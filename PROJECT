@@ -8,4 +8,14 @@ layout:
 multigroup: true
 projectName: aibrix
 repo: github.com/aibrix/aibrix
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: aibrix.ai
+  group: autoscaling
+  kind: PodAutoscaler
+  path: github.com/aibrix/aibrix/api/autoscaling/v1alpha1
+  version: v1alpha1
 version: "3"
