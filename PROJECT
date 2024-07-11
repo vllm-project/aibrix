@@ -5,6 +5,7 @@
 domain: aibrix.ai
 layout:
 - go.kubebuilder.io/v4
+multigroup: true
 projectName: aibrix
 repo: github.com/aibrix/aibrix
 version: "3"
