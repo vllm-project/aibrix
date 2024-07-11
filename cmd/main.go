@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	autoscalingcontroller "github.com/aibrix/aibrix/pkg/controller/podautoscaler"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -35,7 +36,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-	autoscalingcontroller "github.com/aibrix/aibrix/internal/controller/autoscaling"
 	//+kubebuilder:scaffold:imports
 )
 
