@@ -19,7 +19,6 @@ package main
 import (
 	"crypto/tls"
 	"flag"
-	autoscalingcontroller "github.com/aibrix/aibrix/pkg/controller/podautoscaler"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -36,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	autoscalingcontroller "github.com/aibrix/aibrix/pkg/controller/podautoscaler"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -118,7 +118,7 @@ func main() {
 		// LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
-		setupLog.Error(err, "unable to start manager")
+		setupLog.Error(err, "unable to create manager")
 		os.Exit(1)
 	}
 
@@ -126,7 +126,7 @@ func main() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PodAutoscaler")
+		setupLog.Error(err, "unable to create PodAutoscaler controller", "controller", "PodAutoscaler")
 		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder
