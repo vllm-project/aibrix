@@ -1,0 +1,54 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.14.0
+  name: podautoscalers.autoscaling.aibrix.ai
+spec:
+  group: autoscaling.aibrix.ai
+  names:
+    kind: PodAutoscaler
+    listKind: PodAutoscalerList
+    plural: podautoscalers
+    singular: podautoscaler
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: PodAutoscaler is the Schema for the podautoscalers API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PodAutoscalerSpec defines the desired state of PodAutoscaler
+            properties:
+              foo:
+                description: Foo is an example field of PodAutoscaler. Edit podautoscaler_types.go
+                  to remove/update
+                type: string
+            type: object
+          status:
+            description: PodAutoscalerStatus defines the observed state of PodAutoscaler
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
