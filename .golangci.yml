@@ -12,7 +12,7 @@ issues:
     - path: "api/*"
       linters:
         - lll
-    - path: "internal/*"
+    - path: "pkg/*"
       linters:
         - dupl
         - lll
