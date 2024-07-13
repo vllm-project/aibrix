@@ -36,7 +36,7 @@ import (
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
-	modelcontroller "github.com/aibrix/aibrix/internal/controller/model"
+	modelcontroller "github.com/aibrix/aibrix/pkg/controller/lora"
 	autoscalingcontroller "github.com/aibrix/aibrix/pkg/controller/podautoscaler"
 	//+kubebuilder:scaffold:imports
 )
