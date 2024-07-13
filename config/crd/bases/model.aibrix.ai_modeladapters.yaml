@@ -39,13 +39,122 @@ spec:
           spec:
             description: ModelAdapterSpec defines the desired state of ModelAdapter
             properties:
-              foo:
-                description: Foo is an example field of ModelAdapter. Edit modeladapter_types.go
-                  to remove/update
+              additionalConfig:
+                additionalProperties:
+                  type: string
+                description: Additional fields can be added here to customize the
+                  scheduling and deployment
+                type: object
+              baseModel:
+                description: BaseModel is the identifier for the base model to which
+                  the ModelAdapter will be attached.
+                type: string
+              podSelector:
+                description: PodSelector is a label query over pods that should match
+                  the ModelAdapter configuration.
+                properties:
+                  matchExpressions:
+                    description: matchExpressions is a list of label selector requirements.
+                      The requirements are ANDed.
+                    items:
+                      description: |-
+                        A label selector requirement is a selector that contains values, a key, and an operator that
+                        relates the key and values.
+                      properties:
+                        key:
+                          description: key is the label key that the selector applies
+                            to.
+                          type: string
+                        operator:
+                          description: |-
+                            operator represents a key's relationship to a set of values.
+                            Valid operators are In, NotIn, Exists and DoesNotExist.
+                          type: string
+                        values:
+                          description: |-
+                            values is an array of string values. If the operator is In or NotIn,
+                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                            the values array must be empty. This array is replaced during a strategic
+                            merge patch.
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                      map is equivalent to an element of matchExpressions, whose key field is "key", the
+                      operator is "In", and the values array contains only "value". The requirements are ANDed.
+                    type: object
+                type: object
+                x-kubernetes-map-type: atomic
+              schedulerName:
+                description: SchedulerName is the name of the scheduler to use for
+                  scheduling the ModelAdapter.
                 type: string
             type: object
           status:
             description: ModelAdapterStatus defines the observed state of ModelAdapter
+            properties:
+              conditions:
+                description: Conditions represents the latest available observations
+                  of an object's state
+                items:
+                  description: ModelAdapterCondition contains details for the current
+                    condition of this ModelAdapter
+                  properties:
+                    lastTransitionTime:
+                      description: LastTransitionTime is the time the condition last
+                        transitioned from one status to another
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message is a human-readable message indicating
+                        details about the transition
+                      type: string
+                    reason:
+                      description: Reason is a unique, one-word, CamelCase reason
+                        for the condition's last transition
+                      type: string
+                    status:
+                      description: Status is the status of the condition
+                      type: string
+                    type:
+                      description: Type is the type of the condition
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+              instances:
+                description: Instances lists all pod instances of ModelAdapter
+                items:
+                  type: string
+                type: array
+              lastTransitionTime:
+                description: LastTransitionTime is the time the last Phase transitioned
+                  to the current one
+                format: date-time
+                type: string
+              message:
+                description: Message is a human-readable message indicating details
+                  about the last transition
+                type: string
+              phase:
+                description: Phase is a simple, high-level summary of where the ModelAdapter
+                  is in its lifecycle
+                type: string
+              reason:
+                description: Reason is a unique, one-word, CamelCase reason for the
+                  phase's last transition
+                type: string
             type: object
         type: object
     served: true
