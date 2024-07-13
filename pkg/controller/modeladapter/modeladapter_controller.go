@@ -18,14 +18,54 @@ package modeladapter
 
 import (
 	"context"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 )
+
+// Add creates a new ModelAdapter Controller and adds it to the Manager with default RBAC.
+// The Manager will set fields on the Controller and Start it when the Manager is Started.
+func Add(mgr manager.Manager) error {
+	r, err := newReconciler(mgr)
+	if err != nil {
+		return err
+	}
+	return add(mgr, r)
+}
+
+// newReconciler returns a new reconcile.Reconciler
+func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
+	reconciler := &ModelAdapterReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}
+	return reconciler, nil
+}
+
+// add adds a new Controller to mgr with r as the reconcile.Reconciler
+func add(mgr manager.Manager, r reconcile.Reconciler) error {
+	// Create a new controller
+	_, err := controller.New("model-adapter-controller", mgr, controller.Options{
+		Reconciler: r})
+	if err != nil {
+		return err
+	}
+	//return ctrl.NewControllerManagedBy(mgr).
+	//	For(&modelv1alpha1.ModelAdapter{}).
+	//	Complete(r)
+
+	klog.V(4).InfoS("Finished to add model-adapter-controller")
+
+	return nil
+}
+
+var _ reconcile.Reconciler = &ModelAdapterReconciler{}
 
 // ModelAdapterReconciler reconciles a ModelAdapter object
 type ModelAdapterReconciler struct {
@@ -52,11 +92,4 @@ func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// TODO(user): your logic here
 
 	return ctrl.Result{}, nil
-}
-
-// SetupWithManager sets up the controller with the Manager.
-func (r *ModelAdapterReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&modelv1alpha1.ModelAdapter{}).
-		Complete(r)
 }

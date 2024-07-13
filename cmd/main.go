@@ -20,14 +20,17 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -36,14 +39,22 @@ import (
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
-	modeladaptercontroller "github.com/aibrix/aibrix/pkg/controller/modeladapter"
-	autoscalingcontroller "github.com/aibrix/aibrix/pkg/controller/podautoscaler"
+	"github.com/aibrix/aibrix/pkg/controller"
 	//+kubebuilder:scaffold:imports
 )
 
+const (
+	defaultLeaseDuration              = 15 * time.Second
+	defaultRenewDeadline              = 10 * time.Second
+	defaultRetryPeriod                = 2 * time.Second
+	defaultControllerCacheSyncTimeout = 2 * time.Minute
+)
+
 var (
-	scheme   = runtime.NewScheme()
-	setupLog = ctrl.Log.WithName("setup")
+	scheme          = runtime.NewScheme()
+	setupLog        = ctrl.Log.WithName("setup")
+	restConfigQPS   = flag.Int("rest-config-qps", 30, "QPS of rest config.")
+	restConfigBurst = flag.Int("rest-config-burst", 50, "Burst of rest config.")
 )
 
 func init() {
@@ -51,6 +62,8 @@ func init() {
 
 	utilruntime.Must(autoscalingv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(modelv1alpha1.AddToScheme(scheme))
+
+	scheme.AddUnversionedTypes(metav1.SchemeGroupVersion, &metav1.UpdateOptions{}, &metav1.DeleteOptions{}, &metav1.CreateOptions{})
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -60,6 +73,11 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var leaderElectionNamespace string
+	var leaseDuration time.Duration
+	var renewDeadLine time.Duration
+	var leaderElectionResourceLock string
+	var leaderElectionId string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -69,6 +87,18 @@ func main() {
 		"If set the metrics endpoint is served securely")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.BoolVar(&enableLeaderElection, "enable-leader-election", false, "Whether you need to enable leader election.")
+	flag.StringVar(&leaderElectionNamespace, "leader-election-namespace", "aibrix-system",
+		"This determines the namespace in which the leader election configmap will be created, it will use in-cluster namespace if empty.")
+	flag.DurationVar(&leaseDuration, "leader-election-lease-duration", defaultLeaseDuration,
+		"leader-election-lease-duration is the duration that non-leader candidates will wait to force acquire leadership. This is measured against time of last observed ack. Default is 15 seconds.")
+	flag.DurationVar(&renewDeadLine, "leader-election-renew-deadline", defaultRenewDeadline,
+		"leader-election-renew-deadline is the duration that the acting controlplane will retry refreshing leadership before giving up. Default is 10 seconds.")
+	flag.StringVar(&leaderElectionResourceLock, "leader-election-resource-lock", resourcelock.LeasesResourceLock,
+		"leader-election-resource-lock determines which resource lock to use for leader election, defaults to \"leases\".")
+	flag.StringVar(&leaderElectionId, "leader-election-id", "aibrix-controller-manager",
+		"leader-election-id determines the name of the resource that leader election will use for holding the leader lock, Default is aibrix-controller-manager.")
+
 	opts := zap.Options{
 		Development: true,
 	}
@@ -104,10 +134,14 @@ func main() {
 			SecureServing: secureMetrics,
 			TLSOpts:       tlsOpts,
 		},
-		WebhookServer:          webhookServer,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "d534ee11.aibrix.ai",
+		WebhookServer:              webhookServer,
+		HealthProbeBindAddress:     probeAddr,
+		LeaderElection:             enableLeaderElection,
+		LeaderElectionID:           leaderElectionId,
+		LeaderElectionNamespace:    leaderElectionNamespace,
+		LeaderElectionResourceLock: leaderElectionResourceLock,
+		LeaseDuration:              &leaseDuration,
+		RenewDeadline:              &renewDeadLine,
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -125,20 +159,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&autoscalingcontroller.PodAutoscalerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create PodAutoscaler controller", "controller", "PodAutoscaler")
+	// Kind controller registration is encapsulated inside the pkg/controller/controller.go
+	// So here we can use more clean registration flow and there's no need to change logics in future.
+	if err = controller.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to setup controller")
 		os.Exit(1)
 	}
-	if err = (&modeladaptercontroller.ModelAdapterReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ModelAdapter")
-		os.Exit(1)
-	}
+
 	//+kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

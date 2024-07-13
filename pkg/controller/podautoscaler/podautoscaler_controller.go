@@ -18,14 +18,54 @@ package podautoscaler
 
 import (
 	"context"
-
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
+
+// Add creates a new PodAutoscaler Controller and adds it to the Manager with default RBAC.
+// The Manager will set fields on the Controller and Start it when the Manager is Started.
+func Add(mgr manager.Manager) error {
+	r, err := newReconciler(mgr)
+	if err != nil {
+		return err
+	}
+	return add(mgr, r)
+}
+
+// newReconciler returns a new reconcile.Reconciler
+func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
+	reconciler := &PodAutoscalerReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}
+	return reconciler, nil
+}
+
+// add adds a new Controller to mgr with r as the reconcile.Reconciler
+func add(mgr manager.Manager, r reconcile.Reconciler) error {
+	// Create a new controller
+	_, err := controller.New("pod-autoscaler-controller", mgr, controller.Options{
+		Reconciler: r})
+	if err != nil {
+		return err
+	}
+
+	// ctrl.NewControllerManagedBy(mgr).
+	//		For(&autoscalingv1alpha1.PodAutoscaler{}).
+	//		Complete(r)
+
+	klog.V(4).InfoS("Finished to add pod-autoscaler-controller")
+
+	return nil
+}
+
+var _ reconcile.Reconciler = &PodAutoscalerReconciler{}
 
 // PodAutoscalerReconciler reconciles a PodAutoscaler object
 type PodAutoscalerReconciler struct {
@@ -52,11 +92,4 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// TODO(user): your logic here
 
 	return ctrl.Result{}, nil
-}
-
-// SetupWithManager sets up the controller with the Manager.
-func (r *PodAutoscalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&autoscalingv1alpha1.PodAutoscaler{}).
-		Complete(r)
 }
