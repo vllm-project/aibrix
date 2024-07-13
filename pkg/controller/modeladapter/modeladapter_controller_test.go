@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package lora
+package modeladapter
 
 import (
 	"context"
@@ -30,7 +30,7 @@ import (
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 )
 
-var _ = Describe("LoraAdapter Controller", func() {
+var _ = Describe("ModelAdapter Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
 
@@ -40,13 +40,13 @@ var _ = Describe("LoraAdapter Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		loraadapter := &modelv1alpha1.LoraAdapter{}
+		modeladapter := &modelv1alpha1.ModelAdapter{}
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind LoraAdapter")
-			err := k8sClient.Get(ctx, typeNamespacedName, loraadapter)
+			By("creating the custom resource for the Kind ModelAdapter")
+			err := k8sClient.Get(ctx, typeNamespacedName, modeladapter)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &modelv1alpha1.LoraAdapter{
+				resource := &modelv1alpha1.ModelAdapter{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
@@ -59,16 +59,16 @@ var _ = Describe("LoraAdapter Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &modelv1alpha1.LoraAdapter{}
+			resource := &modelv1alpha1.ModelAdapter{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Cleanup the specific resource instance LoraAdapter")
+			By("Cleanup the specific resource instance ModelAdapter")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
-			controllerReconciler := &LoraAdapterReconciler{
+			controllerReconciler := &ModelAdapterReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}

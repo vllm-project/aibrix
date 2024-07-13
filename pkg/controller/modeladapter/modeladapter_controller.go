@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package lora
+package modeladapter
 
 import (
 	"context"
@@ -27,26 +27,26 @@ import (
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 )
 
-// LoraAdapterReconciler reconciles a LoraAdapter object
-type LoraAdapterReconciler struct {
+// ModelAdapterReconciler reconciles a ModelAdapter object
+type ModelAdapterReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
 
-//+kubebuilder:rbac:groups=model.aibrix.ai,resources=loraadapters,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=model.aibrix.ai,resources=loraadapters/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=model.aibrix.ai,resources=loraadapters/finalizers,verbs=update
+//+kubebuilder:rbac:groups=model.aibrix.ai,resources=modeladapters,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=model.aibrix.ai,resources=modeladapters/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=model.aibrix.ai,resources=modeladapters/finalizers,verbs=update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 // TODO(user): Modify the Reconcile function to compare the state specified by
-// the LoraAdapter object against the actual cluster state, and then
+// the ModelAdapter object against the actual cluster state, and then
 // perform operations to make the cluster state reflect the state specified by
 // the user.
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.3/pkg/reconcile
-func (r *LoraAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = log.FromContext(ctx)
 
 	// TODO(user): your logic here
@@ -55,8 +55,8 @@ func (r *LoraAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *LoraAdapterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *ModelAdapterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&modelv1alpha1.LoraAdapter{}).
+		For(&modelv1alpha1.ModelAdapter{}).
 		Complete(r)
 }

@@ -4,20 +4,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.14.0
-  name: loraadapters.model.aibrix.ai
+  name: modeladapters.model.aibrix.ai
 spec:
   group: model.aibrix.ai
   names:
-    kind: LoraAdapter
-    listKind: LoraAdapterList
-    plural: loraadapters
-    singular: loraadapter
+    kind: ModelAdapter
+    listKind: ModelAdapterList
+    plural: modeladapters
+    singular: modeladapter
   scope: Namespaced
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: LoraAdapter is the Schema for the loraadapters API
+        description: ModelAdapter is the Schema for the modeladapters API
         properties:
           apiVersion:
             description: |-
@@ -37,15 +37,15 @@ spec:
           metadata:
             type: object
           spec:
-            description: LoraAdapterSpec defines the desired state of LoraAdapter
+            description: ModelAdapterSpec defines the desired state of ModelAdapter
             properties:
               foo:
-                description: Foo is an example field of LoraAdapter. Edit loraadapter_types.go
+                description: Foo is an example field of ModelAdapter. Edit modeladapter_types.go
                   to remove/update
                 type: string
             type: object
           status:
-            description: LoraAdapterStatus defines the observed state of LoraAdapter
+            description: ModelAdapterStatus defines the observed state of ModelAdapter
             type: object
         type: object
     served: true

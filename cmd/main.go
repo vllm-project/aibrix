@@ -36,7 +36,7 @@ import (
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
-	modelcontroller "github.com/aibrix/aibrix/pkg/controller/lora"
+	modeladaptercontroller "github.com/aibrix/aibrix/pkg/controller/modeladapter"
 	autoscalingcontroller "github.com/aibrix/aibrix/pkg/controller/podautoscaler"
 	//+kubebuilder:scaffold:imports
 )
@@ -132,11 +132,11 @@ func main() {
 		setupLog.Error(err, "unable to create PodAutoscaler controller", "controller", "PodAutoscaler")
 		os.Exit(1)
 	}
-	if err = (&modelcontroller.LoraAdapterReconciler{
+	if err = (&modeladaptercontroller.ModelAdapterReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "LoraAdapter")
+		setupLog.Error(err, "unable to create controller", "controller", "ModelAdapter")
 		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder

@@ -33,7 +33,7 @@ rules:
 - apiGroups:
   - model.aibrix.ai
   resources:
-  - loraadapters
+  - modeladapters
   verbs:
   - create
   - delete
@@ -45,13 +45,13 @@ rules:
 - apiGroups:
   - model.aibrix.ai
   resources:
-  - loraadapters/finalizers
+  - modeladapters/finalizers
   verbs:
   - update
 - apiGroups:
   - model.aibrix.ai
   resources:
-  - loraadapters/status
+  - modeladapters/status
   verbs:
   - get
   - patch

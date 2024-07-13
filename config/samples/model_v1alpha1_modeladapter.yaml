@@ -1,9 +1,9 @@
 apiVersion: model.aibrix.ai/v1alpha1
-kind: LoraAdapter
+kind: ModelAdapter
 metadata:
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
-  name: loraadapter-sample
+  name: modeladapter-sample
 spec:
   # TODO(user): Add fields here

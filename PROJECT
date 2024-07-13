@@ -24,7 +24,7 @@ resources:
   controller: true
   domain: aibrix.ai
   group: model
-  kind: LoraAdapter
+  kind: ModelAdapter
   path: github.com/aibrix/aibrix/api/model/v1alpha1
   version: v1alpha1
 version: "3"

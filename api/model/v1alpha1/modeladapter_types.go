@@ -23,17 +23,17 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// LoraAdapterSpec defines the desired state of LoraAdapter
-type LoraAdapterSpec struct {
+// ModelAdapterSpec defines the desired state of ModelAdapter
+type ModelAdapterSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Foo is an example field of LoraAdapter. Edit loraadapter_types.go to remove/update
+	// Foo is an example field of ModelAdapter. Edit modeladapter_types.go to remove/update
 	Foo string `json:"foo,omitempty"`
 }
 
-// LoraAdapterStatus defines the observed state of LoraAdapter
-type LoraAdapterStatus struct {
+// ModelAdapterStatus defines the observed state of ModelAdapter
+type ModelAdapterStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 }
@@ -41,24 +41,24 @@ type LoraAdapterStatus struct {
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 
-// LoraAdapter is the Schema for the loraadapters API
-type LoraAdapter struct {
+// ModelAdapter is the Schema for the modeladapters API
+type ModelAdapter struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   LoraAdapterSpec   `json:"spec,omitempty"`
-	Status LoraAdapterStatus `json:"status,omitempty"`
+	Spec   ModelAdapterSpec   `json:"spec,omitempty"`
+	Status ModelAdapterStatus `json:"status,omitempty"`
 }
 
 //+kubebuilder:object:root=true
 
-// LoraAdapterList contains a list of LoraAdapter
-type LoraAdapterList struct {
+// ModelAdapterList contains a list of ModelAdapter
+type ModelAdapterList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []LoraAdapter `json:"items"`
+	Items           []ModelAdapter `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&LoraAdapter{}, &LoraAdapterList{})
+	SchemeBuilder.Register(&ModelAdapter{}, &ModelAdapterList{})
 }
