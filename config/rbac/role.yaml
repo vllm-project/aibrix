@@ -30,3 +30,29 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - model.aibrix.ai
+  resources:
+  - loraadapters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - model.aibrix.ai
+  resources:
+  - loraadapters/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - model.aibrix.ai
+  resources:
+  - loraadapters/status
+  verbs:
+  - get
+  - patch
+  - update
