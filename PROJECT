@@ -18,4 +18,13 @@ resources:
   kind: PodAutoscaler
   path: github.com/aibrix/aibrix/api/autoscaling/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: aibrix.ai
+  group: model
+  kind: LoraAdapter
+  path: github.com/aibrix/aibrix/api/model/v1alpha1
+  version: v1alpha1
 version: "3"

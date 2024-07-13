@@ -35,6 +35,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	modelcontroller "github.com/aibrix/aibrix/internal/controller/model"
 	autoscalingcontroller "github.com/aibrix/aibrix/pkg/controller/podautoscaler"
 	//+kubebuilder:scaffold:imports
 )
@@ -48,6 +50,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(autoscalingv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(modelv1alpha1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -127,6 +130,13 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create PodAutoscaler controller", "controller", "PodAutoscaler")
+		os.Exit(1)
+	}
+	if err = (&modelcontroller.LoraAdapterReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "LoraAdapter")
 		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder

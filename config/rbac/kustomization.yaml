@@ -14,6 +14,8 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the Project itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- model_loraadapter_editor_role.yaml
+- model_loraadapter_viewer_role.yaml
 - autoscaling_podautoscaler_editor_role.yaml
 - autoscaling_podautoscaler_viewer_role.yaml
 
