@@ -17,7 +17,9 @@ limitations under the License.
 package modeladapter
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	"io/ioutil"
@@ -38,6 +40,7 @@ import (
 	"net/http"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -119,6 +122,9 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// use the builder fashion. If we need more fine grain control later, we can switch to `controller.New()`
 	ctrl.NewControllerManagedBy(mgr).
 		For(&modelv1alpha1.ModelAdapter{}).
+		Watches(&corev1.Service{}, &handler.EnqueueRequestForObject{}).
+		Watches(&discoveryv1.EndpointSlice{}, &handler.EnqueueRequestForObject{}).
+		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}).
 		Complete(r)
 
 	klog.V(4).InfoS("Finished to add model-adapter-controller")
@@ -162,6 +168,8 @@ type ModelAdapterReconciler struct {
 func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = log.FromContext(ctx)
 
+	// TODO: handle one more case, unload model adapter from pods later.
+
 	// Fetch the ModelAdapter instance
 	modelAdapter := &modelv1alpha1.ModelAdapter{}
 	err := r.Get(ctx, req.NamespacedName, modelAdapter)
@@ -199,7 +207,7 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
 	}
 
-	// Step 1: Reconcile Service
+	// Step 3: Reconcile Service
 	if err := r.reconcileService(ctx, instance); err != nil {
 		if updateErr := r.updateModelAdapterState(ctx, instance, modelv1alpha1.ModelAdapterBinding); updateErr != nil {
 			klog.ErrorS(updateErr, "ModelAdapter update state error", "cluster name", req.Name)
@@ -207,7 +215,7 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
 	}
 
-	// Step 2: Reconcile EndpointSlice
+	// Step 4: Reconcile EndpointSlice
 	if err := r.reconcileEndpointSlice(ctx, instance, selectedPod); err != nil {
 		if updateErr := r.updateModelAdapterState(ctx, instance, modelv1alpha1.ModelAdapterConfiguring); updateErr != nil {
 			klog.ErrorS(updateErr, "ModelAdapter update state error", "cluster name", req.Name)
@@ -231,8 +239,9 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
-	klog.InfoS("Unconditional requeue after", "cluster name", req.Name, "seconds", DefaultRequeueDuration)
-	return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, nil
+	//klog.InfoS("Unconditional requeue after", "cluster name", req.Name, "seconds", DefaultRequeueDuration)
+	//return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, nil
+	return ctrl.Result{}, nil
 }
 
 func (r *ModelAdapterReconciler) schedulePod(ctx context.Context, instance *modelv1alpha1.ModelAdapter) (*corev1.Pod, error) {
@@ -255,34 +264,41 @@ func (r *ModelAdapterReconciler) schedulePod(ctx context.Context, instance *mode
 }
 
 func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance *modelv1alpha1.ModelAdapter, pod *corev1.Pod) error {
-	// Implement your logic to send a curl command to the Pod
-	url := fmt.Sprintf("http://%s:8080/load", pod.Status.PodIP)
-	resp, err := http.Get(url)
+	payload := map[string]string{
+		"id":   instance.Name,
+		"root": instance.Spec.AdditionalConfig["model-artifact"],
+	}
+	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("failed to load model: %s", string(bodyBytes))
-	}
+	// TODO: We need to make it mac can access this pod ip.
+	// TODO: without sidecar, it's hard to know user's port and metrics here.
+	// TODO: Need to finish the vLLM Lora MR and then finalize this one.
+	// We need to make sure the mocked app.py has exact api endpoints with vLLM
 
-	// If successful, update the EndpointSlice with the Pod IP
-	eps := &discoveryv1.EndpointSlice{}
-	objectKey := types.NamespacedName{
-		Namespace: instance.Namespace,
-		Name:      instance.Name,
+	//url := fmt.Sprintf("http://%s:8000/v1/load", pod.Status.PodIP)
+	url := fmt.Sprintf("http://%s:8000/v1/load", "localhost")
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return err
 	}
-	if err := r.Get(ctx, objectKey, eps); err != nil {
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
 		return err
 	}
 
-	eps.Endpoints = append(eps.Endpoints, discoveryv1.Endpoint{
-		Addresses: []string{pod.Status.PodIP},
-	})
+	defer resp.Body.Close()
 
-	return r.Update(ctx, eps)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		bodyBytes, _ := ioutil.ReadAll(resp.Body)
+		return fmt.Errorf("failed to load model adapters: %s", string(bodyBytes))
+	}
+
+	return nil
 }
 
 func (r *ModelAdapterReconciler) updateModelAdapterState(ctx context.Context, instance *modelv1alpha1.ModelAdapter, phase modelv1alpha1.ModelAdapterPhase) error {
@@ -350,7 +366,6 @@ func buildModelAdapterService(context context.Context, instance modelv1alpha1.Mo
 		Spec: corev1.ServiceSpec{
 			ClusterIP:                corev1.ClusterIPNone,
 			PublishNotReadyAddresses: true,
-			Selector:                 instance.Spec.PodSelector.MatchLabels,
 			Ports:                    ports,
 		},
 	}, nil
@@ -428,7 +443,7 @@ func buildModelAdapterEndpointSlice(context context.Context, instance modelv1alp
 		{
 			Name:     stringPtr("http"),
 			Protocol: protocolPtr(corev1.ProtocolTCP),
-			Port:     int32Ptr(80),
+			Port:     int32Ptr(8000),
 		},
 	}
 
@@ -458,10 +473,35 @@ func int32Ptr(i int32) *int32 {
 
 func (r *ModelAdapterReconciler) calculateStatus(ctx context.Context, instance *modelv1alpha1.ModelAdapter) (*modelv1alpha1.ModelAdapter, error) {
 	// Implement your logic to calculate the status of the ModelAdapter
+	// TODO: we need better control here.
+	instance.Status.Phase = modelv1alpha1.ModelAdapterRunning
 	return instance, nil
 }
 
 func (r *ModelAdapterReconciler) inconsistentModelAdapterStatus(ctx context.Context, oldStatus, newStatus modelv1alpha1.ModelAdapterStatus) bool {
 	// Implement your logic to check if the status is inconsistent
+	if oldStatus.Phase != newStatus.Phase || !equalStringSlices(oldStatus.Instances, newStatus.Instances) {
+		return true
+	}
+
+	return false
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	aSet := make(map[string]struct{}, len(a))
+	for _, item := range a {
+		aSet[item] = struct{}{}
+	}
+
+	for _, item := range b {
+		if _, exists := aSet[item]; !exists {
+			return false
+		}
+	}
+
 	return true
 }
