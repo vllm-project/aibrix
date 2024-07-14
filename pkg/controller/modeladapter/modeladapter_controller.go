@@ -366,7 +366,36 @@ func (r *ModelAdapterReconciler) reconcileEndpointSlice(ctx context.Context, ins
 
 	err := r.Get(ctx, objectKey, eps)
 	if err == nil {
-		// EndpointSlice exists, do nothing
+		// Check if the Pod IP is already in the EndpointSlice
+		podIP := pod.Status.PodIP
+		alreadyExists := false
+		for _, endpoint := range eps.Endpoints {
+			for _, address := range endpoint.Addresses {
+				if address == podIP {
+					alreadyExists = true
+					break
+				}
+			}
+			if alreadyExists {
+				break
+			}
+		}
+
+		// Append the Pod IP to the EndpointSlice if it doesn't already exist
+		if !alreadyExists {
+			eps.Endpoints = append(eps.Endpoints, discoveryv1.Endpoint{
+				Addresses: []string{podIP},
+			})
+
+			if err := r.Update(ctx, eps); err != nil {
+				klog.ErrorS(err, "Failed to update EndpointSlice", "EndpointSlice", eps.Name)
+				return err
+			}
+			klog.InfoS("Successfully updated EndpointSlice", "EndpointSlice", eps.Name)
+		} else {
+			klog.InfoS("Pod IP already exists in EndpointSlice", "PodIP", podIP)
+		}
+
 		return nil
 	} else if errors.IsNotFound(err) {
 		// EndpointSlice does not exist, create it
