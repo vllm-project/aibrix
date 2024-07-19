@@ -320,10 +320,7 @@ func (r *ModelAdapterReconciler) reconcileService(ctx context.Context, instance 
 	}
 
 	err := r.Get(ctx, objectKey, svc)
-	if err == nil {
-		// service exists, do nothing
-		return nil
-	} else if errors.IsNotFound(err) {
+	if errors.IsNotFound(err) {
 		// Service does not exist, create it
 		svc, err = buildModelAdapterService(ctx, *instance)
 		if err != nil {
