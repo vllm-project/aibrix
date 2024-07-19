@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lora-test
+  namespace: default
+  labels:
+    aibricks.com/lora-enabled: "true"
+    model.aibrix.ai: "llama2-70b"
+spec:
+  containers:
+    - name: llmengine
+      image: aibrix/vllm:v0.1.0
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lora-test-mac-only
+  namespace: default
+spec:
+  selector:
+    model.aibrix.ai: "llama2-70b"
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+      nodePort: 30080
+  type: NodePort

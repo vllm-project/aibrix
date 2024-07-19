@@ -1,0 +1,13 @@
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelAdapter
+metadata:
+  name: text2sql-lora-1
+  namespace: default
+spec:
+  baseModel: llama2-70b
+  podSelector:
+    matchLabels:
+      model.aibrix.ai: llama2-70b
+  additionalConfig:
+    modelArtifact: jeffwan/rank-1
+  schedulerName: default-model-adapter-scheduler
