@@ -17,13 +17,10 @@ Resolves: #[Insert issue number(s)]
 <p>Your PR title should start with one of these prefixes to indicate the nature of the change:</p>
 <ul>
     <li><code>[Bug]</code>: Corrections to existing functionality</li>
-    <li><code>[Build]</code>: Changes to build process or CI pipeline</li>
+    <li><code>[CI]</code>: Changes to build process or CI pipeline</li>
     <li><code>[Docs]</code>: Updates or additions to documentation</li>
-    <li><code>[Model]</code>: Introducing or enhancing model support (include model name)</li>
     <li><code>[API]</code>: Modifications to aibrix's API or interface</li>
-    <li><code>[Engine]</code>: Changes to aibrix's core components (e.g., controller)</li>
-    <li><code>[HW][Vendor]</code>: Hardware-specific improvements (e.g., [HW][NVIDIA])</li>
-    <li><code>[Other]</code>: For changes not covered above (use sparingly)</li>
+    <li><code>[MISC]</code>: For changes not covered above (use sparingly)</li>
 </ul>
 <p><em>Note: For changes spanning multiple categories, use multiple prefixes in order of importance.</em></p>
 
