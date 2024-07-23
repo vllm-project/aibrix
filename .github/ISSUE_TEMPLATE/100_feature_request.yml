@@ -1,0 +1,53 @@
+name: 🚀 Feature Request
+description: Propose a new feature for AIBrix's GenAI inference infrastructure
+body:
+- type: markdown
+  attributes:
+    value: |
+      Thanks for taking the time to fill out this feature request for AIBrix!
+- type: textarea
+  attributes:
+    label: 🚀 Feature Description and Motivation
+    description: |
+      Provide a clear and concise description of the feature you're proposing. 
+      What problem does it solve? How will it benefit AIBrix users?
+      
+      For example: "I'm working with large language models and need X capability to improve Y aspect of my inference pipeline."
+    placeholder: |
+      I'm proposing [feature] because [motivation]. This would help solve [problem] 
+      and benefit AIBrix users by [advantage].
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Use Case
+    description: |
+      Describe a specific use case or scenario where this feature would be valuable in the context of GenAI inference infrastructure.
+    placeholder: |
+      In my enterprise deployment, I often need to [specific scenario]. 
+      This feature would allow me to [expected outcome].
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Proposed Solution
+    description: |
+      If you have ideas on how this feature could be implemented within AIBrix's cloud-native architecture, please share them here.
+    placeholder: |
+      One possible approach could be to [implementation idea]. 
+      This would integrate with AIBrix's existing [component] by [method].
+- type: textarea
+  attributes:
+    label: Alternatives Considered
+    description: |
+      Have you considered any alternative solutions or features? If so, please describe them here.
+- type: textarea
+  attributes:
+    label: Additional Context
+    description: |
+      Add any other context, examples, or screenshots about the feature request here. 
+      This could include how it might interact with other AIBrix components or impact overall system performance.
+- type: markdown
+  attributes:
+    value: |
+      Thanks for contributing to AIBrix! Your input helps us build better GenAI inference infrastructure. 🎉
