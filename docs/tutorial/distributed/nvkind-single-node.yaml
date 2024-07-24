@@ -1,0 +1,29 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+- role: worker
+  extraMounts:
+    # We inject all NVIDIA GPUs using the nvidia-container-runtime.
+    # This requires `accept-nvidia-visible-devices-as-volume-mounts = true` be set
+    # in `/etc/nvidia-container-runtime/config.toml`
+    - hostPath: /dev/null
+      containerPath: /var/run/nvidia-container-devices/all
+    - hostPath: /tmp/models/
+      containerPath: /data/models/
+    - hostPath: /root/.cache/huggingface
+      containerPath: /root/.cache/huggingface
+# ~/.cache/huggingface:/root/.cache/huggingface
+  # this is for gateway service, make it exposed to public
+  extraPortMappings:
+  - containerPort: 30950
+    hostPort: 4000
+  # Reserved for prometheus & grafana ports. Update service with NodePort 30090 or 30030 if you need to debug the metrics
+  - containerPort: 30090
+    hostPort: 9090
+  - containerPort: 30030
+    hostPort: 3000
+  - containerPort: 38265
+    hostPort: 8265
+  - containerPort: 38000
+    hostPort: 8000
