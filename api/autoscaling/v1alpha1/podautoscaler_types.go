@@ -117,3 +117,12 @@ type PodAutoscalerList struct {
 func init() {
 	SchemeBuilder.Register(&PodAutoscaler{}, &PodAutoscalerList{})
 }
+
+const (
+	// CPU is the amount of the requested cpu actually being consumed by the Pod.
+	CPU = "cpu"
+	// Memory is the amount of the requested memory actually being consumed by the Pod.
+	Memory = "memory"
+	// QPS is the requests per second reaching the Pod.
+	QPS = "qps"
+)

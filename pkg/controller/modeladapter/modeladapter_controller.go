@@ -166,8 +166,8 @@ type ModelAdapterReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.3/pkg/reconcile
 func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
-
+	_log := log.FromContext(ctx)
+	_log.Info("Reconciling model-adapter", "request name", req.Name)
 	// TODO: handle one more case, unload model adapter from pods later.
 
 	// Fetch the ModelAdapter instance
