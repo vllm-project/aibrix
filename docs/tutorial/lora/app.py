@@ -29,7 +29,7 @@ models = [
         ]
     },
     {
-        "id": "sql-lora",
+        "id": "startup-default-lora",
         "object": "model",
         "created": 1715644056,
         "owned_by": "vllm",
@@ -73,12 +73,78 @@ def load_model():
     models.append(new_model)
     return jsonify({"status": "success", "message": "Model loaded successfully"}), 200
 
+
 @app.route('/v1/unload_lora_adapter', methods=['POST'])
 def unload_model():
     model_id = request.json.get('lora_name')
     global models
     models = [model for model in models if model['id'] != model_id]
     return jsonify({"status": "success", "message": "Model unloaded successfully"}), 200
+
+
+@app.route('/v1/completions', methods=['POST'])
+def completion():
+    prompt = request.json.get('prompt')
+    model = request.json.get('model')
+    if not prompt or not model:
+        return jsonify({"status": "error", "message": "Prompt and model are required"}), 400
+
+    # Simulated response
+    response = {
+        "id": "cmpl-uqkvlQyYK7bGYrRHQ0eXlWi7",
+        "object": "text_completion",
+        "created": 1589478378,
+        "model": model,
+        "system_fingerprint": "fp_44709d6fcb",
+        "choices": [
+            {
+                "text": f"This is indeed a test from model {model}!",
+                "index": 0,
+                "logprobs": None,
+                "finish_reason": "length"
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 5,
+            "completion_tokens": 7,
+            "total_tokens": 12
+        }
+    }
+    return jsonify(response), 200
+
+
+@app.route('/v1/chat/completions', methods=['POST'])
+def chat_completions():
+    messages = request.json.get('messages')
+    model = request.json.get('model')
+    if not messages or not model:
+        return jsonify({"status": "error", "message": "Messages and model are required"}), 400
+
+    # Simulated response
+    response = {
+        "id": "chatcmpl-abc123",
+        "object": "chat.completion",
+        "created": 1677858242,
+        "model": model,
+        "usage": {
+            "prompt_tokens": 13,
+            "completion_tokens": 7,
+            "total_tokens": 20
+        },
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": f"\n\nThis is a test from{model}!"
+                },
+                "logprobs": None,
+                "finish_reason": "stop",
+                "index": 0
+            }
+        ]
+    }
+    return jsonify(response), 200
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000)

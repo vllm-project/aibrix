@@ -9,5 +9,6 @@ spec:
     matchLabels:
       model.aibrix.ai: llama2-70b
   additionalConfig:
+    # could be model artifact etc.
     modelArtifact: jeffwan/rank-1
   schedulerName: default-model-adapter-scheduler
