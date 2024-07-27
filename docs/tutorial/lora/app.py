@@ -63,13 +63,20 @@ def get_models():
 
 @app.route('/v1/load_lora_adapter', methods=['POST'])
 def load_model():
-    new_model = {}
-    new_model['id'] = request.json.get('lora_name')
-    new_model['created'] = int(time.time())
-    new_model['object'] = "model"
-    new_model['owned_by'] = "vllm"
-    new_model['parent'] = None
-    new_model['root'] = request.json.get('lora_path')
+    lora_name = request.json.get('lora_name')
+    # Check if the model already exists
+    if any(model['id'] == lora_name for model in models):
+        return jsonify({"status": "success", "message": "Model already loaded"}), 200
+
+    new_model = {
+        'id': lora_name,
+        'created': int(time.time()),
+        'object': "model",
+        'owned_by': "vllm",
+        'parent': None,
+        'root': request.json.get('lora_path')
+    }
+
     models.append(new_model)
     return jsonify({"status": "success", "message": "Model loaded successfully"}), 200
 
