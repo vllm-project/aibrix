@@ -37,35 +37,6 @@ body:
       Discuss any alternative approaches you've considered and why they were not chosen.
   validations:
     required: false
-- type: textarea
-  attributes:
-    label: Impact and Risks
-    description: >
-      Evaluate the potential impact of this change on AIBrix's performance, scalability, and user experience. 
-      Identify any risks or challenges in implementation.
-  validations:
-    required: true
-- type: textarea
-  attributes:
-    label: Feedback Period
-    description: >
-      Specify the duration for which you're seeking feedback. Typically at least one week.
-  validations:
-    required: true
-- type: textarea
-  attributes:
-    label: CC List
-    description: >
-      List any specific team members or stakeholders you'd like to involve in the discussion.
-  validations:
-    required: false
-- type: textarea
-  attributes:
-    label: Additional Context
-    description: >
-      Provide any additional information, context, or resources relevant to this RFC.
-  validations:
-    required: false
 - type: markdown
   attributes:
     value: >
