@@ -17,7 +17,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -49,38 +48,27 @@ const (
 	ModelAdapterPending ModelAdapterPhase = "Pending"
 	// ModelAdapterScheduling means the ModelAdapter is pending scheduling
 	ModelAdapterScheduling ModelAdapterPhase = "Scheduling"
-	// ModelAdapterBinding means the controller starts to load ModelAdapter on a selected pod
+	// ModelAdapterBinding means the controller loads ModelAdapter on a selected pod
 	ModelAdapterBinding ModelAdapterPhase = "Binding"
-	// ModelAdapterConfiguring means the controller starts to configure the service and endpoint for ModelAdapter
-	ModelAdapterConfiguring ModelAdapterPhase = "Configuring"
 	// ModelAdapterRunning means ModelAdapter has been running on the pod
 	ModelAdapterRunning ModelAdapterPhase = "Running"
 	// ModelAdapterFailed means ModelAdapter has terminated in a failure
 	ModelAdapterFailed ModelAdapterPhase = "Failed"
-	// ModelAdapterScaling means ModelAdapter is scaling, could be scaling in or out
+	// ModelAdapterScaling means ModelAdapter is scaling, could be scaling in or out. won't be enabled until we allow multiple replicas
 	ModelAdapterScaling ModelAdapterPhase = "Scaling"
 )
 
 // ModelAdapterStatus defines the observed state of ModelAdapter
 type ModelAdapterStatus struct {
-
 	// Phase is a simple, high-level summary of where the ModelAdapter is in its lifecycle
+	// Phase maps to latest status.conditions.type
 	// +optional
 	Phase ModelAdapterPhase `json:"phase,omitempty"`
-	// Conditions represents the latest available observations of an object's state
+	// Conditions represents the observation of a model adapter's current state.
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	// +optional
-	Conditions []ModelAdapterCondition `json:"conditions,omitempty"`
-	// LastTransitionTime is the time the last Phase transitioned to the current one
-	// +optional
-	LastTransitionTime *metav1.Time `json:"lastTransitionTime,omitempty"`
-	// Reason is a unique, one-word, CamelCase reason for the phase's last transition
-	// +optional
-	Reason string `json:"reason,omitempty"`
-	// Message is a human-readable message indicating details about the last transition
-	// +optional
-	Message string `json:"message,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// Instances lists all pod instances of ModelAdapter
 	// +optional
 	Instances []string `json:"instances,omitempty"`
@@ -88,22 +76,14 @@ type ModelAdapterStatus struct {
 
 type ModelAdapterConditionType string
 
-// ModelAdapterCondition contains details for the current condition of this ModelAdapter
-type ModelAdapterCondition struct {
-	// Type is the type of the condition
-	Type ModelAdapterConditionType `json:"type"`
-	// Status is the status of the condition
-	Status corev1.ConditionStatus `json:"status"`
-	// LastTransitionTime is the time the condition last transitioned from one status to another
-	// +optional
-	LastTransitionTime metav1.Time `json:"lastTransitionTime,omitempty"`
-	// Reason is a unique, one-word, CamelCase reason for the condition's last transition
-	// +optional
-	Reason string `json:"reason,omitempty"`
-	// Message is a human-readable message indicating details about the transition
-	// +optional
-	Message string `json:"message,omitempty"`
-}
+const (
+	ModelAdapterConditionTypeInitialized     ModelAdapterConditionType = "Initialized"
+	ModelAdapterConditionTypeSelectorMatched ModelAdapterConditionType = "SelectorMatched"
+	ModelAdapterConditionTypeScheduled       ModelAdapterConditionType = "Scheduled"
+	ModelAdapterConditionTypeResourceCreated ModelAdapterConditionType = "ResourceCreated"
+	ModelAdapterConditionReady               ModelAdapterConditionType = "Ready"
+	ModelAdapterConditionCleanup             ModelAdapterConditionType = "Cleanup"
+)
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
