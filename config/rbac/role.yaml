@@ -33,6 +33,26 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - pods
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
   - services
   verbs:
   - create
@@ -51,7 +71,7 @@ rules:
   - patch
   - update
 - apiGroups:
-  - discovery
+  - discovery.k8s.io
   resources:
   - endpointslices
   verbs:
@@ -63,7 +83,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - discovery
+  - discovery.k8s.io
   resources:
   - endpointslices/status
   verbs:

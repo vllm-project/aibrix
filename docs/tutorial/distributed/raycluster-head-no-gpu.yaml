@@ -1,0 +1,63 @@
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata:
+  labels:
+    controller-tools.k8s.io: "1.0"
+  name: vllm
+spec:
+  rayVersion: '2.32.0'
+  headGroupSpec:
+    rayStartParams:
+      dashboard-host: '0.0.0.0'
+    template:
+      spec:
+        containers:
+        - name: ray-head
+          image: vllm/vllm-openai:v0.5.2-revised
+          resources:
+            limits:
+              cpu: "8"
+            requests:
+              cpu: "8"
+          volumeMounts:
+          - mountPath: /tmp/ray
+            name: ray-logs
+          - mountPath: /root/.cache/huggingface
+            name: models
+        volumes:
+        - name: ray-logs
+          emptyDir: {}
+        - name: models
+          hostPath:
+            path: /root/.cache/huggingface
+            type: DirectoryOrCreate
+  workerGroupSpecs:
+  - replicas: 2
+    minReplicas: 2
+    maxReplicas: 2
+    groupName: small-group
+    rayStartParams: {}
+    template:
+      spec:
+        containers:
+        - name: ray-worker
+          image: vllm/vllm-openai:v0.5.2-revised
+          volumeMounts:
+            - mountPath: /tmp/ray
+              name: ray-logs
+            - mountPath: /root/.cache/huggingface
+              name: models
+          resources:
+            limits:
+              cpu: "8"
+              nvidia.com/gpu: "1"
+            requests:
+              cpu: "8"
+              nvidia.com/gpu: "1"
+        volumes:
+          - name: ray-logs
+            emptyDir: {}
+          - name: models
+            hostPath:
+              path: /root/.cache/huggingface
+              type: DirectoryOrCreate

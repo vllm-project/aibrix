@@ -38,6 +38,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"net/http"
+	"os"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -48,7 +49,7 @@ import (
 )
 
 const (
-	ControllerUIDLabelKey = "modeladapter-controller-uid"
+	ControllerUIDLabelKey = "model-adapter-controller-uid"
 )
 
 var (
@@ -148,10 +149,12 @@ type ModelAdapterReconciler struct {
 	// TOOD: consider to use control way (kubernetes way) to manage the resources
 }
 
-//+kubebuilder:rbac:groups=discovery,resources=endpointslices,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=discovery,resources=endpointslices/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=services/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=model.aibrix.ai,resources=modeladapters,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=model.aibrix.ai,resources=modeladapters/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=model.aibrix.ai,resources=modeladapters/finalizers,verbs=update
@@ -168,7 +171,7 @@ type ModelAdapterReconciler struct {
 func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = log.FromContext(ctx)
 
-	// TODO: handle one more case, unload model adapter from pods later.
+	// TODO: handle unload model adapter from pods later.
 
 	// Fetch the ModelAdapter instance
 	modelAdapter := &modelv1alpha1.ModelAdapter{}
@@ -192,7 +195,11 @@ func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Request, instance *modelv1alpha1.ModelAdapter) (ctrl.Result, error) {
 	oldInstance := instance.DeepCopy()
 
+	// TODO: Do more validation on the model adapter object
+	// for example, check the base model mapping etc.
+
 	// Step 1: Schedule Pod for ModelAdapter
+	// TODO: check the lora scheduled pod first, verify the mapping is still valid.
 	selectedPod, err := r.schedulePod(ctx, instance)
 	if err != nil {
 		klog.ErrorS(err, "Failed to schedule Pod for ModelAdapter", "modelAdapter", instance.Name)
@@ -260,13 +267,25 @@ func (r *ModelAdapterReconciler) schedulePod(ctx context.Context, instance *mode
 		return nil, fmt.Errorf("no pods found matching selector")
 	}
 
+	// TODO: let's build the scheduling algorithm later
+	// we should also fetch <pod, list<lora>> mappings later.
+
 	return &podList.Items[0], nil // Returning the first Pod for simplicity
 }
 
+// GetEnvKey retrieves the value of the environment variable named by the key.
+// If the variable is present, the function returns the value and a boolean true.
+// If the variable is not present, the function returns an empty string and a boolean false.
+func GetEnvKey(key string) (string, bool) {
+	value, exists := os.LookupEnv(key)
+	return value, exists
+}
+
+// make sure it only called once.
 func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance *modelv1alpha1.ModelAdapter, pod *corev1.Pod) error {
 	payload := map[string]string{
-		"id":   instance.Name,
-		"root": instance.Spec.AdditionalConfig["model-artifact"],
+		"lora_name": instance.Name,
+		"lora_path": instance.Spec.AdditionalConfig["modelArtifact"],
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -275,11 +294,16 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 
 	// TODO: We need to make it mac can access this pod ip.
 	// TODO: without sidecar, it's hard to know user's port and metrics here.
-	// TODO: Need to finish the vLLM Lora MR and then finalize this one.
-	// We need to make sure the mocked app.py has exact api endpoints with vLLM
 
-	//url := fmt.Sprintf("http://%s:8000/v1/load", pod.Status.PodIP)
-	url := fmt.Sprintf("http://%s:8000/v1/load", "localhost")
+	// Define the key you want to check
+	key := "DEBUG_MODE"
+	value, exists := GetEnvKey(key)
+	url := fmt.Sprintf("http://%s:8000/v1/load_lora_adapter", pod.Status.PodIP)
+	if exists && value == "on" {
+		// 30080 is the nodePort of the base model service.
+		url = fmt.Sprintf("http://%s:30080/v1/load_lora_adapter", "localhost")
+	}
+
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return err
@@ -345,6 +369,8 @@ func buildModelAdapterService(context context.Context, instance modelv1alpha1.Mo
 	ports := []corev1.ServicePort{
 		{
 			Name: "http",
+			// it should use the base model service port.
+			// make sure this can be dynamically configured later.
 			Port: 8000,
 			TargetPort: intstr.IntOrString{
 				Type:   intstr.Int,

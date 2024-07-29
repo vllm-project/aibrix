@@ -1,5 +1,5 @@
-apiVersion: v1
-kind: Pod
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: lora-test
   namespace: default
@@ -7,20 +7,32 @@ metadata:
     aibricks.com/lora-enabled: "true"
     model.aibrix.ai: "llama2-70b"
 spec:
-  containers:
-    - name: llmengine
-      image: aibrix/vllm:v0.1.0
-      env:
-        - name: POD_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
-        - name: POD_NAMESPACE
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.namespace
+  replicas: 1
+  selector:
+    matchLabels:
+      aibricks.com/lora-enabled: "true"
+      model.aibrix.ai: "llama2-70b"
+  template:
+    metadata:
+      labels:
+        aibricks.com/lora-enabled: "true"
+        model.aibrix.ai: "llama2-70b"
+    spec:
+      containers:
+        - name: llmengine
+          image: aibrix/vllm:v0.1.0
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
 
 ---
+# Debug only: Make sure pod can be visited from controller that deployed in mac.
 apiVersion: v1
 kind: Service
 metadata:
