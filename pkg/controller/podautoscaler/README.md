@@ -57,10 +57,12 @@ After applying the configurations, you should see:
 
 ```shell
 kubectl get podautoscalers --all-namespaces
+
 >>> NAMESPACE   NAME                    AGE
 >>> default     podautoscaler-example   24s
 
 k get deployments.apps
+
 >>> NAME               READY   UP-TO-DATE   AVAILABLE   AGE
 >>> nginx-deployment   1/1     1            1           8s
 
@@ -70,6 +72,7 @@ A corresponding HPA will also be created:
 
 ```shell
 k get hpa
+
 >>> NAME                        REFERENCE                     TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
 >>> podautoscaler-example-hpa   Deployment/nginx-deployment   0%/10%    1         10        1          2m28s
 ```
@@ -87,11 +90,12 @@ you should observe an increase in the number of Nginx replicas:
 
 ```shell
 kubectl get pods
-NAME                                READY   STATUS    RESTARTS   AGE
-load-generator                      1/1     Running   0          86s
-nginx-deployment-5b85cc87b7-gr94j   1/1     Running   0          56s
-nginx-deployment-5b85cc87b7-lwqqk   1/1     Running   0          56s
-nginx-deployment-5b85cc87b7-q2gmp   1/1     Running   0          4m33s
+
+>>> NAME                                READY   STATUS    RESTARTS   AGE
+>>> load-generator                      1/1     Running   0          86s
+>>> nginx-deployment-5b85cc87b7-gr94j   1/1     Running   0          56s
+>>> nginx-deployment-5b85cc87b7-lwqqk   1/1     Running   0          56s
+>>> nginx-deployment-5b85cc87b7-q2gmp   1/1     Running   0          4m33s
 ```
 
 Note: The reactive speed of the default HPA is limited; AIBrix plans to optimize this in future releases.
