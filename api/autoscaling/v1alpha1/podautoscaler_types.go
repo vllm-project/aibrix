@@ -66,13 +66,22 @@ type PodAutoscalerSpec struct {
 	MetricsSources []MetricSource `json:"metricsSources,omitempty"`
 
 	// ScalingStrategy defines the strategy to use for scaling.
-	// 1. "HPA" for using Kubernetes HPA
-	// 2. "Custom" for a custom scaling mechanism.
-	ScalingStrategy string `json:"scalingStrategy"`
+	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`
 
 	// AdditionalConfig provides a place for custom settings that are not defined as standard fields.
 	AdditionalConfig map[string]string `json:"additionalConfig,omitempty"`
 }
+
+// ScalingStrategyType defines the type for scaling strategies.
+type ScalingStrategyType string
+
+const (
+	// HPA represents the Kubernetes Horizontal Pod Autoscaler.
+	HPA ScalingStrategyType = "HPA"
+
+	// Custom represents any custom scaling mechanism.
+	Custom ScalingStrategyType = "Custom"
+)
 
 // MetricSource defines an endpoint and path from which metrics are collected.
 type MetricSource struct {
@@ -83,17 +92,10 @@ type MetricSource struct {
 }
 
 // PodAutoscalerStatus defines the observed state of PodAutoscaler
-// PodAutoscalerStatus reflects the current state of the PodAutoscaler,
 // including the current number of replicas, operational status, and other metrics.
 type PodAutoscalerStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
-	// ServiceName is the name of the Kubernetes Service that routes traffic to the target, scaled by this PodAutoscaler.
-	//ServiceName string `json:"serviceName"`
-
-	// MetricsServiceName is the name of the Kubernetes Service that provides monitoring data for the target.
-	// TODO it's refer to knative-serving: pkg/apis/autoscaling/v1alpha1/pa_types.go
-	//MetricsServiceName string `json:"metricsServiceName,omitempty"`
 
 	// DesiredScale represents the desired number of instances computed by the PodAutoscaler based on the current metrics.
 	// it's computed according to Scaling policy after observing service metrics

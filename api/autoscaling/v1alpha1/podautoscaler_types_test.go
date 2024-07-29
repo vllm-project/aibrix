@@ -68,7 +68,7 @@ func TestPodAutoscalerInitialization(t *testing.T) {
 	}
 
 	// Check if the ScalingStrategy is "HPA"
-	if got, want := pa.Spec.ScalingStrategy, "HPA"; got != want {
+	if got, want := pa.Spec.ScalingStrategy, HPA; got != want {
 		t.Errorf("Spec.ScalingStrategy = %v, want %v", got, want)
 	}
 

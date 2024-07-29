@@ -18,7 +18,7 @@ package podautoscaler
 
 import (
 	"context"
-	pav1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -27,7 +27,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"time"
@@ -58,7 +57,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// Create a new controller managed by AIBrix manager, watching for changes to PodAutoscaler objects
 	// and HorizontalPodAutoscaler objects.
 	ctrl.NewControllerManagedBy(mgr).
-		For(&pav1alpha1.PodAutoscaler{}).
+		For(&autoscalingv1alpha1.PodAutoscaler{}).
 		Watches(&autoscalingv2.HorizontalPodAutoscaler{}, &handler.EnqueueRequestForObject{}).
 		Complete(r)
 
@@ -89,17 +88,16 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	log_ := log.FromContext(ctx)
-	log_.Info("Reconciling PodAutoscaler", "request name", req.NamespacedName)
+	klog.V(3).InfoS("Reconciling PodAutoscaler", "requestName", req.NamespacedName)
 
-	var pa pav1alpha1.PodAutoscaler
+	var pa autoscalingv1alpha1.PodAutoscaler
 	if err := r.Get(ctx, req.NamespacedName, &pa); err != nil {
 		if errors.IsNotFound(err) {
 			// Object might have been deleted after reconcile request, ignore and return.
-			log_.Info("PodAutoscaler resource not found. Ignoring since object must have been deleted")
+			klog.V(3).InfoS("PodAutoscaler resource not found. Ignoring since object must have been deleted")
 			return ctrl.Result{}, nil
 		}
-		log_.Error(err, "Failed to get PodAutoscaler")
+		klog.V(3).ErrorS(err, "Failed to get PodAutoscaler")
 		return ctrl.Result{}, err
 	}
 
@@ -110,26 +108,27 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Namespace: hpa.Namespace,
 	}
 
-	var existingHPA autoscalingv2.HorizontalPodAutoscaler
+	existingHPA := autoscalingv2.HorizontalPodAutoscaler{}
 	err := r.Get(ctx, hpaName, &existingHPA)
 	if err != nil && errors.IsNotFound(err) {
 		// HPA does not exist, create a new one.
-		log_.Info("Creating a new HPA", "HPA.Namespace", hpa.Namespace, "HPA.Name", hpa.Name)
+		klog.V(3).InfoS("Creating a new HPA", "HPA.Namespace", hpa.Namespace, "HPA.Name", hpa.Name)
 		if err = r.Create(ctx, hpa); err != nil {
-			log_.Error(err, "Failed to create new HPA")
+			klog.V(3).ErrorS(err, "Failed to create new HPA")
 			return ctrl.Result{}, err
 		}
 	} else if err != nil {
 		// Error occurred while fetching the existing HPA, report the error and requeue.
-		log_.Error(err, "Failed to get HPA")
+		klog.V(3).ErrorS(err, "Failed to get HPA")
 		return ctrl.Result{}, err
 	} else {
 		// Update the existing HPA if it already exists.
-		log_.Info("Updating existing HPA", "HPA.Namespace", existingHPA.Namespace, "HPA.Name", existingHPA.Name)
+		klog.V(3).InfoS("Updating existing HPA", "HPA.Namespace", existingHPA.Namespace, "HPA.Name", existingHPA.Name)
+
 		hpa.ResourceVersion = existingHPA.ResourceVersion
 		err = r.Update(ctx, hpa)
 		if err != nil {
-			log_.Error(err, "Failed to update HPA")
+			klog.V(2).ErrorS(err, "Failed to update HPA")
 			return ctrl.Result{}, err
 		}
 	}

@@ -15,10 +15,13 @@ make manifests && make build && make install
 
 Verify the installation:
 
-```log
+```shell
 kubectl get crds | grep aibrix
+```
 
-# Expected output:
+The expected output is as follows:
+
+```log
 # modeladapters.model.aibrix.ai
 # podautoscalers.autoscaling.aibrix.ai
 ```
@@ -48,20 +51,24 @@ The AIBrix-pa will automatically create a corresponding Horizontal Pod Autoscale
 
 ```shell
 # Create nginx
-k apply -f config/samples/autoscaling_v1alpha1_demo_nginx.yaml
+kubectl apply -f config/samples/autoscaling_v1alpha1_demo_nginx.yaml
 # Create AIBrix-pa
-k apply -f config/samples/autoscaling_v1alpha1_podautoscaler.yaml
+kubectl apply -f config/samples/autoscaling_v1alpha1_podautoscaler.yaml
 ```
 
 After applying the configurations, you should see:
 
 ```shell
 kubectl get podautoscalers --all-namespaces
+```
 
+The expected output is as follows:
+
+```log
 >>> NAMESPACE   NAME                    AGE
 >>> default     podautoscaler-example   24s
 
-k get deployments.apps
+kubectl get deployments.apps
 
 >>> NAME               READY   UP-TO-DATE   AVAILABLE   AGE
 >>> nginx-deployment   1/1     1            1           8s
@@ -71,8 +78,12 @@ k get deployments.apps
 A corresponding HPA will also be created:
 
 ```shell
-k get hpa
+kubectl get hpa
+```
 
+The expected output is as follows:
+
+```log
 >>> NAME                        REFERENCE                     TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
 >>> podautoscaler-example-hpa   Deployment/nginx-deployment   0%/10%    1         10        1          2m28s
 ```
@@ -90,7 +101,11 @@ you should observe an increase in the number of Nginx replicas:
 
 ```shell
 kubectl get pods
+```
 
+The expected output is as follows:
+
+```log
 >>> NAME                                READY   STATUS    RESTARTS   AGE
 >>> load-generator                      1/1     Running   0          86s
 >>> nginx-deployment-5b85cc87b7-gr94j   1/1     Running   0          56s
@@ -107,12 +122,12 @@ To clean up the resources:
 
 ```shell
 # Remove AIBrix resources
-k delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example
+kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example
 
 make uninstall && make undeploy
 
 # Remove the cascaded HPA
-k delete hpa podautoscaler-example-hpa
+kubectl delete hpa podautoscaler-example-hpa
 
 # Remove the demo Nginx deployment and load generator
 kubectl delete deployment nginx-deployment

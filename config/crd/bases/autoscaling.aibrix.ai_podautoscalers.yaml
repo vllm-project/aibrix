@@ -123,10 +123,7 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
               scalingStrategy:
-                description: |-
-                  ScalingStrategy defines the strategy to use for scaling.
-                  1. "HPA" for using Kubernetes HPA
-                  2. "Custom" for a custom scaling mechanism.
+                description: ScalingStrategy defines the strategy to use for scaling.
                 type: string
               targetMetric:
                 type: string

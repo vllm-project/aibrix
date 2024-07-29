@@ -18,12 +18,13 @@ package podautoscaler
 
 import (
 	"context"
+	"fmt"
 	pa_v1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2"
 	"math"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"strconv"
 	"strings"
 )
@@ -37,12 +38,11 @@ var (
 )
 
 func getHPANameFromPa(pa *pa_v1.PodAutoscaler) string {
-	return pa.Name + "-hpa"
+	return fmt.Sprintf("%s-hpa", pa.Name)
 }
 
 // MakeHPA creates an HPA resource from a PodAutoscaler resource.
 func MakeHPA(pa *pa_v1.PodAutoscaler, ctx context.Context) *autoscalingv2.HorizontalPodAutoscaler {
-	_log := log.FromContext(ctx)
 	minReplicas, maxReplicas := pa.Spec.MinReplicas, pa.Spec.MaxReplicas
 	if maxReplicas == 0 {
 		maxReplicas = math.MaxInt32 // Set default to no upper limit if not specified
@@ -71,9 +71,9 @@ func MakeHPA(pa *pa_v1.PodAutoscaler, ctx context.Context) *autoscalingv2.Horizo
 	}
 
 	if targetValue, err := strconv.ParseFloat(pa.Spec.TargetValue, 64); err != nil {
-		_log.Info("Failed to parse target value", "error", err)
+		klog.V(3).ErrorS(err, "Failed to parse target value")
 	} else {
-		_log.Info("Creating HPA", "metric", pa.Spec.TargetMetric, "target", targetValue)
+		klog.V(3).InfoS("Creating HPA", "metric", pa.Spec.TargetMetric, "target", targetValue)
 
 		switch strings.ToLower(pa.Spec.TargetMetric) {
 		case pa_v1.CPU:
