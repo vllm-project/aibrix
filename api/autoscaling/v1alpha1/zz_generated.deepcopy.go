@@ -21,7 +21,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -103,11 +102,6 @@ func (in *PodAutoscalerList) DeepCopyObject() runtime.Object {
 func (in *PodAutoscalerSpec) DeepCopyInto(out *PodAutoscalerSpec) {
 	*out = *in
 	out.ScaleTargetRef = in.ScaleTargetRef
-	if in.PodSelector != nil {
-		in, out := &in.PodSelector, &out.PodSelector
-		*out = new(v1.LabelSelector)
-		(*in).DeepCopyInto(*out)
-	}
 	if in.MinReplicas != nil {
 		in, out := &in.MinReplicas, &out.MinReplicas
 		*out = new(int32)

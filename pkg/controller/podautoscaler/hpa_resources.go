@@ -25,6 +25,7 @@ import (
 	"math"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"strconv"
+	"strings"
 )
 
 import (
@@ -32,48 +33,23 @@ import (
 )
 
 var (
-	controllerKind = pa_v1.GroupVersion.WithKind("PodAutoScaler") // 设置控制器的资源类型
+	controllerKind = pa_v1.GroupVersion.WithKind("PodAutoScaler") // Define the resource type for the controller
 )
 
-// getTarget extracts the autoscaling target value from the PodAutoscaler annotations.
-// It returns the target as a float64. If the target annotation does not exist or cannot be converted to float64,
-// the function returns 0.0 and whether get success.
-func getTarget(pa *pa_v1.PodAutoscaler) (float64, bool) {
-	// Retrieve the annotation value using the specific key.
-	value, found := pa.GetAnnotations()["aibricks.pod.autoscaling/target"]
-	if !found {
-		// Return 0.0 and custom error if the annotation is not found.
-		return 0.0, false
-	}
-
-	// Convert the string value to float64.
-	targetValue, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		// Return 0.0 and parsing error if conversion fails.
-		return 0.0, false
-	}
-
-	return targetValue, true
+func getHPANameFromPa(pa *pa_v1.PodAutoscaler) string {
+	return pa.Name + "-hpa"
 }
 
-func getMetric(pa *pa_v1.PodAutoscaler) string {
-	value, found := pa.GetAnnotations()["aibricks.pod.autoscaling/metric"]
-	if !found {
-		return ""
-	}
-	return value
-}
-
-// MakeHPA creates an HPA resource from a PA resource.
+// MakeHPA creates an HPA resource from a PodAutoscaler resource.
 func MakeHPA(pa *pa_v1.PodAutoscaler, ctx context.Context) *autoscalingv2.HorizontalPodAutoscaler {
 	_log := log.FromContext(ctx)
-	min_, max_ := pa.Spec.MinReplicas, pa.Spec.MaxReplicas
-	if max_ == 0 {
-		max_ = math.MaxInt32 // default to no limit
+	minReplicas, maxReplicas := pa.Spec.MinReplicas, pa.Spec.MaxReplicas
+	if maxReplicas == 0 {
+		maxReplicas = math.MaxInt32 // Set default to no upper limit if not specified
 	}
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        pa.Name,
+			Name:        getHPANameFromPa(pa),
 			Namespace:   pa.Namespace,
 			Labels:      pa.Labels,
 			Annotations: pa.Annotations,
@@ -87,35 +63,34 @@ func MakeHPA(pa *pa_v1.PodAutoscaler, ctx context.Context) *autoscalingv2.Horizo
 				Kind:       pa.Spec.ScaleTargetRef.Kind,
 				Name:       pa.Spec.ScaleTargetRef.Name,
 			},
+			MaxReplicas: maxReplicas,
 		},
 	}
-	hpa.Spec.MaxReplicas = max_
-	if *min_ > 0 {
-		hpa.Spec.MinReplicas = min_
+	if minReplicas != nil && *minReplicas > 0 {
+		hpa.Spec.MinReplicas = minReplicas
 	}
 
-	if target, ok := getTarget(pa); ok {
-		_log.Info("Make HPA, the metric is ", getMetric(pa), " the target is ", target)
+	if targetValue, err := strconv.ParseFloat(pa.Spec.TargetValue, 64); err != nil {
+		_log.Info("Failed to parse target value", "error", err)
+	} else {
+		_log.Info("Creating HPA", "metric", pa.Spec.TargetMetric, "target", targetValue)
 
-		switch getMetric(pa) {
+		switch strings.ToLower(pa.Spec.TargetMetric) {
 		case pa_v1.CPU:
-
+			utilValue := int32(math.Ceil(targetValue))
 			hpa.Spec.Metrics = []autoscalingv2.MetricSpec{{
 				Type: autoscalingv2.ResourceMetricSourceType,
 				Resource: &autoscalingv2.ResourceMetricSource{
 					Name: corev1.ResourceCPU,
 					Target: autoscalingv2.MetricTarget{
-						Type: autoscalingv2.UtilizationMetricType,
-						AverageUtilization: func() *int32 {
-							util := int32(math.Ceil(target))
-							return &util
-						}(),
+						Type:               autoscalingv2.UtilizationMetricType,
+						AverageUtilization: &utilValue,
 					},
 				},
 			}}
 
 		case pa_v1.Memory:
-			memory := resource.NewQuantity(int64(target)*1024*1024, resource.BinarySI)
+			memory := resource.NewQuantity(int64(targetValue)*1024*1024, resource.BinarySI)
 			hpa.Spec.Metrics = []autoscalingv2.MetricSpec{{
 				Type: autoscalingv2.ResourceMetricSourceType,
 				Resource: &autoscalingv2.ResourceMetricSource{
@@ -126,36 +101,23 @@ func MakeHPA(pa *pa_v1.PodAutoscaler, ctx context.Context) *autoscalingv2.Horizo
 					},
 				},
 			}}
+
 		default:
-			if target, ok := getTarget(pa); ok {
-				targetQuantity := resource.NewQuantity(int64(target), resource.DecimalSI)
-				hpa.Spec.Metrics = []autoscalingv2.MetricSpec{{
-					Type: autoscalingv2.PodsMetricSourceType,
-					Pods: &autoscalingv2.PodsMetricSource{
-						Metric: autoscalingv2.MetricIdentifier{
-							Name: getMetric(pa),
-						},
-						Target: autoscalingv2.MetricTarget{
-							Type:         autoscalingv2.AverageValueMetricType,
-							AverageValue: targetQuantity,
-						},
+			targetQuantity := resource.NewQuantity(int64(targetValue), resource.DecimalSI)
+			hpa.Spec.Metrics = []autoscalingv2.MetricSpec{{
+				Type: autoscalingv2.PodsMetricSourceType,
+				Pods: &autoscalingv2.PodsMetricSource{
+					Metric: autoscalingv2.MetricIdentifier{
+						Name: pa.Spec.TargetMetric,
 					},
-				}}
-			}
+					Target: autoscalingv2.MetricTarget{
+						Type:         autoscalingv2.AverageValueMetricType,
+						AverageValue: targetQuantity,
+					},
+				},
+			}}
 		}
 	}
-
-	//if window, hasWindow := pa.Window(); hasWindow {
-	//	windowSeconds := int32(window.Seconds())
-	//	hpa.Spec.Behavior = &autoscalingv2.HorizontalPodAutoscalerBehavior{
-	//		ScaleDown: &autoscalingv2.HPAScalingRules{
-	//			StabilizationWindowSeconds: &windowSeconds,
-	//		},
-	//		ScaleUp: &autoscalingv2.HPAScalingRules{
-	//			StabilizationWindowSeconds: &windowSeconds,
-	//		},
-	//	}
-	//}
 
 	return hpa
 }

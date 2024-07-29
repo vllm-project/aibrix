@@ -47,13 +47,6 @@ spec:
                 description: AdditionalConfig provides a place for custom settings
                   that are not defined as standard fields.
                 type: object
-              containerConcurrency:
-                description: |-
-                  ContainerConcurrency limits the number of concurrent requests to a single instance of the target. A value of 0 means unlimited.
-                  TODO it's refer to knative-serving: pkg/apis/autoscaling/v1alpha1/pa_types.go
-                   knative contains this property, but should we involve it?
-                format: int64
-                type: integer
               maxReplicas:
                 description: MaxReplicas is the maximum number of replicas to which
                   the target can be scaled up.
@@ -82,51 +75,6 @@ spec:
                   the target can be scaled down.
                 format: int32
                 type: integer
-              podSelector:
-                description: PodSelector allows for more flexible selection of pods
-                  to scale based on labels.
-                properties:
-                  matchExpressions:
-                    description: matchExpressions is a list of label selector requirements.
-                      The requirements are ANDed.
-                    items:
-                      description: |-
-                        A label selector requirement is a selector that contains values, a key, and an operator that
-                        relates the key and values.
-                      properties:
-                        key:
-                          description: key is the label key that the selector applies
-                            to.
-                          type: string
-                        operator:
-                          description: |-
-                            operator represents a key's relationship to a set of values.
-                            Valid operators are In, NotIn, Exists and DoesNotExist.
-                          type: string
-                        values:
-                          description: |-
-                            values is an array of string values. If the operator is In or NotIn,
-                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                            the values array must be empty. This array is replaced during a strategic
-                            merge patch.
-                          items:
-                            type: string
-                          type: array
-                      required:
-                      - key
-                      - operator
-                      type: object
-                    type: array
-                  matchLabels:
-                    additionalProperties:
-                      type: string
-                    description: |-
-                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                      map is equivalent to an element of matchExpressions, whose key field is "key", the
-                      operator is "In", and the values array contains only "value". The requirements are ANDed.
-                    type: object
-                type: object
-                x-kubernetes-map-type: atomic
               scaleTargetRef:
                 description: |-
                   INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
@@ -180,10 +128,16 @@ spec:
                   1. "HPA" for using Kubernetes HPA
                   2. "Custom" for a custom scaling mechanism.
                 type: string
+              targetMetric:
+                type: string
+              targetValue:
+                type: string
             required:
             - maxReplicas
             - scaleTargetRef
             - scalingStrategy
+            - targetMetric
+            - targetValue
             type: object
           status:
             description: Status represents the current information about the PodAutoscaler.
@@ -200,19 +154,6 @@ spec:
                   it's computed according to Scaling policy after observing service metrics
                 format: int32
                 type: integer
-              metricsServiceName:
-                description: |-
-                  MetricsServiceName is the name of the Kubernetes Service that provides monitoring data for the target.
-                  TODO it's refer to knative-serving: pkg/apis/autoscaling/v1alpha1/pa_types.go
-                type: string
-              serviceName:
-                description: |-
-                  INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-                  Important: Run "make" to regenerate code after modifying this file
-                  ServiceName is the name of the Kubernetes Service that routes traffic to the target, scaled by this PodAutoscaler.
-                type: string
-            required:
-            - serviceName
             type: object
         type: object
     served: true

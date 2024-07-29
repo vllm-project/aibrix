@@ -18,12 +18,11 @@ package podautoscaler
 
 import (
 	"context"
-	pa "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
-	discoveryv1 "k8s.io/api/discovery/v1"
+	pav1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/kubernetes"
-	autoscalingv2listers "k8s.io/client-go/listers/autoscaling/v2"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"time"
 )
 
 // Add creates a new PodAutoscaler Controller and adds it to the Manager with default RBAC.
@@ -45,6 +45,7 @@ func Add(mgr manager.Manager) error {
 
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
+	// Instantiate a new PodAutoscalerReconciler with the given manager's client and scheme
 	reconciler := &PodAutoscalerReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -54,15 +55,14 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
-	// use the builder fashion. If we need more fine grain control later, we can switch to `controller.New()`
+	// Create a new controller managed by AIBrix manager, watching for changes to PodAutoscaler objects
+	// and HorizontalPodAutoscaler objects.
 	ctrl.NewControllerManagedBy(mgr).
-		For(&pa.PodAutoscaler{}).
-		Watches(&corev1.Service{}, &handler.EnqueueRequestForObject{}).
-		Watches(&discoveryv1.EndpointSlice{}, &handler.EnqueueRequestForObject{}).
-		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}).
+		For(&pav1alpha1.PodAutoscaler{}).
+		Watches(&autoscalingv2.HorizontalPodAutoscaler{}, &handler.EnqueueRequestForObject{}).
 		Complete(r)
 
-	klog.V(4).InfoS("Finished to add model-adapter-controller")
+	klog.V(4).InfoS("Added AIBricks pod-autoscaler-controller successfully")
 	return nil
 }
 
@@ -71,29 +71,69 @@ var _ reconcile.Reconciler = &PodAutoscalerReconciler{}
 // PodAutoscalerReconciler reconciles a PodAutoscaler object
 type PodAutoscalerReconciler struct {
 	client.Client
-	Scheme     *runtime.Scheme
-	kubeClient kubernetes.Interface
-	hpaLister  autoscalingv2listers.HorizontalPodAutoscalerLister
+	Scheme *runtime.Scheme
 }
 
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers/finalizers,verbs=update
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the PodAutoscaler object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
+// Reconcile is part of the main Kubernetes reconciliation loop which aims to
+// move the current state of the cluster closer to the desired state as specified by
+// the PodAutoscaler resource. It handles the creation, update, and deletion logic for
+// HorizontalPodAutoscalers based on the PodAutoscaler specifications.
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.3/pkg/reconcile
 func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_log := log.FromContext(ctx)
-	_log.Info(" ------ PA Call Reconciling Scaler", "request name", req.Name)
+	// Implement a timeout for the reconciliation process.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
-	// TODO(user): your logic here
+	log_ := log.FromContext(ctx)
+	log_.Info("Reconciling PodAutoscaler", "request name", req.NamespacedName)
 
+	var pa pav1alpha1.PodAutoscaler
+	if err := r.Get(ctx, req.NamespacedName, &pa); err != nil {
+		if errors.IsNotFound(err) {
+			// Object might have been deleted after reconcile request, ignore and return.
+			log_.Info("PodAutoscaler resource not found. Ignoring since object must have been deleted")
+			return ctrl.Result{}, nil
+		}
+		log_.Error(err, "Failed to get PodAutoscaler")
+		return ctrl.Result{}, err
+	}
+
+	// Generate a corresponding HorizontalPodAutoscaler
+	hpa := MakeHPA(&pa, ctx)
+	hpaName := types.NamespacedName{
+		Name:      hpa.Name,
+		Namespace: hpa.Namespace,
+	}
+
+	var existingHPA autoscalingv2.HorizontalPodAutoscaler
+	err := r.Get(ctx, hpaName, &existingHPA)
+	if err != nil && errors.IsNotFound(err) {
+		// HPA does not exist, create a new one.
+		log_.Info("Creating a new HPA", "HPA.Namespace", hpa.Namespace, "HPA.Name", hpa.Name)
+		if err = r.Create(ctx, hpa); err != nil {
+			log_.Error(err, "Failed to create new HPA")
+			return ctrl.Result{}, err
+		}
+	} else if err != nil {
+		// Error occurred while fetching the existing HPA, report the error and requeue.
+		log_.Error(err, "Failed to get HPA")
+		return ctrl.Result{}, err
+	} else {
+		// Update the existing HPA if it already exists.
+		log_.Info("Updating existing HPA", "HPA.Namespace", existingHPA.Namespace, "HPA.Name", existingHPA.Name)
+		hpa.ResourceVersion = existingHPA.ResourceVersion
+		err = r.Update(ctx, hpa)
+		if err != nil {
+			log_.Error(err, "Failed to update HPA")
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Return with no error and no requeue needed.
 	return ctrl.Result{}, nil
 }

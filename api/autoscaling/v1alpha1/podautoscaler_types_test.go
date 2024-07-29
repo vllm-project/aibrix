@@ -41,9 +41,6 @@ func TestPodAutoscalerInitialization(t *testing.T) {
 			},
 			ScalingStrategy: "HPA",
 		},
-		Status: PodAutoscalerStatus{
-			ServiceName: "example-service",
-		},
 	}
 
 	// Check if the ScaleTargetRef is set up correctly
@@ -75,10 +72,6 @@ func TestPodAutoscalerInitialization(t *testing.T) {
 		t.Errorf("Spec.ScalingStrategy = %v, want %v", got, want)
 	}
 
-	// Check if the ServiceName in status is set correctly
-	if got, want := pa.Status.ServiceName, "example-service"; got != want {
-		t.Errorf("Status.ServiceName = %v, want %v", got, want)
-	}
 }
 
 // Additional test cases can be added here to further validate other aspects of the PodAutoscaler.

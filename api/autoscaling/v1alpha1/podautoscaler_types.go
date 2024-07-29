@@ -49,14 +49,18 @@ type PodAutoscalerSpec struct {
 	// ScaleTargetRef points to scale-able resource that this PodAutoscaler should target and scale. e.g. Deployment
 	ScaleTargetRef corev1.ObjectReference `json:"scaleTargetRef"`
 
-	// PodSelector allows for more flexible selection of pods to scale based on labels.
-	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
+	//// PodSelector allows for more flexible selection of pods to scale based on labels.
+	//PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 
 	// MinReplicas is the minimum number of replicas to which the target can be scaled down.
 	MinReplicas *int32 `json:"minReplicas,omitempty"`
 
 	// MaxReplicas is the maximum number of replicas to which the target can be scaled up.
 	MaxReplicas int32 `json:"maxReplicas"`
+
+	TargetMetric string `json:"targetMetric"`
+
+	TargetValue string `json:"targetValue"`
 
 	// MetricsSources defines a list of sources from which metrics are collected to make scaling decisions.
 	MetricsSources []MetricSource `json:"metricsSources,omitempty"`
@@ -65,11 +69,6 @@ type PodAutoscalerSpec struct {
 	// 1. "HPA" for using Kubernetes HPA
 	// 2. "Custom" for a custom scaling mechanism.
 	ScalingStrategy string `json:"scalingStrategy"`
-
-	// ContainerConcurrency limits the number of concurrent requests to a single instance of the target. A value of 0 means unlimited.
-	// TODO it's refer to knative-serving: pkg/apis/autoscaling/v1alpha1/pa_types.go
-	//  knative contains this property, but should we involve it?
-	ContainerConcurrency int64 `json:"containerConcurrency,omitempty"`
 
 	// AdditionalConfig provides a place for custom settings that are not defined as standard fields.
 	AdditionalConfig map[string]string `json:"additionalConfig,omitempty"`
@@ -90,11 +89,11 @@ type PodAutoscalerStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 	// ServiceName is the name of the Kubernetes Service that routes traffic to the target, scaled by this PodAutoscaler.
-	ServiceName string `json:"serviceName"`
+	//ServiceName string `json:"serviceName"`
 
 	// MetricsServiceName is the name of the Kubernetes Service that provides monitoring data for the target.
 	// TODO it's refer to knative-serving: pkg/apis/autoscaling/v1alpha1/pa_types.go
-	MetricsServiceName string `json:"metricsServiceName,omitempty"`
+	//MetricsServiceName string `json:"metricsServiceName,omitempty"`
 
 	// DesiredScale represents the desired number of instances computed by the PodAutoscaler based on the current metrics.
 	// it's computed according to Scaling policy after observing service metrics
