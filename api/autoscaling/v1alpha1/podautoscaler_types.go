@@ -67,9 +67,6 @@ type PodAutoscalerSpec struct {
 
 	// ScalingStrategy defines the strategy to use for scaling.
 	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`
-
-	// AdditionalConfig provides a place for custom settings that are not defined as standard fields.
-	AdditionalConfig map[string]string `json:"additionalConfig,omitempty"`
 }
 
 // ScalingStrategyType defines the type for scaling strategies.

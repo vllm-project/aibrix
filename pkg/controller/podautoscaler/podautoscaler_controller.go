@@ -125,7 +125,6 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// Update the existing HPA if it already exists.
 		klog.V(3).InfoS("Updating existing HPA", "HPA.Namespace", existingHPA.Namespace, "HPA.Name", existingHPA.Name)
 
-		hpa.ResourceVersion = existingHPA.ResourceVersion
 		err = r.Update(ctx, hpa)
 		if err != nil {
 			klog.V(2).ErrorS(err, "Failed to update HPA")

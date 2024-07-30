@@ -41,12 +41,6 @@ spec:
           spec:
             description: Spec defines the desired behavior of the PodAutoscaler.
             properties:
-              additionalConfig:
-                additionalProperties:
-                  type: string
-                description: AdditionalConfig provides a place for custom settings
-                  that are not defined as standard fields.
-                type: object
               maxReplicas:
                 description: MaxReplicas is the maximum number of replicas to which
                   the target can be scaled up.
