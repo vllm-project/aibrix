@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: m1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: m1
+  labels:
+    app: m1
+    service: m1
+spec:
+  ports:
+    - name: http
+      port: 15000
+      targetPort: 15000
+  selector:
+    app: m1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: m1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: m1
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: m1
+        version: v1
+    spec:
+      serviceAccountName: m1
+      containers:
+        - image: aibrix/vllmm1:v0.1.0
+          name: m1
+          ports:
+            - containerPort: 15000
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
