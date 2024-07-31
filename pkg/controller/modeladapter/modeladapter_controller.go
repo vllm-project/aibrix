@@ -22,8 +22,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	"io/ioutil"
+	"net/http"
+	"os"
+	"time"
+
+	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -40,8 +44,6 @@ import (
 	toolscache "k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
-	"net/http"
-	"os"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -49,7 +51,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"time"
 )
 
 const (

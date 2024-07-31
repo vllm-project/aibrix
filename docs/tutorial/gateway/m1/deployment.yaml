@@ -22,6 +22,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: m1
+  labels:
+    models.aibrix.com/model-name: m1
+    models.aibrix.com/model-port: "15000"
 spec:
   replicas: 1
   selector:
