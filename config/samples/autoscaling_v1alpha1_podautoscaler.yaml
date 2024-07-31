@@ -1,9 +1,18 @@
 apiVersion: autoscaling.aibrix.ai/v1alpha1
 kind: PodAutoscaler
 metadata:
+  name: podautoscaler-example
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
-  name: podautoscaler-sample
+  namespace: default
 spec:
-  # TODO(user): Add fields here
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nginx-deployment
+  minReplicas: 1
+  maxReplicas: 10
+  targetMetric: "CPU"
+  targetValue: "10"
+  scalingStrategy: "HPA"
