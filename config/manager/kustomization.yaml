@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: aibrix/aibrix-controller-manager
-  newTag: v0.1.0-rc
+  newTag: v0.1.0-rc.0
