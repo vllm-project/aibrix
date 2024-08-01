@@ -18,10 +18,12 @@ import (
 )
 
 const (
-	modelIdentifier       = "models.aibrix.com/model-name"
+	// TODO (varun): cleanup model related identifiers and establish common concensus
 	modelHeaderIdentifier = "model"
-	modelPortIdentifier   = "models.aibrix.com/model-port"
-	aibrixEnvoyGateway    = "eg" // parameterize it
+	modelIdentifier       = "model.aibrix.ai"
+	modelPortIdentifier   = "model.aibrix.ai/port"
+	// TODO (varun): parameterize it or dynamically resolve it
+	aibrixEnvoyGateway = "eg"
 )
 
 func Add(mgr manager.Manager) error {
@@ -92,6 +94,7 @@ func (m *ModelRouter) addModel(obj interface{}) {
 						{
 							BackendRef: gatewayv1.BackendRef{
 								BackendObjectReference: gatewayv1.BackendObjectReference{
+									// TODO (varun): resolve service name from deployment
 									Name: gatewayv1.ObjectName(modelName),
 									Port: ptr.To(gatewayv1.PortNumber(modelPort)),
 								},

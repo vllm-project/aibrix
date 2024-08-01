@@ -1,9 +1,7 @@
 package controller
 
 import (
-	"github.com/aibrix/aibrix/pkg/controller/modeladapter"
 	"github.com/aibrix/aibrix/pkg/controller/modelrouter"
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -17,8 +15,8 @@ import (
 var controllerAddFuncs []func(manager.Manager) error
 
 func init() {
-	controllerAddFuncs = append(controllerAddFuncs, podautoscaler.Add)
-	controllerAddFuncs = append(controllerAddFuncs, modeladapter.Add)
+	// controllerAddFuncs = append(controllerAddFuncs, podautoscaler.Add)
+	// controllerAddFuncs = append(controllerAddFuncs, modeladapter.Add)
 	controllerAddFuncs = append(controllerAddFuncs, modelrouter.Add)
 }
 
