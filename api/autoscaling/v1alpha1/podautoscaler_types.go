@@ -56,6 +56,7 @@ type PodAutoscalerSpec struct {
 	MinReplicas *int32 `json:"minReplicas,omitempty"`
 
 	// MaxReplicas is the maximum number of replicas to which the target can be scaled up.
+	// It cannot be less than minReplicas
 	MaxReplicas int32 `json:"maxReplicas"`
 
 	TargetMetric string `json:"targetMetric"`
@@ -73,8 +74,11 @@ type PodAutoscalerSpec struct {
 type ScalingStrategyType string
 
 const (
-	// HPA represents the Kubernetes Horizontal Pod Autoscaler.
+	// HPA represents the Kubernetes native Horizontal Pod Autoscaler.
 	HPA ScalingStrategyType = "HPA"
+
+	// KPA represents the KNative Pod Autoscaling Algorithms
+	KPA ScalingStrategyType = "KPA"
 
 	// Custom represents any custom scaling mechanism.
 	Custom ScalingStrategyType = "Custom"
@@ -94,13 +98,22 @@ type PodAutoscalerStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
+	// LastScaleTime is the last time the PodAutoscaler scaled the number of pods,
+	// used by the autoscaler to control how often the number of pods is changed.
+	// +optional
+	LastScaleTime *metav1.Time `json:"lastScaleTime,omitempty"`
+
 	// DesiredScale represents the desired number of instances computed by the PodAutoscaler based on the current metrics.
 	// it's computed according to Scaling policy after observing service metrics
-	DesiredScale *int32 `json:"desiredScale,omitempty"`
+	DesiredScale int32 `json:"desiredScale,omitempty"`
 
 	// ActualScale represents the actual number of running instances of the scaled target.
 	// it may be different from DesiredScale
-	ActualScale *int32 `json:"actualScale,omitempty"`
+	ActualScale int32 `json:"actualScale,omitempty"`
+
+	// Conditions is the set of conditions required for this autoscaler to scale its target,
+	// and indicates whether or not those conditions are met.
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 //+kubebuilder:object:root=true

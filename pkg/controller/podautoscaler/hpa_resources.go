@@ -19,7 +19,7 @@ package podautoscaler
 import (
 	"context"
 	"fmt"
-	pa_v1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	pav1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,15 +34,15 @@ import (
 )
 
 var (
-	controllerKind = pa_v1.GroupVersion.WithKind("PodAutoScaler") // Define the resource type for the controller
+	controllerKind = pav1.GroupVersion.WithKind("PodAutoScaler") // Define the resource type for the controller
 )
 
-func getHPANameFromPa(pa *pa_v1.PodAutoscaler) string {
+func getHPANameFromPa(pa *pav1.PodAutoscaler) string {
 	return fmt.Sprintf("%s-hpa", pa.Name)
 }
 
 // MakeHPA creates an HPA resource from a PodAutoscaler resource.
-func MakeHPA(pa *pa_v1.PodAutoscaler, ctx context.Context) *autoscalingv2.HorizontalPodAutoscaler {
+func MakeHPA(pa *pav1.PodAutoscaler, ctx context.Context) *autoscalingv2.HorizontalPodAutoscaler {
 	minReplicas, maxReplicas := pa.Spec.MinReplicas, pa.Spec.MaxReplicas
 	if maxReplicas == 0 {
 		maxReplicas = math.MaxInt32 // Set default to no upper limit if not specified
@@ -76,7 +76,7 @@ func MakeHPA(pa *pa_v1.PodAutoscaler, ctx context.Context) *autoscalingv2.Horizo
 		klog.V(3).InfoS("Creating HPA", "metric", pa.Spec.TargetMetric, "target", targetValue)
 
 		switch strings.ToLower(pa.Spec.TargetMetric) {
-		case pa_v1.CPU:
+		case pav1.CPU:
 			utilValue := int32(math.Ceil(targetValue))
 			hpa.Spec.Metrics = []autoscalingv2.MetricSpec{{
 				Type: autoscalingv2.ResourceMetricSourceType,
@@ -89,7 +89,7 @@ func MakeHPA(pa *pa_v1.PodAutoscaler, ctx context.Context) *autoscalingv2.Horizo
 				},
 			}}
 
-		case pa_v1.Memory:
+		case pav1.Memory:
 			memory := resource.NewQuantity(int64(targetValue)*1024*1024, resource.BinarySI)
 			hpa.Spec.Metrics = []autoscalingv2.MetricSpec{{
 				Type: autoscalingv2.ResourceMetricSourceType,

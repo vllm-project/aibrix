@@ -16,7 +16,7 @@ make manifests && make build && make install
 Verify the installation:
 
 ```shell
-kubectl get crds | grep aibrix
+kubectl get crds | grep podautoscalers
 ```
 
 The expected output is as follows:

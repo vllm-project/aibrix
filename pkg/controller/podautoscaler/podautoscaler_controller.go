@@ -94,14 +94,15 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.Get(ctx, req.NamespacedName, &pa); err != nil {
 		if errors.IsNotFound(err) {
 			// Object might have been deleted after reconcile request, ignore and return.
-			klog.V(3).InfoS("PodAutoscaler resource not found. Ignoring since object must have been deleted")
+			klog.InfoS("PodAutoscaler resource not found. Ignoring since object must have been deleted")
 			return ctrl.Result{}, nil
 		}
-		klog.V(3).ErrorS(err, "Failed to get PodAutoscaler")
+		klog.ErrorS(err, "Failed to get PodAutoscaler")
 		return ctrl.Result{}, err
 	}
 
 	// Generate a corresponding HorizontalPodAutoscaler
+	// TODO: it should leverage pa.type to determine whether to reconcile HPA object
 	hpa := MakeHPA(&pa, ctx)
 	hpaName := types.NamespacedName{
 		Name:      hpa.Name,
@@ -112,26 +113,27 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	err := r.Get(ctx, hpaName, &existingHPA)
 	if err != nil && errors.IsNotFound(err) {
 		// HPA does not exist, create a new one.
-		klog.V(3).InfoS("Creating a new HPA", "HPA.Namespace", hpa.Namespace, "HPA.Name", hpa.Name)
+		klog.InfoS("Creating a new HPA", "HPA.Namespace", hpa.Namespace, "HPA.Name", hpa.Name)
 		if err = r.Create(ctx, hpa); err != nil {
-			klog.V(3).ErrorS(err, "Failed to create new HPA")
+			klog.ErrorS(err, "Failed to create new HPA")
 			return ctrl.Result{}, err
 		}
 	} else if err != nil {
 		// Error occurred while fetching the existing HPA, report the error and requeue.
-		klog.V(3).ErrorS(err, "Failed to get HPA")
+		klog.ErrorS(err, "Failed to get HPA")
 		return ctrl.Result{}, err
 	} else {
 		// Update the existing HPA if it already exists.
-		klog.V(3).InfoS("Updating existing HPA", "HPA.Namespace", existingHPA.Namespace, "HPA.Name", existingHPA.Name)
+		klog.InfoS("Updating existing HPA", "HPA.Namespace", existingHPA.Namespace, "HPA.Name", existingHPA.Name)
 
 		err = r.Update(ctx, hpa)
 		if err != nil {
-			klog.V(2).ErrorS(err, "Failed to update HPA")
+			klog.ErrorS(err, "Failed to update HPA")
 			return ctrl.Result{}, err
 		}
 	}
 
+	// TODO: add status update. Currently, actualScale and desireScale are not synced from HPA object yet.
 	// Return with no error and no requeue needed.
 	return ctrl.Result{}, nil
 }
