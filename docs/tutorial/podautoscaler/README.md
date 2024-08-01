@@ -22,7 +22,6 @@ kubectl get crds | grep podautoscalers
 The expected output is as follows:
 
 ```log
-# modeladapters.model.aibrix.ai
 # podautoscalers.autoscaling.aibrix.ai
 ```
 ## Start the AIBrix Manager
