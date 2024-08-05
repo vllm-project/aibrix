@@ -3,7 +3,9 @@
 This demonstration will showcase how the AIBrix PodAutoscaler (abbreviated as AIBrix-pa) dynamically 
 adjusts the number of replicas for an Nginx service based on CPU utilization.
 
-## Build and Install AIBrix CRDs
+# Build CRDs and Run Manager
+
+## Start 1: Build and Run Local
 
 First, build and install the Custom Resource Definitions (CRDs) for AIBrix:
 
@@ -43,7 +45,37 @@ Starting workers	{"controller": "podautoscaler", "controllerGroup": "autoscaling
 ...
 
 ```
-## Create the Demo App and AIBrix PodAutoscaler
+
+## Start 2: Build and Deploy Manager
+It's different from `make run`, since it may reveal the RBAC problem when manager what to watch HPA.
+
+```shell
+make docker-build IMG=aibrix/aibrix-controller-manager:v0.1.0-rc.0
+make deploy IMG=aibrix/aibrix-controller-manager:v0.1.0-rc.0
+```
+
+check the deployed manager logs:
+```shell
+kubectl get pods -n aibrix-system -o name | grep aibrix-controller-manager | head -n 1 | xargs -I {} kubectl logs {} -n aibrix-system
+```
+
+Expected output (no warnings, no errors):
+
+```log
+2024-08-05T10:20:03Z    INFO    Starting EventSource    {"controller": "podautoscaler", "controllerGroup": "autoscaling.aibrix.ai", "controllerKind": "PodAutoscaler", "source": "kind source: *v1alpha1.PodAutoscaler"}
+2024-08-05T10:20:03Z    INFO    Starting EventSource    {"controller": "podautoscaler", "controllerGroup": "autoscaling.aibrix.ai", "controllerKind": "PodAutoscaler", "source": "kind source: *v2.HorizontalPodAutoscaler"}
+2024-08-05T10:20:03Z    INFO    Starting Controller     {"controller": "podautoscaler", "controllerGroup": "autoscaling.aibrix.ai", "controllerKind": "PodAutoscaler"}
+2024-08-05T10:20:03Z    INFO    Starting EventSource    {"controller": "modeladapter", "controllerGroup": "model.aibrix.ai", "controllerKind": "ModelAdapter", "source": "kind source: *v1alpha1.ModelAdapter"}
+2024-08-05T10:20:03Z    INFO    Starting EventSource    {"controller": "modeladapter", "controllerGroup": "model.aibrix.ai", "controllerKind": "ModelAdapter", "source": "kind source: *v1.Service"}
+2024-08-05T10:20:03Z    INFO    Starting EventSource    {"controller": "modeladapter", "controllerGroup": "model.aibrix.ai", "controllerKind": "ModelAdapter", "source": "kind source: *v1.EndpointSlice"}
+2024-08-05T10:20:03Z    INFO    Starting EventSource    {"controller": "modeladapter", "controllerGroup": "model.aibrix.ai", "controllerKind": "ModelAdapter", "source": "kind source: *v1.Pod"}
+2024-08-05T10:20:03Z    INFO    Starting Controller     {"controller": "modeladapter", "controllerGroup": "model.aibrix.ai", "controllerKind": "ModelAdapter"}
+2024-08-05T10:20:03Z    INFO    Starting workers        {"controller": "modeladapter", "controllerGroup": "model.aibrix.ai", "controllerKind": "ModelAdapter", "worker count": 1}
+2024-08-05T10:20:03Z    INFO    Starting workers        {"controller": "podautoscaler", "controllerGroup": "autoscaling.aibrix.ai", "controllerKind": "PodAutoscaler", "worker count": 1}
+```
+
+
+# Create the Demo App and AIBrix PodAutoscaler
 
 Deploy an Nginx application and an AIBrix-pa designed to maintain the CPU usage of the Nginx pods below 10%. 
 The AIBrix-pa will automatically create a corresponding Horizontal Pod Autoscaler (HPA) to achieve this target.
