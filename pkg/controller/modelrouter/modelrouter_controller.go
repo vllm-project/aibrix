@@ -26,6 +26,9 @@ const (
 	aibrixEnvoyGateway = "eg"
 )
 
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+
 func Add(mgr manager.Manager) error {
 	klog.Info("Starting modelrouter controller")
 	cacher := mgr.GetCache()
