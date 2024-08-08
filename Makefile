@@ -89,8 +89,8 @@ licensecheck:
        fi
 
 # Run all the linters
-.PHONY: lint
-lint: licensecheck go-lint
+.PHONY: lint-all
+lint-all: licensecheck lint
 
 ##@ Build
 
