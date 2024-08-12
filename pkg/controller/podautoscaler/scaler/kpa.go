@@ -92,6 +92,11 @@ func NewAutoscaler(spec *DeciderSpec) *autoscaler {
 
 // Scale computes the desired scale based on current metrics.
 func (a *autoscaler) Scale(readyPodsCount int32, observedStableValue, observedPanicValue float64, now time.Time) ScaleResult {
+	/**
+	1. `observedStableValue` and `observedPanicValue` are calculated using different window sizes in the `MetricClient`.
+		For reference, see the KNative implementation at `pkg/autoscaler/metrics/collector.go：185`.
+	2. In KPA, `readyPodsCount` is obtained from `autoscaler.podCounter.ReadyCount`. It's not a big issue, we can change it.
+	*/
 	a.specMux.RLock()
 	spec := a.deciderSpec
 	a.specMux.RUnlock()
