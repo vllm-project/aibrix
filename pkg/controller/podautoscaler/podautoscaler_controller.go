@@ -18,6 +18,8 @@ package podautoscaler
 
 import (
 	"context"
+	"time"
+
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -29,7 +31,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"time"
 )
 
 // Add creates a new PodAutoscaler Controller and adds it to the Manager with default RBAC.
@@ -56,13 +57,13 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// Create a new controller managed by AIBrix manager, watching for changes to PodAutoscaler objects
 	// and HorizontalPodAutoscaler objects.
-	ctrl.NewControllerManagedBy(mgr).
+	err := ctrl.NewControllerManagedBy(mgr).
 		For(&autoscalingv1alpha1.PodAutoscaler{}).
 		Watches(&autoscalingv2.HorizontalPodAutoscaler{}, &handler.EnqueueRequestForObject{}).
 		Complete(r)
 
 	klog.V(4).InfoS("Added AIBricks pod-autoscaler-controller successfully")
-	return nil
+	return err
 }
 
 var _ reconcile.Reconciler = &PodAutoscalerReconciler{}

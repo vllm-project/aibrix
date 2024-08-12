@@ -22,7 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -54,12 +54,12 @@ import (
 )
 
 const (
-	ControllerUIDLabelKey = "model-adapter-controller-uid"
+	//ControllerUIDLabelKey = "model-adapter-controller-uid"
 	ModelAdapterFinalizer = "model-adapter-finalizer"
 )
 
 var (
-	controllerKind         = modelv1alpha1.GroupVersion.WithKind("ModelAdapter")
+	//controllerKind         = modelv1alpha1.GroupVersion.WithKind("ModelAdapter")
 	DefaultRequeueDuration = 1 * time.Second
 )
 
@@ -127,7 +127,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// use the builder fashion. If we need more fine grain control later, we can switch to `controller.New()`
-	ctrl.NewControllerManagedBy(mgr).
+	err := ctrl.NewControllerManagedBy(mgr).
 		For(&modelv1alpha1.ModelAdapter{}).
 		Watches(&corev1.Service{}, &handler.EnqueueRequestForObject{}).
 		Watches(&discoveryv1.EndpointSlice{}, &handler.EnqueueRequestForObject{}).
@@ -135,7 +135,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		Complete(r)
 
 	klog.V(4).InfoS("Finished to add model-adapter-controller")
-	return nil
+	return err
 }
 
 var _ reconcile.Reconciler = &ModelAdapterReconciler{}
@@ -152,7 +152,7 @@ type ModelAdapterReconciler struct {
 	// EndpointSliceLister is able to list/get services from a shared informer's cache store
 	EndpointSliceLister discoverylisters.EndpointSliceLister
 
-	// TOOD: consider to use control way (kubernetes way) to manage the resources
+	// TODO: consider to use control way (kubernetes way) to manage the resources
 }
 
 //+kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch;create;update;patch;delete
@@ -221,7 +221,7 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
-	// TOOD: better handle finalizer here. Then we can define some operations which should
+	// TODO: better handle finalizer here. Then we can define some operations which should
 	// occur before the custom resource to be deleted.
 	// TODO: handle DeletionTimeStamp later.
 	if controllerutil.ContainsFinalizer(instance, ModelAdapterFinalizer) {
@@ -337,7 +337,7 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Check if need to update the status.
-	if r.inconsistentModelAdapterStatus(ctx, oldInstance.Status, instance.Status) {
+	if r.inconsistentModelAdapterStatus(oldInstance.Status, instance.Status) {
 		klog.InfoS("model adapter reconcile", "Update CR status", req.Name, "status", instance.Status)
 
 		instance.Status.Phase = modelv1alpha1.ModelAdapterRunning
@@ -423,10 +423,15 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			// Handle the error here. For example, log it or take appropriate corrective action.
+			klog.InfoS("Error closing response body:", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := ioutil.ReadAll(resp.Body)
+		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("failed to get models: %s", body)
 	}
 
@@ -478,10 +483,15 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 		return err
 	}
 
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			// Handle the error here. For example, log it or take appropriate corrective action.
+			klog.InfoS("Error closing response body:", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		_, _ = ioutil.ReadAll(resp.Body)
+		_, _ = io.ReadAll(resp.Body)
 		return err
 	}
 
@@ -710,7 +720,7 @@ func int32Ptr(i int32) *int32 {
 	return &i
 }
 
-func (r *ModelAdapterReconciler) inconsistentModelAdapterStatus(ctx context.Context, oldStatus, newStatus modelv1alpha1.ModelAdapterStatus) bool {
+func (r *ModelAdapterReconciler) inconsistentModelAdapterStatus(oldStatus, newStatus modelv1alpha1.ModelAdapterStatus) bool {
 	// Implement your logic to check if the status is inconsistent
 	if oldStatus.Phase != newStatus.Phase || !equalStringSlices(oldStatus.Instances, newStatus.Instances) {
 		return true
