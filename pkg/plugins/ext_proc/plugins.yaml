@@ -1,0 +1,34 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: ext-proc-example
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: llama2-70b-router
+  extProc:
+    - backendRefs:
+        - name: grpc-ext-proc
+          port: 50052
+      processingMode:
+        request: {}
+        response: 
+          body: Streamed
+# ---
+# apiVersion: gateway.networking.k8s.io/v1alpha3
+# kind: BackendTLSPolicy
+# metadata:
+#   name: grpc-ext-proc-btls
+# spec:
+#   targetRefs:
+#     - group: ''
+#       kind: Service
+#       name: grpc-ext-proc
+#       sectionName: "9002"
+#   validation:
+#     caCertificateRefs:
+#       - name: grpc-ext-proc-ca
+#         group: ''
+#         kind: ConfigMap
+#     hostname: grpc-ext-proc.envoygateway
