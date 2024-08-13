@@ -19,6 +19,8 @@ package podautoscaler
 import (
 	"context"
 
+	corev1 "k8s.io/api/core/v1"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -29,6 +31,10 @@ import (
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 )
+
+func IntToPtr(num int32) *int32 {
+	return &num
+}
 
 var _ = Describe("PodAutoscaler Controller", func() {
 	Context("When reconciling a resource", func() {
@@ -51,7 +57,15 @@ var _ = Describe("PodAutoscaler Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+						ScaleTargetRef: corev1.ObjectReference{
+							Kind:      "Service",
+							Name:      resourceName,
+							Namespace: "default",
+						},
+						MinReplicas: IntToPtr(5),
+						MaxReplicas: 10,
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
@@ -66,6 +80,7 @@ var _ = Describe("PodAutoscaler Controller", func() {
 			By("Cleanup the specific resource instance PodAutoscaler")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
+
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &PodAutoscalerReconciler{
