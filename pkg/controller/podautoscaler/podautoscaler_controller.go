@@ -18,6 +18,7 @@ package podautoscaler
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
@@ -103,8 +104,20 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	switch pa.Spec.ScalingStrategy {
+	case autoscalingv1alpha1.HPA:
+		return r.reconcileHPA(ctx, pa)
+	case autoscalingv1alpha1.KPA:
+		return r.reconcileKPA(ctx, pa)
+	case autoscalingv1alpha1.Custom:
+		return r.reconcileCustomAlgorithm(ctx, pa)
+	default:
+		return ctrl.Result{}, fmt.Errorf("unknown autoscaling strategy: %s", pa.Spec.ScalingStrategy)
+	}
+}
+
+func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
 	// Generate a corresponding HorizontalPodAutoscaler
-	// TODO: it should leverage pa.type to determine whether to reconcile HPA object
 	hpa := MakeHPA(&pa, ctx)
 	hpaName := types.NamespacedName{
 		Name:      hpa.Name,
@@ -138,4 +151,12 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// TODO: add status update. Currently, actualScale and desireScale are not synced from HPA object yet.
 	// Return with no error and no requeue needed.
 	return ctrl.Result{}, nil
+}
+
+func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
+	return ctrl.Result{}, fmt.Errorf("Not implemneted yet")
+}
+
+func (r *PodAutoscalerReconciler) reconcileCustomAlgorithm(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
+	return ctrl.Result{}, fmt.Errorf("Not implemneted yet")
 }
