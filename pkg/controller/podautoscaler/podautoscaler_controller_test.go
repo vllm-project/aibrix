@@ -63,8 +63,9 @@ var _ = Describe("PodAutoscaler Controller", func() {
 							Name:      resourceName,
 							Namespace: "default",
 						},
-						MinReplicas: IntToPtr(5),
-						MaxReplicas: 10,
+						MinReplicas:     IntToPtr(5),
+						MaxReplicas:     10,
+						ScalingStrategy: "HPA",
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
