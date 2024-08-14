@@ -77,11 +77,11 @@ const (
 	// HPA represents the Kubernetes native Horizontal Pod Autoscaler.
 	HPA ScalingStrategyType = "HPA"
 
-	// KPA represents the KNative Pod Autoscaling Algorithms
+	// KPA represents the KNative Pod Autoscaling Algorithm
 	KPA ScalingStrategyType = "KPA"
 
-	// Custom represents any custom scaling mechanism.
-	Custom ScalingStrategyType = "Custom"
+	// APA represents the AiBrix Pod Autoscaling Algorithm
+	APA ScalingStrategyType = "APA"
 )
 
 // MetricSource defines an endpoint and path from which metrics are collected.

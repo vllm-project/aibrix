@@ -109,8 +109,8 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.reconcileHPA(ctx, pa)
 	case autoscalingv1alpha1.KPA:
 		return r.reconcileKPA(ctx, pa)
-	case autoscalingv1alpha1.Custom:
-		return r.reconcileCustomAlgorithm(ctx, pa)
+	case autoscalingv1alpha1.APA:
+		return r.reconcileAPA(ctx, pa)
 	default:
 		return ctrl.Result{}, fmt.Errorf("unknown autoscaling strategy: %s", pa.Spec.ScalingStrategy)
 	}
@@ -154,9 +154,9 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 }
 
 func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
-	return ctrl.Result{}, fmt.Errorf("Not implemneted yet")
+	return ctrl.Result{}, fmt.Errorf("not implemneted yet")
 }
 
-func (r *PodAutoscalerReconciler) reconcileCustomAlgorithm(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
-	return ctrl.Result{}, fmt.Errorf("Not implemneted yet")
+func (r *PodAutoscalerReconciler) reconcileAPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
+	return ctrl.Result{}, fmt.Errorf("not implemneted yet")
 }
