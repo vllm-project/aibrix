@@ -90,6 +90,8 @@ type MetricSource struct {
 	Endpoint string `json:"endpoint"`
 	// e.g. /api/metrics/cpu
 	Path string `json:"path"`
+	// e.g. kv_cache_utilization
+	Name string
 }
 
 // PodAutoscalerStatus defines the observed state of PodAutoscaler

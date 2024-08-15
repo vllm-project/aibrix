@@ -19,10 +19,26 @@ package podautoscaler
 import (
 	"context"
 	"fmt"
+	"io"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/tools/record"
+	"net/http"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"strconv"
+	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -50,6 +66,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	reconciler := &PodAutoscalerReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		//TODO: init event recorder
 	}
 	return reconciler, nil
 }
@@ -72,7 +89,9 @@ var _ reconcile.Reconciler = &PodAutoscalerReconciler{}
 // PodAutoscalerReconciler reconciles a PodAutoscaler object
 type PodAutoscalerReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme        *runtime.Scheme
+	EventRecorder record.EventRecorder
+	Mapper        apimeta.RESTMapper
 }
 
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers,verbs=get;list;watch;create;update;patch;delete
@@ -118,7 +137,7 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
 	// Generate a corresponding HorizontalPodAutoscaler
-	hpa := MakeHPA(&pa, ctx)
+	hpa := makeHPA(&pa)
 	hpaName := types.NamespacedName{
 		Name:      hpa.Name,
 		Namespace: hpa.Namespace,
@@ -154,9 +173,282 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 }
 
 func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
-	return ctrl.Result{}, fmt.Errorf("not implemneted yet")
+	paStatusOriginal := pa.Status.DeepCopy()
+	scaleReference := fmt.Sprintf("%s/%s/%s", pa.Spec.ScaleTargetRef.Kind, pa.Namespace, pa.Spec.ScaleTargetRef.Name)
+
+	targetGV, err := schema.ParseGroupVersion(pa.Spec.ScaleTargetRef.APIVersion)
+	if err != nil {
+		//r.EventRecorder.Event(pa, corev1.EventTypeWarning, "FailedGetScale", err.Error())
+		// TODO: convert conditionType to type instead of using string
+		setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedGetScale", "the PodAutoscaler controller was unable to get the target's current scale: %v", err)
+		if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
+			utilruntime.HandleError(err)
+		}
+		return ctrl.Result{}, fmt.Errorf("invalid API version in scale target reference: %v", err)
+	}
+
+	targetGK := schema.GroupKind{
+		Group: targetGV.Group,
+		Kind:  pa.Spec.ScaleTargetRef.Kind,
+	}
+
+	mappings, err := r.Mapper.RESTMappings(targetGK)
+	if err != nil {
+		//a.eventRecorder.Event(hpa, v1.EventTypeWarning, "FailedGetScale", err.Error())
+		setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedGetScale", "the HPA controller was unable to get the target's current scale: %v", err)
+		if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
+			utilruntime.HandleError(err)
+		}
+		return ctrl.Result{}, fmt.Errorf("unable to determine resource for scale target reference: %v", err)
+	}
+
+	// TODO: retrieval targetGR for future scale update
+	scale, _, err := r.scaleForResourceMappings(ctx, pa.Namespace, pa.Spec.ScaleTargetRef.Name, mappings)
+	if err != nil {
+		//a.eventRecorder.Event(hpa, v1.EventTypeWarning, "FailedGetScale", err.Error())
+		setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedGetScale", "the HPA controller was unable to get the target's current scale: %v", err)
+		if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
+			utilruntime.HandleError(err)
+		}
+		return ctrl.Result{}, fmt.Errorf("failed to query scale subresource for %s: %v", scaleReference, err)
+	}
+
+	setCondition(&pa, "AbleToScale", metav1.ConditionTrue, "SucceededGetScale", "the HPA controller was able to get the target's current scale")
+
+	// current scale's replica count
+	currentReplicas := scale.Spec.Replicas
+	// desired replica count
+	desiredReplicas := int32(0)
+	var minReplicas int32
+	// minReplica is optional
+	if pa.Spec.MinReplicas != nil {
+		minReplicas = *pa.Spec.MinReplicas
+	} else {
+		minReplicas = 1
+	}
+
+	rescale := true
+	if scale.Spec.Replicas == int32(0) && minReplicas != 0 {
+		// if the replica is 0, then we should not enable autoscaling
+		desiredReplicas = 0
+		rescale = false
+	} else if currentReplicas > pa.Spec.MaxReplicas {
+		desiredReplicas = pa.Spec.MaxReplicas
+	} else if currentReplicas < minReplicas {
+		desiredReplicas = minReplicas
+	} else {
+		// TODO: fix the compute replicas interface.
+		//metricDesiredReplicas, metricName, metricStatuses, metricTimestamp, err := r.computeReplicasForMetrics(ctx, pa, scale, pa.Spec.MetricsSources)
+		if err != nil {
+			err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to compute desired number of replicas based on listed metrics for %s: %v\", reference, err")
+			}
+		}
+
+		rescale = desiredReplicas != currentReplicas
+	}
+
+	if rescale {
+		scale.Spec.Replicas = desiredReplicas
+		// TODO: invoke scale interface to scale the scaleTarget
+		//_, err = r.scaleNamespacer.Scales(hpa.Namespace).Update(ctx, targetGR, scale, metav1.UpdateOptions{})
+	} else {
+		desiredReplicas = currentReplicas
+	}
+
+	//r.SetStatus(hpa, currentReplicas, desiredReplicas, metricsStatus, rescale)
+
+	if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
+
+	}
+
+	return ctrl.Result{}, nil
 }
 
 func (r *PodAutoscalerReconciler) reconcileAPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
+	// scraper
+	// decider
+
 	return ctrl.Result{}, fmt.Errorf("not implemneted yet")
 }
+
+// scaleForResourceMappings attempts to fetch the scale for the
+// resource with the given name and namespace, trying each RESTMapping
+// in turn until a working one is found.  If none work, the first error
+// is returned.  It returns both the scale, as well as the group-resource from
+// the working mapping.
+func (r *PodAutoscalerReconciler) scaleForResourceMappings(ctx context.Context, namespace, name string, mappings []*apimeta.RESTMapping) (*autoscalingv1.Scale, schema.GroupResource, error) {
+	var firstErr error
+	for i, mapping := range mappings {
+		targetGR := mapping.Resource.GroupResource()
+
+		deploymentNamespacedName := types.NamespacedName{Namespace: namespace, Name: name}
+		var deployment appsv1.Deployment
+		err := r.Get(ctx, deploymentNamespacedName, &deployment)
+		// TODO: need more changes here.
+		if err == nil {
+			return nil, targetGR, nil
+		}
+
+		// if this is the first error, remember it,
+		// then go on and try other mappings until we find a good one
+		if i == 0 {
+			firstErr = err
+		}
+	}
+
+	// make sure we handle an empty set of mappings
+	if firstErr == nil {
+		firstErr = fmt.Errorf("unrecognized resource")
+	}
+
+	return nil, schema.GroupResource{}, firstErr
+}
+
+func updateScale(ctx context.Context, c client.Client, namespace string, targetGR schema.GroupResource, scale *autoscalingv1.Scale) error {
+	// Get GVK
+	gvk, err := apiutil.GVKForObject(scale, c.Scheme())
+	if err != nil {
+		return err
+	}
+
+	// Get unstructured object
+	scaleObj := &unstructured.Unstructured{}
+	scaleObj.SetGroupVersionKind(gvk)
+	scaleObj.SetNamespace(namespace)
+	scaleObj.SetName(scale.Name)
+
+	// Update scale object
+	// TODO: change to kind name later.
+	err = c.Patch(ctx, scale, client.Apply, client.FieldOwner("operator-name"))
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *PodAutoscalerReconciler) getMetricsFromPods(pods []corev1.Pod) ([]float64, error) {
+	var metrics []float64
+
+	for _, pod := range pods {
+		// We should use the primary container port. In future, we can decide whether to use sidecar container's port
+		url := fmt.Sprintf("http://%s:8000/metrics", pod.Status.PodIP)
+
+		// scrape metrics
+		resp, err := http.Get(url)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch metrics from pod %s: %v", pod.Name, err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response from pod %s: %v", pod.Name, err)
+		}
+
+		metricValue, err := r.parseMetricFromBody(body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse metrics from pod %s: %v", pod.Name, err)
+		}
+
+		metrics = append(metrics, metricValue)
+	}
+
+	return metrics, nil
+}
+
+func (r *PodAutoscalerReconciler) calculateReplicaCount(metrics []float64) int32 {
+	panic("not implemented")
+}
+
+func (r *PodAutoscalerReconciler) updateAutoscalerStatus(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, count int32) error {
+	panic("not implemented")
+}
+
+func (r *PodAutoscalerReconciler) parseMetricFromBody(body []byte) (float64, error) {
+	// TODO: let's use a different metrics name later
+	metricName := "http_requests_total"
+	lines := strings.Split(string(body), "\n")
+
+	for _, line := range lines {
+		if strings.Contains(line, metricName) {
+			// format is `http_requests_total 1234.56`
+			parts := strings.Fields(line)
+			if len(parts) < 2 {
+				return 0, fmt.Errorf("unexpected format for metric %s", metricName)
+			}
+
+			// parse to float64
+			value, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+			if err != nil {
+				return 0, fmt.Errorf("failed to parse metric value for %s: %v", metricName, err)
+			}
+
+			return value, nil
+		}
+	}
+	return 0, fmt.Errorf("metrics %s not found", metricName)
+}
+
+// setCondition sets the specific condition type on the given HPA to the specified value with the given reason
+// and message.  The message and args are treated like a format string.  The condition will be added if it is
+// not present.
+func setCondition(hpa *autoscalingv1alpha1.PodAutoscaler, conditionType string, status metav1.ConditionStatus, reason, message string, args ...interface{}) {
+	hpa.Status.Conditions = setConditionInList(hpa.Status.Conditions, conditionType, status, reason, message, args...)
+}
+
+// setConditionInList sets the specific condition type on the given PodAutoscaler to the specified value with the given
+// reason and message.
+// The message and args are treated like a format string.
+// The condition will be added if it is not present. The new list will be returned.
+func setConditionInList(inputList []metav1.Condition, conditionType string, status metav1.ConditionStatus, reason, message string, args ...interface{}) []metav1.Condition {
+	resList := inputList
+	var existingCond *metav1.Condition
+	for i, condition := range resList {
+		if condition.Type == conditionType {
+			// can't take a pointer to an iteration variable
+			existingCond = &resList[i]
+			break
+		}
+	}
+
+	if existingCond == nil {
+		resList = append(resList, metav1.Condition{
+			Type: conditionType,
+		})
+		existingCond = &resList[len(resList)-1]
+	}
+
+	if existingCond.Status != status {
+		existingCond.LastTransitionTime = metav1.Now()
+	}
+
+	existingCond.Status = status
+	existingCond.Reason = reason
+	existingCond.Message = fmt.Sprintf(message, args...)
+
+	return resList
+}
+
+func (r *PodAutoscalerReconciler) updateStatusIfNeeded(ctx context.Context, oldStatus *autoscalingv1alpha1.PodAutoscalerStatus, newPA *autoscalingv1alpha1.PodAutoscaler) error {
+	// skip a write if we wouldn't need to update
+	if apiequality.Semantic.DeepEqual(oldStatus, &newPA.Status) {
+		return nil
+	}
+	return r.updateStatus(ctx, newPA)
+}
+
+// updateStatus actually does the update request for the status of the given HPA
+func (r *PodAutoscalerReconciler) updateStatus(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler) error {
+	if err := r.Status().Update(ctx, pa); err != nil {
+		r.EventRecorder.Event(pa, corev1.EventTypeWarning, "FailedUpdateStatus", err.Error())
+		return fmt.Errorf("failed to update status for %s: %v", pa.Name, err)
+	}
+	logger := klog.FromContext(ctx)
+	logger.V(2).Info("Successfully updated status", "HPA", klog.KObj(pa))
+	return nil
+}
+
+// PodAutoscalerConditionType are the valid conditions of a PodAutoscaler.
+type PodAutoscalerConditionType string
