@@ -47,7 +47,7 @@ helm get all eg -n envoy-gateway-system
 
 Port forward to the Envoy service:
 ```
-kubectl -n envoy-gateway-system port-forward service/${ENVOY_SERVICE} 8888:80 &
+kubectl -n envoy-gateway-system port-forward service/envoy-default-eg-e41e7b31 8888:80 &
 ```
 
 Start model router controller

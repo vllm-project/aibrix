@@ -31,6 +31,36 @@ data:
       controllerName: gateway.envoyproxy.io/gatewayclass-controller
     extensionApis:
       enableEnvoyPatchPolicy: true   
+# ---
+# apiVersion: gateway.envoyproxy.io/v1alpha1
+# kind: EnvoyPatchPolicy
+# metadata:
+#   name: custom-response-patch-policy
+# spec:
+#   targetRef:
+#     group: gateway.networking.k8s.io
+#     kind: Gateway
+#     name: eg
+#   type: JSONPatch
+#   jsonPatches:
+#     - type: "type.googleapis.com/envoy.config.listener.v3.Listener"
+#       # The listener name is of the form <GatewayNamespace>/<GatewayName>/<GatewayListenerName>
+#       name: default/eg/http
+#       operation:
+#         op: add
+#         path: "/default_filter_chain/filters/0/typed_config/local_reply_config"
+#         value:
+#           mappers:
+#           - filter:
+#               status_code_filter:
+#                 comparison:
+#                   op: EQ
+#                   value:
+#                     default_value: 404
+#                     runtime_key: key_b
+#             status_code: 406
+#             body:
+#               inline_string: "could not find what you are looking for"
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyPatchPolicy
@@ -40,36 +70,51 @@ spec:
   type: "JSONPatch"
   targetRef:
     group: gateway.networking.k8s.io
-    kind: GatewayClass
+    kind: Gateway
     name: eg
   jsonPatches:
   - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
-    name: "envoy-patch-policy-override1"
+    name: "default/eg/http"
     operation:
       op: add
-      path: ""
+      path: "/virtual_hosts/0/routes"
       value:
-        name: default-eg-http
-        virtualHosts:
-        - name: default-eg-http
-          domains: ["*"]
-          routes:
-          - match:
-              prefix: /
-            route:
-              cluster: original_destination_cluster
-  - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
-    name: "envoy-patch-policy-override2"
-    operation:
-      op: add
-      path: ""
-      value:
-        name: original_destination_cluster
-        type: ORIGINAL_DST
-        original_dst_lb_config:
-          use_http_header: true
-          http_header_name: "target-pod"
-        connect_timeout: 6s
-        lb_policy: CLUSTER_PROVIDED
-        dns_lookup_family: V4_ONLY
+        - name: orginal_route
+          match:
+            prefix: "/"
+          route:  
+            cluster: original_destination_cluster
+            timeout: 1000s  # Increase route timeout
+  # - type: "type.googleapis.com/envoy.config.listener.v3.Listener"
+  #   name: default/eg/http
+  #   operation:
+  #     op: add
+  #     path: "/default_filter_chain/filters/1/typed_config"
+  #     value:
+  #       route_config:
+  #         name: local_route
+  #         "@type": "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
+  #         virtual_hosts:      
+  #           - name: backend
+  #             domains: ["*"]
+  #             routes:
+  #               - match:
+  #                   prefix: "/"
+  #                 route:  
+  #                   cluster: original_destination_cluster
+  #                   timeout: 1000s  # Increase route timeout
+  # - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
+  #   name: "envoy-patch-policy-override2"
+  #   operation:
+  #     op: add
+  #     path: ""
+  #     value:
+  #       name: original_destination_cluster
+  #       type: ORIGINAL_DST  
+  #       original_dst_lb_config:
+  #         use_http_header: true
+  #         http_header_name: "target-pod"
+  #       connect_timeout: 6s
+  #       lb_policy: CLUSTER_PROVIDED
+  #       dns_lookup_family: V4_ONLY
     
