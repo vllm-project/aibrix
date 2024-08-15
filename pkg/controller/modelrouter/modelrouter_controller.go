@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	// TODO (varun): cleanup model related identifiers and establish common concensus
+	// TODO (varun): cleanup model related identifiers and establish common consensus
 	modelHeaderIdentifier = "model"
 	modelIdentifier       = "model.aibrix.ai"
 	modelPortIdentifier   = "model.aibrix.ai/port"
@@ -63,12 +63,12 @@ func Add(mgr manager.Manager) error {
 	modelRouter := &ModelRouter{
 		Client: mgr.GetClient(),
 	}
-	deploymentInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	_, err = deploymentInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addModel,
 		DeleteFunc: modelRouter.deleteModel,
 	})
 
-	return nil
+	return err
 }
 
 type ModelRouter struct {

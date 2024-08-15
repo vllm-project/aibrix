@@ -51,10 +51,10 @@ const (
 )
 
 var (
-	scheme          = runtime.NewScheme()
-	setupLog        = ctrl.Log.WithName("setup")
-	restConfigQPS   = flag.Int("rest-config-qps", 30, "QPS of rest config.")
-	restConfigBurst = flag.Int("rest-config-burst", 50, "Burst of rest config.")
+	scheme   = runtime.NewScheme()
+	setupLog = ctrl.Log.WithName("setup")
+	//restConfigQPS   = flag.Int("rest-config-qps", 30, "QPS of rest config.")
+	//restConfigBurst = flag.Int("rest-config-burst", 50, "Burst of rest config.")
 )
 
 func init() {
