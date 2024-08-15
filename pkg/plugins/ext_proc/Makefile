@@ -7,9 +7,7 @@ build:
 .PHONY: apply
 apply:
 	kubectl apply -f deployment.yaml
-	kubectl apply -f plugins.yaml
 
 .PHONY: delete
 delete:
 	kubectl delete -f deployment.yaml 
-	kubectl delete -f plugins.yaml

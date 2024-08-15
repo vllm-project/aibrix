@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strconv"
 
+	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -31,6 +32,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gwapiv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 )
 
 const (
@@ -55,6 +58,7 @@ func Add(mgr manager.Manager) error {
 	}
 
 	utilruntime.Must(gatewayv1.AddToScheme(mgr.GetClient().Scheme()))
+	utilruntime.Must(egv1a1.AddToScheme(mgr.GetClient().Scheme()))
 
 	modelRouter := &ModelRouter{
 		Client: mgr.GetClient(),
@@ -126,6 +130,48 @@ func (m *ModelRouter) addModel(obj interface{}) {
 	}
 	err := m.Client.Create(context.Background(), &httpRoute)
 	klog.Errorln(err)
+
+	policy := egv1a1.EnvoyExtensionPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-ext-proc", modelName),
+			Namespace: deployment.Namespace,
+		},
+		Spec: egv1a1.EnvoyExtensionPolicySpec{
+			PolicyTargetReferences: egv1a1.PolicyTargetReferences{
+				TargetRefs: []gwapiv1a2.LocalPolicyTargetReferenceWithSectionName{
+					{
+						LocalPolicyTargetReference: gwapiv1a2.LocalPolicyTargetReference{
+							Group: "gateway.networking.k8s.io",
+							Kind:  "HTTPRoute",
+							Name:  gatewayv1.ObjectName(httpRoute.Name),
+						},
+					},
+				},
+			},
+			ExtProc: []egv1a1.ExtProc{
+				{
+					BackendRefs: []egv1a1.BackendRef{
+						{
+							BackendObjectReference: gwapiv1.BackendObjectReference{
+								Name: "grpc-ext-proc",
+								Port: ptr.To(gwapiv1.PortNumber(50052)),
+							},
+						},
+					},
+					ProcessingMode: &egv1a1.ExtProcProcessingMode{
+						Request: &egv1a1.ProcessingModeOptions{
+							Body: ptr.To(egv1a1.ExtProcBodyProcessingMode(egv1a1.StreamedExtProcBodyProcessingMode)),
+						},
+						Response: &egv1a1.ProcessingModeOptions{
+							Body: ptr.To(egv1a1.ExtProcBodyProcessingMode(egv1a1.StreamedExtProcBodyProcessingMode)),
+						},
+					},
+				},
+			},
+		},
+	}
+	err = m.Client.Create(context.Background(), &policy)
+	klog.Errorln(err)
 }
 
 func (m *ModelRouter) deleteModel(obj interface{}) {
@@ -145,5 +191,26 @@ func (m *ModelRouter) deleteModel(obj interface{}) {
 	}
 
 	err := m.Client.Delete(context.Background(), &httpRoute)
+	klog.Errorln(err)
+
+	policy := egv1a1.EnvoyExtensionPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-ext-proc", modelName),
+			Namespace: deployment.Namespace,
+		},
+		Spec: egv1a1.EnvoyExtensionPolicySpec{
+			PolicyTargetReferences: egv1a1.PolicyTargetReferences{
+				TargetRefs: []gwapiv1a2.LocalPolicyTargetReferenceWithSectionName{
+					{
+						LocalPolicyTargetReference: gwapiv1a2.LocalPolicyTargetReference{
+							Kind: "HTTPRoute",
+							Name: gatewayv1.ObjectName(httpRoute.Name),
+						},
+					},
+				},
+			},
+		},
+	}
+	err = m.Client.Delete(context.Background(), &policy)
 	klog.Errorln(err)
 }

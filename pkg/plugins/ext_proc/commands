@@ -1,0 +1,5 @@
+kubectl exec -it redis-master-767bcb955d-lw7x9 -n redis-system -- redis-cli
+
+make delete && make build && make apply
+
+k logs -f grpc-ext-proc-8446f4bbc6-6vlqk
