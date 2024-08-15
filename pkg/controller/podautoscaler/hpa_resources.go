@@ -17,7 +17,6 @@ limitations under the License.
 package podautoscaler
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"strconv"
@@ -41,7 +40,7 @@ func getHPANameFromPa(pa *pav1.PodAutoscaler) string {
 }
 
 // MakeHPA creates an HPA resource from a PodAutoscaler resource.
-func MakeHPA(pa *pav1.PodAutoscaler, ctx context.Context) *autoscalingv2.HorizontalPodAutoscaler {
+func makeHPA(pa *pav1.PodAutoscaler) *autoscalingv2.HorizontalPodAutoscaler {
 	minReplicas, maxReplicas := pa.Spec.MinReplicas, pa.Spec.MaxReplicas
 	if maxReplicas == 0 {
 		maxReplicas = math.MaxInt32 // Set default to no upper limit if not specified

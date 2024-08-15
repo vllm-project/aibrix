@@ -19,10 +19,23 @@ package podautoscaler
 import (
 	"context"
 	"fmt"
+	"io"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"net/http"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"strconv"
+	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -118,7 +131,7 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
 	// Generate a corresponding HorizontalPodAutoscaler
-	hpa := MakeHPA(&pa, ctx)
+	hpa := makeHPA(&pa)
 	hpaName := types.NamespacedName{
 		Name:      hpa.Name,
 		Namespace: hpa.Namespace,
@@ -154,9 +167,193 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 }
 
 func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
-	return ctrl.Result{}, fmt.Errorf("not implemneted yet")
+	// Let's fetch associated deployment. To simplify the process, let's assume we just use deployment now.
+	// TODO: based on the Kind to Get the object.
+	var deployment appsv1.Deployment
+	deploymentNamespacedName := types.NamespacedName{
+		Namespace: pa.Spec.ScaleTargetRef.Namespace,
+		Name:      pa.Spec.ScaleTargetRef.Name,
+	}
+	if err := r.Get(ctx, deploymentNamespacedName, &deployment); err != nil {
+		return ctrl.Result{}, err
+	}
+
+
+
+	scaleReference := fmt.Sprintf("%s/%s/%s", pa.Spec.ScaleTargetRef.Kind, pa.Namespace, pa.Spec.ScaleTargetRef.Name)
+
+	targetGV, err := schema.ParseGroupVersion(pa.Spec.ScaleTargetRef.APIVersion)
+	if err != nil {
+		r.eventRecorder.Event(pa, corev1.EventTypeWarning, "FailedGetScale", err.Error())
+		setCondition(pa, autoscalingv2.AbleToScale, corev1.ConditionFalse, "FailedGetScale", "the PodAutoscaler controller was unable to get the target's current scale: %v", err)
+		if err := r.updateStatusIfNeeded(ctx, hpaStatusOriginal, hpa); err != nil {
+			utilruntime.HandleError(err)
+		}
+		return fmt.Errorf("invalid API version in scale target reference: %v%w", err, errSpec)
+	}
+
+
+	// current scale's replica count
+	currentReplicas := *deployment.Spec.Replicas
+	// desired replica count
+	desiredReplicas := int32(0)
+	var minReplicas int32
+	// minReplica is optional
+	if pa.Spec.MinReplicas != nil {
+		minReplicas = *pa.Spec.MinReplicas
+	} else {
+		minReplicas = 1
+	}
+
+	// https://xiaorui.cc/archives/7365
+	rescale := true
+	if *deployment.Spec.Replicas == int32(0) && minReplicas != 0 {
+		// if the replica is 0, then we should not enable autoscaling
+		desiredReplicas = 0
+		rescale = false
+	} else if currentReplicas > pa.Spec.MaxReplicas {
+		desiredReplicas = pa.Spec.MaxReplicas
+	} else if currentReplicas < minReplicas {
+		desiredReplicas = minReplicas
+	} else {
+		metricDesiredReplicas, metricName, metricStatuses, metricTimestamp, err := r.computeReplicasForMetrics(ctx, pa, scale, pa.Spec.MetricsSources)
+		if err != nil {
+			r.updaStatusIfNeeded(ctx, paStatusOld, pa)
+			return ctrl.Result{}, fmt.Errorf("failed to compute desired number of replicas based on listed metrics for %s: %v\", reference, err")
+		}
+
+		rescale = desiredReplicas != currentReplicas
+	}
+
+	if rescale {
+		deployment.Spec.Replicas = desiredReplicas
+
+		_, err = r.scaleNamespacer.Scales(hpa.Namespace).Update(ctx, targetGR, scale, metav1.UpdateOptions{})
+	} else {
+		desiredReplicas = currentReplicas
+	}
+
+	r.SetStatus(hpa, currentReplicas, desiredReplicas, metricsStatus, rescale)
+
+	retrn r.updaStatusIfNeeded(ctx, paStatusOld, pa)
+
+	// list all the pods
+	var podList corev1.PodList
+	labelSelector := client.MatchingLabels(deployment.Spec.Selector.MatchLabels)
+	if err := r.List(ctx, &podList, client.InNamespace(deployment.Namespace), labelSelector); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	metrics, err := r.getMetricsFromPods(podList.Items)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	newReplicaCount := r.calculateReplicaCount(metrics)
+
+	if *deployment.Spec.Replicas != newReplicaCount {
+		deployment.Spec.Replicas = &newReplicaCount
+		if err := r.Update(ctx, &deployment); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if err := r.updateAutoscalerStatus(ctx, &pa, newReplicaCount); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+}
+
+func updateScale(ctx context.Context, c client.Client, namespace string, targetGR schema.GroupResource, scale *autoscalingv1.Scale) error {
+	// Get GVK
+	gvk, err := apiutil.GVKForObject(scale, c.Scheme())
+	if err != nil {
+		return err
+	}
+
+	// Get unstructured object
+	scaleObj := &unstructured.Unstructured{}
+	scaleObj.SetGroupVersionKind(gvk)
+	scaleObj.SetNamespace(namespace)
+	scaleObj.SetName(scale.Name)
+
+	// Update scale object
+	// TODO: change to kind name later.
+	err = c.Patch(ctx, scale, client.Apply, client.FieldOwner("operator-name"))
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (r *PodAutoscalerReconciler) reconcileAPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
+	// scraper
+	// decider
+
 	return ctrl.Result{}, fmt.Errorf("not implemneted yet")
 }
+
+func (r *PodAutoscalerReconciler) getMetricsFromPods(pods []corev1.Pod) ([]float64, error) {
+	var metrics []float64
+
+	for _, pod := range pods {
+		// We should use the primary container port. In future, we can decide whether to use sidecar container's port
+		url := fmt.Sprintf("http://%s:8000/metrics", pod.Status.PodIP)
+
+		// scrape metrics
+		resp, err := http.Get(url)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch metrics from pod %s: %v", pod.Name, err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response from pod %s: %v", pod.Name, err)
+		}
+
+		metricValue, err := r.parseMetricFromBody(body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse metrics from pod %s: %v", pod.Name, err)
+		}
+
+		metrics = append(metrics, metricValue)
+	}
+
+	return metrics, nil
+}
+
+func (r *PodAutoscalerReconciler) calculateReplicaCount(metrics []float64) int32 {
+	panic("not implemented")
+}
+
+func (r *PodAutoscalerReconciler) updateAutoscalerStatus(ctx context.Context, pa *autoscalingv1alpha1.PodAutoscaler, count int32) error {
+	panic("not implemented")
+}
+
+func (r *PodAutoscalerReconciler) parseMetricFromBody(body []byte) (float64, error) {
+	// TODO: let's use a different metrics name later
+	metricName := "http_requests_total"
+	lines := strings.Split(string(body), "\n")
+
+	for _, line := range lines {
+		if strings.Contains(line, metricName) {
+			// format is `http_requests_total 1234.56`
+			parts := strings.Fields(line)
+			if len(parts) < 2 {
+				return 0, fmt.Errorf("unexpected format for metric %s", metricName)
+			}
+
+			// parse to float64
+			value, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+			if err != nil {
+				return 0, fmt.Errorf("failed to parse metric value for %s: %v", metricName, err)
+			}
+
+			return value, nil
+		}
+	}
+	return 0, fmt.Errorf("metrics %s not found", metricName)
+}
+
