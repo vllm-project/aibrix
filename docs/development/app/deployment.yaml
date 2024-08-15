@@ -8,7 +8,7 @@ metadata:
     model.aibrix.ai: "llama2-70b"
     model.aibrix.ai/port: "8000"
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       aibricks.com/lora-enabled: "true"

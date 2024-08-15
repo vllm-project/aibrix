@@ -63,7 +63,7 @@ func (s *healthServer) Watch(in *healthPb.HealthCheckRequest, srv healthPb.Healt
 }
 
 func (s *server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
-	var user string
+	var user, targetPodIP string
 	ctx := srv.Context()
 
 	for {
@@ -94,6 +94,9 @@ func (s *server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 				if strings.ToLower(n.Key) == "user" {
 					user = string(n.RawValue)
 				}
+				if strings.ToLower(n.Key) == "target-pod" {
+					targetPodIP = string(n.RawValue)
+				}
 			}
 
 			klog.Infof("user: %v", user)
@@ -119,15 +122,28 @@ func (s *server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 					RequestHeaders: &extProcPb.HeadersResponse{
 						Response: &extProcPb.CommonResponse{
 							HeaderMutation: &extProcPb.HeaderMutation{
-								SetHeaders: []*configPb.HeaderValueOption{},
+								SetHeaders: []*configPb.HeaderValueOption{
+									{
+										Header: &configPb.HeaderValue{
+											Key:      "x-went-into-req-headers",
+											RawValue: []byte("true"),
+										},
+									},
+									{
+										Header: &configPb.HeaderValue{
+											Key:      "target-pod",
+											RawValue: []byte(targetPodIP),
+										},
+									},
+								},
 							},
+							ClearRouteCache: true,
 						},
 					},
 				},
 				ModeOverride: &filterPb.ProcessingMode{
-					ResponseHeaderMode: filterPb.ProcessingMode_DEFAULT,
+					ResponseHeaderMode: filterPb.ProcessingMode_SEND,
 					RequestBodyMode:    filterPb.ProcessingMode_NONE,
-					ResponseBodyMode:   filterPb.ProcessingMode_STREAMED,
 				},
 			}
 
@@ -135,7 +151,24 @@ func (s *server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			resp = &extProcPb.ProcessingResponse{
 				Response: &extProcPb.ProcessingResponse_RequestBody{
 					RequestBody: &extProcPb.BodyResponse{
-						Response: &extProcPb.CommonResponse{},
+						Response: &extProcPb.CommonResponse{
+							HeaderMutation: &extProcPb.HeaderMutation{
+								SetHeaders: []*configPb.HeaderValueOption{
+									{
+										Header: &configPb.HeaderValue{
+											Key:      "x-went-into-req-body",
+											RawValue: []byte("true"),
+										},
+									},
+									{
+										Header: &configPb.HeaderValue{
+											Key:      "target-pod",
+											RawValue: []byte(targetPodIP),
+										},
+									},
+								},
+							},
+						},
 					},
 				},
 			}
@@ -144,7 +177,25 @@ func (s *server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			resp = &extProcPb.ProcessingResponse{
 				Response: &extProcPb.ProcessingResponse_ResponseHeaders{
 					ResponseHeaders: &extProcPb.HeadersResponse{
-						Response: &extProcPb.CommonResponse{},
+						Response: &extProcPb.CommonResponse{
+							HeaderMutation: &extProcPb.HeaderMutation{
+								SetHeaders: []*configPb.HeaderValueOption{
+									{
+										Header: &configPb.HeaderValue{
+											Key:      "x-went-into-resp-headers",
+											RawValue: []byte("true"),
+										},
+									},
+									{
+										Header: &configPb.HeaderValue{
+											Key:      "target-pod",
+											RawValue: []byte(targetPodIP),
+										},
+									},
+								},
+							},
+							ClearRouteCache: true,
+						},
 					},
 				},
 			}
