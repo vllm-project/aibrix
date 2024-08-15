@@ -1,3 +1,4 @@
+# not need as EnvoyExtensionPolicy will be auto-created with HTTPRoute, just keeping for now for sample testing.
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
 metadata:
@@ -5,8 +6,8 @@ metadata:
 spec:
   targetRef:
     group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: llama2-70b-router
+    kind: Gateway
+    name: eg
   extProc:
     - backendRefs:
         - name: grpc-ext-proc
@@ -14,4 +15,4 @@ spec:
       processingMode:
         request: {}
         response: 
-          body: STREAMED
+          body: Streamed

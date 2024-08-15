@@ -47,12 +47,12 @@ func NewRedisAccountRateLimiter(name string, client *redis.Client, windowSize ti
 	}
 }
 
-func (rrl redisAccountRateLimiter) Get(ctx context.Context, accountId string) (int64, error) {
-	return rrl.get(ctx, rrl.genKey(accountId))
+func (rrl redisAccountRateLimiter) Get(ctx context.Context, key string) (int64, error) {
+	return rrl.get(ctx, rrl.genKey(key))
 }
 
-func (rrl redisAccountRateLimiter) GetLimit(ctx context.Context, accountId string) (int64, error) {
-	return rrl.get(ctx, fmt.Sprintf("%s:%s", rrl.name, accountId))
+func (rrl redisAccountRateLimiter) GetLimit(ctx context.Context, key string) (int64, error) {
+	return rrl.get(ctx, fmt.Sprintf("%s:%s", rrl.name, key))
 }
 
 func (rrl redisAccountRateLimiter) get(ctx context.Context, key string) (int64, error) {
@@ -66,12 +66,12 @@ func (rrl redisAccountRateLimiter) get(ctx context.Context, key string) (int64, 
 	return val, err
 }
 
-func (rrl redisAccountRateLimiter) Incr(ctx context.Context, accountId string, val int64) (int64, error) {
-	return rrl.incrAndExpire(ctx, rrl.genKey(accountId), val)
+func (rrl redisAccountRateLimiter) Incr(ctx context.Context, key string, val int64) (int64, error) {
+	return rrl.incrAndExpire(ctx, rrl.genKey(key), val)
 }
 
-func (rrl redisAccountRateLimiter) genKey(accountId string) string {
-	return fmt.Sprintf("%s:%s:%d", rrl.name, accountId, time.Now().Unix()/int64(rrl.windowSize.Seconds())%binSize)
+func (rrl redisAccountRateLimiter) genKey(key string) string {
+	return fmt.Sprintf("%s:%s:%d", rrl.name, key, time.Now().Unix()/int64(rrl.windowSize.Seconds())%binSize)
 }
 
 func (rrl redisAccountRateLimiter) incrAndExpire(ctx context.Context, key string, val int64) (int64, error) {
