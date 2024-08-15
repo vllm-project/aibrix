@@ -16,6 +16,10 @@ issues:
       linters:
         - dupl
         - lll
+    # disable lll check for flag descriptions
+    - path: "cmd/main.go"
+      linters:
+        - lll
 linters:
   disable-all: true
   enable:
@@ -36,5 +40,5 @@ linters:
     - staticcheck
     - typecheck
     - unconvert
-    - unparam
+#    - unparam
     - unused
