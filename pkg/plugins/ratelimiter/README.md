@@ -10,7 +10,7 @@ set aibrix:<user-name>_RPM_LIMIT 10
 # Install extension proc
 make build && make apply
 
-# Test requests
+# Request based on model name
 ```shell
 curl -v http://localhost:8888/v1/chat/completions \
   -H "user: varun" \
@@ -25,31 +25,16 @@ curl -v http://localhost:8888/v1/chat/completions \
 ```
 
 # restart envoy gateway after applying envoy patch policy
-kubectl rollout restart deployment envoy-gateway -n envoy-gateway-system
-
-k describe deployment envoy-default-eg-e41e7b31 -n envoy-gateway-system
-
+```shell
 kubectl apply -f docs/development/app/gateway.yaml 
 k describe envoypatchpolicy epp
-
 egctl config envoy-proxy route
 
+kubectl rollout restart deployment envoy-gateway -n envoy-gateway-system
+```
 
-
+# Request based on specific pod
 ```shell
-curl -v http://localhost:8888/v1/chat/completions \
-  -H "target-pod: 10.244.1.3:8000" \
-  -H "model: llama2-70b" \
-  -H "user: varun" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer any_key" \
-  -d '{
-     "model": "llama2-70b",
-     "messages": [{"role": "user", "content": "Say this is a test!"}],
-     "temperature": 0.7
-   }'
-
-
 curl -v http://localhost:8888/v1/chat/completions \
   -H "target-pod: 10.244.1.3:8000" \
   -H "user: varun" \

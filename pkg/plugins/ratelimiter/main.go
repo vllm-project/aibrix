@@ -81,7 +81,7 @@ func (s *server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		switch v := req.Request.(type) {
 
 		case *extProcPb.ProcessingRequest_RequestHeaders:
-			resp, targetPodIP = s.HandleRequestHeaders(ctx, req)
+			resp, user, targetPodIP = s.HandleRequestHeaders(ctx, req)
 
 		case *extProcPb.ProcessingRequest_RequestBody:
 			resp = s.HandleRequestBody(req, targetPodIP)
@@ -102,7 +102,7 @@ func (s *server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	}
 }
 
-func (s *server) HandleRequestHeaders(ctx context.Context, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, string) {
+func (s *server) HandleRequestHeaders(ctx context.Context, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, string, string) {
 	log.Println("--- In RequestHeaders processing ...")
 	var user, targetPodIP string
 	r := req.Request
@@ -126,7 +126,7 @@ func (s *server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 	// if no user name present in the request headers
 	if user == "" {
 		klog.Infoln("user does not exists")
-		return nil, targetPodIP
+		return nil, user, targetPodIP
 	}
 	code, err := s.checkRPM(ctx, user)
 	if err != nil {
@@ -149,7 +149,7 @@ func (s *server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 					},
 				},
 			},
-		}, targetPodIP
+		}, user, targetPodIP
 	}
 
 	code, err = s.checkTPM(ctx, user)
@@ -173,7 +173,7 @@ func (s *server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 					},
 				},
 			},
-		}, targetPodIP
+		}, user, targetPodIP
 	}
 
 	resp := &extProcPb.ProcessingResponse{
@@ -206,7 +206,7 @@ func (s *server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 		},
 	}
 
-	return resp, targetPodIP
+	return resp, user, targetPodIP
 }
 
 func (s *server) HandleRequestBody(req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
@@ -356,7 +356,7 @@ func (s *server) checkRPM(ctx context.Context, user string) (envoyTypePb.StatusC
 		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get requests per minute current for user: %v", user)
 	}
 	klog.Infof("rmpCurrent: %v, rpmLimit: %v", rpmCurrent, rpmLimit)
-	if rpmCurrent > rpmLimit {
+	if rpmCurrent >= rpmLimit {
 		err := fmt.Errorf("requests per limit of:%v, reached for user: %v", rpmLimit, user)
 		klog.Errorln(err)
 		return envoyTypePb.StatusCode_TooManyRequests, err
@@ -377,7 +377,7 @@ func (s *server) checkTPM(ctx context.Context, user string) (envoyTypePb.StatusC
 		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get tokens per minute current for user: %v", user)
 	}
 	klog.Infof("tpmCurrent: %v, tpmLimit: %v", tpmCurrent, tpmLimit)
-	if tpmCurrent > tpmLimit {
+	if tpmCurrent >= tpmLimit {
 		err := fmt.Errorf("tokens per limit of:%v, reached for user: %v", tpmLimit, user)
 		klog.Errorln(err)
 		return envoyTypePb.StatusCode_TooManyRequests, err
