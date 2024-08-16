@@ -77,14 +77,37 @@ spec:
     name: "default/eg/http"
     operation:
       op: add
-      path: "/virtual_hosts/0/routes"
+      path: "/virtual_hosts/0/routes/0"
       value:
-        - name: orginal_route
-          match:
-            prefix: "/"
-          route:  
-            cluster: original_destination_cluster
-            timeout: 1000s  # Increase route timeout
+        name: orginal_route
+        match:
+          prefix: "/"
+          headers:
+            - name: "target-pod"
+              string_match:
+                exact: "10.244.1.3:8000"
+            # - name: "target-pod"
+            #   # string_match:
+            #   #   exact: "hello"
+            #   safe_regex_match:
+            #     regex: "*.*.*.*"
+        route:  
+          cluster: original_destination_cluster
+          timeout: 1000s  # Increase route timeout
+  - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
+    name: "envoy-patch-policy-override2"
+    operation:
+      op: add
+      path: ""
+      value:
+        name: original_destination_cluster
+        type: ORIGINAL_DST  
+        original_dst_lb_config:
+          use_http_header: true
+          http_header_name: "target-pod"
+        connect_timeout: 6s
+        lb_policy: CLUSTER_PROVIDED
+        dns_lookup_family: V4_ONLY
   # - type: "type.googleapis.com/envoy.config.listener.v3.Listener"
   #   name: default/eg/http
   #   operation:
@@ -103,18 +126,5 @@ spec:
   #                 route:  
   #                   cluster: original_destination_cluster
   #                   timeout: 1000s  # Increase route timeout
-  # - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
-  #   name: "envoy-patch-policy-override2"
-  #   operation:
-  #     op: add
-  #     path: ""
-  #     value:
-  #       name: original_destination_cluster
-  #       type: ORIGINAL_DST  
-  #       original_dst_lb_config:
-  #         use_http_header: true
-  #         http_header_name: "target-pod"
-  #       connect_timeout: 6s
-  #       lb_policy: CLUSTER_PROVIDED
-  #       dns_lookup_family: V4_ONLY
+  
     
