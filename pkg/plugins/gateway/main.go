@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -30,7 +31,6 @@ import (
 	"time"
 
 	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/ext_proc/rate_limiter"
-	"github.com/coocood/freecache"
 	redis "github.com/redis/go-redis/v9"
 	openai "github.com/sashabaranov/go-openai"
 	"google.golang.org/grpc"
@@ -41,12 +41,8 @@ import (
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	filterPb "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
-)
-
-var (
-	cache    *freecache.Cache
-	cacheKey = []byte("key")
 )
 
 type server struct {
@@ -82,135 +78,19 @@ func (s *server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		}
 
 		resp := &extProcPb.ProcessingResponse{}
-
 		switch v := req.Request.(type) {
 
 		case *extProcPb.ProcessingRequest_RequestHeaders:
-			r := req.Request
-			h := r.(*extProcPb.ProcessingRequest_RequestHeaders)
-			klog.Infof("In RequestHeaders pricessing, Request: %+v, EndOfStream: %+v", r, h.RequestHeaders.EndOfStream)
-
-			for _, n := range h.RequestHeaders.Headers.Headers {
-				if strings.ToLower(n.Key) == "user" {
-					user = string(n.RawValue)
-				}
-				if strings.ToLower(n.Key) == "target-pod" {
-					targetPodIP = string(n.RawValue)
-				}
-			}
-
-			klog.Infof("user: %v", user)
-
-			// TODO (varun): add check if user exists in backend storage
-			// if no user name present in the request headers
-			if user == "" {
-				klog.Infoln("user does not exists")
-				return status.Errorf(codes.PermissionDenied, "user does not exists")
-			}
-			code, err := s.checkRPM(ctx, user)
-			if err != nil {
-				return status.Errorf(code, err.Error())
-			}
-
-			code, err = s.checkTPM(ctx, user)
-			if err != nil {
-				return status.Errorf(code, err.Error())
-			}
-
-			resp = &extProcPb.ProcessingResponse{
-				Response: &extProcPb.ProcessingResponse_RequestHeaders{
-					RequestHeaders: &extProcPb.HeadersResponse{
-						Response: &extProcPb.CommonResponse{
-							HeaderMutation: &extProcPb.HeaderMutation{
-								SetHeaders: []*configPb.HeaderValueOption{
-									{
-										Header: &configPb.HeaderValue{
-											Key:      "x-went-into-req-headers",
-											RawValue: []byte("true"),
-										},
-									},
-									{
-										Header: &configPb.HeaderValue{
-											Key:      "target-pod",
-											RawValue: []byte(targetPodIP),
-										},
-									},
-								},
-							},
-							ClearRouteCache: true,
-						},
-					},
-				},
-				ModeOverride: &filterPb.ProcessingMode{
-					ResponseHeaderMode: filterPb.ProcessingMode_SEND,
-					RequestBodyMode:    filterPb.ProcessingMode_NONE,
-				},
-			}
+			resp, targetPodIP = s.HandleRequestHeaders(ctx, req)
 
 		case *extProcPb.ProcessingRequest_RequestBody:
-			resp = &extProcPb.ProcessingResponse{
-				Response: &extProcPb.ProcessingResponse_RequestBody{
-					RequestBody: &extProcPb.BodyResponse{
-						Response: &extProcPb.CommonResponse{
-							HeaderMutation: &extProcPb.HeaderMutation{
-								SetHeaders: []*configPb.HeaderValueOption{
-									{
-										Header: &configPb.HeaderValue{
-											Key:      "x-went-into-req-body",
-											RawValue: []byte("true"),
-										},
-									},
-									{
-										Header: &configPb.HeaderValue{
-											Key:      "target-pod",
-											RawValue: []byte(targetPodIP),
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			}
+			resp = s.HandleRequestBody(req, targetPodIP)
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
-			resp = &extProcPb.ProcessingResponse{
-				Response: &extProcPb.ProcessingResponse_ResponseHeaders{
-					ResponseHeaders: &extProcPb.HeadersResponse{
-						Response: &extProcPb.CommonResponse{
-							HeaderMutation: &extProcPb.HeaderMutation{
-								SetHeaders: []*configPb.HeaderValueOption{
-									{
-										Header: &configPb.HeaderValue{
-											Key:      "x-went-into-resp-headers",
-											RawValue: []byte("true"),
-										},
-									},
-									{
-										Header: &configPb.HeaderValue{
-											Key:      "target-pod",
-											RawValue: []byte(targetPodIP),
-										},
-									},
-								},
-							},
-							ClearRouteCache: true,
-						},
-					},
-				},
-			}
+			resp = s.HandleResponseHeaders(req, targetPodIP)
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
-			klog.Info("In ResponseBody")
-			r := req.Request
-			b := r.(*extProcPb.ProcessingRequest_ResponseBody)
-
-			var res openai.CompletionResponse
-			json.Unmarshal(b.ResponseBody.Body, &res)
-
-			rpm, _ := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_RPM_CURRENT", user), 1)
-			tpm, _ := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user), int64(res.Usage.TotalTokens))
-			klog.Infof("Updated RPM: %v, TPM: %v for user: %v", rpm, tpm, user)
+			resp = s.HandleResponseBody(ctx, req, user)
 
 		default:
 			log.Printf("Unknown Request type %+v\n", v)
@@ -222,52 +102,295 @@ func (s *server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	}
 }
 
-func (s *server) checkRPM(ctx context.Context, user string) (codes.Code, error) {
+func (s *server) HandleRequestHeaders(ctx context.Context, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, string) {
+	log.Println("--- In RequestHeaders processing ...")
+	var user, targetPodIP string
+	r := req.Request
+	h := r.(*extProcPb.ProcessingRequest_RequestHeaders)
+
+	log.Printf("Headers: %+v\n", h)
+	log.Printf("EndOfStream: %v\n", h.RequestHeaders.EndOfStream)
+
+	for _, n := range h.RequestHeaders.Headers.Headers {
+		if strings.ToLower(n.Key) == "user" {
+			user = string(n.RawValue)
+		}
+		if strings.ToLower(n.Key) == "target-pod" {
+			targetPodIP = string(n.RawValue)
+		}
+	}
+
+	klog.Infof("user: %v", user)
+
+	// TODO (varun): add check if user exists in backend storage
+	// if no user name present in the request headers
+	if user == "" {
+		klog.Infoln("user does not exists")
+		return nil, targetPodIP
+	}
+	code, err := s.checkRPM(ctx, user)
+	if err != nil {
+		return &extProcPb.ProcessingResponse{
+			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+				ImmediateResponse: &extProcPb.ImmediateResponse{
+					Status: &envoyTypePb.HttpStatus{
+						Code: code,
+					},
+					Details: err.Error(),
+					Headers: &extProcPb.HeaderMutation{
+						SetHeaders: []*configPb.HeaderValueOption{
+							{
+								Header: &configPb.HeaderValue{
+									Key:      "x-rpm-exceeded",
+									RawValue: []byte("true"),
+								},
+							},
+						},
+					},
+				},
+			},
+		}, targetPodIP
+	}
+
+	code, err = s.checkTPM(ctx, user)
+	if err != nil {
+		return &extProcPb.ProcessingResponse{
+			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+				ImmediateResponse: &extProcPb.ImmediateResponse{
+					Status: &envoyTypePb.HttpStatus{
+						Code: code,
+					},
+					Details: err.Error(),
+					Headers: &extProcPb.HeaderMutation{
+						SetHeaders: []*configPb.HeaderValueOption{
+							{
+								Header: &configPb.HeaderValue{
+									Key:      "x-tpm-exceeded",
+									RawValue: []byte("true"),
+								},
+							},
+						},
+					},
+				},
+			},
+		}, targetPodIP
+	}
+
+	resp := &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_RequestHeaders{
+			RequestHeaders: &extProcPb.HeadersResponse{
+				Response: &extProcPb.CommonResponse{
+					HeaderMutation: &extProcPb.HeaderMutation{
+						SetHeaders: []*configPb.HeaderValueOption{
+							{
+								Header: &configPb.HeaderValue{
+									Key:      "x-went-into-req-headers",
+									RawValue: []byte("true"),
+								},
+							},
+							{
+								Header: &configPb.HeaderValue{
+									Key:      "target-pod",
+									RawValue: []byte(targetPodIP),
+								},
+							},
+						},
+					},
+					ClearRouteCache: true,
+				},
+			},
+		},
+		ModeOverride: &filterPb.ProcessingMode{
+			ResponseHeaderMode: filterPb.ProcessingMode_SEND,
+			RequestBodyMode:    filterPb.ProcessingMode_NONE,
+		},
+	}
+
+	return resp, targetPodIP
+}
+
+func (s *server) HandleRequestBody(req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
+	log.Println("--- In RequestBody processing")
+
+	return &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_RequestBody{
+			RequestBody: &extProcPb.BodyResponse{
+				Response: &extProcPb.CommonResponse{
+					HeaderMutation: &extProcPb.HeaderMutation{
+						SetHeaders: []*configPb.HeaderValueOption{
+							{
+								Header: &configPb.HeaderValue{
+									Key:      "x-went-into-req-body",
+									RawValue: []byte("true"),
+								},
+							},
+							{
+								Header: &configPb.HeaderValue{
+									Key:      "target-pod",
+									RawValue: []byte(targetPodIP),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func (s *server) HandleResponseHeaders(req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
+	log.Println("--- In ResponseHeaders processing")
+
+	return &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_ResponseHeaders{
+			ResponseHeaders: &extProcPb.HeadersResponse{
+				Response: &extProcPb.CommonResponse{
+					HeaderMutation: &extProcPb.HeaderMutation{
+						SetHeaders: []*configPb.HeaderValueOption{
+							{
+								Header: &configPb.HeaderValue{
+									Key:      "x-went-into-resp-headers",
+									RawValue: []byte("true"),
+								},
+							},
+							{
+								Header: &configPb.HeaderValue{
+									Key:      "target-pod",
+									RawValue: []byte(targetPodIP),
+								},
+							},
+						},
+					},
+					ClearRouteCache: true,
+				},
+			},
+		},
+	}
+}
+
+func (s *server) HandleResponseBody(ctx context.Context, req *extProcPb.ProcessingRequest, user string) *extProcPb.ProcessingResponse {
+	log.Println("--- In ResponseBody processing")
+
+	r := req.Request
+	b := r.(*extProcPb.ProcessingRequest_ResponseBody)
+
+	var res openai.CompletionResponse
+	if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
+		return &extProcPb.ProcessingResponse{
+			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+				ImmediateResponse: &extProcPb.ImmediateResponse{
+					Status: &envoyTypePb.HttpStatus{
+						Code: envoyTypePb.StatusCode_InternalServerError,
+					},
+					Details: err.Error(),
+				},
+			},
+		}
+	}
+
+	rpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_RPM_CURRENT", user), 1)
+	if err != nil {
+		return &extProcPb.ProcessingResponse{
+			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+				ImmediateResponse: &extProcPb.ImmediateResponse{
+					Status: &envoyTypePb.HttpStatus{
+						Code: envoyTypePb.StatusCode_InternalServerError,
+					},
+					Details: err.Error(),
+					Body:    "post query: error on updating rpm",
+				},
+			},
+		}
+	}
+	tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user), int64(res.Usage.TotalTokens))
+	if err != nil {
+		return &extProcPb.ProcessingResponse{
+			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+				ImmediateResponse: &extProcPb.ImmediateResponse{
+					Status: &envoyTypePb.HttpStatus{
+						Code: envoyTypePb.StatusCode_InternalServerError,
+					},
+					Details: err.Error(),
+					Body:    "post query: error on updating tpm",
+				},
+			},
+		}
+	}
+	klog.Infof("Updated RPM: %v, TPM: %v for user: %v", rpm, tpm, user)
+
+	return &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_ResponseBody{
+			ResponseBody: &extProcPb.BodyResponse{
+				Response: &extProcPb.CommonResponse{
+					HeaderMutation: &extProcPb.HeaderMutation{
+						SetHeaders: []*configPb.HeaderValueOption{
+							{
+								Header: &configPb.HeaderValue{
+									Key:      "x-updated-rpm",
+									RawValue: []byte(fmt.Sprintf("%d", rpm)),
+								},
+							},
+							{
+								Header: &configPb.HeaderValue{
+									Key:      "x-updated-tpm",
+									RawValue: []byte(fmt.Sprintf("%d", tpm)),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func (s *server) checkRPM(ctx context.Context, user string) (envoyTypePb.StatusCode, error) {
 	rpmLimit, err := s.ratelimiter.GetLimit(ctx, fmt.Sprintf("%v_RPM_LIMIT", user))
 	if err != nil {
 		klog.Error(err)
-		return codes.Internal, fmt.Errorf("fail to get requests per minute limit for user: %v", user)
+		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get requests per minute limit for user: %v", user)
 	}
 	rpmCurrent, err := s.ratelimiter.Get(ctx, fmt.Sprintf("%v_RPM_CURRENT", user))
 	if err != nil {
 		klog.Error(err)
-		return codes.Internal, fmt.Errorf("fail to get requests per minute current for user: %v", user)
+		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get requests per minute current for user: %v", user)
 	}
 	klog.Infof("rmpCurrent: %v, rpmLimit: %v", rpmCurrent, rpmLimit)
 	if rpmCurrent > rpmLimit {
 		err := fmt.Errorf("requests per limit of:%v, reached for user: %v", rpmLimit, user)
 		klog.Errorln(err)
-		return codes.ResourceExhausted, err
+		return envoyTypePb.StatusCode_TooManyRequests, err
 	}
 
-	return codes.OK, nil
+	return envoyTypePb.StatusCode_OK, nil
 }
 
-func (s *server) checkTPM(ctx context.Context, user string) (codes.Code, error) {
+func (s *server) checkTPM(ctx context.Context, user string) (envoyTypePb.StatusCode, error) {
 	tpmLimit, err := s.ratelimiter.GetLimit(ctx, fmt.Sprintf("%v_TPM_LIMIT", user))
 	if err != nil {
 		klog.Error(err)
-		return codes.Internal, fmt.Errorf("fail to get tokens per minute limit for user: %v", user)
+		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get tokens per minute limit for user: %v", user)
 	}
 	tpmCurrent, err := s.ratelimiter.Get(ctx, fmt.Sprintf("%v_TPM_CURRENT", user))
 	if err != nil {
 		klog.Error(err)
-		return codes.Internal, fmt.Errorf("fail to get tokens per minute current for user: %v", user)
+		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get tokens per minute current for user: %v", user)
 	}
 	klog.Infof("tpmCurrent: %v, tpmLimit: %v", tpmCurrent, tpmLimit)
 	if tpmCurrent > tpmLimit {
 		err := fmt.Errorf("tokens per limit of:%v, reached for user: %v", tpmLimit, user)
 		klog.Errorln(err)
-		return codes.ResourceExhausted, err
+		return envoyTypePb.StatusCode_TooManyRequests, err
 	}
 
-	return codes.OK, nil
+	return envoyTypePb.StatusCode_OK, nil
 }
 
 // Create Redis Client
 var (
-	host = getEnv("REDIS_HOST", "localhost")
-	port = string(getEnv("REDIS_PORT", "6379"))
+	grpc_port  int
+	redis_host = getEnv("REDIS_HOST", "localhost")
+	redis_port = string(getEnv("REDIS_PORT", "6379"))
 )
 
 func getEnv(key, defaultValue string) string {
@@ -278,20 +401,15 @@ func getEnv(key, defaultValue string) string {
 	return value
 }
 
-const (
-	RPM_LIMIT = 4
-	TPM_LIMIT = 1000
-)
-
 func main() {
+	flag.IntVar(&grpc_port, "port", 50052, "gRPC port")
+	flag.Parse()
 
 	// Connect to Redis
 	client := redis.NewClient(&redis.Options{
-		Addr: host + ":" + port,
+		Addr: redis_host + ":" + redis_port,
 		DB:   0, // Default DB
 	})
-
-	// Ping the Redis server to check the connection
 	pong, err := client.Ping(context.Background()).Result()
 	if err != nil {
 		log.Fatal("Error connecting to Redis:", err)
@@ -299,7 +417,7 @@ func main() {
 	fmt.Println("Connected to Redis:", pong)
 
 	// grpc server init
-	lis, err := net.Listen("tcp", ":50052")
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", grpc_port))
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
