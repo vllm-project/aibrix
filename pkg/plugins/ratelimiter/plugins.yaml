@@ -1,0 +1,18 @@
+# not need as EnvoyExtensionPolicy will be auto-created with HTTPRoute, just keeping for now for sample testing.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: ext-proc-example
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: eg
+  extProc:
+    - backendRefs:
+        - name: grpc-ext-proc
+          port: 50052
+      processingMode:
+        request: {}
+        response: 
+          body: Streamed

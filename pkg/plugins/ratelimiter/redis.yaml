@@ -1,0 +1,47 @@
+# https://www.callicoder.com/deploy-multi-container-go-redis-app-kubernetes/
+apiVersion: apps/v1  # API version
+kind: Deployment
+metadata:
+  name: redis-master # Unique name for the deployment
+  labels:
+    app: redis       # Labels to be applied to this deployment
+spec:
+  selector:
+    matchLabels:     # This deployment applies to the Pods matching these labels
+      app: redis
+      role: master
+      tier: backend
+  replicas: 1        # Run a single pod in the deployment
+  template:          # Template for the pods that will be created by this deployment
+    metadata:
+      labels:        # Labels to be applied to the Pods in this deployment
+        app: redis
+        role: master
+        tier: backend
+    spec:            # Spec for the container which will be run inside the Pod.
+      containers:
+      - name: master
+        image: redis
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
+        ports:
+        - containerPort: 6379
+---        
+apiVersion: v1
+kind: Service        # Type of Kubernetes resource
+metadata:
+  name: redis-master # Name of the Kubernetes resource
+  labels:            # Labels that will be applied to this resource
+    app: redis
+    role: master
+    tier: backend
+spec:
+  ports:
+  - port: 6379       # Map incoming connections on port 6379 to the target port 6379 of the Pod
+    targetPort: 6379
+  selector:          # Map any Pod with the specified labels to this service
+    app: redis
+    role: master
+    tier: backend
