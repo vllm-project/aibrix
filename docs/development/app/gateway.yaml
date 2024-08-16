@@ -31,36 +31,6 @@ data:
       controllerName: gateway.envoyproxy.io/gatewayclass-controller
     extensionApis:
       enableEnvoyPatchPolicy: true   
-# ---
-# apiVersion: gateway.envoyproxy.io/v1alpha1
-# kind: EnvoyPatchPolicy
-# metadata:
-#   name: custom-response-patch-policy
-# spec:
-#   targetRef:
-#     group: gateway.networking.k8s.io
-#     kind: Gateway
-#     name: eg
-#   type: JSONPatch
-#   jsonPatches:
-#     - type: "type.googleapis.com/envoy.config.listener.v3.Listener"
-#       # The listener name is of the form <GatewayNamespace>/<GatewayName>/<GatewayListenerName>
-#       name: default/eg/http
-#       operation:
-#         op: add
-#         path: "/default_filter_chain/filters/0/typed_config/local_reply_config"
-#         value:
-#           mappers:
-#           - filter:
-#               status_code_filter:
-#                 comparison:
-#                   op: EQ
-#                   value:
-#                     default_value: 404
-#                     runtime_key: key_b
-#             status_code: 406
-#             body:
-#               inline_string: "could not find what you are looking for"
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyPatchPolicy
@@ -83,14 +53,10 @@ spec:
         match:
           prefix: "/"
           headers:
+            # update ip address as needed and in production this config is not needed as backend will derive the pod ip
             - name: "target-pod"
               string_match:
                 exact: "10.244.1.3:8000"
-            # - name: "target-pod"
-            #   # string_match:
-            #   #   exact: "hello"
-            #   safe_regex_match:
-            #     regex: "*.*.*.*"
         route:  
           cluster: original_destination_cluster
           timeout: 1000s  # Increase route timeout
@@ -108,23 +74,4 @@ spec:
         connect_timeout: 6s
         lb_policy: CLUSTER_PROVIDED
         dns_lookup_family: V4_ONLY
-  # - type: "type.googleapis.com/envoy.config.listener.v3.Listener"
-  #   name: default/eg/http
-  #   operation:
-  #     op: add
-  #     path: "/default_filter_chain/filters/1/typed_config"
-  #     value:
-  #       route_config:
-  #         name: local_route
-  #         "@type": "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
-  #         virtual_hosts:      
-  #           - name: backend
-  #             domains: ["*"]
-  #             routes:
-  #               - match:
-  #                   prefix: "/"
-  #                 route:  
-  #                   cluster: original_destination_cluster
-  #                   timeout: 1000s  # Increase route timeout
   
-    
