@@ -3,13 +3,14 @@ package scaler
 import (
 	"context"
 	"fmt"
+	"time"
+
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 	podutil "github.com/aibrix/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"time"
 )
 
 // ReplicasScaler bundles all needed information to calculate the target amount of replicas

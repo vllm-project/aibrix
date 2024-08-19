@@ -57,11 +57,15 @@ spec:
                     endpoint:
                       description: e.g. service1.example.com
                       type: string
+                    metric:
+                      description: e.g. kv_cache_utilization metrics
+                      type: string
                     path:
                       description: e.g. /api/metrics/cpu
                       type: string
                   required:
                   - endpoint
+                  - metric
                   - path
                   type: object
                 type: array

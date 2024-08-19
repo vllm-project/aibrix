@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
-	autoscalingv2 "k8s.io/api/autoscaling/v2"
-	corev1 "k8s.io/api/core/v1"
 	"net/http"
 	"strconv"
 	"strings"
+
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	corev1 "k8s.io/api/core/v1"
 
 	"time"
 )
@@ -24,18 +25,12 @@ type restMetricsClient struct {
 }
 
 func (r restMetricsClient) GetPodContainerMetric(ctx context.Context, metricName string, pod corev1.Pod, containerPort int) (PodMetricsInfo, time.Time, error) {
-	podList := []corev1.Pod{pod}
-	metrics, err := GetMetricsFromPods(podList, metricName, containerPort)
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-
+	panic("not implemented")
 }
 
 func (r restMetricsClient) GetObjectMetric(ctx context.Context, metricName string, namespace string, objectRef *autoscalingv2.CrossVersionObjectReference, containerPort int) (PodMetricsInfo, time.Time, error) {
 	//TODO implement me
 	panic("implement me")
-
 }
 
 func GetMetricsFromPods(pods []corev1.Pod, metricName string, metricsPort int) ([]float64, error) {

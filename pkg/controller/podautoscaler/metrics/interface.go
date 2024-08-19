@@ -2,8 +2,9 @@ package metrics
 
 import (
 	"context"
-	v1 "k8s.io/api/core/v1"
 	"time"
+
+	v1 "k8s.io/api/core/v1"
 
 	autoscaling "k8s.io/api/autoscaling/v2"
 )
