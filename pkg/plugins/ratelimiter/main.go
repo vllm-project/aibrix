@@ -30,12 +30,17 @@ import (
 	"syscall"
 	"time"
 
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/ext_proc/rate_limiter"
+	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/ratelimiter/rate_limiter"
+	routing "github.com/aibrix/aibrix/pkg/plugins/ratelimiter/routing_algorithms"
 	redis "github.com/redis/go-redis/v9"
 	openai "github.com/sashabaranov/go-openai"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -47,6 +52,7 @@ import (
 
 type server struct {
 	ratelimiter ratelimiter.AccountRateLimiter
+	client      kubernetes.Interface
 }
 type healthServer struct{}
 
@@ -104,7 +110,7 @@ func (s *server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 
 func (s *server) HandleRequestHeaders(ctx context.Context, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, string, string) {
 	log.Println("--- In RequestHeaders processing ...")
-	var user, targetPodIP string
+	var user, model, targetPodIP string
 	r := req.Request
 	h := r.(*extProcPb.ProcessingRequest_RequestHeaders)
 
@@ -114,6 +120,9 @@ func (s *server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 	for _, n := range h.RequestHeaders.Headers.Headers {
 		if strings.ToLower(n.Key) == "user" {
 			user = string(n.RawValue)
+		}
+		if strings.ToLower(n.Key) == "model" {
+			model = string(n.RawValue)
 		}
 		if strings.ToLower(n.Key) == "target-pod" {
 			targetPodIP = string(n.RawValue)
@@ -176,25 +185,57 @@ func (s *server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 		}, user, targetPodIP
 	}
 
+	pods, err := s.client.CoreV1().Pods("default").List(ctx, v1.ListOptions{
+		LabelSelector: fmt.Sprintf("model.aibrix.ai=%s", model),
+	})
+	if err != nil {
+		klog.Error(err)
+		return &extProcPb.ProcessingResponse{
+			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+				ImmediateResponse: &extProcPb.ImmediateResponse{
+					Status: &envoyTypePb.HttpStatus{
+						Code: code,
+					},
+					Details: err.Error(),
+					Headers: &extProcPb.HeaderMutation{
+						SetHeaders: []*configPb.HeaderValueOption{
+							{
+								Header: &configPb.HeaderValue{
+									Key:      "x-routing-error",
+									RawValue: []byte("true"),
+								},
+							},
+						},
+					},
+				},
+			},
+		}, user, targetPodIP
+	}
+
+	// TODO (varun): evaluate how to enable selection of routing algorithm
+	route := routing.NewRandomRouter()
+	targetPodIP, _ = route.Get(ctx, pods.Items)
+	headers := []*configPb.HeaderValueOption{{
+		Header: &configPb.HeaderValue{
+			Key:      "x-went-into-req-headers",
+			RawValue: []byte("true"),
+		},
+	}}
+	if targetPodIP != "" {
+		headers = append(headers, &configPb.HeaderValueOption{
+			Header: &configPb.HeaderValue{
+				Key:      "target-pod",
+				RawValue: []byte(targetPodIP),
+			},
+		})
+	}
+
 	resp := &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestHeaders{
 			RequestHeaders: &extProcPb.HeadersResponse{
 				Response: &extProcPb.CommonResponse{
 					HeaderMutation: &extProcPb.HeaderMutation{
-						SetHeaders: []*configPb.HeaderValueOption{
-							{
-								Header: &configPb.HeaderValue{
-									Key:      "x-went-into-req-headers",
-									RawValue: []byte("true"),
-								},
-							},
-							{
-								Header: &configPb.HeaderValue{
-									Key:      "target-pod",
-									RawValue: []byte(targetPodIP),
-								},
-							},
-						},
+						SetHeaders: headers,
 					},
 					ClearRouteCache: true,
 				},
@@ -401,7 +442,37 @@ func getEnv(key, defaultValue string) string {
 	return value
 }
 
+//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
+
+func createClient(kubeconfigPath string) (kubernetes.Interface, error) {
+	var kubeconfig *rest.Config
+
+	if kubeconfigPath != "" {
+		config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("unable to load kubeconfig from %s: %v", kubeconfigPath, err)
+		}
+		kubeconfig = config
+	} else {
+		config, err := rest.InClusterConfig()
+		if err != nil {
+			return nil, fmt.Errorf("unable to load in-cluster config: %v", err)
+		}
+		kubeconfig = config
+	}
+
+	client, err := kubernetes.NewForConfig(kubeconfig)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create a client: %v", err)
+	}
+
+	return client, nil
+}
+
+// TODO (varun): one or multi plugin ext_proc
 func main() {
+	var kubeconfig *string
+	kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	flag.IntVar(&grpc_port, "port", 50052, "gRPC port")
 	flag.Parse()
 
@@ -416,6 +487,12 @@ func main() {
 	}
 	fmt.Println("Connected to Redis:", pong)
 
+	// Connect to K8s cluster
+	k8sClient, err := createClient(*kubeconfig)
+	if err != nil {
+		log.Fatal("Error creating kubernetes client:", err)
+	}
+
 	// grpc server init
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", grpc_port))
 	if err != nil {
@@ -426,6 +503,7 @@ func main() {
 
 	extProcPb.RegisterExternalProcessorServer(s, &server{
 		ratelimiter: ratelimiter.NewRedisAccountRateLimiter("aibrix", client, 1*time.Minute),
+		client:      k8sClient,
 	})
 	healthPb.RegisterHealthServer(s, &healthServer{})
 

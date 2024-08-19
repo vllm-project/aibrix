@@ -27,17 +27,17 @@ curl -v http://localhost:8888/v1/chat/completions \
 # restart envoy gateway after applying envoy patch policy
 ```shell
 kubectl apply -f docs/development/app/gateway.yaml 
-k describe envoypatchpolicy epp
+kubectl describe envoypatchpolicy epp
 egctl config envoy-proxy route
 
 kubectl rollout restart deployment envoy-gateway -n envoy-gateway-system
 ```
 
-# Request based on specific pod
+# After applying envoy patch policy to target specific pod, model name in header is only used to fetch pods for that model service
 ```shell
 curl -v http://localhost:8888/v1/chat/completions \
-  -H "target-pod: 10.244.1.3:8000" \
   -H "user: varun" \
+  -H "model: llama2-70b" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer any_key" \
   -d '{
