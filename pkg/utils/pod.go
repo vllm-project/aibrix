@@ -1,6 +1,10 @@
-package pod
+package utils
 
-import v1 "k8s.io/api/core/v1"
+import (
+	"fmt"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // IsPodReady returns true if a pod is ready; false otherwise.
 func IsPodReady(pod *v1.Pod) bool {
@@ -41,4 +45,37 @@ func GetPodConditionFromList(conditions []v1.PodCondition, conditionType v1.PodC
 		}
 	}
 	return -1, nil
+}
+
+// SetConditionInList sets the specific condition type on the given PodAutoscaler to the specified value with the given
+// reason and message.
+// The message and args are treated like a format string.
+// The condition will be added if it is not present. The new list will be returned.
+func SetConditionInList(inputList []metav1.Condition, conditionType string, status metav1.ConditionStatus, reason, message string, args ...interface{}) []metav1.Condition {
+	resList := inputList
+	var existingCond *metav1.Condition
+	for i, condition := range resList {
+		if condition.Type == conditionType {
+			// can't take a pointer to an iteration variable
+			existingCond = &resList[i]
+			break
+		}
+	}
+
+	if existingCond == nil {
+		resList = append(resList, metav1.Condition{
+			Type: conditionType,
+		})
+		existingCond = &resList[len(resList)-1]
+	}
+
+	if existingCond.Status != status {
+		existingCond.LastTransitionTime = metav1.Now()
+	}
+
+	existingCond.Status = status
+	existingCond.Reason = reason
+	existingCond.Message = fmt.Sprintf(message, args...)
+
+	return resList
 }

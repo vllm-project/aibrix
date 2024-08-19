@@ -4,13 +4,49 @@ import (
 	"context"
 	"fmt"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
-	podutil "github.com/aibrix/aibrix/pkg/utils/pod"
+	podutil "github.com/aibrix/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"time"
 )
+
+// ReplicasScaler bundles all needed information to calculate the target amount of replicas
+type ReplicasScaler struct {
+	metricsClient  metrics.MetricsClient
+	resourceClient client.Client
+	// put necessary configuration information there.
+}
+
+func newReplicasScaler(metricsClient metrics.MetricsClient, client client.Client) *ReplicasScaler {
+	return &ReplicasScaler{
+		metricsClient:  metricsClient,
+		resourceClient: client,
+	}
+}
+
+func (c *ReplicasScaler) getReadyPodsCount(namespace string, selector labels.Selector) (int64, error) {
+	podList := &v1.PodList{}
+	if err := c.resourceClient.List(context.Background(), podList,
+		&client.ListOptions{Namespace: namespace, LabelSelector: selector}); err != nil {
+		return 0, fmt.Errorf("unable to get pods while calculating replica count: %v", err)
+	}
+
+	if len(podList.Items) == 0 {
+		return 0, fmt.Errorf("no pods returned by selector while calculating replica count")
+	}
+
+	readyPodCount := 0
+
+	for _, pod := range podList.Items {
+		if pod.Status.Phase == v1.PodRunning && podutil.IsPodReady(&pod) {
+			readyPodCount++
+		}
+	}
+
+	return int64(readyPodCount), nil
+}
 
 func groupPods(pods []*v1.Pod, metrics metrics.PodMetricsInfo, resource v1.ResourceName, cpuInitializationPeriod, delayOfInitialReadinessStatus time.Duration) (readyPodCount int, unreadyPods, missingPods, ignoredPods sets.String) {
 	missingPods = sets.NewString()
@@ -83,4 +119,35 @@ func getReadyPodsCount(ctx context.Context, podLister client.Client, namespace s
 	}
 
 	return int64(readyPodCount), nil
+}
+
+func calculatePodRequests(pods []*v1.Pod, container string, resource v1.ResourceName) (map[string]int64, error) {
+	requests := make(map[string]int64, len(pods))
+	for _, pod := range pods {
+		podSum := int64(0)
+		// Calculate all regular containers and restartable init containers requests.
+		containers := append([]v1.Container{}, pod.Spec.Containers...)
+		for _, c := range pod.Spec.InitContainers {
+			if c.RestartPolicy != nil && *c.RestartPolicy == v1.ContainerRestartPolicyAlways {
+				containers = append(containers, c)
+			}
+		}
+		for _, c := range containers {
+			if container == "" || container == c.Name {
+				if containerRequest, ok := c.Resources.Requests[resource]; ok {
+					podSum += containerRequest.MilliValue()
+				} else {
+					return nil, fmt.Errorf("missing request for %s in container %s of Pod %s", resource, c.Name, pod.ObjectMeta.Name)
+				}
+			}
+		}
+		requests[pod.Name] = podSum
+	}
+	return requests, nil
+}
+
+func removeMetricsForPods(metrics metrics.PodMetricsInfo, pods sets.String) {
+	for _, pod := range pods.UnsortedList() {
+		delete(metrics, pod)
+	}
 }

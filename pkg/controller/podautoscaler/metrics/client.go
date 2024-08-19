@@ -3,8 +3,12 @@ package metrics
 import (
 	"context"
 	"fmt"
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog/v2"
+	"io"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	corev1 "k8s.io/api/core/v1"
+	"net/http"
+	"strconv"
+	"strings"
 
 	"time"
 )
@@ -19,52 +23,69 @@ const (
 type restMetricsClient struct {
 }
 
-func GetPodContainerMetric(ctx context.Context, resource v1.ResourceName, container string) (PodMetricsInfo, error) {
-	res := make(PodMetricsInfo, len(rawMetrics))
-	for _, m := range rawMetrics {
-		containerFound := false
-		for _, c := range m.Containers {
-			if c.Name == container {
-				containerFound = true
-				if val, resFound := c.Usage[resource]; resFound {
-					res[m.Name] = PodMetric{
-						Timestamp: m.Timestamp.Time,
-						Window:    m.Window.Duration,
-						Value:     val.MilliValue(),
-					}
-				}
-				break
-			}
-		}
-		if !containerFound {
-			return nil, fmt.Errorf("container %s not present in metrics for pod %s/%s", container, m.Namespace, m.Name)
-		}
+func (r restMetricsClient) GetPodContainerMetric(ctx context.Context, metricName string, pod corev1.Pod, containerPort int) (PodMetricsInfo, time.Time, error) {
+	podList := []corev1.Pod{pod}
+	metrics, err := GetMetricsFromPods(podList, metricName, containerPort)
+	if err != nil {
+		return nil, time.Time{}, err
 	}
-	return res, nil
+
 }
 
-func getPodMetrics(ctx context.Context, rawMetrics []metricsapi.PodMetrics, resource v1.ResourceName) PodMetricsInfo {
-	res := make(PodMetricsInfo, len(rawMetrics))
+func (r restMetricsClient) GetObjectMetric(ctx context.Context, metricName string, namespace string, objectRef *autoscalingv2.CrossVersionObjectReference, containerPort int) (PodMetricsInfo, time.Time, error) {
+	//TODO implement me
+	panic("implement me")
 
-	for _, m := range rawMetrics {
-		podSum := int64(0)
-		missing := len(m.Containers) == 0
-		for _, c := range m.Containers {
-			resValue, found := c.Usage[resource]
-			if !found {
-				missing = true
-				klog.FromContext(ctx).V(2).Info("Missing resource metric", "resourceMetric", resource, "pod", klog.KRef(m.Namespace, m.Name))
-				break
-			}
-			podSum += resValue.MilliValue()
+}
+
+func GetMetricsFromPods(pods []corev1.Pod, metricName string, metricsPort int) ([]float64, error) {
+	var metrics []float64
+
+	for _, pod := range pods {
+		// We should use the primary container port. In future, we can decide whether to use sidecar container's port
+		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, metricsPort)
+
+		// scrape metrics
+		resp, err := http.Get(url)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch metrics from pod %s: %v", pod.Name, err)
 		}
-		if !missing {
-			res[m.Name] = PodMetric{
-				Timestamp: m.Timestamp.Time,
-				Window:    m.Window.Duration,
-				Value:     podSum,
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response from pod %s: %v", pod.Name, err)
+		}
+
+		metricValue, err := parseMetricFromBody(body, metricName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse metrics from pod %s: %v", pod.Name, err)
+		}
+
+		metrics = append(metrics, metricValue)
+	}
+
+	return metrics, nil
+}
+
+func parseMetricFromBody(body []byte, metricName string) (float64, error) {
+	lines := strings.Split(string(body), "\n")
+
+	for _, line := range lines {
+		if strings.Contains(line, metricName) {
+			// format is `http_requests_total 1234.56`
+			parts := strings.Fields(line)
+			if len(parts) < 2 {
+				return 0, fmt.Errorf("unexpected format for metric %s", metricName)
 			}
+
+			// parse to float64
+			value, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+			if err != nil {
+				return 0, fmt.Errorf("failed to parse metric value for %s: %v", metricName, err)
+			}
+
+			return value, nil
 		}
 	}
-	return res
+	return 0, fmt.Errorf("metrics %s not found", metricName)
 }
