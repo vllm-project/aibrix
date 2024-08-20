@@ -1,0 +1,41 @@
+name: Python Tests
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+    name: Lint
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v4
+      - name: Set up Python environment ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          cd python/aibrix
+          python -m pip install --upgrade pip
+          pip install -U pip poetry
+          poetry config virtualenvs.create false
+          poetry install --no-root --with dev
+      - name: Run Ruff
+        run: |
+          cd python/aibrix
+          python -m ruff check .
+      - name: Run isort
+        run: |
+          cd python/aibrix
+          python -m isort . --check-only
+      - name: Run mypy
+        run: |
+          cd python/aibrix
+          python -m mypy .
