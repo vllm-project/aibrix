@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "aibrix"
+version = "0.1.0"
+description = ""
+authors = ["brosoul <brosoul@126.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+
+[tool.poetry.group.dev.dependencies]
+mypy = "^1.11.1"
+ruff = "^0.6.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
