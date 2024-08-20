@@ -17,24 +17,30 @@ limitations under the License.
 package kpa
 
 import (
+	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
 	"log"
 	"testing"
 	"time"
 )
 
 func TestScale(t *testing.T) {
-	as := NewAutoscaler(&DeciderSpec{
-		MaxScaleUpRate:   1.5,
-		MaxScaleDownRate: 0.75,
-		TargetValue:      100,
-		TotalValue:       500,
-		PanicThreshold:   2.0,
-		StableWindow:     1 * time.Minute,
-		ScaleDownDelay:   1 * time.Minute,
-		ActivationScale:  2,
-	})
+	kpaScaler, err := NewKpaScaler(5,
+		&DeciderSpec{
+			MaxScaleUpRate:   1.5,
+			MaxScaleDownRate: 0.75,
+			TargetValue:      100,
+			TotalValue:       500,
+			PanicThreshold:   2.0,
+			StableWindow:     1 * time.Minute,
+			ScaleDownDelay:   1 * time.Minute,
+			ActivationScale:  2,
+		},
+		time.Time{}, 10, aggregation.NewTimeWindow(30*time.Second, 1*time.Second),
+	)
+	if err != nil {
+		t.Errorf("Failed to create KpaScaler: %v", err)
+	}
 
-	readyPodsCount := int32(5)
 	observedStableValue := 120.0
 	observedPanicValue := 240.0
 	ticker := time.NewTicker(10 * time.Second)
@@ -43,7 +49,7 @@ func TestScale(t *testing.T) {
 	for range ticker.C {
 		now := time.Now()
 		log.Printf("Scaling evaluation at %s", now)
-		result := as.Scale(readyPodsCount, observedStableValue, observedPanicValue, now)
+		result := kpaScaler.Scale(observedStableValue, observedPanicValue, now)
 		log.Printf("Scale result: Desired Pod Count = %d, Excess Burst Capacity = %d, Valid = %v", result.DesiredPodCount, result.ExcessBurstCapacity, result.ScaleValid)
 
 		// Stop if the desired pod count has increased
