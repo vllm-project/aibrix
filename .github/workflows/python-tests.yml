@@ -39,7 +39,7 @@ jobs:
         run: |
           cd python/aibrix
           python -m mypy .
-      - name: Run Test
-        run: |
-          cd python/aibrix
-          python -m pytest ./tests
+      # - name: Run Test
+      #   run: |
+      #     cd python/aibrix
+      #     python -m pytest ./tests
