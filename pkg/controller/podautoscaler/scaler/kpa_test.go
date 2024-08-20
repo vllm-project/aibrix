@@ -17,10 +17,11 @@ limitations under the License.
 package kpa
 
 import (
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
 	"log"
 	"testing"
 	"time"
+
+	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
 )
 
 func TestScale(t *testing.T) {

@@ -18,10 +18,11 @@ package kpa
 
 import (
 	"errors"
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
-	"k8s.io/klog/v2"
 	"math"
 	"time"
+
+	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
+	"k8s.io/klog/v2"
 )
 
 /**
