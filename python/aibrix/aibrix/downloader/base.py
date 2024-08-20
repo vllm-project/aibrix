@@ -1,13 +1,15 @@
-
-from concurrent.futures import ThreadPoolExecutor, wait
-from pathlib import Path
 import re
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 import time
-from typing import List, Optional, Tuple
+from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, wait
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import List, Optional
 
-from aibrix import envs, logger
+from aibrix import envs
+from aibrix.logger import init_logger
+
+logger = init_logger(__name__)
 
 
 @dataclass
@@ -15,9 +17,9 @@ class BaseDownloader(ABC):
     """Base class for downloader."""
     model_uri: str
     model_name: str
-    required_envs: Tuple[str] = field(default_factory=tuple)
-    optional_envs: Tuple[str] = field(default_factory=tuple)
-    allow_file_suffix: Tuple[str] = field(default_factory=tuple)
+    required_envs: List[str] = field(default_factory=list)
+    optional_envs: List[str] = field(default_factory=list)
+    allow_file_suffix: List[str] = field(default_factory=list)
 
     def __post_init__(self):
         # ensure downloader required envs are set
@@ -25,24 +27,24 @@ class BaseDownloader(ABC):
 
     @abstractmethod
     def _check_config(self):
-        return NotImplementedError
+        pass
     
     @abstractmethod
     def _is_directory(self) -> bool:
         """Check if model_uri is a directory."""
-        return NotImplementedError
+        pass
     
     @abstractmethod
     def _directory_list(self, path: str) -> List[str]:
-        return NotImplementedError
+        pass
     
     @abstractmethod
     def _support_range_download(self) -> bool:
-        return NotImplementedError
+        pass
     
     @abstractmethod
     def download(self, path: str, local_path: Path, enable_range: bool = True):
-        return NotImplementedError
+        pass
     
     def download_directory(self, local_path: Path):
         directory_list = self._directory_list(self.model_uri)
@@ -102,8 +104,6 @@ class BaseDownloader(ABC):
         else:
             self.download(self.model_uri, model_path)
         return model_path
-        
-        
 
 def get_downloader(model_uri: str) -> BaseDownloader:
     """Get downloader for model_uri."""

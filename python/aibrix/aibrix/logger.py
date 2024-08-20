@@ -1,8 +1,8 @@
 import logging
 import sys
-from pathlib import Path
 from logging import Logger
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 
 def _default_logging_basic_config() -> None:
