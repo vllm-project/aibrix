@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import time
 from typing import List, Optional, Tuple
 
-from ai_runtime import envs, logger
+from aibrix import envs, logger
 
 
 @dataclass
@@ -108,11 +108,11 @@ class BaseDownloader(ABC):
 def get_downloader(model_uri: str) -> BaseDownloader:
     """Get downloader for model_uri."""
     if re.match(envs.DOWNLOADER_S3_REGEX, model_uri):
-        from ai_runtime.downloader.s3 import S3Downloader
+        from aibrix.downloader.s3 import S3Downloader
         return S3Downloader(model_uri)
     elif re.match(envs.DOWNLOADER_TOS_REGEX, model_uri):
-        from ai_runtime.downloader.tos import TOSDownloader
+        from aibrix.downloader.tos import TOSDownloader
         return TOSDownloader(model_uri)
     else:
-        from ai_runtime.downloader.huggingface import HuggingFaceDownloader
+        from aibrix.downloader.huggingface import HuggingFaceDownloader
         return HuggingFaceDownloader(model_uri)

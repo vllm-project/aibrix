@@ -6,14 +6,14 @@ from logging.handlers import RotatingFileHandler
 
 
 def _default_logging_basic_config() -> None:
-    Path("/tmp/ai_runtime").mkdir(parents=True, exist_ok=True)
+    Path("/tmp/aibrix").mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         format="%(asctime)s - %(filename)s:%(lineno)d - %(funcName)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S %Z",
         handlers=[
             logging.StreamHandler(stream=sys.stdout),
             RotatingFileHandler(
-                "/tmp/ai_runtime/python.log",
+                "/tmp/aibrix/python.log",
                 maxBytes=10 * (2 ** 20),
                 backupCount=10,
             ),

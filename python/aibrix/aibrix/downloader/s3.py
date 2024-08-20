@@ -1,5 +1,5 @@
 
-from ai_runtime.downloader.base import BaseDownloader
+from aibrix.downloader.base import BaseDownloader
 
 
 class S3Downloader(BaseDownloader):

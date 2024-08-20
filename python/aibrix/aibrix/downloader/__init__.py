@@ -1,5 +1,5 @@
 from typing import Optional
-from ai_runtime.downloader.base import get_downloader
+from aibrix.downloader.base import get_downloader
 
 
 def download_model(model_uri: str, local_path: Optional[str] = None):
