@@ -25,7 +25,7 @@ import (
 )
 
 func TestScale(t *testing.T) {
-	kpaScaler, err := NewKpaScaler(5,
+	kpaScaler, err := NewKpaAutoscaler(5,
 		&DeciderSpec{
 			MaxScaleUpRate:   1.5,
 			MaxScaleDownRate: 0.75,
@@ -39,7 +39,7 @@ func TestScale(t *testing.T) {
 		time.Time{}, 10, aggregation.NewTimeWindow(30*time.Second, 1*time.Second),
 	)
 	if err != nil {
-		t.Errorf("Failed to create KpaScaler: %v", err)
+		t.Errorf("Failed to create KpaAutoscaler: %v", err)
 	}
 
 	observedStableValue := 120.0

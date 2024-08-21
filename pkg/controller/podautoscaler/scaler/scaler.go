@@ -13,23 +13,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// ReplicasScaler bundles all needed information to calculate the target amount of replicas
-type ReplicasScaler struct {
-	metricsClient  metrics.MetricsClient
-	resourceClient client.Client
-	// put necessary configuration information there.
-}
-
-func newReplicasScaler(metricsClient metrics.MetricsClient, client client.Client) *ReplicasScaler {
-	return &ReplicasScaler{
-		metricsClient:  metricsClient,
-		resourceClient: client,
-	}
-}
-
-func (c *ReplicasScaler) getReadyPodsCount(namespace string, selector labels.Selector) (int64, error) {
+func (a *Autoscaler) getReadyPodsCount(namespace string, selector labels.Selector) (int64, error) {
 	podList := &v1.PodList{}
-	if err := c.resourceClient.List(context.Background(), podList,
+	if err := a.resourceClient.List(context.Background(), podList,
 		&client.ListOptions{Namespace: namespace, LabelSelector: selector}); err != nil {
 		return 0, fmt.Errorf("unable to get pods while calculating replica count: %v", err)
 	}

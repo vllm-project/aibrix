@@ -26,11 +26,11 @@ import (
 )
 
 /**
-This implementation of the algorithm is based on both the Knative KpaScaler code and its documentation.
+This implementation of the algorithm is based on both the Knative KpaAutoscaler code and its documentation.
 
-According to Knative documentation, the KpaScaler Scale policy includes both a stable mode and a panic mode.
-If the metric usage does not exceed the panic threshold, KpaScaler tries to align the per-pod metric usage with the stable target value.
-If metric usage exceeds the panic target during the panic window, KpaScaler enters panic mode and tries to maintain the per-pod metric usage at the panic target.
+According to Knative documentation, the KpaAutoscaler Scale policy includes both a stable mode and a panic mode.
+If the metric usage does not exceed the panic threshold, KpaAutoscaler tries to align the per-pod metric usage with the stable target value.
+If metric usage exceeds the panic target during the panic window, KpaAutoscaler enters panic mode and tries to maintain the per-pod metric usage at the panic target.
 If the metric no longer exceeds the panic threshold, exit the panic mode.
 
                                                        |
@@ -47,45 +47,100 @@ If the metric no longer exceeds the panic threshold, exit the panic mode.
 
 */
 
-type KpaScaler struct {
-	scaler       *Autoscaler
+// DeciderSpec defines parameters for scaling decisions.
+type DeciderSpec struct {
+	// Maximum rate at which to scale up
+	MaxScaleUpRate float64
+	// Maximum rate at which to scale down
+	MaxScaleDownRate float64
+	// The metric used for scaling, i.e. CPU, Memory, QPS.
+	ScalingMetric string
+	// The value of scaling metric per pod that we target to maintain.
+	TargetValue float64
+	// The total value of scaling metric that a pod can maintain.
+	TotalValue float64
+	// The burst capacity that user wants to maintain without queuing at the POD level.
+	// Note, that queueing still might happen due to the non-ideal load balancing.
+	TargetBurstCapacity float64
+	// ActivationScale is the minimum, non-zero value that a service should scale to.
+	// For example, if ActivationScale = 2, when a service scaled from zero it would
+	// scale up two replicas in this case. In essence, this allows one to set both a
+	// min-scale value while also preserving the ability to scale to zero.
+	// ActivationScale must be >= 2.
+	ActivationScale int32
+
+	// TODO: Note that the following attributes are specific to Knative; but we retain them here temporarily.
+	// PanicThreshold is the threshold at which panic mode is entered. It represents
+	// a factor of the currently observed load over the panic window over the ready
+	// pods. I.e. if this is 2, panic mode will be entered if the observed metric
+	// is twice as high as the current population can handle.
+	PanicThreshold float64
+	// StableWindow is needed to determine when to exit panic mode.
+	StableWindow time.Duration
+	// ScaleDownDelay is the time that must pass at reduced concurrency before a
+	// scale-down decision is applied.
+	ScaleDownDelay time.Duration
+}
+
+// DeciderStatus is the current scale recommendation.
+type DeciderStatus struct {
+	// DesiredScale is the target number of instances that autoscaler
+	// this revision needs.
+	DesiredScale int32
+
+	// TODO: ExcessBurstCapacity might be a general attribute since it describes
+	//  how much capacity users want to keep for preparing for burst traffic.
+
+	// ExcessBurstCapacity is the difference between spare capacity
+	// (how much more load the pods in the revision deployment can take before being
+	// overloaded) and the configured target burst capacity.
+	// If this number is negative: Activator will be threaded in
+	// the request path by the PodAutoscaler controller.
+	ExcessBurstCapacity int32
+}
+
+type KpaAutoscaler struct {
+	*Autoscaler
 	panicTime    time.Time
 	maxPanicPods int32
 	delayWindow  *aggregation.TimeWindow
+	podCounter   int
+	deciderSpec  *DeciderSpec
+	Status       DeciderStatus
 }
 
-func NewKpaScaler(readyPodsCount int, spec *DeciderSpec, panicTime time.Time,
-	maxPanicPods int32, delayWindow *aggregation.TimeWindow) (*KpaScaler, error) {
+var _ Scaler = (*KpaAutoscaler)(nil)
+
+func NewKpaAutoscaler(readyPodsCount int, spec *DeciderSpec, panicTime time.Time,
+	maxPanicPods int32, delayWindow *aggregation.TimeWindow) (*KpaAutoscaler, error) {
 	if spec == nil {
 		return nil, errors.New("spec cannot be nil")
 	}
 	if delayWindow == nil {
 		return nil, errors.New("delayWindow cannot be nil")
 	}
-	scaler := &Autoscaler{
-		podCounter:  readyPodsCount,
-		deciderSpec: spec,
-	}
-	return &KpaScaler{
-		scaler:       scaler,
+	autoscaler := &Autoscaler{}
+	return &KpaAutoscaler{
+		Autoscaler:   autoscaler,
+		podCounter:   readyPodsCount,
 		panicTime:    panicTime,
 		maxPanicPods: maxPanicPods,
 		delayWindow:  delayWindow,
+		deciderSpec:  spec,
 	}, nil
 }
 
-// Scale implements Scaler interface in KpaScaler.
-func (k *KpaScaler) Scale(observedStableValue float64, observedPanicValue float64, now time.Time) ScaleResult {
+// Scale implements Scaler interface in KpaAutoscaler.
+func (k *KpaAutoscaler) Scale(observedStableValue float64, observedPanicValue float64, now time.Time) ScaleResult {
 	/**
 	`observedStableValue` and `observedPanicValue` are calculated using different window sizes in the `MetricClient`.
 	 For reference, see the KNative implementation at `pkg/autoscaler/metrics/collector.go：185`.
 	*/
-	a := k.scaler
-	a.specMux.RLock()
-	spec := a.deciderSpec
-	a.specMux.RUnlock()
+	k.specMux.RLock()
+	spec := k.deciderSpec
+	k.specMux.RUnlock()
 
-	originalReadyPodsCount := a.podCounter
+	originalReadyPodsCount := k.podCounter
 	// Use 1 if there are zero current pods.
 	readyPodsCount := math.Max(1, float64(originalReadyPodsCount))
 
@@ -110,12 +165,12 @@ func (k *KpaScaler) Scale(observedStableValue float64, observedPanicValue float6
 	desiredPanicPodCount := int32(math.Min(math.Max(dppc, maxScaleDown), maxScaleUp))
 
 	//	If ActivationScale > 1, then adjust the desired pod counts
-	if a.deciderSpec.ActivationScale > 1 {
-		if dspc > 0 && a.deciderSpec.ActivationScale > desiredStablePodCount {
-			desiredStablePodCount = a.deciderSpec.ActivationScale
+	if k.deciderSpec.ActivationScale > 1 {
+		if dspc > 0 && k.deciderSpec.ActivationScale > desiredStablePodCount {
+			desiredStablePodCount = k.deciderSpec.ActivationScale
 		}
-		if dppc > 0 && a.deciderSpec.ActivationScale > desiredPanicPodCount {
-			desiredPanicPodCount = a.deciderSpec.ActivationScale
+		if dppc > 0 && k.deciderSpec.ActivationScale > desiredPanicPodCount {
+			desiredPanicPodCount = k.deciderSpec.ActivationScale
 		}
 	}
 
