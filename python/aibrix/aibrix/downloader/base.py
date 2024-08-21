@@ -38,6 +38,7 @@ class BaseDownloader(ABC):
     def __post_init__(self):
         # ensure downloader required envs are set
         self._check_config()
+        self.model_name_path = self.model_name.replace("/", "_")
 
     @abstractmethod
     def _check_config(self):
@@ -61,6 +62,11 @@ class BaseDownloader(ABC):
         pass
     
     def download_directory(self, local_path: Path):
+        """Download directory from model_uri to local_path.
+        Overwrite the method directly when there is a corresponding download 
+        directory method for ``Downloader``. Otherwise, the following logic will be 
+        used to download the directory.
+        """
         directory_list = self._directory_list(self.model_uri)
         if len(self.allow_file_suffix) == 0:
             logger.info("All files from {self.model_uri} will be downloaded.")
@@ -107,8 +113,7 @@ class BaseDownloader(ABC):
             Path(local_path).mkdir(parents=True, exist_ok=True)
 
         # ensure model local path exists
-        model_name = self.model_name.replace("/", "_")
-        model_path = Path(local_path).joinpath(model_name)
+        model_path = Path(local_path).joinpath(self.model_name_path)
         model_path.mkdir(parents=True, exist_ok=True)
 
         # TODO check local file exists
