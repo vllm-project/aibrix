@@ -18,8 +18,8 @@ import os
 
 # Downloader Default Directory
 DOWNLOADER_LOCAL_DIR = os.getenv('DOWNLOADER_LOCAL_DIR', '"/tmp/aibrix/models/"')
-DOWNLOADER_NUM_THREADS = int(os.getenv('DOWNLOADER_NUM_THREADS', '3'))
+DOWNLOADER_NUM_THREADS = int(os.getenv('DOWNLOADER_NUM_THREADS', '2'))
 
 # Downloader Regex
 DOWNLOADER_S3_REGEX = r"^s3://"
-DOWNLOADER_TOS_REGEX = r"https://(.+?).tos-(.+?).volces.com/(.+)"  # TBD
+DOWNLOADER_TOS_REGEX = r"https://(.+?).tos-(.+?).volces.com/(.+)"
