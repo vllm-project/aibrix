@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"k8s.io/klog/v2"
+
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 
@@ -34,7 +36,7 @@ func (r restMetricsClient) GetObjectMetric(ctx context.Context, metricName strin
 }
 
 func GetMetricsFromPods(pods []corev1.Pod, metricName string, metricsPort int) ([]float64, error) {
-	var metrics []float64
+	metrics := make([]float64, 0, len(pods))
 
 	for _, pod := range pods {
 		// We should use the primary container port. In future, we can decide whether to use sidecar container's port
@@ -45,7 +47,12 @@ func GetMetricsFromPods(pods []corev1.Pod, metricName string, metricsPort int) (
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch metrics from pod %s: %v", pod.Name, err)
 		}
-		defer resp.Body.Close()
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				// Handle the error here. For example, log it or take appropriate corrective action.
+				klog.InfoS("Error closing response body:", err)
+			}
+		}()
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response from pod %s: %v", pod.Name, err)

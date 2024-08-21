@@ -49,10 +49,10 @@ func (c *ReplicasScaler) getReadyPodsCount(namespace string, selector labels.Sel
 	return int64(readyPodCount), nil
 }
 
-func groupPods(pods []*v1.Pod, metrics metrics.PodMetricsInfo, resource v1.ResourceName, cpuInitializationPeriod, delayOfInitialReadinessStatus time.Duration) (readyPodCount int, unreadyPods, missingPods, ignoredPods sets.String) {
-	missingPods = sets.NewString()
-	unreadyPods = sets.NewString()
-	ignoredPods = sets.NewString()
+func groupPods(pods []*v1.Pod, metrics metrics.PodMetricsInfo, resource v1.ResourceName, cpuInitializationPeriod, delayOfInitialReadinessStatus time.Duration) (readyPodCount int, unreadyPods, missingPods, ignoredPods sets.Set[string]) {
+	missingPods = sets.New[string]()
+	unreadyPods = sets.New[string]()
+	ignoredPods = sets.New[string]()
 
 	for _, pod := range pods {
 		if pod.DeletionTimestamp != nil || pod.Status.Phase == v1.PodFailed {
@@ -93,7 +93,7 @@ func groupPods(pods []*v1.Pod, metrics metrics.PodMetricsInfo, resource v1.Resou
 		}
 		readyPodCount++
 	}
-	return
+	return readyPodCount, unreadyPods, missingPods, ignoredPods
 }
 
 func getReadyPodsCount(ctx context.Context, podLister client.Client, namespace string, selector labels.Selector) (int64, error) {
@@ -147,7 +147,7 @@ func calculatePodRequests(pods []*v1.Pod, container string, resource v1.Resource
 	return requests, nil
 }
 
-func removeMetricsForPods(metrics metrics.PodMetricsInfo, pods sets.String) {
+func removeMetricsForPods(metrics metrics.PodMetricsInfo, pods sets.Set[string]) {
 	for _, pod := range pods.UnsortedList() {
 		delete(metrics, pod)
 	}

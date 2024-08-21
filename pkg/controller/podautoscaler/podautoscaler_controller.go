@@ -289,8 +289,6 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 			"desiredReplicas", desiredReplicas,
 			"reason", rescaleReason)
 
-	} else {
-		desiredReplicas = currentReplicas
 	}
 
 	if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {

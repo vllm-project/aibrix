@@ -41,4 +41,4 @@ linters:
     - typecheck
     - unconvert
 #    - unparam
-    - unused
+#    - unused
