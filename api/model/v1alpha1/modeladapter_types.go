@@ -85,8 +85,10 @@ const (
 	ModelAdapterConditionCleanup             ModelAdapterConditionType = "Cleanup"
 )
 
-//+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
+// +genclient
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ModelAdapter is the Schema for the modeladapters API
 type ModelAdapter struct {
@@ -97,7 +99,7 @@ type ModelAdapter struct {
 	Status ModelAdapterStatus `json:"status,omitempty"`
 }
 
-//+kubebuilder:object:root=true
+// +kubebuilder:object:root=true
 
 // ModelAdapterList contains a list of ModelAdapter
 type ModelAdapterList struct {

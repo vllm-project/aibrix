@@ -26,8 +26,10 @@ import (
 // INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 // Important: Run "make" to regenerate code after modifying this file
 
-//+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
+// +genclient
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // PodAutoscaler is the Schema for the podautoscalers API, a resource to scale Kubernetes pods based on observed metrics.
 // The fields in the spec determine how the scaling behavior should be applied.
@@ -118,7 +120,7 @@ type PodAutoscalerStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-//+kubebuilder:object:root=true
+// +kubebuilder:object:root=true
 
 // PodAutoscalerList contains a list of PodAutoscaler
 type PodAutoscalerList struct {

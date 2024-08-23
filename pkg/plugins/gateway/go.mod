@@ -1,4 +1,4 @@
-module github.com/aibrix/aibrix/pkg/plugins/ratelimiter
+module github.com/aibrix/aibrix/pkg/plugins/gateway
 
 go 1.22.0
 
