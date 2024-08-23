@@ -32,17 +32,17 @@ class BaseDownloader(ABC):
 
     model_uri: str
     model_name: str
-    required_envs: List[str] = field(default_factory=list)
-    optional_envs: List[str] = field(default_factory=list)
-    allow_file_suffix: List[str] = field(default_factory=list)
+    allow_file_suffix: Optional[List[str]] = field(
+        default_factory=lambda: envs.DOWNLOADER_ALLOW_FILE_SUFFIX
+    )
 
     def __post_init__(self):
-        # ensure downloader required envs are set
-        self._check_config()
+        # valid downloader config
+        self._valid_config()
         self.model_name_path = self.model_name.replace("/", "_")
 
     @abstractmethod
-    def _check_config(self):
+    def _valid_config(self):
         pass
 
     @abstractmethod
@@ -59,7 +59,7 @@ class BaseDownloader(ABC):
         pass
 
     @abstractmethod
-    def download(self, path: str, local_path: Path, enable_range: bool = True):
+    def download(self, filename: str, local_path: Path, enable_range: bool = True):
         pass
 
     def download_directory(self, local_path: Path):
@@ -69,8 +69,8 @@ class BaseDownloader(ABC):
         used to download the directory.
         """
         directory_list = self._directory_list(self.model_uri)
-        if len(self.allow_file_suffix) == 0:
-            logger.info("All files from {self.model_uri} will be downloaded.")
+        if self.allow_file_suffix is None:
+            logger.info(f"All files from {self.model_uri} will be downloaded.")
             filtered_files = directory_list
         else:
             filtered_files = [
@@ -91,7 +91,10 @@ class BaseDownloader(ABC):
             executor = ThreadPoolExecutor(num_threads)
             futures = [
                 executor.submit(
-                    self.download, path=file, local_path=local_path, enable_range=False
+                    self.download,
+                    filename=file,
+                    local_path=local_path,
+                    enable_range=False,
                 )
                 for file in filtered_files
             ]
@@ -117,7 +120,7 @@ class BaseDownloader(ABC):
                 f"duration: {duration:.2f} seconds."
             )
 
-    def download_model(self, local_path: Optional[str]):
+    def download_model(self, local_path: Optional[str] = None):
         if local_path is None:
             local_path = envs.DOWNLOADER_LOCAL_DIR
             Path(local_path).mkdir(parents=True, exist_ok=True)
@@ -132,6 +135,10 @@ class BaseDownloader(ABC):
             self.download_directory(model_path)
         else:
             self.download(self.model_uri, model_path)
+
+        # create completed file to indicate download completed
+        completed_file = model_path.joinpath(".completed")
+        completed_file.touch()
         return model_path
 
 

@@ -22,7 +22,7 @@ class S3Downloader(BaseDownloader):
     def __init__(self, model_uri):
         super().__init__(model_uri)
 
-    def _check_config(self):
+    def _valid_config(self):
         pass
 
     def _is_directory(self) -> bool:
@@ -35,5 +35,5 @@ class S3Downloader(BaseDownloader):
     def _support_range_download(self) -> bool:
         return True
 
-    def download(self, path: str, local_path: Path, enable_range: bool = True):
+    def download(self, filename: str, local_path: Path, enable_range: bool = True):
         pass
