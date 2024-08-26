@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import List
@@ -18,6 +19,7 @@ from urllib.parse import urlparse
 
 import boto3
 from boto3.s3.transfer import TransferConfig
+from tqdm import tqdm
 
 from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
@@ -93,7 +95,7 @@ class S3Downloader(BaseDownloader):
 
         # check if file exist
         try:
-            self.client.head_object(Bucket=self.bucket_name, Key=filename)
+            meta_data = self.client.head_object(Bucket=self.bucket_name, Key=filename)
         except Exception as e:
             raise ValueError(f"TOS file {filename} not exist for {e}.")
 
@@ -114,6 +116,16 @@ class S3Downloader(BaseDownloader):
         config = TransferConfig(**config_kwargs)
 
         # download file
-        self.client.download_file(
-            Bucket=self.bucket_name, Key=filename, Filename=local_file, Config=config
-        )
+        total_length = int(meta_data.get("ContentLength", 0))
+        with tqdm(total=total_length, unit="b", unit_scale=True) as pbar:
+
+            def download_progress(bytes_transferred):
+                pbar.update(bytes_transferred)
+
+            self.client.download_file(
+                Bucket=self.bucket_name,
+                Key=filename,
+                Filename=local_file,
+                Config=config,
+                Callback=download_progress,
+            )

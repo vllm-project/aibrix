@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 import re
 from functools import cached_property, lru_cache
 from pathlib import Path
@@ -18,9 +19,14 @@ from typing import List, Tuple
 from urllib.parse import urlparse
 
 import tos
+from tos import DataTransferType
+from tqdm import tqdm
 
 from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
+
+tos_logger = logging.getLogger("tos")
+tos_logger.setLevel(logging.WARNING)
 
 
 def _parse_bucket_info_from_uri(model_uri: str) -> Tuple[str, str, str, str]:
@@ -95,7 +101,7 @@ class TOSDownloader(BaseDownloader):
 
         # check if file exist
         try:
-            self.client.head_object(bucket=self.bucket_name, key=filename)
+            meta_data = self.client.head_object(bucket=self.bucket_name, key=filename)
         except Exception as e:
             raise ValueError(f"TOS file {filename} not exist for {e}.")
 
@@ -107,12 +113,21 @@ class TOSDownloader(BaseDownloader):
         download_kwargs = {}
         if envs.DOWNLOADER_PART_THRESHOLD is not None:
             download_kwargs["multipart_threshold"] = envs.DOWNLOADER_PART_THRESHOLD
- 
+
         # download file
-        self.client.download_file(
-            bucket=self.bucket_name,
-            key=filename,
-            file_path=local_file,
-            task_num=task_num,
-            **download_kwargs
-        )
+        total_length = meta_data.content_length
+        with tqdm(total=total_length, unit="b", unit_scale=True) as pbar:
+
+            def download_progress(
+                consumed_bytes, total_bytes, rw_once_bytes, type: DataTransferType
+            ):
+                pbar.update(rw_once_bytes)
+
+            self.client.download_file(
+                bucket=self.bucket_name,
+                key=filename,
+                file_path=local_file,
+                task_num=task_num,
+                data_transfer_listener=download_progress,
+                **download_kwargs,
+            )
