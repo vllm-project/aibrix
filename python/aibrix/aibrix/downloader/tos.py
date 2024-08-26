@@ -13,7 +13,7 @@
 # limitations under the License.
 import logging
 import re
-from functools import cached_property, lru_cache
+from functools import lru_cache
 from pathlib import Path
 from typing import List, Tuple
 from urllib.parse import urlparse
