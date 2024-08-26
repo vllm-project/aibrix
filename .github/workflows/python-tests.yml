@@ -31,6 +31,7 @@ jobs:
         run: |
           cd python/aibrix
           python -m ruff check .
+          python -m ruff format --check . 
       - name: Run isort
         run: |
           cd python/aibrix
