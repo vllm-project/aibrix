@@ -19,8 +19,9 @@ package podautoscaler
 import (
 	"context"
 	"fmt"
-	appsv1 "k8s.io/api/apps/v1"
 	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
 
 	scaler "github.com/aibrix/aibrix/pkg/controller/podautoscaler/scaler"
 
@@ -228,7 +229,7 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 		minReplicas = 1
 	}
 
-	rescale := true
+	rescale := true //nolint:ineffassign
 	r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "KPAAlgorithmRun",
 		"KPA algorithm run. desiredReplicas: %d, currentReplicas: %d",
 		desiredReplicas, currentReplicas)
@@ -238,7 +239,7 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 	if currentReplicas == int32(0) && minReplicas != 0 {
 		// if the replica is 0, then we should not enable autoscaling
 		desiredReplicas = 0
-		rescale = false
+		rescale = false //nolint:ineffassign
 	} else if currentReplicas > pa.Spec.MaxReplicas {
 		desiredReplicas = pa.Spec.MaxReplicas
 	} else if currentReplicas < minReplicas {
@@ -284,13 +285,14 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 		if desiredReplicas < currentReplicas {
 			rescaleReason = "All metrics below target"
 		}
-		rescale = desiredReplicas != currentReplicas
+		rescale = desiredReplicas != currentReplicas //nolint:ineffassign,staticcheck
 	}
 
 	r.EventRecorder.Event(&pa, corev1.EventTypeWarning, "PipelineWIP", "We set rescale=False temporarily to skip scaling action")
 
 	// TODO: Remove the following line after debugging metrics, algorithm, and scaling actions is complete.
-	rescale = false
+	//  After completion, remember to delete all `nolint:ineffassign`
+	rescale = false //nolint:ineffassign
 
 	if rescale {
 		scale.Spec.Replicas = &desiredReplicas
