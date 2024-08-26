@@ -9,6 +9,7 @@ readme = "README.md"
 python = "^3.11"
 huggingface-hub = "^0.24.6"
 tos = "^2.7.1"
+boto3 = "^1.35.5"
 
 
 [tool.poetry.group.dev.dependencies]

@@ -92,9 +92,6 @@ class TOSDownloader(BaseDownloader):
         # filename should extract from model_uri when it is not a directory
         if not self._is_directory():
             filename = self.bucket_path
-        _file_name = filename.split("/")[-1]
-        # TOS client does not support Path, convert it to str
-        local_file = str(local_path.joinpath(_file_name).absolute())
 
         # check if file exist
         try:
@@ -102,14 +99,20 @@ class TOSDownloader(BaseDownloader):
         except Exception as e:
             raise ValueError(f"TOS file {filename} not exist for {e}.")
 
-        if not enable_range:
-            self.client.get_object_to_file(
-                bucket=self.bucket_name, key=filename, file_path=local_file
-            )
-        else:
-            self.client.download_file(
-                bucket=self.bucket_name,
-                key=filename,
-                file_path=local_file,
-                task_num=envs.DOWNLOADER_NUM_THREADS,
-            )
+        _file_name = filename.split("/")[-1]
+        # TOS client does not support Path, convert it to str
+        local_file = str(local_path.joinpath(_file_name).absolute())
+        task_num = envs.DOWNLOADER_NUM_THREADS if enable_range else 1
+
+        download_kwargs = {}
+        if envs.DOWNLOADER_PART_THRESHOLD is not None:
+            download_kwargs["multipart_threshold"] = envs.DOWNLOADER_PART_THRESHOLD
+ 
+        # download file
+        self.client.download_file(
+            bucket=self.bucket_name,
+            key=filename,
+            file_path=local_file,
+            task_num=task_num,
+            **download_kwargs
+        )

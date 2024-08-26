@@ -134,12 +134,19 @@ class BaseDownloader(ABC):
         if self._is_directory():
             self.download_directory(model_path)
         else:
-            self.download(self.model_uri, model_path)
+            self.download(
+                filename=self.model_uri,
+                local_path=model_path,
+                enable_range=self._support_range_download(),
+            )
 
         # create completed file to indicate download completed
         completed_file = model_path.joinpath(".completed")
         completed_file.touch()
         return model_path
+
+    def __hash__(self):
+        return hash(tuple(self.__dict__))
 
 
 def get_downloader(model_uri: str) -> BaseDownloader:
