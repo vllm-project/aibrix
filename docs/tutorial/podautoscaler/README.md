@@ -7,10 +7,15 @@ adjusts the number of replicas for an Nginx service based on CPU utilization.
 
 ## Start 1: Build and Run Local
 
-First, build and install the Custom Resource Definitions (CRDs) for AIBrix:
+Go into the root directory:
 
 ```shell
 cd $AIBrix_HOME
+```
+
+First, build and install the Custom Resource Definitions (CRDs) for AIBrix:
+
+```shell
 
 make manifests && make build && make install
 ```
@@ -59,6 +64,13 @@ check the deployed manager logs:
 kubectl get pods -n aibrix-system -o name | grep aibrix-controller-manager | head -n 1 | xargs -I {} kubectl logs {} -n aibrix-system
 ```
 
+
+Or you can add `-f` to watch manager's logs continuously:
+
+```shell
+kubectl get pods -n aibrix-system -o name | grep aibrix-controller-manager | head -n 1 | xargs -I {} kubectl logs -f {} -n aibrix-system
+```
+
 Expected output (no warnings, no errors):
 
 ```log
@@ -85,6 +97,8 @@ The AIBrix-pa will automatically create a corresponding Horizontal Pod Autoscale
 kubectl apply -f config/samples/autoscaling_v1alpha1_demo_nginx.yaml
 # Create AIBrix-pa
 kubectl apply -f config/samples/autoscaling_v1alpha1_podautoscaler.yaml
+
+kubectl apply -f config/samples/autoscaling_v1alpha1_kpa.yaml
 ```
 
 After applying the configurations, you should see:
@@ -154,6 +168,7 @@ To clean up the resources:
 ```shell
 # Remove AIBrix resources
 kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example
+kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example-kpa
 
 make uninstall && make undeploy
 
