@@ -20,15 +20,13 @@ import (
 	"log"
 	"testing"
 	"time"
-
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
 )
 
 func TestScale(t *testing.T) {
-	kpaScaler, err := NewKpaAutoscaler(5,
-		&DeciderSpec{
+	kpaScaler, err := NewKpaAutoscaler(10,
+		&DeciderKpaSpec{
 			MaxScaleUpRate:   1.5,
-			MaxScaleDownRate: 0.75,
+			MaxScaleDownRate: 2,
 			TargetValue:      100,
 			TotalValue:       500,
 			PanicThreshold:   2.0,
@@ -36,7 +34,6 @@ func TestScale(t *testing.T) {
 			ScaleDownDelay:   1 * time.Minute,
 			ActivationScale:  2,
 		},
-		time.Time{}, 10, aggregation.NewTimeWindow(30*time.Second, 1*time.Second),
 	)
 	if err != nil {
 		t.Errorf("Failed to create KpaAutoscaler: %v", err)

@@ -31,7 +31,7 @@ Our implementation specifically mimics and adapts the autoscaling functionality 
 
 - autoscaler:		pkg/autoscaler/scaling/autoscaler.go
 - Scaler(interface):	pkg/autoscaler/scaling/autoscaler.go
-- DeciderSpec:		pkg/autoscaler/scaling/multiscaler.go
+- DeciderKpaSpec:		pkg/autoscaler/scaling/multiscaler.go
 - ScaleResult:		pkg/autoscaler/scaling/multiscaler.go
 
 */
@@ -40,7 +40,7 @@ Our implementation specifically mimics and adapts the autoscaling functionality 
 // It encapsulates all the necessary data and state needed for scaling decisions.
 // Refer to:  KpaAutoscaler
 type Autoscaler struct {
-	// specMux guards the current DeciderSpec.
+	// specMux guards the current DeciderKpaSpec.
 	specMux        sync.RWMutex
 	metricsClient  metrics.MetricsClient
 	resourceClient client.Client

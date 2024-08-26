@@ -5,7 +5,7 @@ adjusts the number of replicas for an Nginx service based on CPU utilization.
 
 # Build CRDs and Run Manager
 
-## Start 1: Build and Run Local
+## Compile, Build Docker or Run Local
 
 Go into the root directory:
 
@@ -87,7 +87,7 @@ Expected output (no warnings, no errors):
 ```
 
 
-# Create the Demo App and AIBrix PodAutoscaler
+# Case 1: Create HPA-based AIBrix PodAutoscaler to scale the Demo Nginx App 
 
 Deploy an Nginx application and an AIBrix-pa designed to maintain the CPU usage of the Nginx pods below 10%. 
 The AIBrix-pa will automatically create a corresponding Horizontal Pod Autoscaler (HPA) to achieve this target.
@@ -97,8 +97,6 @@ The AIBrix-pa will automatically create a corresponding Horizontal Pod Autoscale
 kubectl apply -f config/samples/autoscaling_v1alpha1_demo_nginx.yaml
 # Create AIBrix-pa
 kubectl apply -f config/samples/autoscaling_v1alpha1_podautoscaler.yaml
-
-kubectl apply -f config/samples/autoscaling_v1alpha1_kpa.yaml
 ```
 
 After applying the configurations, you should see:
@@ -161,7 +159,91 @@ The expected output is as follows:
 Note: The reactive speed of the default HPA is limited; AIBrix plans to optimize this in future releases.
 
 
-## Cleanup
+
+## Apply Pressure to See the Effect
+
+Use a simple workload generator to increase load:
+
+```shell
+kubectl run load-generator --image=busybox -- /bin/sh -c "while true; do wget -q -O- http://nginx-service.default.svc.cluster.local; done"
+```
+
+The CPU usage of Nginx will increase to above 40%. After about 30 seconds,
+you should observe an increase in the number of Nginx replicas:
+
+```shell
+kubectl get pods
+```
+
+The expected output is as follows:
+
+```log
+>>> NAME                                READY   STATUS    RESTARTS   AGE
+>>> load-generator                      1/1     Running   0          86s
+>>> nginx-deployment-5b85cc87b7-gr94j   1/1     Running   0          56s
+>>> nginx-deployment-5b85cc87b7-lwqqk   1/1     Running   0          56s
+>>> nginx-deployment-5b85cc87b7-q2gmp   1/1     Running   0          4m33s
+```
+
+Note: The reactive speed of the default HPA is limited; AIBrix plans to optimize this in future releases.
+
+
+# [WIP] Case 2: Create KPA-based AIBrix PodAutoscaler
+
+Create Nginx App:
+```shell
+kubectl apply -f config/samples/autoscaling_v1alpha1_demo_nginx.yaml
+```
+
+Create an autoscaler with type of KPA:
+```shell
+kubectl apply -f config/samples/autoscaling_v1alpha1_kpa.yaml
+```
+
+You can see the kpa scaler has been created:
+
+```shell
+kubectl get podautoscalers --all-namespaces
+```
+
+```log
+>>> NAMESPACE   NAME                    AGE
+>>> default     podautoscaler-example-kpa   5m1s
+```
+
+You can see logs like `KPA algorithm run...` in `aibrix-controller-manager`:
+
+```shell
+kubectl get pods -n aibrix-system -o name | grep aibrix-controller-manager | head -n 1 | xargs -I {} kubectl logs {} -n aibrix-system
+```
+
+```log
+deployment nginx-deployment does not have a model, labels: map[]
+I0826 08:47:48.965426       1 kpa.go:247] "Operating in stable mode."
+2024-08-26T08:47:48Z	DEBUG	events	KPA algorithm run. desiredReplicas: 0, currentReplicas: 1	{"type": "Normal", "object": {"kind":"PodAutoscaler","namespace":"default","name":"podautoscaler-example-kpa","uid":"a76f80e6-bdeb-462f-85c1-97192005d9fb","apiVersion":"autoscaling.aibrix.ai/v1alpha1","resourceVersion":"2245812"}, "reason": "KPAAlgorithmRun"}
+2024-08-26T08:47:48Z	DEBUG	events	We set rescale=False temporarily to skip scaling action	{"type": "Warning", "object": {"kind":"PodAutoscaler","namespace":"default","name":"podautoscaler-example-kpa","uid":"a76f80e6-bdeb-462f-85c1-97192005d9fb","apiVersion":"autoscaling.aibrix.ai/v1alpha1","resourceVersion":"2245812"}, "reason": "PipelineWIP"}
+I0826 08:47:48.968666       1 kpa.go:247] "Operating in stable mode."
+2024-08-26T08:47:48Z	DEBUG	events	KPA algorithm run. desiredReplicas: 0, currentReplicas: 1	{"type": "Normal", "object": {"kind":"PodAutoscaler","namespace":"default","name":"podautoscaler-example-kpa","uid":"a76f80e6-bdeb-462f-85c1-97192005d9fb","apiVersion":"autoscaling.aibrix.ai/v1alpha1","resourceVersion":"2245814"}, "reason": "KPAAlgorithmRun"}
+2024-08-26T08:47:48Z	DEBUG	events	We set rescale=False temporarily to skip scaling action	{"type": "Warning", "object": {"kind":"PodAutoscaler","namespace":"default","name":"podautoscaler-example-kpa","uid":"a76f80e6-bdeb-462f-85c1-97192005d9fb","apiVersion":"autoscaling.aibrix.ai/v1alpha1","resourceVersion":"2245814"}, "reason": "PipelineWIP"}
+```
+
+
+
+Some logs from `podautoscaler-example-kpa` are shown below, where you can observe events like `KPAAlgorithmRun` and `PipelineWIP`:
+
+```shell
+kubectl describe podautoscalers podautoscaler-example-kpa
+```
+```log
+Events:
+  Type     Reason           Age                    From           Message
+  ----     ------           ----                   ----           -------
+  Normal   KPAAlgorithmRun  6m15s (x2 over 6m15s)  PodAutoscaler  KPA algorithm run. desiredReplicas: 0, currentReplicas: 1
+  Warning  PipelineWIP      6m15s (x2 over 6m15s)  PodAutoscaler  We set rescale=False temporarily to skip scaling action
+```
+
+
+# Cleanup
 
 To clean up the resources:
 
