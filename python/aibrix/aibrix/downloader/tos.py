@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import re
+from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import List, Tuple
 from urllib.parse import urlparse
@@ -50,23 +51,31 @@ class TOSDownloader(BaseDownloader):
         super().__init__(model_uri=model_uri, model_name=model_name)  # type: ignore
 
     def _valid_config(self):
-        assert self.bucket_name is not None, "TOS bucket name is not set."
-        assert self.bucket_path is not None, "TOS bucket path is not set."
-        assert self.bucket_path.endswith("/"), "TOS bucket path must end with /."
-        # TODO 检查 bucket 是否存在
+        assert (
+            self.bucket_name is not None or self.bucket_name == ""
+        ), "TOS bucket name is not set."
+        assert (
+            self.bucket_path is not None or self.bucket_path == ""
+        ), "TOS bucket path is not set."
         try:
             self.client.head_bucket(self.bucket_name)
         except Exception as e:
             assert False, f"TOS bucket {self.bucket_name} not exist for {e}."
 
+    @lru_cache()
     def _is_directory(self) -> bool:
         """Check if model_uri is a directory."""
+        if self.bucket_path.endswith("/"):
+            return True
         objects_out = self.client.list_objects_type2(
             self.bucket_name, prefix=self.bucket_path, delimiter="/"
         )
-        if len(objects_out.contents) > 0:
-            return True
-        return False
+        if (
+            len(objects_out.contents) == 1
+            and objects_out.contents[0].key == self.bucket_path
+        ):
+            return False
+        return True
 
     def _directory_list(self, path: str) -> List[str]:
         # TODO cache list_objects_type2 result to avoid too many requests
@@ -80,6 +89,9 @@ class TOSDownloader(BaseDownloader):
         return True
 
     def download(self, filename: str, local_path: Path, enable_range: bool = True):
+        # filename should extract from model_uri when it is not a directory
+        if not self._is_directory():
+            filename = self.bucket_path
         _file_name = filename.split("/")[-1]
         # TOS client does not support Path, convert it to str
         local_file = str(local_path.joinpath(_file_name).absolute())
