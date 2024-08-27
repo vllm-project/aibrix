@@ -5,6 +5,7 @@ resources:
 - bases/autoscaling.aibrix.ai_podautoscalers.yaml
 - bases/model.aibrix.ai_modeladapters.yaml
 - bases/orchestration.aibrix.ai_rayclusterreplicasets.yaml
+- bases/orchestration.aibrix.ai_rayclusterfleets.yaml
 #+kubebuilder:scaffold:crdkustomizeresource
 
 patches:
@@ -17,6 +18,7 @@ patches:
 #- path: patches/cainjection_in_autoscaling_podautoscalers.yaml
 #- path: patches/cainjection_in_model_modeladapters.yaml
 #- path: patches/cainjection_in_orchestration_rayclusterreplicasets.yaml
+#- path: patches/cainjection_in_orchestration_rayclusterfleets.yaml
 #+kubebuilder:scaffold:crdkustomizecainjectionpatch
 
 # [WEBHOOK] To enable webhook, uncomment the following section
