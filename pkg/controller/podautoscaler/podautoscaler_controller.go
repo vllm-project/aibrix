@@ -21,7 +21,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/scaler"
+	appsv1 "k8s.io/api/apps/v1"
+
+	scaler "github.com/aibrix/aibrix/pkg/controller/podautoscaler/scaler"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -33,11 +35,9 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
-	corev1 "k8s.io/api/core/v1"
-
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	podutils "github.com/aibrix/aibrix/pkg/utils"
-	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -68,6 +68,22 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 		EventRecorder: mgr.GetEventRecorderFor("PodAutoscaler"),
 		Mapper:        mgr.GetRESTMapper(),
 	}
+
+	// During initialization, KNative passes a podCounter, which may be non-zero if the Scale object already exists.
+	// We currently set the podCounter (readyPodsCount) to 0.
+	// Refer to: pkg/autoscaler/scaling/autoscaler.go:82, function newAutoscaler.
+	kpaScaler, err := scaler.NewKpaAutoscaler(
+		0,
+		// TODO: The following parameters are specific to KPA.
+		//  We use default values based on KNative settings to quickly establish a fully functional workflow.
+		// refer to https://github.com/knative/serving/blob/b6e6baa6dc6697d0e7ddb3a12925f329a1f5064c/config/core/configmaps/autoscaler.yaml#L27
+		scaler.NewDefaultDeciderKpaSpec(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	reconciler.Autoscaler = kpaScaler
+
 	return reconciler, nil
 }
 
@@ -99,6 +115,7 @@ type PodAutoscalerReconciler struct {
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers/finalizers,verbs=update
 //+kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch;update
 
 // Reconcile is part of the main Kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state as specified by
@@ -216,7 +233,7 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 	setCondition(&pa, "AbleToScale", metav1.ConditionTrue, "SucceededGetScale", "the HPA controller was able to get the target's current scale")
 
 	// current scale's replica count
-	currentReplicas := scale.Spec.Replicas
+	currentReplicas := *scale.Spec.Replicas
 	// desired replica count
 	desiredReplicas := int32(0)
 	rescaleReason := ""
@@ -228,19 +245,22 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 		minReplicas = 1
 	}
 
-	rescale := true
+	rescale := true //nolint:ineffassign
+	r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "KPAAlgorithmRun",
+		"KPA algorithm run. desiredReplicas: %d, currentReplicas: %d",
+		desiredReplicas, currentReplicas)
+
 	logger := klog.FromContext(ctx)
 
-	if scale.Spec.Replicas == int32(0) && minReplicas != 0 {
+	if currentReplicas == int32(0) && minReplicas != 0 {
 		// if the replica is 0, then we should not enable autoscaling
 		desiredReplicas = 0
-		rescale = false
+		rescale = false //nolint:ineffassign
 	} else if currentReplicas > pa.Spec.MaxReplicas {
 		desiredReplicas = pa.Spec.MaxReplicas
 	} else if currentReplicas < minReplicas {
 		desiredReplicas = minReplicas
 	} else {
-		// TODO: fix the compute replicas interface.
 		metricDesiredReplicas, metricName, metricTimestamp, err := r.computeReplicasForMetrics(ctx, pa, scale)
 		if err != nil && metricDesiredReplicas == -1 {
 			r.setCurrentReplicasAndMetricsInStatus(&pa, currentReplicas)
@@ -268,11 +288,17 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 		if desiredReplicas < currentReplicas {
 			rescaleReason = "All metrics below target"
 		}
-		rescale = desiredReplicas != currentReplicas
+		rescale = desiredReplicas != currentReplicas //nolint:ineffassign,staticcheck
 	}
 
+	r.EventRecorder.Event(&pa, corev1.EventTypeWarning, "PipelineWIP", "We set rescale=False temporarily to skip scaling action")
+
+	// TODO: Remove the following line after debugging metrics, algorithm, and scaling actions is complete.
+	//  After completion, remember to delete all `nolint:ineffassign`
+	rescale = false //nolint:ineffassign
+
 	if rescale {
-		scale.Spec.Replicas = desiredReplicas
+		scale.Spec.Replicas = &desiredReplicas
 		r.EventRecorder.Eventf(&pa, corev1.EventTypeWarning, "FailedRescale", "New size: %d; reason: %s; error: %v", desiredReplicas, rescaleReason, err.Error())
 		setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedUpdateScale", "the HPA controller was unable to update the target scale: %v", err)
 		r.setCurrentReplicasAndMetricsInStatus(&pa, currentReplicas)
@@ -314,15 +340,14 @@ func (r *PodAutoscalerReconciler) reconcileAPA(ctx context.Context, pa autoscali
 // scaleForResourceMappings attempts to fetch the scale for the resource with the given name and namespace,
 // trying each RESTMapping in turn until a working one is found.  If none work, the first error is returned.
 // It returns both the scale, as well as the group-resource from the working mapping.
-func (r *PodAutoscalerReconciler) scaleForResourceMappings(ctx context.Context, namespace, name string, mappings []*apimeta.RESTMapping) (*autoscalingv1.Scale, schema.GroupResource, error) {
+func (r *PodAutoscalerReconciler) scaleForResourceMappings(ctx context.Context, namespace, name string, mappings []*apimeta.RESTMapping) (*appsv1.Deployment, schema.GroupResource, error) {
 	var firstErr error
 	for i, mapping := range mappings {
 		targetGR := mapping.Resource.GroupResource()
-		scale := &autoscalingv1.Scale{}
-		key := client.ObjectKey{Namespace: namespace, Name: name}
-		err := r.Get(ctx, key, scale)
+		deployment := &appsv1.Deployment{}
+		err := r.Get(context.TODO(), types.NamespacedName{Namespace: namespace, Name: name}, deployment)
 		if err == nil {
-			return scale, targetGR, nil
+			return deployment, targetGR, nil
 		}
 
 		if firstErr == nil {
@@ -344,7 +369,7 @@ func (r *PodAutoscalerReconciler) scaleForResourceMappings(ctx context.Context, 
 	return nil, schema.GroupResource{}, firstErr
 }
 
-func (r *PodAutoscalerReconciler) updateScale(ctx context.Context, namespace string, targetGR schema.GroupResource, scale *autoscalingv1.Scale) error {
+func (r *PodAutoscalerReconciler) updateScale(ctx context.Context, namespace string, targetGR schema.GroupResource, scale *appsv1.Deployment) error {
 	// Get GVK
 	gvk, err := apiutil.GVKForObject(scale, r.Client.Scheme())
 	if err != nil {
@@ -420,9 +445,23 @@ func (r *PodAutoscalerReconciler) updateStatus(ctx context.Context, pa *autoscal
 // It may return both valid metricDesiredReplicas and an error,
 // when some metrics still work and HPA should perform scaling based on them.
 // If PodAutoscaler cannot do anything due to error, it returns -1 in metricDesiredReplicas as a failure signal.
-func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *autoscalingv1.Scale) (replicas int32, metrics string, timestamp time.Time, err error) {
+func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *appsv1.Deployment) (replicas int32, metrics string, timestamp time.Time, err error) {
 	currentTimestamp := time.Now()
-	scaleResult := r.Autoscaler.Scale(0, 0, currentTimestamp)
+	// Retrieve the count of ready pods based on the label selector.
+	labelSelector, err := metav1.LabelSelectorAsSelector(scale.Spec.Selector)
+	if err != nil {
+		return 0, "", currentTimestamp, fmt.Errorf("error converting label selector: %w", err)
+	}
+	originalReadyPodsCount, err := scaler.GetReadyPodsCount(ctx, r.Client, scale.Namespace, labelSelector)
+	if err != nil {
+		return 0, "", currentTimestamp, fmt.Errorf("error getting ready pods count: %w", err)
+	}
+
+	// TODO: Complete the remaining items - Retrieve the following metrics from metricClient:
+	//  1. observedStableValue: Average over the past stableWindow period.
+	//  2. observedPanicValue: Average over the past panicWindow period.
+	// Calculate the desired number of pods using the autoscaler logic.
+	scaleResult := r.Autoscaler.Scale(int(originalReadyPodsCount), 0, 0, currentTimestamp)
 	if scaleResult.ScaleValid {
 		return scaleResult.DesiredPodCount, "", currentTimestamp, nil
 	}

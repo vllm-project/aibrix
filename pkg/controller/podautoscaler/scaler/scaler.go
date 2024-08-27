@@ -98,7 +98,7 @@ func groupPods(pods []*v1.Pod, metrics metrics.PodMetricsInfo, resource v1.Resou
 	return readyPodCount, unreadyPods, missingPods, ignoredPods
 }
 
-func getReadyPodsCount(ctx context.Context, podLister client.Client, namespace string, selector labels.Selector) (int64, error) {
+func GetReadyPodsCount(ctx context.Context, podLister client.Client, namespace string, selector labels.Selector) (int64, error) {
 	podList := &v1.PodList{}
 
 	err := podLister.List(ctx, podList, &client.ListOptions{

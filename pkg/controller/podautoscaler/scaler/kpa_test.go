@@ -20,15 +20,14 @@ import (
 	"log"
 	"testing"
 	"time"
-
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
 )
 
 func TestScale(t *testing.T) {
-	kpaScaler, err := NewKpaAutoscaler(5,
-		&DeciderSpec{
+	readyPodCount := 10
+	kpaScaler, err := NewKpaAutoscaler(10,
+		&DeciderKpaSpec{
 			MaxScaleUpRate:   1.5,
-			MaxScaleDownRate: 0.75,
+			MaxScaleDownRate: 2,
 			TargetValue:      100,
 			TotalValue:       500,
 			PanicThreshold:   2.0,
@@ -36,7 +35,6 @@ func TestScale(t *testing.T) {
 			ScaleDownDelay:   1 * time.Minute,
 			ActivationScale:  2,
 		},
-		time.Time{}, 10, aggregation.NewTimeWindow(30*time.Second, 1*time.Second),
 	)
 	if err != nil {
 		t.Errorf("Failed to create KpaAutoscaler: %v", err)
@@ -50,7 +48,7 @@ func TestScale(t *testing.T) {
 	for range ticker.C {
 		now := time.Now()
 		log.Printf("Scaling evaluation at %s", now)
-		result := kpaScaler.Scale(observedStableValue, observedPanicValue, now)
+		result := kpaScaler.Scale(readyPodCount, observedStableValue, observedPanicValue, now)
 		log.Printf("Scale result: Desired Pod Count = %d, Excess Burst Capacity = %d, Valid = %v", result.DesiredPodCount, result.ExcessBurstCapacity, result.ScaleValid)
 
 		// Stop if the desired pod count has increased
