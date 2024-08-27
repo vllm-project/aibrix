@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"strings"
 	"sync"
 
@@ -238,25 +237,16 @@ func (c *Cache) debugInfo() {
 	}
 }
 
-func (c *Cache) SelectPodWithLeastModelAdapters(pods []v1.Pod) (*v1.Pod, error) {
-	modelAdapterCountMin := math.MaxInt
-	selectedPod := &v1.Pod{}
+func (c *Cache) GetPods() map[string]*v1.Pod {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
-	c.debugInfo()
+	return c.pods
+}
 
-	for _, pod := range pods {
-		if _, ok := c.pods[pod.Name]; !ok {
-			return nil, errors.New("pod not found in the cache")
-		}
+func (c *Cache) GetPodToModelAdapterMapping() map[string]map[string]struct{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
-		modelAdapters := c.podToModelAdapterMapping[pod.Name]
-		if len(modelAdapters) < modelAdapterCountMin {
-			selectedPod = &pod
-			modelAdapterCountMin = len(modelAdapters)
-		}
-	}
-
-	klog.Infof("pod selected with least model adapters: %s", selectedPod.Name)
-
-	return selectedPod, nil
+	return c.podToModelAdapterMapping
 }
