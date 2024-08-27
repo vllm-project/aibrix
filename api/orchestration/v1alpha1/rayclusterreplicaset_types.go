@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -25,17 +26,61 @@ import (
 
 // RayClusterReplicaSetSpec defines the desired state of RayClusterReplicaSet
 type RayClusterReplicaSetSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// Replicas is the number of desired replicas.
+	// This is a pointer to distinguish between explicit zero and unspecified.
+	// Defaults to 1.
+	// More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller/#what-is-a-replicationcontroller
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty" protobuf:"varint,1,opt,name=replicas"`
 
-	// Foo is an example field of RayClusterReplicaSet. Edit rayclusterreplicaset_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// Minimum number of seconds for which a newly created pod should be ready
+	// without any of its container crashing, for it to be considered available.
+	// Defaults to 0 (pod will be considered available as soon as it is ready)
+	// +optional
+	MinReadySeconds int32 `json:"minReadySeconds,omitempty" protobuf:"varint,4,opt,name=minReadySeconds"`
+
+	// Selector is a label query over RayCluster that should match the replica count.
+	// Label keys and values that must match in order to be controlled by this replica set.
+	// It must match the pod template's labels.
+	// More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors
+	Selector *metav1.LabelSelector `json:"selector" protobuf:"bytes,2,opt,name=selector"`
+
+	// Template is the object that describes the pod that will be created if
+	// insufficient replicas are detected.
+	// More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller#pod-template
+	// +optional
+	RayClusterSpec *rayclusterv1.RayClusterSpec `json:"rayClusterSpec,omitempty"`
 }
 
 // RayClusterReplicaSetStatus defines the observed state of RayClusterReplicaSet
 type RayClusterReplicaSetStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// Replicas is the most recently observed number of replicas.
+	// More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller/#what-is-a-replicationcontroller
+	Replicas int32 `json:"replicas" protobuf:"varint,1,opt,name=replicas"`
+
+	// The number of pods that have labels matching the labels of the pod template of the replicaset.
+	// +optional
+	FullyLabeledReplicas int32 `json:"fullyLabeledReplicas,omitempty" protobuf:"varint,2,opt,name=fullyLabeledReplicas"`
+
+	// readyReplicas is the number of pods targeted by this ReplicaSet with a Ready Condition.
+	// +optional
+	ReadyReplicas int32 `json:"readyReplicas,omitempty" protobuf:"varint,4,opt,name=readyReplicas"`
+
+	// The number of available replicas (ready for at least minReadySeconds) for this replica set.
+	// +optional
+	AvailableReplicas int32 `json:"availableReplicas,omitempty" protobuf:"varint,5,opt,name=availableReplicas"`
+
+	// ObservedGeneration reflects the generation of the most recently observed ReplicaSet.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty" protobuf:"varint,3,opt,name=observedGeneration"`
+
+	// Represents the latest available observations of a replica set's current state.
+	// +optional
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,6,rep,name=conditions"`
 }
 
 //+kubebuilder:object:root=true
