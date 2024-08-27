@@ -28,6 +28,7 @@ import (
 	"time"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	"github.com/aibrix/aibrix/pkg/cache"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -113,6 +114,11 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	eventBroadcaster.StartRecordingToSink(&clientv1core.EventSinkImpl{Interface: k8sClient.CoreV1().Events("")})
 	recorder := eventBroadcaster.NewRecorder(mgr.GetScheme(), corev1.EventSource{Component: "model-adapter-controller"})
 
+	c, err := cache.GetCache()
+	if err != nil {
+		klog.Fatal(err.Error())
+	}
+
 	reconciler := &ModelAdapterReconciler{
 		Client:              mgr.GetClient(),
 		Scheme:              mgr.GetScheme(),
@@ -120,6 +126,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 		ServiceLister:       serviceLister,
 		EndpointSliceLister: endpointSliceLister,
 		Recorder:            recorder,
+		cache:               c,
 	}
 	return reconciler, nil
 }
@@ -145,6 +152,7 @@ type ModelAdapterReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	cache    *cache.Cache
 	// PodLister is able to list/get pods from a shared informer's cache store
 	PodLister corelisters.PodLister
 	// ServiceLister is able to list/get services from a shared informer's cache store
@@ -395,7 +403,7 @@ func (r *ModelAdapterReconciler) schedulePod(ctx context.Context, instance *mode
 	// TODO: let's build the scheduling algorithm later
 	// we should also fetch <pod, list<lora>> mappings later.
 
-	return &podList.Items[0], nil // Returning the first Pod for simplicity
+	return r.cache.SelectPodWithLeastModelAdapters(podList.Items)
 }
 
 // GetEnvKey retrieves the value of the environment variable named by the key.

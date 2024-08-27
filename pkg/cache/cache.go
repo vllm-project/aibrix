@@ -17,11 +17,14 @@ limitations under the License.
 package cache
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"math"
+	"strings"
 	"sync"
-	"time"
 
+	crdinformers "github.com/aibrix/aibrix/pkg/client/informers/externalversions"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
@@ -31,6 +34,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog"
 
+	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	v1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
 	v1alpha1scheme "github.com/aibrix/aibrix/pkg/client/clientset/versioned/scheme"
 	"k8s.io/client-go/kubernetes/scheme"
 )
@@ -39,14 +44,24 @@ var once sync.Once
 
 // type global
 type Cache struct {
-	mu   sync.RWMutex
-	pods map[string]*v1.Pod
+	mu                       sync.RWMutex
+	initialized              bool
+	pods                     map[string]*v1.Pod
+	modelAdapterToPodMapping map[string][]string
+	podToModelAdapterMapping map[string]map[string]struct{}
 }
 
 var (
 	instance   Cache
 	kubeconfig string
 )
+
+func GetCache() (*Cache, error) {
+	if !instance.initialized {
+		return nil, errors.New("cache is not initialized")
+	}
+	return &instance, nil
+}
 
 func NewCache(stopCh <-chan struct{}) *Cache {
 	once.Do(func() {
@@ -72,24 +87,34 @@ func NewCache(stopCh <-chan struct{}) *Cache {
 			panic(err)
 		}
 
-		factory := informers.NewSharedInformerFactoryWithOptions(k8sClientSet, 10*time.Second, informers.WithNamespace("default"))
+		crdClientSet, err := v1alpha1.NewForConfig(config)
+		if err != nil {
+			panic(err)
+		}
+
+		factory := informers.NewSharedInformerFactoryWithOptions(k8sClientSet, 0)
+		crdFactory := crdinformers.NewSharedInformerFactoryWithOptions(crdClientSet, 0)
+
 		podInformer := factory.Core().V1().Pods().Informer()
+		modeInformer := crdFactory.Model().V1alpha1().ModelAdapters().Informer()
 
 		defer runtime.HandleCrash()
-		go factory.Start(stopCh)
+		factory.Start(stopCh)
+		crdFactory.Start(stopCh)
 
-		if !cache.WaitForCacheSync(stopCh, podInformer.HasSynced) {
+		// factory.WaitForCacheSync(stopCh)
+		// crdFactory.WaitForCacheSync(stopCh)
+
+		if !cache.WaitForCacheSync(stopCh, podInformer.HasSynced, modeInformer.HasSynced) {
 			runtime.HandleError(fmt.Errorf("timed out waiting for caches to sync"))
 			return
 		}
 
-		// crdClientSet, err = v1alpha1.NewForConfig(config)
-		// if err != nil {
-		// 	panic(err)
-		// }
-
 		instance = Cache{
-			pods: map[string]*v1.Pod{},
+			initialized:              true,
+			pods:                     map[string]*v1.Pod{},
+			modelAdapterToPodMapping: map[string][]string{},
+			podToModelAdapterMapping: map[string]map[string]struct{}{},
 		}
 
 		podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -97,30 +122,141 @@ func NewCache(stopCh <-chan struct{}) *Cache {
 			UpdateFunc: instance.updatePod,
 			DeleteFunc: instance.deletePod,
 		})
+
+		modeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+			AddFunc:    instance.addModel,
+			UpdateFunc: instance.updateModel,
+			DeleteFunc: instance.deleteModel,
+		})
 	})
 
 	return &instance
 }
 
 func (c *Cache) addPod(obj interface{}) {
-	pod := obj.(*v1.Pod)
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	pod := obj.(*v1.Pod)
 	c.pods[pod.Name] = pod
+	c.podToModelAdapterMapping[pod.Name] = map[string]struct{}{}
 	klog.Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
 }
 
 func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
-	klog.Infof(
-		"POD UPDATED. %s/%s %s",
-		oldPod.Namespace, oldPod.Name, newPod.Status.Phase,
-	)
+	klog.Infof("POD UPDATED. %s/%s %s", oldPod.Namespace, oldPod.Name, newPod.Status.Phase)
 }
 
 func (c *Cache) deletePod(obj interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	pod := obj.(*v1.Pod)
+	delete(c.pods, pod.Name)
 	klog.Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
+}
+
+func (c *Cache) addModel(obj interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	model := obj.(*modelv1alpha1.ModelAdapter)
+	c.modelAdapterToPodMapping[model.Name] = model.Status.Instances
+	c.addModelAdapterMapping(model)
+
+	klog.Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
+}
+
+func (c *Cache) updateModel(oldObj interface{}, newObj interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	oldModel := oldObj.(*modelv1alpha1.ModelAdapter)
+	newModel := newObj.(*modelv1alpha1.ModelAdapter)
+	c.modelAdapterToPodMapping[newModel.Name] = newModel.Status.Instances
+	c.deleteModelAdapterMapping(oldModel)
+	c.addModelAdapterMapping(newModel)
+
+	klog.Infof("MODELADAPTER UPDATED. %s/%s %s", oldModel.Namespace, oldModel.Name, newModel.Status.Phase)
+}
+
+func (c *Cache) deleteModel(obj interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	model := obj.(*modelv1alpha1.ModelAdapter)
+	delete(c.modelAdapterToPodMapping, model.Name)
+	c.deleteModelAdapterMapping(model)
+
+	klog.Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
+}
+
+func (c *Cache) addModelAdapterMapping(model *modelv1alpha1.ModelAdapter) {
+	for _, pod := range model.Status.Instances {
+		models, ok := c.podToModelAdapterMapping[pod]
+		if !ok {
+			c.podToModelAdapterMapping[pod] = map[string]struct{}{
+				model.Name: {},
+			}
+			continue
+		}
+
+		models[model.Name] = struct{}{}
+		c.podToModelAdapterMapping[pod] = models
+	}
+}
+
+func (c *Cache) deleteModelAdapterMapping(model *modelv1alpha1.ModelAdapter) {
+	for _, pod := range model.Status.Instances {
+		modelAdapters := c.podToModelAdapterMapping[pod]
+		delete(modelAdapters, model.Name)
+		c.podToModelAdapterMapping[pod] = modelAdapters
+	}
+}
+
+func (c *Cache) debugInfo() {
+	for model, instances := range c.modelAdapterToPodMapping {
+		klog.Infof("modelName: %s, instances: %v", model, instances)
+	}
+
+	for pod, models := range c.podToModelAdapterMapping {
+		if !strings.HasPrefix(pod, "llama") {
+			continue
+		}
+
+		modelsArr := []string{}
+		for m := range models {
+			modelsArr = append(modelsArr, m)
+		}
+
+		klog.Infof("podName: %s, modelAdapters: %v", pod, modelsArr)
+	}
+}
+
+func (c *Cache) SelectPodWithLeastModelAdapters(pods []v1.Pod) (*v1.Pod, error) {
+	modelAdapterCountMin := math.MaxInt
+	selectedPod := &v1.Pod{}
+
+	c.debugInfo()
+
+	for _, pod := range pods {
+		if _, ok := c.pods[pod.Name]; !ok {
+			return nil, errors.New("pod not found in the cache")
+		}
+
+		modelAdapters := c.podToModelAdapterMapping[pod.Name]
+		if len(modelAdapters) < modelAdapterCountMin {
+			selectedPod = &pod
+			modelAdapterCountMin = len(modelAdapters)
+		}
+	}
+
+	klog.Infof("pod selected with least model adapters: %s", selectedPod.Name)
+
+	return selectedPod, nil
 }

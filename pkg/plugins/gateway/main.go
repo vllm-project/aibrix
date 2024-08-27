@@ -34,7 +34,6 @@ import (
 	routing "github.com/aibrix/aibrix/pkg/plugins/gateway/routing_algorithms"
 	redis "github.com/redis/go-redis/v9"
 	openai "github.com/sashabaranov/go-openai"
-	"go.etcd.io/etcd/server/v3/proxy/grpcproxy/cache"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -499,10 +498,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
-
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-	cache.NewCache(stopCh)
 
 	s := grpc.NewServer()
 
