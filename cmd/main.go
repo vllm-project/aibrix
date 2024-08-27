@@ -39,6 +39,8 @@ import (
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
+	orchestrationcontroller "github.com/aibrix/aibrix/internal/controller/orchestration"
 	"github.com/aibrix/aibrix/pkg/controller"
 	//+kubebuilder:scaffold:imports
 )
@@ -64,6 +66,7 @@ func init() {
 	utilruntime.Must(modelv1alpha1.AddToScheme(scheme))
 
 	scheme.AddUnversionedTypes(metav1.SchemeGroupVersion, &metav1.UpdateOptions{}, &metav1.DeleteOptions{}, &metav1.CreateOptions{})
+	utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -166,6 +169,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&orchestrationcontroller.RayClusterReplicaSetReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "RayClusterReplicaSet")
+		os.Exit(1)
+	}
 	//+kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

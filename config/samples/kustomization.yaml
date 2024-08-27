@@ -2,4 +2,5 @@
 resources:
 - autoscaling_v1alpha1_podautoscaler.yaml
 - model_v1alpha1_modeladapter.yaml
+- orchestration_v1alpha1_rayclusterreplicaset.yaml
 #+kubebuilder:scaffold:manifestskustomizesamples
