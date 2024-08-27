@@ -29,10 +29,10 @@ import (
 This implementation is inspired by the scaling solutions provided by Knative.
 Our implementation specifically mimics and adapts the autoscaling functionality found in:
 
-- autoscaler:		pkg/autoscaler/scaling/autoscaler.go
+- autoscaler:			pkg/autoscaler/scaling/autoscaler.go
 - Scaler(interface):	pkg/autoscaler/scaling/autoscaler.go
 - DeciderKpaSpec:		pkg/autoscaler/scaling/multiscaler.go
-- ScaleResult:		pkg/autoscaler/scaling/multiscaler.go
+- ScaleResult:			pkg/autoscaler/scaling/multiscaler.go
 
 */
 
@@ -63,7 +63,7 @@ type Scaler interface {
 	// ScaleResult which contains the recommended number of pods to scale up or down to.
 	//
 	// Refer to:  KpaAutoscaler.Scale Implementation
-	Scale(observedStableValue float64, observedPanicValue float64, now time.Time) ScaleResult
+	Scale(originalReadyPodsCount int, observedStableValue float64, observedPanicValue float64, now time.Time) ScaleResult
 }
 
 // ScaleResult contains the results of a scaling decision.

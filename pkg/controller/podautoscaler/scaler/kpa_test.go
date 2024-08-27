@@ -23,6 +23,7 @@ import (
 )
 
 func TestScale(t *testing.T) {
+	readyPodCount := 10
 	kpaScaler, err := NewKpaAutoscaler(10,
 		&DeciderKpaSpec{
 			MaxScaleUpRate:   1.5,
@@ -47,7 +48,7 @@ func TestScale(t *testing.T) {
 	for range ticker.C {
 		now := time.Now()
 		log.Printf("Scaling evaluation at %s", now)
-		result := kpaScaler.Scale(observedStableValue, observedPanicValue, now)
+		result := kpaScaler.Scale(readyPodCount, observedStableValue, observedPanicValue, now)
 		log.Printf("Scale result: Desired Pod Count = %d, Excess Burst Capacity = %d, Valid = %v", result.DesiredPodCount, result.ExcessBurstCapacity, result.ScaleValid)
 
 		// Stop if the desired pod count has increased

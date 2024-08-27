@@ -120,7 +120,6 @@ type KpaAutoscaler struct {
 	panicTime    time.Time
 	maxPanicPods int32
 	delayWindow  *aggregation.TimeWindow
-	podCounter   int
 	deciderSpec  *DeciderKpaSpec
 	Status       DeciderStatus
 }
@@ -158,7 +157,6 @@ func NewKpaAutoscaler(readyPodsCount int, spec *DeciderKpaSpec) (*KpaAutoscaler,
 
 	return &KpaAutoscaler{
 		Autoscaler:   autoscaler,
-		podCounter:   readyPodsCount,
 		panicTime:    panicTime,
 		maxPanicPods: int32(readyPodsCount),
 		delayWindow:  delayWindow,
@@ -167,7 +165,8 @@ func NewKpaAutoscaler(readyPodsCount int, spec *DeciderKpaSpec) (*KpaAutoscaler,
 }
 
 // Scale implements Scaler interface in KpaAutoscaler.
-func (k *KpaAutoscaler) Scale(observedStableValue float64, observedPanicValue float64, now time.Time) ScaleResult {
+// Refer to knative-serving: pkg/autoscaler/scaling/autoscaler.go, Scale function.
+func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, observedStableValue float64, observedPanicValue float64, now time.Time) ScaleResult {
 	/**
 	`observedStableValue` and `observedPanicValue` are calculated using different window sizes in the `MetricClient`.
 	 For reference, see the KNative implementation at `pkg/autoscaler/metrics/collector.go：185`.
@@ -176,7 +175,6 @@ func (k *KpaAutoscaler) Scale(observedStableValue float64, observedPanicValue fl
 	spec := k.deciderSpec
 	k.specMux.RUnlock()
 
-	originalReadyPodsCount := k.podCounter
 	// Use 1 if there are zero current pods.
 	readyPodsCount := math.Max(1, float64(originalReadyPodsCount))
 

@@ -68,6 +68,22 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 		EventRecorder: mgr.GetEventRecorderFor("PodAutoscaler"),
 		Mapper:        mgr.GetRESTMapper(),
 	}
+
+	// During initialization, KNative passes a podCounter, which may be non-zero if the Scale object already exists.
+	// We currently set the podCounter (readyPodsCount) to 0.
+	// Refer to: pkg/autoscaler/scaling/autoscaler.go:82, function newAutoscaler.
+	kpaScaler, err := scaler.NewKpaAutoscaler(
+		0,
+		// TODO: The following parameters are specific to KPA.
+		//  We use default values based on KNative settings to quickly establish a fully functional workflow.
+		// refer to https://github.com/knative/serving/blob/b6e6baa6dc6697d0e7ddb3a12925f329a1f5064c/config/core/configmaps/autoscaler.yaml#L27
+		scaler.NewDefaultDeciderKpaSpec(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	reconciler.Autoscaler = kpaScaler
+
 	return reconciler, nil
 }
 
@@ -245,19 +261,6 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 	} else if currentReplicas < minReplicas {
 		desiredReplicas = minReplicas
 	} else {
-		// TODO: fix the compute replicas interface.
-		kpaScaler, err := scaler.NewKpaAutoscaler(
-			int(currentReplicas),
-			// TODO: The following parameters are specific to KPA.
-			//  We use default values based on KNative settings to quickly establish a fully functional workflow.
-			// refer to https://github.com/knative/serving/blob/b6e6baa6dc6697d0e7ddb3a12925f329a1f5064c/config/core/configmaps/autoscaler.yaml#L27
-			scaler.NewDefaultDeciderKpaSpec(),
-		)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("meet error when initialize KpaAutoscaler %v", err)
-		}
-		r.Autoscaler = kpaScaler
-
 		metricDesiredReplicas, metricName, metricTimestamp, err := r.computeReplicasForMetrics(ctx, pa, scale)
 		if err != nil && metricDesiredReplicas == -1 {
 			r.setCurrentReplicasAndMetricsInStatus(&pa, currentReplicas)
@@ -444,10 +447,21 @@ func (r *PodAutoscalerReconciler) updateStatus(ctx context.Context, pa *autoscal
 // If PodAutoscaler cannot do anything due to error, it returns -1 in metricDesiredReplicas as a failure signal.
 func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *appsv1.Deployment) (replicas int32, metrics string, timestamp time.Time, err error) {
 	currentTimestamp := time.Now()
+	// Retrieve the count of ready pods based on the label selector.
+	labelSelector, err := metav1.LabelSelectorAsSelector(scale.Spec.Selector)
+	if err != nil {
+		return 0, "", currentTimestamp, fmt.Errorf("error converting label selector: %w", err)
+	}
+	originalReadyPodsCount, err := scaler.GetReadyPodsCount(ctx, r.Client, scale.Namespace, labelSelector)
+	if err != nil {
+		return 0, "", currentTimestamp, fmt.Errorf("error getting ready pods count: %w", err)
+	}
+
 	// TODO: Complete the remaining items - Retrieve the following metrics from metricClient:
 	//  1. observedStableValue: Average over the past stableWindow period.
 	//  2. observedPanicValue: Average over the past panicWindow period.
-	scaleResult := r.Autoscaler.Scale(0, 0, currentTimestamp)
+	// Calculate the desired number of pods using the autoscaler logic.
+	scaleResult := r.Autoscaler.Scale(int(originalReadyPodsCount), 0, 0, currentTimestamp)
 	if scaleResult.ScaleValid {
 		return scaleResult.DesiredPodCount, "", currentTimestamp, nil
 	}
