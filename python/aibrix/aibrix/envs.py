@@ -52,7 +52,7 @@ DOWNLOADER_ALLOW_FILE_SUFFIX = _parse_list_str(
 
 # Downloader Regex
 DOWNLOADER_S3_REGEX = r"^s3://"
-DOWNLOADER_TOS_REGEX = r"https://(.+?).tos-(.+?).volces.com/(.+)"
+DOWNLOADER_TOS_REGEX = r"^tos://"
 
 # Downloader HuggingFace Envs
 DOWNLOADER_HF_TOKEN = os.getenv("HF_TOKEN")

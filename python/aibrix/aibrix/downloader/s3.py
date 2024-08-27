@@ -13,7 +13,7 @@
 # limitations under the License.
 from functools import lru_cache
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 from urllib.parse import urlparse
 
 import boto3
@@ -24,7 +24,7 @@ from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
 
 
-def _parse_bucket_info_from_uri(uri):
+def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
     parsed = urlparse(uri, scheme="s3")
     bucket_name = parsed.netloc
     bucket_path = parsed.path.lstrip("/")
