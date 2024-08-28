@@ -38,7 +38,7 @@ func NewLeastAdapters(c *cache.Cache) Scheduler {
 
 func (r leastAdapters) SelectPod(ctx context.Context, pods []v1.Pod) (*v1.Pod, error) {
 	modelAdapterCountMin := math.MaxInt
-	selectedPod := &v1.Pod{}
+	selectedPod := v1.Pod{}
 	podMap := r.cache.GetPods()
 	podToModelAdapterMapping := r.cache.GetPodToModelAdapterMapping()
 
@@ -49,12 +49,12 @@ func (r leastAdapters) SelectPod(ctx context.Context, pods []v1.Pod) (*v1.Pod, e
 
 		modelAdapters := podToModelAdapterMapping[pod.Name]
 		if len(modelAdapters) < modelAdapterCountMin {
-			selectedPod = &pod
+			selectedPod = pod
 			modelAdapterCountMin = len(modelAdapters)
 		}
 	}
 
 	klog.Infof("pod selected with least model adapters: %s", selectedPod.Name)
 
-	return selectedPod, nil
+	return &selectedPod, nil
 }

@@ -79,7 +79,9 @@ func NewCache(stopCh <-chan struct{}) *Cache {
 			panic(err)
 		}
 
-		v1alpha1scheme.AddToScheme(scheme.Scheme)
+		if err := v1alpha1scheme.AddToScheme(scheme.Scheme); err != nil {
+			panic(err)
+		}
 
 		k8sClientSet, err := kubernetes.NewForConfig(config)
 		if err != nil {
@@ -116,17 +118,21 @@ func NewCache(stopCh <-chan struct{}) *Cache {
 			podToModelAdapterMapping: map[string]map[string]struct{}{},
 		}
 
-		podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc:    instance.addPod,
 			UpdateFunc: instance.updatePod,
 			DeleteFunc: instance.deletePod,
-		})
+		}); err != nil {
+			panic(err)
+		}
 
-		modeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		if _, err = modeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc:    instance.addModel,
 			UpdateFunc: instance.updateModel,
 			DeleteFunc: instance.deleteModel,
-		})
+		}); err != nil {
+			panic(err)
+		}
 	})
 
 	return &instance
