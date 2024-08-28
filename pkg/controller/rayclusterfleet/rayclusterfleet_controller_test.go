@@ -19,6 +19,10 @@ package rayclusterfleet
 import (
 	"context"
 
+	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -51,7 +55,35 @@ var _ = Describe("RayClusterFleet Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: orchestrationv1alpha1.RayClusterFleetSpec{
+						MinReadySeconds: 0,
+						Strategy: appsv1.DeploymentStrategy{
+							Type: appsv1.RollingUpdateDeploymentStrategyType,
+						},
+						Selector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{
+								"foot": "bar",
+							},
+						},
+						Template: rayclusterv1.RayClusterSpec{
+							HeadGroupSpec: rayclusterv1.HeadGroupSpec{
+								ServiceType: corev1.ServiceTypeClusterIP,
+								Template: corev1.PodTemplateSpec{
+									Spec: corev1.PodSpec{
+										Containers: []corev1.Container{
+											{
+												Name:  "test",
+												Image: "test-image",
+											},
+										},
+									},
+								},
+								RayStartParams: map[string]string{},
+							},
+							RayVersion:             "fake-ray-version",
+							HeadServiceAnnotations: map[string]string{},
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

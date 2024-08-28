@@ -49,7 +49,7 @@ type RayClusterReplicaSetSpec struct {
 	// insufficient replicas are detected.
 	// More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller#pod-template
 	// +optional
-	RayClusterSpec *rayclusterv1.RayClusterSpec `json:"rayClusterSpec,omitempty"`
+	Template rayclusterv1.RayClusterSpec `json:"template,omitempty"`
 }
 
 // RayClusterReplicaSetStatus defines the observed state of RayClusterReplicaSet
