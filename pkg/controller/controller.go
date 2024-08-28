@@ -20,6 +20,8 @@ import (
 	"github.com/aibrix/aibrix/pkg/controller/modeladapter"
 	"github.com/aibrix/aibrix/pkg/controller/modelrouter"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler"
+	"github.com/aibrix/aibrix/pkg/controller/rayclusterfleet"
+	"github.com/aibrix/aibrix/pkg/controller/rayclusterreplicaset"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -36,6 +38,8 @@ func init() {
 	controllerAddFuncs = append(controllerAddFuncs, podautoscaler.Add)
 	controllerAddFuncs = append(controllerAddFuncs, modeladapter.Add)
 	controllerAddFuncs = append(controllerAddFuncs, modelrouter.Add)
+	controllerAddFuncs = append(controllerAddFuncs, rayclusterreplicaset.Add)
+	controllerAddFuncs = append(controllerAddFuncs, rayclusterfleet.Add)
 }
 
 // SetupWithManager sets up the controller with the Manager.
