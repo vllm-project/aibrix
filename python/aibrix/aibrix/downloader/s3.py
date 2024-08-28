@@ -17,11 +17,11 @@ from typing import List, Tuple
 from urllib.parse import urlparse
 
 import boto3
+from aibrix.downloader.base import BaseDownloader
 from boto3.s3.transfer import TransferConfig
 from tqdm import tqdm
 
 from aibrix import envs
-from aibrix.downloader.base import BaseDownloader
 
 
 def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
@@ -39,8 +39,6 @@ class S3Downloader(BaseDownloader):
         endpoint = envs.DOWNLOADER_AWS_ENDPOINT
         region = envs.DOWNLOADER_AWS_REGION
         bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri)
-        self.bucket_name = bucket_name
-        self.bucket_path = bucket_path
 
         self.client = boto3.client(
             service_name="s3",
@@ -50,7 +48,12 @@ class S3Downloader(BaseDownloader):
             aws_secret_access_key=sk,
         )
 
-        super().__init__(model_uri=model_uri, model_name=model_name)  # type: ignore
+        super().__init__(
+            model_uri=model_uri,
+            model_name=model_name,
+            bucket_path=bucket_path,
+            bucket_name=bucket_name,
+        )  # type: ignore
 
     def _valid_config(self):
         assert (
@@ -79,7 +82,7 @@ class S3Downloader(BaseDownloader):
 
     def _directory_list(self, path: str) -> List[str]:
         objects_out = self.client.list_objects_v2(
-            Bucket=self.bucket_name, Delimiter="/", Prefix=self.bucket_path
+            Bucket=self.bucket_name, Delimiter="/", Prefix=path
         )
         contents = objects_out.get("Contents", [])
         return [content.get("Key") for content in contents]
@@ -87,18 +90,20 @@ class S3Downloader(BaseDownloader):
     def _support_range_download(self) -> bool:
         return True
 
-    def download(self, filename: str, local_path: Path, enable_range: bool = True):
-        # filename should extract from model_uri when it is not a directory
-        if not self._is_directory():
-            filename = self.bucket_path
-
+    def download(
+        self,
+        local_path: Path,
+        bucket_path: str,
+        bucket_name: str = None,
+        enable_range: bool = True,
+    ):
         # check if file exist
         try:
-            meta_data = self.client.head_object(Bucket=self.bucket_name, Key=filename)
+            meta_data = self.client.head_object(Bucket=bucket_name, Key=bucket_path)
         except Exception as e:
-            raise ValueError(f"TOS file {filename} not exist for {e}.")
+            raise ValueError(f"S3 bucket path {bucket_path} not exist for {e}.")
 
-        _file_name = filename.split("/")[-1]
+        _file_name = bucket_path.split("/")[-1]
         # S3 client does not support Path, convert it to str
         local_file = str(local_path.joinpath(_file_name).absolute())
 
@@ -122,8 +127,8 @@ class S3Downloader(BaseDownloader):
                 pbar.update(bytes_transferred)
 
             self.client.download_file(
-                Bucket=self.bucket_name,
-                Key=filename,
+                Bucket=bucket_name,
+                Key=bucket_path,
                 Filename=local_file,
                 Config=config,
                 Callback=download_progress,

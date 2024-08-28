@@ -15,11 +15,11 @@
 from pathlib import Path
 from typing import List, Optional
 
+from aibrix.downloader.base import BaseDownloader
+from aibrix.logger import init_logger
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
 from aibrix import envs
-from aibrix.downloader.base import BaseDownloader
-from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 
@@ -36,12 +36,19 @@ class HuggingFaceDownloader(BaseDownloader):
             else:
                 model_name = _parse_model_name_from_uri(model_uri)
 
-        super().__init__(model_uri=model_uri, model_name=model_name)  # type: ignore
-
         self.hf_token = envs.DOWNLOADER_HF_TOKEN
         self.hf_endpoint = envs.DOWNLOADER_HF_ENDPOINT
         self.hf_revision = envs.DOWNLOADER_HF_REVISION
 
+        super().__init__(
+            model_uri=model_uri,
+            model_name=model_name,
+            bucket_path=model_uri,
+            bucket_name=None,
+        )  # type: ignore
+
+        # Dependent on the attributes generated in the base class,
+        # so place it after the super().__init__() call.
         self.allow_patterns = (
             None
             if self.allow_file_suffix is None
@@ -58,7 +65,7 @@ class HuggingFaceDownloader(BaseDownloader):
         assert (
             len(self.model_uri.split("/")) == 2
         ), "Model uri must be in `repo/name` format."
-
+        assert self.bucket_name is None, "Bucket name is empty in HuggingFace."
         assert self.model_name is not None, "Model name is not set."
 
     def _is_directory(self) -> bool:
@@ -74,10 +81,16 @@ class HuggingFaceDownloader(BaseDownloader):
     def _support_range_download(self) -> bool:
         return False
 
-    def download(self, filename: str, local_path: Path, enable_range: bool = True):
+    def download(
+        self,
+        local_path: Path,
+        bucket_path: str,
+        bucket_name: str = None,
+        enable_range: bool = True,
+    ):
         hf_hub_download(
             repo_id=self.model_uri,
-            filename=filename,
+            filename=bucket_path,
             local_dir=local_path,
             revision=self.hf_revision,
             token=self.hf_token,

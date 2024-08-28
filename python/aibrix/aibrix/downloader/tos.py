@@ -18,11 +18,11 @@ from typing import List, Tuple
 from urllib.parse import urlparse
 
 import tos
+from aibrix.downloader.base import BaseDownloader
 from tos import DataTransferType
 from tqdm import tqdm
 
 from aibrix import envs
-from aibrix.downloader.base import BaseDownloader
 
 tos_logger = logging.getLogger("tos")
 tos_logger.setLevel(logging.WARNING)
@@ -40,18 +40,18 @@ class TOSDownloader(BaseDownloader):
         model_name = envs.DOWNLOADER_MODEL_NAME
         ak = envs.DOWNLOADER_TOS_ACCESS_KEY
         sk = envs.DOWNLOADER_TOS_SECRET_KEY
-        endpoint = envs.DOWNLOADER_TOS_ENDPOINT or ''
-        region = envs.DOWNLOADER_TOS_REGION or ''
+        endpoint = envs.DOWNLOADER_TOS_ENDPOINT or ""
+        region = envs.DOWNLOADER_TOS_REGION or ""
         bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri)
-        self.bucket_name = bucket_name
-        self.bucket_path = bucket_path
-        
-        self.client = tos.TosClientV2(ak=ak,
-                                      sk=sk,
-                                      endpoint=endpoint,
-                                      region=region)
-        
-        super().__init__(model_uri=model_uri, model_name=model_name)  # type: ignore
+
+        self.client = tos.TosClientV2(ak=ak, sk=sk, endpoint=endpoint, region=region)
+
+        super().__init__(
+            model_uri=model_uri,
+            model_name=model_name,
+            bucket_path=bucket_path,
+            bucket_name=bucket_name,
+        )  # type: ignore
 
     def _valid_config(self):
         assert (
@@ -83,26 +83,27 @@ class TOSDownloader(BaseDownloader):
     def _directory_list(self, path: str) -> List[str]:
         # TODO cache list_objects_type2 result to avoid too many requests
         objects_out = self.client.list_objects_type2(
-            self.bucket_name, prefix=self.bucket_path, delimiter="/"
+            self.bucket_name, prefix=path, delimiter="/"
         )
-
         return [obj.key for obj in objects_out.contents]
 
     def _support_range_download(self) -> bool:
         return True
 
-    def download(self, filename: str, local_path: Path, enable_range: bool = True):
-        # filename should extract from model_uri when it is not a directory
-        if not self._is_directory():
-            filename = self.bucket_path
-
+    def download(
+        self,
+        local_path: Path,
+        bucket_path: str,
+        bucket_name: str = None,
+        enable_range: bool = True,
+    ):
         # check if file exist
         try:
-            meta_data = self.client.head_object(bucket=self.bucket_name, key=filename)
+            meta_data = self.client.head_object(bucket=bucket_name, key=bucket_path)
         except Exception as e:
-            raise ValueError(f"TOS file {filename} not exist for {e}.")
+            raise ValueError(f"TOS bucket path {bucket_path} not exist for {e}.")
 
-        _file_name = filename.split("/")[-1]
+        _file_name = bucket_path.split("/")[-1]
         # TOS client does not support Path, convert it to str
         local_file = str(local_path.joinpath(_file_name).absolute())
         task_num = envs.DOWNLOADER_NUM_THREADS if enable_range else 1
@@ -121,8 +122,8 @@ class TOSDownloader(BaseDownloader):
                 pbar.update(rw_once_bytes)
 
             self.client.download_file(
-                bucket=self.bucket_name,
-                key=filename,
+                bucket=bucket_name,
+                key=bucket_path,
                 file_path=local_file,
                 task_num=task_num,
                 data_transfer_listener=download_progress,

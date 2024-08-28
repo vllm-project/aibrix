@@ -20,8 +20,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from aibrix import envs
 from aibrix.logger import init_logger
+
+from aibrix import envs
 
 logger = init_logger(__name__)
 
@@ -32,6 +33,8 @@ class BaseDownloader(ABC):
 
     model_uri: str
     model_name: str
+    bucket_path: str
+    bucket_name: Optional[str]
     allow_file_suffix: Optional[List[str]] = field(
         default_factory=lambda: envs.DOWNLOADER_ALLOW_FILE_SUFFIX
     )
@@ -59,7 +62,13 @@ class BaseDownloader(ABC):
         pass
 
     @abstractmethod
-    def download(self, filename: str, local_path: Path, enable_range: bool = True):
+    def download(
+        self,
+        local_path: Path,
+        bucket_path: str,
+        bucket_name: str = None,
+        enable_range: bool = True,
+    ):
         pass
 
     def download_directory(self, local_path: Path):
@@ -68,9 +77,9 @@ class BaseDownloader(ABC):
         directory method for ``Downloader``. Otherwise, the following logic will be
         used to download the directory.
         """
-        directory_list = self._directory_list(self.model_uri)
+        directory_list = self._directory_list(self.bucket_path)
         if self.allow_file_suffix is None:
-            logger.info(f"All files from {self.model_uri} will be downloaded.")
+            logger.info(f"All files from {self.bucket_path} will be downloaded.")
             filtered_files = directory_list
         else:
             filtered_files = [
@@ -92,8 +101,9 @@ class BaseDownloader(ABC):
             futures = [
                 executor.submit(
                     self.download,
-                    filename=file,
                     local_path=local_path,
+                    bucket_path=file,
+                    bucket_name=self.bucket_name,
                     enable_range=False,
                 )
                 for file in filtered_files
@@ -111,7 +121,7 @@ class BaseDownloader(ABC):
             st = time.perf_counter()
             for file in filtered_files:
                 # use range download to speedup download
-                self.download(file, local_path, True)
+                self.download(local_path, file, self.bucket_name, True)
             duration = time.perf_counter() - st
             logger.info(
                 f"Downloader {self.__class__.__name__} download "
@@ -132,11 +142,12 @@ class BaseDownloader(ABC):
         # TODO check local file exists
 
         if self._is_directory():
-            self.download_directory(model_path)
+            self.download_directory(local_path=model_path)
         else:
             self.download(
-                filename=self.model_uri,
                 local_path=model_path,
+                bucket_path=self.bucket_path,
+                bucket_name=self.bucket_name,
                 enable_range=self._support_range_download(),
             )
 
