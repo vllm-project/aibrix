@@ -109,7 +109,7 @@ class LocalDiskFiles:
             for _ in range(start_index):
                 next(file)
                 if not file:
-                    print(f"read requests is out of index, not enough size.")
+                    print("read requests is out of index, not enough size.")
                     return request_inputs
         
             if num_requests > 0:
@@ -159,7 +159,7 @@ class LocalDiskFiles:
             for _ in range(start_index):
                 next(file)
                 if not file:
-                    print(f"writing requests is out of index.")
+                    print("writing requests is out of index.")
                     return 
 
             for obj in output_list:
@@ -181,7 +181,7 @@ class LocalDiskFiles:
             for _ in range(start_index):
                 next(file)
                 if not file:
-                    print(f"reading requests output is out of index.")
+                    print("reading requests output is out of index.")
                     return output_data
 
             num_lines = 0
