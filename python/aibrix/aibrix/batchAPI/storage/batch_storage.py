@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import uuid
+
 from .generic_storage import PersistentStorage
 
 current_job_offsets = {}

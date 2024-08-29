@@ -13,12 +13,10 @@
 # limitations under the License.
 
 
-from .batch_storage import uploadInputData
-from .batch_storage import removeJobData
-from .batch_storage import get_job_request_len
-from .batch_storage import read_job_requests
-from .batch_storage import put_job_results
-from .batch_storage import get_job_results
+from .batch_storage import (get_job_request_len, get_job_results,
+                            put_job_results, read_job_requests, removeJobData,
+                            uploadInputData)
+
 
 def submitJobInput(inputDataFile):
     """ Upload job input data file to storage.
