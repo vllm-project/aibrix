@@ -13,15 +13,15 @@
 # limitations under the License.
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 import boto3
-from aibrix.downloader.base import BaseDownloader
 from boto3.s3.transfer import TransferConfig
 from tqdm import tqdm
 
 from aibrix import envs
+from aibrix.downloader.base import BaseDownloader
 
 
 def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
@@ -94,7 +94,7 @@ class S3Downloader(BaseDownloader):
         self,
         local_path: Path,
         bucket_path: str,
-        bucket_name: str = None,
+        bucket_name: Optional[str] = None,
         enable_range: bool = True,
     ):
         # check if file exist

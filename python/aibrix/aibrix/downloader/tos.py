@@ -14,15 +14,15 @@
 import logging
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 import tos
-from aibrix.downloader.base import BaseDownloader
 from tos import DataTransferType
 from tqdm import tqdm
 
 from aibrix import envs
+from aibrix.downloader.base import BaseDownloader
 
 tos_logger = logging.getLogger("tos")
 tos_logger.setLevel(logging.WARNING)
@@ -94,7 +94,7 @@ class TOSDownloader(BaseDownloader):
         self,
         local_path: Path,
         bucket_path: str,
-        bucket_name: str = None,
+        bucket_name: Optional[str] = None,
         enable_range: bool = True,
     ):
         # check if file exist

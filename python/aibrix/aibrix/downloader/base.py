@@ -20,9 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from aibrix.logger import init_logger
-
 from aibrix import envs
+from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 
@@ -66,7 +65,7 @@ class BaseDownloader(ABC):
         self,
         local_path: Path,
         bucket_path: str,
-        bucket_name: str = None,
+        bucket_name: Optional[str] = None,
         enable_range: bool = True,
     ):
         pass

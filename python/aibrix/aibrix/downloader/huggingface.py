@@ -15,11 +15,11 @@
 from pathlib import Path
 from typing import List, Optional
 
-from aibrix.downloader.base import BaseDownloader
-from aibrix.logger import init_logger
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
 from aibrix import envs
+from aibrix.downloader.base import BaseDownloader
+from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 
@@ -85,7 +85,7 @@ class HuggingFaceDownloader(BaseDownloader):
         self,
         local_path: Path,
         bucket_path: str,
-        bucket_name: str = None,
+        bucket_name: Optional[str] = None,
         enable_range: bool = True,
     ):
         hf_hub_download(
