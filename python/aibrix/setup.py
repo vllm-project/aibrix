@@ -1,6 +1,4 @@
-
-"""A setuptools based setup module.
-"""
+"""A setuptools based setup module."""
 #!/usr/bin/env python
 
 import io
@@ -21,7 +19,7 @@ with io.open(os.path.join(here, NAME, "__version__.py")) as f:
     exec(f.read(), about)
 
 setup(
-    name='aibrix',
+    name="aibrix",
     version=about["__version__"],
     packages=find_packages(),  # Automatically find and include all packages
     install_requires=[

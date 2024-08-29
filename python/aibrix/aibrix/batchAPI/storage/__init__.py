@@ -13,28 +13,35 @@
 # limitations under the License.
 
 
-from .batch_storage import (get_job_request_len, get_job_results,
-                            put_job_results, read_job_requests, removeJobData,
-                            uploadInputData)
+from .batch_storage import (
+    get_job_request_len,
+    get_job_results,
+    put_job_results,
+    read_job_requests,
+    removeJobData,
+    uploadInputData,
+)
 
 
 def submitJobInput(inputDataFile):
-    """ Upload job input data file to storage.
+    """Upload job input data file to storage.
 
     Args:
         inputDataFile (str): an input file string. Each line is a request.
     """
     job_id = uploadInputData(inputDataFile)
     return job_id
-        
+
+
 def deleteJob(job_id):
-    """ Delete job given job ID. This removes all data associated this job, 
-        including input data and output results.
+    """Delete job given job ID. This removes all data associated this job,
+    including input data and output results.
     """
     removeJobData(job_id)
 
+
 def getJobInputRequests(job_id, start_index, num_requests):
-    """ Read job input requests specified job Id.
+    """Read job input requests specified job Id.
 
     Args:
         job_id : job_id is returned by job submission.
@@ -43,13 +50,14 @@ def getJobInputRequests(job_id, start_index, num_requests):
     """
     return read_job_requests(job_id, start_index, num_requests)
 
+
 def getJobNumRequest(job_id):
-    """ Get the number of valid requests for this submitted job. 
-    """
+    """Get the number of valid requests for this submitted job."""
     return get_job_request_len(job_id)
 
+
 def putJobResults(job_id, start_index, requests_results):
-    """ Write job requests results to storage. 
+    """Write job requests results to storage.
 
     Args:
         job_id : job_id is returned by job submission.
@@ -58,8 +66,9 @@ def putJobResults(job_id, start_index, requests_results):
     """
     put_job_results(job_id, start_index, requests_results)
 
+
 def getJobResults(job_id, start_index, num_requests):
-    """ Read job requests results from storage. 
+    """Read job requests results from storage.
 
     Args:
         job_id : job_id is returned by job submission.
