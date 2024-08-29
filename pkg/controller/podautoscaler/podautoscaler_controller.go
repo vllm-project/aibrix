@@ -230,11 +230,11 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 
 	// current scale's replica count
 	currentReplicasInt64, found, err := unstructured.NestedInt64(scale.Object, "spec", "replicas")
-	if err != nil || !found {
-		if !found {
-			r.EventRecorder.Eventf(&pa, corev1.EventTypeWarning, "ReplicasNotFound", "The 'replicas' field is missing from the scale object")
-			return ctrl.Result{}, fmt.Errorf("the 'replicas' field was not found in the scale object")
-		}
+	if !found {
+		r.EventRecorder.Eventf(&pa, corev1.EventTypeWarning, "ReplicasNotFound", "The 'replicas' field is missing from the scale object")
+		return ctrl.Result{}, fmt.Errorf("the 'replicas' field was not found in the scale object")
+	}
+	if err != nil {
 		r.EventRecorder.Eventf(&pa, corev1.EventTypeWarning, "FailedGetScale", "Error retrieving 'replicas' from scale: %v", err)
 		return ctrl.Result{}, fmt.Errorf("failed to get 'replicas' from scale: %v", err)
 	}
@@ -267,7 +267,7 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 	} else if currentReplicas < minReplicas {
 		desiredReplicas = minReplicas
 	} else {
-		metricDesiredReplicas, metricName, metricTimestamp, err := r.computeReplicasForMetrics(logger, ctx, pa, scale)
+		metricDesiredReplicas, metricName, metricTimestamp, err := r.computeReplicasForMetrics(ctx, pa, scale)
 		if err != nil && metricDesiredReplicas == -1 {
 			r.setCurrentReplicasAndMetricsInStatus(&pa, currentReplicas)
 			if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
@@ -448,7 +448,8 @@ func (r *PodAutoscalerReconciler) updateStatus(ctx context.Context, pa *autoscal
 // It may return both valid metricDesiredReplicas and an error,
 // when some metrics still work and HPA should perform scaling based on them.
 // If PodAutoscaler cannot do anything due to error, it returns -1 in metricDesiredReplicas as a failure signal.
-func (r *PodAutoscalerReconciler) computeReplicasForMetrics(logger klog.Logger, ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (replicas int32, metrics string, timestamp time.Time, err error) {
+func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (replicas int32, metrics string, timestamp time.Time, err error) {
+	logger := klog.FromContext(ctx)
 	currentTimestamp := time.Now()
 
 	// Retrieve the selector string from the Scale object's Status.
