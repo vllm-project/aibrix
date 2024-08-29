@@ -1,5 +1,6 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
+PLUGINS_IMG ?= aibrix/plugins:v0.1.0
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.29.0
 
@@ -96,11 +97,11 @@ lint-all: licensecheck lint
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build -o bin/manager cmd/controllers/main.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+	go run ./cmd/controllers/main.go
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
@@ -108,6 +109,10 @@ run: manifests generate fmt vet ## Run a controller from your host.
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build -t ${IMG} .
+
+.PHONY: docker-build-plugins
+docker-build-plugins: ## Build docker image with the manager.
+	$(CONTAINER_TOOL) build -t ${PLUGINS_IMG} -f gateway.Dockerfile .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.

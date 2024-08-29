@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: grpc-ext-proc
+  name: gateway-plugins
 spec:
   selector:
-    app: grpc-ext-proc
+    app: gateway-plugins
   ports:
     - protocol: TCP
       port: 50052
@@ -13,20 +13,20 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: grpc-ext-proc
+  name: gateway-plugins
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: grpc-ext-proc
+      app: gateway-plugins
   template:
     metadata:
       labels:
-        app: grpc-ext-proc
+        app: gateway-plugins
     spec:
       containers:
         - name: golang-app-container
-          image: aibrix/tpm:v0.1.0
+          image: aibrix/plugins:v0.1.0
           ports:
             - containerPort: 50052
           env:

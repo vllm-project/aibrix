@@ -83,7 +83,7 @@ make deploy IMG=example.com/aibrix:v1
 
 ### Start the Manager through an IDE
 
-Alternatively, for better debugging, you can start AIBricks in debug mode using an IDE like [Goland](https://www.jetbrains.com/go/) or [VSCode](https://code.visualstudio.com/). The main entry point of the project is located at `cmd/main.go`.
+Alternatively, for better debugging, you can start AIBricks in debug mode using an IDE like [Goland](https://www.jetbrains.com/go/) or [VSCode](https://code.visualstudio.com/). The main entry point of the project is located at `cmd/controllers/main.go`.
 
 ### Create AIBricks Sample Instances
 
