@@ -43,7 +43,7 @@ import (
 var (
 	grpc_port  int
 	redis_host = getEnv("REDIS_HOST", "localhost")
-	redis_port = string(getEnv("REDIS_PORT", "6379"))
+	redis_port = getEnv("REDIS_PORT", "6379")
 )
 
 func getEnv(key, defaultValue string) string {
@@ -83,8 +83,7 @@ func createClient(kubeconfigPath string) (kubernetes.Interface, error) {
 
 // TODO (varun): one or multi plugin ext_proc
 func main() {
-	var kubeconfig *string
-	kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
+	kubeconfig := flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	flag.IntVar(&grpc_port, "port", 50052, "gRPC port")
 	flag.Parse()
 
@@ -122,7 +121,7 @@ func main() {
 	log.Println("Starting gRPC server on port :50052")
 
 	// shutdown
-	var gracefulStop = make(chan os.Signal)
+	var gracefulStop = make(chan os.Signal, 1)
 	signal.Notify(gracefulStop, syscall.SIGTERM)
 	signal.Notify(gracefulStop, syscall.SIGINT)
 	go func() {
@@ -133,5 +132,7 @@ func main() {
 		os.Exit(0)
 	}()
 
-	s.Serve(lis)
+	if err := s.Serve(lis); err != nil {
+		panic(err)
+	}
 }
