@@ -47,7 +47,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -129,9 +128,9 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// use the builder fashion. If we need more fine grain control later, we can switch to `controller.New()`
 	err := ctrl.NewControllerManagedBy(mgr).
 		For(&modelv1alpha1.ModelAdapter{}).
-		Watches(&corev1.Service{}, &handler.EnqueueRequestForObject{}).
-		Watches(&discoveryv1.EndpointSlice{}, &handler.EnqueueRequestForObject{}).
-		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}).
+		Owns(&corev1.Service{}).
+		Owns(&discoveryv1.EndpointSlice{}).
+		Owns(&corev1.Pod{}).
 		Complete(r)
 
 	klog.V(4).InfoS("Finished to add model-adapter-controller")
