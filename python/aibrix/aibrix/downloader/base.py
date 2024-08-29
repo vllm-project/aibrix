@@ -149,10 +149,6 @@ class BaseDownloader(ABC):
                 bucket_name=self.bucket_name,
                 enable_range=self._support_range_download(),
             )
-
-        # create completed file to indicate download completed
-        completed_file = model_path.joinpath(".completed")
-        completed_file.touch()
         return model_path
 
     def __hash__(self):
