@@ -160,3 +160,55 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - rayclusterfleets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - rayclusterfleets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - rayclusterfleets/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - rayclusterreplicasets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - rayclusterreplicasets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - rayclusterreplicasets/status
+  verbs:
+  - get
+  - patch
+  - update

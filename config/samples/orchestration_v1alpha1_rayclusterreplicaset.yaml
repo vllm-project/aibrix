@@ -1,0 +1,9 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: RayClusterReplicaSet
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: rayclusterreplicaset-sample
+spec:
+  # TODO(user): Add fields here
