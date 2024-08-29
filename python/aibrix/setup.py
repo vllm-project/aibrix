@@ -16,7 +16,7 @@ URL = "https://github.com/aibrix"
 
 here = os.path.abspath(os.path.dirname(__file__))
 
-about = {}
+about: dict[str, str] = {}
 with io.open(os.path.join(here, NAME, "__version__.py")) as f:
     exec(f.read(), about)
 

@@ -1,6 +1,8 @@
-import aibrix.batchAPI.storage as _storage
 import json
 import os
+
+import aibrix.batchAPI.storage as _storage
+
 
 def generate_input_data(num_requests):
     input_name = "./sample_job_input.json"
