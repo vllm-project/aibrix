@@ -3,15 +3,26 @@
 Welcome to AIBrix, the foundational building blocks for constructing your own GenAI inference infrastructure. AIBrix offers a cloud-native solution tailored to meet the demands of enterprises aiming to deploy, manage, and scale LLMs efficiently.
 
 ## Key Features
-TODO
+
+- High density Lora management
+- Intelligent and LLM specific routing strategies
+- LLM tailored pod autoscaler
+- AI runtime sidecar (metrics merge, fast model downloading, admin operations)
 
 ## Quick Start
 
 To get started with AIBrix, clone this repository and follow the setup instructions in the documentation. Our comprehensive guide will help you configure and deploy your first LLM infrastructure seamlessly.
 
 ```shell
+# Local Testing
 git clone https://github.com/aibrix/aibrix.git
 cd aibrix
+kubectl apply -k config/default
+```
+
+```shell
+# Note: this command will be available after the repo going public
+kubectl apply -k "github.com/aibrix/aibrix/config/default"
 ```
 
 ## Documentation

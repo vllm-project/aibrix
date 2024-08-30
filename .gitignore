@@ -24,3 +24,7 @@ go.work.sum
 .idea
 
 .DS_Store
+
+# Jupyter notebook
+.ipynb_checkpoints/
+
