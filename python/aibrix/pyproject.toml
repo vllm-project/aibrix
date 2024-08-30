@@ -10,6 +10,9 @@ python = "^3.11"
 huggingface-hub = "^0.24.6"
 tos = "^2.7.1"
 boto3 = "^1.35.5"
+fastapi = "^0.112.2"
+gunicorn = "^23.0.0"
+uvicorn = "^0.30.6"
 
 
 [tool.poetry.group.dev.dependencies]
