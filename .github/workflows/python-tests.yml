@@ -31,10 +31,6 @@ jobs:
         run: |
           cd python/aibrix
           python -m ruff check .
-      - name: Run isort
-        run: |
-          cd python/aibrix
-          python -m isort . --check-only
       - name: Run mypy
         run: |
           cd python/aibrix
