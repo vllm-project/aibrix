@@ -16,6 +16,8 @@ COPY cmd/controllers/main.go cmd/main.go
 COPY api/ api/
 COPY pkg/controller/ pkg/controller/
 COPY pkg/utils/ pkg/utils/
+COPY pkg/cache/ pkg/cache/
+COPY pkg/client/ pkg/client/
 
 # Build
 # the GOARCH has not a default value to allow the binary be built according to the host where the command

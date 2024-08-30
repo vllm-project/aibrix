@@ -27,7 +27,7 @@ curl -X POST http://localhost:8000/v1/load_lora_adapter \
 
 ```
 # check available models
-curl http://localhost:8000/v1/models
+curl http://localhost:8000/v1/models | jq .
 ```
 
 4. Unload Model
