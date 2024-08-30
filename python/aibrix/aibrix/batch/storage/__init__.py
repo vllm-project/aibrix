@@ -13,12 +13,14 @@
 # limitations under the License.
 
 
-from aibrix.batch.storage.batch_storage import (get_job_request_len,
-                                                get_storage_job_results,
-                                                put_storage_job_results,
-                                                read_job_requests,
-                                                remove_storage_job_data,
-                                                upload_input_data)
+from aibrix.batch.storage.batch_storage import (
+    get_job_request_len,
+    get_storage_job_results,
+    put_storage_job_results,
+    read_job_requests,
+    remove_storage_job_data,
+    upload_input_data,
+)
 
 
 def submit_job_input(inputDataFile):

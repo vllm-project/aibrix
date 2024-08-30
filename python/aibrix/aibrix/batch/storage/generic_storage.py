@@ -20,10 +20,12 @@ from abc import ABC, abstractmethod
 
 LOCAL_STORAGE_PATH_VAR = "LOCAL_STORAGE_PATH"
 
+
 class StorageType(Enum):
     LocalDiskFile = 1
     S3 = 2
     TOS = 3
+
 
 class PersistentStorage(ABC):
     """
