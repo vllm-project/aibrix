@@ -14,6 +14,10 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the Project itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- orchestration_rayclusterfleet_editor_role.yaml
+- orchestration_rayclusterfleet_viewer_role.yaml
+- orchestration_rayclusterreplicaset_editor_role.yaml
+- orchestration_rayclusterreplicaset_viewer_role.yaml
 - model_modeladapter_editor_role.yaml
 - model_modeladapter_viewer_role.yaml
 - autoscaling_podautoscaler_editor_role.yaml

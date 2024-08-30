@@ -32,17 +32,19 @@ class BaseDownloader(ABC):
 
     model_uri: str
     model_name: str
-    required_envs: List[str] = field(default_factory=list)
-    optional_envs: List[str] = field(default_factory=list)
-    allow_file_suffix: List[str] = field(default_factory=list)
+    bucket_path: str
+    bucket_name: Optional[str]
+    allow_file_suffix: Optional[List[str]] = field(
+        default_factory=lambda: envs.DOWNLOADER_ALLOW_FILE_SUFFIX
+    )
 
     def __post_init__(self):
-        # ensure downloader required envs are set
-        self._check_config()
+        # valid downloader config
+        self._valid_config()
         self.model_name_path = self.model_name.replace("/", "_")
 
     @abstractmethod
-    def _check_config(self):
+    def _valid_config(self):
         pass
 
     @abstractmethod
@@ -59,7 +61,13 @@ class BaseDownloader(ABC):
         pass
 
     @abstractmethod
-    def download(self, path: str, local_path: Path, enable_range: bool = True):
+    def download(
+        self,
+        local_path: Path,
+        bucket_path: str,
+        bucket_name: Optional[str] = None,
+        enable_range: bool = True,
+    ):
         pass
 
     def download_directory(self, local_path: Path):
@@ -68,9 +76,9 @@ class BaseDownloader(ABC):
         directory method for ``Downloader``. Otherwise, the following logic will be
         used to download the directory.
         """
-        directory_list = self._directory_list(self.model_uri)
-        if len(self.allow_file_suffix) == 0:
-            logger.info("All files from {self.model_uri} will be downloaded.")
+        directory_list = self._directory_list(self.bucket_path)
+        if self.allow_file_suffix is None:
+            logger.info(f"All files from {self.bucket_path} will be downloaded.")
             filtered_files = directory_list
         else:
             filtered_files = [
@@ -91,7 +99,11 @@ class BaseDownloader(ABC):
             executor = ThreadPoolExecutor(num_threads)
             futures = [
                 executor.submit(
-                    self.download, path=file, local_path=local_path, enable_range=False
+                    self.download,
+                    local_path=local_path,
+                    bucket_path=file,
+                    bucket_name=self.bucket_name,
+                    enable_range=False,
                 )
                 for file in filtered_files
             ]
@@ -108,7 +120,7 @@ class BaseDownloader(ABC):
             st = time.perf_counter()
             for file in filtered_files:
                 # use range download to speedup download
-                self.download(file, local_path, True)
+                self.download(local_path, file, self.bucket_name, True)
             duration = time.perf_counter() - st
             logger.info(
                 f"Downloader {self.__class__.__name__} download "
@@ -117,7 +129,7 @@ class BaseDownloader(ABC):
                 f"duration: {duration:.2f} seconds."
             )
 
-    def download_model(self, local_path: Optional[str]):
+    def download_model(self, local_path: Optional[str] = None):
         if local_path is None:
             local_path = envs.DOWNLOADER_LOCAL_DIR
             Path(local_path).mkdir(parents=True, exist_ok=True)
@@ -129,10 +141,18 @@ class BaseDownloader(ABC):
         # TODO check local file exists
 
         if self._is_directory():
-            self.download_directory(model_path)
+            self.download_directory(local_path=model_path)
         else:
-            self.download(self.model_uri, model_path)
+            self.download(
+                local_path=model_path,
+                bucket_path=self.bucket_path,
+                bucket_name=self.bucket_name,
+                enable_range=self._support_range_download(),
+            )
         return model_path
+
+    def __hash__(self):
+        return hash(tuple(self.__dict__))
 
 
 def get_downloader(model_uri: str) -> BaseDownloader:

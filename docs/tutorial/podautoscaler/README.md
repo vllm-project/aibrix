@@ -190,9 +190,14 @@ Note: The reactive speed of the default HPA is limited; AIBrix plans to optimize
 
 # [WIP] Case 2: Create KPA-based AIBrix PodAutoscaler
 
-Create Nginx App:
+Create Nginx App, the default replicas is 1:
 ```shell
 kubectl apply -f config/samples/autoscaling_v1alpha1_demo_nginx.yaml
+kubectl get deployments -n default
+```
+```log
+NAME               READY   UP-TO-DATE   AVAILABLE   AGE
+nginx-deployment   1/1     1            1           24s
 ```
 
 Create an autoscaler with type of KPA:
@@ -211,6 +216,8 @@ kubectl get podautoscalers --all-namespaces
 >>> default     podautoscaler-example-kpa   5m1s
 ```
 
+**Note that**: Since we pass CPU target value 0 to KPA, it will try to scale the pod down to 0.
+
 You can see logs like `KPA algorithm run...` in `aibrix-controller-manager`:
 
 ```shell
@@ -218,28 +225,29 @@ kubectl get pods -n aibrix-system -o name | grep aibrix-controller-manager | hea
 ```
 
 ```log
-deployment nginx-deployment does not have a model, labels: map[]
-I0826 08:47:48.965426       1 kpa.go:247] "Operating in stable mode."
-2024-08-26T08:47:48Z	DEBUG	events	KPA algorithm run. desiredReplicas: 0, currentReplicas: 1	{"type": "Normal", "object": {"kind":"PodAutoscaler","namespace":"default","name":"podautoscaler-example-kpa","uid":"a76f80e6-bdeb-462f-85c1-97192005d9fb","apiVersion":"autoscaling.aibrix.ai/v1alpha1","resourceVersion":"2245812"}, "reason": "KPAAlgorithmRun"}
-2024-08-26T08:47:48Z	DEBUG	events	We set rescale=False temporarily to skip scaling action	{"type": "Warning", "object": {"kind":"PodAutoscaler","namespace":"default","name":"podautoscaler-example-kpa","uid":"a76f80e6-bdeb-462f-85c1-97192005d9fb","apiVersion":"autoscaling.aibrix.ai/v1alpha1","resourceVersion":"2245812"}, "reason": "PipelineWIP"}
-I0826 08:47:48.968666       1 kpa.go:247] "Operating in stable mode."
-2024-08-26T08:47:48Z	DEBUG	events	KPA algorithm run. desiredReplicas: 0, currentReplicas: 1	{"type": "Normal", "object": {"kind":"PodAutoscaler","namespace":"default","name":"podautoscaler-example-kpa","uid":"a76f80e6-bdeb-462f-85c1-97192005d9fb","apiVersion":"autoscaling.aibrix.ai/v1alpha1","resourceVersion":"2245814"}, "reason": "KPAAlgorithmRun"}
-2024-08-26T08:47:48Z	DEBUG	events	We set rescale=False temporarily to skip scaling action	{"type": "Warning", "object": {"kind":"PodAutoscaler","namespace":"default","name":"podautoscaler-example-kpa","uid":"a76f80e6-bdeb-462f-85c1-97192005d9fb","apiVersion":"autoscaling.aibrix.ai/v1alpha1","resourceVersion":"2245814"}, "reason": "PipelineWIP"}
+2024-08-28T03:52:01Z	INFO	Obtained selector and get ReadyPodsCount	{"controller": "podautoscaler", "controllerGroup": "autoscaling.aibrix.ai", "controllerKind": "PodAutoscaler", "PodAutoscaler": {"name":"podautoscaler-example-kpa","namespace":"default"}, "namespace": "default", "name": "podautoscaler-example-kpa", "reconcileID": "2a811d63-9181-46b5-ac63-a512cb6c4e17", "selector": "app=nginx", "originalReadyPodsCount": 1}
+I0828 03:52:01.735190       1 kpa.go:245] "Operating in stable mode."
+2024-08-28T03:52:01Z	INFO	Successfully called Scale Algorithm	{"controller": "podautoscaler", "controllerGroup": "autoscaling.aibrix.ai", "controllerKind": "PodAutoscaler", "PodAutoscaler": {"name":"podautoscaler-example-kpa","namespace":"default"}, "namespace": "default", "name": "podautoscaler-example-kpa", "reconcileID": "2a811d63-9181-46b5-ac63-a512cb6c4e17", "scaleResult": {"DesiredPodCount":0,"ExcessBurstCapacity":98,"ScaleValid":true}}
+2024-08-28T03:52:01Z	INFO	Proposing desired replicas	{"controller": "podautoscaler", "controllerGroup": "autoscaling.aibrix.ai", "controllerKind": "PodAutoscaler", "PodAutoscaler": {"name":"podautoscaler-example-kpa","namespace":"default"}, "namespace": "default", "name": "podautoscaler-example-kpa", "reconcileID": "2a811d63-9181-46b5-ac63-a512cb6c4e17", "desiredReplicas": 0, "metric": "", "timestamp": "2024-08-28T03:52:01Z", "scaleTarget": "Deployment/default/nginx-deployment"}
+2024-08-28T03:52:01Z	DEBUG	events	KPA algorithm run. desiredReplicas: 0, currentReplicas: 1	{"type": "Normal", "object": {"kind":"PodAutoscaler","namespace":"default","name":"podautoscaler-example-kpa","uid":"f1dda4ea-4627-47d8-aaa8-a5499ed20698","apiVersion":"autoscaling.aibrix.ai/v1alpha1","resourceVersion":"2348298"}, "reason": "KPAAlgorithmRun"}
+2024-08-28T03:52:01Z	INFO	Successfully rescaled	{"controller": "podautoscaler", "controllerGroup": "autoscaling.aibrix.ai", "controllerKind": "PodAutoscaler", "PodAutoscaler": {"name":"podautoscaler-example-kpa","namespace":"default"}, "namespace": "default", "name": "podautoscaler-example-kpa", "reconcileID": "2a811d63-9181-46b5-ac63-a512cb6c4e17", "currentReplicas": 1, "desiredReplicas": 0, "reason": "All metrics below target"}
+2024-08-28T03:52:01Z	DEBUG	events	New size: 0; reason: All metrics below target	{"type": "Normal", "object": {"kind":"PodAutoscaler","namespace":"default","name":"podautoscaler-example-kpa","uid":"f1dda4ea-4627-47d8-aaa8-a5499ed20698","apiVersion":"autoscaling.aibrix.ai/v1alpha1","resourceVersion":"2348298"}, "reason": "SuccessfulRescale"}
+2024-08-28T03:52:01Z	DEBUG	events	KPA algorithm run. desiredReplicas: 0, currentReplicas: 0	{"type": "Normal", "object": {"kind":"PodAutoscaler","namespace":"default","name":"podautoscaler-example-kpa","uid":"f1dda4ea-4627-47d8-aaa8-a5499ed20698","apiVersion":"autoscaling.aibrix.ai/v1alpha1","resourceVersion":"2348301"}, "reason": "KPAAlgorithmRun"}
+2024-08-28T03:58:41Z	DEBUG	events	KPA algorithm run. desiredReplicas: 0, currentReplicas: 0	{"type": "Normal", "object": {"kind":"PodAutoscaler","namespace":"default","name":"podautoscaler-example-kpa","uid":"f1dda4ea-4627-47d8-aaa8-a5499ed20698","apiVersion":"autoscaling.aibrix.ai/v1alpha1","resourceVersion":"2348301"}, "reason": "KPAAlgorithmRun"}
 ```
 
-
-
-Some logs from `podautoscaler-example-kpa` are shown below, where you can observe events like `KPAAlgorithmRun` and `PipelineWIP`:
+Some events from `podautoscaler-example-kpa` are shown below, KPA succeeded to scale down the pods to 0:
 
 ```shell
 kubectl describe podautoscalers podautoscaler-example-kpa
 ```
 ```log
 Events:
-  Type     Reason           Age                    From           Message
-  ----     ------           ----                   ----           -------
-  Normal   KPAAlgorithmRun  6m15s (x2 over 6m15s)  PodAutoscaler  KPA algorithm run. desiredReplicas: 0, currentReplicas: 1
-  Warning  PipelineWIP      6m15s (x2 over 6m15s)  PodAutoscaler  We set rescale=False temporarily to skip scaling action
+  Type    Reason             Age    From           Message
+  ----    ------             ----   ----           -------
+  Normal  KPAAlgorithmRun    2m23s  PodAutoscaler  KPA algorithm run. desiredReplicas: 0, currentReplicas: 1
+  Normal  SuccessfulRescale  2m23s  PodAutoscaler  New size: 0; reason: All metrics below target
+  Normal  KPAAlgorithmRun    2m23s  PodAutoscaler  KPA algorithm run. desiredReplicas: 0, currentReplicas: 0
 ```
 
 

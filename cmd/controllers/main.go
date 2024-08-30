@@ -39,6 +39,8 @@ import (
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
+	"github.com/aibrix/aibrix/pkg/cache"
 	"github.com/aibrix/aibrix/pkg/controller"
 	//+kubebuilder:scaffold:imports
 )
@@ -64,6 +66,7 @@ func init() {
 	utilruntime.Must(modelv1alpha1.AddToScheme(scheme))
 
 	scheme.AddUnversionedTypes(metav1.SchemeGroupVersion, &metav1.UpdateOptions{}, &metav1.DeleteOptions{}, &metav1.CreateOptions{})
+	utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -158,6 +161,11 @@ func main() {
 		setupLog.Error(err, "unable to create manager")
 		os.Exit(1)
 	}
+
+	setupLog.Info("starting cache")
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	cache.NewCache(stopCh)
 
 	// Kind controller registration is encapsulated inside the pkg/controller/controller.go
 	// So here we can use more clean registration flow and there's no need to change logics in future.

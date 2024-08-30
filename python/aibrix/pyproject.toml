@@ -7,6 +7,9 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.11"
+huggingface-hub = "^0.24.6"
+tos = "^2.7.1"
+boto3 = "^1.35.5"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -18,3 +21,6 @@ isort = "^5.13.2"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.mypy]
+ignore_missing_imports = true

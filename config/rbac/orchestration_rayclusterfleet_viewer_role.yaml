@@ -1,0 +1,23 @@
+# permissions for end users to view rayclusterfleets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: orchestration-rayclusterfleet-viewer-role
+rules:
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - rayclusterfleets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - rayclusterfleets/status
+  verbs:
+  - get

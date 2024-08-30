@@ -8,7 +8,7 @@ kind load docker-image aibrix/vllm:v0.1.0
 
 2. Deploy mocked model image
 ```shell
-kubectl apply -f deployment.yaml
+kubectl apply -f docs/development/app/deployment.yaml
 kubectl port-forward svc/llama2-70b 8000:8000 &
 ```
 
@@ -71,7 +71,7 @@ curl http://localhost:8888/v1/chat/completions \
 
 Delete envoy gateway and corresponding objects
 ```
-kubectl delete -f gateway.yaml
+kubectl delete -f docs/development/app/gateway.yaml
 
 helm uninstall eg -n envoy-gateway-system
 ```
