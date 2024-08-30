@@ -14,8 +14,16 @@
 
 import json
 import os
+from enum import Enum
 from abc import ABC, abstractmethod
 
+
+LOCAL_STORAGE_PATH_VAR = "LOCAL_STORAGE_PATH"
+
+class StorageType(Enum):
+    LocalDiskFile = 1
+    S3 = 2
+    TOS = 3
 
 class PersistentStorage(ABC):
     """
@@ -46,8 +54,8 @@ class PersistentStorage(ABC):
         return self._storage_type_name
 
     @classmethod
-    def create_storage(cls, storage_type=0):
-        if storage_type == 0:
+    def create_storage(cls, storage_type=StorageType.LocalDiskFile):
+        if storage_type == StorageType.LocalDiskFile:
             return LocalDiskFiles()
         else:
             raise ValueError("Unknown storage type")
@@ -59,10 +67,16 @@ class LocalDiskFiles(PersistentStorage):
     """
 
     def __init__(self):
-        self.directory_path = os.path.abspath(os.path.dirname(__file__))
+        print("Setup ENV VAR for local storage path! ")
+
+        if LOCAL_STORAGE_PATH_VAR in os.environ:
+            self.directory_path = os.environ[LOCAL_STORAGE_PATH_VAR]
+        else:
+            self.directory_path = os.path.abspath(os.path.dirname(__file__))
+
         self.directory_path = self.directory_path + "/data/"
         os.makedirs(self.directory_path, exist_ok=True)
-        print("Storage path: ", self.directory_path)
+        print("Storage path is located: ", self.directory_path)
 
     def write_job_input_data(self, job_id, inputDataFileName):
         """This writes requests file to local disk."""
