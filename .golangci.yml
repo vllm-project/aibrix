@@ -17,7 +17,7 @@ issues:
         - dupl
         - lll
     # disable lll check for flag descriptions
-    - path: "cmd/main.go"
+    - path: "cmd/controllers/main.go"
       linters:
         - lll
 linters:

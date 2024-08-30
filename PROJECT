@@ -27,4 +27,22 @@ resources:
   kind: ModelAdapter
   path: github.com/aibrix/aibrix/api/model/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: aibrix.ai
+  group: orchestration
+  kind: RayClusterReplicaSet
+  path: github.com/aibrix/aibrix/api/orchestration/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: aibrix.ai
+  group: orchestration
+  kind: RayClusterFleet
+  path: github.com/aibrix/aibrix/api/orchestration/v1alpha1
+  version: v1alpha1
 version: "3"

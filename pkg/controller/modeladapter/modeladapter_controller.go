@@ -28,6 +28,8 @@ import (
 	"time"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	"github.com/aibrix/aibrix/pkg/cache"
+	"github.com/aibrix/aibrix/pkg/controller/modeladapter/scheduling"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -47,7 +49,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -113,6 +114,13 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	eventBroadcaster.StartRecordingToSink(&clientv1core.EventSinkImpl{Interface: k8sClient.CoreV1().Events("")})
 	recorder := eventBroadcaster.NewRecorder(mgr.GetScheme(), corev1.EventSource{Component: "model-adapter-controller"})
 
+	c, err := cache.GetCache()
+	if err != nil {
+		klog.Fatal(err.Error())
+	}
+
+	scheduler := scheduling.NewLeastAdapters(c)
+
 	reconciler := &ModelAdapterReconciler{
 		Client:              mgr.GetClient(),
 		Scheme:              mgr.GetScheme(),
@@ -120,6 +128,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 		ServiceLister:       serviceLister,
 		EndpointSliceLister: endpointSliceLister,
 		Recorder:            recorder,
+		scheduler:           scheduler,
 	}
 	return reconciler, nil
 }
@@ -129,9 +138,9 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// use the builder fashion. If we need more fine grain control later, we can switch to `controller.New()`
 	err := ctrl.NewControllerManagedBy(mgr).
 		For(&modelv1alpha1.ModelAdapter{}).
-		Watches(&corev1.Service{}, &handler.EnqueueRequestForObject{}).
-		Watches(&discoveryv1.EndpointSlice{}, &handler.EnqueueRequestForObject{}).
-		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}).
+		Owns(&corev1.Service{}).
+		Owns(&discoveryv1.EndpointSlice{}).
+		Owns(&corev1.Pod{}).
 		Complete(r)
 
 	klog.V(4).InfoS("Finished to add model-adapter-controller")
@@ -143,8 +152,9 @@ var _ reconcile.Reconciler = &ModelAdapterReconciler{}
 // ModelAdapterReconciler reconciles a ModelAdapter object
 type ModelAdapterReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Scheme    *runtime.Scheme
+	Recorder  record.EventRecorder
+	scheduler scheduling.Scheduler
 	// PodLister is able to list/get pods from a shared informer's cache store
 	PodLister corelisters.PodLister
 	// ServiceLister is able to list/get services from a shared informer's cache store
@@ -395,7 +405,7 @@ func (r *ModelAdapterReconciler) schedulePod(ctx context.Context, instance *mode
 	// TODO: let's build the scheduling algorithm later
 	// we should also fetch <pod, list<lora>> mappings later.
 
-	return &podList.Items[0], nil // Returning the first Pod for simplicity
+	return r.scheduler.SelectPod(ctx, podList.Items)
 }
 
 // GetEnvKey retrieves the value of the environment variable named by the key.

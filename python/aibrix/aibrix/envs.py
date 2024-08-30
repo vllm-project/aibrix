@@ -13,13 +13,60 @@
 # limitations under the License.
 
 import os
+from typing import Optional
+
+ENV_VARS_TRUE_VALUES = {"1", "ON", "YES", "TRUE"}
+
+
+def _is_true(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    return value.upper() in ENV_VARS_TRUE_VALUES
+
+
+def _parse_list_str(value: Optional[str], sep: str = ",") -> Optional[list[str]]:
+    if value is None:
+        return None
+    return [str(item).strip() for item in value.split(sep)]
+
+
+def _parse_int_or_none(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    return int(value)
+
 
 # Model Download Related Config
 
 # Downloader Default Directory
-DOWNLOADER_LOCAL_DIR = os.getenv("DOWNLOADER_LOCAL_DIR", '"/tmp/aibrix/models/"')
-DOWNLOADER_NUM_THREADS = int(os.getenv("DOWNLOADER_NUM_THREADS", "2"))
+DOWNLOADER_LOCAL_DIR = os.getenv("DOWNLOADER_LOCAL_DIR", "/tmp/aibrix/models/")
+
+
+DOWNLOADER_MODEL_NAME = os.getenv("DOWNLOADER_MODEL_NAME")
+DOWNLOADER_NUM_THREADS = int(os.getenv("DOWNLOADER_NUM_THREADS", "4"))
+DOWNLOADER_PART_THRESHOLD = _parse_int_or_none(os.getenv("DOWNLOADER_PART_THRESHOLD"))
+DOWNLOADER_PART_CHUNKSIZE = _parse_int_or_none(os.getenv("DOWNLOADER_PART_CHUNKSIZE"))
+DOWNLOADER_ALLOW_FILE_SUFFIX = _parse_list_str(
+    os.getenv("DOWNLOADER_ALLOW_FILE_SUFFIX")
+)
 
 # Downloader Regex
 DOWNLOADER_S3_REGEX = r"^s3://"
-DOWNLOADER_TOS_REGEX = r"https://(.+?).tos-(.+?).volces.com/(.+)"
+DOWNLOADER_TOS_REGEX = r"^tos://"
+
+# Downloader HuggingFace Envs
+DOWNLOADER_HF_TOKEN = os.getenv("HF_TOKEN")
+DOWNLOADER_HF_ENDPOINT = os.getenv("HF_ENDPOINT")
+DOWNLOADER_HF_REVISION = os.getenv("HF_REVISION")
+
+# Downloader TOS Envs
+DOWNLOADER_TOS_ACCESS_KEY = os.getenv("TOS_ACCESS_KEY")
+DOWNLOADER_TOS_SECRET_KEY = os.getenv("TOS_SECRET_KEY")
+DOWNLOADER_TOS_ENDPOINT = os.getenv("TOS_ENDPOINT")
+DOWNLOADER_TOS_REGION = os.getenv("TOS_REGION")
+
+# Downloader AWS S3 Envs
+DOWNLOADER_AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
+DOWNLOADER_AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+DOWNLOADER_AWS_ENDPOINT = os.getenv("AWS_ENDPOINT_URL")
+DOWNLOADER_AWS_REGION = os.getenv("AWS_REGION")

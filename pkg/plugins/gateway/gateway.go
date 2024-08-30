@@ -14,33 +14,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package main
+package gateway
 
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"log"
-	"net"
-	"os"
-	"os/signal"
 	"strings"
-	"syscall"
-	"time"
 
 	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
 	routing "github.com/aibrix/aibrix/pkg/plugins/gateway/routing_algorithms"
-	redis "github.com/redis/go-redis/v9"
 	openai "github.com/sashabaranov/go-openai"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -50,21 +40,29 @@ import (
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
-type server struct {
+type Server struct {
 	ratelimiter ratelimiter.AccountRateLimiter
 	client      kubernetes.Interface
 }
-type healthServer struct{}
 
-func (s *healthServer) Check(ctx context.Context, in *healthPb.HealthCheckRequest) (*healthPb.HealthCheckResponse, error) {
+func NewServer(r ratelimiter.AccountRateLimiter, c kubernetes.Interface) *Server {
+	return &Server{
+		ratelimiter: r,
+		client:      c,
+	}
+}
+
+type HealthServer struct{}
+
+func (s *HealthServer) Check(ctx context.Context, in *healthPb.HealthCheckRequest) (*healthPb.HealthCheckResponse, error) {
 	return &healthPb.HealthCheckResponse{Status: healthPb.HealthCheckResponse_SERVING}, nil
 }
 
-func (s *healthServer) Watch(in *healthPb.HealthCheckRequest, srv healthPb.Health_WatchServer) error {
+func (s *HealthServer) Watch(in *healthPb.HealthCheckRequest, srv healthPb.Health_WatchServer) error {
 	return status.Error(codes.Unimplemented, "watch is not implemented")
 }
 
-func (s *server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
+func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var user, targetPodIP string
 	ctx := srv.Context()
 
@@ -108,7 +106,7 @@ func (s *server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	}
 }
 
-func (s *server) HandleRequestHeaders(ctx context.Context, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, string, string) {
+func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, string, string) {
 	log.Println("--- In RequestHeaders processing ...")
 	var user, model, targetPodIP string
 	r := req.Request
@@ -250,7 +248,7 @@ func (s *server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 	return resp, user, targetPodIP
 }
 
-func (s *server) HandleRequestBody(req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
+func (s *Server) HandleRequestBody(req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
 	log.Println("--- In RequestBody processing")
 
 	return &extProcPb.ProcessingResponse{
@@ -279,7 +277,7 @@ func (s *server) HandleRequestBody(req *extProcPb.ProcessingRequest, targetPodIP
 	}
 }
 
-func (s *server) HandleResponseHeaders(req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
+func (s *Server) HandleResponseHeaders(req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
 	log.Println("--- In ResponseHeaders processing")
 
 	return &extProcPb.ProcessingResponse{
@@ -309,7 +307,7 @@ func (s *server) HandleResponseHeaders(req *extProcPb.ProcessingRequest, targetP
 	}
 }
 
-func (s *server) HandleResponseBody(ctx context.Context, req *extProcPb.ProcessingRequest, user string) *extProcPb.ProcessingResponse {
+func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.ProcessingRequest, user string) *extProcPb.ProcessingResponse {
 	log.Println("--- In ResponseBody processing")
 
 	r := req.Request
@@ -385,7 +383,7 @@ func (s *server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 	}
 }
 
-func (s *server) checkRPM(ctx context.Context, user string) (envoyTypePb.StatusCode, error) {
+func (s *Server) checkRPM(ctx context.Context, user string) (envoyTypePb.StatusCode, error) {
 	rpmLimit, err := s.ratelimiter.GetLimit(ctx, fmt.Sprintf("%v_RPM_LIMIT", user))
 	if err != nil {
 		klog.Error(err)
@@ -406,7 +404,7 @@ func (s *server) checkRPM(ctx context.Context, user string) (envoyTypePb.StatusC
 	return envoyTypePb.StatusCode_OK, nil
 }
 
-func (s *server) checkTPM(ctx context.Context, user string) (envoyTypePb.StatusCode, error) {
+func (s *Server) checkTPM(ctx context.Context, user string) (envoyTypePb.StatusCode, error) {
 	tpmLimit, err := s.ratelimiter.GetLimit(ctx, fmt.Sprintf("%v_TPM_LIMIT", user))
 	if err != nil {
 		klog.Error(err)
@@ -425,101 +423,4 @@ func (s *server) checkTPM(ctx context.Context, user string) (envoyTypePb.StatusC
 	}
 
 	return envoyTypePb.StatusCode_OK, nil
-}
-
-// Create Redis Client
-var (
-	grpc_port  int
-	redis_host = getEnv("REDIS_HOST", "localhost")
-	redis_port = string(getEnv("REDIS_PORT", "6379"))
-)
-
-func getEnv(key, defaultValue string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return defaultValue
-	}
-	return value
-}
-
-//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
-
-func createClient(kubeconfigPath string) (kubernetes.Interface, error) {
-	var kubeconfig *rest.Config
-
-	if kubeconfigPath != "" {
-		config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
-		if err != nil {
-			return nil, fmt.Errorf("unable to load kubeconfig from %s: %v", kubeconfigPath, err)
-		}
-		kubeconfig = config
-	} else {
-		config, err := rest.InClusterConfig()
-		if err != nil {
-			return nil, fmt.Errorf("unable to load in-cluster config: %v", err)
-		}
-		kubeconfig = config
-	}
-
-	client, err := kubernetes.NewForConfig(kubeconfig)
-	if err != nil {
-		return nil, fmt.Errorf("unable to create a client: %v", err)
-	}
-
-	return client, nil
-}
-
-// TODO (varun): one or multi plugin ext_proc
-func main() {
-	var kubeconfig *string
-	kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
-	flag.IntVar(&grpc_port, "port", 50052, "gRPC port")
-	flag.Parse()
-
-	// Connect to Redis
-	client := redis.NewClient(&redis.Options{
-		Addr: redis_host + ":" + redis_port,
-		DB:   0, // Default DB
-	})
-	pong, err := client.Ping(context.Background()).Result()
-	if err != nil {
-		log.Fatal("Error connecting to Redis:", err)
-	}
-	fmt.Println("Connected to Redis:", pong)
-
-	// Connect to K8s cluster
-	k8sClient, err := createClient(*kubeconfig)
-	if err != nil {
-		log.Fatal("Error creating kubernetes client:", err)
-	}
-
-	// grpc server init
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", grpc_port))
-	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
-	}
-
-	s := grpc.NewServer()
-
-	extProcPb.RegisterExternalProcessorServer(s, &server{
-		ratelimiter: ratelimiter.NewRedisAccountRateLimiter("aibrix", client, 1*time.Minute),
-		client:      k8sClient,
-	})
-	healthPb.RegisterHealthServer(s, &healthServer{})
-
-	log.Println("Starting gRPC server on port :50052")
-
-	// shutdown
-	var gracefulStop = make(chan os.Signal)
-	signal.Notify(gracefulStop, syscall.SIGTERM)
-	signal.Notify(gracefulStop, syscall.SIGINT)
-	go func() {
-		sig := <-gracefulStop
-		log.Printf("caught sig: %+v", sig)
-		log.Println("Wait for 1 second to finish processing")
-		time.Sleep(1 * time.Second)
-		os.Exit(0)
-	}()
-
-	s.Serve(lis)
 }

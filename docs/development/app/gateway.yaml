@@ -61,7 +61,7 @@ spec:
           cluster: original_destination_cluster
           timeout: 1000s  # Increase route timeout
         typed_per_filter_config:
-          "envoy.filters.http.ext_proc/envoyextensionpolicy/default/ext-proc-example/extproc/0":
+          "envoy.filters.http.ext_proc/envoyextensionpolicy/default/gateway-plugins-extension-policy/extproc/0":
             "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
             "config": {}
   - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"

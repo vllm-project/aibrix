@@ -1,14 +1,22 @@
 # Install backed storage for persist rpm/tpm configuration
-kubectl apply -f redis.yaml
+kubectl apply -f pkg/plugins/gateway/redis.yaml
 
 # Add rpm/tpm config 
 kubectl exec -it redis-master-<pod-name> -- redis-cli
 
-set aibrix:<user-name>_TPM_LIMIT 100
-set aibrix:<user-name>_RPM_LIMIT 10
+set aibrix:your-user-name_TPM_LIMIT 100
+set aibrix:your-user-name_RPM_LIMIT 10
 
-# Install extension proc
-make build && make apply
+# Cleanup & Install gateway plugin extension proc
+docker rmi aibrix/plugins:v0.1.0 --force
+kubectl delete -f pkg/plugins/gateway/deployment.yaml 
+kubectl delete -f pkg/plugins/gateway/plugins.yaml
+
+make docker-build-plugins
+kind load docker-image aibrix/plugins:v0.1.0
+kubectl apply -f pkg/plugins/gateway/deployment.yaml
+kubectl apply -f pkg/plugins/gateway/plugins.yaml
+
 
 # Request based on model name
 ```shell
@@ -36,7 +44,7 @@ kubectl rollout restart deployment envoy-gateway -n envoy-gateway-system
 # After applying envoy patch policy to target specific pod, model name in header is only used to fetch pods for that model service
 ```shell
 curl -v http://localhost:8888/v1/chat/completions \
-  -H "user: varun" \
+  -H "user: your-user-name" \
   -H "model: llama2-70b" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer any_key" \
