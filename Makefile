@@ -145,10 +145,10 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
 docker-buildx-downloader:
-	docker buildx build --push --platform=${PLATFORMS} -f runtime.Dockerfile . -t ${AIBRIX_REPO}/${DOWNLOADER_IMG}
+	docker buildx build --push --platform=${PLATFORMS} --target=downloader -f runtime.Dockerfile . -t ${AIBRIX_REPO}/${DOWNLOADER_IMG}
 
 docker-buildx-runtime:
-	docker buildx build --push --platform=${PLATFORMS} -f router.Dockerfile . -t ${AIBRIX_REPO}/${RUNTIME_IMG}
+	docker buildx build --push --platform=${PLATFORMS} --target=runtime -f runtime.Dockerfile . -t ${AIBRIX_REPO}/${RUNTIME_IMG}
 
 ##@ Deployment
 
