@@ -1,7 +1,18 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, Response, jsonify
 import time
+import os
+try:
+    from kubernetes import client, config
+except Exception as e:
+    print(f"Failed to import kubernetes, skip: {e}")
 
 app = Flask(__name__)
+v1 = None
+
+MODEL_NAME = 'llama2-70b'
+DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-70b')
+NAMESPACE = os.getenv('NAMESPACE', 'default')
+DEFAULT_REPLICAS = int(os.getenv('DEFAULT_REPLICAS', '1'))
 
 models = [
     {
@@ -152,6 +163,44 @@ def chat_completions():
     }
     return jsonify(response), 200
 
+@app.route('/metrics')
+def metrics():
+    # get deployment information
+    try:
+        apps_v1 = client.AppsV1Api()
+        resp = apps_v1.read_namespaced_deployment(DEPLOYMENT_NAME, NAMESPACE)
+        replicas = resp.spec.replicas if resp.spec.replicas is not None else 1
+    except Exception as e:
+        print(f"Failed to get deployment information: {DEPLOYMENT_NAME=} {NAMESPACE=} {e=}, set replicas to {DEFAULT_REPLICAS}")
+        replicas = DEFAULT_REPLICAS
+
+    # a reasonable mock total value
+    total = 100.0
+    model_name = MODEL_NAME
+    # 计算每个 metrics
+    success_total = total / replicas
+    avg_prompt_throughput = total / replicas if replicas > 0 else 0
+    avg_generation_throughput = total / replicas if replicas > 0 else 0
+
+    # construct Prometheus-style Metrics
+    metrics_output = f"""# HELP vllm:request_success_total Count of successfully processed requests.
+# TYPE vllm:request_success_total counter
+vllm:request_success_total{{finished_reason="stop",model_name="{model_name}"}} {success_total}
+# HELP vllm:avg_prompt_throughput_toks_per_s Average prefill throughput in tokens/s.
+# TYPE vllm:avg_prompt_throughput_toks_per_s gauge
+vllm:avg_prompt_throughput_toks_per_s{{model_name="{model_name}"}} {avg_prompt_throughput}
+# HELP vllm:avg_generation_throughput_toks_per_s Average generation throughput in tokens/s.
+# TYPE vllm:avg_generation_throughput_toks_per_s gauge
+vllm:avg_generation_throughput_toks_per_s{{model_name="{model_name}"}} {avg_generation_throughput}
+"""
+    return Response(metrics_output, mimetype='text/plain')
 
 if __name__ == '__main__':
+    try:
+        # config.load_kube_config()
+        config.load_incluster_config()
+    except Exception as e:
+        print(f"Failed to load k8s config: {e}")
+
+    print(f"Starting app. DEPLOYMENT_NAME: {DEPLOYMENT_NAME}, NAMESPACE: {NAMESPACE}")
     app.run(host='0.0.0.0', port=8000)
