@@ -1,2 +1,2 @@
 #!/bin/bash
-gunicorn -b :8000 app:app -k uvicorn.workers.UvicornWorker
+gunicorn -b :8080 app:app -k uvicorn.workers.UvicornWorker

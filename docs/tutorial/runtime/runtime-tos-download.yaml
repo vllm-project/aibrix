@@ -31,14 +31,12 @@ spec:
         - --port
         - "8000"
         - --model
-        - /models/deepseek-coder-6.7b-instruct
+        - /models/deepseek-ai_deepseek-coder-6.7b-instruct
         - --served-model-name
         - deepseek-ai/deepseek-coder-6.7b-instruct
         - --distributed-executor-backend
         - ray
         - --trust-remote-code
-        - --max-model-len
-        - "1296"
         image: vllm/vllm-openai:v0.5.5
         imagePullPolicy: Always
         livenessProbe:
@@ -72,20 +70,29 @@ spec:
             nvidia.com/gpu: "1"
         # We need to use dataset cache
         volumeMounts:
-        - mountPath: /root/.cache/huggingface
-          name: cache-volume
         - mountPath: /models
           name: model-hostpath
         - name: dshm
           mountPath: /dev/shm
+      - name: aibrix-runtime
+        image: aibrix/aibrix-runtime:latest
+        command:
+        - bash
+        - entrypoint.sh
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        volumeMounts:
+        - mountPath: /models
+          name: model-hostpath
       initContainers:
-      - name: init-model
-        image: aibrix/downloader
+      - name: model-init
+        image: aibrix/aibrix-downloader:latest
         command:
         - python
         - /app/download.py
         - --model-uri
-        - deepseek-ai/deepseek-coder-6.7b-instruct
+        - tos://<input your tos bucket name>/<input your tos bucket path>
         - --local-dir
         - /models/
         env:
@@ -101,27 +108,16 @@ spec:
           value: <input your tos endpoint>
         - name: TOS_REGION
           value: <input your tos region>
-       volumeMounts:
+        volumeMounts:
         - mountPath: /models
           name: model-hostpath
       volumes:
-      - emptyDir: {}
-        name: cache-volume
       - emptyDir: {}
         name: model-hostpath
       - name: dshm
         emptyDir:
           medium: Memory
           sizeLimit: "10Gi"
-      affinity:
-          nodeAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-              - matchExpressions:
-                - key: machine.cluster.vke.volcengine.com/gpu-name
-                  operator: In
-                  values:
-                  - NVIDIA-A10
 
 ---
 
@@ -133,8 +129,8 @@ metadata:
     prometheus-discovery: "true"
   annotations:
     prometheus.io/scrape: "true"
-    prometheus.io/port: "8000"
-  name: aibricks-model-deepseek-coder-6.7b-instruct
+    prometheus.io/port: "8080"
+  name: aibricks-model-deepseek-coder-6-7b-instruct-svc
   namespace: default
 spec:
   ports:
@@ -142,6 +138,10 @@ spec:
     port: 8000
     protocol: TCP
     targetPort: 8000
+  - name: http
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
   selector:
     models.aibricks.ai: deepseek-coder-6.7b-instruct
   type: ClusterIP

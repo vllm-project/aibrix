@@ -144,9 +144,11 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
+.PHONY: docker-buildx-downloader
 docker-buildx-downloader:
 	docker buildx build --push --platform=${PLATFORMS} --target=downloader -f runtime.Dockerfile . -t ${AIBRIX_REPO}/${DOWNLOADER_IMG}
 
+.PHONY: docker-buildx-runtime
 docker-buildx-runtime:
 	docker buildx build --push --platform=${PLATFORMS} --target=runtime -f runtime.Dockerfile . -t ${AIBRIX_REPO}/${RUNTIME_IMG}
 
