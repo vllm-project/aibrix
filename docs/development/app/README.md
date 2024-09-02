@@ -3,6 +3,9 @@
 1. Builder mocked base model image
 ```dockerfile
 docker build -t aibrix/vllm:v0.1.0 -f Dockerfile .
+
+# If you are using Docker-Desktop on Mac, Kubernetes shares the local image repository with Docker.
+# Therefore, the following command is not necessary.
 kind load docker-image aibrix/vllm:v0.1.0
 ```
 
@@ -38,7 +41,7 @@ kind load docker-image aibrix/plugins:v0.1.0
 make install && make deploy
 ```
 
-Check stauts
+Check status
 ```shell
 helm status eg -n envoy-gateway-system
 
@@ -76,4 +79,48 @@ curl -v http://localhost:8888/v1/chat/completions \
 Delete envoy gateway and corresponding objects
 ```shell
 make undeploy && make uninstall
+```
+
+
+## Test Metrics
+
+In order to facilitate the testing of Metrics, we make the Metrics value returned by
+this mocked vllm deployment inversely proportional to the replica.
+
+We scale the deployment to 1 replica firstly.
+
+```shell
+kubectl scale deployment llama2-70b --replicas=1
+curl http://localhost:8000/metrics
+```
+
+```log
+# HELP vllm:request_success_total Count of successfully processed requests.
+# TYPE vllm:request_success_total counter
+vllm:request_success_total{finished_reason="stop",model_name="llama2-70b"} 100.0
+# HELP vllm:avg_prompt_throughput_toks_per_s Average prefill throughput in tokens/s.
+# TYPE vllm:avg_prompt_throughput_toks_per_s gauge
+vllm:avg_prompt_throughput_toks_per_s{model_name="llama2-70b"} 100.0
+# HELP vllm:avg_generation_throughput_toks_per_s Average generation throughput in tokens/s.
+# TYPE vllm:avg_generation_throughput_toks_per_s gauge
+vllm:avg_generation_throughput_toks_per_s{model_name="llama2-70b"} 100.0
+```
+
+Then we scale the deployment to 5 replicas.
+
+```shell
+kubectl scale deployment llama2-70b --replicas=5
+curl http://localhost:8000/metrics
+```
+
+```
+# HELP vllm:request_success_total Count of successfully processed requests.
+# TYPE vllm:request_success_total counter
+vllm:request_success_total{finished_reason="stop",model_name="llama2-70b"} 20.0
+# HELP vllm:avg_prompt_throughput_toks_per_s Average prefill throughput in tokens/s.
+# TYPE vllm:avg_prompt_throughput_toks_per_s gauge
+vllm:avg_prompt_throughput_toks_per_s{model_name="llama2-70b"} 20.0
+# HELP vllm:avg_generation_throughput_toks_per_s Average generation throughput in tokens/s.
+# TYPE vllm:avg_generation_throughput_toks_per_s gauge
+vllm:avg_generation_throughput_toks_per_s{model_name="llama2-70b"} 20.0
 ```
