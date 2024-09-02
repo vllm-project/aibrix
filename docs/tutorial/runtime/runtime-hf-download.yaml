@@ -1,0 +1,145 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    models.aibricks.ai: deepseek-coder-6.7b-instruct
+    models.aibricks.com/model-name: deepseek-coder-6.7b-instruct
+  name: aibricks-model-deepseek-coder-6.7b-instruct
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      models.aibricks.ai: deepseek-coder-6.7b-instruct
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        models.aibricks.ai: deepseek-coder-6.7b-instruct
+    spec:
+      containers:
+      - command:
+        - python3
+        - -m
+        - vllm.entrypoints.openai.api_server
+        - --host
+        - "0.0.0.0"
+        - --port
+        - "8000"
+        - --model
+        - /models/deepseek-ai_deepseek-coder-6.7b-instruct
+        - --served-model-name
+        - deepseek-ai/deepseek-coder-6.7b-instruct
+        - --distributed-executor-backend
+        - ray
+        - --trust-remote-code
+        image: vllm/vllm-openai:v0.5.5
+        imagePullPolicy: Always
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTP
+          initialDelaySeconds: 90
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: vllm-openai
+        ports:
+        - containerPort: 8000
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTP
+          initialDelaySeconds: 90
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+          requests:
+            nvidia.com/gpu: "1"
+        # We need to use dataset cache
+        volumeMounts:
+        - mountPath: /models
+          name: model-hostpath
+        - name: dshm
+          mountPath: /dev/shm
+      - name: aibrix-runtime
+        image: aibrix/aibrix-runtime:latest
+        command:
+        - bash
+        - entrypoint.sh
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        volumeMounts:
+        - mountPath: /models
+          name: model-hostpath
+      initContainers:
+      - name: model-init
+        image: aibrix/aibrix-downloader:latest
+        command:
+        - python
+        - /app/download.py
+        - --model-uri
+        - deepseek-ai/deepseek-coder-6.7b-instruct
+        - --local-dir
+        - /models/
+        env:
+        - name: DOWNLOADER_MODEL_NAME
+          value: deepseek-ai/deepseek-coder-6.7b-instruct
+        - name: DOWNLOADER_ALLOW_FILE_SUFFIX
+          value: json, safetensors
+        - name: HF_TOKEN
+          value: <input your hf token, if needed>
+        - name: HF_ENDPOINT
+          value: <input your hf endpoint, if needed>
+        - name: HF_REVISION
+          value: <input your mdoel revision, if needed>
+        volumeMounts:
+        - mountPath: /models
+          name: model-hostpath
+      volumes:
+      - emptyDir: {}
+        name: model-hostpath
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: "10Gi"
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    models.aibricks.ai: deepseek-coder-6.7b-instruct
+    prometheus-discovery: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+  name: aibricks-model-deepseek-coder-6-7b-instruct-svc
+  namespace: default
+spec:
+  ports:
+  - name: serve
+    port: 8000
+    protocol: TCP
+    targetPort: 8000
+  - name: http
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    models.aibricks.ai: deepseek-coder-6.7b-instruct
+  type: ClusterIP
