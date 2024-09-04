@@ -31,7 +31,7 @@ The expected output is as follows:
 ```log
 # podautoscalers.autoscaling.aibrix.ai
 ```
-## Start the AIBrix Manager
+## Start 1: run AIBrix Manager locally or from Goland
 
 Open a separate terminal to start the AIBrix manager. This process is synchronous:
 
@@ -49,6 +49,12 @@ You should see the following logs if the manager launches successfully:
 Starting workers	{"controller": "podautoscaler", "controllerGroup": "autoscaling.aibrix.ai", "controllerKind": "PodAutoscaler", "worker count": 1}
 ...
 
+```
+
+For debugging purposes, you can expose the ports in Kubernetes using the following command:
+
+```shell
+kubectl port-forward svc/llama2-70b 8000:8000
 ```
 
 ## Start 2: Build and Deploy Manager
@@ -188,7 +194,7 @@ The expected output is as follows:
 Note: The reactive speed of the default HPA is limited; AIBrix plans to optimize this in future releases.
 
 
-# [WIP] Case 2: Create KPA-based AIBrix PodAutoscaler
+# Case 2: Create KPA-based AIBrix PodAutoscaler on NGinx (Deprecated)
 
 Create Nginx App, the default replicas is 1:
 ```shell
@@ -250,6 +256,91 @@ Events:
   Normal  KPAAlgorithmRun    2m23s  PodAutoscaler  KPA algorithm run. desiredReplicas: 0, currentReplicas: 0
 ```
 
+# Case 3: Create a KPA-Based AIBrix Pod Autoscaler on Mocked Llama
+[README.md](../../development/app/README.md)
+
+Here is a polished and translated version of your readme:
+
+---
+
+## Launching Mocked Llama
+
+The Mocked Llama is a simulation of a vllm-based Llama deployment. It provides mocked metrics for scaling purposes, following the standard Prometheus protocol.
+
+For a detailed introduction, refer to the [README.md](../../development/app/README.md).
+
+### Deployment on K8S
+
+Deploy using the following commands:
+
+```shell
+kubectl apply -f docs/development/app/deployment.yaml
+kubectl get deployments -n default
+```
+
+You should see the deployment status similar to this:
+
+```log
+NAME         READY   UP-TO-DATE   AVAILABLE   AGE
+llama2-70b   3/3     3            3           16s
+```
+
+### Local Debugging
+
+If you prefer local debugging, expose the ports using:
+
+```shell
+kubectl port-forward svc/llama2-70b 8000:8000
+```
+
+## Autoscaling
+
+Create an autoscaler of type KPA:
+
+```shell
+kubectl apply -f config/samples/autoscaling_v1alpha1_mock_llama.yaml
+```
+
+Verify the creation of the KPA scaler:
+
+```shell
+kubectl get podautoscalers --all-namespaces
+```
+
+```log
+NAMESPACE   NAME                               AGE
+default     podautoscaler-example-mock-llama   10s
+```
+
+## Scaling Result, Logs and Events
+
+
+```shell
+kubectl get deployments -n default
+```
+
+The deployment has been rescaled to 5 replicas:
+
+```log
+NAME         READY   UP-TO-DATE   AVAILABLE   AGE
+llama2-70b   5/5     5            5           9m47s
+```
+
+Check for logs indicating `KPA algorithm run...` in the `aibrix-controller-manager`:
+
+```shell
+kubectl get pods -n aibrix-system -o name | grep aibrix-controller-manager | head -n 1 | xargs -I {} kubectl logs {} -n aibrix-system |grep 'KPA'
+```
+
+```log
+2024-09-04T05:58:32Z  DEBUG events  KPA algorithm run. currentReplicas: 5, desiredReplicas: 3, rescale: true  {"type": "Normal", "object": {"kind":"PodAutoscaler","namespace":"default","name":"podautoscaler-example-mock-llama","uid":"4a303da4-e444-40d3-aea7-119af93a4dca","apiVersion":"autoscaling.aibrix.ai/v1alpha1","resourceVersion":"2538282"}, "reason": "KPAAlgorithmRun"}
+2024-09-04T05:58:32Z  DEBUG events  KPA algorithm run. currentReplicas: 5, desiredReplicas: 5, rescale: false {"type": "Normal", "object": {"kind":"PodAutoscaler","namespace":"default","name":"podautoscaler-example-mock-llama","uid":"4a303da4-e444-40d3-aea7-119af93a4dca","apiVersion":"autoscaling.aibrix.ai/v1alpha1","resourceVersion":"2538286"}, "reason": "KPAAlgorithmRun"}
+```
+
+## Scaling Analysis
+
+The Mocked Llama has an average prompt throughput of 100 tokens per second (`avg_prompt_throughput_toks_per_s`). The AutoScaler aims to maintain each pod's metrics at 20. As indicated in the events, the KPA podautoscaler adjusted the replicas from 3 to 5.
+
 
 # Cleanup
 
@@ -259,6 +350,7 @@ To clean up the resources:
 # Remove AIBrix resources
 kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example
 kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example-kpa
+kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example-mock-llama
 
 make uninstall && make undeploy
 
@@ -268,4 +360,5 @@ kubectl delete hpa podautoscaler-example-hpa
 # Remove the demo Nginx deployment and load generator
 kubectl delete deployment nginx-deployment
 kubectl delete pod load-generator
+kubectl delete deployment llama2-70b
 ```
