@@ -1,4 +1,4 @@
-name: docker-push-images
+name: Docker Push Images
 
 on:
   push:
