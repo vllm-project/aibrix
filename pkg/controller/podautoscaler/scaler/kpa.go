@@ -19,12 +19,13 @@ package scaler
 import (
 	"context"
 	"errors"
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
-	v1 "k8s.io/api/core/v1"
 	"math"
 	"strconv"
 	"time"
+
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
+	v1 "k8s.io/api/core/v1"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
 	"k8s.io/klog/v2"
@@ -292,7 +293,10 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 }
 
 func (k *KpaAutoscaler) UpdatePodListMetric(ctx context.Context, metricKey metrics.NamespaceNameMetric, list *v1.PodList, port int, now time.Time) {
-	k.metricsClient.UpdatePodListMetric(ctx, metricKey, list, port, now)
+	err := k.metricsClient.UpdatePodListMetric(ctx, metricKey, list, port, now)
+	if err != nil {
+		return
+	}
 }
 
 func (k *KpaAutoscaler) UpdateSpec(pa autoscalingv1alpha1.PodAutoscaler) {

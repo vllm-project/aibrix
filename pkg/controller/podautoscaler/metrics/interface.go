@@ -18,8 +18,9 @@ package metrics
 
 import (
 	"context"
-	"k8s.io/apimachinery/pkg/types"
 	"time"
+
+	"k8s.io/apimachinery/pkg/types"
 
 	v1 "k8s.io/api/core/v1"
 

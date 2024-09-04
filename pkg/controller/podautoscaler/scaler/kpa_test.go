@@ -17,9 +17,10 @@ limitations under the License.
 package scaler
 
 import (
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 	"testing"
 	"time"
+
+	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 )
 
 // TestKpaScale tests the KPA behavior under high traffic rising condition.
@@ -31,12 +32,12 @@ func TestKpaScale(t *testing.T) {
 	kpaMetricsClient := metrics.NewKPAMetricsClient()
 	now := time.Now()
 	metricKey := metrics.NewNamespaceNameMetric("test_ns", "llama-70b", "ttot")
-	kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-60*time.Second), 10.0)
-	kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-50*time.Second), 11.0)
-	kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-40*time.Second), 12.0)
-	kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-30*time.Second), 13.0)
-	kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-20*time.Second), 14.0)
-	kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-10*time.Second), 100.0)
+	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-60*time.Second), 10.0)
+	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-50*time.Second), 11.0)
+	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-40*time.Second), 12.0)
+	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-30*time.Second), 13.0)
+	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-20*time.Second), 14.0)
+	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-10*time.Second), 100.0)
 
 	kpaScaler, err := NewKpaAutoscaler(readyPodCount,
 		&DeciderKpaSpec{
