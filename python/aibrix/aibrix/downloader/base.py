@@ -41,7 +41,7 @@ class BaseDownloader(ABC):
     def __post_init__(self):
         # valid downloader config
         self._valid_config()
-        self.model_name_path = self.model_name.replace("/", "_")
+        self.model_name_path = self.model_name
 
     @abstractmethod
     def _valid_config(self):

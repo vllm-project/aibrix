@@ -31,7 +31,7 @@ spec:
         - --port
         - "8000"
         - --model
-        - /models/deepseek-ai_deepseek-coder-6.7b-instruct
+        - /models/deepseek-ai/deepseek-coder-6.7b-instruct
         - --served-model-name
         - deepseek-ai/deepseek-coder-6.7b-instruct
         - --distributed-executor-backend
