@@ -3,6 +3,7 @@ apiVersion: apps/v1  # API version
 kind: Deployment
 metadata:
   name: redis-master # Unique name for the deployment
+  namespace: aibrix-system
   labels:
     app: redis       # Labels to be applied to this deployment
 spec:
@@ -33,6 +34,7 @@ apiVersion: v1
 kind: Service        # Type of Kubernetes resource
 metadata:
   name: redis-master # Name of the Kubernetes resource
+  namespace: aibrix-system
   labels:            # Labels that will be applied to this resource
     app: redis
     role: master

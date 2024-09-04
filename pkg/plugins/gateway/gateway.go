@@ -26,6 +26,7 @@ import (
 
 	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
 	routing "github.com/aibrix/aibrix/pkg/plugins/gateway/routing_algorithms"
+	podutils "github.com/aibrix/aibrix/pkg/utils"
 	openai "github.com/sashabaranov/go-openai"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -183,7 +184,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 		}, user, targetPodIP
 	}
 
-	pods, err := s.client.CoreV1().Pods("default").List(ctx, v1.ListOptions{
+	pods, err := s.client.CoreV1().Pods(podutils.NAMESPACE).List(ctx, v1.ListOptions{
 		LabelSelector: fmt.Sprintf("model.aibrix.ai=%s", model),
 	})
 	if err != nil {

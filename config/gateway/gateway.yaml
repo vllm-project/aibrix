@@ -2,6 +2,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
   name: eg
+  namespace: aibrix-system
 spec:
   controllerName: gateway.envoyproxy.io/gatewayclass-controller
 ---
@@ -9,6 +10,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: eg
+  namespace: aibrix-system
 spec:
   gatewayClassName: eg
   listeners:
@@ -20,7 +22,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: envoy-gateway-config
-  namespace: envoy-gateway-system
+  namespace: aibrix-system
 data:
   envoy-gateway.yaml: |
     apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -33,9 +35,29 @@ data:
       enableEnvoyPatchPolicy: true   
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: gateway-plugins-extension-policy
+  namespace: aibrix-system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: eg
+  extProc:
+    - backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+      processingMode:
+        request: {}
+        response: 
+          body: Streamed
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyPatchPolicy
 metadata:
   name: epp
+  namespace: aibrix-system
 spec:
   type: "JSONPatch"
   targetRef:
@@ -44,7 +66,7 @@ spec:
     name: eg
   jsonPatches:
   - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
-    name: "default/eg/http"
+    name: "aibrix-system/eg/http"
     operation:
       op: add
       path: "/virtual_hosts/0/routes/0"
@@ -61,7 +83,7 @@ spec:
           cluster: original_destination_cluster
           timeout: 1000s  # Increase route timeout
         typed_per_filter_config:
-          "envoy.filters.http.ext_proc/envoyextensionpolicy/default/gateway-plugins-extension-policy/extproc/0":
+          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/gateway-plugins-extension-policy/extproc/0":
             "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
             "config": {}
   - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"

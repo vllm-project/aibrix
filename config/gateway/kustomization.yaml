@@ -1,0 +1,3 @@
+resources:
+- redis.yaml
+- gateway-plugin.yaml
