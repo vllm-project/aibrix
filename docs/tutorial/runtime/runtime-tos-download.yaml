@@ -75,7 +75,7 @@ spec:
         - name: dshm
           mountPath: /dev/shm
       - name: aibrix-runtime
-        image: aibrix/aibrix-runtime:latest
+        image: aibrix/runtime:latest
         command:
         - bash
         - entrypoint.sh
@@ -87,7 +87,7 @@ spec:
           name: model-hostpath
       initContainers:
       - name: model-init
-        image: aibrix/aibrix-downloader:latest
+        image: aibrix/runtime:latest
         command:
         - python
         - -m
