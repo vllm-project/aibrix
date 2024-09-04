@@ -1,7 +1,7 @@
-
 import argparse
 
 from aibrix.downloader import download_model
+
 
 def main():
     parser = argparse.ArgumentParser(description="Download model from HuggingFace")
