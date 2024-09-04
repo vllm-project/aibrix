@@ -1,8 +1,11 @@
+# Git Commit Hash
+GIT_COMMIT_HASH := $(shell git rev-parse HEAD)
+
 # Image URL to use all building/pushing image targets
-AIBRIX_REPO ?= aibrix
-IMG ?= controller:latest
-PLUGINS_IMG ?= aibrix/plugins:v0.1.0
-RUNTIME_IMG ?= ${AIBRIX_REPO}/runtime:latest
+AIBRIX_DOCKERHUB_NAMESPACE ?= aibrix
+IMG ?= ${AIBRIX_DOCKERHUB_NAMESPACE}/controller-manager:${GIT_COMMIT_HASH}
+PLUGINS_IMG ?= ${AIBRIX_DOCKERHUB_NAMESPACE}/plugins:${GIT_COMMIT_HASH}
+RUNTIME_IMG ?= ${AIBRIX_DOCKERHUB_NAMESPACE}/runtime:${GIT_COMMIT_HASH}
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.29.0
 
@@ -123,6 +126,17 @@ docker-build-runtime: ## Build docker image with the AI Runime.
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
+	$(CONTAINER_TOOL) push ${AIBRIX_DOCKERHUB_NAMESPACE}/controller-manager:nightly
+
+.PHONY: docker-push-plugins
+docker-push-plugins: ## Push docker image with the manager.
+	$(CONTAINER_TOOL) push ${PLUGINS_IMG}
+	$(CONTAINER_TOOL) push ${AIBRIX_DOCKERHUB_NAMESPACE}/plugins:nightly
+
+.PHONY: docker-push-runtime
+docker-push-runtime: ## Push docker image with the manager.
+	$(CONTAINER_TOOL) push ${RUNTIME_IMG}
+	$(CONTAINER_TOOL) push ${AIBRIX_DOCKERHUB_NAMESPACE}/runtime:nightly
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
@@ -149,7 +163,7 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 
 .PHONY: docker-buildx-runtime
 docker-buildx-runtime:
-	$(CONTAINER_TOOL) buildx build --push --platform=${PLATFORMS} -f runtime.Dockerfile . -t ${AIBRIX_REPO}/${RUNTIME_IMG}
+	$(CONTAINER_TOOL) buildx build --push --platform=${PLATFORMS} -f runtime.Dockerfile . -t ${RUNTIME_IMG}
 
 ##@ Deployment
 

@@ -16,7 +16,15 @@ jobs:
       uses: actions/setup-go@v4
       with:
         go-version: '1.22'
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
     - name: Lint
       run: make lint-all
     - name: Unit Test
       run: make test
+    - name: Docker Build - Controller Manager
+      run: make docker-build
+    - name: Docker Build - Gateway Plugins
+      run: make docker-build-plugins
+    - name: Docker Build - Runtime
+      run: make docker-build-runtime
