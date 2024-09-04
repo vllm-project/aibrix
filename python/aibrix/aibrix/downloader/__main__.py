@@ -1,12 +1,7 @@
+
 import argparse
 
-from aibrix.downloader.base import get_downloader
-
-
-def download_model(args: argparse.Namespace):
-    downloader = get_downloader(args.model_uri)
-    downloader.download_model(args.local_dir)
-
+from aibrix.downloader import download_model
 
 def main():
     parser = argparse.ArgumentParser(description="Download model from HuggingFace")
@@ -23,7 +18,8 @@ def main():
         default=None,
         help="dir to save model files",
     )
-    download_model(parser.parse_args())
+    args = parser.parse_args()
+    download_model(args.model_uri, args.local_dir)
 
 
 if __name__ == "__main__":

@@ -90,7 +90,8 @@ spec:
         image: aibrix/aibrix-downloader:latest
         command:
         - python
-        - /app/download.py
+        - -m
+        - aibrix.downloader
         - --model-uri
         - s3://<input your s3 bucket name>/<input your s3 bucket path>
         - --local-dir

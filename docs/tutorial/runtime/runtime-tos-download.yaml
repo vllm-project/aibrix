@@ -90,7 +90,8 @@ spec:
         image: aibrix/aibrix-downloader:latest
         command:
         - python
-        - /app/download.py
+        - -m
+        - aibrix.downloader
         - --model-uri
         - tos://<input your tos bucket name>/<input your tos bucket path>
         - --local-dir

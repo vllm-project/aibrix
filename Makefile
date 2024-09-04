@@ -2,7 +2,6 @@
 AIBRIX_REPO ?= aibrix
 IMG ?= controller:latest
 PLUGINS_IMG ?= aibrix/plugins:v0.1.0
-DOWNLOADER_IMG ?= aibrix-downloader:latest
 RUNTIME_IMG ?= aibrix-runtime:latest
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.29.0
@@ -144,13 +143,9 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
-.PHONY: docker-buildx-downloader
-docker-buildx-downloader:
-	docker buildx build --push --platform=${PLATFORMS} --target=downloader -f runtime.Dockerfile . -t ${AIBRIX_REPO}/${DOWNLOADER_IMG}
-
 .PHONY: docker-buildx-runtime
 docker-buildx-runtime:
-	docker buildx build --push --platform=${PLATFORMS} --target=runtime -f runtime.Dockerfile . -t ${AIBRIX_REPO}/${RUNTIME_IMG}
+	docker buildx build --push --platform=${PLATFORMS} -f runtime.Dockerfile . -t ${AIBRIX_REPO}/${RUNTIME_IMG}
 
 ##@ Deployment
 

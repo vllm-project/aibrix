@@ -90,7 +90,8 @@ spec:
         image: aibrix/aibrix-downloader:latest
         command:
         - python
-        - /app/download.py
+        - -m
+        - aibrix.downloader
         - --model-uri
         - deepseek-ai/deepseek-coder-6.7b-instruct
         - --local-dir
