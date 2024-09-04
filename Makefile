@@ -2,7 +2,7 @@
 AIBRIX_REPO ?= aibrix
 IMG ?= controller:latest
 PLUGINS_IMG ?= aibrix/plugins:v0.1.0
-RUNTIME_IMG ?= runtime:latest
+RUNTIME_IMG ?= ${AIBRIX_REPO}/runtime:latest
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.29.0
 
