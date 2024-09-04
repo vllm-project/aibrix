@@ -18,12 +18,23 @@ package metrics
 
 import (
 	"context"
+	"k8s.io/apimachinery/pkg/types"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 
 	autoscaling "k8s.io/api/autoscaling/v2"
 )
+
+// NamespaceNameMetric contains the namespace, name and the metric name
+type NamespaceNameMetric struct {
+	types.NamespacedName
+	MetricName string
+}
+
+func NewNamespaceNameMetric(namespace string, name string, metricName string) NamespaceNameMetric {
+	return NamespaceNameMetric{NamespacedName: types.NamespacedName{Namespace: namespace, Name: name}, MetricName: metricName}
+}
 
 // PodMetric contains pod metric value (the metric values are expected to be the metric as a milli-value)
 type PodMetric struct {
@@ -49,4 +60,6 @@ type MetricsClient interface {
 	// GetObjectMetric gets the given metric (and an associated timestamp) for the given
 	// object in the given namespace, it can be used to fetch any object metrics supports /scale interface
 	GetObjectMetric(ctx context.Context, metricName string, namespace string, objectRef *autoscaling.CrossVersionObjectReference, containerPort int) (PodMetricsInfo, time.Time, error)
+
+	UpdatePodListMetric(ctx context.Context, metricKey NamespaceNameMetric, podList *v1.PodList, containerPort int, now time.Time) error
 }

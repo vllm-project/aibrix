@@ -17,6 +17,7 @@ limitations under the License.
 package aggregation
 
 import (
+	"errors"
 	"math"
 	"time"
 )
@@ -27,7 +28,7 @@ Referenced the knative implementation: pkg/autoscaler/aggregation/max/window.go,
 but did not use the Ascending Minima Algorithm as we may need other aggregation functions beyond Max.
 */
 type entry struct {
-	value int32
+	value float64
 	index int
 }
 
@@ -54,7 +55,7 @@ func (w *window) index(i int) int {
 
 // Record updates the window with a new value and index.
 // It also removes all entries that are too old (index too small compared to the new index).
-func (w *window) Record(value int32, index int) {
+func (w *window) Record(value float64, index int) {
 	// Remove elements that are outside the sliding window range.
 	for w.length > 0 && w.valueList[w.first].index <= index-w.Size() {
 		w.first = w.index(w.first + 1)
@@ -68,34 +69,51 @@ func (w *window) Record(value int32, index int) {
 	}
 }
 
-// Max returns the maximum value in the current window.
-func (w *window) Max() int32 {
-	if w.length > 0 {
-		maxValue := w.valueList[w.first].value
-		for i := 1; i < w.length; i++ {
-			valueIndex := w.index(w.first + i)
-			if w.valueList[valueIndex].value > maxValue {
-				maxValue = w.valueList[valueIndex].value
-			}
-		}
-		return maxValue
+func (w *window) Max() (float64, error) {
+	if w.length == 0 {
+		return 0, errors.New("no data available")
 	}
-	return -1 // return a default value if no entries exist
+	maxValue := w.valueList[w.first].value
+	for i := 1; i < w.length; i++ {
+		valueIndex := w.index(w.first + i)
+		if w.valueList[valueIndex].value > maxValue {
+			maxValue = w.valueList[valueIndex].value
+		}
+	}
+	return maxValue, nil
 }
 
-// Min returns the minimum value in the current window.
-func (w *window) Min() int32 {
-	if w.length > 0 {
-		minValue := w.valueList[w.first].value
-		for i := 1; i < w.length; i++ {
-			valueIndex := w.index(w.first + i)
-			if w.valueList[valueIndex].value < minValue {
-				minValue = w.valueList[valueIndex].value
-			}
-		}
-		return minValue
+func (w *window) Min() (float64, error) {
+	if w.length == 0 {
+		return 0, errors.New("no data available")
 	}
-	return -1 // return a default value if no entries exist
+	minValue := w.valueList[w.first].value
+	for i := 1; i < w.length; i++ {
+		valueIndex := w.index(w.first + i)
+		if w.valueList[valueIndex].value < minValue {
+			minValue = w.valueList[valueIndex].value
+		}
+	}
+	return minValue, nil
+}
+
+func (w *window) Avg() (float64, error) {
+	if w.length == 0 {
+		return 0, errors.New("no data available")
+	}
+	sum := 0.0
+	count := 0
+	for i := 0; i < w.length; i++ {
+		index := w.index(w.first + i)
+		if w.valueList[index].index > w.valueList[w.first].index-w.Size() {
+			sum += w.valueList[index].value
+			count++
+		}
+	}
+	if count == 0 {
+		return 0, errors.New("no valid data in window")
+	}
+	return sum / float64(count), nil
 }
 
 type TimeWindow struct {
@@ -108,15 +126,19 @@ func NewTimeWindow(duration, granularity time.Duration) *TimeWindow {
 	return &TimeWindow{window: newWindow(buckets), granularity: granularity}
 }
 
-func (t *TimeWindow) Record(now time.Time, value int32) {
+func (t *TimeWindow) Record(now time.Time, value float64) {
 	index := int(now.Unix()) / int(t.granularity.Seconds())
 	t.window.Record(value, index)
 }
 
-func (t *TimeWindow) Max() int32 {
+func (t *TimeWindow) Max() (float64, error) {
 	return t.window.Max()
 }
 
-func (t *TimeWindow) Min() int32 {
+func (t *TimeWindow) Min() (float64, error) {
 	return t.window.Min()
+}
+
+func (t *TimeWindow) Avg() (float64, error) {
+	return t.window.Avg()
 }

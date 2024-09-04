@@ -17,7 +17,10 @@ limitations under the License.
 package utils
 
 import (
+	"context"
 	"fmt"
+	"k8s.io/apimachinery/pkg/labels"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -99,4 +102,31 @@ func SetConditionInList(inputList []metav1.Condition, conditionType string, stat
 	existingCond.Message = fmt.Sprintf(message, args...)
 
 	return resList
+}
+
+func GetPodListByLabelSelector(ctx context.Context, podLister client.Client, namespace string, selector labels.Selector) (*v1.PodList, error) {
+	podList := &v1.PodList{}
+	err := podLister.List(ctx, podList, &client.ListOptions{
+		Namespace:     namespace,
+		LabelSelector: selector,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("unable to get pods: %v", err)
+	}
+	return podList, nil
+}
+
+func CountReadyPods(podList *v1.PodList) (int64, error) {
+	if podList == nil || len(podList.Items) == 0 {
+		return 0, fmt.Errorf("no pods provided or list is empty")
+	}
+
+	readyPodCount := 0
+	for _, pod := range podList.Items {
+		if pod.Status.Phase == v1.PodRunning && IsPodReady(&pod) {
+			readyPodCount++
+		}
+	}
+
+	return int64(readyPodCount), nil
 }

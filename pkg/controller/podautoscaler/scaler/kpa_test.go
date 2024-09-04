@@ -17,44 +17,50 @@ limitations under the License.
 package scaler
 
 import (
-	"log"
+	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 	"testing"
 	"time"
 )
 
-func TestScale(t *testing.T) {
-	readyPodCount := 10
-	kpaScaler, err := NewKpaAutoscaler(10,
+// TestKpaScale tests the KPA behavior under high traffic rising condition.
+// KPA stable mode recommend number of replicas 3.
+// However, in the event of a traffic spike within the last 10 seconds,
+// and surpassing the PanicThreshold, the system should enter panic mode and scale up to 10 replicas.
+func TestKpaScale(t *testing.T) {
+	readyPodCount := 5
+	kpaMetricsClient := metrics.NewKPAMetricsClient()
+	now := time.Now()
+	metricKey := metrics.NewNamespaceNameMetric("test_ns", "llama-70b", "ttot")
+	kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-60*time.Second), 10.0)
+	kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-50*time.Second), 11.0)
+	kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-40*time.Second), 12.0)
+	kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-30*time.Second), 13.0)
+	kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-20*time.Second), 14.0)
+	kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-10*time.Second), 100.0)
+
+	kpaScaler, err := NewKpaAutoscaler(readyPodCount,
 		&DeciderKpaSpec{
-			MaxScaleUpRate:   1.5,
+			MaxScaleUpRate:   2,
 			MaxScaleDownRate: 2,
-			TargetValue:      100,
+			ScalingMetric:    metricKey.MetricName,
+			TargetValue:      10,
 			TotalValue:       500,
 			PanicThreshold:   2.0,
-			StableWindow:     1 * time.Minute,
-			ScaleDownDelay:   1 * time.Minute,
+			StableWindow:     60 * time.Second,
+			ScaleDownDelay:   10 * time.Second,
 			ActivationScale:  2,
 		},
 	)
+	kpaScaler.metricsClient = kpaMetricsClient
 	if err != nil {
 		t.Errorf("Failed to create KpaAutoscaler: %v", err)
 	}
-
-	observedStableValue := 120.0
-	observedPanicValue := 240.0
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		now := time.Now()
-		log.Printf("Scaling evaluation at %s", now)
-		result := kpaScaler.Scale(readyPodCount, observedStableValue, observedPanicValue, now)
-		log.Printf("Scale result: Desired Pod Count = %d, Excess Burst Capacity = %d, Valid = %v", result.DesiredPodCount, result.ExcessBurstCapacity, result.ScaleValid)
-
-		// Stop if the desired pod count has increased
-		if result.DesiredPodCount > 5 {
-			log.Println("Scaling up, breaking loop.")
-			break
-		}
+	result := kpaScaler.Scale(readyPodCount, metricKey, now)
+	// recent rapid rising metric value make scaler adapt turn on panic mode
+	if result.DesiredPodCount != 10 {
+		t.Errorf("result.DesiredPodCount = 10, got %d", result.DesiredPodCount)
 	}
 }

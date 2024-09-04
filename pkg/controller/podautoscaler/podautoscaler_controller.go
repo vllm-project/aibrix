@@ -21,6 +21,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
+
+	podutil "github.com/aibrix/aibrix/pkg/utils"
+	"k8s.io/apimachinery/pkg/labels"
+
 	scaler "github.com/aibrix/aibrix/pkg/controller/podautoscaler/scaler"
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
@@ -79,7 +84,6 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 		return nil, err
 	}
 	reconciler.Autoscaler = kpaScaler
-
 	return reconciler, nil
 }
 
@@ -228,6 +232,12 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 
 	setCondition(&pa, "AbleToScale", metav1.ConditionTrue, "SucceededGetScale", "the HPA controller was able to get the target's current scale")
 
+	// Update the scale required metrics periodically
+	err = r.UpdateMetricsForScale(ctx, pa, scale)
+	if err != nil {
+		r.EventRecorder.Event(&pa, corev1.EventTypeWarning, "FailedUpdateMetrics", err.Error())
+		return ctrl.Result{}, fmt.Errorf("failed to update metrics for scale target reference: %v", err)
+	}
 	// current scale's replica count
 	currentReplicasInt64, found, err := unstructured.NestedInt64(scale.Object, "spec", "replicas")
 	if !found {
@@ -252,9 +262,6 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 	}
 
 	rescale := true
-	r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "KPAAlgorithmRun",
-		"KPA algorithm run. desiredReplicas: %d, currentReplicas: %d",
-		desiredReplicas, currentReplicas)
 
 	logger := klog.FromContext(ctx)
 
@@ -294,8 +301,23 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 		if desiredReplicas < currentReplicas {
 			rescaleReason = "All metrics below target"
 		}
+
+		if desiredReplicas > pa.Spec.MaxReplicas {
+			logger.Info("Scaling adjustment: Algorithm recommended scaling to a target that exceeded the maximum limit.",
+				"recommendedReplicas", desiredReplicas, "adjustedTo", pa.Spec.MaxReplicas)
+			desiredReplicas = pa.Spec.MaxReplicas
+		} else if desiredReplicas < minReplicas {
+			logger.Info("Scaling adjustment: Algorithm recommended scaling to a target that fell below the minimum limit.",
+				"recommendedReplicas", desiredReplicas, "adjustedTo", minReplicas)
+			desiredReplicas = minReplicas
+		}
+
 		rescale = desiredReplicas != currentReplicas
 	}
+
+	r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "KPAAlgorithmRun",
+		"KPA algorithm run. currentReplicas: %d, desiredReplicas: %d, rescale: %t",
+		desiredReplicas, currentReplicas, rescale)
 
 	if rescale {
 
@@ -448,30 +470,15 @@ func (r *PodAutoscalerReconciler) updateStatus(ctx context.Context, pa *autoscal
 // It may return both valid metricDesiredReplicas and an error,
 // when some metrics still work and HPA should perform scaling based on them.
 // If PodAutoscaler cannot do anything due to error, it returns -1 in metricDesiredReplicas as a failure signal.
-func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (replicas int32, metrics string, timestamp time.Time, err error) {
+func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (replicas int32, relatedMetrics string, timestamp time.Time, err error) {
 	logger := klog.FromContext(ctx)
 	currentTimestamp := time.Now()
 
-	// Retrieve the selector string from the Scale object's Status.
-	selectorMap, found, err := unstructured.NestedMap(scale.Object, "spec", "selector")
-	if err != nil || !found {
-		if !found {
-			return 0, "", currentTimestamp, fmt.Errorf("the 'spec.selector' field was not found in the scale object")
-		}
-		return 0, "", currentTimestamp, fmt.Errorf("failed to get 'spec.selector' from scale: %v", err)
-	}
-
-	// Convert selectorMap to *metav1.LabelSelector object
-	selector := &metav1.LabelSelector{}
-	err = runtime.DefaultUnstructuredConverter.FromUnstructured(selectorMap, selector)
+	// Retrieve the selector string from the Scale object's Status,
+	// and convert *metav1.LabelSelector object to labels.Selector structure
+	labelsSelector, err := extractLabelSelector(scale)
 	if err != nil {
-		return 0, "", currentTimestamp, fmt.Errorf("failed to convert 'spec.selector' to LabelSelector: %v", err)
-	}
-
-	// Convert *metav1.LabelSelector object to labels.Selector structure
-	labelsSelector, err := metav1.LabelSelectorAsSelector(selector)
-	if err != nil {
-		return 0, "", currentTimestamp, fmt.Errorf("failed to convert LabelSelector to labels.Selector: %v", err)
+		return 0, "", currentTimestamp, err
 	}
 
 	originalReadyPodsCount, err := scaler.GetReadyPodsCount(ctx, r.Client, pa.Namespace, labelsSelector)
@@ -480,17 +487,98 @@ func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context,
 		return 0, "", currentTimestamp, fmt.Errorf("error getting ready pods count: %w", err)
 	}
 
-	logger.Info("Obtained selector and get ReadyPodsCount", "selector", labelsSelector, "originalReadyPodsCount", originalReadyPodsCount)
+	err = r.updateScalerSpec(ctx, pa)
+	if err != nil {
+		return 0, "", currentTimestamp, fmt.Errorf("error update scaler spec: %w", err)
+	}
 
-	// TODO: Complete the remaining items - Retrieve the following metrics from metricClient:
-	//  1. observedStableValue: Average over the past stableWindow period.
-	//  2. observedPanicValue: Average over the past panicWindow period.
+	logger.Info("Obtained selector and get ReadyPodsCount", "selector", labelsSelector, "originalReadyPodsCount", originalReadyPodsCount)
+	metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.TargetMetric)
+
 	// Calculate the desired number of pods using the autoscaler logic.
-	scaleResult := r.Autoscaler.Scale(int(originalReadyPodsCount), 0, 0, currentTimestamp)
+	scaleResult := r.Autoscaler.Scale(int(originalReadyPodsCount), metricKey, currentTimestamp)
 	if scaleResult.ScaleValid {
 		logger.Info("Successfully called Scale Algorithm", "scaleResult", scaleResult)
-		return scaleResult.DesiredPodCount, "", currentTimestamp, nil
+		return scaleResult.DesiredPodCount, metricKey.MetricName, currentTimestamp, nil
 	}
 
 	return 0, "", currentTimestamp, fmt.Errorf("can not calculate metrics for scale %s", pa.Spec.ScaleTargetRef.Name)
+}
+
+// refer to knative-serving.
+// In pkg/reconciler/autoscaling/kpa/kpa.go:198, kpa maintains a list of deciders into multi-scaler, each of them corresponds to a pa (PodAutoscaler).
+// kpa create or update deciders in reconcile function.
+// for now, we update the kpascaler.spec when reconciling before calling the Scale function, to make the pa information pass into the Scale algorithm.
+func (r *PodAutoscalerReconciler) updateScalerSpec(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) error {
+	// assert: pa.Spec.ScaleTargetRef.Kind == "KPA"
+	kpa, ok := r.Autoscaler.(*scaler.KpaAutoscaler)
+
+	if !ok {
+		return fmt.Errorf("failed to assert type as *scaler.KpaAutoscaler")
+	}
+	kpa.UpdateSpec(pa)
+	return nil
+}
+
+// extractLabelSelector extracts a LabelSelector from the given scale object.
+func extractLabelSelector(scale *unstructured.Unstructured) (labels.Selector, error) {
+	// Retrieve the selector string from the Scale object's 'spec' field.
+	selectorMap, found, err := unstructured.NestedMap(scale.Object, "spec", "selector")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get 'spec.selector' from scale: %v", err)
+	}
+	if !found {
+		return nil, fmt.Errorf("the 'spec.selector' field was not found in the scale object")
+	}
+
+	// Convert selectorMap to a *metav1.LabelSelector object
+	selector := &metav1.LabelSelector{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(selectorMap, selector)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert 'spec.selector' to LabelSelector: %v", err)
+	}
+
+	labelsSelector, err := metav1.LabelSelectorAsSelector(selector)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert LabelSelector to labels.Selector: %v", err)
+	}
+
+	return labelsSelector, nil
+}
+
+func (r *PodAutoscalerReconciler) UpdateMetricsForScale(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (err error) {
+	logger := klog.FromContext(ctx)
+
+	// TODO: We are hard-code casting Autoscaler to KpaAutoscaler here. Discussion needed.
+	// The `metricsClient` attribute in Autoscaler is used by both
+	// PodAutoscalerReconciler and KpaAutoscaler. However, we initialize PodAutoscalerReconciler
+	// with KpaAutoscaler because Go does not support classical inheritance.
+
+	kpa, ok := r.Autoscaler.(*scaler.KpaAutoscaler)
+
+	if !ok {
+		return fmt.Errorf("failed to assert type as *scaler.KpaAutoscaler")
+	}
+	currentTimestamp := time.Now()
+
+	// Retrieve the selector string from the Scale object's Status,
+	// and convert *metav1.LabelSelector object to labels.Selector structure
+	labelsSelector, err := extractLabelSelector(scale)
+	if err != nil {
+		return err
+	}
+	// get pod list
+	podList, err := podutil.GetPodListByLabelSelector(ctx, r.Client, pa.Namespace, labelsSelector)
+	if err != nil {
+		logger.Error(err, "failed to get pod list by label selector")
+		return err
+	}
+	metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.TargetMetric)
+
+	// TODO: The `containerPort` might only be effective for REST metrics.
+	//  Where exactly should we incorporate it into the autoscaling types? Shall we add an 'other_field_dict' into pa?
+	containerPort := 8000
+	kpa.UpdatePodListMetric(ctx, metricKey, podList, containerPort, currentTimestamp)
+
+	return nil
 }

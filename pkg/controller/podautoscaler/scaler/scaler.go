@@ -99,29 +99,12 @@ func groupPods(pods []*v1.Pod, metrics metrics.PodMetricsInfo, resource v1.Resou
 }
 
 func GetReadyPodsCount(ctx context.Context, podLister client.Client, namespace string, selector labels.Selector) (int64, error) {
-	podList := &v1.PodList{}
-
-	err := podLister.List(ctx, podList, &client.ListOptions{
-		Namespace:     namespace,
-		LabelSelector: selector,
-	})
+	podList, err := podutil.GetPodListByLabelSelector(ctx, podLister, namespace, selector)
 	if err != nil {
 		return 0, fmt.Errorf("unable to get pods while calculating replica count: %v", err)
 	}
 
-	if len(podList.Items) == 0 {
-		return 0, fmt.Errorf("no pods returned by selector while calculating replica count")
-	}
-
-	readyPodCount := 0
-
-	for _, pod := range podList.Items {
-		if pod.Status.Phase == v1.PodRunning && podutil.IsPodReady(&pod) {
-			readyPodCount++
-		}
-	}
-
-	return int64(readyPodCount), nil
+	return podutil.CountReadyPods(podList)
 }
 
 func calculatePodRequests(pods []*v1.Pod, container string, resource v1.ResourceName) (map[string]int64, error) {

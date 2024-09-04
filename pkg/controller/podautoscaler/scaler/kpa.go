@@ -17,8 +17,13 @@ limitations under the License.
 package scaler
 
 import (
+	"context"
 	"errors"
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
+	v1 "k8s.io/api/core/v1"
 	"math"
+	"strconv"
 	"time"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
@@ -85,10 +90,10 @@ type DeciderKpaSpec struct {
 // NewDefaultDeciderKpaSpec references KPA and sets up a default configuration.
 func NewDefaultDeciderKpaSpec() *DeciderKpaSpec {
 	return &DeciderKpaSpec{
-		MaxScaleUpRate:      10,               // Scale up rate of 1000%, allowing rapid scaling
+		MaxScaleUpRate:      2,                // Scale up rate of 200%, allowing rapid scaling
 		MaxScaleDownRate:    2,                // Scale down rate of 50%, for more gradual reduction
 		ScalingMetric:       "CPU",            // Metric used for scaling, here set to CPU utilization
-		TargetValue:         10.0,             // Target CPU utilization set at 10%
+		TargetValue:         30.0,             // Target CPU utilization set at 10%
 		TotalValue:          100.0,            // Total CPU utilization capacity for pods is 100%
 		TargetBurstCapacity: 2.0,              // Target burst capacity to handle sudden spikes
 		ActivationScale:     1,                // Initial scaling factor upon activation
@@ -153,7 +158,8 @@ func NewKpaAutoscaler(readyPodsCount int, spec *DeciderKpaSpec) (*KpaAutoscaler,
 	}
 
 	// TODO missing MetricClient
-	autoscaler := &Autoscaler{}
+	metricsClient := metrics.NewKPAMetricsClient()
+	autoscaler := &Autoscaler{metricsClient: metricsClient}
 
 	return &KpaAutoscaler{
 		Autoscaler:   autoscaler,
@@ -166,27 +172,22 @@ func NewKpaAutoscaler(readyPodsCount int, spec *DeciderKpaSpec) (*KpaAutoscaler,
 
 // Scale implements Scaler interface in KpaAutoscaler.
 // Refer to knative-serving: pkg/autoscaler/scaling/autoscaler.go, Scale function.
-func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, observedStableValue float64, observedPanicValue float64, now time.Time) ScaleResult {
+func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time) ScaleResult {
 	/**
 	`observedStableValue` and `observedPanicValue` are calculated using different window sizes in the `MetricClient`.
 	 For reference, see the KNative implementation at `pkg/autoscaler/metrics/collector.go：185`.
 	*/
-	k.specMux.RLock()
-	spec := k.deciderSpec
-	k.specMux.RUnlock()
+	spec := k.GetSpec()
+
+	kpaMetricsClient := k.metricsClient.(*metrics.KPAMetricsClient)
+	observedStableValue, observedPanicValue, err := kpaMetricsClient.StableAndPanicMetrics(metricKey, now)
+	if err != nil {
+		klog.Errorf("Failed to get stable and panic metrics for %s: %v", metricKey, err)
+		return ScaleResult{}
+	}
 
 	// Use 1 if there are zero current pods.
 	readyPodsCount := math.Max(1, float64(originalReadyPodsCount))
-
-	// TODO if we add metricClient into Autoscaler, we can uncomment following codes, then get
-	//  observedStableValue and observedPanicValue from metricClient. It could be more elegant.
-	//metricName := spec.ScalingMetric
-	//switch metricName {
-	//case v1alpha1.CPU:
-	//	observedStableValue, observedPanicValue, err = a.metricClient.GetCPU(now)
-	//default:
-	//	observedStableValue, observedPanicValue, err = a.metricClient.GetCPU(now)
-	//}
 
 	maxScaleUp := math.Ceil(spec.MaxScaleUpRate * readyPodsCount)
 	maxScaleDown := math.Floor(readyPodsCount / spec.MaxScaleDownRate)
@@ -238,7 +239,7 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, observedStableValue fl
 			klog.InfoS("Increasing pods count.", "originalPodCount", originalReadyPodsCount, "desiredPodCount", desiredPodCount)
 			k.maxPanicPods = desiredPodCount
 		} else if desiredPodCount < k.maxPanicPods {
-			klog.InfoS("Skipping pod count decrease from - to - ", "a.maxPanicPods", k.maxPanicPods, "desiredPodCount", desiredPodCount)
+			klog.InfoS("Skipping pod count decrease", "current", k.maxPanicPods, "desired", desiredPodCount)
 		}
 		desiredPodCount = k.maxPanicPods
 	} else {
@@ -252,14 +253,18 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, observedStableValue fl
 	// interval (because the largest will be picked rather than the most recent
 	// in that case).
 	if k.delayWindow != nil {
-		k.delayWindow.Record(now, desiredPodCount)
-		delayedPodCount := k.delayWindow.Max()
-		if delayedPodCount != desiredPodCount {
+		k.delayWindow.Record(now, float64(desiredPodCount))
+		delayedPodCount, err := k.delayWindow.Max()
+		if err != nil {
+			klog.ErrorS(err, "Failed to get delayed pod count")
+			return ScaleResult{}
+		}
+		if int32(delayedPodCount) != desiredPodCount {
 			klog.InfoS(
 				"Delaying scale to %d, staying at %d",
 				"desiredPodCount", desiredPodCount, "delayedPodCount", delayedPodCount,
 			)
-			desiredPodCount = delayedPodCount
+			desiredPodCount = int32(delayedPodCount)
 		}
 	}
 
@@ -284,4 +289,28 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, observedStableValue fl
 		ExcessBurstCapacity: int32(excessBCF),
 		ScaleValid:          true,
 	}
+}
+
+func (k *KpaAutoscaler) UpdatePodListMetric(ctx context.Context, metricKey metrics.NamespaceNameMetric, list *v1.PodList, port int, now time.Time) {
+	k.metricsClient.UpdatePodListMetric(ctx, metricKey, list, port, now)
+}
+
+func (k *KpaAutoscaler) UpdateSpec(pa autoscalingv1alpha1.PodAutoscaler) {
+	k.specMux.Lock()
+	defer k.specMux.Unlock()
+
+	targetValue, err := strconv.ParseFloat(pa.Spec.TargetValue, 64)
+	if err != nil {
+		klog.ErrorS(err, "Failed to parse target value", "targetValue", pa.Spec.TargetValue)
+		return
+	}
+	k.deciderSpec.TargetValue = targetValue
+	k.deciderSpec.ScalingMetric = pa.Spec.TargetMetric
+}
+
+func (k *KpaAutoscaler) GetSpec() *DeciderKpaSpec {
+	k.specMux.Lock()
+	defer k.specMux.Unlock()
+
+	return k.deciderSpec
 }

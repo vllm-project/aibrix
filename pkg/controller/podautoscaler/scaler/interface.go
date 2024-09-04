@@ -55,15 +55,13 @@ type Scaler interface {
 	// and the current time. This method is the core of the autoscaling logic.
 	//
 	// Parameters:
-	// observedStableValue - the metric value (e.g., CPU utilization) averaged over a stable period.
-	// observedPanicValue - the metric value observed during a short, recent period which may indicate a spike or drop.
 	// now - the current time, used to determine if scaling actions are needed based on time-based rules or delays.
 	//
 	// Returns:
 	// ScaleResult which contains the recommended number of pods to scale up or down to.
 	//
 	// Refer to:  KpaAutoscaler.Scale Implementation
-	Scale(originalReadyPodsCount int, observedStableValue float64, observedPanicValue float64, now time.Time) ScaleResult
+	Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time) ScaleResult
 }
 
 // ScaleResult contains the results of a scaling decision.
