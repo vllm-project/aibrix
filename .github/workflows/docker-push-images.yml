@@ -3,8 +3,6 @@ name: docker-push-images
 on:
   push:
     branches: [ "main", "release-*"]
-  pull_request:
-    branches: [ "main", "release-*"]
 
 jobs:
   build:
