@@ -114,14 +114,17 @@ run: manifests generate fmt vet ## Run a controller from your host.
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) tag ${IMG} ${AIBRIX_DOCKERHUB_NAMESPACE}/controller-manager:nightly
 
 .PHONY: docker-build-plugins
 docker-build-plugins: ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build -t ${PLUGINS_IMG} -f gateway.Dockerfile .
+	$(CONTAINER_TOOL) tag ${PLUGINS_IMG} ${AIBRIX_DOCKERHUB_NAMESPACE}/plugins:nightly
 
 .PHONY: docker-build-runtime
 docker-build-runtime: ## Build docker image with the AI Runime.
 	$(CONTAINER_TOOL) build -t ${RUNTIME_IMG} -f runtime.Dockerfile .
+	$(CONTAINER_TOOL) tag ${RUNTIME_IMG} ${AIBRIX_DOCKERHUB_NAMESPACE}/runtime:nightly
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
