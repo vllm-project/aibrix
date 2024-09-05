@@ -114,8 +114,8 @@ class TOSDownloader(BaseDownloader):
         task_num = envs.DOWNLOADER_NUM_THREADS if enable_range else 1
 
         download_kwargs = {}
-        if envs.DOWNLOADER_PART_THRESHOLD is not None:
-            download_kwargs["multipart_threshold"] = envs.DOWNLOADER_PART_THRESHOLD
+        if envs.DOWNLOADER_PART_CHUNKSIZE is not None:
+            download_kwargs["part_size"] = envs.DOWNLOADER_PART_CHUNKSIZE
 
         # download file
         total_length = meta_data.content_length
