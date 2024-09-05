@@ -54,8 +54,12 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd:maxDescLen=0 webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
-generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+generate: ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	sh ./hack/update-codegen.sh
+
+.PHONY: verify
+verify:
+	sh ./hack/verify-codegen.sh
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
