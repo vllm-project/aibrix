@@ -21,6 +21,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
@@ -91,6 +92,16 @@ func (in *ModelAdapterSpec) DeepCopyInto(out *ModelAdapterSpec) {
 		in, out := &in.PodSelector, &out.PodSelector
 		*out = new(v1.LabelSelector)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.CredentialsSecretRef != nil {
+		in, out := &in.CredentialsSecretRef, &out.CredentialsSecretRef
+		*out = new(corev1.LocalObjectReference)
+		**out = **in
+	}
+	if in.Replicas != nil {
+		in, out := &in.Replicas, &out.Replicas
+		*out = new(int32)
+		**out = **in
 	}
 	if in.AdditionalConfig != nil {
 		in, out := &in.AdditionalConfig, &out.AdditionalConfig
