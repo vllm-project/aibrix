@@ -60,7 +60,7 @@ set aibrix:your-user-name_RPM_LIMIT 10
 
 Test request (ensure header model name matches with deployment's model name for routing)
 ```shell
-curl http://localhost:8888/v1/chat/completions \
+curl -v http://localhost:8888/v1/chat/completions \
   -H "user: your-user-name" \
   -H "model: llama2-70b" \
   -H "Content-Type: application/json" \
