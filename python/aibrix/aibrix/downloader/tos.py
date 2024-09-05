@@ -42,9 +42,14 @@ class TOSDownloader(BaseDownloader):
         sk = envs.DOWNLOADER_TOS_SECRET_KEY
         endpoint = envs.DOWNLOADER_TOS_ENDPOINT or ""
         region = envs.DOWNLOADER_TOS_REGION or ""
+        enable_crc = envs.DOWNLOADER_TOS_ENABLE_CRC
         bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri)
 
-        self.client = tos.TosClientV2(ak=ak, sk=sk, endpoint=endpoint, region=region)
+        self.client = tos.TosClientV2(ak=ak,
+                                      sk=sk,
+                                      endpoint=endpoint,
+                                      region=region,
+                                      enable_crc=enable_crc)
 
         super().__init__(
             model_uri=model_uri,
