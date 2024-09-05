@@ -20,8 +20,10 @@ package applyconfiguration
 import (
 	v1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/pkg/client/applyconfiguration/autoscaling/v1alpha1"
 	applyconfigurationmodelv1alpha1 "github.com/aibrix/aibrix/pkg/client/applyconfiguration/model/v1alpha1"
+	applyconfigurationorchestrationv1alpha1 "github.com/aibrix/aibrix/pkg/client/applyconfiguration/orchestration/v1alpha1"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -29,7 +31,7 @@ import (
 // apply configuration type exists for the given GroupVersionKind.
 func ForKind(kind schema.GroupVersionKind) interface{} {
 	switch kind {
-	// Group=autoscaling, Version=v1alpha1
+	// Group=autoscaling.aibrix.ai, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithKind("MetricSource"):
 		return &autoscalingv1alpha1.MetricSourceApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PodAutoscaler"):
@@ -39,13 +41,29 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 	case v1alpha1.SchemeGroupVersion.WithKind("PodAutoscalerStatus"):
 		return &autoscalingv1alpha1.PodAutoscalerStatusApplyConfiguration{}
 
-		// Group=model, Version=v1alpha1
+		// Group=model.aibrix.ai, Version=v1alpha1
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelAdapter"):
 		return &applyconfigurationmodelv1alpha1.ModelAdapterApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelAdapterSpec"):
 		return &applyconfigurationmodelv1alpha1.ModelAdapterSpecApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelAdapterStatus"):
 		return &applyconfigurationmodelv1alpha1.ModelAdapterStatusApplyConfiguration{}
+
+		// Group=orchestration.aibrix.ai, Version=v1alpha1
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("FleetCondition"):
+		return &applyconfigurationorchestrationv1alpha1.FleetConditionApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleet"):
+		return &applyconfigurationorchestrationv1alpha1.RayClusterFleetApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleetSpec"):
+		return &applyconfigurationorchestrationv1alpha1.RayClusterFleetSpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleetStatus"):
+		return &applyconfigurationorchestrationv1alpha1.RayClusterFleetStatusApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterReplicaSet"):
+		return &applyconfigurationorchestrationv1alpha1.RayClusterReplicaSetApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterReplicaSetSpec"):
+		return &applyconfigurationorchestrationv1alpha1.RayClusterReplicaSetSpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterReplicaSetStatus"):
+		return &applyconfigurationorchestrationv1alpha1.RayClusterReplicaSetStatusApplyConfiguration{}
 
 	}
 	return nil

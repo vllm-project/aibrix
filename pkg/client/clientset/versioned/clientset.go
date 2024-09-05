@@ -23,6 +23,7 @@ import (
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/autoscaling/v1alpha1"
 	modelv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/model/v1alpha1"
+	orchestrationv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/orchestration/v1alpha1"
 	discovery "k8s.io/client-go/discovery"
 	rest "k8s.io/client-go/rest"
 	flowcontrol "k8s.io/client-go/util/flowcontrol"
@@ -32,13 +33,15 @@ type Interface interface {
 	Discovery() discovery.DiscoveryInterface
 	AutoscalingV1alpha1() autoscalingv1alpha1.AutoscalingV1alpha1Interface
 	ModelV1alpha1() modelv1alpha1.ModelV1alpha1Interface
+	OrchestrationV1alpha1() orchestrationv1alpha1.OrchestrationV1alpha1Interface
 }
 
 // Clientset contains the clients for groups.
 type Clientset struct {
 	*discovery.DiscoveryClient
-	autoscalingV1alpha1 *autoscalingv1alpha1.AutoscalingV1alpha1Client
-	modelV1alpha1       *modelv1alpha1.ModelV1alpha1Client
+	autoscalingV1alpha1   *autoscalingv1alpha1.AutoscalingV1alpha1Client
+	modelV1alpha1         *modelv1alpha1.ModelV1alpha1Client
+	orchestrationV1alpha1 *orchestrationv1alpha1.OrchestrationV1alpha1Client
 }
 
 // AutoscalingV1alpha1 retrieves the AutoscalingV1alpha1Client
@@ -49,6 +52,11 @@ func (c *Clientset) AutoscalingV1alpha1() autoscalingv1alpha1.AutoscalingV1alpha
 // ModelV1alpha1 retrieves the ModelV1alpha1Client
 func (c *Clientset) ModelV1alpha1() modelv1alpha1.ModelV1alpha1Interface {
 	return c.modelV1alpha1
+}
+
+// OrchestrationV1alpha1 retrieves the OrchestrationV1alpha1Client
+func (c *Clientset) OrchestrationV1alpha1() orchestrationv1alpha1.OrchestrationV1alpha1Interface {
+	return c.orchestrationV1alpha1
 }
 
 // Discovery retrieves the DiscoveryClient
@@ -103,6 +111,10 @@ func NewForConfigAndClient(c *rest.Config, httpClient *http.Client) (*Clientset,
 	if err != nil {
 		return nil, err
 	}
+	cs.orchestrationV1alpha1, err = orchestrationv1alpha1.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
 
 	cs.DiscoveryClient, err = discovery.NewDiscoveryClientForConfigAndClient(&configShallowCopy, httpClient)
 	if err != nil {
@@ -126,6 +138,7 @@ func New(c rest.Interface) *Clientset {
 	var cs Clientset
 	cs.autoscalingV1alpha1 = autoscalingv1alpha1.New(c)
 	cs.modelV1alpha1 = modelv1alpha1.New(c)
+	cs.orchestrationV1alpha1 = orchestrationv1alpha1.New(c)
 
 	cs.DiscoveryClient = discovery.NewDiscoveryClient(c)
 	return &cs

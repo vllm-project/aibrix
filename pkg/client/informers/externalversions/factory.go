@@ -26,6 +26,7 @@ import (
 	autoscaling "github.com/aibrix/aibrix/pkg/client/informers/externalversions/autoscaling"
 	internalinterfaces "github.com/aibrix/aibrix/pkg/client/informers/externalversions/internalinterfaces"
 	model "github.com/aibrix/aibrix/pkg/client/informers/externalversions/model"
+	orchestration "github.com/aibrix/aibrix/pkg/client/informers/externalversions/orchestration"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -255,6 +256,7 @@ type SharedInformerFactory interface {
 
 	Autoscaling() autoscaling.Interface
 	Model() model.Interface
+	Orchestration() orchestration.Interface
 }
 
 func (f *sharedInformerFactory) Autoscaling() autoscaling.Interface {
@@ -263,4 +265,8 @@ func (f *sharedInformerFactory) Autoscaling() autoscaling.Interface {
 
 func (f *sharedInformerFactory) Model() model.Interface {
 	return model.New(f, f.namespace, f.tweakListOptions)
+}
+
+func (f *sharedInformerFactory) Orchestration() orchestration.Interface {
+	return orchestration.New(f, f.namespace, f.tweakListOptions)
 }

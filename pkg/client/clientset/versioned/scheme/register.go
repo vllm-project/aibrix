@@ -20,6 +20,7 @@ package scheme
 import (
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -33,6 +34,7 @@ var ParameterCodec = runtime.NewParameterCodec(Scheme)
 var localSchemeBuilder = runtime.SchemeBuilder{
 	autoscalingv1alpha1.AddToScheme,
 	modelv1alpha1.AddToScheme,
+	orchestrationv1alpha1.AddToScheme,
 }
 
 // AddToScheme adds all types of this clientset into the given scheme. This allows composition

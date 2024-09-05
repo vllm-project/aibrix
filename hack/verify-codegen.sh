@@ -45,7 +45,7 @@ chmod +x ${CODEGEN_PKG}/generate-groups.sh
 cd ${SCRIPT_ROOT}
 ${CODEGEN_PKG}/generate-groups.sh all \
  github.com/aibrix/aibrix/pkg/client github.com/aibrix/aibrix/api \
- "model:v1alpha1 autoscaling:v1alpha1" \
+ "model:v1alpha1 autoscaling:v1alpha1 orchestration:v1alpha1" \
  --output-base "${TEMP_DIR}" \
  --go-header-file hack/boilerplate.go.txt
 

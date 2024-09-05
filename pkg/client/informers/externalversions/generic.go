@@ -22,6 +22,7 @@ import (
 
 	v1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	cache "k8s.io/client-go/tools/cache"
 )
@@ -52,13 +53,19 @@ func (f *genericInformer) Lister() cache.GenericLister {
 // TODO extend this to unknown resources with a client pool
 func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource) (GenericInformer, error) {
 	switch resource {
-	// Group=autoscaling, Version=v1alpha1
+	// Group=autoscaling.aibrix.ai, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithResource("podautoscalers"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Autoscaling().V1alpha1().PodAutoscalers().Informer()}, nil
 
-		// Group=model, Version=v1alpha1
+		// Group=model.aibrix.ai, Version=v1alpha1
 	case modelv1alpha1.SchemeGroupVersion.WithResource("modeladapters"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Model().V1alpha1().ModelAdapters().Informer()}, nil
+
+		// Group=orchestration.aibrix.ai, Version=v1alpha1
+	case orchestrationv1alpha1.SchemeGroupVersion.WithResource("rayclusterfleets"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Orchestration().V1alpha1().RayClusterFleets().Informer()}, nil
+	case orchestrationv1alpha1.SchemeGroupVersion.WithResource("rayclusterreplicasets"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Orchestration().V1alpha1().RayClusterReplicaSets().Informer()}, nil
 
 	}
 

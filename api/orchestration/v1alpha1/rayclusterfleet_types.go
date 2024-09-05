@@ -146,8 +146,10 @@ const (
 	FleetReplicaFailure FleetConditionType = "ReplicaFailure"
 )
 
-//+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
+// +genclient
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // RayClusterFleet is the Schema for the rayclusterfleets API
 type RayClusterFleet struct {
@@ -158,7 +160,8 @@ type RayClusterFleet struct {
 	Status RayClusterFleetStatus `json:"status,omitempty"`
 }
 
-//+kubebuilder:object:root=true
+// +kubebuilder:object:root=true
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // RayClusterFleetList contains a list of RayClusterFleet
 type RayClusterFleetList struct {

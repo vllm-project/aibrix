@@ -121,6 +121,7 @@ type PodAutoscalerStatus struct {
 }
 
 // +kubebuilder:object:root=true
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // PodAutoscalerList contains a list of PodAutoscaler
 type PodAutoscalerList struct {

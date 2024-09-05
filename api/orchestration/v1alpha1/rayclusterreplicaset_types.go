@@ -83,8 +83,10 @@ type RayClusterReplicaSetStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,6,rep,name=conditions"`
 }
 
-//+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
+// +genclient
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // RayClusterReplicaSet is the Schema for the rayclusterreplicasets API
 type RayClusterReplicaSet struct {
@@ -95,7 +97,8 @@ type RayClusterReplicaSet struct {
 	Status RayClusterReplicaSetStatus `json:"status,omitempty"`
 }
 
-//+kubebuilder:object:root=true
+// +kubebuilder:object:root=true
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // RayClusterReplicaSetList contains a list of RayClusterReplicaSet
 type RayClusterReplicaSetList struct {

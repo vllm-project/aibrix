@@ -23,30 +23,30 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// PodAutoscalerApplyConfiguration represents an declarative configuration of the PodAutoscaler type for use
+// RayClusterReplicaSetApplyConfiguration represents an declarative configuration of the RayClusterReplicaSet type for use
 // with apply.
-type PodAutoscalerApplyConfiguration struct {
+type RayClusterReplicaSetApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
-	Spec                             *PodAutoscalerSpecApplyConfiguration   `json:"spec,omitempty"`
-	Status                           *PodAutoscalerStatusApplyConfiguration `json:"status,omitempty"`
+	Spec                             *RayClusterReplicaSetSpecApplyConfiguration   `json:"spec,omitempty"`
+	Status                           *RayClusterReplicaSetStatusApplyConfiguration `json:"status,omitempty"`
 }
 
-// PodAutoscaler constructs an declarative configuration of the PodAutoscaler type for use with
+// RayClusterReplicaSet constructs an declarative configuration of the RayClusterReplicaSet type for use with
 // apply.
-func PodAutoscaler(name, namespace string) *PodAutoscalerApplyConfiguration {
-	b := &PodAutoscalerApplyConfiguration{}
+func RayClusterReplicaSet(name, namespace string) *RayClusterReplicaSetApplyConfiguration {
+	b := &RayClusterReplicaSetApplyConfiguration{}
 	b.WithName(name)
 	b.WithNamespace(namespace)
-	b.WithKind("PodAutoscaler")
-	b.WithAPIVersion("autoscaling.aibrix.ai/v1alpha1")
+	b.WithKind("RayClusterReplicaSet")
+	b.WithAPIVersion("orchestration.aibrix.ai/v1alpha1")
 	return b
 }
 
 // WithKind sets the Kind field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Kind field is set to the value of the last call.
-func (b *PodAutoscalerApplyConfiguration) WithKind(value string) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithKind(value string) *RayClusterReplicaSetApplyConfiguration {
 	b.Kind = &value
 	return b
 }
@@ -54,7 +54,7 @@ func (b *PodAutoscalerApplyConfiguration) WithKind(value string) *PodAutoscalerA
 // WithAPIVersion sets the APIVersion field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the APIVersion field is set to the value of the last call.
-func (b *PodAutoscalerApplyConfiguration) WithAPIVersion(value string) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithAPIVersion(value string) *RayClusterReplicaSetApplyConfiguration {
 	b.APIVersion = &value
 	return b
 }
@@ -62,7 +62,7 @@ func (b *PodAutoscalerApplyConfiguration) WithAPIVersion(value string) *PodAutos
 // WithName sets the Name field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Name field is set to the value of the last call.
-func (b *PodAutoscalerApplyConfiguration) WithName(value string) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithName(value string) *RayClusterReplicaSetApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Name = &value
 	return b
@@ -71,7 +71,7 @@ func (b *PodAutoscalerApplyConfiguration) WithName(value string) *PodAutoscalerA
 // WithGenerateName sets the GenerateName field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the GenerateName field is set to the value of the last call.
-func (b *PodAutoscalerApplyConfiguration) WithGenerateName(value string) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithGenerateName(value string) *RayClusterReplicaSetApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.GenerateName = &value
 	return b
@@ -80,7 +80,7 @@ func (b *PodAutoscalerApplyConfiguration) WithGenerateName(value string) *PodAut
 // WithNamespace sets the Namespace field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Namespace field is set to the value of the last call.
-func (b *PodAutoscalerApplyConfiguration) WithNamespace(value string) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithNamespace(value string) *RayClusterReplicaSetApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Namespace = &value
 	return b
@@ -89,7 +89,7 @@ func (b *PodAutoscalerApplyConfiguration) WithNamespace(value string) *PodAutosc
 // WithUID sets the UID field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the UID field is set to the value of the last call.
-func (b *PodAutoscalerApplyConfiguration) WithUID(value types.UID) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithUID(value types.UID) *RayClusterReplicaSetApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.UID = &value
 	return b
@@ -98,7 +98,7 @@ func (b *PodAutoscalerApplyConfiguration) WithUID(value types.UID) *PodAutoscale
 // WithResourceVersion sets the ResourceVersion field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the ResourceVersion field is set to the value of the last call.
-func (b *PodAutoscalerApplyConfiguration) WithResourceVersion(value string) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithResourceVersion(value string) *RayClusterReplicaSetApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.ResourceVersion = &value
 	return b
@@ -107,7 +107,7 @@ func (b *PodAutoscalerApplyConfiguration) WithResourceVersion(value string) *Pod
 // WithGeneration sets the Generation field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Generation field is set to the value of the last call.
-func (b *PodAutoscalerApplyConfiguration) WithGeneration(value int64) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithGeneration(value int64) *RayClusterReplicaSetApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.Generation = &value
 	return b
@@ -116,7 +116,7 @@ func (b *PodAutoscalerApplyConfiguration) WithGeneration(value int64) *PodAutosc
 // WithCreationTimestamp sets the CreationTimestamp field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the CreationTimestamp field is set to the value of the last call.
-func (b *PodAutoscalerApplyConfiguration) WithCreationTimestamp(value metav1.Time) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithCreationTimestamp(value metav1.Time) *RayClusterReplicaSetApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.CreationTimestamp = &value
 	return b
@@ -125,7 +125,7 @@ func (b *PodAutoscalerApplyConfiguration) WithCreationTimestamp(value metav1.Tim
 // WithDeletionTimestamp sets the DeletionTimestamp field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the DeletionTimestamp field is set to the value of the last call.
-func (b *PodAutoscalerApplyConfiguration) WithDeletionTimestamp(value metav1.Time) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithDeletionTimestamp(value metav1.Time) *RayClusterReplicaSetApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.DeletionTimestamp = &value
 	return b
@@ -134,7 +134,7 @@ func (b *PodAutoscalerApplyConfiguration) WithDeletionTimestamp(value metav1.Tim
 // WithDeletionGracePeriodSeconds sets the DeletionGracePeriodSeconds field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the DeletionGracePeriodSeconds field is set to the value of the last call.
-func (b *PodAutoscalerApplyConfiguration) WithDeletionGracePeriodSeconds(value int64) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithDeletionGracePeriodSeconds(value int64) *RayClusterReplicaSetApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	b.DeletionGracePeriodSeconds = &value
 	return b
@@ -144,7 +144,7 @@ func (b *PodAutoscalerApplyConfiguration) WithDeletionGracePeriodSeconds(value i
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
 // If called multiple times, the entries provided by each call will be put on the Labels field,
 // overwriting an existing map entries in Labels field with the same key.
-func (b *PodAutoscalerApplyConfiguration) WithLabels(entries map[string]string) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithLabels(entries map[string]string) *RayClusterReplicaSetApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	if b.Labels == nil && len(entries) > 0 {
 		b.Labels = make(map[string]string, len(entries))
@@ -159,7 +159,7 @@ func (b *PodAutoscalerApplyConfiguration) WithLabels(entries map[string]string) 
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
 // If called multiple times, the entries provided by each call will be put on the Annotations field,
 // overwriting an existing map entries in Annotations field with the same key.
-func (b *PodAutoscalerApplyConfiguration) WithAnnotations(entries map[string]string) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithAnnotations(entries map[string]string) *RayClusterReplicaSetApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	if b.Annotations == nil && len(entries) > 0 {
 		b.Annotations = make(map[string]string, len(entries))
@@ -173,7 +173,7 @@ func (b *PodAutoscalerApplyConfiguration) WithAnnotations(entries map[string]str
 // WithOwnerReferences adds the given value to the OwnerReferences field in the declarative configuration
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
 // If called multiple times, values provided by each call will be appended to the OwnerReferences field.
-func (b *PodAutoscalerApplyConfiguration) WithOwnerReferences(values ...*v1.OwnerReferenceApplyConfiguration) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithOwnerReferences(values ...*v1.OwnerReferenceApplyConfiguration) *RayClusterReplicaSetApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	for i := range values {
 		if values[i] == nil {
@@ -187,7 +187,7 @@ func (b *PodAutoscalerApplyConfiguration) WithOwnerReferences(values ...*v1.Owne
 // WithFinalizers adds the given value to the Finalizers field in the declarative configuration
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
 // If called multiple times, values provided by each call will be appended to the Finalizers field.
-func (b *PodAutoscalerApplyConfiguration) WithFinalizers(values ...string) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithFinalizers(values ...string) *RayClusterReplicaSetApplyConfiguration {
 	b.ensureObjectMetaApplyConfigurationExists()
 	for i := range values {
 		b.Finalizers = append(b.Finalizers, values[i])
@@ -195,7 +195,7 @@ func (b *PodAutoscalerApplyConfiguration) WithFinalizers(values ...string) *PodA
 	return b
 }
 
-func (b *PodAutoscalerApplyConfiguration) ensureObjectMetaApplyConfigurationExists() {
+func (b *RayClusterReplicaSetApplyConfiguration) ensureObjectMetaApplyConfigurationExists() {
 	if b.ObjectMetaApplyConfiguration == nil {
 		b.ObjectMetaApplyConfiguration = &v1.ObjectMetaApplyConfiguration{}
 	}
@@ -204,7 +204,7 @@ func (b *PodAutoscalerApplyConfiguration) ensureObjectMetaApplyConfigurationExis
 // WithSpec sets the Spec field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Spec field is set to the value of the last call.
-func (b *PodAutoscalerApplyConfiguration) WithSpec(value *PodAutoscalerSpecApplyConfiguration) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithSpec(value *RayClusterReplicaSetSpecApplyConfiguration) *RayClusterReplicaSetApplyConfiguration {
 	b.Spec = value
 	return b
 }
@@ -212,7 +212,7 @@ func (b *PodAutoscalerApplyConfiguration) WithSpec(value *PodAutoscalerSpecApply
 // WithStatus sets the Status field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Status field is set to the value of the last call.
-func (b *PodAutoscalerApplyConfiguration) WithStatus(value *PodAutoscalerStatusApplyConfiguration) *PodAutoscalerApplyConfiguration {
+func (b *RayClusterReplicaSetApplyConfiguration) WithStatus(value *RayClusterReplicaSetStatusApplyConfiguration) *RayClusterReplicaSetApplyConfiguration {
 	b.Status = value
 	return b
 }

@@ -100,6 +100,7 @@ type ModelAdapter struct {
 }
 
 // +kubebuilder:object:root=true
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ModelAdapterList contains a list of ModelAdapter
 type ModelAdapterList struct {

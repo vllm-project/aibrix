@@ -23,6 +23,8 @@ import (
 	fakeautoscalingv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/autoscaling/v1alpha1/fake"
 	modelv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/model/v1alpha1"
 	fakemodelv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/model/v1alpha1/fake"
+	orchestrationv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/orchestration/v1alpha1"
+	fakeorchestrationv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/orchestration/v1alpha1/fake"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
@@ -88,4 +90,9 @@ func (c *Clientset) AutoscalingV1alpha1() autoscalingv1alpha1.AutoscalingV1alpha
 // ModelV1alpha1 retrieves the ModelV1alpha1Client
 func (c *Clientset) ModelV1alpha1() modelv1alpha1.ModelV1alpha1Interface {
 	return &fakemodelv1alpha1.FakeModelV1alpha1{Fake: &c.Fake}
+}
+
+// OrchestrationV1alpha1 retrieves the OrchestrationV1alpha1Client
+func (c *Clientset) OrchestrationV1alpha1() orchestrationv1alpha1.OrchestrationV1alpha1Interface {
+	return &fakeorchestrationv1alpha1.FakeOrchestrationV1alpha1{Fake: &c.Fake}
 }

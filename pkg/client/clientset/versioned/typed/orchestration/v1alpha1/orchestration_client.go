@@ -20,29 +20,34 @@ package v1alpha1
 import (
 	"net/http"
 
-	v1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	v1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/client/clientset/versioned/scheme"
 	rest "k8s.io/client-go/rest"
 )
 
-type ModelV1alpha1Interface interface {
+type OrchestrationV1alpha1Interface interface {
 	RESTClient() rest.Interface
-	ModelAdaptersGetter
+	RayClusterFleetsGetter
+	RayClusterReplicaSetsGetter
 }
 
-// ModelV1alpha1Client is used to interact with features provided by the model.aibrix.ai group.
-type ModelV1alpha1Client struct {
+// OrchestrationV1alpha1Client is used to interact with features provided by the orchestration.aibrix.ai group.
+type OrchestrationV1alpha1Client struct {
 	restClient rest.Interface
 }
 
-func (c *ModelV1alpha1Client) ModelAdapters(namespace string) ModelAdapterInterface {
-	return newModelAdapters(c, namespace)
+func (c *OrchestrationV1alpha1Client) RayClusterFleets(namespace string) RayClusterFleetInterface {
+	return newRayClusterFleets(c, namespace)
 }
 
-// NewForConfig creates a new ModelV1alpha1Client for the given config.
+func (c *OrchestrationV1alpha1Client) RayClusterReplicaSets(namespace string) RayClusterReplicaSetInterface {
+	return newRayClusterReplicaSets(c, namespace)
+}
+
+// NewForConfig creates a new OrchestrationV1alpha1Client for the given config.
 // NewForConfig is equivalent to NewForConfigAndClient(c, httpClient),
 // where httpClient was generated with rest.HTTPClientFor(c).
-func NewForConfig(c *rest.Config) (*ModelV1alpha1Client, error) {
+func NewForConfig(c *rest.Config) (*OrchestrationV1alpha1Client, error) {
 	config := *c
 	if err := setConfigDefaults(&config); err != nil {
 		return nil, err
@@ -54,9 +59,9 @@ func NewForConfig(c *rest.Config) (*ModelV1alpha1Client, error) {
 	return NewForConfigAndClient(&config, httpClient)
 }
 
-// NewForConfigAndClient creates a new ModelV1alpha1Client for the given config and http client.
+// NewForConfigAndClient creates a new OrchestrationV1alpha1Client for the given config and http client.
 // Note the http client provided takes precedence over the configured transport values.
-func NewForConfigAndClient(c *rest.Config, h *http.Client) (*ModelV1alpha1Client, error) {
+func NewForConfigAndClient(c *rest.Config, h *http.Client) (*OrchestrationV1alpha1Client, error) {
 	config := *c
 	if err := setConfigDefaults(&config); err != nil {
 		return nil, err
@@ -65,12 +70,12 @@ func NewForConfigAndClient(c *rest.Config, h *http.Client) (*ModelV1alpha1Client
 	if err != nil {
 		return nil, err
 	}
-	return &ModelV1alpha1Client{client}, nil
+	return &OrchestrationV1alpha1Client{client}, nil
 }
 
-// NewForConfigOrDie creates a new ModelV1alpha1Client for the given config and
+// NewForConfigOrDie creates a new OrchestrationV1alpha1Client for the given config and
 // panics if there is an error in the config.
-func NewForConfigOrDie(c *rest.Config) *ModelV1alpha1Client {
+func NewForConfigOrDie(c *rest.Config) *OrchestrationV1alpha1Client {
 	client, err := NewForConfig(c)
 	if err != nil {
 		panic(err)
@@ -78,9 +83,9 @@ func NewForConfigOrDie(c *rest.Config) *ModelV1alpha1Client {
 	return client
 }
 
-// New creates a new ModelV1alpha1Client for the given RESTClient.
-func New(c rest.Interface) *ModelV1alpha1Client {
-	return &ModelV1alpha1Client{c}
+// New creates a new OrchestrationV1alpha1Client for the given RESTClient.
+func New(c rest.Interface) *OrchestrationV1alpha1Client {
+	return &OrchestrationV1alpha1Client{c}
 }
 
 func setConfigDefaults(config *rest.Config) error {
@@ -98,7 +103,7 @@ func setConfigDefaults(config *rest.Config) error {
 
 // RESTClient returns a RESTClient that is used to communicate
 // with API server by this client implementation.
-func (c *ModelV1alpha1Client) RESTClient() rest.Interface {
+func (c *OrchestrationV1alpha1Client) RESTClient() rest.Interface {
 	if c == nil {
 		return nil
 	}

@@ -30,7 +30,7 @@ type AutoscalingV1alpha1Interface interface {
 	PodAutoscalersGetter
 }
 
-// AutoscalingV1alpha1Client is used to interact with features provided by the autoscaling group.
+// AutoscalingV1alpha1Client is used to interact with features provided by the autoscaling.aibrix.ai group.
 type AutoscalingV1alpha1Client struct {
 	restClient rest.Interface
 }

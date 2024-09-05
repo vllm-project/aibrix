@@ -39,7 +39,7 @@ func ModelAdapter(name, namespace string) *ModelAdapterApplyConfiguration {
 	b.WithName(name)
 	b.WithNamespace(namespace)
 	b.WithKind("ModelAdapter")
-	b.WithAPIVersion("model/v1alpha1")
+	b.WithAPIVersion("model.aibrix.ai/v1alpha1")
 	return b
 }
 
