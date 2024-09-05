@@ -53,6 +53,10 @@ help: ## Display this help.
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd:maxDescLen=0 webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
+.PHONY: verify
+verify:
+	sh ./hack/verify-codegen.sh
+
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...
