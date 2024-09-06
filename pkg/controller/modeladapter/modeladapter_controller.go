@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"time"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
@@ -38,9 +38,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/kubernetes"
-	clientv1core "k8s.io/client-go/kubernetes/typed/core/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	toolscache "k8s.io/client-go/tools/cache"
@@ -49,7 +46,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -60,8 +56,10 @@ const (
 )
 
 var (
-	//controllerKind         = modelv1alpha1.GroupVersion.WithKind("ModelAdapter")
-	DefaultRequeueDuration = 1 * time.Second
+	controllerKind                     = modelv1alpha1.GroupVersion.WithKind("ModelAdapter")
+	controllerName                     = "model-adapter-controller"
+	defaultModelAdapterSchedulerPolicy = "leastAdapters"
+	defaultRequeueDuration             = 1 * time.Second
 )
 
 // Add creates a new ModelAdapter Controller and adds it to the Manager with default RBAC.
@@ -100,26 +98,17 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	serviceLister := corelisters.NewServiceLister(serviceInformer.(toolscache.SharedIndexInformer).GetIndexer())
 	endpointSliceLister := discoverylisters.NewEndpointSliceLister(endpointSliceInformer.(toolscache.SharedIndexInformer).GetIndexer())
 
-	// TODO: mgr.GetClient() gives us the controller-runtime client but here we need a client-go client. Find other ways instead.
-	// get kubernetes client from manager
-	config := mgr.GetConfig()
-	k8sClient, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		klog.Fatalf("Unable to create Kubernetes client: %v", err)
-	}
-
-	// Do we still need this?
-	eventBroadcaster := record.NewBroadcaster()
-	eventBroadcaster.StartLogging(klog.Infof)
-	eventBroadcaster.StartRecordingToSink(&clientv1core.EventSinkImpl{Interface: k8sClient.CoreV1().Events("")})
-	recorder := eventBroadcaster.NewRecorder(mgr.GetScheme(), corev1.EventSource{Component: "model-adapter-controller"})
-
+	// init scheduler
 	c, err := cache.GetCache()
 	if err != nil {
 		klog.Fatal(err.Error())
 	}
 
-	scheduler := scheduling.NewLeastAdapters(c)
+	// TODO: policy should be configured by users
+	scheduler, err := scheduling.NewScheduler(defaultModelAdapterSchedulerPolicy, c)
+	if err != nil {
+		return nil, err
+	}
 
 	reconciler := &ModelAdapterReconciler{
 		Client:              mgr.GetClient(),
@@ -127,7 +116,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 		PodLister:           podLister,
 		ServiceLister:       serviceLister,
 		EndpointSliceLister: endpointSliceLister,
-		Recorder:            recorder,
+		Recorder:            mgr.GetEventRecorderFor(controllerName),
 		scheduler:           scheduler,
 	}
 	return reconciler, nil
@@ -137,10 +126,11 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// use the builder fashion. If we need more fine grain control later, we can switch to `controller.New()`
 	err := ctrl.NewControllerManagedBy(mgr).
+		Named(controllerName).
 		For(&modelv1alpha1.ModelAdapter{}).
 		Owns(&corev1.Service{}).
 		Owns(&discoveryv1.EndpointSlice{}).
-		Owns(&corev1.Pod{}).
+		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}).
 		Complete(r)
 
 	klog.V(4).InfoS("Finished to add model-adapter-controller")
@@ -161,8 +151,6 @@ type ModelAdapterReconciler struct {
 	ServiceLister corelisters.ServiceLister
 	// EndpointSliceLister is able to list/get services from a shared informer's cache store
 	EndpointSliceLister discoverylisters.EndpointSliceLister
-
-	// TODO: consider to use control way (kubernetes way) to manage the resources
 }
 
 //+kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch;create;update;patch;delete
@@ -175,19 +163,10 @@ type ModelAdapterReconciler struct {
 //+kubebuilder:rbac:groups=model.aibrix.ai,resources=modeladapters/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=model.aibrix.ai,resources=modeladapters/finalizers,verbs=update
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the ModelAdapter object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.3/pkg/reconcile
+// Reconcile reads that state of ModelAdapter object and makes changes based on the state read
+// and what is in the ModelAdapter.Spec
 func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
-
-	// TODO: handle unload model adapter from pods later.
+	klog.V(5).InfoS("Starting to process ModelAdapter", "modelAdapter", req.NamespacedName)
 
 	// Fetch the ModelAdapter instance
 	modelAdapter := &modelv1alpha1.ModelAdapter{}
@@ -200,7 +179,7 @@ func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return reconcile.Result{}, nil
 		}
 
-		// Error reading the onbject and let's requeue the request
+		// Error reading the object and let's requeue the request
 		klog.ErrorS(err, "Failed to get ModelAdapter", "modelAdapter", klog.KObj(modelAdapter))
 		return reconcile.Result{}, err
 	}
@@ -251,8 +230,8 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	oldInstance := instance.DeepCopy()
 
 	// Step 0: Validate ModelAdapter configurations
-	if ctrlResult, err := r.validateModelAdapter(ctx, instance); err != nil {
-		return ctrlResult, err
+	if err := validateModelAdapter(instance); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Step 1: Schedule Pod for ModelAdapter
@@ -273,7 +252,7 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 			}
 		} else if err != nil {
 			// failed to fetch the pod, let's requeue
-			return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
+			return ctrl.Result{RequeueAfter: defaultRequeueDuration}, err
 		} else {
 			existPods = true
 			// compare instance and model adapter labels.
@@ -297,7 +276,7 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 		selectedPod, err = r.schedulePod(ctx, instance)
 		if err != nil {
 			klog.ErrorS(err, "Failed to schedule Pod for ModelAdapter", "modelAdapter", instance.Name)
-			return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
+			return ctrl.Result{RequeueAfter: defaultRequeueDuration}, err
 		}
 
 		instance.Status.Phase = modelv1alpha1.ModelAdapterScheduling
@@ -312,7 +291,7 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 
 		if err := r.Status().Update(ctx, instance); err != nil {
 			klog.InfoS("Got error when updating status", "cluster name", req.Name, "error", err, "ModelAdapter", instance)
-			return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
+			return ctrl.Result{RequeueAfter: defaultRequeueDuration}, err
 		}
 
 		return ctrl.Result{Requeue: true}, nil
@@ -324,10 +303,10 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 		instance.Status.Phase = modelv1alpha1.ModelAdapterFailed
 		if err := r.Status().Update(ctx, instance); err != nil {
 			klog.InfoS("Got error when updating status", "cluster name", req.Name, "error", err, "ModelAdapter", instance)
-			return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
+			return ctrl.Result{RequeueAfter: defaultRequeueDuration}, err
 		}
 
-		return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
+		return ctrl.Result{RequeueAfter: defaultRequeueDuration}, err
 	}
 
 	// Step 3: Reconcile Service
@@ -349,23 +328,26 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	// Check if need to update the status.
 	if r.inconsistentModelAdapterStatus(oldInstance.Status, instance.Status) {
 		klog.InfoS("model adapter reconcile", "Update CR status", req.Name, "status", instance.Status)
-
+		// TODO: check whether it should be moved to somewhere else.
 		instance.Status.Phase = modelv1alpha1.ModelAdapterRunning
-		meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-			Type:               string(modelv1alpha1.ModelAdapterConditionReady),
-			Status:             metav1.ConditionTrue,
-			Reason:             "Reconciling",
-			Message:            fmt.Sprintf("ModelAdapter %s is ready", klog.KObj(instance)),
-			LastTransitionTime: metav1.Now(),
-		})
-
-		if err := r.Status().Update(ctx, instance); err != nil {
-			klog.InfoS("Got error when updating status", "cluster name", req.Name, "error", err, "ModelAdapter", instance)
-			return ctrl.Result{RequeueAfter: DefaultRequeueDuration}, err
+		if err = r.updateStatus(ctx, instance, instance.Status); err != nil {
+			return reconcile.Result{}, fmt.Errorf("update modelAdapter status error: %v", err)
 		}
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *ModelAdapterReconciler) updateStatus(ctx context.Context, instance *modelv1alpha1.ModelAdapter, status modelv1alpha1.ModelAdapterStatus) error {
+	meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+		Type:               string(modelv1alpha1.ModelAdapterConditionReady),
+		Status:             metav1.ConditionTrue,
+		Reason:             "Reconciling",
+		Message:            fmt.Sprintf("ModelAdapter %s is ready", klog.KObj(instance)),
+		LastTransitionTime: metav1.Now(),
+	})
+
+	return r.Status().Update(ctx, instance)
 }
 
 func (r *ModelAdapterReconciler) clearModelAdapterInstanceList(ctx context.Context, instance *modelv1alpha1.ModelAdapter) (ctrl.Result, error) {
@@ -408,19 +390,13 @@ func (r *ModelAdapterReconciler) schedulePod(ctx context.Context, instance *mode
 	return r.scheduler.SelectPod(ctx, podList.Items)
 }
 
-// GetEnvKey retrieves the value of the environment variable named by the key.
-// If the variable is present, the function returns the value and a boolean true.
-// If the variable is not present, the function returns an empty string and a boolean false.
-func GetEnvKey(key string) (string, bool) {
-	value, exists := os.LookupEnv(key)
-	return value, exists
-}
-
 // make sure it only called once.
 func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance *modelv1alpha1.ModelAdapter, pod *corev1.Pod) error {
 	// Define the key you want to check
+	// DEBUG_MODE is used to fastly debug the controller behavior in dev environment.
+	// TODO: we should move it to global feature gate which can be shared and customized by all controllers.
 	key := "DEBUG_MODE"
-	value, exists := GetEnvKey(key)
+	value, exists := getEnvKey(key)
 	host := fmt.Sprintf("http://%s:8000", pod.Status.PodIP)
 	if exists && value == "on" {
 		// 30080 is the nodePort of the base model service.
@@ -537,7 +513,7 @@ func (r *ModelAdapterReconciler) reconcileService(ctx context.Context, instance 
 	err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, found)
 	if err != nil && apierrors.IsNotFound(err) {
 		// Service does not exist, create a new one
-		svc, err := buildModelAdapterService(*instance)
+		svc, err := buildModelAdapterService(instance)
 		if err != nil {
 			klog.ErrorS(err, "Failed to define new Service resource for ModelAdapter")
 			meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
@@ -578,47 +554,13 @@ func (r *ModelAdapterReconciler) reconcileService(ctx context.Context, instance 
 	return ctrl.Result{}, nil
 }
 
-func buildModelAdapterService(instance modelv1alpha1.ModelAdapter) (*corev1.Service, error) {
-	labels := map[string]string{
-		"model.aibrix.ai/base-model":    instance.Spec.BaseModel,
-		"model.aibrix.ai/model-adapter": instance.Name,
-	}
-
-	ports := []corev1.ServicePort{
-		{
-			Name: "http",
-			// it should use the base model service port.
-			// make sure this can be dynamically configured later.
-			Port: 8000,
-			TargetPort: intstr.IntOrString{
-				Type:   intstr.Int,
-				IntVal: 8000,
-			},
-			Protocol: corev1.ProtocolTCP,
-		},
-	}
-
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      instance.Name,
-			Namespace: instance.Namespace,
-			Labels:    labels,
-		},
-		Spec: corev1.ServiceSpec{
-			ClusterIP:                corev1.ClusterIPNone,
-			PublishNotReadyAddresses: true,
-			Ports:                    ports,
-		},
-	}, nil
-}
-
 func (r *ModelAdapterReconciler) reconcileEndpointSlice(ctx context.Context, instance *modelv1alpha1.ModelAdapter, pod *corev1.Pod) (ctrl.Result, error) {
 	// check if the endpoint slice already exists, if not create a new one.
 	found := &discoveryv1.EndpointSlice{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, found)
 	if err != nil && apierrors.IsNotFound(err) {
 		// EndpointSlice does not exist, create it
-		eps, err := buildModelAdapterEndpointSlice(*instance, *pod)
+		eps, err := buildModelAdapterEndpointSlice(instance, pod)
 		if err != nil {
 			klog.ErrorS(err, "Failed to define new EndpointSlice resource for ModelAdapter")
 			instance.Status.Phase = modelv1alpha1.ModelAdapterFailed
@@ -687,49 +629,6 @@ func (r *ModelAdapterReconciler) reconcileEndpointSlice(ctx context.Context, ins
 	return ctrl.Result{}, nil
 }
 
-func buildModelAdapterEndpointSlice(instance modelv1alpha1.ModelAdapter, pod corev1.Pod) (*discoveryv1.EndpointSlice, error) {
-	serviceLabels := map[string]string{
-		"kubernetes.io/service-name": instance.Name,
-	}
-
-	addresses := []discoveryv1.Endpoint{
-		{
-			Addresses: []string{pod.Status.PodIP},
-		},
-	}
-
-	ports := []discoveryv1.EndpointPort{
-		{
-			Name:     stringPtr("http"),
-			Protocol: protocolPtr(corev1.ProtocolTCP),
-			Port:     int32Ptr(8000),
-		},
-	}
-
-	return &discoveryv1.EndpointSlice{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      instance.Name,
-			Namespace: instance.Namespace,
-			Labels:    serviceLabels,
-		},
-		AddressType: discoveryv1.AddressTypeIPv4,
-		Endpoints:   addresses,
-		Ports:       ports,
-	}, nil
-}
-
-func stringPtr(s string) *string {
-	return &s
-}
-
-func protocolPtr(p corev1.Protocol) *corev1.Protocol {
-	return &p
-}
-
-func int32Ptr(i int32) *int32 {
-	return &i
-}
-
 func (r *ModelAdapterReconciler) inconsistentModelAdapterStatus(oldStatus, newStatus modelv1alpha1.ModelAdapterStatus) bool {
 	// Implement your logic to check if the status is inconsistent
 	if oldStatus.Phase != newStatus.Phase || !equalStringSlices(oldStatus.Instances, newStatus.Instances) {
@@ -737,29 +636,4 @@ func (r *ModelAdapterReconciler) inconsistentModelAdapterStatus(oldStatus, newSt
 	}
 
 	return false
-}
-
-func (r *ModelAdapterReconciler) validateModelAdapter(ctx context.Context, instance *modelv1alpha1.ModelAdapter) (ctrl.Result, error) {
-	// TODO: Do more validation on the model adapter object
-	// for example, check the base model mapping etc.
-	return ctrl.Result{}, nil
-}
-
-func equalStringSlices(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-
-	aSet := make(map[string]struct{}, len(a))
-	for _, item := range a {
-		aSet[item] = struct{}{}
-	}
-
-	for _, item := range b {
-		if _, exists := aSet[item]; !exists {
-			return false
-		}
-	}
-
-	return true
 }
