@@ -5,9 +5,13 @@ FROM ${BASE_IMAGE} AS base
 
 WORKDIR /app
 
-# Install Poetry
+# Install Poetry and other dependencies
 ARG POETRY_VERSION=1.8.3
-RUN python3 -m pip install poetry==${POETRY_VERSION}
+RUN python3 -m pip install poetry==${POETRY_VERSION} \
+    && apt-get update \
+    && apt-get install -y python3-dev build-essential \
+    && apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy the runtime source
 COPY python/aibrix/poetry.lock python/aibrix/pyproject.toml python/aibrix/ /app/
