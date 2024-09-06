@@ -196,6 +196,11 @@ Note: The reactive speed of the default HPA is limited; AIBrix plans to optimize
 
 # Case 2: Create KPA-based AIBrix PodAutoscaler on NGinx (Deprecated)
 
+> Note that Case 2 has been deprecated temporarily as the latest KPA AutoScaler requires the Prometheus-style Metrics as input,
+> which is not provided by the nginx Image. For up-to-date tutorials on KPA, please refer to case 3.
+> 
+> We will adapt or remove the nginx-based AutoScaler demonstration in the future.
+
 Create Nginx App, the default replicas is 1:
 ```shell
 kubectl apply -f config/samples/autoscaling_v1alpha1_demo_nginx.yaml

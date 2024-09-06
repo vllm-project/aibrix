@@ -88,6 +88,7 @@ In order to facilitate the testing of Metrics, we make the Metrics value returne
 this mocked vllm deployment inversely proportional to the replica.
 
 We scale the deployment to 1 replica firstly.
+We can observe that the total value of Metrics is 100.
 
 ```shell
 kubectl scale deployment llama2-70b --replicas=1
@@ -107,6 +108,8 @@ vllm:avg_generation_throughput_toks_per_s{model_name="llama2-70b"} 100.0
 ```
 
 Then we scale the deployment to 5 replicas.
+We can now see that the total value of Metrics becomes 100 / 5 = 20. 
+This is beneficial for testing AutoScaling.
 
 ```shell
 kubectl scale deployment llama2-70b --replicas=5
