@@ -45,11 +45,9 @@ class TOSDownloader(BaseDownloader):
         enable_crc = envs.DOWNLOADER_TOS_ENABLE_CRC
         bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri)
 
-        self.client = tos.TosClientV2(ak=ak,
-                                      sk=sk,
-                                      endpoint=endpoint,
-                                      region=region,
-                                      enable_crc=enable_crc)
+        self.client = tos.TosClientV2(
+            ak=ak, sk=sk, endpoint=endpoint, region=region, enable_crc=enable_crc
+        )
 
         super().__init__(
             model_uri=model_uri,
