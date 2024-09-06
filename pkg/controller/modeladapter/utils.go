@@ -3,10 +3,11 @@ package modeladapter
 import (
 	"errors"
 	"fmt"
-	corev1 "k8s.io/api/core/v1"
 	"net/url"
 	"os"
 	"strings"
+
+	corev1 "k8s.io/api/core/v1"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 )

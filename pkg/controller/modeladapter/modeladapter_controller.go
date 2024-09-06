@@ -24,8 +24,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"time"
+
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/cache"

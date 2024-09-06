@@ -1,10 +1,11 @@
 package modeladapter
 
 import (
-	"github.com/stretchr/testify/assert"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"os"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 )
@@ -143,11 +144,13 @@ func TestEqualStringSlices(t *testing.T) {
 func TestGetEnvKey(t *testing.T) {
 	// Case 1: Environment variable exists
 	t.Run("environment variable exists", func(t *testing.T) {
-		os.Setenv("TEST_ENV", "test_value")
+		err := os.Setenv("TEST_ENV", "test_value")
+		assert.NoError(t, err)
 		value, exists := getEnvKey("TEST_ENV")
 		assert.True(t, exists)
 		assert.Equal(t, "test_value", value)
-		os.Unsetenv("TEST_ENV")
+		err = os.Unsetenv("TEST_ENV")
+		assert.NoError(t, err)
 	})
 
 	// Case 2: Environment variable does not exist
