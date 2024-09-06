@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 import boto3
 from boto3.s3.transfer import TransferConfig
+from botocore.config import Config, MAX_POOL_CONNECTIONS
 from tqdm import tqdm
 
 from aibrix import envs
@@ -40,12 +41,24 @@ class S3Downloader(BaseDownloader):
         region = envs.DOWNLOADER_AWS_REGION
         bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri)
 
+        # Avoid warning log "Connection pool is full"
+        # Refs: https://github.com/boto/botocore/issues/619#issuecomment-583511406
+        max_pool_connections = (
+            envs.DOWNLOADER_NUM_THREADS
+            if envs.DOWNLOADER_NUM_THREADS > MAX_POOL_CONNECTIONS
+            else MAX_POOL_CONNECTIONS
+        )
+        client_config = Config(
+            max_pool_connections=max_pool_connections,
+        )
+
         self.client = boto3.client(
             service_name="s3",
             region_name=region,
             endpoint_url=endpoint,
             aws_access_key_id=ak,
             aws_secret_access_key=sk,
+            config=client_config,
         )
 
         super().__init__(
