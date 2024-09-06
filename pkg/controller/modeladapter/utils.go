@@ -102,7 +102,8 @@ func extractHuggingFacePath(artifactURL string) (string, error) {
 	}
 
 	// Extract the path part (xxx/yyy) and trim any leading slashes
-	path := strings.TrimPrefix(parsedURL.Path, "/")
+	// TODO: replace url.Parse with something else.
+	path := strings.TrimPrefix(parsedURL.Host, "/") + parsedURL.Path
 
 	if path == "" {
 		return "", errors.New("invalid huggingface path, path cannot be empty")

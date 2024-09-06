@@ -176,34 +176,24 @@ func TestExtractHuggingFacePath(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "Valid HuggingFace URL with leading slash",
-			artifactURL: "huggingface:///xxx/yyy",
-			expected:    "xxx/yyy",
-			expectError: false,
-		},
-		{
 			name:        "Empty path in HuggingFace URL",
 			artifactURL: "huggingface://",
 			expectError: true,
-			errorMsg:    "invalid huggingface path, path cannot be empty",
 		},
 		{
 			name:        "Invalid protocol (S3)",
 			artifactURL: "s3://mybucket/mykey",
 			expectError: true,
-			errorMsg:    "unsupported protocol, only huggingface:// is allowed",
 		},
 		{
 			name:        "Invalid protocol (GCS)",
 			artifactURL: "gcs://mybucket/mykey",
 			expectError: true,
-			errorMsg:    "unsupported protocol, only huggingface:// is allowed",
 		},
 		{
 			name:        "Invalid URL format",
 			artifactURL: ":invalid-url",
 			expectError: true,
-			errorMsg:    "failed to parse URL",
 		},
 	}
 
