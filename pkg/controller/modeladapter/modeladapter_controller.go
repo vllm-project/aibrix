@@ -65,8 +65,6 @@ var (
 // Add creates a new ModelAdapter Controller and adds it to the Manager with default RBAC.
 // The Manager will set fields on the Controller and Start it when the Manager is Started.
 func Add(mgr manager.Manager) error {
-	// TODO: check crd exists or not. If not, we should fail here directly without moving forward.
-
 	r, err := newReconciler(mgr)
 	if err != nil {
 		return err
@@ -231,6 +229,21 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 
 	// Step 0: Validate ModelAdapter configurations
 	if err := validateModelAdapter(instance); err != nil {
+		klog.Error(err, "Failed to validate the ModelAdapter")
+
+		instance.Status.Phase = modelv1alpha1.ModelAdapterFailed
+		meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+			Type:               string(modelv1alpha1.ModelAdapterConditionTypeResourceCreated),
+			Status:             metav1.ConditionFalse,
+			Reason:             "ValidationFailed",
+			Message:            "ModelAdapter resource is not valid",
+			LastTransitionTime: metav1.Now()})
+
+		if updateErr := r.Status().Update(ctx, instance); updateErr != nil {
+			klog.ErrorS(err, "Failed to update ModelAdapter status", "modelAdapter", klog.KObj(instance))
+			return reconcile.Result{}, updateErr
+		}
+
 		return ctrl.Result{}, err
 	}
 
@@ -240,21 +253,19 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	var err error
 	if instance.Status.Instances != nil && len(instance.Status.Instances) != 0 {
 		// model adapter has already been scheduled to some pods
-		// check the lora scheduled pod first, verify the mapping is still valid.
+		// check the scheduled pod first, verify the mapping is still valid.
+		// TODO: this needs to be changed once we support multiple lora adapters
 		selectedPodName := instance.Status.Instances[0]
 		if err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: selectedPodName}, selectedPod); err != nil && apierrors.IsNotFound(err) {
 			klog.ErrorS(err, "Failed to get selected pod but pod is still in ModelAdapter instance list", "modelAdapter", klog.KObj(instance))
 
-			// clear the pod list
-			ctrlResult, err := r.clearModelAdapterInstanceList(ctx, instance)
-			if err != nil {
-				return ctrlResult, err
-			}
+			// instance.Status.Instances has been outdated, and we need to clear the pod list
+			// after the pod list is cleaned up, let's reconcile the instance object again in the next loop
+			return ctrl.Result{}, r.clearModelAdapterInstanceList(ctx, instance)
 		} else if err != nil {
 			// failed to fetch the pod, let's requeue
 			return ctrl.Result{RequeueAfter: defaultRequeueDuration}, err
 		} else {
-			existPods = true
 			// compare instance and model adapter labels.
 			selector, err := metav1.LabelSelectorAsSelector(instance.Spec.PodSelector)
 			if err != nil {
@@ -264,15 +275,16 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 
 			if !selector.Matches(labels.Set(selectedPod.Labels)) {
 				klog.Warning("current assigned pod selector doesn't match model adapter selector")
-				ctrlResult, err := r.clearModelAdapterInstanceList(ctx, instance)
-				if err != nil {
-					return ctrlResult, err
-				}
+				return ctrl.Result{}, r.clearModelAdapterInstanceList(ctx, instance)
 			}
+
+			existPods = true
 		}
 	}
 
 	if !existPods {
+		// TODO: as we plan to support lora replicas, it needs some corresponding changes.
+		// it should return a list of pods in future, otherwise, it should be invoked by N times.
 		selectedPod, err = r.schedulePod(ctx, instance)
 		if err != nil {
 			klog.ErrorS(err, "Failed to schedule Pod for ModelAdapter", "modelAdapter", instance.Name)
@@ -328,7 +340,6 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	// Check if need to update the status.
 	if r.inconsistentModelAdapterStatus(oldInstance.Status, instance.Status) {
 		klog.InfoS("model adapter reconcile", "Update CR status", req.Name, "status", instance.Status)
-		// TODO: check whether it should be moved to somewhere else.
 		instance.Status.Phase = modelv1alpha1.ModelAdapterRunning
 		if err = r.updateStatus(ctx, instance, instance.Status); err != nil {
 			return reconcile.Result{}, fmt.Errorf("update modelAdapter status error: %v", err)
@@ -350,7 +361,7 @@ func (r *ModelAdapterReconciler) updateStatus(ctx context.Context, instance *mod
 	return r.Status().Update(ctx, instance)
 }
 
-func (r *ModelAdapterReconciler) clearModelAdapterInstanceList(ctx context.Context, instance *modelv1alpha1.ModelAdapter) (ctrl.Result, error) {
+func (r *ModelAdapterReconciler) clearModelAdapterInstanceList(ctx context.Context, instance *modelv1alpha1.ModelAdapter) error {
 	stalePodName := instance.Status.Instances[0]
 	instance.Status.Instances = []string{}
 	meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
@@ -363,9 +374,10 @@ func (r *ModelAdapterReconciler) clearModelAdapterInstanceList(ctx context.Conte
 
 	if err := r.Status().Update(ctx, instance); err != nil {
 		klog.Error(err, "Failed to update modelAdapter status")
-		return ctrl.Result{}, err
+		return err
 	}
-	return ctrl.Result{}, nil
+
+	return nil
 }
 
 func (r *ModelAdapterReconciler) schedulePod(ctx context.Context, instance *modelv1alpha1.ModelAdapter) (*corev1.Pod, error) {
@@ -384,103 +396,36 @@ func (r *ModelAdapterReconciler) schedulePod(ctx context.Context, instance *mode
 		return nil, fmt.Errorf("no pods found matching selector")
 	}
 
-	// TODO: let's build the scheduling algorithm later
-	// we should also fetch <pod, list<lora>> mappings later.
-
 	return r.scheduler.SelectPod(ctx, podList.Items)
 }
 
-// make sure it only called once.
 func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance *modelv1alpha1.ModelAdapter, pod *corev1.Pod) error {
 	// Define the key you want to check
-	// DEBUG_MODE is used to fastly debug the controller behavior in dev environment.
-	// TODO: we should move it to global feature gate which can be shared and customized by all controllers.
 	key := "DEBUG_MODE"
 	value, exists := getEnvKey(key)
 	host := fmt.Sprintf("http://%s:8000", pod.Status.PodIP)
-	if exists && value == "on" {
+	if exists && value == "1" {
 		// 30080 is the nodePort of the base model service.
 		host = fmt.Sprintf("http://%s:30080", "localhost")
 	}
 
-	// Get the list of existing models from /v1/models, parse the payload, if the instance already exist, we should return nil directly.
-	url := fmt.Sprintf("%s/v1/models", host)
-	resp, err := http.Get(url)
+	// Check if the model is already loaded
+	exists, err := r.modelAdapterExists(host, instance.Name)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			// Handle the error here. For example, log it or take appropriate corrective action.
-			klog.InfoS("Error closing response body:", err)
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to get models: %s", body)
-	}
-
-	var response map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return err
-	}
-
-	data, ok := response["data"].([]interface{})
-	if !ok {
-		return errors.New("invalid data format")
-	}
-
-	// Check if the instance already exists
-	for _, item := range data {
-		model, ok := item.(map[string]interface{})
-		if !ok {
-			fmt.Println("Invalid model format")
-			continue
-		}
-
-		if model["id"] == instance.Name {
-			// Instance already exists, return nil
-			klog.V(4).Info("lora model has been registered previous, skip registration")
-			return nil
-		}
-	}
-
-	payload := map[string]string{
-		"lora_name": instance.Name,
-		"lora_path": instance.Spec.AdditionalConfig["modelArtifact"],
-	}
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
+	if exists {
+		klog.V(4).Info("LoRA model has been registered previously, skipping registration")
 		return nil
 	}
 
-	// TODO: We need to make it mac can access this pod ip.
-	// TODO: without sidecar, it's hard to know user's port and metrics here.
-	url = fmt.Sprintf("%s/v1/load_lora_adapter", host)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{}
-	resp, err = client.Do(req)
+	// Load the Model adapter
+	err = r.loadModelAdapter(host, instance)
 	if err != nil {
 		return err
 	}
 
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			// Handle the error here. For example, log it or take appropriate corrective action.
-			klog.InfoS("Error closing response body:", err)
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		_, _ = io.ReadAll(resp.Body)
-		return err
-	}
-
+	// Update the instance status
 	instance.Status.Phase = modelv1alpha1.ModelAdapterBinding
 	meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
 		Type:               string(modelv1alpha1.ModelAdapterConditionTypeScheduled),
@@ -497,6 +442,91 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 	return nil
 }
 
+// Separate method to check if the model already exists
+func (r *ModelAdapterReconciler) modelAdapterExists(host, modelName string) (bool, error) {
+	// TODO: /v1/models is the vllm entrypoints, let's support multiple engine in future
+	url := fmt.Sprintf("%s/v1/models", host)
+	resp, err := http.Get(url)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			klog.InfoS("Error closing response body:", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("failed to get models: %s", body)
+	}
+
+	var response map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return false, err
+	}
+
+	data, ok := response["data"].([]interface{})
+	if !ok {
+		return false, errors.New("invalid data format")
+	}
+
+	for _, item := range data {
+		model, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if model["id"] == modelName {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// Separate method to load the LoRA adapter
+func (r *ModelAdapterReconciler) loadModelAdapter(host string, instance *modelv1alpha1.ModelAdapter) error {
+	artifactURL, err := extractHuggingFacePath(instance.Spec.ArtifactURL)
+	if err != nil {
+		// Handle error, e.g., log it and return
+		klog.ErrorS(err, "Invalid artifact URL", "artifactURL", artifactURL)
+		return err
+	}
+
+	payload := map[string]string{
+		"lora_name": instance.Name,
+		"lora_path": artifactURL,
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("%s/v1/load_lora_adapter", host)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			klog.InfoS("Error closing response body:", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to load LoRA adapter: %s", body)
+	}
+
+	return nil
+}
 func (r *ModelAdapterReconciler) updateModelAdapterState(ctx context.Context, instance *modelv1alpha1.ModelAdapter, phase modelv1alpha1.ModelAdapterPhase) error {
 	if instance.Status.Phase == phase {
 		return nil

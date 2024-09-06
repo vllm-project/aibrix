@@ -26,7 +26,7 @@ import (
 )
 
 type Scheduler interface {
-	// Returns the pod to schedule model adapter
+	// SelectPod returns the pod to schedule model adapter
 	SelectPod(ctx context.Context, pods []v1.Pod) (*v1.Pod, error)
 }
 

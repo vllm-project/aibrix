@@ -1,6 +1,7 @@
 package modeladapter
 
 import (
+	"errors"
 	"fmt"
 	corev1 "k8s.io/api/core/v1"
 	"net/url"
@@ -86,4 +87,25 @@ func equalStringSlices(a, b []string) bool {
 func getEnvKey(key string) (string, bool) {
 	value, exists := os.LookupEnv(key)
 	return value, exists
+}
+
+func extractHuggingFacePath(artifactURL string) (string, error) {
+	parsedURL, err := url.Parse(artifactURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse URL: %w", err)
+	}
+
+	// Check if the scheme is "huggingface"
+	if parsedURL.Scheme != "huggingface" {
+		return "", errors.New("unsupported protocol, only huggingface:// is allowed")
+	}
+
+	// Extract the path part (xxx/yyy) and trim any leading slashes
+	path := strings.TrimPrefix(parsedURL.Path, "/")
+
+	if path == "" {
+		return "", errors.New("invalid huggingface path, path cannot be empty")
+	}
+
+	return path, nil
 }

@@ -157,3 +157,72 @@ func TestGetEnvKey(t *testing.T) {
 		assert.Equal(t, "", value)
 	})
 }
+
+func TestExtractHuggingFacePath(t *testing.T) {
+	tests := []struct {
+		name        string
+		artifactURL string
+		expected    string
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:        "Valid HuggingFace URL",
+			artifactURL: "huggingface://xxx/yyy",
+			expected:    "xxx/yyy",
+			expectError: false,
+		},
+		{
+			name:        "Valid HuggingFace URL with leading slash",
+			artifactURL: "huggingface:///xxx/yyy",
+			expected:    "xxx/yyy",
+			expectError: false,
+		},
+		{
+			name:        "Empty path in HuggingFace URL",
+			artifactURL: "huggingface://",
+			expectError: true,
+			errorMsg:    "invalid huggingface path, path cannot be empty",
+		},
+		{
+			name:        "Invalid protocol (S3)",
+			artifactURL: "s3://mybucket/mykey",
+			expectError: true,
+			errorMsg:    "unsupported protocol, only huggingface:// is allowed",
+		},
+		{
+			name:        "Invalid protocol (GCS)",
+			artifactURL: "gcs://mybucket/mykey",
+			expectError: true,
+			errorMsg:    "unsupported protocol, only huggingface:// is allowed",
+		},
+		{
+			name:        "Invalid URL format",
+			artifactURL: ":invalid-url",
+			expectError: true,
+			errorMsg:    "failed to parse URL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := extractHuggingFacePath(tt.artifactURL)
+
+			if tt.expectError {
+				if err == nil {
+					t.Fatalf("expected error but got nil")
+				}
+				if err.Error() != tt.errorMsg && tt.errorMsg != "" {
+					t.Errorf("expected error message %q but got %q", tt.errorMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("expected %q but got %q", tt.expected, result)
+				}
+			}
+		})
+	}
+}
