@@ -8,46 +8,35 @@ set -o nounset
 set -o pipefail
 
 SCRIPT_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
-ROOT_PKG=github.com/aibrix/aibrix
+DIFFROOT="${SCRIPT_ROOT}/pkg/client"
+TMP_DIFFROOT="$(mktemp -d -t "$(basename "$0").XXXXXX")"
 
-# Grab code-generator version from go.sum
-CODEGEN_VERSION=$(grep 'k8s.io/code-generator' go.sum | awk '{print $2}' | sed 's/\/go.mod//g' | head -1)
-CODEGEN_PKG=$(echo `go env GOPATH`"/pkg/mod/k8s.io/code-generator@${CODEGEN_VERSION}")
-
-if [[ ! -d ${CODEGEN_PKG} ]]; then
-    echo "${CODEGEN_PKG} is missing. Running 'go mod download'."
-    go mod download
-fi
-
-echo ">> Using ${CODEGEN_PKG}"
-
-# code-generator does work with go.mod but makes assumptions about
-# the project living in `$GOPATH/src`. To work around this and support
-# any location; create a temporary directory, use this as an output
-# base, and copy everything back once generated.
-TEMP_DIR=$(mktemp -d)
 cleanup() {
-    echo ">> Removing ${TEMP_DIR}"
-#    rm -rf ${TEMP_DIR}
+  rm -rf "${TMP_DIFFROOT}"
 }
 trap "cleanup" EXIT SIGINT
 
-echo ">> Temporary output directory ${TEMP_DIR}"
+cleanup
+
+mkdir -p "${TMP_DIFFROOT}"
+cp -a "${DIFFROOT}"/* "${TMP_DIFFROOT}"
 
 # Ensure we can execute.
-chmod +x ${CODEGEN_PKG}/generate-groups.sh
+chmod +x ${SCRIPT_ROOT}/hack/update-codegen.sh
 
-# generate the code with:
-# --output-base    because this script should also be able to run inside the vendor dir of
-#                  k8s.io/kubernetes. The output-base is needed for the generators to output into the vendor dir
-#                  instead of the $GOPATH directly. For normal projects this can be dropped.
-#
-cd ${SCRIPT_ROOT}
-${CODEGEN_PKG}/generate-groups.sh all \
- github.com/aibrix/aibrix/pkg/client github.com/aibrix/aibrix/api \
- "model:v1alpha1 autoscaling:v1alpha1 orchestration:v1alpha1" \
- --output-base "${TEMP_DIR}" \
- --go-header-file hack/boilerplate.go.txt
+"${SCRIPT_ROOT}/hack/update-codegen.sh"
+echo "diffing ${DIFFROOT} against freshly generated codegen"
+ret=0
+diff -Naupr "${DIFFROOT}" "${TMP_DIFFROOT}" || ret=$?
+if [[ $ret -eq 0 ]]; then
+  echo "${DIFFROOT} up to date."
+else
+  echo "${DIFFROOT} is out of date. Please run hack/update-codegen.sh"
+  exit 1
+fi
 
-# Copy everything back.
-cp -a "${TEMP_DIR}/${ROOT_PKG}/." "${SCRIPT_ROOT}/"
+# smoke test
+echo "Smoke testing by compiling..."
+pushd "${SCRIPT_ROOT}"
+  go build "${DIFFROOT}/..."
+popd

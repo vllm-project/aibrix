@@ -31,7 +31,7 @@ type OrchestrationV1alpha1Interface interface {
 	RayClusterReplicaSetsGetter
 }
 
-// OrchestrationV1alpha1Client is used to interact with features provided by the orchestration.aibrix.ai group.
+// OrchestrationV1alpha1Client is used to interact with features provided by the orchestration group.
 type OrchestrationV1alpha1Client struct {
 	restClient rest.Interface
 }

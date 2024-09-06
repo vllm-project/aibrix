@@ -30,7 +30,7 @@ type ModelV1alpha1Interface interface {
 	ModelAdaptersGetter
 }
 
-// ModelV1alpha1Client is used to interact with features provided by the model.aibrix.ai group.
+// ModelV1alpha1Client is used to interact with features provided by the model group.
 type ModelV1alpha1Client struct {
 	restClient rest.Interface
 }

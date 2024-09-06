@@ -39,7 +39,7 @@ func RayClusterFleet(name, namespace string) *RayClusterFleetApplyConfiguration 
 	b.WithName(name)
 	b.WithNamespace(namespace)
 	b.WithKind("RayClusterFleet")
-	b.WithAPIVersion("orchestration.aibrix.ai/v1alpha1")
+	b.WithAPIVersion("orchestration/v1alpha1")
 	return b
 }
 

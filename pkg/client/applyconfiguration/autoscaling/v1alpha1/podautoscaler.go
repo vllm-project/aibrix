@@ -39,7 +39,7 @@ func PodAutoscaler(name, namespace string) *PodAutoscalerApplyConfiguration {
 	b.WithName(name)
 	b.WithNamespace(namespace)
 	b.WithKind("PodAutoscaler")
-	b.WithAPIVersion("autoscaling.aibrix.ai/v1alpha1")
+	b.WithAPIVersion("autoscaling/v1alpha1")
 	return b
 }
 

@@ -31,7 +31,7 @@ import (
 // apply configuration type exists for the given GroupVersionKind.
 func ForKind(kind schema.GroupVersionKind) interface{} {
 	switch kind {
-	// Group=autoscaling.aibrix.ai, Version=v1alpha1
+	// Group=autoscaling, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithKind("MetricSource"):
 		return &autoscalingv1alpha1.MetricSourceApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PodAutoscaler"):
@@ -41,7 +41,7 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 	case v1alpha1.SchemeGroupVersion.WithKind("PodAutoscalerStatus"):
 		return &autoscalingv1alpha1.PodAutoscalerStatusApplyConfiguration{}
 
-		// Group=model.aibrix.ai, Version=v1alpha1
+		// Group=model, Version=v1alpha1
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelAdapter"):
 		return &applyconfigurationmodelv1alpha1.ModelAdapterApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelAdapterSpec"):
@@ -49,7 +49,7 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelAdapterStatus"):
 		return &applyconfigurationmodelv1alpha1.ModelAdapterStatusApplyConfiguration{}
 
-		// Group=orchestration.aibrix.ai, Version=v1alpha1
+		// Group=orchestration, Version=v1alpha1
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("FleetCondition"):
 		return &applyconfigurationorchestrationv1alpha1.FleetConditionApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleet"):

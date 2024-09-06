@@ -39,7 +39,7 @@ func RayClusterReplicaSet(name, namespace string) *RayClusterReplicaSetApplyConf
 	b.WithName(name)
 	b.WithNamespace(namespace)
 	b.WithKind("RayClusterReplicaSet")
-	b.WithAPIVersion("orchestration.aibrix.ai/v1alpha1")
+	b.WithAPIVersion("orchestration/v1alpha1")
 	return b
 }
 

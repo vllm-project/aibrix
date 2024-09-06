@@ -36,6 +36,7 @@ echo ">> Temporary output directory ${TEMP_DIR}"
 
 # Ensure we can execute.
 chmod +x ${CODEGEN_PKG}/generate-groups.sh
+chmod +x ${CODEGEN_PKG}/generate-internal-groups.sh
 
 # generate the code with:
 # --output-base    because this script should also be able to run inside the vendor dir of
@@ -43,7 +44,7 @@ chmod +x ${CODEGEN_PKG}/generate-groups.sh
 #                  instead of the $GOPATH directly. For normal projects this can be dropped.
 #
 cd ${SCRIPT_ROOT}
-${CODEGEN_PKG}/generate-groups.sh all \
+${CODEGEN_PKG}/generate-groups.sh applyconfiguration,client,informer,lister \
  github.com/aibrix/aibrix/pkg/client github.com/aibrix/aibrix/api \
  "model:v1alpha1 autoscaling:v1alpha1 orchestration:v1alpha1" \
  --output-base "${TEMP_DIR}" \

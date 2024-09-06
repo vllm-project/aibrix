@@ -9,7 +9,7 @@ kind load docker-image aibrix/vllm:v0.1.0
 2. Deploy mocked model image
 ```shell
 kubectl apply -f docs/development/app/deployment.yaml
-kubectl port-forward svc/llama2-70b 8000:8000 &
+kubectl -n aibrix-system port-forward svc/llama2-70b 8000:8000 &
 ```
 
 ## Test python app separately

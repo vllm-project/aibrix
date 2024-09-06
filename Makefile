@@ -53,6 +53,18 @@ help: ## Display this help.
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd:maxDescLen=0 webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
+.PHONY: generate
+generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	
+.PHONY: update-codegen
+update-codegen:
+	sh ./hack/update-codegen.sh
+
+.PHONY: verify-codegen
+verify-codegen:
+	sh ./hack/verify-codegen.sh
+
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...
