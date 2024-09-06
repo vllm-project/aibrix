@@ -89,11 +89,11 @@ class BaseDownloader(ABC):
 
         if not self._support_range_download():
             # download using multi threads
-            st = time.perf_counter()
             num_threads = envs.DOWNLOADER_NUM_THREADS
             logger.info(
-                f"Downloader {self.__class__.__name__} does not support "
-                f"range download, use {num_threads} threads to download."
+                f"Downloader {self.__class__.__name__} download "
+                f"{len(filtered_files)} files from {self.model_uri} "
+                f"use {num_threads} threads to download."
             )
 
             executor = ThreadPoolExecutor(num_threads)
@@ -108,26 +108,17 @@ class BaseDownloader(ABC):
                 for file in filtered_files
             ]
             wait(futures)
-            duration = time.perf_counter() - st
+
+        else:
             logger.info(
                 f"Downloader {self.__class__.__name__} download "
                 f"{len(filtered_files)} files from {self.model_uri} "
-                f"using {num_threads} threads, "
-                f"duration: {duration:.2f} seconds."
+                f"using range support methods."
             )
-
-        else:
-            st = time.perf_counter()
             for file in filtered_files:
                 # use range download to speedup download
                 self.download(local_path, file, self.bucket_name, True)
-            duration = time.perf_counter() - st
-            logger.info(
-                f"Downloader {self.__class__.__name__} download "
-                f"{len(filtered_files)} files from {self.model_uri} "
-                f"using range support methods, "
-                f"duration: {duration:.2f} seconds."
-            )
+
 
     def download_model(self, local_path: Optional[str] = None):
         if local_path is None:
@@ -139,7 +130,7 @@ class BaseDownloader(ABC):
         model_path.mkdir(parents=True, exist_ok=True)
 
         # TODO check local file exists
-
+        st = time.perf_counter()
         if self._is_directory():
             self.download_directory(local_path=model_path)
         else:
@@ -149,6 +140,13 @@ class BaseDownloader(ABC):
                 bucket_name=self.bucket_name,
                 enable_range=self._support_range_download(),
             )
+        duration = time.perf_counter() - st
+        logger.info(
+            f"Downloader {self.__class__.__name__} download "
+            f"from {self.model_uri} "
+            f"duration: {duration:.2f} seconds."
+        )
+
         return model_path
 
     def __hash__(self):
