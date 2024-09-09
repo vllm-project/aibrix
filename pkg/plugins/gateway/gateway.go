@@ -30,6 +30,7 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog"
@@ -95,7 +96,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			resp = s.HandleResponseHeaders(req, targetPodIP)
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
-			resp = s.HandleResponseBody(ctx, req, user)
+			resp = s.HandleResponseBody(ctx, req, user, targetPodIP)
 
 		default:
 			log.Printf("Unknown Request type %+v\n", v)
@@ -109,12 +110,9 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, string, string) {
 	log.Println("--- In RequestHeaders processing ...")
-	var user, model, targetPodIP string
+	var user, model, routingStrategy, targetPodIP string
 	r := req.Request
 	h := r.(*extProcPb.ProcessingRequest_RequestHeaders)
-
-	log.Printf("Headers: %+v\n", h)
-	log.Printf("EndOfStream: %v\n", h.RequestHeaders.EndOfStream)
 
 	for _, n := range h.RequestHeaders.Headers.Headers {
 		if strings.ToLower(n.Key) == "user" {
@@ -123,12 +121,13 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 		if strings.ToLower(n.Key) == "model" {
 			model = string(n.RawValue)
 		}
+		if strings.ToLower(n.Key) == "routing-strategy" {
+			routingStrategy = string(n.RawValue)
+		}
 		if strings.ToLower(n.Key) == "target-pod" {
 			targetPodIP = string(n.RawValue)
 		}
 	}
-
-	klog.Infof("user: %v", user)
 
 	// TODO (varun): add check if user exists in backend storage
 	// if no user name present in the request headers
@@ -136,6 +135,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 		klog.Infoln("user does not exists")
 		return nil, user, targetPodIP
 	}
+	klog.Infof("user: %v", user)
 	code, err := s.checkRPM(ctx, user)
 	if err != nil {
 		return &extProcPb.ProcessingResponse{
@@ -211,9 +211,21 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 		}, user, targetPodIP
 	}
 
-	// TODO (varun): evaluate how to enable selection of routing algorithm
-	route := routing.NewRandomRouter()
-	targetPodIP, _ = route.Get(ctx, pods.Items)
+	targetPodIP, err = s.SelectTargetPod(ctx, routingStrategy, pods.Items)
+	if err != nil {
+		return &extProcPb.ProcessingResponse{
+			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+				ImmediateResponse: &extProcPb.ImmediateResponse{
+					Status: &envoyTypePb.HttpStatus{
+						Code: envoyTypePb.StatusCode_InternalServerError,
+					},
+					Details: err.Error(),
+					Body:    "error on selecting target pod",
+				},
+			},
+		}, user, targetPodIP
+	}
+
 	headers := []*configPb.HeaderValueOption{{
 		Header: &configPb.HeaderValue{
 			Key:      "x-went-into-req-headers",
@@ -227,6 +239,22 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 				RawValue: []byte(targetPodIP),
 			},
 		})
+
+		reqCount, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_REQUEST_COUNT", targetPodIP), 1)
+		if err != nil {
+			return &extProcPb.ProcessingResponse{
+				Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+					ImmediateResponse: &extProcPb.ImmediateResponse{
+						Status: &envoyTypePb.HttpStatus{
+							Code: envoyTypePb.StatusCode_InternalServerError,
+						},
+						Details: err.Error(),
+						Body:    "error on updating request count",
+					},
+				},
+			}, user, targetPodIP
+		}
+		klog.Infof("RequestStart: SelectedTargetPodIP: %s, PodRequestCount: %v", targetPodIP, reqCount)
 	}
 
 	resp := &extProcPb.ProcessingResponse{
@@ -308,7 +336,7 @@ func (s *Server) HandleResponseHeaders(req *extProcPb.ProcessingRequest, targetP
 	}
 }
 
-func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.ProcessingRequest, user string) *extProcPb.ProcessingResponse {
+func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.ProcessingRequest, user string, targetPodIP string) *extProcPb.ProcessingResponse {
 	log.Println("--- In ResponseBody processing")
 
 	r := req.Request
@@ -358,6 +386,15 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 	}
 	klog.Infof("Updated RPM: %v, TPM: %v for user: %v", rpm, tpm, user)
 
+	if targetPodIP != "" {
+		podTpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_THROUGHPUT", targetPodIP), int64(res.Usage.TotalTokens))
+		if err != nil {
+			klog.Error(err)
+		} else {
+			klog.Infof("RequestEnd: SelectedTargetPodIP: %s, PodThroughput: %v", targetPodIP, podTpm)
+		}
+	}
+
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ResponseBody{
 			ResponseBody: &extProcPb.BodyResponse{
@@ -397,7 +434,7 @@ func (s *Server) checkRPM(ctx context.Context, user string) (envoyTypePb.StatusC
 	}
 	klog.Infof("rmpCurrent: %v, rpmLimit: %v", rpmCurrent, rpmLimit)
 	if rpmCurrent >= rpmLimit {
-		err := fmt.Errorf("requests per limit of:%v, reached for user: %v", rpmLimit, user)
+		err := fmt.Errorf("requests per limit of: %v, reached for user: %v", rpmLimit, user)
 		klog.Errorln(err)
 		return envoyTypePb.StatusCode_TooManyRequests, err
 	}
@@ -424,4 +461,21 @@ func (s *Server) checkTPM(ctx context.Context, user string) (envoyTypePb.StatusC
 	}
 
 	return envoyTypePb.StatusCode_OK, nil
+}
+
+func (s *Server) SelectTargetPod(ctx context.Context, routingStrategy string, pods []corev1.Pod) (string, error) {
+	// TODO (varun): evaluate how to enable selection of routing algorithm
+	var route routing.Router
+	switch routingStrategy {
+	case "random":
+		route = routing.NewRandomRouter()
+	case "least-request":
+		route = routing.NewLeastRequestRouter(s.ratelimiter)
+	case "throughput":
+		route = routing.NewThroughputRouter(s.ratelimiter)
+	default:
+		return "", nil
+	}
+
+	return route.Get(ctx, pods)
 }
