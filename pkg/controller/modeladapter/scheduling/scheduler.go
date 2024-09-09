@@ -18,11 +18,24 @@ package scheduling
 
 import (
 	"context"
+	"errors"
 
 	v1 "k8s.io/api/core/v1"
+
+	"github.com/aibrix/aibrix/pkg/cache"
 )
 
 type Scheduler interface {
-	// Returns the pod to schedule model adapter
+	// SelectPod returns the pod to schedule model adapter
 	SelectPod(ctx context.Context, pods []v1.Pod) (*v1.Pod, error)
+}
+
+// NewScheduler leverages the factory method to choose the right scheduler
+func NewScheduler(policyName string, c *cache.Cache) (Scheduler, error) {
+	switch policyName {
+	case "leastAdapters":
+		return NewLeastAdapters(c), nil
+	default:
+		return nil, errors.New("unknown scheduler policy")
+	}
 }

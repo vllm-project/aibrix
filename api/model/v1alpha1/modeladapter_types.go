@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -27,13 +28,30 @@ import (
 type ModelAdapterSpec struct {
 
 	// BaseModel is the identifier for the base model to which the ModelAdapter will be attached.
+	// +optional
 	BaseModel string `json:"baseModel,omitempty"`
 
 	// PodSelector is a label query over pods that should match the ModelAdapter configuration.
+	// +kubebuilder:validation:Required
 	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 
 	// SchedulerName is the name of the scheduler to use for scheduling the ModelAdapter.
+	// +optional
+	// +kubebuilder:default=default
 	SchedulerName string `json:"schedulerName,omitempty"`
+
+	// ArtifactURL is the address of the model artifact to be downloaded. Different protocol is supported like s3,gcs,huggingface
+	// +kubebuilder:validation:Required
+	ArtifactURL string `json:"artifactURL,omitempty"`
+
+	// CredentialsSecretRef points to the secret used to authenticate the artifact download requests
+	// +optional
+	CredentialsSecretRef *corev1.LocalObjectReference `json:"credentialsSecretRef,omitempty"`
+
+	// Replicas is the desired number of replicas of model adapter
+	// +optional
+	// +kubebuilder:default=1
+	Replicas *int32 `json:"replicas,omitempty"`
 
 	// Additional fields can be added here to customize the scheduling and deployment
 	// +optional
@@ -55,6 +73,7 @@ const (
 	// ModelAdapterFailed means ModelAdapter has terminated in a failure
 	ModelAdapterFailed ModelAdapterPhase = "Failed"
 	// ModelAdapterScaling means ModelAdapter is scaling, could be scaling in or out. won't be enabled until we allow multiple replicas
+	// TODO: not implemented yet.
 	ModelAdapterScaling ModelAdapterPhase = "Scaling"
 )
 

@@ -18,16 +18,20 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // ModelAdapterSpecApplyConfiguration represents an declarative configuration of the ModelAdapterSpec type for use
 // with apply.
 type ModelAdapterSpecApplyConfiguration struct {
-	BaseModel        *string           `json:"baseModel,omitempty"`
-	PodSelector      *v1.LabelSelector `json:"podSelector,omitempty"`
-	SchedulerName    *string           `json:"schedulerName,omitempty"`
-	AdditionalConfig map[string]string `json:"additionalConfig,omitempty"`
+	BaseModel            *string                      `json:"baseModel,omitempty"`
+	PodSelector          *v1.LabelSelector            `json:"podSelector,omitempty"`
+	SchedulerName        *string                      `json:"schedulerName,omitempty"`
+	ArtifactURL          *string                      `json:"artifactURL,omitempty"`
+	CredentialsSecretRef *corev1.LocalObjectReference `json:"credentialsSecretRef,omitempty"`
+	Replicas             *int32                       `json:"replicas,omitempty"`
+	AdditionalConfig     map[string]string            `json:"additionalConfig,omitempty"`
 }
 
 // ModelAdapterSpecApplyConfiguration constructs an declarative configuration of the ModelAdapterSpec type for use with
@@ -57,6 +61,30 @@ func (b *ModelAdapterSpecApplyConfiguration) WithPodSelector(value v1.LabelSelec
 // If called multiple times, the SchedulerName field is set to the value of the last call.
 func (b *ModelAdapterSpecApplyConfiguration) WithSchedulerName(value string) *ModelAdapterSpecApplyConfiguration {
 	b.SchedulerName = &value
+	return b
+}
+
+// WithArtifactURL sets the ArtifactURL field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ArtifactURL field is set to the value of the last call.
+func (b *ModelAdapterSpecApplyConfiguration) WithArtifactURL(value string) *ModelAdapterSpecApplyConfiguration {
+	b.ArtifactURL = &value
+	return b
+}
+
+// WithCredentialsSecretRef sets the CredentialsSecretRef field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CredentialsSecretRef field is set to the value of the last call.
+func (b *ModelAdapterSpecApplyConfiguration) WithCredentialsSecretRef(value corev1.LocalObjectReference) *ModelAdapterSpecApplyConfiguration {
+	b.CredentialsSecretRef = &value
+	return b
+}
+
+// WithReplicas sets the Replicas field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Replicas field is set to the value of the last call.
+func (b *ModelAdapterSpecApplyConfiguration) WithReplicas(value int32) *ModelAdapterSpecApplyConfiguration {
+	b.Replicas = &value
 	return b
 }
 
