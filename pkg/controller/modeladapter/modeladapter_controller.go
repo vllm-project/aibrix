@@ -342,7 +342,7 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	if r.inconsistentModelAdapterStatus(oldInstance.Status, instance.Status) {
 		klog.InfoS("model adapter reconcile", "Update CR status", req.Name, "status", instance.Status)
 		instance.Status.Phase = modelv1alpha1.ModelAdapterRunning
-		if err = r.updateStatus(ctx, instance, instance.Status); err != nil {
+		if err = r.updateStatus(ctx, instance); err != nil {
 			return reconcile.Result{}, fmt.Errorf("update modelAdapter status error: %v", err)
 		}
 	}
@@ -350,7 +350,7 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-func (r *ModelAdapterReconciler) updateStatus(ctx context.Context, instance *modelv1alpha1.ModelAdapter, status modelv1alpha1.ModelAdapterStatus) error {
+func (r *ModelAdapterReconciler) updateStatus(ctx context.Context, instance *modelv1alpha1.ModelAdapter) error {
 	meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
 		Type:               string(modelv1alpha1.ModelAdapterConditionReady),
 		Status:             metav1.ConditionTrue,
