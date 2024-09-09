@@ -2,11 +2,11 @@
 
 1. Builder mocked base model image
 ```dockerfile
-docker build -t aibrix/vllm:v0.1.0 -f Dockerfile .
+docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
 
 # If you are using Docker-Desktop on Mac, Kubernetes shares the local image repository with Docker.
 # Therefore, the following command is not necessary.
-kind load docker-image aibrix/vllm:v0.1.0
+kind load docker-image aibrix/vllm-mock:nightly
 ```
 
 2. Deploy mocked model image
