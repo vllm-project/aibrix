@@ -3,7 +3,7 @@ name = "aibrix"
 version = "0.1.0-rc.1"
 description = "AI Runtime for aibrix"
 authors = [
-    "AIBRIX Authors <brosoul@126.com>"
+    "AIBrix Authors <brosoul@126.com>"
 ]
 readme = "README.md"
 license = "Apache-2.0"
