@@ -12,7 +12,7 @@ metadata:
   name: eg
   namespace: aibrix-system
 spec:
-  gatewayClassName: eg
+  gatewayClassName: aibrix-eg
   listeners:
     - name: http
       protocol: HTTP
@@ -43,7 +43,7 @@ spec:
   targetRef:
     group: gateway.networking.k8s.io
     kind: Gateway
-    name: eg
+    name: aibrix-eg
   extProc:
     - backendRefs:
         - name: aibrix-gateway-plugins
@@ -63,10 +63,10 @@ spec:
   targetRef:
     group: gateway.networking.k8s.io
     kind: Gateway
-    name: eg
+    name: aibrix-eg
   jsonPatches:
   - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
-    name: "aibrix-system/eg/http"
+    name: "aibrix-system/aibrix-eg/http"
     operation:
       op: add
       path: "/virtual_hosts/0/routes/0"
