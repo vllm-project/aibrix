@@ -71,7 +71,7 @@ spec:
       op: add
       path: "/virtual_hosts/0/routes/0"
       value:
-        name: orginal_route
+        name: original_route
         match:
           prefix: "/"
           # headers:
