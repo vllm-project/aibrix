@@ -1,4 +1,5 @@
 resources:
-- gateway-plugin.yaml
-- redis.yaml
 - gateway.yaml
+- redis.yaml
+- gateway-plugin.yaml
+

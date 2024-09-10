@@ -59,9 +59,10 @@ spec:
 # kind: HTTPRoute
 # metadata:
 #   name: llama2-70b-router
+#   namespace: aibrix-system
 # spec:
 #   parentRefs:
-#     - name: eg
+#     - name: aibrix-eg
 #   rules:
 #     - matches:
 #         - headers:

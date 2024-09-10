@@ -186,16 +186,13 @@ endif
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
 	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply -f -
     ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization	
-	helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.1.0 -n aibrix-system
-	$(KUBECTL) wait --timeout=5m -n aibrix-system deployment/envoy-gateway --for=condition=Available
-	$(KUBECTL) apply -f config/gateway/gateway.yaml
+	$(KUBECTL) create -k config/dependency
 	
 
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/crd | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
-	$(KUBECTL) delete -f config/gateway/gateway.yaml
-	helm uninstall eg -n aibrix-system
+	$(KUBECTL) delete -k config/dependency
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.

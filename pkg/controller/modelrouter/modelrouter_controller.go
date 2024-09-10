@@ -39,7 +39,7 @@ const (
 	modelIdentifier       = "model.aibrix.ai"
 	modelPortIdentifier   = "model.aibrix.ai/port"
 	// TODO (varun): parameterize it or dynamically resolve it
-	aibrixEnvoyGateway = "eg"
+	aibrixEnvoyGateway = "aibrix-eg"
 )
 
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete

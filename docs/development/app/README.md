@@ -50,12 +50,12 @@ helm get all eg -n envoy-gateway-system
 
 Port forward to the Envoy service:
 ```shell
-kubectl -n aibrix-system port-forward service/envoy-aibrix-system-eg-95d1b654 8888:80 &
+kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc  8888:80 &
 ```
 
 # Add rpm/tpm config 
 ```shell
-kubectl -n aibrix-system exec -it aibrix-redis-master-<pod-name> -- redis-cli
+kubectl -n aibrix-system exec -it aibrix-redis-master-767bcb955d-qrlfc  -- redis-cli
 
 set aibrix:your-user-name_TPM_LIMIT 100
 set aibrix:your-user-name_RPM_LIMIT 10
