@@ -195,26 +195,26 @@ func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				klog.Error("Failed to update custom resource to add finalizer")
 				return ctrl.Result{}, err
 			}
-		} else {
-			// the object is being deleted
-			if controllerutil.ContainsFinalizer(modelAdapter, ModelAdapterFinalizer) {
-				// the finalizer is present, so let's unload lora from those inference engines
-				if err := r.unloadModelAdapter(modelAdapter); err != nil {
-					// if fail to delete unload lora here, return the error so it can be retried.
-					return ctrl.Result{}, err
-				}
-				if ok := controllerutil.RemoveFinalizer(modelAdapter, ModelAdapterFinalizer); !ok {
-					klog.Error("Failed to remove finalizer for ModelAdapter")
-					return ctrl.Result{Requeue: true}, nil
-				}
-				if err := r.Update(ctx, modelAdapter); err != nil {
-					klog.Error("Failed to update custom resource to remove finalizer")
-					return ctrl.Result{}, err
-				}
-			}
-			// Stop reconciliation as the item is being deleted
-			return ctrl.Result{}, nil
 		}
+	} else {
+		// the object is being deleted
+		if controllerutil.ContainsFinalizer(modelAdapter, ModelAdapterFinalizer) {
+			// the finalizer is present, so let's unload lora from those inference engines
+			if err := r.unloadModelAdapter(modelAdapter); err != nil {
+				// if fail to delete unload lora here, return the error so it can be retried.
+				return ctrl.Result{}, err
+			}
+			if ok := controllerutil.RemoveFinalizer(modelAdapter, ModelAdapterFinalizer); !ok {
+				klog.Error("Failed to remove finalizer for ModelAdapter")
+				return ctrl.Result{Requeue: true}, nil
+			}
+			if err := r.Update(ctx, modelAdapter); err != nil {
+				klog.Error("Failed to update custom resource to remove finalizer")
+				return ctrl.Result{}, err
+			}
+		}
+		// Stop reconciliation as the item is being deleted
+		return ctrl.Result{}, nil
 	}
 
 	return r.DoReconcile(ctx, req, modelAdapter)
@@ -422,7 +422,7 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 	key := "DEBUG_MODE"
 	value, exists := getEnvKey(key)
 	host := fmt.Sprintf("http://%s:8000", pod.Status.PodIP)
-	if exists && value == "1" {
+	if exists && value == "on" {
 		// 30080 is the nodePort of the base model service.
 		host = fmt.Sprintf("http://%s:30080", "localhost")
 	}
@@ -564,7 +564,14 @@ func (r *ModelAdapterReconciler) unloadModelAdapter(instance *modelv1alpha1.Mode
 		return err
 	}
 
-	url := fmt.Sprintf("%s/v1/unload_lora_adapter", host)
+	url := fmt.Sprintf("http://%s.%s.pod.cluster.local:%d/v1/unload_lora_adapter", host, instance.Namespace, 8000)
+	key := "DEBUG_MODE"
+	value, exists := getEnvKey(key)
+	if exists && value == "on" {
+		// 30080 is the nodePort of the base model service.
+		url = "http://localhost:30080/v1/unload_lora_adapter"
+	}
+
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return err
