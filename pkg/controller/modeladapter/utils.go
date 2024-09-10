@@ -70,7 +70,7 @@ func validateModelAdapter(instance *modelv1alpha1.ModelAdapter) error {
 
 // validateArtifactURL checks if the ArtifactURL has a valid schema (s3://, gcs://, huggingface://, https://)
 func validateArtifactURL(artifactURL string) error {
-	allowedSchemes := []string{"s3://", "gcs://", "huggingface://"}
+	allowedSchemes := []string{"s3://", "gcs://", "huggingface://", "hf://"}
 	for _, scheme := range allowedSchemes {
 		if strings.HasPrefix(artifactURL, scheme) {
 			return nil
