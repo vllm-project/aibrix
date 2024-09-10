@@ -4,8 +4,8 @@
 Make sure that your python conda environment is setup correctly. The following installs sphinx package and necessary templates.
 
 ```bash
-python -m pip install sphinx
-pip install sphinx-book-theme
+pip install sphinx==8.0.2
+pip install sphinx-book-theme==1.1.3
 ```
 
 ## Compile html pages
