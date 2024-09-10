@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "aibrix"
 version = "0.1.0-rc.1"
-description = "AI Runtime for aibrix"
+description = "AIBrix, the foundational building blocks for constructing your own GenAI inference infrastructure."
 authors = [
     "AIBrix Authors <brosoul@126.com>"
 ]
