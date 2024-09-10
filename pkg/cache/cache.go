@@ -19,7 +19,6 @@ package cache
 import (
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 
@@ -30,7 +29,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
@@ -62,22 +60,8 @@ func GetCache() (*Cache, error) {
 	return &instance, nil
 }
 
-func NewCache(stopCh <-chan struct{}) *Cache {
+func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 	once.Do(func() {
-		var config *rest.Config
-		var err error
-
-		if kubeconfig == "" {
-			log.Printf("using in-cluster configuration")
-			config, err = rest.InClusterConfig()
-		} else {
-			log.Printf("using configuration from '%s'", kubeconfig)
-			config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-		}
-
-		if err != nil {
-			panic(err)
-		}
 
 		if err := v1alpha1scheme.AddToScheme(scheme.Scheme); err != nil {
 			panic(err)

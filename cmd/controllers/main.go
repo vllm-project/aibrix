@@ -19,17 +19,19 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"log"
 	"os"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
-	_ "k8s.io/client-go/plugin/pkg/client/auth"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -71,6 +73,7 @@ func init() {
 }
 
 func main() {
+	var kubeConfig string
 	var metricsAddr string
 	var enableLeaderElection bool
 	var probeAddr string
@@ -81,6 +84,7 @@ func main() {
 	var renewDeadLine time.Duration
 	var leaderElectionResourceLock string
 	var leaderElectionId string
+	flag.StringVar(&kubeConfig, "kubeconfig", "", "The address the metric endpoint binds to.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -165,7 +169,21 @@ func main() {
 	setupLog.Info("starting cache")
 	stopCh := make(chan struct{})
 	defer close(stopCh)
-	cache.NewCache(stopCh)
+	var config *rest.Config
+
+	if kubeConfig == "" {
+		log.Printf("using in-cluster configuration")
+		config, err = rest.InClusterConfig()
+	} else {
+		log.Printf("using configuration from '%s'", kubeConfig)
+		config, err = clientcmd.BuildConfigFromFlags("", kubeConfig)
+	}
+
+	if err != nil {
+		panic(err)
+	}
+
+	cache.NewCache(config, stopCh)
 
 	// Kind controller registration is encapsulated inside the pkg/controller/controller.go
 	// So here we can use more clean registration flow and there's no need to change logics in future.
