@@ -7,7 +7,7 @@
 
 1. Builder mocked base model image
 ```dockerfile
-docker build -t aibrix/vllm:v0.1.0 -f Dockerfile .
+docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
 ```
 
 2. Deploy mocked model image

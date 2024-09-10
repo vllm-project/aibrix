@@ -4,24 +4,24 @@ metadata:
   name: llama2-70b
   namespace: aibrix-system
   labels:
-    aibricks.com/lora-enabled: "true"
+    modeladapter.aibricks.ai/enabled: "true"
     model.aibrix.ai: "llama2-70b"
     model.aibrix.ai/port: "8000"
 spec:
   replicas: 3
   selector:
     matchLabels:
-      aibricks.com/lora-enabled: "true"
+      modeladapter.aibricks.ai/enabled: "true"
       model.aibrix.ai: "llama2-70b"
   template:
     metadata:
       labels:
-        aibricks.com/lora-enabled: "true"
+        modeladapter.aibricks.ai/enabled: "true"
         model.aibrix.ai: "llama2-70b"
     spec:
       containers:
         - name: llmengine
-          image: aibrix/vllm:v0.1.0
+          image: aibrix/vllm-mock:nightly
           ports:
             - containerPort: 8000
           env:
@@ -51,7 +51,7 @@ spec:
     - protocol: TCP
       port: 8000
       targetPort: 8000
-      nodePort: 30080
+      nodePort: 30081
   type: NodePort
 # ---
 # for test-purpose, if need to create HTTPRoute object manually
@@ -59,9 +59,10 @@ spec:
 # kind: HTTPRoute
 # metadata:
 #   name: llama2-70b-router
+#   namespace: aibrix-system
 # spec:
 #   parentRefs:
-#     - name: eg
+#     - name: aibrix-eg
 #   rules:
 #     - matches:
 #         - headers:

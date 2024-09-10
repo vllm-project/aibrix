@@ -1,12 +1,37 @@
 [tool.poetry]
 name = "aibrix"
-version = "0.1.0"
-description = ""
-authors = ["brosoul <brosoul@126.com>"]
+version = "0.1.0-rc.1"
+description = "AIBrix, the foundational building blocks for constructing your own GenAI inference infrastructure."
+authors = [
+    "AIBrix Authors <brosoul@126.com>"
+]
 readme = "README.md"
+license = "Apache-2.0"
+repository = "https://github.com/aibrix/aibrix/tree/main/python/aibrix"
+classifiers = [
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+packages = [
+    { include = "aibrix" },
+]
+exclude = ["test"]
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = ">=3.8,<3.12"
 huggingface-hub = "^0.24.6"
 tos = "^2.7.1"
 boto3 = "^1.35.5"

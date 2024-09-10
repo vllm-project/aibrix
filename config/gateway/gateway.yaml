@@ -12,27 +12,11 @@ metadata:
   name: eg
   namespace: aibrix-system
 spec:
-  gatewayClassName: eg
+  gatewayClassName: aibrix-eg
   listeners:
     - name: http
       protocol: HTTP
-      port: 80
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: envoy-gateway-config
-  namespace: aibrix-system
-data:
-  envoy-gateway.yaml: |
-    apiVersion: gateway.envoyproxy.io/v1alpha1
-    kind: EnvoyGateway
-    provider:
-      type: Kubernetes
-    gateway:
-      controllerName: gateway.envoyproxy.io/gatewayclass-controller
-    extensionApis:
-      enableEnvoyPatchPolicy: true   
+      port: 80   
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
@@ -43,7 +27,7 @@ spec:
   targetRef:
     group: gateway.networking.k8s.io
     kind: Gateway
-    name: eg
+    name: aibrix-eg
   extProc:
     - backendRefs:
         - name: aibrix-gateway-plugins
@@ -63,15 +47,15 @@ spec:
   targetRef:
     group: gateway.networking.k8s.io
     kind: Gateway
-    name: eg
+    name: aibrix-eg
   jsonPatches:
   - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
-    name: "aibrix-system/eg/http"
+    name: "aibrix-system/aibrix-eg/http"
     operation:
       op: add
       path: "/virtual_hosts/0/routes/0"
       value:
-        name: orginal_route
+        name: original_route
         match:
           prefix: "/"
           # headers:
@@ -83,7 +67,7 @@ spec:
           cluster: original_destination_cluster
           timeout: 1000s  # Increase route timeout
         typed_per_filter_config:
-          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/gateway-plugins-extension-policy/extproc/0":
+          "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0":
             "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
             "config": {}
   - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
