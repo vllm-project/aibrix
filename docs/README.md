@@ -11,7 +11,6 @@ pip install sphinx-book-theme==1.1.3
 ## Compile html pages
 
 ```
-cd website/docs
 make html
 ```
 
