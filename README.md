@@ -17,11 +17,21 @@ To get started with AIBrix, clone this repository and follow the setup instructi
 # Local Testing
 git clone https://github.com/aibrix/aibrix.git
 cd aibrix
+
+# Install component dependencies
+kubectl create -k config/dependency
+
+# Install aibrix components
 kubectl apply -k config/default
 ```
 
 ```shell
 # Note: this command will be available after the repo going public
+
+# Install component dependencies
+kubectl create -k "github.com/aibrix/aibrix/config/dependency"
+
+# Install aibrix components
 kubectl apply -k "github.com/aibrix/aibrix/config/default"
 ```
 

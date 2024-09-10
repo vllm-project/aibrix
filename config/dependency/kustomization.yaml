@@ -1,0 +1,3 @@
+resources:
+- https://github.com/envoyproxy/gateway/releases/download/v1.1.0/install.yaml
+# potential kuberay ray cluster manifest here.
