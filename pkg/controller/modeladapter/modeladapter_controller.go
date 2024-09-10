@@ -554,7 +554,20 @@ func (r *ModelAdapterReconciler) unloadModelAdapter(instance *modelv1alpha1.Mode
 	}
 
 	// TODO:(jiaxin.shan) Support multiple instances
-	host := instance.Status.Instances[0]
+
+	podName := instance.Status.Instances[0]
+	targetPod := &corev1.Pod{}
+	if err := r.Get(context.TODO(), types.NamespacedName{
+		Namespace: instance.Namespace,
+		Name:      podName,
+	}, targetPod); err != nil {
+		if apierrors.IsNotFound(err) {
+			// since the pod doesn't exist, unload is unnecessary
+			return nil
+		}
+		klog.Warning("Error getting Pod from lora instance list", err)
+		return err
+	}
 
 	payload := map[string]string{
 		"lora_name": instance.Name,
@@ -564,7 +577,7 @@ func (r *ModelAdapterReconciler) unloadModelAdapter(instance *modelv1alpha1.Mode
 		return err
 	}
 
-	url := fmt.Sprintf("http://%s.%s.pod.cluster.local:%d/v1/unload_lora_adapter", host, instance.Namespace, 8000)
+	url := fmt.Sprintf("http://%s:%d/v1/unload_lora_adapter", targetPod.Status.PodIP, 8000)
 	key := "DEBUG_MODE"
 	value, exists := getEnvKey(key)
 	if exists && value == "on" {
