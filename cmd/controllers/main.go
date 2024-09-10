@@ -73,7 +73,6 @@ func init() {
 }
 
 func main() {
-	var kubeConfig string
 	var metricsAddr string
 	var enableLeaderElection bool
 	var probeAddr string
@@ -84,7 +83,6 @@ func main() {
 	var renewDeadLine time.Duration
 	var leaderElectionResourceLock string
 	var leaderElectionId string
-	flag.StringVar(&kubeConfig, "kubeconfig", "", "The address the metric endpoint binds to.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -171,6 +169,8 @@ func main() {
 	defer close(stopCh)
 	var config *rest.Config
 
+	// ref: https://github.com/kubernetes-sigs/controller-runtime/issues/878#issuecomment-1002204308
+	kubeConfig := flag.Lookup("kubeconfig").Value.String()
 	if kubeConfig == "" {
 		log.Printf("using in-cluster configuration")
 		config, err = rest.InClusterConfig()
