@@ -6,9 +6,9 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = 'AIBrix Team'
-copyright = '2024, ByteDance InfraLab-Compute'
-author = 'ByteDance InfraLab-Compute'
+project = 'AIBrix'
+copyright = '2024, AIBrix Team'
+author = 'AIBrix Team'
 release = '0.1.0'
 
 # -- General configuration ---------------------------------------------------
