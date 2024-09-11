@@ -49,6 +49,7 @@ OR
 docker build -t aibrix/plugins:v0.1.0 -f gateway.Dockerfile .
 kind load docker-image aibrix/plugins:v0.1.0
 
+kubectl -n aibrix-system apply -f docs/development/app/redis.yaml
 kubectl -n aibrix-system apply -f docs/development/app/gateway-plugin.yaml
 ```
 
@@ -120,6 +121,7 @@ done
 Delete envoy gateway and corresponding objects
 ```shell
 kubectl -n aibrix-system delete -f docs/development/app/gateway-plugin.yaml
+kubectl -n aibrix-system delete -f docs/development/app/redis.yaml
 OR
 make undeploy && make uninstall
 ```
