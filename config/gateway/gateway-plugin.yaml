@@ -45,4 +45,4 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-
+      serviceAccountName: controller-manager
