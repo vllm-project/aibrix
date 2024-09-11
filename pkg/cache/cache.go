@@ -46,11 +46,11 @@ type Cache struct {
 	pods                     map[string]*v1.Pod
 	modelAdapterToPodMapping map[string][]string
 	podToModelAdapterMapping map[string]map[string]struct{}
+	podRequestTracker        map[string]int
 }
 
 var (
-	instance   Cache
-	kubeconfig string
+	instance Cache
 )
 
 func GetCache() (*Cache, error) {
@@ -100,6 +100,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 			pods:                     map[string]*v1.Pod{},
 			modelAdapterToPodMapping: map[string][]string{},
 			podToModelAdapterMapping: map[string]map[string]struct{}{},
+			podRequestTracker:        map[string]int{},
 		}
 
 		if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -239,4 +240,27 @@ func (c *Cache) GetPodToModelAdapterMapping() map[string]map[string]struct{} {
 	defer c.mu.RUnlock()
 
 	return c.podToModelAdapterMapping
+}
+
+func (c *Cache) IncrPodRequestCount(podName string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.podRequestTracker[podName] += 1
+	return c.podRequestTracker[podName]
+}
+
+func (c *Cache) DecrPodRequestCount(podName string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.podRequestTracker[podName] -= 1
+	return c.podRequestTracker[podName]
+}
+
+func (c *Cache) GetPodRequestCount() map[string]int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.podRequestTracker
 }

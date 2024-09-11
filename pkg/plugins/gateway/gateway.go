@@ -24,9 +24,6 @@ import (
 	"log"
 	"strings"
 
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
-	routing "github.com/aibrix/aibrix/pkg/plugins/gateway/routing_algorithms"
-	podutils "github.com/aibrix/aibrix/pkg/utils"
 	openai "github.com/sashabaranov/go-openai"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -35,6 +32,10 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog"
 
+	"github.com/aibrix/aibrix/pkg/cache"
+	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
+	routing "github.com/aibrix/aibrix/pkg/plugins/gateway/routing_algorithms"
+	podutils "github.com/aibrix/aibrix/pkg/utils"
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	filterPb "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -43,14 +44,23 @@ import (
 )
 
 type Server struct {
-	ratelimiter ratelimiter.AccountRateLimiter
-	client      kubernetes.Interface
+	ratelimiter         ratelimiter.AccountRateLimiter
+	client              kubernetes.Interface
+	requestCountTracker map[string]int
+	cache               *cache.Cache
 }
 
 func NewServer(r ratelimiter.AccountRateLimiter, c kubernetes.Interface) *Server {
+	cache, err := cache.GetCache()
+	if err != nil {
+		panic(err)
+	}
+
 	return &Server{
-		ratelimiter: r,
-		client:      c,
+		ratelimiter:         r,
+		client:              c,
+		requestCountTracker: map[string]int{},
+		cache:               cache,
 	}
 }
 
@@ -240,21 +250,8 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 			},
 		})
 
-		reqCount, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_REQUEST_COUNT", targetPodIP), 1)
-		if err != nil {
-			return &extProcPb.ProcessingResponse{
-				Response: &extProcPb.ProcessingResponse_ImmediateResponse{
-					ImmediateResponse: &extProcPb.ImmediateResponse{
-						Status: &envoyTypePb.HttpStatus{
-							Code: envoyTypePb.StatusCode_InternalServerError,
-						},
-						Details: err.Error(),
-						Body:    "error on updating request count",
-					},
-				},
-			}, user, targetPodIP
-		}
-		klog.Infof("RequestStart: SelectedTargetPodIP: %s, PodRequestCount: %v", targetPodIP, reqCount)
+		podRequestCounter := s.cache.IncrPodRequestCount(fmt.Sprintf("%v_REQUEST_COUNT", targetPodIP))
+		klog.Infof("RequestStart: SelectedTargetPodIP: %s, PodRequestCount: %v", targetPodIP, podRequestCounter)
 	}
 
 	resp := &extProcPb.ProcessingResponse{
@@ -387,6 +384,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 	klog.Infof("Updated RPM: %v, TPM: %v for user: %v", rpm, tpm, user)
 
 	if targetPodIP != "" {
+		podRequestCounter := s.cache.DecrPodRequestCount(fmt.Sprintf("%v_REQUEST_COUNT", targetPodIP))
+		klog.Infof("RequestStart: SelectedTargetPodIP: %s, PodRequestCount: %v", targetPodIP, podRequestCounter)
+
 		podTpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_THROUGHPUT", targetPodIP), int64(res.Usage.TotalTokens))
 		if err != nil {
 			klog.Error(err)
