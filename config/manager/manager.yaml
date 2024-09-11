@@ -38,7 +38,7 @@ spec:
           - --leader-elect
           - --health-probe-bind-address=:8081
           - --metrics-bind-address=0
-        image: aibrix/controller-manager:nightly
+        image: controller:latest
         name: manager
         securityContext:
           allowPrivilegeEscalation: false
