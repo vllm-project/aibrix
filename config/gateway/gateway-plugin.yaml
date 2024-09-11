@@ -29,6 +29,7 @@ spec:
       containers:
         - name: golang-app-container
           image: aibrix/plugins:nightly
+          imagePullPolicy: Always
           ports:
             - containerPort: 50052
           env:

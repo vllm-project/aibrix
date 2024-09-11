@@ -31,7 +31,7 @@ spec:
       securityContext:
         runAsNonRoot: true
       containers:
-      - imagePullPolicy: IfNotPresent
+      - imagePullPolicy: Always
         command:
         - /manager
         args:
