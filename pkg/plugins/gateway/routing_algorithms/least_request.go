@@ -56,7 +56,7 @@ func (r leastRequestRouter) Get(ctx context.Context, pods []v1.Pod) (string, err
 		reqCount := podRequestCounts[podRequestCount]
 		klog.Infof("PodIP: %s, PodRequestCount: %v", podIP, reqCount)
 		if reqCount <= minCount {
-			minCount = int(reqCount)
+			minCount = reqCount
 			targetPodIP = podIP
 		}
 	}

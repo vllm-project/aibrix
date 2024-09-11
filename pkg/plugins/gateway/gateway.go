@@ -44,6 +44,7 @@ import (
 )
 
 type Server struct {
+	routers             map[string]routing.Router
 	ratelimiter         ratelimiter.AccountRateLimiter
 	client              kubernetes.Interface
 	requestCountTracker map[string]int
@@ -55,8 +56,14 @@ func NewServer(r ratelimiter.AccountRateLimiter, c kubernetes.Interface) *Server
 	if err != nil {
 		panic(err)
 	}
+	routers := map[string]routing.Router{
+		"random":        routing.NewRandomRouter(),
+		"least-request": routing.NewLeastRequestRouter(r),
+		"throughput":    routing.NewThroughputRouter(r),
+	}
 
 	return &Server{
+		routers:             routers,
 		ratelimiter:         r,
 		client:              c,
 		requestCountTracker: map[string]int{},
@@ -464,17 +471,16 @@ func (s *Server) checkTPM(ctx context.Context, user string) (envoyTypePb.StatusC
 }
 
 func (s *Server) SelectTargetPod(ctx context.Context, routingStrategy string, pods []corev1.Pod) (string, error) {
-	// TODO (varun): evaluate how to enable selection of routing algorithm
 	var route routing.Router
 	switch routingStrategy {
 	case "random":
-		route = routing.NewRandomRouter()
+		route = s.routers[routingStrategy]
 	case "least-request":
-		route = routing.NewLeastRequestRouter(s.ratelimiter)
+		route = s.routers[routingStrategy]
 	case "throughput":
-		route = routing.NewThroughputRouter(s.ratelimiter)
+		route = s.routers[routingStrategy]
 	default:
-		return "", nil
+		route = s.routers["random"]
 	}
 
 	return route.Get(ctx, pods)
