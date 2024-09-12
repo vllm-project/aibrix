@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 import boto3
 from boto3.s3.transfer import TransferConfig
-from botocore.config import Config, MAX_POOL_CONNECTIONS
+from botocore.config import MAX_POOL_CONNECTIONS, Config
 from tqdm import tqdm
 
 from aibrix import envs
