@@ -29,3 +29,7 @@ __pycache__
 # Jupyter notebook
 .ipynb_checkpoints/
 
+# Sphinx documentation
+docs/build/
+!**/*.template.rst
+
