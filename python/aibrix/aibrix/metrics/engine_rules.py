@@ -34,7 +34,7 @@ VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
         "vllm:time_per_output_token_seconds", "aibrix:time_per_output_token"
     ),
     "vllm:e2e_request_latency_seconds": RenameStandardRule(
-        "vllm:e2e_request_latency", "aibrix:e2e_request_latency"
+        "vllm:e2e_request_latency_seconds", "aibrix:e2e_request_latency"
     ),
 }
 
