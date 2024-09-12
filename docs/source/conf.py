@@ -42,7 +42,7 @@ copybutton_prompt_is_regexp = True
 
 html_title = project
 html_theme = 'sphinx_book_theme'
-html_logo = 'aibrix_icon.png'
+html_logo = 'assets/logos/aibrix-logo-light.png'
 html_static_path = ['_static']
 html_theme_options = {
     # repository level setting
@@ -57,8 +57,8 @@ html_theme_options = {
 
 
     # navigation and sidebar
-    'show_toc_level': 1,
-    'announcement': 'This is still in private mode',
+    'show_toc_level': 2,
+    'announcement': None,
     'secondary_sidebar_items': [
         'page-toc',
     ],
