@@ -24,6 +24,7 @@ from aibrix.metrics.standard_rules import StandardRule
 
 logger = init_logger(__name__)
 
+
 class HTTPCollector(Collector):
     def __init__(
         self,
