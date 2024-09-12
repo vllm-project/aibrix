@@ -15,10 +15,11 @@
 from typing import Dict
 
 import requests
-from aibrix.logger import init_logger
-from aibrix.metrics.standard_rules import StandardRule
 from prometheus_client.parser import text_string_to_metric_families
 from prometheus_client.registry import Collector
+
+from aibrix.logger import init_logger
+from aibrix.metrics.standard_rules import StandardRule
 
 logger = init_logger(__name__)
 DEFAULT_METRIC_COLLECTOR_TIMEOUT = 1

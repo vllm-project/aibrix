@@ -14,7 +14,7 @@
 
 
 from abc import abstractmethod
-from typing import Iterable, Optional
+from typing import Iterable
 
 from prometheus_client import Metric
 from prometheus_client.samples import Sample
@@ -25,7 +25,7 @@ class StandardRule:
         self.rule_type = rule_type
 
     @abstractmethod
-    def __call__(self, metric: Metric) -> Optional[Iterable[Metric]]:
+    def __call__(self, metric: Metric) -> Iterable[Metric]:
         pass
 
 
@@ -35,7 +35,7 @@ class RenameStandardRule(StandardRule):
         self.original_name = original_name
         self.new_name = new_name
 
-    def __call__(self, metric: Metric) -> Optional[Iterable[Metric]]:
+    def __call__(self, metric: Metric) -> Iterable[Metric]:
         assert (
             metric.name == self.original_name
         ), f"Metric name {metric.name} does not match Rule original name {self.original_name}"

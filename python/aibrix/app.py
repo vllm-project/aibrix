@@ -1,17 +1,16 @@
 import os
 import shutil
-import uvicorn
-
-from fastapi import FastAPI
 from pathlib import Path
 
-from aibrix.logger import init_logger
-from aibrix.metrics.engine_rules import get_metric_standard_rules
-from aibrix.metrics.http_collector import HTTPCollector
+import uvicorn
+from fastapi import FastAPI
 from prometheus_client import CollectorRegistry, make_asgi_app, multiprocess
 from starlette.routing import Mount
 
 from aibrix import envs
+from aibrix.logger import init_logger
+from aibrix.metrics.engine_rules import get_metric_standard_rules
+from aibrix.metrics.http_collector import HTTPCollector
 
 logger = init_logger(__name__)
 
