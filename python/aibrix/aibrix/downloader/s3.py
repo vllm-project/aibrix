@@ -134,7 +134,7 @@ class S3Downloader(BaseDownloader):
 
         # download file
         total_length = int(meta_data.get("ContentLength", 0))
-        with tqdm(total=total_length, unit="b", unit_scale=True) as pbar:
+        with tqdm(desc=_file_name, total=total_length, unit="b", unit_scale=True) as pbar:
 
             def download_progress(bytes_transferred):
                 pbar.update(bytes_transferred)

@@ -117,7 +117,7 @@ class TOSDownloader(BaseDownloader):
 
         # download file
         total_length = meta_data.content_length
-        with tqdm(total=total_length, unit="b", unit_scale=True) as pbar:
+        with tqdm(desc=_file_name, total=total_length, unit="b", unit_scale=True) as pbar:
 
             def download_progress(
                 consumed_bytes, total_bytes, rw_once_bytes, type: DataTransferType
