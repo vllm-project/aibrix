@@ -4,5 +4,5 @@ sphinx-click==6.0.0
 sphinx-copybutton==0.5.2
 sphinx-togglebutton==0.3.2
 sphinxemoji==0.3.1
-sphinx-autodoc-typehints-2.4.1==2.4.1
+sphinx-autodoc-typehints==2.4.1
 sphinx_design==0.6.1
