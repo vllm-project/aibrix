@@ -1,0 +1,192 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import time
+from enum import Enum
+import aibrix.batch.storage as _storage
+
+class JobStatus(Enum):
+    STARTED = 1
+    VALIDATING = 2
+    FAILED = 3
+    PENDING = 4
+    IN_PROGRESS = 5
+    EXPIRED = 6
+    CANCELLING = 7
+    CANCELED = 8
+    COMPLETED = 9
+
+class JobMetaInfo:
+    def __init__(self, job_id, model_endpoint, completion_window):
+        self._job_id = job_id
+        self._num_requests = 0
+        self._started_time = time.time()
+        self._end_time = None
+
+        self._model_endpoint = model_endpoint
+        self._completion_window = completion_window
+
+        self._request_progress_bits = []
+        self._succeed_num_requests = 0
+        self._job_status = JobStatus.STARTED
+
+        # extral metadata
+        self._meta_data = {}
+        
+    
+    def validate_job(self):
+        # 1. this makes sure the job id is consistent with storage side
+        input_num = _storage.get_job_num_request(self._job_id)
+        self._num_requests = input_num
+        self._request_progress_bits = [False] * input_num
+        if input_num == 0:
+            print("Storage side does not have valid request to process.")
+            return False
+
+        # 2. check window time is a valid time string
+        completion_time_str = self._completion_window
+        try:
+            time_unit = completion_time_str[-1]
+            assert time_unit == 'm' or time_unit == 'h', "Time only supports minutes and hours." 
+            time_str = completion_time_str[0:-1]
+            time_window = int(time_str)
+        except ValueError:
+            print("Completion window is not a valid number!")
+            return False
+        except AssertionError as e:
+            print(e)
+            return False
+
+        # 3. model endpoint is valid.
+        if not check_model_endpoint():
+            return False
+
+        # 4. Authenticate job and rate limit
+        if not job_authentication():
+            return False
+
+        return True
+    
+    def check_model_endpoint(self):
+        return True
+    
+    def job_authentication(self):
+        return True
+
+    def mark_requests_done(self, request_range):
+        pass
+        
+
+class JobManager:
+    def __init__(self):
+        self._pending_jobs = {}
+        self._in_progress_jobs = {}
+        self._done_jobs = {}
+    
+    def create_job(self, job_id, model_endpoint, completion_window):
+        job_meta = JobMetaInfo(job_id, model_endpoint, completion_window)
+        job_meta._job_status = JobStatus.VALIDATING
+
+        valid_status = job_meta.validate_job()
+        if valid_status:
+            job_meta._job_status = JobStatus.PENDING
+            self._pending_jobs[job_id] = job_meta
+        else:
+            job_meta._job_status = JobStatus.FAILED
+
+    def cancel_job(self, job_id):
+        """
+        This is called by user to cancel a created job. 
+        if this job is pending or done, we directly remove it.
+        if the job is in progress, we also need to remove the requests
+        in model proxy.
+        """
+        if job_id in self._pending_jobs:
+            meta_data = self._pending_jobs[job_id]
+            del self._pending_jobs[job_id]
+
+            meta_data._job_status = JobStatus.CANCELED
+            self._done_jobs[job_id] = meta_data
+        elif job_id in self._done_jobs[job_id]:
+            print(f"Job {job_id} is already canceled or completed!!!")
+        elif job_id in self._in_progress_jobs:
+            meta_data = self._in_progress_jobs[job_id]
+
+            #[TODO] Xin
+            #Remove all related requests from scheduler and proxy
+            meta_data._job_status = JobStatus.CANCELED
+            del self._in_progress_jobs[job_id]
+            self._done_jobs[job_id] = meta_data
+        else:
+            print(f"Job {job_id} not exist, maybe submit a job first!")
+        
+        return True
+        
+    def get_job_status(self, jobId):
+        return 
+
+    def start_execute_job(self, job_id):
+        """
+        This interface should be called by scheduler.
+        User is not allowed to choose a job to be scheduled.
+        """
+        if job_id not in self._pending_jobs:
+            print(f"Job {job_id} does not exist. Maybe create it first?")
+            return False
+        if job_id in self._in_progress_jobs:
+            print(f"Job {job_id} has already been launched.")
+            return False
+
+        meta_data = self._pending_jobs[job_id]
+        self._in_progress_jobs[job_id] = meta_data
+        del self._pending_jobs[job_id]
+        return True
+
+    def mark_job_progress(self, job_id, executed_requests):
+        """
+        This is used to sync job's progress, called by execution proxy.
+        It is guaranteed that each request is executed at least once. 
+        """
+        if job_id not in self._in_progress_jobs:
+            print(f"Job {job_id} has not started yet.")
+            return False
+        
+        meta_data = self._in_progress_jobs[job_id]
+        request_len = len(meta_data._request_progress_bits)
+        succeed_num = 0
+        for req_id in executed_requests:
+            if req_id < 0 or req_id >= request_len:
+                print(f"makr job {job_id} progress, request index out of boundary!")
+                continue
+            if meta_data._request_progress_bits[req_id] == False:
+                meta_data._request_progress_bits[req_id] = True
+                succeed_num += 1
+        meta_data._succeed_num_requests += succeed_num
+        if meta_data._succeed_num_requests == request_len:
+            del self._in_progress_jobs[job_id]
+            meta_data._job_status = JobStatus.COMPLETED
+            self._done_jobs[job_id] = meta_data
+        else:
+            self._in_progress_jobs[job_id] = meta_data
+        return True
+
+    def expire_job(self, job_id):
+        """
+        This is called by scheduler. When a job arrives at its 
+        specified due time, scheduler will mark this expired.
+        """
+        pass
+ 
+    def syncJobtoStorage(self, jobId):
+        pass
