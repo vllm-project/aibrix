@@ -38,6 +38,8 @@ boto3 = "^1.35.5"
 fastapi = "^0.112.2"
 gunicorn = "^23.0.0"
 uvicorn = "^0.30.6"
+prometheus-client = "^0.20.0"
+types-requests = "^2.31.0"
 
 
 [tool.poetry.group.dev.dependencies]

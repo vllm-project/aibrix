@@ -19,6 +19,8 @@ package rayclusterreplicaset
 import (
 	"context"
 
+	"github.com/aibrix/aibrix/pkg/controller/util/expectation"
+
 	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	corev1 "k8s.io/api/core/v1"
 
@@ -97,8 +99,9 @@ var _ = Describe("RayClusterReplicaSet Controller", func() {
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &RayClusterReplicaSetReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:       k8sClient,
+				Scheme:       k8sClient.Scheme(),
+				Expectations: expectation.NewControllerExpectations(),
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{

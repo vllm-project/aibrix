@@ -21,8 +21,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// Since RayClusterReplicaSet design principle is high similar to upstream ReplicaSet, most of the spec api fields are
+// from upstream codes. The only difference is it manages the RayCluster template instead of pod template.
+// The other thing to notice is some of the advanced feature of replicaset may not be supported here.
 
 // RayClusterReplicaSetSpec defines the desired state of RayClusterReplicaSet
 type RayClusterReplicaSetSpec struct {
@@ -82,6 +83,14 @@ type RayClusterReplicaSetStatus struct {
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,6,rep,name=conditions"`
 }
+
+// These are valid conditions of a replica set.
+const (
+	// RayClusterReplicaSetReplicaFailure is added in a replica set when one of its ray cluster fails to be created
+	// due to insufficient quota, limit ranges, pod security policy, node selectors, etc. or deleted
+	// due to kubelet being down or finalizers are failing.
+	RayClusterReplicaSetReplicaFailure string = "ReplicaFailure"
+)
 
 // +genclient
 // +kubebuilder:object:root=true

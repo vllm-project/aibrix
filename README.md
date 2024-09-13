@@ -25,14 +25,13 @@ kubectl create -k config/dependency
 kubectl apply -k config/default
 ```
 
+Install stable distribution
 ```shell
-# Note: this command will be available after the repo going public
-
 # Install component dependencies
-kubectl create -k "github.com/aibrix/aibrix/config/dependency"
+kubectl create -k "github.com/aibrix/aibrix/config/dependency?ref=v0.1.0-rc.1"
 
 # Install aibrix components
-kubectl apply -k "github.com/aibrix/aibrix/config/default"
+kubectl apply -k "github.com/aibrix/aibrix/config/default?ref=v0.1.0-rc.1"
 ```
 
 ## Documentation
