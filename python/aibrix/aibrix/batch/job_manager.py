@@ -42,7 +42,8 @@ class JobMetaInfo:
         self._end_time = None
 
         self._model_endpoint = model_endpoint
-        self._completion_window = completion_window
+        self._completion_window_str = completion_window
+        self._completion_window = 0
 
         self._request_progress_bits = []
         self._succeed_num_requests = 0
@@ -74,6 +75,9 @@ class JobMetaInfo:
             ), "Time only supports minutes and hours."
             time_str = completion_time_str[0:-1]
             time_window = int(time_str)
+            if time_unit == "h":
+                time_window *= 60
+            self._completion_window = time_window
         except ValueError:
             print("Completion window is not a valid number!")
             return False
@@ -82,11 +86,11 @@ class JobMetaInfo:
             return False
 
         # 3. model endpoint is valid.
-        if not check_model_endpoint():
+        if not self.check_model_endpoint():
             return False
 
         # 4. Authenticate job and rate limit
-        if not job_authentication():
+        if not self.job_authentication():
             return False
 
         return True
@@ -156,7 +160,7 @@ class JobManager:
 
         return True
 
-    def get_job_status(self, jobId):
+    def get_job_status(self, job_id):
         """
         This retrieves a job's status to users.
         Job scheduler does not need to check job status. It can directly
@@ -209,7 +213,7 @@ class JobManager:
             if req_id < 0 or req_id >= request_len:
                 print(f"makr job {job_id} progress, request index out of boundary!")
                 continue
-            if meta_data._request_progress_bits[req_id] == False:
+            if not meta_data._request_progress_bits[req_id]:
                 meta_data._request_progress_bits[req_id] = True
                 succeed_num += 1
         meta_data._succeed_num_requests += succeed_num
