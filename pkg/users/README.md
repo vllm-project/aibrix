@@ -25,7 +25,7 @@ curl http://localhost:8090/UpdateUser \
   -d '{"name": "your-user-name","rpm": 1000,"tpm": 10000}'
 ```
 
-# Create user
+# Delete user
 ```shell
 curl http://localhost:8090/DeleteUser \
   -H "Content-Type: application/json" \
