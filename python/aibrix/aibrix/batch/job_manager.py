@@ -16,6 +16,7 @@ import time
 from enum import Enum
 import aibrix.batch.storage as _storage
 
+
 class JobStatus(Enum):
     STARTED = 1
     VALIDATING = 2
@@ -27,8 +28,14 @@ class JobStatus(Enum):
     CANCELED = 8
     COMPLETED = 9
 
+
 class JobMetaInfo:
     def __init__(self, job_id, model_endpoint, completion_window):
+        """
+        This constructs a full set of metadata for a batch job.
+        Later if needed, this can include other extral metadata
+        as an easy extention.
+        """
         self._job_id = job_id
         self._num_requests = 0
         self._started_time = time.time()
@@ -43,9 +50,13 @@ class JobMetaInfo:
 
         # extral metadata
         self._meta_data = {}
-        
-    
+
     def validate_job(self):
+        """
+        This handles all validations before successfully creating a job.
+        This is also the place connecting other components
+        to check connection and status.
+        """
         # 1. this makes sure the job id is consistent with storage side
         input_num = _storage.get_job_num_request(self._job_id)
         self._num_requests = input_num
@@ -58,7 +69,9 @@ class JobMetaInfo:
         completion_time_str = self._completion_window
         try:
             time_unit = completion_time_str[-1]
-            assert time_unit == 'm' or time_unit == 'h', "Time only supports minutes and hours." 
+            assert (
+                time_unit == "m" or time_unit == "h"
+            ), "Time only supports minutes and hours."
             time_str = completion_time_str[0:-1]
             time_window = int(time_str)
         except ValueError:
@@ -77,24 +90,35 @@ class JobMetaInfo:
             return False
 
         return True
-    
+
     def check_model_endpoint(self):
         return True
-    
+
     def job_authentication(self):
         return True
 
-    def mark_requests_done(self, request_range):
-        pass
-        
 
 class JobManager:
     def __init__(self):
+        """
+        This manages jobs in three categorical job pools.
+        1. _pending_jobs are jobs that are not scheduled yet
+        2. _in_progress_jobs are jobs that are in progress now.
+        Theses are the input to the job scheduler.
+        3. _done_jobs are inactive jobs. This needs to be updated periodically.
+        """
         self._pending_jobs = {}
         self._in_progress_jobs = {}
         self._done_jobs = {}
-    
+
     def create_job(self, job_id, model_endpoint, completion_window):
+        """
+        This interface is exposed to users to submit a new job and create
+        a job accordingly.
+        Before calling this, user needs to submit job input to storage first
+        to have job ID ready.
+        This will validate a job with multiple checking steps.
+        """
         job_meta = JobMetaInfo(job_id, model_endpoint, completion_window)
         job_meta._job_status = JobStatus.VALIDATING
 
@@ -107,7 +131,7 @@ class JobManager:
 
     def cancel_job(self, job_id):
         """
-        This is called by user to cancel a created job. 
+        This is called by user to cancel a created job.
         if this job is pending or done, we directly remove it.
         if the job is in progress, we also need to remove the requests
         in model proxy.
@@ -122,19 +146,35 @@ class JobManager:
             print(f"Job {job_id} is already canceled or completed!!!")
         elif job_id in self._in_progress_jobs:
             meta_data = self._in_progress_jobs[job_id]
-
-            #[TODO] Xin
-            #Remove all related requests from scheduler and proxy
+            # [TODO] Xin
+            # Remove all related requests from scheduler and proxy
             meta_data._job_status = JobStatus.CANCELED
             del self._in_progress_jobs[job_id]
             self._done_jobs[job_id] = meta_data
         else:
             print(f"Job {job_id} not exist, maybe submit a job first!")
-        
+
         return True
-        
+
     def get_job_status(self, jobId):
-        return 
+        """
+        This retrieves a job's status to users.
+        Job scheduler does not need to check job status. It can directly
+        check the job pool for scheduling, such as pending_jobs.
+        """
+        meta_data = None
+
+        if job_id in self._pending_jobs:
+            meta_data = self._pending_jobs[job_id]
+        elif job_id in self._in_progress_jobs:
+            meta_data = self._in_progress_jobs[job_id]
+        elif job_id in self._done_jobs:
+            meta_data = self._done_jobs[job_id]
+
+        if not meta_data:
+            print(f"Job {job_id} can not be found! Maybe create a job first.")
+            return None
+        return meta_data._job_status
 
     def start_execute_job(self, job_id):
         """
@@ -156,12 +196,12 @@ class JobManager:
     def mark_job_progress(self, job_id, executed_requests):
         """
         This is used to sync job's progress, called by execution proxy.
-        It is guaranteed that each request is executed at least once. 
+        It is guaranteed that each request is executed at least once.
         """
         if job_id not in self._in_progress_jobs:
             print(f"Job {job_id} has not started yet.")
             return False
-        
+
         meta_data = self._in_progress_jobs[job_id]
         request_len = len(meta_data._request_progress_bits)
         succeed_num = 0
@@ -183,10 +223,32 @@ class JobManager:
 
     def expire_job(self, job_id):
         """
-        This is called by scheduler. When a job arrives at its 
+        This is called by scheduler. When a job arrives at its
         specified due time, scheduler will mark this expired.
+        User can not expire a job, but can cancel a job.
         """
-        pass
- 
+
+        if job_id in self._pending_jobs:
+            meta_data = self._pending_jobs[job_id]
+            meta_data._job_status = JobStatus.EXPIRED
+            self._done_jobs[job_id] = meta_data
+            del self._pending_jobs[job_id]
+        elif job_id in self._in_progress_jobs:
+            # Now a job can not be expired once it gets scheduled, considering
+            # that expiring a partial executed job wastes resources.
+            # Later we may apply another policy to force a job to expire
+            # regardless of its current progress.
+            print(f"Job {job_id} was scheduled and it can not expire")
+        elif job_id in self._done_jobs:
+            print(f"Job {job_id} is done and this should not happen.")
+
+        return True
+
     def syncJobtoStorage(self, jobId):
+        """
+        [TODO]
+        This is used to serialize everything here to storage to make sure
+        that job manager can restart it over from storage once it crashes
+        or intentional quit.
+        """
         pass
