@@ -6,6 +6,7 @@ AIBRIX_DOCKERHUB_NAMESPACE ?= aibrix
 IMG ?= ${AIBRIX_DOCKERHUB_NAMESPACE}/controller-manager:${GIT_COMMIT_HASH}
 PLUGINS_IMG ?= ${AIBRIX_DOCKERHUB_NAMESPACE}/plugins:${GIT_COMMIT_HASH}
 RUNTIME_IMG ?= ${AIBRIX_DOCKERHUB_NAMESPACE}/runtime:${GIT_COMMIT_HASH}
+USERS_IMG ?= ${AIBRIX_DOCKERHUB_NAMESPACE}/users:${GIT_COMMIT_HASH}
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.29.0
 
@@ -126,13 +127,18 @@ docker-build: ## Build docker image with the manager.
 
 .PHONY: docker-build-plugins
 docker-build-plugins: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${PLUGINS_IMG} -f gateway.Dockerfile .
+	$(CONTAINER_TOOL) build -t ${PLUGINS_IMG} -f Dockerfile.gateway .
 	$(CONTAINER_TOOL) tag ${PLUGINS_IMG} ${AIBRIX_DOCKERHUB_NAMESPACE}/plugins:nightly
 
 .PHONY: docker-build-runtime
 docker-build-runtime: ## Build docker image with the AI Runime.
 	$(CONTAINER_TOOL) build -t ${RUNTIME_IMG} -f runtime.Dockerfile .
 	$(CONTAINER_TOOL) tag ${RUNTIME_IMG} ${AIBRIX_DOCKERHUB_NAMESPACE}/runtime:nightly
+
+.PHONY: docker-build-users
+docker-build-users: ## Build docker image with the manager.
+	$(CONTAINER_TOOL) build -t ${USERS_IMG} -f Dockerfile.users .
+	$(CONTAINER_TOOL) tag ${USERS_IMG} ${AIBRIX_DOCKERHUB_NAMESPACE}/users:nightly
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
@@ -148,6 +154,11 @@ docker-push-plugins: ## Push docker image with the manager.
 docker-push-runtime: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${RUNTIME_IMG}
 	$(CONTAINER_TOOL) push ${AIBRIX_DOCKERHUB_NAMESPACE}/runtime:nightly
+
+.PHONY: docker-push-users
+docker-push-users: ## Push docker image with the manager.
+	$(CONTAINER_TOOL) push ${USERS_IMG}
+	$(CONTAINER_TOOL) push ${AIBRIX_DOCKERHUB_NAMESPACE}/users:nightly
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:

@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: aibrix-gateway-users
+  namespace: aibrix-system
+spec:
+  selector:
+    app: gateway-users
+  ports:
+    - protocol: TCP
+      port: 8090
+      targetPort: 8090
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aibrix-gateway-users
+  namespace: aibrix-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway-users
+  template:
+    metadata:
+      labels:
+        app: gateway-users
+    spec:
+      initContainers:
+        - name: init-c
+          image: busybox
+          command: ['sh', '-c', "until nslookup aibrix-redis-master.aibrix-system.svc.cluster.local; do echo waiting for service aibrix-redis-master; sleep 2; done"]
+      containers:
+        - name: golang-app-container
+          image: aibrix/users:nightly
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8090
+          env:
+            - name: REDIS_HOST
+              value: aibrix-redis-master
+            - name: REDIS_PORT
+              value: "6379" 
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+      serviceAccountName: aibrix-gateway-plugin
