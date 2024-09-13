@@ -101,16 +101,14 @@ spec:
           value: deepseek-ai/deepseek-coder-6.7b-instruct
         - name: DOWNLOADER_ALLOW_FILE_SUFFIX
           value: json, safetensors
-        - name: DOWNLOADER_TOS_ACCESS_KEY
+        - name: TOS_ACCESS_KEY
           value: <input your tos access key>
-        - name: DOWNLOADER_TOS_SECRET_KEY
+        - name: TOS_SECRET_KEY
           value: <input your tos secret key>
-        - name: DOWNLOADER_TOS_ENDPOINT
+        - name: TOS_ENDPOINT
           value: <input your tos endpoint>
-        - name: DOWNLOADER_TOS_REGION
+        - name: TOS_REGION
           value: <input your tos region>
-        - name: DOWNLOADER_TOS_ENABLE_CRC
-          value: "false"
         volumeMounts:
         - mountPath: /models
           name: model-hostpath
