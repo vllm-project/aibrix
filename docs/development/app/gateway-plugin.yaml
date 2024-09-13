@@ -1,11 +1,11 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: gateway-plugins
+  name: aibrix-gateway-plugins
   namespace: aibrix-system
 spec:
   selector:
-    app: gateway-plugins
+    app: aibrix-gateway-plugins
   ports:
     - protocol: TCP
       port: 50052
@@ -14,22 +14,21 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: gateway-plugins
+  name: aibrix-gateway-plugins
   namespace: aibrix-system
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: gateway-plugins
+      app: aibrix-gateway-plugins
   template:
     metadata:
       labels:
-        app: gateway-plugins
+        app: aibrix-gateway-plugins
     spec:
       containers:
         - name: golang-app-container
-          image: aibrix/plugins:nightly
-          imagePullPolicy: Always
+          image: aibrix/plugins:v0.1.0
           ports:
             - containerPort: 50052
           env:
@@ -45,4 +44,4 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-      serviceAccountName: aibrix-gateway-plugin
+

@@ -28,17 +28,29 @@ curl http://localhost:8000/v1/chat/completions \
    }'
 ```
 
+```shell
+kubectl delete -f docs/development/app/deployment.yaml
+```
 
 
 ## Test with envoy gateway
 
 Install envoy gateway and setup HTTP Route
 ```shell
-make docker-build && make docker-build-plugins
+- if setting up from scratch
 
+make docker-build && make docker-build-plugins
+make install && make deploy
+
+OR
+
+- if only want to test gateway plugins
+
+docker build -t aibrix/plugins:v0.1.0 -f gateway.Dockerfile .
 kind load docker-image aibrix/plugins:v0.1.0
 
-make install && make deploy
+kubectl -n aibrix-system apply -f docs/development/app/redis.yaml
+kubectl -n aibrix-system apply -f docs/development/app/gateway-plugin.yaml
 ```
 
 Check status
@@ -73,11 +85,44 @@ curl -v http://localhost:8888/v1/chat/completions \
      "messages": [{"role": "user", "content": "Say this is a test!"}],
      "temperature": 0.7
    }'
+
+# least-request based
+for i in {1..10}; do
+  curl -v http://localhost:8888/v1/chat/completions \
+  -H "user: your-user-name" \
+  -H "routing-strategy: least-request" \
+  -H "model: llama2-70b" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer any_key" \
+  -d '{
+     "model": "llama2-70b",
+     "messages": [{"role": "user", "content": "Say this is a test!"}],
+     "temperature": 0.7
+   }' &
+done
+
+# throughput based
+for i in {1..10}; do
+  curl -v http://localhost:8888/v1/chat/completions \
+  -H "user: your-user-name" \
+  -H "routing-strategy: throughput" \
+  -H "model: llama2-70b" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer any_key" \
+  -d '{
+     "model": "llama2-70b",
+     "messages": [{"role": "user", "content": "Say this is a test!"}],
+     "temperature": 0.7
+   }' &
+done
 ```
 
 
 Delete envoy gateway and corresponding objects
 ```shell
+kubectl -n aibrix-system delete -f docs/development/app/gateway-plugin.yaml
+kubectl -n aibrix-system delete -f docs/development/app/redis.yaml
+OR
 make undeploy && make uninstall
 ```
 

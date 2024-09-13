@@ -27,14 +27,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aibrix/aibrix/pkg/plugins/gateway"
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
 	redis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/aibrix/aibrix/pkg/cache"
+	"github.com/aibrix/aibrix/pkg/plugins/gateway"
+	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 )
@@ -54,36 +55,7 @@ func getEnv(key, defaultValue string) string {
 	return value
 }
 
-//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
-
-func createClient(kubeconfigPath string) (kubernetes.Interface, error) {
-	var kubeconfig *rest.Config
-
-	if kubeconfigPath != "" {
-		config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
-		if err != nil {
-			return nil, fmt.Errorf("unable to load kubeconfig from %s: %v", kubeconfigPath, err)
-		}
-		kubeconfig = config
-	} else {
-		config, err := rest.InClusterConfig()
-		if err != nil {
-			return nil, fmt.Errorf("unable to load in-cluster config: %v", err)
-		}
-		kubeconfig = config
-	}
-
-	client, err := kubernetes.NewForConfig(kubeconfig)
-	if err != nil {
-		return nil, fmt.Errorf("unable to create a client: %v", err)
-	}
-
-	return client, nil
-}
-
-// TODO (varun): one or multi plugin ext_proc
 func main() {
-	kubeconfig := flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	flag.IntVar(&grpc_port, "port", 50052, "gRPC port")
 	flag.Parse()
 
@@ -98,8 +70,29 @@ func main() {
 	}
 	fmt.Println("Connected to Redis:", pong)
 
+	fmt.Println("Starting cache")
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	var config *rest.Config
+
+	// ref: https://github.com/kubernetes-sigs/controller-runtime/issues/878#issuecomment-1002204308
+	kubeConfig := flag.Lookup("kubeconfig").Value.String()
+	if kubeConfig == "" {
+		log.Printf("using in-cluster configuration")
+		config, err = rest.InClusterConfig()
+	} else {
+		log.Printf("using configuration from '%s'", kubeConfig)
+		config, err = clientcmd.BuildConfigFromFlags("", kubeConfig)
+	}
+
+	if err != nil {
+		panic(err)
+	}
+
+	cache.NewCache(config, stopCh)
+
 	// Connect to K8s cluster
-	k8sClient, err := createClient(*kubeconfig)
+	k8sClient, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		log.Fatal("Error creating kubernetes client:", err)
 	}

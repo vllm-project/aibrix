@@ -1,57 +1,57 @@
-.. AIBrix documentation master file, created by
-   sphinx-quickstart on Thu Aug  8 15:07:35 2024.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
-
 Welcome to AIBrix
 =================
 
-.. image:: aibrix_icon.png 
-  :width: 400
-  :alt: Alternative text
+.. image:: ./assets/logos/aibrix-logo-light.png
+  :width: 60%
+  :align: center
+  :alt: AIBrix
 
-AIBrix is a high-performant and easy-to-use library for LLM inference. 
+AIBrix is the foundational building blocks for constructing your own GenAI inference infrastructure.
+AIBrix offers a cloud-native solution tailored to meet the demands of enterprises aiming to deploy, manage, and scale LLMs efficiently.
 
-AIBrix is high-performant at
+Key features:
 
-* This is a bulleted list.
-* It has two items, the second
-  item uses two lines.
+* High density Lora management
+* Intelligent and LLM specific routing strategies
+* LLM tailored pod autoscaler
+* AI runtime sidecar (metrics merge, fast model downloading, admin operations)
 
-
-AIBrix is easy-to-use with
-
-1. This is a numbered list.
-2. It has two items too.
-#. This is a numbered list.
-#. It has two items too.
 
 Documentation
 =============
 
-Get Started
------------
-
 .. toctree::
-   :caption: Chapter 1
-   :titlesonly:
+   :maxdepth: 1
+   :caption: Getting Started
 
-
-   getstarted/quickstart
-
-
+   getting_started/quickstart.rst
+   getting_started/installation.rst
 
 
 .. toctree::
-   :caption: Chapter 2
-   :titlesonly:
+   :maxdepth: 1
+   :caption: Core Concepts
 
-   serving/installation
-   External Link <https://www.sphinx-doc.org>
+   designs/architecture.rst
 
+.. toctree::
+   :maxdepth: 1
+   :caption: User Manuals
 
+   features/autoscaling.rst
+   features/lora-dynamic-loading.rst
+   features/gateway-plugins.rst
+   features/multi-node-inference.rst
+   features/runtime.rst
 
+.. toctree::
+   :maxdepth: 1
+   :caption: Development
 
+   development/contribution.rst
 
+.. toctree::
+   :maxdepth: 1
+   :caption: Community
 
-This is an example of a simple Sphinx project using the Sphinx Book Theme.
+   community/community.rst

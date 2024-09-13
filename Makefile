@@ -188,7 +188,6 @@ install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~
     ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization	
 	$(KUBECTL) create -k config/dependency
 	
-
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/crd | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -

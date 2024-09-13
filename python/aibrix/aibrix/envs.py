@@ -36,6 +36,9 @@ def _parse_int_or_none(value: Optional[str]) -> Optional[int]:
     return int(value)
 
 
+# Runtime Server Config
+SERVER_PORT = int(os.getenv("SERVER_PORT", "8080"))
+
 # Model Download Related Config
 
 # Downloader Default Directory
@@ -67,7 +70,17 @@ DOWNLOADER_TOS_REGION = os.getenv("TOS_REGION")
 DOWNLOADER_TOS_ENABLE_CRC = _is_true(os.getenv("TOS_ENABLE_CRC"))
 
 # Downloader AWS S3 Envs
-DOWNLOADER_AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
-DOWNLOADER_AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-DOWNLOADER_AWS_ENDPOINT = os.getenv("AWS_ENDPOINT_URL")
+DOWNLOADER_AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+DOWNLOADER_AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+DOWNLOADER_AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL")
 DOWNLOADER_AWS_REGION = os.getenv("AWS_REGION")
+
+# Metric Standardizing Related Config
+# Scrape config
+METRIC_SCRAPE_HOST = os.getenv("METRIC_SCRAPE_HOST", "localhost")
+METRIC_SCRAPE_PORT = int(os.getenv("METRIC_SCRAPE_PORT", "8000"))
+METRIC_SCRAPE_PATH = os.getenv("METRIC_SCRAPE_PATH", "/metrics")
+METRIC_SCRAPE_ENGINE = os.getenv("METRIC_SCRAPE_ENGINE", "vllm")
+
+# Runtime Metric config
+PROMETHEUS_MULTIPROC_DIR = os.getenv("PROMETHEUS_MULTIPROC_DIR", "/tmp/aibrix/metrics/")
