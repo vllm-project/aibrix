@@ -101,11 +101,11 @@ spec:
           value: deepseek-ai/deepseek-coder-6.7b-instruct
         - name: DOWNLOADER_ALLOW_FILE_SUFFIX
           value: json, safetensors
-        - name: HF_TOKEN
+        - name: DOWNLOADER_HF_TOKEN
           value: <input your hf token, if needed>
-        - name: HF_ENDPOINT
+        - name: DOWNLOADER_HF_ENDPOINT
           value: <input your hf endpoint, if needed>
-        - name: HF_REVISION
+        - name: DOWNLOADER_HF_REVISION
           value: <input your mdoel revision, if needed>
         volumeMounts:
         - mountPath: /models
