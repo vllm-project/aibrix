@@ -35,9 +35,9 @@ def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
 class S3Downloader(BaseDownloader):
     def __init__(self, model_uri):
         model_name = envs.DOWNLOADER_MODEL_NAME
-        ak = envs.DOWNLOADER_AWS_ACCESS_KEY
-        sk = envs.DOWNLOADER_AWS_SECRET_KEY
-        endpoint = envs.DOWNLOADER_AWS_ENDPOINT
+        ak = envs.DOWNLOADER_AWS_ACCESS_KEY_ID
+        sk = envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY
+        endpoint = envs.DOWNLOADER_AWS_ENDPOINT_URL
         region = envs.DOWNLOADER_AWS_REGION
         bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri)
 
