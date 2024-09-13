@@ -50,7 +50,7 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationmodelv1alpha1.ModelAdapterStatusApplyConfiguration{}
 
 		// Group=orchestration, Version=v1alpha1
-	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("FleetCondition"):
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleetCondition"):
 		return &applyconfigurationorchestrationv1alpha1.FleetConditionApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleet"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterFleetApplyConfiguration{}

@@ -26,8 +26,8 @@ import (
 // FleetConditionApplyConfiguration represents an declarative configuration of the FleetCondition type for use
 // with apply.
 type FleetConditionApplyConfiguration struct {
-	Type               *v1alpha1.FleetConditionType `json:"type,omitempty"`
-	Status             *v1.ConditionStatus          `json:"status,omitempty"`
+	Type               *v1alpha1.RayClusterFleetConditionType `json:"type,omitempty"`
+	Status             *v1.ConditionStatus                    `json:"status,omitempty"`
 	LastUpdateTime     *metav1.Time                 `json:"lastUpdateTime,omitempty"`
 	LastTransitionTime *metav1.Time                 `json:"lastTransitionTime,omitempty"`
 	Reason             *string                      `json:"reason,omitempty"`
@@ -43,7 +43,7 @@ func FleetCondition() *FleetConditionApplyConfiguration {
 // WithType sets the Type field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Type field is set to the value of the last call.
-func (b *FleetConditionApplyConfiguration) WithType(value v1alpha1.FleetConditionType) *FleetConditionApplyConfiguration {
+func (b *FleetConditionApplyConfiguration) WithType(value v1alpha1.RayClusterFleetConditionType) *FleetConditionApplyConfiguration {
 	b.Type = &value
 	return b
 }
