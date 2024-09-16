@@ -159,7 +159,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 					Status: &envoyTypePb.HttpStatus{
 						Code: code,
 					},
-					Details: err.Error(),
+					Body: err.Error(),
 					Headers: &extProcPb.HeaderMutation{
 						SetHeaders: []*configPb.HeaderValueOption{
 							{
@@ -183,7 +183,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 					Status: &envoyTypePb.HttpStatus{
 						Code: code,
 					},
-					Details: err.Error(),
+					Body: err.Error(),
 					Headers: &extProcPb.HeaderMutation{
 						SetHeaders: []*configPb.HeaderValueOption{
 							{
@@ -207,7 +207,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 					Status: &envoyTypePb.HttpStatus{
 						Code: envoyTypePb.StatusCode_ServiceUnavailable,
 					},
-					Details: "no models are deployed",
+					Body: "no models are deployed",
 					Headers: &extProcPb.HeaderMutation{
 						SetHeaders: []*configPb.HeaderValueOption{
 							{
@@ -231,8 +231,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 					Status: &envoyTypePb.HttpStatus{
 						Code: envoyTypePb.StatusCode_InternalServerError,
 					},
-					Details: err.Error(),
-					Body:    "error on selecting target pod",
+					Body: fmt.Sprintf("error on selecting target pod: %v", err.Error()),
 				},
 			},
 		}, user, targetPodIP
@@ -349,7 +348,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 					Status: &envoyTypePb.HttpStatus{
 						Code: envoyTypePb.StatusCode_InternalServerError,
 					},
-					Details: err.Error(),
+					Body: err.Error(),
 				},
 			},
 		}
@@ -363,8 +362,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 					Status: &envoyTypePb.HttpStatus{
 						Code: envoyTypePb.StatusCode_InternalServerError,
 					},
-					Details: err.Error(),
-					Body:    "post query: error on updating rpm",
+					Body: fmt.Sprintf("post query: error on updating rpm: %v", err.Error()),
 				},
 			},
 		}
@@ -468,8 +466,6 @@ func (s *Server) checkTPM(ctx context.Context, user string) (envoyTypePb.StatusC
 func (s *Server) SelectTargetPod(ctx context.Context, routingStrategy string, pods map[string]*v1.Pod) (string, error) {
 	var route routing.Router
 	switch routingStrategy {
-	case "random":
-		route = s.routers[routingStrategy]
 	case "least-request":
 		route = s.routers[routingStrategy]
 	case "throughput":

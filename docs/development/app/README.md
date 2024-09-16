@@ -84,7 +84,7 @@ curl -v http://localhost:8888/v1/chat/completions \
      "model": "llama2-70b",
      "messages": [{"role": "user", "content": "Say this is a test!"}],
      "temperature": 0.7
-   }'
+   }' &
 
 # least-request based
 for i in {1..10}; do
