@@ -12,7 +12,7 @@ docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
 
 2. Deploy mocked model image
 ```shell
-kubectl apply -f deployment.yaml
+kubectl apply -f docs/development/app/deployment.yaml
 ```
 
 3. Load models
@@ -43,7 +43,7 @@ Verified! The model is loaded and unloaded successfully and pod annotations are 
 5. Deploy the controller and apply the `model_adapter.yaml`
 
 ```
-kubectl apply -f model_adapter.yaml
+kubectl apply -f docs/tutorial/lora/model_adapter.yaml
 ```
 
 
@@ -70,4 +70,18 @@ curl https://localhost:8000/v1/completions \
     "max_tokens": 7,
     "temperature": 0
   }'
+```
+
+```shell
+curl -v http://localhost:8888/v1/chat/completions \
+  -H "user: your-user-name" \
+  -H "model: lora-1" \
+  -H "routing-strategy: random" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer any_key" \
+  -d '{
+     "model": "lora-1",
+     "messages": [{"role": "user", "content": "Say this is a test!"}],
+     "temperature": 0.7
+   }'
 ```

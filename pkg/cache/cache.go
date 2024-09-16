@@ -41,11 +41,15 @@ var once sync.Once
 
 // type global
 type Cache struct {
-	mu                       sync.RWMutex
-	initialized              bool
-	pods                     map[string]*v1.Pod
-	modelAdapterToPodMapping map[string][]string
-	podToModelAdapterMapping map[string]map[string]struct{}
+	mu          sync.RWMutex
+	initialized bool
+	pods        map[string]*v1.Pod
+
+	podToModelMapping map[string]map[string]struct{} // pod_name: map[model_name]struct{}
+	modelToPodMapping map[string]map[string]*v1.Pod  // model_name: map[pod_name]*v1.Pod
+
+	modelAdapterToPodMapping map[string][]string            // TODO deprecate: model_adapter_name: []pods
+	podToModelAdapterMapping map[string]map[string]struct{} // TODO deprecate: pod_name: map[model_adapter_name]struct{}
 	podRequestTracker        map[string]int
 }
 
@@ -96,8 +100,12 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 		}
 
 		instance = Cache{
-			initialized:              true,
-			pods:                     map[string]*v1.Pod{},
+			initialized: true,
+			pods:        map[string]*v1.Pod{},
+
+			podToModelMapping: map[string]map[string]struct{}{},
+			modelToPodMapping: map[string]map[string]*v1.Pod{},
+
 			modelAdapterToPodMapping: map[string][]string{},
 			podToModelAdapterMapping: map[string]map[string]struct{}{},
 			podRequestTracker:        map[string]int{},
@@ -112,9 +120,9 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 		}
 
 		if _, err = modeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-			AddFunc:    instance.addModel,
-			UpdateFunc: instance.updateModel,
-			DeleteFunc: instance.deleteModel,
+			AddFunc:    instance.addModelAdapter,
+			UpdateFunc: instance.updateModelAdapter,
+			DeleteFunc: instance.deleteModelAdapter,
 		}); err != nil {
 			panic(err)
 		}
@@ -128,9 +136,17 @@ func (c *Cache) addPod(obj interface{}) {
 	defer c.mu.Unlock()
 
 	pod := obj.(*v1.Pod)
+	// only track pods with model deployments
+	modelName, ok := pod.Labels[modelv1alpha1.GroupVersion.Group]
+	if !ok {
+		return
+	}
+
 	c.pods[pod.Name] = pod
+	c.addPodAndModelMapping(pod.Name, modelName)
 	c.podToModelAdapterMapping[pod.Name] = map[string]struct{}{}
 	klog.Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
+	c.debugInfo()
 }
 
 func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
@@ -138,8 +154,21 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 	defer c.mu.Unlock()
 
 	oldPod := oldObj.(*v1.Pod)
+	oldModelName, ok := oldPod.Labels[modelv1alpha1.GroupVersion.Group]
+	if !ok {
+		return
+	}
+
 	newPod := newObj.(*v1.Pod)
+	newModelName, ok := oldPod.Labels[modelv1alpha1.GroupVersion.Group]
+	if !ok {
+		return
+	}
+
+	c.deletePodAndModelMapping(oldPod.Name, oldModelName)
+	c.addPodAndModelMapping(newPod.Name, newModelName)
 	klog.Infof("POD UPDATED. %s/%s %s", oldPod.Namespace, oldPod.Name, newPod.Status.Phase)
+	c.debugInfo()
 }
 
 func (c *Cache) deletePod(obj interface{}) {
@@ -147,43 +176,103 @@ func (c *Cache) deletePod(obj interface{}) {
 	defer c.mu.Unlock()
 
 	pod := obj.(*v1.Pod)
+	modelName, ok := pod.Labels[modelv1alpha1.GroupVersion.Group]
+	if !ok {
+		return
+	}
+
 	delete(c.pods, pod.Name)
+	c.deletePodAndModelMapping(pod.Name, modelName)
 	klog.Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
+	c.debugInfo()
 }
 
-func (c *Cache) addModel(obj interface{}) {
+func (c *Cache) addModelAdapter(obj interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	model := obj.(*modelv1alpha1.ModelAdapter)
+	for _, pod := range model.Status.Instances {
+		c.addPodAndModelMapping(pod, model.Name)
+	}
+
 	c.modelAdapterToPodMapping[model.Name] = model.Status.Instances
 	c.addModelAdapterMapping(model)
 
 	klog.Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
+	c.debugInfo()
 }
 
-func (c *Cache) updateModel(oldObj interface{}, newObj interface{}) {
+func (c *Cache) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	oldModel := oldObj.(*modelv1alpha1.ModelAdapter)
 	newModel := newObj.(*modelv1alpha1.ModelAdapter)
+
+	for _, pod := range oldModel.Status.Instances {
+		c.deletePodAndModelMapping(pod, oldModel.Name)
+	}
+
+	for _, pod := range newModel.Status.Instances {
+		c.addPodAndModelMapping(pod, newModel.Name)
+	}
+
 	c.modelAdapterToPodMapping[newModel.Name] = newModel.Status.Instances
 	c.deleteModelAdapterMapping(oldModel)
 	c.addModelAdapterMapping(newModel)
 
 	klog.Infof("MODELADAPTER UPDATED. %s/%s %s", oldModel.Namespace, oldModel.Name, newModel.Status.Phase)
+	c.debugInfo()
 }
 
-func (c *Cache) deleteModel(obj interface{}) {
+func (c *Cache) deleteModelAdapter(obj interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	model := obj.(*modelv1alpha1.ModelAdapter)
+	for _, pod := range model.Status.Instances {
+		c.deletePodAndModelMapping(pod, model.Name)
+	}
+
 	delete(c.modelAdapterToPodMapping, model.Name)
 	c.deleteModelAdapterMapping(model)
 
 	klog.Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
+	c.debugInfo()
+}
+
+func (c *Cache) addPodAndModelMapping(podName, modelName string) {
+	pod, ok := c.pods[podName]
+	if !ok {
+		klog.Errorf("pod %s does not exist in internal-cache", podName)
+		return
+	}
+
+	models, ok := c.podToModelMapping[podName]
+	if !ok {
+		c.podToModelMapping[podName] = map[string]struct{}{
+			modelName: {},
+		}
+	} else {
+		models[modelName] = struct{}{}
+		c.podToModelMapping[podName] = models
+	}
+
+	pods, ok := c.modelToPodMapping[modelName]
+	if !ok {
+		c.modelToPodMapping[modelName] = map[string]*v1.Pod{
+			podName: pod,
+		}
+	} else {
+		pods[podName] = pod
+		c.modelToPodMapping[modelName] = pods
+	}
+}
+
+func (c *Cache) deletePodAndModelMapping(podName, modelName string) {
+	delete(c.podToModelMapping, podName)
+	delete(c.modelToPodMapping, modelName)
 }
 
 func (c *Cache) addModelAdapterMapping(model *modelv1alpha1.ModelAdapter) {
@@ -210,6 +299,24 @@ func (c *Cache) deleteModelAdapterMapping(model *modelv1alpha1.ModelAdapter) {
 }
 
 func (c *Cache) debugInfo() {
+	for _, pod := range c.pods {
+		klog.Info(pod.Name)
+	}
+	for podName, models := range c.podToModelMapping {
+		var modelList string
+		for modelName := range models {
+			modelList += modelName + " "
+		}
+		klog.Infof("pod: %s, models: %s", podName, modelList)
+	}
+	for modelName, pods := range c.modelToPodMapping {
+		var podList string
+		for podName := range pods {
+			podList += podName + " "
+		}
+		klog.Infof("model: %s, pods: %s", modelName, podList)
+	}
+
 	for model, instances := range c.modelAdapterToPodMapping {
 		klog.Infof("modelName: %s, instances: %v", model, instances)
 	}
@@ -233,6 +340,19 @@ func (c *Cache) GetPods() map[string]*v1.Pod {
 	defer c.mu.RUnlock()
 
 	return c.pods
+}
+
+func (c *Cache) GetPodsForModel(modelName string) map[string]*v1.Pod {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	pods := map[string]*v1.Pod{}
+	for podName, pod := range c.modelToPodMapping[modelName] {
+		klog.Info(podName)
+		pods[podName] = pod
+	}
+
+	return pods
 }
 
 func (c *Cache) GetPodToModelAdapterMapping() map[string]map[string]struct{} {

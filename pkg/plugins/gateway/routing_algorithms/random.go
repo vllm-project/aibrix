@@ -18,7 +18,6 @@ package routingalgorithms
 
 import (
 	"context"
-	"math/rand/v2"
 
 	v1 "k8s.io/api/core/v1"
 )
@@ -30,7 +29,11 @@ func NewRandomRouter() Router {
 	return randomRouter{}
 }
 
-func (r randomRouter) Get(ctx context.Context, pods []v1.Pod) (string, error) {
-	pod := pods[rand.IntN(3)]
-	return pod.Status.PodIP + ":8000", nil // TODO (varun): remove static port
+func (r randomRouter) Get(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
+	var selectedPod *v1.Pod
+	for _, pod := range pods {
+		selectedPod = pod
+	}
+
+	return selectedPod.Status.PodIP + ":8000", nil // TODO (varun): remove static port
 }

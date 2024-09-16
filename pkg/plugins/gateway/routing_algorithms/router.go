@@ -25,5 +25,5 @@ import (
 type Router interface {
 	// Returns the target pod
 	// TODO (varun): replace with cache util package which can watch on pods
-	Get(ctx context.Context, pods []v1.Pod) (string, error)
+	Get(ctx context.Context, pods map[string]*v1.Pod) (string, error)
 }

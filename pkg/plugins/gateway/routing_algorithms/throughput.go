@@ -36,7 +36,7 @@ func NewThroughputRouter(ratelimiter ratelimiter.AccountRateLimiter) Router {
 	}
 }
 
-func (r throughputRouter) Get(ctx context.Context, pods []v1.Pod) (string, error) {
+func (r throughputRouter) Get(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
 	var targetPodIP string
 	minCount := math.MaxInt
 

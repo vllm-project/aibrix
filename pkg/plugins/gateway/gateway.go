@@ -27,15 +27,13 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog"
 
 	"github.com/aibrix/aibrix/pkg/cache"
 	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
 	routing "github.com/aibrix/aibrix/pkg/plugins/gateway/routing_algorithms"
-	podutils "github.com/aibrix/aibrix/pkg/utils"
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	filterPb "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -201,23 +199,20 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 		}, user, targetPodIP
 	}
 
-	pods, err := s.client.CoreV1().Pods(podutils.NAMESPACE).List(ctx, v1.ListOptions{
-		LabelSelector: fmt.Sprintf("model.aibrix.ai=%s", model),
-	})
-	if err != nil {
-		klog.Error(err)
+	pods := s.cache.GetPodsForModel(model)
+	if len(pods) == 0 {
 		return &extProcPb.ProcessingResponse{
 			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
 				ImmediateResponse: &extProcPb.ImmediateResponse{
 					Status: &envoyTypePb.HttpStatus{
-						Code: code,
+						Code: envoyTypePb.StatusCode_ServiceUnavailable,
 					},
-					Details: err.Error(),
+					Details: "no models are deployed",
 					Headers: &extProcPb.HeaderMutation{
 						SetHeaders: []*configPb.HeaderValueOption{
 							{
 								Header: &configPb.HeaderValue{
-									Key:      "x-routing-error",
+									Key:      "x-no-model-deployment",
 									RawValue: []byte("true"),
 								},
 							},
@@ -228,7 +223,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 		}, user, targetPodIP
 	}
 
-	targetPodIP, err = s.SelectTargetPod(ctx, routingStrategy, pods.Items)
+	targetPodIP, err = s.SelectTargetPod(ctx, routingStrategy, pods)
 	if err != nil {
 		return &extProcPb.ProcessingResponse{
 			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
@@ -470,7 +465,7 @@ func (s *Server) checkTPM(ctx context.Context, user string) (envoyTypePb.StatusC
 	return envoyTypePb.StatusCode_OK, nil
 }
 
-func (s *Server) SelectTargetPod(ctx context.Context, routingStrategy string, pods []corev1.Pod) (string, error) {
+func (s *Server) SelectTargetPod(ctx context.Context, routingStrategy string, pods map[string]*v1.Pod) (string, error) {
 	var route routing.Router
 	switch routingStrategy {
 	case "random":
