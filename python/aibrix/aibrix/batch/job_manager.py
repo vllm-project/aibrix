@@ -18,7 +18,7 @@ import aibrix.batch.storage as _storage
 
 
 class JobStatus(Enum):
-    STARTED = 1
+    CREATED = 1
     VALIDATING = 2
     FAILED = 3
     PENDING = 4
@@ -47,7 +47,7 @@ class JobMetaInfo:
 
         self._request_progress_bits = []
         self._succeed_num_requests = 0
-        self._job_status = JobStatus.STARTED
+        self._job_status = JobStatus.CREATED
 
         # extral metadata
         self._meta_data = {}
@@ -69,6 +69,8 @@ class JobMetaInfo:
         # 2. check window time is a valid time string
         completion_time_str = self._completion_window
         try:
+            # For now, this only supports either minute or hour.
+            # A mixed of both h and m, like "4h 40m" needs to be extended later.
             time_unit = completion_time_str[-1]
             assert (
                 time_unit == "m" or time_unit == "h"
@@ -96,9 +98,13 @@ class JobMetaInfo:
         return True
 
     def check_model_endpoint(self):
+        # [TODO] Xin
+        # Check if endpoint is accessible from model proxy.
         return True
 
     def job_authentication(self):
+        # [TODO] xin
+        # Check if the job and account is permitted and rate limit.
         return True
 
 
@@ -146,8 +152,11 @@ class JobManager:
 
             meta_data._job_status = JobStatus.CANCELED
             self._done_jobs[job_id] = meta_data
+
         elif job_id in self._done_jobs[job_id]:
             print(f"Job {job_id} is already canceled or completed!!!")
+            return False
+
         elif job_id in self._in_progress_jobs:
             meta_data = self._in_progress_jobs[job_id]
             # [TODO] Xin
@@ -157,6 +166,7 @@ class JobManager:
             self._done_jobs[job_id] = meta_data
         else:
             print(f"Job {job_id} not exist, maybe submit a job first!")
+            return False
 
         return True
 
@@ -209,20 +219,28 @@ class JobManager:
         meta_data = self._in_progress_jobs[job_id]
         request_len = len(meta_data._request_progress_bits)
         succeed_num = 0
+        invalid_flag = False
+
         for req_id in executed_requests:
             if req_id < 0 or req_id >= request_len:
                 print(f"makr job {job_id} progress, request index out of boundary!")
+                invalid_flag = True
                 continue
             if not meta_data._request_progress_bits[req_id]:
                 meta_data._request_progress_bits[req_id] = True
                 succeed_num += 1
+
         meta_data._succeed_num_requests += succeed_num
         if meta_data._succeed_num_requests == request_len:
+            # Mark the job to be completed if all requests are finished.
             del self._in_progress_jobs[job_id]
             meta_data._job_status = JobStatus.COMPLETED
             self._done_jobs[job_id] = meta_data
         else:
             self._in_progress_jobs[job_id] = meta_data
+
+        if invalid_flag:
+            return False
         return True
 
     def expire_job(self, job_id):
@@ -243,14 +261,17 @@ class JobManager:
             # Later we may apply another policy to force a job to expire
             # regardless of its current progress.
             print(f"Job {job_id} was scheduled and it can not expire")
+            return False
+
         elif job_id in self._done_jobs:
             print(f"Job {job_id} is done and this should not happen.")
+            return False
 
         return True
 
-    def syncJobtoStorage(self, jobId):
+    def sync_job_to_storage(self, jobId):
         """
-        [TODO]
+        [TODO] Xin
         This is used to serialize everything here to storage to make sure
         that job manager can restart it over from storage once it crashes
         or intentional quit.
