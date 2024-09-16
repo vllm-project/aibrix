@@ -18,7 +18,6 @@ package scheduling
 
 import (
 	"context"
-	"errors"
 	"math"
 
 	"github.com/aibrix/aibrix/pkg/cache"
@@ -37,24 +36,20 @@ func NewLeastAdapters(c *cache.Cache) Scheduler {
 }
 
 func (r leastAdapters) SelectPod(ctx context.Context, pods []v1.Pod) (*v1.Pod, error) {
-	modelAdapterCountMin := math.MaxInt
 	selectedPod := v1.Pod{}
-	podMap := r.cache.GetPods()
-	podToModelAdapterMapping := r.cache.GetPodToModelAdapterMapping()
+	modelAdapterCountMin := math.MaxInt
 
 	for _, pod := range pods {
-		if _, ok := podMap[pod.Name]; !ok {
-			return nil, errors.New("pod not found in the cache")
+		models, err := r.cache.GetModelsForPod(pod.Name)
+		if err != nil {
+			return nil, err
 		}
-
-		modelAdapters := podToModelAdapterMapping[pod.Name]
-		if len(modelAdapters) < modelAdapterCountMin {
+		if len(models) < modelAdapterCountMin {
 			selectedPod = pod
-			modelAdapterCountMin = len(modelAdapters)
+			modelAdapterCountMin = len(models)
 		}
 	}
 
 	klog.Infof("pod selected with least model adapters: %s", selectedPod.Name)
-
 	return &selectedPod, nil
 }
