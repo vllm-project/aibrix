@@ -33,7 +33,6 @@ import (
 
 	"github.com/aibrix/aibrix/pkg/cache"
 	"github.com/aibrix/aibrix/pkg/plugins/gateway"
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
 	"github.com/aibrix/aibrix/pkg/utils"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
@@ -48,7 +47,7 @@ func main() {
 	flag.Parse()
 
 	// Connect to Redis
-	client := utils.GetRedisClient()
+	redisClient := utils.GetRedisClient()
 
 	fmt.Println("Starting cache")
 	stopCh := make(chan struct{})
@@ -86,10 +85,7 @@ func main() {
 
 	s := grpc.NewServer()
 
-	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(
-		ratelimiter.NewRedisAccountRateLimiter("aibrix", client, 1*time.Minute),
-		k8sClient,
-	))
+	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(redisClient, k8sClient))
 	healthPb.RegisterHealthServer(s, &gateway.HealthServer{})
 
 	log.Println("Starting gRPC server on port :50052")

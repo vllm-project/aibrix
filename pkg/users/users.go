@@ -17,25 +17,18 @@ limitations under the License.
 package users
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 
+	"github.com/aibrix/aibrix/pkg/utils"
 	"github.com/gorilla/mux"
 	"github.com/redis/go-redis/v9"
 )
 
 type httpServer struct {
 	redisClient *redis.Client
-}
-
-type User struct {
-	Name string `json:"name"`
-	Rpm  int64  `json:"rpm"`
-	Tpm  int64  `json:"tpm"`
 }
 
 func NewHTTPServer(addr string, redis *redis.Client) *http.Server {
@@ -55,7 +48,7 @@ func NewHTTPServer(addr string, redis *redis.Client) *http.Server {
 }
 
 func (s *httpServer) createUser(w http.ResponseWriter, r *http.Request) {
-	var u User
+	var u utils.User
 
 	err := decodeJSONBody(w, r, &u)
 	if err != nil {
@@ -69,12 +62,12 @@ func (s *httpServer) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.checkUser(u) {
+	if utils.CheckUser(u, s.redisClient) {
 		fmt.Fprintf(w, "User: %+v exists", u.Name)
 		return
 	}
 
-	if err := s.setUser(u); err != nil {
+	if err := utils.SetUser(u, s.redisClient); err != nil {
 		fmt.Fprintf(w, "error occurred on creating user: %+v", err)
 		return
 	}
@@ -83,7 +76,7 @@ func (s *httpServer) createUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *httpServer) readUser(w http.ResponseWriter, r *http.Request) {
-	var u User
+	var u utils.User
 
 	err := decodeJSONBody(w, r, &u)
 	if err != nil {
@@ -97,7 +90,7 @@ func (s *httpServer) readUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.getUser(u)
+	user, err := utils.GetUser(u, s.redisClient)
 	if err != nil {
 		fmt.Fprint(w, "user does not exists")
 		return
@@ -107,7 +100,7 @@ func (s *httpServer) readUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *httpServer) updateUser(w http.ResponseWriter, r *http.Request) {
-	var u User
+	var u utils.User
 
 	err := decodeJSONBody(w, r, &u)
 	if err != nil {
@@ -121,12 +114,12 @@ func (s *httpServer) updateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.checkUser(u) {
+	if !utils.CheckUser(u, s.redisClient) {
 		fmt.Fprintf(w, "User: %+v does not exists", u.Name)
 		return
 	}
 
-	if err := s.setUser(u); err != nil {
+	if err := utils.SetUser(u, s.redisClient); err != nil {
 		fmt.Fprintf(w, "error occurred on updating user: %+v", err)
 		return
 	}
@@ -135,7 +128,7 @@ func (s *httpServer) updateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *httpServer) deleteUser(w http.ResponseWriter, r *http.Request) {
-	var u User
+	var u utils.User
 
 	err := decodeJSONBody(w, r, &u)
 	if err != nil {
@@ -149,55 +142,15 @@ func (s *httpServer) deleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.checkUser(u) {
+	if !utils.CheckUser(u, s.redisClient) {
 		fmt.Fprintf(w, "User: %+v does not exists", u.Name)
 		return
 	}
 
-	if err := s.delUser(u); err != nil {
+	if err := utils.DelUser(u, s.redisClient); err != nil {
 		fmt.Fprintf(w, "error occurred on deleting user: %+v", err)
 		return
 	}
 
 	fmt.Fprintf(w, "Deleted User: %+v", u)
-}
-
-func (s *httpServer) checkUser(u User) bool {
-	val, err := s.redisClient.Exists(context.Background(), genKey(u.Name)).Result()
-	if err != nil {
-		return false
-	}
-
-	return val != 0
-}
-
-func (s *httpServer) getUser(u User) (User, error) {
-	val, err := s.redisClient.Get(context.Background(), genKey(u.Name)).Result()
-	if err != nil {
-		return User{}, err
-	}
-	user := &User{}
-	err = json.Unmarshal([]byte(val), user)
-	if err != nil {
-		return User{}, err
-	}
-
-	return *user, nil
-}
-
-func (s *httpServer) setUser(u User) error {
-	b, err := json.Marshal(&u)
-	if err != nil {
-		return err
-	}
-
-	return s.redisClient.Set(context.Background(), genKey(u.Name), string(b), 0).Err()
-}
-
-func (s *httpServer) delUser(u User) error {
-	return s.redisClient.Del(context.Background(), genKey(u.Name)).Err()
-}
-
-func genKey(s string) string {
-	return fmt.Sprintf("aibrix-users/%s", s)
 }

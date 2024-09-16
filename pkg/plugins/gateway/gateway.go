@@ -23,7 +23,9 @@ import (
 	"io"
 	"log"
 	"strings"
+	"time"
 
+	"github.com/redis/go-redis/v9"
 	openai "github.com/sashabaranov/go-openai"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -35,7 +37,7 @@ import (
 	"github.com/aibrix/aibrix/pkg/cache"
 	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
 	routing "github.com/aibrix/aibrix/pkg/plugins/gateway/routing_algorithms"
-	podutils "github.com/aibrix/aibrix/pkg/utils"
+	"github.com/aibrix/aibrix/pkg/utils"
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	filterPb "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -43,19 +45,26 @@ import (
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
+var (
+	defaultRPM           = 100
+	defaultTPMMultiplier = 1000
+)
+
 type Server struct {
 	routers             map[string]routing.Router
+	redisClient         *redis.Client
 	ratelimiter         ratelimiter.AccountRateLimiter
 	client              kubernetes.Interface
 	requestCountTracker map[string]int
 	cache               *cache.Cache
 }
 
-func NewServer(r ratelimiter.AccountRateLimiter, c kubernetes.Interface) *Server {
+func NewServer(redisClient *redis.Client, c kubernetes.Interface) *Server {
 	cache, err := cache.GetCache()
 	if err != nil {
 		panic(err)
 	}
+	r := ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
 	routers := map[string]routing.Router{
 		"random":        routing.NewRandomRouter(),
 		"least-request": routing.NewLeastRequestRouter(r),
@@ -64,6 +73,7 @@ func NewServer(r ratelimiter.AccountRateLimiter, c kubernetes.Interface) *Server
 
 	return &Server{
 		routers:             routers,
+		redisClient:         redisClient,
 		ratelimiter:         r,
 		client:              c,
 		requestCountTracker: map[string]int{},
@@ -127,13 +137,13 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, string, string) {
 	log.Println("--- In RequestHeaders processing ...")
-	var user, model, routingStrategy, targetPodIP string
+	var username, model, routingStrategy, targetPodIP string
 	r := req.Request
 	h := r.(*extProcPb.ProcessingRequest_RequestHeaders)
 
 	for _, n := range h.RequestHeaders.Headers.Headers {
 		if strings.ToLower(n.Key) == "user" {
-			user = string(n.RawValue)
+			username = string(n.RawValue)
 		}
 		if strings.ToLower(n.Key) == "model" {
 			model = string(n.RawValue)
@@ -146,14 +156,21 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 		}
 	}
 
-	// TODO (varun): add check if user exists in backend storage
-	// if no user name present in the request headers
-	if user == "" {
+	user, err := utils.GetUser(utils.User{Name: username}, s.redisClient)
+	if err != nil {
+		// TODO: return immediate response
 		klog.Infoln("user does not exists")
-		return nil, user, targetPodIP
+		return nil, username, targetPodIP
 	}
-	klog.Infof("user: %v", user)
-	code, err := s.checkRPM(ctx, user)
+
+	if user.Rpm == 0 {
+		user.Rpm = int64(defaultRPM)
+	}
+	if user.Tpm == 0 {
+		user.Tpm = user.Rpm * int64(defaultTPMMultiplier)
+	}
+
+	code, err := s.checkRPM(ctx, username, user.Rpm)
 	if err != nil {
 		return &extProcPb.ProcessingResponse{
 			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
@@ -174,10 +191,10 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 					},
 				},
 			},
-		}, user, targetPodIP
+		}, username, targetPodIP
 	}
 
-	code, err = s.checkTPM(ctx, user)
+	code, err = s.checkTPM(ctx, username, user.Tpm)
 	if err != nil {
 		return &extProcPb.ProcessingResponse{
 			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
@@ -198,10 +215,10 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 					},
 				},
 			},
-		}, user, targetPodIP
+		}, username, targetPodIP
 	}
 
-	pods, err := s.client.CoreV1().Pods(podutils.NAMESPACE).List(ctx, v1.ListOptions{
+	pods, err := s.client.CoreV1().Pods(utils.NAMESPACE).List(ctx, v1.ListOptions{
 		LabelSelector: fmt.Sprintf("model.aibrix.ai=%s", model),
 	})
 	if err != nil {
@@ -225,7 +242,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 					},
 				},
 			},
-		}, user, targetPodIP
+		}, username, targetPodIP
 	}
 
 	targetPodIP, err = s.SelectTargetPod(ctx, routingStrategy, pods.Items)
@@ -240,7 +257,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 					Body:    "error on selecting target pod",
 				},
 			},
-		}, user, targetPodIP
+		}, username, targetPodIP
 	}
 
 	headers := []*configPb.HeaderValueOption{{
@@ -278,7 +295,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 		},
 	}
 
-	return resp, user, targetPodIP
+	return resp, username, targetPodIP
 }
 
 func (s *Server) HandleRequestBody(req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
@@ -428,12 +445,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 	}
 }
 
-func (s *Server) checkRPM(ctx context.Context, user string) (envoyTypePb.StatusCode, error) {
-	rpmLimit, err := s.ratelimiter.GetLimit(ctx, fmt.Sprintf("%v_RPM_LIMIT", user))
-	if err != nil {
-		klog.Error(err)
-		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get requests per minute limit for user: %v", user)
-	}
+func (s *Server) checkRPM(ctx context.Context, user string, rpmLimit int64) (envoyTypePb.StatusCode, error) {
 	rpmCurrent, err := s.ratelimiter.Get(ctx, fmt.Sprintf("%v_RPM_CURRENT", user))
 	if err != nil {
 		klog.Error(err)
@@ -449,12 +461,7 @@ func (s *Server) checkRPM(ctx context.Context, user string) (envoyTypePb.StatusC
 	return envoyTypePb.StatusCode_OK, nil
 }
 
-func (s *Server) checkTPM(ctx context.Context, user string) (envoyTypePb.StatusCode, error) {
-	tpmLimit, err := s.ratelimiter.GetLimit(ctx, fmt.Sprintf("%v_TPM_LIMIT", user))
-	if err != nil {
-		klog.Error(err)
-		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get tokens per minute limit for user: %v", user)
-	}
+func (s *Server) checkTPM(ctx context.Context, user string, tpmLimit int64) (envoyTypePb.StatusCode, error) {
 	tpmCurrent, err := s.ratelimiter.Get(ctx, fmt.Sprintf("%v_TPM_CURRENT", user))
 	if err != nil {
 		klog.Error(err)
