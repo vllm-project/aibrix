@@ -26,6 +26,10 @@ spec:
       labels:
         app: gateway-plugins
     spec:
+      initContainers:
+        - name: init-c
+          image: busybox
+          command: ['sh', '-c', "until nslookup aibrix-redis-master.aibrix-system.svc.cluster.local; do echo waiting for service aibrix-redis-master; sleep 2; done"]
       containers:
         - name: golang-app-container
           image: aibrix/plugins:nightly

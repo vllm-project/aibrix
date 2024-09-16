@@ -5,7 +5,7 @@ metadata:
   namespace: aibrix-system
 spec:
   selector:
-    app: aibrix-gateway-plugins
+    app: gateway-plugins
   ports:
     - protocol: TCP
       port: 50052
@@ -20,15 +20,20 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app: aibrix-gateway-plugins
+      app: gateway-plugins
   template:
     metadata:
       labels:
-        app: aibrix-gateway-plugins
+        app: gateway-plugins
     spec:
+      serviceAccountName: aibrix-gateway-plugin
+      initContainers:
+        - name: init-c
+          image: busybox
+          command: ['sh', '-c', "until nslookup aibrix-redis-master.aibrix-system.svc.cluster.local; do echo waiting for service aibrix-redis-master; sleep 2; done"]
       containers:
         - name: golang-app-container
-          image: aibrix/plugins:v0.1.0
+          image: aibrix/plugins:nightly
           ports:
             - containerPort: 50052
           env:
