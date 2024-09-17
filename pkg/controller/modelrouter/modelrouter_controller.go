@@ -67,6 +67,7 @@ func Add(mgr manager.Manager) error {
 	return err
 }
 
+// TODO: Delete model router for creating httproute as now selecting a target is default method
 type ModelRouter struct {
 	client.Client
 	Scheme *runtime.Scheme

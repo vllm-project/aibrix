@@ -80,7 +80,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 		crdFactory := crdinformers.NewSharedInformerFactoryWithOptions(crdClientSet, 0)
 
 		podInformer := factory.Core().V1().Pods().Informer()
-		modeInformer := crdFactory.Model().V1alpha1().ModelAdapters().Informer()
+		modelInformer := crdFactory.Model().V1alpha1().ModelAdapters().Informer()
 
 		defer runtime.HandleCrash()
 		factory.Start(stopCh)
@@ -89,7 +89,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 		// factory.WaitForCacheSync(stopCh)
 		// crdFactory.WaitForCacheSync(stopCh)
 
-		if !cache.WaitForCacheSync(stopCh, podInformer.HasSynced, modeInformer.HasSynced) {
+		if !cache.WaitForCacheSync(stopCh, podInformer.HasSynced, modelInformer.HasSynced) {
 			runtime.HandleError(fmt.Errorf("timed out waiting for caches to sync"))
 			return
 		}
@@ -110,7 +110,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 			panic(err)
 		}
 
-		if _, err = modeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		if _, err = modelInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc:    instance.addModelAdapter,
 			UpdateFunc: instance.updateModelAdapter,
 			DeleteFunc: instance.deleteModelAdapter,
