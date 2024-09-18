@@ -28,12 +28,12 @@ spec:
     spec:
       initContainers:
         - name: init-c
-          image: busybox
+          image: busybox:stable
           command: ['sh', '-c', "until nslookup aibrix-redis-master.aibrix-system.svc.cluster.local; do echo waiting for service aibrix-redis-master; sleep 2; done"]
       containers:
-        - name: golang-app-container
-          image: aibrix/users:nightly
-          imagePullPolicy: Always
+        - name: gateway-users
+          image: users:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8090
           env:

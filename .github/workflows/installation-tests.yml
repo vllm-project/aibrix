@@ -39,19 +39,21 @@ jobs:
           IMG=aibrix/controller-manager:${{ github.sha }} make docker-build
           PLUGINS_IMG=aibrix/plugins:${{ github.sha }} make docker-build-plugins
           RUNTIME_IMG=aibrix/runtime:${{ github.sha }} make docker-build-runtime
+          USERS_IMG=aibrix/users:${{ github.sha }} make docker-build-users
 
       - name: Load image into Kind
         run: |
           kind load docker-image aibrix/controller-manager:${{ github.sha }} --name installation-test
           kind load docker-image aibrix/plugins:${{ github.sha }} --name installation-test
           kind load docker-image aibrix/runtime:${{ github.sha }} --name installation-test
+          kind load docker-image aibrix/users:${{ github.sha }} --name installation-test
 
       - name: Deploy controller with the built image
         run: |
           kubectl create -k config/dependency
           cd config/manager && kustomize edit set image controller=aibrix/controller-manager:${{ github.sha }}
           cd ${{ github.workspace }}
-          cd config/gateway && kustomize edit set image plugins=aibrix/plugins:${{ github.sha }}
+          cd config/gateway && kustomize edit set image plugins=aibrix/plugins:${{ github.sha }} && kustomize edit set image users=aibrix/users:${{ github.sha }}
           cd ${{ github.workspace }}
           kubectl apply -k config/default
 

@@ -25,6 +25,8 @@ jobs:
         run: make docker-build-plugins
       - name: Docker Build - Runtime
         run: make docker-build-runtime
+      - name: Docker Build - Users
+        run: make docker-build-users
       # push container image to dockerhub
       - name: Push Image - Controller Manager
         run: make docker-push
@@ -32,3 +34,5 @@ jobs:
         run: make docker-push-plugins
       - name: Push Image - Runtime
         run: make docker-push-runtime
+      - name: Push Image - Users
+        run: make docker-push-users

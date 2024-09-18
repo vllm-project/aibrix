@@ -10,3 +10,6 @@ images:
 - name: plugins
   newName: aibrix/plugins
   newTag: nightly
+- name: users
+  newName: aibrix/users
+  newTag: nightly
