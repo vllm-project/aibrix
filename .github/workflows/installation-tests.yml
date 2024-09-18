@@ -1,0 +1,65 @@
+name: Installation Tests
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  installation-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Install kind
+        run: |
+          [ $(uname -m) = x86_64 ] && curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+          chmod +x ./kind
+          mv ./kind /usr/local/bin/kind
+          kind version
+
+      - name: Install kustomize
+        run: |
+          curl -L https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v5.4.3/kustomize_v5.4.3_$(go env GOOS)_$(go env GOARCH).tar.gz | tar -xz -C /usr/local/bin/
+          kustomize version
+
+      - name: Set up testing environment
+        run: |
+          # Set up the cluster with kind or other Kubernetes environment needed
+          kind create cluster --name installation-test
+          kubectl cluster-info --context kind-installation-test
+
+      - name: Build container images
+        run: |
+          IMG=aibrix/controller-manager:${{ github.sha }} make docker-build
+          PLUGINS_IMG=aibrix/plugins:${{ github.sha }} make docker-build-plugins
+          RUNTIME_IMG=aibrix/runtime:${{ github.sha }} make docker-build-runtime
+
+      - name: Load image into Kind
+        run: |
+          kind load docker-image aibrix/controller-manager:${{ github.sha }} --name installation-test
+          kind load docker-image aibrix/plugins:${{ github.sha }} --name installation-test
+          kind load docker-image aibrix/runtime:${{ github.sha }} --name installation-test
+
+      - name: Deploy controller with the built image
+        run: |
+          kubectl create -k config/dependency
+          cd config/manager && kustomize edit set image controller=aibrix/controller-manager:${{ github.sha }}
+          cd ${{ github.workspace }}
+          cd config/gateway && kustomize edit set image plugins=aibrix/plugins:${{ github.sha }}
+          cd ${{ github.workspace }}
+          kubectl apply -k config/default
+
+      - name: Check pod status
+        run: |
+          sleep 60s
+          kubectl get pods --all-namespaces
+          kubectl wait pod --all --for=condition=ready --all-namespaces --timeout=300s
+
+      - name: Clean up
+        run: kind delete cluster --name installation-test

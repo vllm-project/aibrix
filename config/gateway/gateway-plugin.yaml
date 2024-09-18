@@ -31,9 +31,9 @@ spec:
           image: busybox
           command: ['sh', '-c', "until nslookup aibrix-redis-master.aibrix-system.svc.cluster.local; do echo waiting for service aibrix-redis-master; sleep 2; done"]
       containers:
-        - name: golang-app-container
-          image: aibrix/plugins:nightly
-          imagePullPolicy: Always
+        - name: gateway-plugin
+          image: plugins:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 50052
           env:
