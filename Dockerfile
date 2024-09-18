@@ -15,8 +15,6 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY api/ api/
 COPY pkg/controller/ pkg/controller/
-COPY pkg/users/ pkg/users/
-COPY pkg/plugins/ pkg/plugins/
 COPY pkg/utils/ pkg/utils/
 COPY pkg/cache/ pkg/cache/
 COPY pkg/client/ pkg/client/
@@ -28,17 +26,11 @@ COPY pkg/client/ pkg/client/
 # by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/controllers/main.go
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o users cmd/users/main.go
-
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o plugins cmd/plugins/main.go
-
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY --from=builder /workspace/manager .
-COPY --from=builder /workspace/users .
-COPY --from=builder /workspace/plugins .
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]
