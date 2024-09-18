@@ -1,0 +1,121 @@
+name: Release Build and Push
+
+on:
+  push:
+    tags:
+      - 'v*'  # This triggers the workflow on any new tag
+
+jobs:
+  image-release:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Set up Docker Buildx (optional but allows advanced Docker building)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      # Log in to Docker Hub
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      # Build container images
+      - name: Build Container Images
+        run: |
+          IMG=aibrix/controller-manager:${{ github.ref_name }} make docker-build
+          PLUGINS_IMG=aibrix/plugins:${{ github.ref_name }} make docker-build-plugins
+          RUNTIME_IMG=aibrix/runtime:${{ github.ref_name }} make docker-build-runtime
+          USERS_IMG=aibrix/users:${{ github.ref_name }} make docker-build-users
+
+      # Push container image to container registry
+      - name: Push container image to container registry
+        run: |
+          IMG=aibrix/controller-manager:${{ github.ref_name }} make docker-push
+          PLUGINS_IMG=aibrix/plugins:${{ github.ref_name }} make docker-push-plugins
+          RUNTIME_IMG=aibrix/runtime:${{ github.ref_name }} make docker-push-runtime
+          USERS_IMG=aibrix/users:${{ github.ref_name }} make docker-push-users
+
+  artifact-release:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Install Kustomize
+      - name: Install Kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          mv kustomize /usr/local/bin/
+
+      # Build Kustomize package
+      - name: Build Kustomize
+        run: |
+          kustomize build config/dependency > aibrix-dependency-${{ github.ref_name }}.yaml
+          kustomize build config/default > aibrix-core-${{ github.ref_name }}.yaml
+
+      # Upload the Kustomize YAML as a release artifact
+      - name: Upload Kustomize YAML
+        uses: actions/upload-artifact@v3
+        with:
+          name: aibrix-dependency-${{ github.ref_name }}.yaml
+          path: aibrix-dependency-${{ github.ref_name }}.yaml
+
+      - name: Upload Kustomize YAML
+        uses: actions/upload-artifact@v3
+        with:
+          name: aibrix-core-${{ github.ref_name }}.yaml
+          path: aibrix-core-${{ github.ref_name }}.yaml
+
+  cut-github-release:
+    runs-on: ubuntu-latest
+    needs: [artifact-release]
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      # Download the Kustomize artifact from the previous job
+      - name: Download Kustomize YAML
+        uses: actions/download-artifact@v3
+        with:
+          name: aibrix-dependency-${{ github.ref_name }}.yaml
+
+      - name: Download Kustomize YAML
+        uses: actions/download-artifact@v3
+        with:
+          name: aibrix-core-${{ github.ref_name }}.yaml
+
+      # Determine if this is a prerelease based on the tag name
+      # if it contains
+      - name: Set prerelease flag
+        id: prerelease_check
+        run: |
+          if [[ "${{ github.ref_name }}" == *"rc"* ]]; then
+            echo "This is a prerelease"
+            echo "prerelease=true" >> $GITHUB_ENV
+          else
+            echo "This is not a prerelease"
+            echo "prerelease=false" >> $GITHUB_ENV
+          fi
+
+      - name: Create Draft Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}  # Use the tag that triggered the workflow
+          name: ${{ github.ref_name }}  # The name of the release
+          body: |
+            Automatically generated release for tag ${{ github.ref_name }}.
+          draft: true # let's always check the release before officially published.
+          prerelease: ${{ env.prerelease }}
+          files: |
+            aibrix-dependency-${{ github.ref_name }}.yaml
+            aibrix-core-${{ github.ref_name }}.yaml
