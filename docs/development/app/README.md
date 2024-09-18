@@ -46,7 +46,7 @@ OR
 
 - if only want to test gateway plugins
 
-docker build -t aibrix/plugins:v0.1.0 -f gateway.Dockerfile .
+docker build -t aibrix/plugins:v0.1.0 -f Dockerfile.gateway .
 kind load docker-image aibrix/plugins:v0.1.0
 
 kubectl -n aibrix-system apply -f docs/development/app/redis.yaml

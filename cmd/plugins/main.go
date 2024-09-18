@@ -17,7 +17,6 @@ limitations under the License.
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -27,7 +26,6 @@ import (
 	"syscall"
 	"time"
 
-	redis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -35,45 +33,27 @@ import (
 
 	"github.com/aibrix/aibrix/pkg/cache"
 	"github.com/aibrix/aibrix/pkg/plugins/gateway"
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
+	"github.com/aibrix/aibrix/pkg/utils"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
-// Create Redis Client
 var (
-	grpc_port  int
-	redis_host = getEnv("REDIS_HOST", "localhost")
-	redis_port = getEnv("REDIS_PORT", "6379")
+	grpc_port int
 )
-
-func getEnv(key, defaultValue string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return defaultValue
-	}
-	return value
-}
 
 func main() {
 	flag.IntVar(&grpc_port, "port", 50052, "gRPC port")
 	flag.Parse()
 
 	// Connect to Redis
-	client := redis.NewClient(&redis.Options{
-		Addr: redis_host + ":" + redis_port,
-		DB:   0, // Default DB
-	})
-	pong, err := client.Ping(context.Background()).Result()
-	if err != nil {
-		log.Fatal("Error connecting to Redis:", err)
-	}
-	fmt.Println("Connected to Redis:", pong)
+	redisClient := utils.GetRedisClient()
 
 	fmt.Println("Starting cache")
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 	var config *rest.Config
+	var err error
 
 	// ref: https://github.com/kubernetes-sigs/controller-runtime/issues/878#issuecomment-1002204308
 	kubeConfig := flag.Lookup("kubeconfig").Value.String()
@@ -105,10 +85,7 @@ func main() {
 
 	s := grpc.NewServer()
 
-	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(
-		ratelimiter.NewRedisAccountRateLimiter("aibrix", client, 1*time.Minute),
-		k8sClient,
-	))
+	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(redisClient, k8sClient))
 	healthPb.RegisterHealthServer(s, &gateway.HealthServer{})
 
 	log.Println("Starting gRPC server on port :50052")
