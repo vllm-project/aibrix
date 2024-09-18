@@ -30,6 +30,8 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+
+	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -54,20 +56,33 @@ func Add(mgr manager.Manager) error {
 		return err
 	}
 
+	modelInformer, err := cacher.GetInformer(context.TODO(), &modelv1alpha1.ModelAdapter{})
+	if err != nil {
+		return err
+	}
+
 	utilruntime.Must(gatewayv1.AddToScheme(mgr.GetClient().Scheme()))
 
 	modelRouter := &ModelRouter{
 		Client: mgr.GetClient(),
 	}
+
 	_, err = deploymentInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addModel,
 		DeleteFunc: modelRouter.deleteModel,
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = modelInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    modelRouter.addModelAdapter,
+		DeleteFunc: modelRouter.deleteModelAdapter,
 	})
 
 	return err
 }
 
-// TODO: Delete model router for creating httproute as now selecting a target is default method
 type ModelRouter struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -75,19 +90,39 @@ type ModelRouter struct {
 
 func (m *ModelRouter) addModel(obj interface{}) {
 	deployment := obj.(*appsv1.Deployment)
+	m.createHTTPRoute(deployment.Namespace, deployment.Labels)
+}
 
-	modelName, ok := deployment.Labels[modelIdentifier]
+func (m *ModelRouter) deleteModel(obj interface{}) {
+	deployment := obj.(*appsv1.Deployment)
+	m.deleteHTTPRoute(deployment.Namespace, deployment.Labels)
+}
+
+func (m *ModelRouter) addModelAdapter(obj interface{}) {
+	modelAdapter := obj.(*modelv1alpha1.ModelAdapter)
+	m.createHTTPRoute(modelAdapter.Namespace, modelAdapter.Labels)
+}
+
+func (m *ModelRouter) deleteModelAdapter(obj interface{}) {
+	modelAdapter := obj.(*modelv1alpha1.ModelAdapter)
+	m.deleteHTTPRoute(modelAdapter.Namespace, modelAdapter.Labels)
+}
+
+func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string) {
+	modelName, ok := labels[modelIdentifier]
 	if !ok {
-		fmt.Printf("deployment %s does not have a model, labels: %s\n", deployment.Name, deployment.Labels)
 		return
 	}
 
-	modelPort, _ := strconv.ParseInt(deployment.Labels[modelPortIdentifier], 10, 32)
+	modelPort, err := strconv.ParseInt(labels[modelPortIdentifier], 10, 32)
+	if err != nil {
+		return
+	}
 
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-router", modelName),
-			Namespace: deployment.Namespace,
+			Namespace: namespace,
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
@@ -125,26 +160,27 @@ func (m *ModelRouter) addModel(obj interface{}) {
 			},
 		},
 	}
-	err := m.Client.Create(context.Background(), &httpRoute)
-	klog.Errorln(err)
+	if err := m.Client.Create(context.Background(), &httpRoute); err != nil {
+		klog.Errorln(err)
+	}
+	klog.Infof("httproute: %v created for model: %v", httpRoute.Name, modelName)
 }
 
-func (m *ModelRouter) deleteModel(obj interface{}) {
-	deployment := obj.(*appsv1.Deployment)
-
-	modelName, ok := deployment.Labels[modelIdentifier]
+func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string) {
+	modelName, ok := labels[modelIdentifier]
 	if !ok {
-		fmt.Printf("deployment %s does not have a model, labels: %s\n", deployment.Name, deployment.Labels)
 		return
 	}
 
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-router", modelName),
-			Namespace: deployment.Namespace,
+			Namespace: namespace,
 		},
 	}
 
-	err := m.Client.Delete(context.Background(), &httpRoute)
-	klog.Errorln(err)
+	if err := m.Client.Delete(context.Background(), &httpRoute); err != nil {
+		klog.Errorln(err)
+	}
+	klog.Infof("httproute: %v deleted for model: %v", httpRoute.Name, modelName)
 }

@@ -157,9 +157,12 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 
 	user, err := utils.GetUser(utils.User{Name: username}, s.redisClient)
 	if err != nil {
-		// TODO: return immediate response
-		klog.Infoln("user does not exists")
-		return nil, username, targetPodIP
+		return generateErrorResponse(
+			envoyTypePb.StatusCode_Forbidden,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: "x-user-missing", RawValue: []byte("true"),
+			}}},
+			fmt.Sprintf("pre query: username is missing: %v", err.Error())), username, targetPodIP
 	}
 
 	if user.Rpm == 0 {
@@ -189,48 +192,49 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 			fmt.Sprintf("pre query: error on checking tpm: %v", err.Error())), username, targetPodIP
 	}
 
-	pods, err := s.cache.GetPodsForModel(model)
-	if len(pods) == 0 || err != nil {
-		return generateErrorResponse(
-			code,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-no-model-deployment", RawValue: []byte("true"),
-			}}},
-			fmt.Sprintf("pre query: no models are deployed: %v", err.Error())), username, targetPodIP
-	}
+	headers := []*configPb.HeaderValueOption{{
+		Header: &configPb.HeaderValue{
+			Key:      "x-went-into-req-headers",
+			RawValue: []byte("true"),
+		},
+	}}
+	if routingStrategy != "" {
+		pods, err := s.cache.GetPodsForModel(model)
+		if len(pods) == 0 || err != nil {
+			return generateErrorResponse(
+				code,
+				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+					Key: "x-no-model-deployment", RawValue: []byte("true"),
+				}}},
+				fmt.Sprintf("pre query: no models are deployed: %v", err.Error())), username, targetPodIP
+		}
 
-	targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods)
-	if targetPodIP == "" || err != nil {
-		return generateErrorResponse(
-			code,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-select-target-pod", RawValue: []byte("true"),
-			}}},
-			fmt.Sprintf("pre query: error on selecting target pod: %v", err.Error())), username, targetPodIP
-	}
+		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods)
+		if targetPodIP == "" || err != nil {
+			return generateErrorResponse(
+				code,
+				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+					Key: "x-select-target-pod", RawValue: []byte("true"),
+				}}},
+				fmt.Sprintf("pre query: error on selecting target pod: %v", err.Error())), username, targetPodIP
+		}
 
-	podRequestCounter := s.cache.IncrPodRequestCount(fmt.Sprintf("%v_REQUEST_COUNT", targetPodIP))
-	klog.Infof("RequestStart: SelectedTargetPodIP: %s, PodRequestCount: %v", targetPodIP, podRequestCounter)
+		headers = append(headers, &configPb.HeaderValueOption{
+			Header: &configPb.HeaderValue{
+				Key:      "target-pod",
+				RawValue: []byte(targetPodIP),
+			},
+		})
+		podRequestCounter := s.cache.IncrPodRequestCount(fmt.Sprintf("%v_REQUEST_COUNT", targetPodIP))
+		klog.Infof("RequestStart: SelectedTargetPodIP: %s, PodRequestCount: %v", targetPodIP, podRequestCounter)
+	}
 
 	resp := &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestHeaders{
 			RequestHeaders: &extProcPb.HeadersResponse{
 				Response: &extProcPb.CommonResponse{
 					HeaderMutation: &extProcPb.HeaderMutation{
-						SetHeaders: []*configPb.HeaderValueOption{
-							{
-								Header: &configPb.HeaderValue{
-									Key:      "x-went-into-req-headers",
-									RawValue: []byte("true"),
-								},
-							},
-							{
-								Header: &configPb.HeaderValue{
-									Key:      "target-pod",
-									RawValue: []byte(targetPodIP),
-								},
-							},
-						},
+						SetHeaders: headers,
 					},
 					ClearRouteCache: true,
 				},
@@ -277,25 +281,27 @@ func (s *Server) HandleRequestBody(req *extProcPb.ProcessingRequest, targetPodIP
 func (s *Server) HandleResponseHeaders(req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
 	log.Println("--- In ResponseHeaders processing")
 
+	headers := []*configPb.HeaderValueOption{{
+		Header: &configPb.HeaderValue{
+			Key:      "x-went-into-resp-headers",
+			RawValue: []byte("true"),
+		},
+	}}
+	if targetPodIP != "" {
+		headers = append(headers, &configPb.HeaderValueOption{
+			Header: &configPb.HeaderValue{
+				Key:      "target-pod",
+				RawValue: []byte(targetPodIP),
+			},
+		})
+	}
+
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ResponseHeaders{
 			ResponseHeaders: &extProcPb.HeadersResponse{
 				Response: &extProcPb.CommonResponse{
 					HeaderMutation: &extProcPb.HeaderMutation{
-						SetHeaders: []*configPb.HeaderValueOption{
-							{
-								Header: &configPb.HeaderValue{
-									Key:      "x-went-into-resp-headers",
-									RawValue: []byte("true"),
-								},
-							},
-							{
-								Header: &configPb.HeaderValue{
-									Key:      "target-pod",
-									RawValue: []byte(targetPodIP),
-								},
-							},
-						},
+						SetHeaders: headers,
 					},
 					ClearRouteCache: true,
 				},
@@ -311,8 +317,10 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 	b := r.(*extProcPb.ProcessingRequest_ResponseBody)
 
 	defer func() {
-		podRequestCounter := s.cache.DecrPodRequestCount(fmt.Sprintf("%v_REQUEST_COUNT", targetPodIP))
-		klog.Infof("RequestEnd: SelectedTargetPodIP: %s, PodRequestCount: %v", targetPodIP, podRequestCounter)
+		if targetPodIP != "" {
+			podRequestCounter := s.cache.DecrPodRequestCount(fmt.Sprintf("%v_REQUEST_COUNT", targetPodIP))
+			klog.Infof("RequestEnd: SelectedTargetPodIP: %s, PodRequestCount: %v", targetPodIP, podRequestCounter)
+		}
 	}()
 
 	var res openai.CompletionResponse
@@ -345,11 +353,13 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 	}
 	klog.Infof("Updated RPM: %v, TPM: %v for user: %v", rpm, tpm, user)
 
-	podTpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_THROUGHPUT", targetPodIP), int64(res.Usage.TotalTokens))
-	if err != nil {
-		klog.Error(err)
-	} else {
-		klog.Infof("RequestEnd: SelectedTargetPodIP: %s, PodThroughput: %v", targetPodIP, podTpm)
+	if targetPodIP != "" {
+		podTpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_THROUGHPUT", targetPodIP), int64(res.Usage.TotalTokens))
+		if err != nil {
+			klog.Error(err)
+		} else {
+			klog.Infof("RequestEnd: SelectedTargetPodIP: %s, PodThroughput: %v", targetPodIP, podTpm)
+		}
 	}
 
 	return &extProcPb.ProcessingResponse{

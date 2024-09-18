@@ -72,11 +72,26 @@ curl https://localhost:8000/v1/completions \
   }'
 ```
 
+# request via gateway without routing strategy
 ```shell
 curl -v http://localhost:8888/v1/chat/completions \
   -H "user: your-user-name" \
   -H "model: lora-1" \
-  -H "routing-strategy: random" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer any_key" \
+  -d '{
+     "model": "lora-1",
+     "messages": [{"role": "user", "content": "Say this is a test!"}],
+     "temperature": 0.7
+   }'
+```
+
+# request via gateway with routing strategy
+```shell
+curl -v http://localhost:8888/v1/chat/completions \
+  -H "user: your-user-name" \
+  -H "model: lora-1" \
+  -H "routing-strategy: least-request" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer any_key" \
   -d '{

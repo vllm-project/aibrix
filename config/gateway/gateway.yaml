@@ -58,11 +58,16 @@ spec:
         name: original_route
         match:
           prefix: "/"
-          # headers:
-          #   # update ip address as needed and in production this config is not needed as backend will derive the pod ip
-          #   - name: "target-pod"
-          #     string_match:
-          #       exact: "10.244.1.3:8000"
+          headers:
+            - name: "routing-strategy"
+              string_match:
+                exact: "random"
+            - name: "least-request"
+              string_match:
+                exact: "random"
+            - name: "routing-strategy"
+              string_match:
+                exact: "throughput"
         route:  
           cluster: original_destination_cluster
           timeout: 1000s  # Increase route timeout
