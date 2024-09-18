@@ -52,6 +52,10 @@ var (
 	instance Cache
 )
 
+const (
+	modelIdentifier = "model.aibrix.ai"
+)
+
 func GetCache() (*Cache, error) {
 	if !instance.initialized {
 		return nil, errors.New("cache is not initialized")
@@ -128,7 +132,7 @@ func (c *Cache) addPod(obj interface{}) {
 
 	pod := obj.(*v1.Pod)
 	// only track pods with model deployments
-	modelName, ok := pod.Labels[modelv1alpha1.GroupVersion.Group]
+	modelName, ok := pod.Labels[modelIdentifier]
 	if !ok {
 		return
 	}
@@ -144,13 +148,13 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 	defer c.mu.Unlock()
 
 	oldPod := oldObj.(*v1.Pod)
-	oldModelName, ok := oldPod.Labels[modelv1alpha1.GroupVersion.Group]
+	oldModelName, ok := oldPod.Labels[modelIdentifier]
 	if !ok {
 		return
 	}
 
 	newPod := newObj.(*v1.Pod)
-	newModelName, ok := oldPod.Labels[modelv1alpha1.GroupVersion.Group]
+	newModelName, ok := oldPod.Labels[modelIdentifier]
 	if !ok {
 		return
 	}
@@ -166,7 +170,7 @@ func (c *Cache) deletePod(obj interface{}) {
 	defer c.mu.Unlock()
 
 	pod := obj.(*v1.Pod)
-	modelName, ok := pod.Labels[modelv1alpha1.GroupVersion.Group]
+	modelName, ok := pod.Labels[modelIdentifier]
 	if !ok {
 		return
 	}
