@@ -6,16 +6,18 @@ Welcome to AIBrix
   :align: center
   :alt: AIBrix
 
-AIBrix is the foundational building blocks for constructing your own GenAI inference infrastructure.
-AIBrix offers a cloud-native solution tailored to meet the demands of enterprises aiming to deploy, manage, and scale LLMs efficiently.
+AIBrix is an open-source initiative designed to provide essential building blocks to construct scalable GenAI inference infrastructure. 
+AIBrix delivers a cloud-native solution optimized for deploying, managing, and scaling large language model (LLM) inference, tailored specifically to enterprise needs.
 
 Key features:
 
-* High density Lora management
-* Intelligent and LLM specific routing strategies
-* LLM tailored pod autoscaler
-* AI runtime sidecar (metrics merge, fast model downloading, admin operations)
-
+- **LLM Gateway and Routing**: Efficiently manage and direct traffic across multiple models and replicas.
+- **High-Density LoRA Management**: Streamlined support for lightweight, low-rank adaptations of models.
+- **Distributed Inference**: Scalable architecture to handle large workloads across multiple nodes.
+- **LLM App-Tailored Autoscaler**: Dynamically scale inference resources based on real-time demand.
+- **Unified AI Runtime**: A versatile sidecar enabling metric standardization, model downloading, and management.
+- **GPU Hardware Failure Detection (TBD)**: Proactive detection of GPU hardware issues.
+- **Benchmark Tool (TBD)**: A tool for measuring inference performance and resource efficiency.
 
 Documentation
 =============
