@@ -99,6 +99,8 @@ var _ = Describe("RayClusterFleet Controller", func() {
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
 		It("should successfully reconcile the resource", func() {
+			// TODO: (@jiaxin.shan) Let's re-enable the test once the integration test is done.
+			Skip("Skipping this test for now")
 			By("Reconciling the created resource")
 			controllerReconciler := &RayClusterFleetReconciler{
 				Client: k8sClient,

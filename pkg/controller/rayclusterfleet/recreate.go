@@ -4,13 +4,14 @@ import (
 	"context"
 
 	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
+	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
+
 	"github.com/aibrix/aibrix/pkg/controller/rayclusterfleet/util"
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
 // rolloutRecreate implements the logic for recreating a replica set.
-func (r *RayClusterFleetReconciler) rolloutRecreate(ctx context.Context, d *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestrationv1alpha1.RayClusterReplicaSet, podMap map[types.UID][]*v1.Pod) error {
+func (r *RayClusterFleetReconciler) rolloutRecreate(ctx context.Context, d *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestrationv1alpha1.RayClusterReplicaSet, clusterMap map[types.UID][]*rayclusterv1.RayCluster) error {
 	// Don't create a new RS if not already existed, so that we avoid scaling up before scaling down.
 	newRS, oldRSs, err := r.getAllReplicaSetsAndSyncRevision(ctx, d, rsList, false)
 	if err != nil {
@@ -30,7 +31,7 @@ func (r *RayClusterFleetReconciler) rolloutRecreate(ctx context.Context, d *orch
 	}
 
 	// Do not process a deployment when it has old pods running.
-	if oldPodsRunning(newRS, oldRSs, podMap) {
+	if oldPodsRunning(newRS, oldRSs, clusterMap) {
 		return r.syncRolloutStatus(ctx, allRSs, newRS, d)
 	}
 
@@ -80,7 +81,7 @@ func (r *RayClusterFleetReconciler) scaleDownOldReplicaSetsForRecreate(ctx conte
 }
 
 // oldPodsRunning returns whether there are old pods running or any of the old ReplicaSets thinks that it runs pods.
-func oldPodsRunning(newRS *orchestrationv1alpha1.RayClusterReplicaSet, oldRSs []*orchestrationv1alpha1.RayClusterReplicaSet, podMap map[types.UID][]*v1.Pod) bool {
+func oldPodsRunning(newRS *orchestrationv1alpha1.RayClusterReplicaSet, oldRSs []*orchestrationv1alpha1.RayClusterReplicaSet, podMap map[types.UID][]*rayclusterv1.RayCluster) bool {
 	if oldPods := util.GetActualReplicaCountForReplicaSets(oldRSs); oldPods > 0 {
 		return true
 	}
@@ -90,16 +91,11 @@ func oldPodsRunning(newRS *orchestrationv1alpha1.RayClusterReplicaSet, oldRSs []
 			continue
 		}
 		for _, pod := range podList {
-			switch pod.Status.Phase {
-			case v1.PodFailed, v1.PodSucceeded:
+			switch pod.Status.State {
+
+			case rayclusterv1.Failed, rayclusterv1.Unhealthy:
 				// Don't count pods in terminal state.
 				continue
-			case v1.PodUnknown:
-				// v1.PodUnknown is a deprecated status.
-				// This logic is kept for backward compatibility.
-				// This used to happen in situation like when the node is temporarily disconnected from the cluster.
-				// If we can't be sure that the pod is not running, we have to count it.
-				return true
 			default:
 				// Pod is not in terminal phase.
 				return true

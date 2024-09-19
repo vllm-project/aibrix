@@ -164,7 +164,7 @@ func filterOutCondition(conditions []orchestrationv1alpha1.RayClusterFleetCondit
 // Useful for promoting replica set failure conditions into deployments.
 func ReplicaSetToDeploymentCondition(cond metav1.Condition) orchestrationv1alpha1.RayClusterFleetCondition {
 	return orchestrationv1alpha1.RayClusterFleetCondition{
-		Type:               orchestrationv1alpha1.RayClusterFleetConditionType(string(cond.Type)),
+		Type:               orchestrationv1alpha1.RayClusterFleetConditionType(cond.Type),
 		Status:             v1.ConditionStatus(cond.Status),
 		LastTransitionTime: cond.LastTransitionTime,
 		LastUpdateTime:     cond.LastTransitionTime,
@@ -611,9 +611,15 @@ func EqualIgnoreHash(template1, template2 *rayclusterv1.RayClusterSpec) bool {
 	t1Copy := template1.DeepCopy()
 	t2Copy := template2.DeepCopy()
 	// Remove hash labels from template.Labels before comparing
-	// TODO: originally it's v1.PodTemplateSpec, should we have it?
+	// Note: only head and worker templates has the pod templates.
 	delete(t1Copy.HeadGroupSpec.Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
 	delete(t2Copy.HeadGroupSpec.Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+	for i := range t1Copy.WorkerGroupSpecs {
+		delete(t1Copy.WorkerGroupSpecs[i].Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+	}
+	for i := range t2Copy.WorkerGroupSpecs {
+		delete(t2Copy.WorkerGroupSpecs[i].Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+	}
 	return apiequality.Semantic.DeepEqual(t1Copy, t2Copy)
 }
 
@@ -839,13 +845,19 @@ func IsSaturated(deployment *orchestrationv1alpha1.RayClusterFleet, rs *orchestr
 // Returns error if polling timesout.
 func WaitForObservedDeployment(getDeploymentFunc func() (*orchestrationv1alpha1.RayClusterFleet, error), desiredGeneration int64, interval, timeout time.Duration) error {
 	// TODO: This should take clientset.Interface when all code is updated to use clientset. Keeping it this way allows the function to be used by callers who have client.Interface.
-	return wait.PollImmediate(interval, timeout, func() (bool, error) {
-		deployment, err := getDeploymentFunc()
-		if err != nil {
-			return false, err
-		}
-		return deployment.Status.ObservedGeneration >= desiredGeneration, nil
-	})
+	return wait.PollUntilContextTimeout(
+		context.Background(),
+		interval,
+		timeout,
+		true,
+		func(ctx context.Context) (done bool, err error) {
+			deployment, err := getDeploymentFunc()
+			if err != nil {
+				return false, err
+			}
+			return deployment.Status.ObservedGeneration >= desiredGeneration, nil
+		},
+	)
 }
 
 // ResolveFenceposts resolves both maxSurge and maxUnavailable. This needs to happen in one
@@ -918,7 +930,8 @@ func GetDeploymentsForReplicaSet(c client.Client, rs *orchestrationv1alpha1.RayC
 		if selector.Empty() || !selector.Matches(labels.Set(rs.Labels)) {
 			continue
 		}
-		fleets = append(fleets, &f)
+		fCopy := f
+		fleets = append(fleets, &fCopy)
 	}
 
 	if len(fleets) == 0 {
@@ -949,11 +962,7 @@ func isScalingEvent(d *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestr
 		totalReplicas += rs.Status.Replicas
 	}
 
-	if d.Status.Replicas != totalReplicas {
-		return true
-	}
-
-	return false
+	return d.Status.Replicas != totalReplicas
 }
 
 // source: https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/controller_utils.go

@@ -36,6 +36,7 @@ func init() {
 	controllerAddFuncs = append(controllerAddFuncs, podautoscaler.Add)
 	controllerAddFuncs = append(controllerAddFuncs, modeladapter.Add)
 	controllerAddFuncs = append(controllerAddFuncs, modelrouter.Add)
+	// TODO: only enable them if KubeRay is installed (check RayCluster CRD exist)
 	//controllerAddFuncs = append(controllerAddFuncs, rayclusterreplicaset.Add)
 	//controllerAddFuncs = append(controllerAddFuncs, rayclusterfleet.Add)
 }

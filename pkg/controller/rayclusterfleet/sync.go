@@ -82,8 +82,7 @@ func (r *RayClusterFleetReconciler) checkPausedConditions(ctx context.Context, d
 		return nil
 	}
 
-	var err error
-	err = r.Update(ctx, d)
+	err := r.Update(ctx, d)
 	return err
 }
 
@@ -505,9 +504,7 @@ func calculateStatus(allRSs []*orchestrationv1alpha1.RayClusterReplicaSet, newRS
 
 	// Copy conditions one by one so we won't mutate the original object.
 	conditions := deployment.Status.Conditions
-	for i := range conditions {
-		status.Conditions = append(status.Conditions, conditions[i])
-	}
+	status.Conditions = append(status.Conditions, conditions...)
 
 	if availableReplicas >= *(deployment.Spec.Replicas)-util.MaxUnavailable(*deployment) {
 		minAvailability := util.NewDeploymentCondition(orchestrationv1alpha1.RayClusterFleetAvailable, v1.ConditionTrue, util.MinimumReplicasAvailable, "Deployment has minimum availability.")

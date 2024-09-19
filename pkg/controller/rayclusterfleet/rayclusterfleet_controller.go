@@ -19,10 +19,13 @@ package rayclusterfleet
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/controller/util/expectation"
+	appsv1 "k8s.io/api/apps/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -33,12 +36,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
 )
 
 var (
@@ -101,10 +102,8 @@ type RayClusterFleetReconciler struct {
 
 // Reconcile method moves the RayClusterFleet to the desired State
 func (r *RayClusterFleetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
-
-	var fleet orchestrationv1alpha1.RayClusterFleet
-	if err := r.Get(ctx, req.NamespacedName, &fleet); err != nil {
+	var fleet *orchestrationv1alpha1.RayClusterFleet
+	if err := r.Get(ctx, req.NamespacedName, fleet); err != nil {
 		if errors.IsNotFound(err) {
 			klog.Info("Fleet not found, might have been deleted", "namespace", req.Namespace, "name", req.Name)
 			return ctrl.Result{}, nil
@@ -112,27 +111,70 @@ func (r *RayClusterFleetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 		return ctrl.Result{}, err
 	}
+	startTime := time.Now()
+	klog.V(4).InfoS("Started syncing fleet", "fleet", klog.KRef(fleet.Namespace, fleet.Name), "startTime", startTime)
+	defer func() {
+		klog.V(4).InfoS("Finished syncing fleet", "fleet", klog.KRef(fleet.Namespace, fleet.Name), "duration", time.Since(startTime))
+	}()
 
-	rsList, err := r.getReplicaSetsForFleet(ctx, &fleet)
+	f := fleet.DeepCopy()
+
+	// check whether fleet matches all the ray clusters
+	everything := metav1.LabelSelector{}
+	if reflect.DeepEqual(f.Spec.Selector, &everything) {
+		r.Recorder.Eventf(f, v1.EventTypeWarning, "SelectingAll", "This fleet is selecting all RayClusters. A non-empty selector is required.")
+		if f.Status.ObservedGeneration < f.Generation {
+			f.Status.ObservedGeneration = f.Generation
+			err := r.Status().Update(ctx, f)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	rsList, err := r.getReplicaSetsForFleet(ctx, f)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	_, err = r.getRayClusterMapForFleet(&fleet, rsList)
+	clusterMap, err := r.getRayClusterMapForFleet(f, rsList)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	//if fleet.DeletionTimestamp != nil {
-	//	return r.syncStatusOnly(ctx, &fleet, rsList)
-	//}
-	//
-	//switch fleet.Spec.Strategy.Type {
-	//case appsv1.RecreateDeploymentStrategyType:
-	//	return r.rolloutRecreate(ctx, &fleet, rsList, rayclusterMap)
-	//case appsv1.RollingUpdateDeploymentStrategyType:
-	//	return r.rolloutRolling(ctx, &fleet, rsList)
-	//}
+	if f.DeletionTimestamp != nil {
+		return ctrl.Result{}, r.syncStatusOnly(ctx, f, rsList)
+	}
+
+	// check whether the fleet is in pause status
+	if err := r.checkPausedConditions(ctx, f); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if f.Spec.Paused {
+		return ctrl.Result{}, r.sync(ctx, f, rsList)
+	}
+
+	if getRollbackTo(f) != nil {
+		return ctrl.Result{}, r.rollback(ctx, f, rsList)
+	}
+
+	scalingEvent, err := r.isScalingEvent(ctx, f, rsList)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if scalingEvent {
+		return ctrl.Result{}, r.sync(ctx, f, rsList)
+	}
+
+	switch f.Spec.Strategy.Type {
+	case appsv1.RecreateDeploymentStrategyType:
+		return ctrl.Result{}, r.rolloutRecreate(ctx, f, rsList, clusterMap)
+	case appsv1.RollingUpdateDeploymentStrategyType:
+		return ctrl.Result{}, r.rolloutRolling(ctx, f, rsList)
+	}
 
 	return ctrl.Result{}, nil
 }
@@ -198,81 +240,6 @@ func (r *RayClusterFleetReconciler) getRayClusterMapForFleet(d *orchestrationv1a
 
 	return clusterMap, nil
 }
-
-//
-//func (r *RayClusterFleetReconciler) syncStatusOnly(ctx context.Context, fleet *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestrationv1alpha1.RayClusterReplicaSet) (ctrl.Result, error) {
-//	var totalReplicas int32
-//	for _, rs := range rsList {
-//		totalReplicas += rs.Status.Replicas
-//	}
-//
-//	fleet.Status.Replicas = totalReplicas
-//	err := r.Status().Update(ctx, fleet)
-//	if err != nil {
-//		return ctrl.Result{}, err
-//
-//	}
-//
-//	return ctrl.Result{}, nil
-//}
-//
-//func (r *RayClusterFleetReconciler) rolloutRecreate(ctx context.Context, d *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestrationv1alpha1.RayClusterReplicaSet, clusterMap map[types.UID][]*rayclusterv1.RayCluster) (ctrl.Result, error) {
-//	for _, rs := range rsList {
-//		if rs.Spec.Replicas != nil && *rs.Spec.Replicas > 0 {
-//			var replicas int32 = 0
-//			rs.Spec.Replicas = &replicas
-//			if err := r.Update(ctx, rs); err != nil {
-//				return ctrl.Result{}, err
-//			}
-//		}
-//	}
-//
-//	newRS, err := r.createNewReplicaSet(ctx, d)
-//	if err != nil {
-//		return ctrl.Result{}, err
-//	}
-//
-//	logger := log.FromContext(ctx)
-//	logger.Info("Rolling out Recreate deployment", "deployment", d.Name, "newReplicaSet", newRS.Name)
-//
-//	return ctrl.Result{}, nil
-//}
-//
-//func (r *RayClusterFleetReconciler) rolloutRolling(ctx context.Context, d *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestrationv1alpha1.RayClusterReplicaSet) (ctrl.Result, error) {
-//	maxSurge := d.Spec.Strategy.RollingUpdate.MaxSurge.IntValue()
-//	maxUnavailable := d.Spec.Strategy.RollingUpdate.MaxUnavailable.IntValue()
-//
-//	for _, rs := range rsList {
-//		if *rs.Spec.Replicas > int32(maxUnavailable) {
-//			logger := log.FromContext(ctx)
-//			logger.Info("Scaling down old ReplicaSet", "replicaSet", rs.Name)
-//
-//			var replicas int32 = *rs.Spec.Replicas - int32(maxUnavailable)
-//			rs.Spec.Replicas = &replicas
-//			if err := r.Update(ctx, rs); err != nil {
-//				return ctrl.Result{}, err
-//			}
-//		}
-//	}
-//
-//	newRS, err := r.createNewReplicaSet(ctx, d)
-//	if err != nil {
-//		return ctrl.Result{}, err
-//	}
-//
-//	if *newRS.Spec.Replicas < int32(maxSurge) {
-//		replicas := *newRS.Spec.Replicas + int32(maxSurge)
-//		newRS.Spec.Replicas = &replicas
-//		if err := r.Update(ctx, newRS); err != nil {
-//			return ctrl.Result{}, err
-//		}
-//	}
-//
-//	logger := log.FromContext(ctx)
-//	logger.Info("Rolling out RollingUpdate deployment", "deployment", d.Name, "newReplicaSet", newRS.Name)
-//
-//	return ctrl.Result{}, nil
-//}
 
 func (r *RayClusterFleetReconciler) createNewReplicaSet(ctx context.Context, d *orchestrationv1alpha1.RayClusterFleet) (*orchestrationv1alpha1.RayClusterReplicaSet, error) {
 	newRS := &orchestrationv1alpha1.RayClusterReplicaSet{

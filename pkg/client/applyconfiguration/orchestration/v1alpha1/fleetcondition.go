@@ -28,10 +28,10 @@ import (
 type FleetConditionApplyConfiguration struct {
 	Type               *v1alpha1.RayClusterFleetConditionType `json:"type,omitempty"`
 	Status             *v1.ConditionStatus                    `json:"status,omitempty"`
-	LastUpdateTime     *metav1.Time                 `json:"lastUpdateTime,omitempty"`
-	LastTransitionTime *metav1.Time                 `json:"lastTransitionTime,omitempty"`
-	Reason             *string                      `json:"reason,omitempty"`
-	Message            *string                      `json:"message,omitempty"`
+	LastUpdateTime     *metav1.Time                           `json:"lastUpdateTime,omitempty"`
+	LastTransitionTime *metav1.Time                           `json:"lastTransitionTime,omitempty"`
+	Reason             *string                                `json:"reason,omitempty"`
+	Message            *string                                `json:"message,omitempty"`
 }
 
 // FleetConditionApplyConfiguration constructs an declarative configuration of the FleetCondition type for use with
