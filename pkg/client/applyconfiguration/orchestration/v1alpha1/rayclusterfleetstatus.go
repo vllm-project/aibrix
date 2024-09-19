@@ -20,14 +20,14 @@ package v1alpha1
 // RayClusterFleetStatusApplyConfiguration represents an declarative configuration of the RayClusterFleetStatus type for use
 // with apply.
 type RayClusterFleetStatusApplyConfiguration struct {
-	ObservedGeneration  *int64                             `json:"observedGeneration,omitempty"`
-	Replicas            *int32                             `json:"replicas,omitempty"`
-	UpdatedReplicas     *int32                             `json:"updatedReplicas,omitempty"`
-	ReadyReplicas       *int32                             `json:"readyReplicas,omitempty"`
-	AvailableReplicas   *int32                             `json:"availableReplicas,omitempty"`
-	UnavailableReplicas *int32                             `json:"unavailableReplicas,omitempty"`
-	Conditions          []FleetConditionApplyConfiguration `json:"conditions,omitempty"`
-	CollisionCount      *int32                             `json:"collisionCount,omitempty"`
+	ObservedGeneration  *int64                                       `json:"observedGeneration,omitempty"`
+	Replicas            *int32                                       `json:"replicas,omitempty"`
+	UpdatedReplicas     *int32                                       `json:"updatedReplicas,omitempty"`
+	ReadyReplicas       *int32                                       `json:"readyReplicas,omitempty"`
+	AvailableReplicas   *int32                                       `json:"availableReplicas,omitempty"`
+	UnavailableReplicas *int32                                       `json:"unavailableReplicas,omitempty"`
+	Conditions          []RayClusterFleetConditionApplyConfiguration `json:"conditions,omitempty"`
+	CollisionCount      *int32                                       `json:"collisionCount,omitempty"`
 }
 
 // RayClusterFleetStatusApplyConfiguration constructs an declarative configuration of the RayClusterFleetStatus type for use with
@@ -87,7 +87,7 @@ func (b *RayClusterFleetStatusApplyConfiguration) WithUnavailableReplicas(value 
 // WithConditions adds the given value to the Conditions field in the declarative configuration
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
 // If called multiple times, values provided by each call will be appended to the Conditions field.
-func (b *RayClusterFleetStatusApplyConfiguration) WithConditions(values ...*FleetConditionApplyConfiguration) *RayClusterFleetStatusApplyConfiguration {
+func (b *RayClusterFleetStatusApplyConfiguration) WithConditions(values ...*RayClusterFleetConditionApplyConfiguration) *RayClusterFleetStatusApplyConfiguration {
 	for i := range values {
 		if values[i] == nil {
 			panic("nil value passed to WithConditions")
