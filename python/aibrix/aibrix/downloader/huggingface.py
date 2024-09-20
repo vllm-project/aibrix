@@ -99,6 +99,7 @@ class HuggingFaceDownloader(BaseDownloader):
             token=self.hf_token,
             endpoint=self.hf_endpoint,
             local_dir_use_symlinks=False,
+            force_download=envs.DOWNLOADER_FORCE_DOWNLOAD,
         )
 
     def download_directory(self, local_path: Path):
@@ -111,4 +112,5 @@ class HuggingFaceDownloader(BaseDownloader):
             max_workers=envs.DOWNLOADER_NUM_THREADS,
             endpoint=self.hf_endpoint,
             local_dir_use_symlinks=False,
+            force_download=envs.DOWNLOADER_FORCE_DOWNLOAD,
         )
