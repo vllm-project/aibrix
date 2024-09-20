@@ -15,6 +15,7 @@
 from unittest import mock
 
 import pytest
+
 from aibrix.downloader.base import get_downloader
 from aibrix.downloader.s3 import S3Downloader
 
@@ -26,6 +27,7 @@ def mock_not_exsit_boto3(mock_boto3):
     mock_boto3.client.return_value = mock_client
     mock_client.head_bucket.side_effect = Exception("head bucket error")
 
+
 def mock_exsit_boto3(mock_boto3):
     mock_client = mock.Mock()
     mock_boto3.client.return_value = mock_client
@@ -35,7 +37,7 @@ def mock_exsit_boto3(mock_boto3):
 @mock.patch(S3_BOTO3_MODULE)
 def test_get_downloader_s3(mock_boto3):
     mock_exsit_boto3(mock_boto3)
-    
+
     downloader = get_downloader("s3://bucket/path")
     assert isinstance(downloader, S3Downloader)
 
@@ -43,7 +45,7 @@ def test_get_downloader_s3(mock_boto3):
 @mock.patch(S3_BOTO3_MODULE)
 def test_get_downloader_s3_path_not_exist(mock_boto3):
     mock_not_exsit_boto3(mock_boto3)
-    
+
     with pytest.raises(AssertionError) as exception:
         get_downloader("s3://bucket/not_exsit_path")
     assert "not exist" in str(exception.value)
@@ -52,17 +54,18 @@ def test_get_downloader_s3_path_not_exist(mock_boto3):
 @mock.patch(S3_BOTO3_MODULE)
 def test_get_downloader_s3_path_empty(mock_boto3):
     mock_exsit_boto3(mock_boto3)
-    
+
     # Bucket name and path both are empty,
     # will first assert the name
     with pytest.raises(AssertionError) as exception:
         get_downloader("s3://")
     assert "S3 bucket name is not set." in str(exception.value)
 
+
 @mock.patch(S3_BOTO3_MODULE)
 def test_get_downloader_s3_path_empty_path(mock_boto3):
     mock_exsit_boto3(mock_boto3)
-    
+
     # bucket path is empty
     with pytest.raises(AssertionError) as exception:
         get_downloader("s3://bucket/")

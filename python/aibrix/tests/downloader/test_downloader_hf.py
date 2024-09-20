@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unittest import mock
-
 import pytest
 
 from aibrix.downloader.base import get_downloader
@@ -24,10 +22,12 @@ def test_get_downloader_hf():
     downloader = get_downloader("facebook/opt-125m")
     assert isinstance(downloader, HuggingFaceDownloader)
 
+
 def test_get_downloader_hf_not_exist():
     with pytest.raises(AssertionError) as exception:
         get_downloader("not_exsit_path/model")
     assert "not exist" in str(exception.value)
+
 
 def test_get_downloader_hf_invalid_uri():
     with pytest.raises(AssertionError) as exception:
