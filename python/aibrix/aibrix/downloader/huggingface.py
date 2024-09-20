@@ -39,6 +39,7 @@ class HuggingFaceDownloader(BaseDownloader):
         self.hf_token = envs.DOWNLOADER_HF_TOKEN
         self.hf_endpoint = envs.DOWNLOADER_HF_ENDPOINT
         self.hf_revision = envs.DOWNLOADER_HF_REVISION
+        self.hf_api = HfApi(endpoint=self.hf_endpoint, token=self.hf_token)
 
         super().__init__(
             model_uri=model_uri,
@@ -67,6 +68,7 @@ class HuggingFaceDownloader(BaseDownloader):
         ), "Model uri must be in `repo/name` format."
         assert self.bucket_name is None, "Bucket name is empty in HuggingFace."
         assert self.model_name is not None, "Model name is not set."
+        assert self.hf_api.repo_exists(repo_id=self.model_uri), f"Model {self.model_uri} not exist."
 
     def _is_directory(self) -> bool:
         """Check if model_uri is a directory.
@@ -75,8 +77,7 @@ class HuggingFaceDownloader(BaseDownloader):
         return True
 
     def _directory_list(self, path: str) -> List[str]:
-        hf_api = HfApi(endpoint=self.hf_endpoint, token=self.hf_token)
-        return hf_api.list_repo_files(repo_id=self.model_uri)
+        return self.hf_api.list_repo_files(repo_id=self.model_uri)
 
     def _support_range_download(self) -> bool:
         return False
