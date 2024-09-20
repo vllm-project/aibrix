@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
-from aibrix.config import DOWNLOAD_CACHE_DIR
 import tos
 from tos import DataTransferType
 from tqdm import tqdm
@@ -26,7 +25,6 @@ from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
 from aibrix.downloader.utils import check_file_exist, meta_file, save_meta_data
 from aibrix.logger import init_logger
-
 
 tos_logger = logging.getLogger("tos")
 tos_logger.setLevel(logging.WARNING)
@@ -112,7 +110,7 @@ class TOSDownloader(BaseDownloader):
 
         _file_name = bucket_path.split("/")[-1]
         local_file = local_path.joinpath(_file_name).absolute()
-        
+
         # check if file exist
         etag = meta_data.etag
         file_size = meta_data.content_length
@@ -123,12 +121,16 @@ class TOSDownloader(BaseDownloader):
                 logger.info(f"File {_file_name} exist in local, skip download.")
                 return
             else:
-                logger.info(f"File {_file_name} not exist in local, start to download...")
+                logger.info(
+                    f"File {_file_name} not exist in local, start to download..."
+                )
         else:
-            logger.info(f"File {_file_name} start downloading directly "
-                        f"for DOWNLOADER_FORCE_DOWNLOAD={envs.DOWNLOADER_FORCE_DOWNLOAD}, "
-                        f"DOWNLOADER_CHECK_FILE_EXIST={envs.DOWNLOADER_CHECK_FILE_EXIST}")
-        
+            logger.info(
+                f"File {_file_name} start downloading directly "
+                f"for DOWNLOADER_FORCE_DOWNLOAD={envs.DOWNLOADER_FORCE_DOWNLOAD}, "
+                f"DOWNLOADER_CHECK_FILE_EXIST={envs.DOWNLOADER_CHECK_FILE_EXIST}"
+            )
+
         task_num = envs.DOWNLOADER_NUM_THREADS if enable_range else 1
 
         download_kwargs = {}
@@ -137,7 +139,9 @@ class TOSDownloader(BaseDownloader):
 
         # download file
         total_length = meta_data.content_length
-        with tqdm(desc=_file_name, total=total_length, unit="b", unit_scale=True) as pbar:
+        with tqdm(
+            desc=_file_name, total=total_length, unit="b", unit_scale=True
+        ) as pbar:
 
             def download_progress(
                 consumed_bytes, total_bytes, rw_once_bytes, type: DataTransferType
@@ -147,7 +151,9 @@ class TOSDownloader(BaseDownloader):
             self.client.download_file(
                 bucket=bucket_name,
                 key=bucket_path,
-                file_path=str(local_file),  # TOS client does not support Path, convert it to str
+                file_path=str(
+                    local_file
+                ),  # TOS client does not support Path, convert it to str
                 task_num=task_num,
                 data_transfer_listener=download_progress,
                 **download_kwargs,

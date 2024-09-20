@@ -16,8 +16,6 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
-from aibrix.downloader.utils import check_file_exist, meta_file, save_meta_data
-from aibrix.logger import init_logger
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import MAX_POOL_CONNECTIONS, Config
@@ -25,6 +23,8 @@ from tqdm import tqdm
 
 from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
+from aibrix.downloader.utils import check_file_exist, meta_file, save_meta_data
+from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 
@@ -121,7 +121,7 @@ class S3Downloader(BaseDownloader):
 
         _file_name = bucket_path.split("/")[-1]
         local_file = local_path.joinpath(_file_name).absolute()
-        
+
         # check if file exist
         etag = meta_data.get("ETag", "")
         file_size = meta_data.get("ContentLength", 0)
@@ -132,11 +132,15 @@ class S3Downloader(BaseDownloader):
                 logger.info(f"File {_file_name} exist in local, skip download.")
                 return
             else:
-                logger.info(f"File {_file_name} not exist in local, start to download...")
+                logger.info(
+                    f"File {_file_name} not exist in local, start to download..."
+                )
         else:
-            logger.info(f"File {_file_name} start downloading directly "
-                        f"for DOWNLOADER_FORCE_DOWNLOAD={envs.DOWNLOADER_FORCE_DOWNLOAD}, "
-                        f"DOWNLOADER_CHECK_FILE_EXIST={envs.DOWNLOADER_CHECK_FILE_EXIST}")
+            logger.info(
+                f"File {_file_name} start downloading directly "
+                f"for DOWNLOADER_FORCE_DOWNLOAD={envs.DOWNLOADER_FORCE_DOWNLOAD}, "
+                f"DOWNLOADER_CHECK_FILE_EXIST={envs.DOWNLOADER_CHECK_FILE_EXIST}"
+            )
 
         # construct TransferConfig
         config_kwargs = {
@@ -152,7 +156,9 @@ class S3Downloader(BaseDownloader):
 
         # download file
         total_length = int(meta_data.get("ContentLength", 0))
-        with tqdm(desc=_file_name, total=total_length, unit="b", unit_scale=True) as pbar:
+        with tqdm(
+            desc=_file_name, total=total_length, unit="b", unit_scale=True
+        ) as pbar:
 
             def download_progress(bytes_transferred):
                 pbar.update(bytes_transferred)
@@ -160,7 +166,9 @@ class S3Downloader(BaseDownloader):
             self.client.download_file(
                 Bucket=bucket_name,
                 Key=bucket_path,
-                Filename=str(local_file),  # S3 client does not support Path, convert it to str
+                Filename=str(
+                    local_file
+                ),  # S3 client does not support Path, convert it to str
                 Config=config,
                 Callback=download_progress,
             )
