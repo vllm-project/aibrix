@@ -68,7 +68,9 @@ class HuggingFaceDownloader(BaseDownloader):
         ), "Model uri must be in `repo/name` format."
         assert self.bucket_name is None, "Bucket name is empty in HuggingFace."
         assert self.model_name is not None, "Model name is not set."
-        assert self.hf_api.repo_exists(repo_id=self.model_uri), f"Model {self.model_uri} not exist."
+        assert self.hf_api.repo_exists(
+            repo_id=self.model_uri
+        ), f"Model {self.model_uri} not exist."
 
     def _is_directory(self) -> bool:
         """Check if model_uri is a directory.
