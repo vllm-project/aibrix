@@ -42,7 +42,7 @@ VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
 
 
 def get_metric_standard_rules(engine: str) -> Dict[str, StandardRule]:
-    if engine == "vllm":
+    if engine.lower() == "vllm":
         return VLLM_METRIC_STANDARD_RULES
     else:
         raise ValueError(f"Engine {engine} is not supported.")
