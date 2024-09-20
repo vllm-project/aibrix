@@ -70,10 +70,10 @@ class S3Downloader(BaseDownloader):
 
     def _valid_config(self):
         assert (
-            self.bucket_name is not None or self.bucket_name == ""
+            self.bucket_name is not None and self.bucket_name != ""
         ), "S3 bucket name is not set."
         assert (
-            self.bucket_path is not None or self.bucket_path == ""
+            self.bucket_path is not None and self.bucket_path != ""
         ), "S3 bucket path is not set."
         try:
             self.client.head_bucket(Bucket=self.bucket_name)
