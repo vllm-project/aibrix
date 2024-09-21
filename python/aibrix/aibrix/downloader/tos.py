@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
-from aibrix.downloader.utils import check_file_exist, meta_file, save_meta_data
+from aibrix.downloader.utils import meta_file, need_to_download, save_meta_data
 from aibrix.logger import init_logger
 
 tos_logger = logging.getLogger("tos")
@@ -116,20 +116,8 @@ class TOSDownloader(BaseDownloader):
         file_size = meta_data.content_length
         meta_data_file = meta_file(local_path=local_path, file_name=_file_name)
 
-        if not envs.DOWNLOADER_FORCE_DOWNLOAD and envs.DOWNLOADER_CHECK_FILE_EXIST:
-            if check_file_exist(local_file, meta_data_file, file_size, etag):
-                logger.info(f"File {_file_name} exist in local, skip download.")
-                return
-            else:
-                logger.info(
-                    f"File {_file_name} not exist in local, start to download..."
-                )
-        else:
-            logger.info(
-                f"File {_file_name} start downloading directly "
-                f"for DOWNLOADER_FORCE_DOWNLOAD={envs.DOWNLOADER_FORCE_DOWNLOAD}, "
-                f"DOWNLOADER_CHECK_FILE_EXIST={envs.DOWNLOADER_CHECK_FILE_EXIST}"
-            )
+        if not need_to_download(local_file, meta_data_file, file_size, etag):
+            return
 
         task_num = envs.DOWNLOADER_NUM_THREADS if enable_range else 1
 
