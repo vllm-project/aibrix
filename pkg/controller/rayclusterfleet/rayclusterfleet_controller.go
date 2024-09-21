@@ -102,7 +102,7 @@ type RayClusterFleetReconciler struct {
 
 // Reconcile method moves the RayClusterFleet to the desired State
 func (r *RayClusterFleetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var fleet *orchestrationv1alpha1.RayClusterFleet
+	fleet := &orchestrationv1alpha1.RayClusterFleet{}
 	if err := r.Get(ctx, req.NamespacedName, fleet); err != nil {
 		if errors.IsNotFound(err) {
 			klog.Info("Fleet not found, might have been deleted", "namespace", req.Namespace, "name", req.Name)
