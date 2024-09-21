@@ -82,13 +82,13 @@ func constructRayCluster(replicaset *orchestrationv1alpha1.RayClusterReplicaSet)
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: replicaset.Name + "-",
 			Namespace:    replicaset.Namespace,
-			Labels:       replicaset.Spec.Selector.MatchLabels,
+			Labels:       replicaset.Spec.Template.Labels,
 			Annotations:  make(map[string]string),
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(replicaset, controllerKind),
 			},
 		},
-		Spec: replicaset.Spec.Template,
+		Spec: replicaset.Spec.Template.Spec,
 	}
 
 	return cluster
@@ -138,7 +138,7 @@ func calculateStatus(rs *orchestrationv1alpha1.RayClusterReplicaSet, filteredClu
 	fullyLabeledReplicasCount := 0
 	readyReplicasCount := 0
 	availableReplicasCount := 0
-	templateLabel := labels.Set(rs.Spec.Selector.MatchLabels).AsSelectorPreValidated()
+	templateLabel := labels.Set(rs.Spec.Template.Labels).AsSelectorPreValidated()
 	for _, cluster := range filteredClusters {
 		if templateLabel.Matches(labels.Set(cluster.Labels)) {
 			fullyLabeledReplicasCount++

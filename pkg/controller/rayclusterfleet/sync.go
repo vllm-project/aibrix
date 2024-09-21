@@ -242,8 +242,8 @@ func (r *RayClusterFleetReconciler) getNewReplicaSet(ctx context.Context, d *orc
 			return nil, rsErr
 		}
 
-		// If the Deployment owns the ReplicaSet and the ReplicaSet's PodTemplateSpec is semantically
-		// deep equal to the PodTemplateSpec of the Deployment, it's the Deployment's new ReplicaSet.
+		// If the Deployment owns the ReplicaSet and the ReplicaSet's RayClusterTemplateSpec is semantically
+		// deep equal to the RayClusterTemplateSpec of the Deployment, it's the Deployment's new ReplicaSet.
 		// Otherwise, this is a hash collision and we need to increment the collisionCount field in
 		// the status of the Deployment and requeue to try the creation in the next sync.
 		controllerRef := metav1.GetControllerOf(rs)

@@ -126,7 +126,7 @@ func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl
 		client.InNamespace(replicaset.Namespace),
 		// Note: we simplify the case a little bit and
 		// there's no need to follow replicaset's implementation to list all clusters here.
-		client.MatchingLabels(replicaset.Spec.Selector.MatchLabels),
+		client.MatchingLabels(replicaset.Spec.Template.Labels),
 	}
 
 	if err := r.Client.List(ctx, rayclusterList, ListOps...); err != nil {

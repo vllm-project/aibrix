@@ -65,23 +65,30 @@ var _ = Describe("RayClusterFleet Controller", func() {
 								"foot": "bar",
 							},
 						},
-						Template: rayclusterv1.RayClusterSpec{
-							HeadGroupSpec: rayclusterv1.HeadGroupSpec{
-								ServiceType: corev1.ServiceTypeClusterIP,
-								Template: corev1.PodTemplateSpec{
-									Spec: corev1.PodSpec{
-										Containers: []corev1.Container{
-											{
-												Name:  "test",
-												Image: "test-image",
+						Template: orchestrationv1alpha1.RayClusterTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{
+								Labels: map[string]string{
+									"foo": "bar",
+								},
+							},
+							Spec: rayclusterv1.RayClusterSpec{
+								HeadGroupSpec: rayclusterv1.HeadGroupSpec{
+									ServiceType: corev1.ServiceTypeClusterIP,
+									Template: corev1.PodTemplateSpec{
+										Spec: corev1.PodSpec{
+											Containers: []corev1.Container{
+												{
+													Name:  "test",
+													Image: "test-image",
+												},
 											},
 										},
 									},
+									RayStartParams: map[string]string{},
 								},
-								RayStartParams: map[string]string{},
+								RayVersion:             "fake-ray-version",
+								HeadServiceAnnotations: map[string]string{},
 							},
-							RayVersion:             "fake-ray-version",
-							HeadServiceAnnotations: map[string]string{},
 						},
 					},
 				}

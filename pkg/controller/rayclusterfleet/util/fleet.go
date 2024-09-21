@@ -29,7 +29,7 @@ import (
 	"time"
 
 	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
-	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
+	labelsutil "github.com/aibrix/aibrix/pkg/utils"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -607,18 +607,21 @@ func ListPods(deployment *orchestrationv1alpha1.RayClusterFleet, rsList []*orche
 //  1. The hash result would be different upon podTemplateSpec API changes
 //     (e.g. the addition of a new field will cause the hash code to change)
 //  2. The deployment template won't have hash labels
-func EqualIgnoreHash(template1, template2 *rayclusterv1.RayClusterSpec) bool {
+func EqualIgnoreHash(template1, template2 *orchestrationv1alpha1.RayClusterTemplateSpec) bool {
 	t1Copy := template1.DeepCopy()
 	t2Copy := template2.DeepCopy()
 	// Remove hash labels from template.Labels before comparing
 	// Note: only head and worker templates has the pod templates.
-	delete(t1Copy.HeadGroupSpec.Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
-	delete(t2Copy.HeadGroupSpec.Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
-	for i := range t1Copy.WorkerGroupSpecs {
-		delete(t1Copy.WorkerGroupSpecs[i].Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+	delete(t1Copy.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+	delete(t2Copy.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+
+	delete(t1Copy.Spec.HeadGroupSpec.Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+	delete(t2Copy.Spec.HeadGroupSpec.Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+	for i := range t1Copy.Spec.WorkerGroupSpecs {
+		delete(t1Copy.Spec.WorkerGroupSpecs[i].Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
 	}
-	for i := range t2Copy.WorkerGroupSpecs {
-		delete(t2Copy.WorkerGroupSpecs[i].Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+	for i := range t2Copy.Spec.WorkerGroupSpecs {
+		delete(t2Copy.Spec.WorkerGroupSpecs[i].Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
 	}
 	return apiequality.Semantic.DeepEqual(t1Copy, t2Copy)
 }
@@ -658,14 +661,13 @@ func FindOldReplicaSets(deployment *orchestrationv1alpha1.RayClusterFleet, rsLis
 	return requiredRSs, allRSs
 }
 
-// SetFromReplicaSetTemplate sets the desired PodTemplateSpec from a replica set template to the given deployment.
-func SetFromReplicaSetTemplate(fleet *orchestrationv1alpha1.RayClusterFleet, template rayclusterv1.RayClusterSpec) *orchestrationv1alpha1.RayClusterFleet {
-	// TODO: set replicaset template
-	//fleet.Spec.Template.ObjectMeta = template.ObjectMeta
-	//fleet.Spec.Template.Spec = template.Spec
-	//fleet.Spec.Template.ObjectMeta.Labels = labelsutil.CloneAndRemoveLabel(
-	//	fleet.Spec.Template.ObjectMeta.Labels,
-	//	appsv1.DefaultDeploymentUniqueLabelKey)
+// SetFromReplicaSetTemplate sets the desired RayClusterTemplateSpec from a replica set template to the given deployment.
+func SetFromReplicaSetTemplate(fleet *orchestrationv1alpha1.RayClusterFleet, template orchestrationv1alpha1.RayClusterTemplateSpec) *orchestrationv1alpha1.RayClusterFleet {
+	fleet.Spec.Template.ObjectMeta = template.ObjectMeta
+	fleet.Spec.Template.Spec = template.Spec
+	fleet.Spec.Template.ObjectMeta.Labels = labelsutil.CloneAndRemoveLabel(
+		fleet.Spec.Template.ObjectMeta.Labels,
+		appsv1.DefaultDeploymentUniqueLabelKey)
 	return fleet
 }
 
@@ -1029,7 +1031,7 @@ func FilterReplicaSets(RSes []*orchestrationv1alpha1.RayClusterReplicaSet, filte
 // ComputeHash returns a hash value calculated from pod template and
 // a collisionCount to avoid hash collision. The hash will be safe encoded to
 // avoid bad words.
-func ComputeHash(template *rayclusterv1.RayClusterSpec, collisionCount *int32) string {
+func ComputeHash(template *orchestrationv1alpha1.RayClusterTemplateSpec, collisionCount *int32) string {
 	podTemplateSpecHasher := fnv.New32a()
 	DeepHashObject(podTemplateSpecHasher, *template)
 

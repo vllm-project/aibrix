@@ -17,7 +17,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,7 +39,7 @@ type RayClusterFleetSpec struct {
 
 	// Template describes the pods that will be created.
 	// The only allowed template.spec.restartPolicy value is "Always".
-	Template rayclusterv1.RayClusterSpec `json:"template" protobuf:"bytes,3,opt,name=template"`
+	Template RayClusterTemplateSpec `json:"template" protobuf:"bytes,3,opt,name=template"`
 
 	// The deployment strategy to use to replace existing pods with new ones.
 	// +optional

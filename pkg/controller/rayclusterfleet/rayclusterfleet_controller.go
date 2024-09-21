@@ -246,7 +246,7 @@ func (r *RayClusterFleetReconciler) createNewReplicaSet(ctx context.Context, d *
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: d.Name + "-",
 			Namespace:    d.Namespace,
-			Labels:       d.Spec.Selector.MatchLabels,
+			Labels:       d.Spec.Template.Labels,
 		},
 		Spec: orchestrationv1alpha1.RayClusterReplicaSetSpec{
 			Replicas: d.Spec.Replicas,
