@@ -115,41 +115,41 @@ func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 
 	rsKey := req.NamespacedName.String()
-	if r.Expectations.SatisfiedExpectations(rsKey) {
-		klog.InfoS("Expectations not met, requeuing", "replicaset", rsKey)
-		return ctrl.Result{RequeueAfter: defaultRequeueDurationForWaitingExpectation}, nil
-	}
+	rsNeedsSync := r.Expectations.SatisfiedExpectations(rsKey)
 
 	// fetch current ray cluster associated with this replicaset
-	rayclusterList := &rayclusterv1.RayClusterList{}
+	rayClusterList := &rayclusterv1.RayClusterList{}
 	ListOps := []client.ListOption{
 		client.InNamespace(replicaset.Namespace),
-		// Note: we simplify the case a little bit and
-		// there's no need to follow replicaset's implementation to list all clusters here.
-		client.MatchingLabels(replicaset.Spec.Template.Labels),
+		client.MatchingLabels(replicaset.Spec.Selector.MatchLabels),
 	}
 
-	if err := r.Client.List(ctx, rayclusterList, ListOps...); err != nil {
-		klog.ErrorS(err, "unable to list rayclusters")
+	if err := r.Client.List(ctx, rayClusterList, ListOps...); err != nil {
+		klog.ErrorS(err, "unable to list ray clusters")
 		return ctrl.Result{}, err
 	}
 
-	filteredClusters := filterActiveClusters(rayclusterList.Items)
-	currentReplicas := int32(len(filteredClusters))
+	// ignore inactive clusters.
+	filteredClusters := filterActiveClusters(rayClusterList.Items)
 
-	// Determine the scaling operation (scale up or down)
-	desiredReplicas := *replicaset.Spec.Replicas
 	var scaleError error
-	if currentReplicas < desiredReplicas {
-		diff := desiredReplicas - currentReplicas
-		_ = r.Expectations.ExpectCreations(rsKey, int(diff))
-		scaleError = r.scaleUp(ctx, replicaset, int(diff))
-	} else if currentReplicas > desiredReplicas {
-		diff := currentReplicas - desiredReplicas
-		_ = r.Expectations.ExpectDeletions(rsKey, int(diff))
-		scaleError = r.scaleDown(ctx, filteredClusters, int(diff))
+	if rsNeedsSync && replicaset.DeletionTimestamp == nil {
+		currentReplicas := int32(len(filteredClusters))
+
+		// Determine the scaling operation (scale up or down)
+		desiredReplicas := *replicaset.Spec.Replicas
+		if currentReplicas < desiredReplicas {
+			diff := desiredReplicas - currentReplicas
+			_ = r.Expectations.ExpectCreations(rsKey, int(diff))
+			scaleError = r.scaleUp(ctx, replicaset, int(diff))
+		} else if currentReplicas > desiredReplicas {
+			diff := currentReplicas - desiredReplicas
+			_ = r.Expectations.ExpectDeletions(rsKey, int(diff))
+			scaleError = r.scaleDown(ctx, filteredClusters, int(diff))
+		}
 	}
 
+	replicaset = replicaset.DeepCopy()
 	newStatus := calculateStatus(replicaset, filteredClusters, scaleError)
 	if err := r.updateReplicaSetStatus(replicaset, newStatus, rsKey); err != nil {
 		return reconcile.Result{}, err
