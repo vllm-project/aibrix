@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -108,12 +109,15 @@ func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl
 	_ = log.FromContext(ctx)
 
 	replicaset := &orchestrationv1alpha1.RayClusterReplicaSet{}
+	rsKey := req.NamespacedName.String()
 	if err := r.Get(ctx, req.NamespacedName, replicaset); err != nil {
-		klog.ErrorS(err, "unable to fetch raycluster-replicaset")
+		klog.ErrorS(err, "unable to fetch object", "RayClusterReplicaSet", req.NamespacedName)
+		// deletion & recreation will find the exception exist, even it always return true (result is same) but the logic is different.
+		// let's remove the expectation in this case.
+		r.Expectations.DeleteExpectations(rsKey)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	rsKey := req.NamespacedName.String()
 	rsNeedsSync := r.Expectations.SatisfiedExpectations(rsKey)
 
 	// fetch current ray cluster associated with this replicaset
@@ -144,7 +148,7 @@ func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl
 		} else if currentReplicas > desiredReplicas {
 			diff := currentReplicas - desiredReplicas
 			_ = r.Expectations.ExpectDeletions(rsKey, int(diff))
-			scaleError = r.scaleDown(ctx, filteredClusters, int(diff))
+			scaleError = r.scaleDown(ctx, replicaset, filteredClusters, int(diff))
 		}
 	}
 
@@ -162,15 +166,15 @@ func (r *RayClusterReplicaSetReconciler) scaleUp(ctx context.Context, replicaset
 	for i := 0; i < diff; i++ {
 		newCluster := constructRayCluster(replicaset)
 		if err := r.Create(ctx, newCluster); err != nil {
-			r.Expectations.CreationObserved(replicaset.Name)
 			return fmt.Errorf("failed to create pod: %w", err)
 		}
+		r.Expectations.CreationObserved(types.NamespacedName{Namespace: replicaset.Namespace, Name: replicaset.Name}.String())
 	}
 	return nil
 }
 
 // scaleDown handles RayCluster deletion logic when scaling down
-func (r *RayClusterReplicaSetReconciler) scaleDown(ctx context.Context, clusters []rayclusterv1.RayCluster, diff int) error {
+func (r *RayClusterReplicaSetReconciler) scaleDown(ctx context.Context, replicaset *orchestrationv1alpha1.RayClusterReplicaSet, clusters []rayclusterv1.RayCluster, diff int) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, diff)
 
@@ -180,11 +184,11 @@ func (r *RayClusterReplicaSetReconciler) scaleDown(ctx context.Context, clusters
 		go func(cluster rayclusterv1.RayCluster) {
 			defer wg.Done()
 			if err := r.Delete(ctx, &cluster); err != nil {
-				r.Expectations.DeletionObserved(cluster.Name)
 				if !apierrors.IsNotFound(err) {
 					errCh <- fmt.Errorf("failed to delete pod: %w", err)
 				}
 			}
+			r.Expectations.DeletionObserved(types.NamespacedName{Namespace: replicaset.Namespace, Name: replicaset.Name}.String())
 		}(cluster)
 	}
 
