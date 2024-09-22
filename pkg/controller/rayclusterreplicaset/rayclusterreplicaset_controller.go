@@ -31,13 +31,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
 )
 
 var (
@@ -106,8 +104,6 @@ type RayClusterReplicaSetReconciler struct {
 
 // Reconcile method moves the RayClusterReplicaSet to desired State
 func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
-
 	replicaset := &orchestrationv1alpha1.RayClusterReplicaSet{}
 	rsKey := req.NamespacedName.String()
 	if err := r.Get(ctx, req.NamespacedName, replicaset); err != nil {
@@ -119,7 +115,6 @@ func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 
 	rsNeedsSync := r.Expectations.SatisfiedExpectations(rsKey)
-
 	// fetch current ray cluster associated with this replicaset
 	rayClusterList := &rayclusterv1.RayClusterList{}
 	ListOps := []client.ListOption{
@@ -135,6 +130,7 @@ func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl
 	// ignore inactive clusters.
 	filteredClusters := filterActiveClusters(rayClusterList.Items)
 
+	// manage replica differences
 	var scaleError error
 	if rsNeedsSync && replicaset.DeletionTimestamp == nil {
 		currentReplicas := int32(len(filteredClusters))
@@ -152,7 +148,7 @@ func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl
 		}
 	}
 
-	replicaset = replicaset.DeepCopy()
+	// status update if necessary
 	newStatus := calculateStatus(replicaset, filteredClusters, scaleError)
 	if err := r.updateReplicaSetStatus(replicaset, newStatus, rsKey); err != nil {
 		return reconcile.Result{}, err

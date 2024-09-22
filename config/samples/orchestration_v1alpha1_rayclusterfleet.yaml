@@ -4,6 +4,40 @@ metadata:
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
-  name: rayclusterfleet-sample
+  name: fleet
 spec:
-  # TODO(user): Add fields here
+  replicas: 1
+  selector:
+    matchLabels:
+      models.aibricks.ai: llama-2-7b-hf
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        models.aibricks.ai: llama-2-7b-hf
+    spec:
+      rayVersion: '2.10.0' # should match the Ray version in the image of the containers
+      headGroupSpec:
+        rayStartParams:
+          dashboard-host: '0.0.0.0'
+        template:
+          spec:
+            containers:
+              - name: ray-head
+                image: rayproject/ray:2.10.0
+                ports:
+                  - containerPort: 6379
+                    name: gcs-server
+                  - containerPort: 8265
+                    name: dashboard
+                  - containerPort: 10001
+                    name: client
+                resources:
+                  limits:
+                    cpu: "1000m"
+                  requests:
+                    cpu: "200m"
