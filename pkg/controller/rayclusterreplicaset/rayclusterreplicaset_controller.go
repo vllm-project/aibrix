@@ -22,7 +22,6 @@ import (
 	"sync"
 	"time"
 
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/controller/util/expectation"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
@@ -43,7 +42,7 @@ import (
 var (
 	controllerName                              = "raycluster-replicaset-controller"
 	defaultRequeueDurationForWaitingExpectation = 5 * time.Second
-	controllerKind                              = modelv1alpha1.GroupVersion.WithKind("RayClusterReplicaSet")
+	controllerKind                              = orchestrationv1alpha1.GroupVersion.WithKind("RayClusterReplicaSet")
 )
 
 // Add creates a new RayClusterReplicaSet Controller and adds it to the Manager with default RBAC.
