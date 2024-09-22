@@ -96,7 +96,7 @@ func constructRayCluster(replicaset *orchestrationv1alpha1.RayClusterReplicaSet)
 
 // filterActiveClusters filters out inactive Cluster from a list of RayClusters
 func filterActiveClusters(clusters []rayclusterv1.RayCluster) []rayclusterv1.RayCluster {
-	var activeClusters []rayclusterv1.RayCluster
+	activeClusters := make([]rayclusterv1.RayCluster, 0)
 	for _, cluster := range clusters {
 		if isClusterActive(cluster) {
 			activeClusters = append(activeClusters, cluster)
@@ -110,8 +110,10 @@ func filterActiveClusters(clusters []rayclusterv1.RayCluster) []rayclusterv1.Ray
 }
 
 func isClusterActive(c rayclusterv1.RayCluster) bool {
-	// TODO: Should we validate cluster state?
-	return c.DeletionTimestamp != nil
+	// Do not use `c.Status.State != rayclusterv1.Ready`, creation staging doesn't have state created.
+	return c.Status.State != rayclusterv1.Failed &&
+		c.Status.State != rayclusterv1.Unhealthy &&
+		c.DeletionTimestamp == nil
 }
 
 func isStatusSame(rs *orchestrationv1alpha1.RayClusterReplicaSet, newStatus orchestrationv1alpha1.RayClusterReplicaSetStatus) bool {

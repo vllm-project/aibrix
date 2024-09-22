@@ -27,7 +27,6 @@ func IsRayClusterReady(cluster *rayclusterv1.RayCluster) bool {
 }
 
 func IsRayClusterStateReady(status rayclusterv1.RayClusterStatus) bool {
-	// TODO: verify
 	return status.State == rayclusterv1.Ready
 }
 
