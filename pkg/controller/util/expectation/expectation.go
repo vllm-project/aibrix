@@ -101,7 +101,7 @@ func (r *ControllerExpectations) DeleteExpectations(controllerKey string) {
 	if exp, exists, err := r.GetByKey(controllerKey); err == nil && exists {
 		if err := r.Delete(exp); err != nil {
 
-			klog.V(2).Info("Error deleting expectations", "controller", controllerKey, "err", err)
+			klog.InfoS("Error deleting expectations", "controller", controllerKey, "err", err)
 		}
 	}
 }
@@ -122,7 +122,7 @@ func (r *ControllerExpectations) SatisfiedExpectations(controllerKey string) boo
 			return false
 		}
 	} else if err != nil {
-		klog.V(2).Info("Error encountered while checking expectations, forcing sync", "err", err)
+		klog.InfoS("Error encountered while checking expectations, forcing sync", "err", err)
 	} else {
 		// When a new controller is created, it doesn't have expectations.
 		// When it doesn't see expected watch events for > TTL, the expectations expire.

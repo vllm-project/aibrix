@@ -69,9 +69,9 @@ func makeHPA(pa *pav1.PodAutoscaler) *autoscalingv2.HorizontalPodAutoscaler {
 	}
 
 	if targetValue, err := strconv.ParseFloat(pa.Spec.TargetValue, 64); err != nil {
-		klog.V(3).ErrorS(err, "Failed to parse target value")
+		klog.ErrorS(err, "Failed to parse target value")
 	} else {
-		klog.V(3).InfoS("Creating HPA", "metric", pa.Spec.TargetMetric, "target", targetValue)
+		klog.V(4).InfoS("Creating HPA", "metric", pa.Spec.TargetMetric, "target", targetValue)
 
 		switch strings.ToLower(pa.Spec.TargetMetric) {
 		case pav1.CPU:

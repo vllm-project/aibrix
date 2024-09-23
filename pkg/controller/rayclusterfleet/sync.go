@@ -264,7 +264,7 @@ func (r *RayClusterFleetReconciler) getNewReplicaSet(ctx context.Context, d *orc
 		// error.
 		dErr := r.Status().Update(ctx, d)
 		if dErr == nil {
-			logger.V(2).Info("Found a hash collision for deployment - bumping collisionCount to resolve it", "deployment", klog.KObj(d), "oldCollisionCount", preCollisionCount, "newCollisionCount", *d.Status.CollisionCount)
+			logger.Info("Found a hash collision for deployment - bumping collisionCount to resolve it", "deployment", klog.KObj(d), "oldCollisionCount", preCollisionCount, "newCollisionCount", *d.Status.CollisionCount)
 		}
 		return nil, err
 	case errors.HasStatusCause(err, v1.NamespaceTerminatingCause):

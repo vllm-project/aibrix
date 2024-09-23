@@ -398,7 +398,7 @@ func getIntFromAnnotation(logger klog.Logger, rs *orchestrationv1alpha1.RayClust
 	}
 	intValue, err := strconv.Atoi(annotationValue)
 	if err != nil {
-		logger.V(2).Info("Could not convert the value with annotation key for the replica set", "annotationValue", annotationValue, "annotationKey", annotationKey, "replicaSet", klog.KObj(rs))
+		logger.Info("Could not convert the value with annotation key for the replica set", "annotationValue", annotationValue, "annotationKey", annotationKey, "replicaSet", klog.KObj(rs))
 		return int32(0), false
 	}
 	return int32(intValue), true
