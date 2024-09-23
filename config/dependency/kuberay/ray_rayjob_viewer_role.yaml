@@ -1,0 +1,28 @@
+---
+# Source: kuberay-operator/templates/ray_rayjob_viewer_role.yaml
+# permissions for end users to view rayjobs.
+
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  labels: 
+    app.kubernetes.io/name: kuberay-operator
+    helm.sh/chart: kuberay-operator-1.2.1
+    app.kubernetes.io/instance: aibrix-kuberay-operator
+    app.kubernetes.io/managed-by: Helm
+  name: rayjob-viewer-role
+rules:
+- apiGroups:
+  - ray.io
+  resources:
+  - rayjobs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ray.io
+  resources:
+  - rayjobs/status
+  verbs:
+  - get

@@ -1,0 +1,21 @@
+---
+# Source: kuberay-operator/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: aibrix-kuberay-operator
+  labels:
+    app.kubernetes.io/name: kuberay-operator
+    helm.sh/chart: kuberay-operator-1.2.1
+    app.kubernetes.io/instance: aibrix-kuberay-operator
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: kuberay-operator
+    app.kubernetes.io/instance: aibrix-kuberay-operator

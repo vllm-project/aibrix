@@ -57,7 +57,7 @@ var _ = BeforeSuite(func() {
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths: []string{
 			filepath.Join("..", "..", "..", "config", "crd", "bases"),
-			filepath.Join("..", "..", "..", "third-party", "kuberay", "ray.io_rayclusters.yaml"),
+			filepath.Join("..", "..", "..", "config", "dependency", "kuberay", "crds", "ray.io_rayclusters.yaml"),
 		},
 		ErrorIfCRDPathMissing: true,
 

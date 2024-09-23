@@ -1,0 +1,26 @@
+---
+# Source: kuberay-operator/templates/ray_rayservice_editor_role.yaml
+# permissions for end users to edit rayservices.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rayservice-editor-role
+rules:
+- apiGroups:
+  - ray.io
+  resources:
+  - rayservices
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ray.io
+  resources:
+  - rayservices/status
+  verbs:
+  - get
