@@ -33,27 +33,34 @@ class InferenceEngine(ABC):
     name: str
     version: str
     endpoint: str
-    
+
     def _create_error_response(
         self,
         message: str,
         err_type: str = "BadRequestError",
-        status_code: HTTPStatus = HTTPStatus.BAD_REQUEST) -> ErrorResponse:
-        return ErrorResponse(message=message, 
-                             type=err_type, 
-                             code=status_code.value)
+        status_code: HTTPStatus = HTTPStatus.BAD_REQUEST,
+    ) -> ErrorResponse:
+        return ErrorResponse(message=message, type=err_type, code=status_code.value)
 
-    async def load_lora_adapter(self, request: LoadLoraAdapterRequest) -> Union[ErrorResponse, str]:
-        return self._create_error_response(f"Inference engine {self.name} with version {self.version} "
-                                           "not support load lora adapter",
-                                           err_type="NotImplementedError",
-                                           status_code=HTTPStatus.NOT_IMPLEMENTED)
+    async def load_lora_adapter(
+        self, request: LoadLoraAdapterRequest
+    ) -> Union[ErrorResponse, str]:
+        return self._create_error_response(
+            f"Inference engine {self.name} with version {self.version} "
+            "not support load lora adapter",
+            err_type="NotImplementedError",
+            status_code=HTTPStatus.NOT_IMPLEMENTED,
+        )
 
-    async def unload_lora_adapter(self, request: UnloadLoraAdapterRequest) -> Union[ErrorResponse, str]:
-        return self._create_error_response(f"Inference engine {self.name} with version {self.version} "
-                                           "not support unload lora adapter",
-                                           err_type="NotImplementedError",
-                                           status_code=HTTPStatus.NOT_IMPLEMENTED)
+    async def unload_lora_adapter(
+        self, request: UnloadLoraAdapterRequest
+    ) -> Union[ErrorResponse, str]:
+        return self._create_error_response(
+            f"Inference engine {self.name} with version {self.version} "
+            "not support unload lora adapter",
+            err_type="NotImplementedError",
+            status_code=HTTPStatus.NOT_IMPLEMENTED,
+        )
 
 
 def get_inference_engine(engine: str, version: str, endpoint: str) -> InferenceEngine:
