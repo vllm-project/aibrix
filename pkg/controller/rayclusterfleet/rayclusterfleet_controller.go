@@ -22,7 +22,6 @@ import (
 	"reflect"
 	"time"
 
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/controller/util/expectation"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
@@ -45,7 +44,7 @@ import (
 var (
 	controllerName                              = "raycluster-fleet-controller"
 	defaultRequeueDurationForWaitingExpectation = 5 * time.Second
-	controllerKind                              = modelv1alpha1.GroupVersion.WithKind("RayClusterFleet")
+	controllerKind                              = orchestrationv1alpha1.GroupVersion.WithKind("RayClusterFleet")
 )
 
 // Add creates a new RayClusterFleet Controller and adds it to the Manager with default RBAC.
@@ -196,7 +195,7 @@ func (r *RayClusterFleetReconciler) getReplicaSetsForFleet(ctx context.Context, 
 		return nil, err
 	}
 
-	var ownedReplicaSets []*orchestrationv1alpha1.RayClusterReplicaSet
+	ownedReplicaSets := make([]*orchestrationv1alpha1.RayClusterReplicaSet, 0)
 	for i := range rsList.Items {
 		rs := &rsList.Items[i]
 		if metav1.IsControlledBy(rs, fleet) {
@@ -207,16 +206,16 @@ func (r *RayClusterFleetReconciler) getReplicaSetsForFleet(ctx context.Context, 
 	return ownedReplicaSets, nil
 }
 
-func (r *RayClusterFleetReconciler) getRayClusterMapForFleet(d *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestrationv1alpha1.RayClusterReplicaSet) (map[types.UID][]*rayclusterv1.RayCluster, error) {
+func (r *RayClusterFleetReconciler) getRayClusterMapForFleet(f *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestrationv1alpha1.RayClusterReplicaSet) (map[types.UID][]*rayclusterv1.RayCluster, error) {
 	clusterList := &rayclusterv1.RayClusterList{}
 
-	// Get all rayclusters matches the fleet
-	selector, err := metav1.LabelSelectorAsSelector(d.Spec.Selector)
+	// Get all RayClusters matches the fleet
+	selector, err := metav1.LabelSelectorAsSelector(f.Spec.Selector)
 	if err != nil {
 		return nil, err
 	}
 
-	err = r.List(context.TODO(), clusterList, client.InNamespace(d.Namespace), client.MatchingLabelsSelector{Selector: selector})
+	err = r.List(context.TODO(), clusterList, client.InNamespace(f.Namespace), client.MatchingLabelsSelector{Selector: selector})
 	if err != nil {
 		return nil, err
 	}
@@ -247,6 +246,10 @@ func (r *RayClusterFleetReconciler) createNewReplicaSet(ctx context.Context, d *
 			GenerateName: d.Name + "-",
 			Namespace:    d.Namespace,
 			Labels:       d.Spec.Template.Labels,
+			Annotations:  make(map[string]string),
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(d, controllerKind),
+			},
 		},
 		Spec: orchestrationv1alpha1.RayClusterReplicaSetSpec{
 			Replicas: d.Spec.Replicas,

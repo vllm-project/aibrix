@@ -193,8 +193,7 @@ func (r *RayClusterFleetReconciler) getNewReplicaSet(ctx context.Context, d *orc
 	// new ReplicaSet does not exist, create one.
 	newRSTemplate := *d.Spec.Template.DeepCopy()
 	podTemplateSpecHash := util.ComputeHash(&newRSTemplate, d.Status.CollisionCount)
-	// TODO: how to pass through the labels
-	//newRSTemplate.Labels = labelsutil.CloneAndAddLabel(d.Spec.Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey, podTemplateSpecHash)
+	newRSTemplate.Labels = labelsutil.CloneAndAddLabel(d.Spec.Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey, podTemplateSpecHash)
 	// Add podTemplateHash label to selector.
 	newRSSelector := labelsutil.CloneSelectorAndAddLabel(d.Spec.Selector, appsv1.DefaultDeploymentUniqueLabelKey, podTemplateSpecHash)
 
@@ -205,8 +204,7 @@ func (r *RayClusterFleetReconciler) getNewReplicaSet(ctx context.Context, d *orc
 			Name:            d.Name + "-" + podTemplateSpecHash,
 			Namespace:       d.Namespace,
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(d, controllerKind)},
-			// TODO: jiaxin check
-			//Labels:          newRSTemplate.Labels,
+			Labels:          newRSTemplate.Labels,
 		},
 		Spec: orchestrationv1alpha1.RayClusterReplicaSetSpec{
 			Replicas:        new(int32),
