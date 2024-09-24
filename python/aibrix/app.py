@@ -1,6 +1,7 @@
 import os
 import shutil
 from pathlib import Path
+from urllib.parse import urljoin
 
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request, Response
@@ -57,11 +58,9 @@ def mount_metrics(app: FastAPI):
     multiprocess.MultiProcessCollector(registry)
 
     # construct scrape metric config
-    engine = envs.METRIC_SCRAPE_ENGINE
-    scrape_host = envs.METRIC_SCRAPE_HOST
-    scrape_port = envs.METRIC_SCRAPE_PORT
-    scrape_path = envs.METRIC_SCRAPE_PATH
-    scrape_endpoint = f"http://{scrape_host}:{scrape_port}{scrape_path}"
+    engine = envs.INFERENCE_ENGINE
+
+    scrape_endpoint = urljoin(envs.INFERENCE_ENGINE_ENDPOINT, envs.METRIC_SCRAPE_PATH)
     collector = HTTPCollector(scrape_endpoint, get_metric_standard_rules(engine))
     registry.register(collector)
     logger.info(
