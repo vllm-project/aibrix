@@ -82,7 +82,7 @@ def init_app_state(state: State) -> None:
     )
 
 
-@router.post("/lora_adapter/load")
+@router.post("/v1/lora_adapter/load")
 async def load_lora_adapter(request: LoadLoraAdapterRequest, raw_request: Request):
     response = await inference_engine(raw_request).load_lora_adapter(request)
     if isinstance(response, ErrorResponse):
@@ -91,7 +91,7 @@ async def load_lora_adapter(request: LoadLoraAdapterRequest, raw_request: Reques
     return Response(status_code=200, content=response)
 
 
-@router.post("/lora_adapter/unload")
+@router.post("/v1/lora_adapter/unload")
 async def unload_lora_adapter(request: UnloadLoraAdapterRequest, raw_request: Request):
     response = await inference_engine(raw_request).unload_lora_adapter(request)
     if isinstance(response, ErrorResponse):
