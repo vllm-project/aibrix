@@ -7,4 +7,3 @@ helm template aibrix-kuberay-operator kuberay/kuberay-operator --namespace aibri
 ```
 
 If you use zsh, please use `noglob helm ...` to skip the brace check.
-
