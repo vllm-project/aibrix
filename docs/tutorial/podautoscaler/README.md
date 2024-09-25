@@ -31,6 +31,7 @@ The expected output is as follows:
 ```log
 # podautoscalers.autoscaling.aibrix.ai
 ```
+
 ## Start 1: run AIBrix Manager locally or from Goland
 
 Open a separate terminal to start the AIBrix manager. This process is synchronous:
@@ -164,36 +165,6 @@ The expected output is as follows:
 
 Note: The reactive speed of the default HPA is limited; AIBrix plans to optimize this in future releases.
 
-
-
-## Apply Pressure to See the Effect
-
-Use a simple workload generator to increase load:
-
-```shell
-kubectl run load-generator --image=busybox -- /bin/sh -c "while true; do wget -q -O- http://nginx-service.default.svc.cluster.local; done"
-```
-
-The CPU usage of Nginx will increase to above 40%. After about 30 seconds,
-you should observe an increase in the number of Nginx replicas:
-
-```shell
-kubectl get pods
-```
-
-The expected output is as follows:
-
-```log
->>> NAME                                READY   STATUS    RESTARTS   AGE
->>> load-generator                      1/1     Running   0          86s
->>> nginx-deployment-5b85cc87b7-gr94j   1/1     Running   0          56s
->>> nginx-deployment-5b85cc87b7-lwqqk   1/1     Running   0          56s
->>> nginx-deployment-5b85cc87b7-q2gmp   1/1     Running   0          4m33s
-```
-
-Note: The reactive speed of the default HPA is limited; AIBrix plans to optimize this in future releases.
-
-
 # Case 2: Create KPA-based AIBrix PodAutoscaler (Deprecated)
 
 Create a demo deployment whose default replicas is 1:
@@ -270,7 +241,7 @@ Deploy using the following commands:
 
 ```shell
 kubectl apply -f docs/development/app/deployment.yaml
-kubectl get deployments -n default
+kubectl get deployments --all-namespaces |grep llama2
 ```
 
 You should see the deployment status similar to this:
@@ -311,7 +282,7 @@ default     podautoscaler-example-mock-llama   10s
 
 
 ```shell
-kubectl get deployments -n default
+kubectl get deployments --all-namespaces |grep llama2
 ```
 
 The deployment has been rescaled to 5 replicas:
@@ -344,8 +315,7 @@ To clean up the resources:
 ```shell
 # Remove AIBrix resources
 kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example
-kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example-kpa
-kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example-mock-llama
+kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example-mock-llama -n aibrix-system
 
 make uninstall && make undeploy
 
@@ -355,5 +325,6 @@ kubectl delete hpa podautoscaler-example-hpa
 # Remove the demo Nginx deployment and load generator
 kubectl delete deployment nginx-deployment
 kubectl delete pod load-generator
-kubectl delete deployment llama2-70b
+kubectl delete deployment llama2-70b -n aibrix-system
+
 ```
