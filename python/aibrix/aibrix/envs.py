@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os
-from typing import Optional
+from typing import List, Optional
 
 ENV_VARS_TRUE_VALUES = {"1", "ON", "YES", "TRUE"}
 
@@ -24,7 +24,7 @@ def _is_true(value: Optional[str]) -> bool:
     return value.upper() in ENV_VARS_TRUE_VALUES
 
 
-def _parse_list_str(value: Optional[str], sep: str = ",") -> Optional[list[str]]:
+def _parse_list_str(value: Optional[str], sep: str = ",") -> Optional[List[str]]:
     if value is None:
         return None
     return [str(item).strip() for item in value.split(sep)]
