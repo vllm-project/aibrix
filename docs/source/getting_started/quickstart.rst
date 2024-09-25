@@ -6,10 +6,13 @@ Quickstart
 
 
 To get started with AIBrix, clone `aibrix/aibrix` repository, and install the manifests.
+
 .. note::
+
     This is the latest version which is not very stable, take your risk.
 
 .. code:: bash
+
     # Local Testing
     git clone https://github.com/aibrix/aibrix.git
     cd aibrix
@@ -24,6 +27,7 @@ To get started with AIBrix, clone `aibrix/aibrix` repository, and install the ma
 Install stable distribution.
 
 .. code:: bash
+
     # Install component dependencies
     kubectl create -k "github.com/aibrix/aibrix/config/dependency?ref=v0.1.0-rc.1"
 
