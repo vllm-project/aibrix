@@ -17,9 +17,10 @@ limitations under the License.
 package scaler
 
 import (
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	"sync"
 	"time"
+
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/client"
