@@ -83,7 +83,7 @@ func constructRayCluster(replicaset *orchestrationv1alpha1.RayClusterReplicaSet)
 			GenerateName: replicaset.Name + "-",
 			Namespace:    replicaset.Namespace,
 			Labels:       replicaset.Spec.Template.Labels,
-			Annotations:  make(map[string]string),
+			Annotations:  replicaset.Spec.Template.Annotations,
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(replicaset, controllerKind),
 			},

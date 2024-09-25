@@ -246,7 +246,7 @@ func (r *RayClusterFleetReconciler) createNewReplicaSet(ctx context.Context, d *
 			GenerateName: d.Name + "-",
 			Namespace:    d.Namespace,
 			Labels:       d.Spec.Template.Labels,
-			Annotations:  make(map[string]string),
+			Annotations:  d.Spec.Template.Annotations,
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(d, controllerKind),
 			},
