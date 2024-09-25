@@ -17,6 +17,7 @@ limitations under the License.
 package scaler
 
 import (
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	"testing"
 	"time"
 
@@ -59,7 +60,7 @@ func TestKpaScale(t *testing.T) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	result := kpaScaler.Scale(readyPodCount, metricKey, now)
+	result := kpaScaler.Scale(readyPodCount, metricKey, now, autoscalingv1alpha1.KPA)
 	// recent rapid rising metric value make scaler adapt turn on panic mode
 	if result.DesiredPodCount != 10 {
 		t.Errorf("result.DesiredPodCount = 10, got %d", result.DesiredPodCount)

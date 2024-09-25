@@ -86,21 +86,31 @@ type DeciderKpaSpec struct {
 	// ScaleDownDelay is the time that must pass at reduced concurrency before a
 	// scale-down decision is applied.
 	ScaleDownDelay time.Duration
+
+	// The two following attributes are specific to APA. We may separate them from DeciderKpaSpec later.
+	// UpFluctuationTolerance represents the threshold before scaling up,
+	// which means no scaling up will occur unless the currentMetricValue exceeds the TargetValue by more than UpFluctuationTolerance
+	// UpFluctuationTolerance represents the threshold before scaling down,
+	// which means no scaling down will occur unless the currentMetricValue is less than the TargetValue by more than UpFluctuationTolerance
+	UpFluctuationTolerance   float64
+	DownFluctuationTolerance float64
 }
 
 // NewDefaultDeciderKpaSpec references KPA and sets up a default configuration.
 func NewDefaultDeciderKpaSpec() *DeciderKpaSpec {
 	return &DeciderKpaSpec{
-		MaxScaleUpRate:      2,                // Scale up rate of 200%, allowing rapid scaling
-		MaxScaleDownRate:    2,                // Scale down rate of 50%, for more gradual reduction
-		ScalingMetric:       "CPU",            // Metric used for scaling, here set to CPU utilization
-		TargetValue:         30.0,             // Target CPU utilization set at 10%
-		TotalValue:          100.0,            // Total CPU utilization capacity for pods is 100%
-		TargetBurstCapacity: 2.0,              // Target burst capacity to handle sudden spikes
-		ActivationScale:     1,                // Initial scaling factor upon activation
-		PanicThreshold:      2.0,              // Panic threshold set at 200% to trigger rapid scaling
-		StableWindow:        60 * time.Second, // Time window to stabilize before altering scale
-		ScaleDownDelay:      30 * time.Minute, // Delay before scaling down to avoid flapping
+		MaxScaleUpRate:           2,                // Scale up rate of 200%, allowing rapid scaling
+		MaxScaleDownRate:         2,                // Scale down rate of 50%, for more gradual reduction
+		ScalingMetric:            "CPU",            // Metric used for scaling, here set to CPU utilization
+		TargetValue:              30.0,             // Target CPU utilization set at 10%
+		TotalValue:               100.0,            // Total CPU utilization capacity for pods is 100%
+		TargetBurstCapacity:      2.0,              // Target burst capacity to handle sudden spikes
+		ActivationScale:          1,                // Initial scaling factor upon activation
+		PanicThreshold:           2.0,              // Panic threshold set at 200% to trigger rapid scaling
+		StableWindow:             60 * time.Second, // Time window to stabilize before altering scale
+		ScaleDownDelay:           30 * time.Minute, // Delay before scaling down to avoid flapping
+		UpFluctuationTolerance:   0.1,              // Tolerance for scaling up, set at 10%
+		DownFluctuationTolerance: 0.2,              // Tolerance for scaling up, set at 10%
 	}
 }
 
@@ -171,9 +181,41 @@ func NewKpaAutoscaler(readyPodsCount int, spec *DeciderKpaSpec) (*KpaAutoscaler,
 	}, nil
 }
 
+// APA_Scale references and enhances the algorithm in the following paper:.
+//
+//	 Huo, Qizheng, et al. "High Concurrency Response Strategy based on Kubernetes Horizontal Pod Autoscaler."
+//		Journal of Physics: Conference Series. Vol. 2451. No. 1. IOP Publishing, 2023.
+func (k *KpaAutoscaler) APA_Scale(currentPodCount float64, currentUse float64, spec *DeciderKpaSpec) int32 {
+	expectedUse := spec.TargetValue
+	upTolerance := spec.UpFluctuationTolerance
+	downTolerance := spec.DownFluctuationTolerance
+
+	// Check if scaling up is necessary
+	if currentUse/expectedUse > (1 + upTolerance) {
+		maxScaleUp := math.Ceil(spec.MaxScaleUpRate * currentPodCount)
+		expectedPods := int32(math.Ceil(currentPodCount * (currentUse / expectedUse)))
+		// Ensure the number of pods does not exceed the maximum scale-up limit
+		if float64(expectedPods) > maxScaleUp {
+			expectedPods = int32(maxScaleUp)
+		}
+		return expectedPods
+	} else if currentUse/expectedUse < (1 - downTolerance) { // Check if scaling down is necessary
+		maxScaleDown := math.Floor(currentPodCount / spec.MaxScaleDownRate)
+		expectedPods := int32(math.Ceil(currentPodCount * (currentUse / expectedUse)))
+		// Ensure the number of pods does not fall below the minimum scale-down limit
+		if float64(expectedPods) < maxScaleDown {
+			expectedPods = int32(maxScaleDown)
+		}
+		return expectedPods
+	}
+
+	// If the current utilization is within the expected range, maintain the current pod count
+	return int32(currentPodCount)
+}
+
 // Scale implements Scaler interface in KpaAutoscaler.
 // Refer to knative-serving: pkg/autoscaler/scaling/autoscaler.go, Scale function.
-func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time) ScaleResult {
+func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time, strategy autoscalingv1alpha1.ScalingStrategyType) ScaleResult {
 	/**
 	`observedStableValue` and `observedPanicValue` are calculated using different window sizes in the `MetricClient`.
 	 For reference, see the KNative implementation at `pkg/autoscaler/metrics/collector.go：185`.
@@ -185,6 +227,16 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	if err != nil {
 		klog.Errorf("Failed to get stable and panic metrics for %s: %v", metricKey, err)
 		return ScaleResult{}
+	}
+
+	if strategy == autoscalingv1alpha1.APA {
+		desiredPodCount := k.APA_Scale(float64(originalReadyPodsCount), observedPanicValue, spec)
+		klog.InfoS("Use APA scaling strategy", "currentPodCount", originalReadyPodsCount, "currentUse", observedPanicValue, "desiredPodCount", originalReadyPodsCount)
+		return ScaleResult{
+			DesiredPodCount:     desiredPodCount,
+			ExcessBurstCapacity: 0,
+			ScaleValid:          true,
+		}
 	}
 
 	// Use 1 if there are zero current pods.

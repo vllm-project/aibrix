@@ -17,6 +17,7 @@ limitations under the License.
 package scaler
 
 import (
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	"sync"
 	"time"
 
@@ -61,7 +62,7 @@ type Scaler interface {
 	// ScaleResult which contains the recommended number of pods to scale up or down to.
 	//
 	// Refer to:  KpaAutoscaler.Scale Implementation
-	Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time) ScaleResult
+	Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time, strategy autoscalingv1alpha1.ScalingStrategyType) ScaleResult
 }
 
 // ScaleResult contains the results of a scaling decision.
