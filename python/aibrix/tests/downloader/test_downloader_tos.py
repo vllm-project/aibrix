@@ -45,7 +45,7 @@ env_group_no_model_name.DOWNLOADER_MODEL_NAME = None
 
 @mock.patch(ENVS_MODULE, env_group)
 @mock.patch(TOS_MODULE)
-def test_get_downloader_s3(mock_tos):
+def test_get_downloader_tos(mock_tos):
     mock_exsit_tos(mock_tos)
 
     downloader = get_downloader("tos://bucket/path")
@@ -54,7 +54,7 @@ def test_get_downloader_s3(mock_tos):
 
 @mock.patch(ENVS_MODULE, env_group)
 @mock.patch(TOS_MODULE)
-def test_get_downloader_s3_path_not_exist(mock_tos):
+def test_get_downloader_tos_path_not_exist(mock_tos):
     mock_not_exsit_tos(mock_tos)
 
     with pytest.raises(AssertionError) as exception:
@@ -63,7 +63,7 @@ def test_get_downloader_s3_path_not_exist(mock_tos):
 
 @mock.patch(ENVS_MODULE, env_group)
 @mock.patch(TOS_MODULE)
-def test_get_downloader_s3_path_empty(mock_tos):
+def test_get_downloader_tos_path_empty(mock_tos):
     mock_exsit_tos(mock_tos)
 
     # Bucket name and path both are empty,
@@ -75,7 +75,7 @@ def test_get_downloader_s3_path_empty(mock_tos):
 
 @mock.patch(ENVS_MODULE, env_group)
 @mock.patch(TOS_MODULE)
-def test_get_downloader_s3_path_empty_path(mock_tos):
+def test_get_downloader_tos_path_empty_path(mock_tos):
     mock_exsit_tos(mock_tos)
 
     # bucket path is empty
@@ -86,7 +86,7 @@ def test_get_downloader_s3_path_empty_path(mock_tos):
 
 @mock.patch(ENVS_MODULE, env_group_no_model_name)
 @mock.patch(TOS_MODULE)
-def test_get_downloader_s3_no_model_name(mock_tos):
+def test_get_downloader_tos_no_model_name(mock_tos):
     mock_exsit_tos(mock_tos)
 
     with pytest.raises(AssertionError) as exception:
