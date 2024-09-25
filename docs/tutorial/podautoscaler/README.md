@@ -55,7 +55,7 @@ Starting workers	{"controller": "podautoscaler", "controllerGroup": "autoscaling
 For debugging purposes, you can expose the ports in Kubernetes using the following command:
 
 ```shell
-kubectl port-forward svc/llama2-70b 8000:8000
+kubectl port-forward svc/llama2-70b 8000:8000 -n aibrix-system
 ```
 
 ## Start 2: Build and Deploy Manager
@@ -308,6 +308,80 @@ kubectl get pods -n aibrix-system -o name | grep aibrix-controller-manager | hea
 The Mocked Llama has an average prompt throughput of 100 tokens per second (`avg_prompt_throughput_toks_per_s`). The AutoScaler aims to maintain each pod's metrics at 20. As indicated in the events, the KPA podautoscaler adjusted the replicas from 3 to 5.
 
 
+
+# Case 4: Create a APA-Based AIBrix Pod Autoscaler on Mocked Llama
+
+## Launching Mocked Llama
+
+The Mocked Llama is a simulation of a vllm-based Llama deployment. It provides mocked metrics for scaling purposes, following the standard Prometheus protocol.
+
+For a detailed introduction, refer to the [README.md](../../development/app/README.md).
+
+### Deployment on K8S
+
+Deploy using the following commands:
+
+```shell
+kubectl apply -f docs/development/app/deployment.yaml
+kubectl get deployments --all-namespaces |grep llama2
+```
+
+You should see the deployment status similar to this:
+
+```log
+NAME         READY   UP-TO-DATE   AVAILABLE   AGE
+llama2-70b   3/3     3            3           16s
+```
+
+## Autoscaling
+
+If you have created other autoscaler on this mocked llama deployment, deleted them first:
+```shell
+kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example-mock-llama -n aibrix-system
+kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example-mock-llama-apa -n aibrix-system
+```
+
+Create an autoscaler of type APA:
+
+```shell
+kubectl apply -f config/samples/autoscaling_v1alpha1_mock_llama_apa.yaml
+kubectl get podautoscalers --all-namespaces
+```
+
+```log
+NAMESPACE       NAME                                   AGE
+aibrix-system   podautoscaler-example-mock-llama-apa   65m
+```
+
+## Scaling Result, Logs and Events
+
+
+```shell
+kubectl get deployments --all-namespaces |grep llama2
+```
+
+The deployment has been rescaled to 5 replicas:
+
+```log
+aibrix-system   llama2-70b                  5/5     5            5           65m
+```
+
+Check the events of APA podautoscalers, you can see the scaling details:
+
+```shell
+kubectl describe podautoscalers podautoscaler-example-mock-llama-apa -n aibrix-system
+```
+
+```log
+Events:
+  Type    Reason             Age   From           Message
+  ----    ------             ----  ----           -------
+  Normal  AlgorithmRun       78s   PodAutoscaler  APA algorithm run. currentReplicas: 3, desiredReplicas: 5, rescale: true
+  Normal  SuccessfulRescale  78s   PodAutoscaler  New size: 5; reason: avg_prompt_throughput_toks_per_s above target
+  Normal  AlgorithmRun       77s   PodAutoscaler  APA algorithm run. currentReplicas: 5, desiredReplicas: 5, rescale: false
+```
+
+
 # Cleanup
 
 To clean up the resources:
@@ -316,6 +390,7 @@ To clean up the resources:
 # Remove AIBrix resources
 kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example
 kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example-mock-llama -n aibrix-system
+kubectl delete podautoscalers.autoscaling.aibrix.ai podautoscaler-example-mock-llama-apa -n aibrix-system
 
 make uninstall && make undeploy
 

@@ -185,23 +185,23 @@ func NewKpaAutoscaler(readyPodsCount int, spec *DeciderKpaSpec) (*KpaAutoscaler,
 //
 //	 Huo, Qizheng, et al. "High Concurrency Response Strategy based on Kubernetes Horizontal Pod Autoscaler."
 //		Journal of Physics: Conference Series. Vol. 2451. No. 1. IOP Publishing, 2023.
-func (k *KpaAutoscaler) APA_Scale(currentPodCount float64, currentUse float64, spec *DeciderKpaSpec) int32 {
+func (k *KpaAutoscaler) APA_Scale(currentPodCount float64, currentUsePerPod float64, spec *DeciderKpaSpec) int32 {
 	expectedUse := spec.TargetValue
 	upTolerance := spec.UpFluctuationTolerance
 	downTolerance := spec.DownFluctuationTolerance
 
 	// Check if scaling up is necessary
-	if currentUse/expectedUse > (1 + upTolerance) {
+	if currentUsePerPod/expectedUse > (1 + upTolerance) {
 		maxScaleUp := math.Ceil(spec.MaxScaleUpRate * currentPodCount)
-		expectedPods := int32(math.Ceil(currentPodCount * (currentUse / expectedUse)))
+		expectedPods := int32(math.Ceil(currentPodCount * (currentUsePerPod / expectedUse)))
 		// Ensure the number of pods does not exceed the maximum scale-up limit
 		if float64(expectedPods) > maxScaleUp {
 			expectedPods = int32(maxScaleUp)
 		}
 		return expectedPods
-	} else if currentUse/expectedUse < (1 - downTolerance) { // Check if scaling down is necessary
+	} else if currentUsePerPod/expectedUse < (1 - downTolerance) { // Check if scaling down is necessary
 		maxScaleDown := math.Floor(currentPodCount / spec.MaxScaleDownRate)
-		expectedPods := int32(math.Ceil(currentPodCount * (currentUse / expectedUse)))
+		expectedPods := int32(math.Ceil(currentPodCount * (currentUsePerPod / expectedUse)))
 		// Ensure the number of pods does not fall below the minimum scale-down limit
 		if float64(expectedPods) < maxScaleDown {
 			expectedPods = int32(maxScaleDown)
@@ -230,8 +230,9 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	}
 
 	if strategy == autoscalingv1alpha1.APA {
-		desiredPodCount := k.APA_Scale(float64(originalReadyPodsCount), observedPanicValue, spec)
-		klog.InfoS("Use APA scaling strategy", "currentPodCount", originalReadyPodsCount, "currentUse", observedPanicValue, "desiredPodCount", originalReadyPodsCount)
+		currentUsePerPod := observedPanicValue / float64(originalReadyPodsCount)
+		desiredPodCount := k.APA_Scale(float64(originalReadyPodsCount), currentUsePerPod, spec)
+		klog.InfoS("Use APA scaling strategy", "currentPodCount", originalReadyPodsCount, "currentUsePerPod", currentUsePerPod, "desiredPodCount", desiredPodCount)
 		return ScaleResult{
 			DesiredPodCount:     desiredPodCount,
 			ExcessBurstCapacity: 0,

@@ -11,7 +11,7 @@ v1 = None
 
 MODEL_NAME = 'llama2-70b'
 DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-70b')
-NAMESPACE = os.getenv('NAMESPACE', 'default')
+NAMESPACE = os.getenv('NAMESPACE', 'aibrix-system')
 DEFAULT_REPLICAS = int(os.getenv('DEFAULT_REPLICAS', '1'))
 
 models = [

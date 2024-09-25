@@ -313,10 +313,9 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 		rescale = desiredReplicas != currentReplicas
 	}
 
-	r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "KPAAlgorithmRun",
-		"KPA algorithm run. currentReplicas: %d, desiredReplicas: %d, rescale: %t",
-		desiredReplicas, currentReplicas, rescale)
-
+	r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "AlgorithmRun",
+		"%s algorithm run. currentReplicas: %d, desiredReplicas: %d, rescale: %t",
+		pa.Spec.ScalingStrategy, currentReplicas, desiredReplicas, rescale)
 	if rescale {
 
 		if err := r.updateScale(ctx, pa.Namespace, targetGR, scale, desiredReplicas); err != nil {
