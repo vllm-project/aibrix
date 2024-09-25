@@ -34,6 +34,7 @@ def mock_exsit_boto3(mock_boto3):
     mock_boto3.client.return_value = mock_client
     mock_client.head_bucket.return_value = mock.Mock()
 
+
 env_group = mock.Mock()
 env_group.DOWNLOADER_MODEL_NAME = "model_name"
 env_group.DOWNLOADER_NUM_THREADS = 4

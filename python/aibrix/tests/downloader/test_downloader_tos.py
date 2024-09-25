@@ -61,6 +61,7 @@ def test_get_downloader_tos_path_not_exist(mock_tos):
         get_downloader("tos://bucket/not_exsit_path")
     assert "not exist" in str(exception.value)
 
+
 @mock.patch(ENVS_MODULE, env_group)
 @mock.patch(TOS_MODULE)
 def test_get_downloader_tos_path_empty(mock_tos):
