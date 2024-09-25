@@ -41,8 +41,8 @@ def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
 class TOSDownloader(BaseDownloader):
     def __init__(self, model_uri):
         model_name = envs.DOWNLOADER_MODEL_NAME
-        ak = envs.DOWNLOADER_TOS_ACCESS_KEY
-        sk = envs.DOWNLOADER_TOS_SECRET_KEY
+        ak = envs.DOWNLOADER_TOS_ACCESS_KEY or ""
+        sk = envs.DOWNLOADER_TOS_SECRET_KEY or ""
         endpoint = envs.DOWNLOADER_TOS_ENDPOINT or ""
         region = envs.DOWNLOADER_TOS_REGION or ""
         enable_crc = envs.DOWNLOADER_TOS_ENABLE_CRC
@@ -60,6 +60,9 @@ class TOSDownloader(BaseDownloader):
         )  # type: ignore
 
     def _valid_config(self):
+        assert (
+            self.model_name is not None and self.model_name != ""
+        ), "TOS model name is not set, please set env variable DOWNLOADER_MODEL_NAME."
         assert (
             self.bucket_name is not None and self.bucket_name != ""
         ), "TOS bucket name is not set."

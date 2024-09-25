@@ -74,6 +74,9 @@ class S3Downloader(BaseDownloader):
 
     def _valid_config(self):
         assert (
+            self.model_name is not None and self.model_name != ""
+        ), "S3 model name is not set, please set env variable DOWNLOADER_MODEL_NAME."
+        assert (
             self.bucket_name is not None and self.bucket_name != ""
         ), "S3 bucket name is not set."
         assert (
