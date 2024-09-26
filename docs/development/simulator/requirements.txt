@@ -1,0 +1,14 @@
+flask
+kubernetes
+numpy
+pandas
+scikit-learn
+wandb
+kaleido
+ddsketch
+plotly_express
+matplotlib
+seaborn
+fasteners
+transformers
+git+https://github.com/zhangjyr/vidur.git

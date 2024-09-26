@@ -33,3 +33,6 @@ __pycache__
 docs/build/
 !**/*.template.rst
 
+docs/development/simulator/.venv
+docs/development/simulator/simulator_output
+docs/development/simulator/cache
