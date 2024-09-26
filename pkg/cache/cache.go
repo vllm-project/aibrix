@@ -261,7 +261,7 @@ func (c *Cache) deletePodAndModelMapping(podName, modelName string) {
 
 func (c *Cache) debugInfo() {
 	for _, pod := range c.pods {
-		klog.Info(pod.Name)
+		klog.Infof("pod: %s, podIP: %v", pod.Name, pod.Status.PodIP)
 	}
 	for podName, models := range c.podToModelMapping {
 		var modelList string
