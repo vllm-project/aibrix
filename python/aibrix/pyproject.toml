@@ -41,6 +41,7 @@ uvicorn = "^0.30.6"
 prometheus-client = "^0.20.0"
 types-requests = "^2.31.0"
 httpx = "^0.27.2"
+hf-transfer = "^0.1.8"
 
 
 [tool.poetry.group.dev.dependencies]
