@@ -49,7 +49,7 @@ Here is how you get started.
 Good Start issues
 ^^^^^^^^^^^^^^^^^
 
-To find Kubeflow issues that make good entry points:
+To find AIBrix issues that make good entry points:
 
 - Start with issues labeled `good first issue <https://github.com/aibrix/aibrix/labels/good%20first%20issue>`_.
 - For issues that require deeper knowledge of one or more technical aspects, look at issues labeled `help wanted <https://github.com/aibrix/aibrix/labels/help%20wanted>`_.
