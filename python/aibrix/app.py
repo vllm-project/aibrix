@@ -3,6 +3,7 @@ import shutil
 from pathlib import Path
 from urllib.parse import urljoin
 
+from aibrix.metrics.metrics import INFO_METRICS
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.datastructures import State
@@ -10,7 +11,7 @@ from fastapi.responses import JSONResponse
 from prometheus_client import CollectorRegistry, make_asgi_app, multiprocess
 from starlette.routing import Mount
 
-from aibrix import envs
+from aibrix import __version__, envs
 from aibrix.logger import init_logger
 from aibrix.metrics.engine_rules import get_metric_standard_rules
 from aibrix.metrics.http_collector import HTTPCollector
@@ -101,6 +102,13 @@ async def unload_lora_adapter(request: UnloadLoraAdapterRequest, raw_request: Re
 
 def build_app():
     app = FastAPI(debug=False)
+    INFO_METRICS.info(
+        {
+            "version": __version__,
+            "engine": envs.INFERENCE_ENGINE,
+            "engine_version": envs.INFERENCE_ENGINE_VERSION,
+        }
+    )
     mount_metrics(app)
     init_app_state(app.state)
     app.include_router(router)
