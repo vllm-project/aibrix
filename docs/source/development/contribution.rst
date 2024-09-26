@@ -1,7 +1,0 @@
-.. _contribution:
-
-============
-Contribution
-============
-
-TODO
