@@ -152,7 +152,7 @@ class BaseDownloader(ABC):
         return hash(tuple(self.__dict__))
 
 
-def get_downloader(model_uri: str, model_name: Optional[str]) -> BaseDownloader:
+def get_downloader(model_uri: str, model_name: Optional[str] = None) -> BaseDownloader:
     """Get downloader for model_uri."""
     if re.match(envs.DOWNLOADER_S3_REGEX, model_uri):
         from aibrix.downloader.s3 import S3Downloader
