@@ -4,35 +4,16 @@
 Contribution
 ============
 
-This document is the single source of truth for how to contribute to the code base. We’d love to accept your patches and contributions to this project.
-There are just a few small guidelines you need to follow.
+This document serves as the definitive guide for contributing to the codebase. We welcome your patches and contributions to the project and appreciate your support.
+
+To ensure a smooth process, please follow a few simple guidelines.
 
 
 Getting Started
 ---------------
 
-
-Follow the code of conduct
 Please make sure to read and observe our `Code of Conduct <https://github.com/aibrix/aibrix/blob/main/CODE_OF_CONDUCT.md>`_.
 
-
-Joining the community
----------------------
-
-Follow these instructions if you want to:
-
-Become a member of the AIBrix GitHub org
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Before asking to join the community, we ask that you first make some number of contributions to demonstrate your intent to continue contributing to AIBrix.
-
-There are a number of ways to contribute to AIBrix:
-
-- Submit PRs (codes or docs)
-- File issues reporting bugs or providing feedback
-- Answer questions on Slack or GitHub issues
-
-When you are ready to join, please send an issue asking adding yourself as a member in the issue.
 
 Make your first contribution
 ----------------------------
@@ -45,7 +26,6 @@ There’s always code that can be clarified and variables or functions that can 
 There’s always a need for more test coverage. You get the idea - if you ever see something you think should be fixed, you should own it.
 Here is how you get started.
 
-
 Good Start issues
 ^^^^^^^^^^^^^^^^^
 
@@ -53,6 +33,24 @@ To find AIBrix issues that make good entry points:
 
 - Start with issues labeled `good first issue <https://github.com/aibrix/aibrix/labels/good%20first%20issue>`_.
 - For issues that require deeper knowledge of one or more technical aspects, look at issues labeled `help wanted <https://github.com/aibrix/aibrix/labels/help%20wanted>`_.
+
+Joining the community
+---------------------
+
+Follow these instructions if you want to:
+
+Become an official member of the AIBrix GitHub Org
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Before requesting to join the AIBrix GitHub Org, we kindly ask that you make a few initial contributions to demonstrate your intent to continue contributing to AIBrix.
+
+There are a number of ways to contribute to AIBrix:
+
+- Submit PRs (codes or docs)
+- File issues reporting bugs or providing feedback
+- Answer questions on Slack or GitHub issues
+
+When you are ready to join, please send an issue asking adding yourself as a member in the issue.
 
 
 PR process
