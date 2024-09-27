@@ -159,9 +159,11 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 		return
 	}
 
+	delete(c.pods, oldPod.Name)
+	c.pods[newPod.Name] = newPod
 	c.deletePodAndModelMapping(oldPod.Name, oldModelName)
 	c.addPodAndModelMapping(newPod.Name, newModelName)
-	klog.Infof("POD UPDATED. %s/%s %s", oldPod.Namespace, oldPod.Name, newPod.Status.Phase)
+	klog.Infof("POD UPDATED. %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
 	c.debugInfo()
 }
 
