@@ -2,7 +2,6 @@ kind: Kustomization
 
 # KubeRay helm package doesn't allow namespace setting at this moment, we can not export resources with namespace specified
 # The workaround is to use kustomize namespace override to create under aibrix-system namespace.
-namespace: aibrix-system
 
 resources:
 - crds/ray.io_rayclusters.yaml
