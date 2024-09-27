@@ -53,7 +53,7 @@ var (
 )
 
 const (
-	modelIdentifier = "model.aibrix.ai"
+	modelIdentifier = "model.aibrix.ai/name"
 )
 
 func GetCache() (*Cache, error) {

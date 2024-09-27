@@ -52,13 +52,13 @@ Here's one model adapter example.
       name: llama-2-7b-sql-lora-test
       namespace: aibrix-system
       labels:
-        model.aibrix.ai: "llama-2-7b-sql-lora-test"
+        model.aibrix.ai/name: "llama-2-7b-sql-lora-test"
         model.aibrix.ai/port: "8000"
     spec:
       baseModel: llama2-70b
       podSelector:
         matchLabels:
-          model.aibrix.ai: llama2-70b
+          model.aibrix.ai/name: llama2-70b
       artifactURL:  huggingface://yard1/llama-2-7b-sql-lora-test
       schedulerName: default
 

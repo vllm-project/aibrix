@@ -4,20 +4,20 @@ metadata:
   name: llama2-70b
   namespace: aibrix-system
   labels:
-    modeladapter.aibricks.ai/enabled: "true"
-    model.aibrix.ai: "llama2-70b"
+    model.aibrix.ai/name: "llama2-70b"
     model.aibrix.ai/port: "8000"
+    adapter.model.aibrix.ai/enabled: "true"
 spec:
   replicas: 3
   selector:
     matchLabels:
-      modeladapter.aibricks.ai/enabled: "true"
-      model.aibrix.ai: "llama2-70b"
+      adapter.model.aibrix.ai/enabled: "true"
+      model.aibrix.ai/name: "llama2-70b"
   template:
     metadata:
       labels:
-        modeladapter.aibricks.ai/enabled: "true"
-        model.aibrix.ai: "llama2-70b"
+        adapter.model.aibrix.ai/enabled: "true"
+        model.aibrix.ai/name: "llama2-70b"
     spec:
       containers:
         - name: llmengine
@@ -46,7 +46,7 @@ metadata:
   namespace: aibrix-system
 spec:
   selector:
-    model.aibrix.ai: "llama2-70b"
+    model.aibrix.ai/name: "llama2-70b"
   ports:
     - protocol: TCP
       port: 8000

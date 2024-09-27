@@ -38,7 +38,7 @@ import (
 const (
 	// TODO (varun): cleanup model related identifiers and establish common consensus
 	modelHeaderIdentifier = "model"
-	modelIdentifier       = "model.aibrix.ai"
+	modelIdentifier       = "model.aibrix.ai/name"
 	modelPortIdentifier   = "model.aibrix.ai/port"
 	// TODO (varun): parameterize it or dynamically resolve it
 	aibrixEnvoyGateway = "aibrix-eg"

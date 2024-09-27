@@ -43,16 +43,22 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 const (
 	//ControllerUIDLabelKey = "model-adapter-controller-uid"
-	ModelAdapterFinalizer = "modeladapter.aibrix.ai/finalizer"
+	ModelIdentifierKey                = "model.aibrix.ai/name"
+	ModelAdapterFinalizer             = "adapter.model.aibrix.ai/finalizer"
+	ModelAdapterPodTemplateLabelKey   = "adapter.model.aibrix.ai/enabled"
+	ModelAdapterPodTemplateLabelValue = "true"
 )
 
 var (
@@ -120,15 +126,44 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	return reconciler, nil
 }
 
+func podWithLabelFilter(labelKey, labelValue, modelIdKey string) predicate.Predicate {
+	hasLabelAndModelIdentifier := func(labels map[string]string, labelKey, labelValue, modelIdentifierKey string) bool {
+		if _, exists := labels[modelIdentifierKey]; !exists {
+			return false
+		}
+		return labels[labelKey] == labelValue
+	}
+
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return hasLabelAndModelIdentifier(e.Object.GetLabels(), labelKey, labelValue, modelIdKey)
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return hasLabelAndModelIdentifier(e.ObjectNew.GetLabels(), labelKey, labelValue, modelIdKey)
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			return hasLabelAndModelIdentifier(e.Object.GetLabels(), labelKey, labelValue, modelIdKey)
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return hasLabelAndModelIdentifier(e.Object.GetLabels(), labelKey, labelValue, modelIdKey)
+		},
+	}
+}
+
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// use the builder fashion. If we need more fine grain control later, we can switch to `controller.New()`
 	err := ctrl.NewControllerManagedBy(mgr).
 		Named(controllerName).
-		For(&modelv1alpha1.ModelAdapter{}).
+		For(&modelv1alpha1.ModelAdapter{}, builder.WithPredicates(predicate.Or(
+			predicate.GenerationChangedPredicate{},
+			predicate.LabelChangedPredicate{},
+			predicate.AnnotationChangedPredicate{},
+		))).
 		Owns(&corev1.Service{}).
 		Owns(&discoveryv1.EndpointSlice{}).
-		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}).
+		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{},
+			builder.WithPredicates(podWithLabelFilter(ModelAdapterPodTemplateLabelKey, ModelAdapterPodTemplateLabelValue, ModelIdentifierKey))).
 		Complete(r)
 
 	klog.V(4).InfoS("Finished to add model-adapter-controller")

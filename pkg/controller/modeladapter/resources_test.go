@@ -92,8 +92,8 @@ func TestBuildModelAdapterService(t *testing.T) {
 	assert.Equal(t, "test-instance", service.Name)
 	assert.Equal(t, "default", service.Namespace)
 	assert.Equal(t, map[string]string{
-		"model.aibrix.ai/base-model":    "test-model",
-		"model.aibrix.ai/model-adapter": "test-instance",
+		"model.aibrix.ai/name":         "test-model",
+		"adapter.model.aibrix.ai/name": "test-instance",
 	}, service.Labels)
 
 	// Check ports

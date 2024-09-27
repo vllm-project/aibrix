@@ -27,15 +27,16 @@ Save yaml as `deployment.yaml` and run `kubectl apply -f deployment.yaml`.
     kind: Deployment
     metadata:
       labels:
-        model.aibrix.ai: llama-2-7b-hf
+        model.aibrix.ai/name: llama-2-7b-hf
         model.aibrix.ai/port: "8000"
+        adapter.model.aibrix.ai/enabled: true
       name: llama-2-7b-hf
       namespace: aibrix-system
     spec:
       replicas: 1
       selector:
         matchLabels:
-          model.aibrix.ai: llama-2-7b-hf
+          model.aibrix.ai/name: llama-2-7b-hf
       strategy:
         rollingUpdate:
           maxSurge: 25%
@@ -44,7 +45,7 @@ Save yaml as `deployment.yaml` and run `kubectl apply -f deployment.yaml`.
       template:
         metadata:
           labels:
-            model.aibrix.ai: llama-2-7b-hf
+            model.aibrix.ai/name: llama-2-7b-hf
         spec:
           containers:
             - command:
@@ -112,7 +113,7 @@ Save yaml as `service.yaml` and run `kubectl apply -f service.yaml`.
     kind: Service
     metadata:
       labels:
-        model.aibrix.ai: llama-2-7b-hf
+        model.aibrix.ai/name: llama-2-7b-hf
         prometheus-discovery: "true"
       annotations:
         prometheus.io/scrape: "true"
@@ -130,7 +131,7 @@ Save yaml as `service.yaml` and run `kubectl apply -f service.yaml`.
           protocol: TCP
           targetPort: 8080
       selector:
-        model.aibrix.ai: llama-2-7b-hf
+        model.aibrix.ai/name: llama-2-7b-hf
       type: ClusterIP
 
 Register a user to authenticate the gateway
