@@ -46,7 +46,6 @@ First Define the necessary environment variables for the HuggingFace model.
 .. code-block:: bash
 
     # General settings
-    export DOWNLOADER_MODEL_NAME=deepseek-ai/deepseek-coder-6.7b-instruct/
     export DOWNLOADER_ALLOW_FILE_SUFFIX=json, safetensors
     export DOWNLOADER_NUM_THREADS=16
     # HuggingFace settings
@@ -70,7 +69,6 @@ First Define the necessary environment variables for the S3 model.
 .. code-block:: bash
 
     # General settings
-    export DOWNLOADER_MODEL_NAME=deepseek-ai/deepseek-coder-6.7b-instruct/
     export DOWNLOADER_ALLOW_FILE_SUFFIX=json, safetensors
     export DOWNLOADER_NUM_THREADS=16
     # AWS settings
@@ -96,7 +94,6 @@ First Define the necessary environment variables for the TOS model.
 .. code-block:: bash
 
     # General settings
-    export DOWNLOADER_MODEL_NAME=deepseek-ai/deepseek-coder-6.7b-instruct/
     export DOWNLOADER_ALLOW_FILE_SUFFIX=json, safetensors
     export DOWNLOADER_NUM_THREADS=16
     # AWS settings

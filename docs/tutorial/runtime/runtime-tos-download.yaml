@@ -31,7 +31,7 @@ spec:
         - --port
         - "8000"
         - --model
-        - /models/deepseek-ai/deepseek-coder-6.7b-instruct
+        - /models/deepseek-coder-6.7b-instruct
         - --served-model-name
         - deepseek-ai/deepseek-coder-6.7b-instruct
         - --distributed-executor-backend
@@ -96,9 +96,9 @@ spec:
         - tos://<input your tos bucket name>/<input your tos bucket path>
         - --local-dir
         - /models/
+        - --model-name
+        - deepseek-coder-6.7b-instruct
         env:
-        - name: DOWNLOADER_MODEL_NAME
-          value: deepseek-ai/deepseek-coder-6.7b-instruct
         - name: DOWNLOADER_ALLOW_FILE_SUFFIX
           value: json, safetensors
         - name: TOS_ACCESS_KEY
