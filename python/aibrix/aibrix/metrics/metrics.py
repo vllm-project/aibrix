@@ -12,6 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from prometheus_client import Info
+from prometheus_client import CollectorRegistry, Counter, Histogram, Info
 
-INFO_METRICS = Info(name="aibrix:info", documentation="AIBrix Info")
+
+REGISTRY = CollectorRegistry()
+
+INFO_METRICS = Info(
+    name="aibrix:info",
+    documentation="AIBrix Info",
+    # labelnames=["version", "engine", "engine_version"],
+    registry=REGISTRY,
+)
+
+HTTP_COUNTER_METRICS = Counter(
+    name="aibrix:api_request_total",
+    documentation="Count of AIBrix API Requests by method, endpoint and status",
+    labelnames=["method", "endpoint", "status"],
+    registry=REGISTRY,
+)
+HTTP_LATENCY_METRICS = Histogram(
+    name="aibrix:api_request_latency",
+    documentation="Latency of AIBrix API Requests by method, endpoint and status",
+    labelnames=["method", "endpoint", "status"],
+    buckets=[0.1, 0.2, 0.5, 1, 2, 5],
+    registry=REGISTRY,
+)
