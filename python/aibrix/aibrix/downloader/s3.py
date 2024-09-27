@@ -23,7 +23,12 @@ from tqdm import tqdm
 
 from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
-from aibrix.downloader.utils import infer_model_name, meta_file, need_to_download, save_meta_data
+from aibrix.downloader.utils import (
+    infer_model_name,
+    meta_file,
+    need_to_download,
+    save_meta_data,
+)
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -40,7 +45,8 @@ class S3Downloader(BaseDownloader):
     def __init__(self, model_uri, model_name: Optional[str] = None):
         if model_name is None:
             model_name = infer_model_name(model_uri)
-            logger.warning(f"model_name is not set, using {model_name} as model_name")
+            logger.info(f"model_name is not set, using `{model_name}` as model_name")
+
         ak = envs.DOWNLOADER_AWS_ACCESS_KEY_ID
         sk = envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY
         endpoint = envs.DOWNLOADER_AWS_ENDPOINT_URL

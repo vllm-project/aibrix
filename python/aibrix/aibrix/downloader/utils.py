@@ -94,9 +94,9 @@ def need_to_download(
         )
     return True
 
+
 def infer_model_name(uri: str):
     if uri == "":
         raise ValueError("Model uri is empty.")
 
-    return uri.strip().strip('/').split('/')[-1]
-    
+    return uri.strip().strip("/").split("/")[-1]
