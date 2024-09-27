@@ -44,10 +44,10 @@ jobs:
 
       - name: Build Container Images with Github Container Registry prefix
         run: |
-          IMG=ghcr.io/aibrix/controller-manager:${{ github.sha }} make docker-build
-          PLUGINS_IMG=ghcr.io/aibrix/plugins:${{ github.sha }} make docker-build-plugins
-          RUNTIME_IMG=ghcr.io/aibrix/runtime:${{ github.sha }} make docker-build-runtime
-          USERS_IMG=ghcr.io/aibrix/users:${{ github.sha }} make docker-build-users
+          IMG=ghcr.io/aibrix/controller-manager:${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build
+          PLUGINS_IMG=ghcr.io/aibrix/plugins:${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build-plugins
+          RUNTIME_IMG=ghcr.io/aibrix/runtime:${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build-runtime
+          USERS_IMG=ghcr.io/aibrix/users:${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build-users
 
       - name: Push Container Images to Github Container Registry
         run: |
