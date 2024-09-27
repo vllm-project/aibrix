@@ -139,7 +139,7 @@ func (c *Cache) addPod(obj interface{}) {
 
 	c.pods[pod.Name] = pod
 	c.addPodAndModelMapping(pod.Name, modelName)
-	klog.Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
+	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
 }
 
@@ -163,7 +163,7 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 	c.pods[newPod.Name] = newPod
 	c.deletePodAndModelMapping(oldPod.Name, oldModelName)
 	c.addPodAndModelMapping(newPod.Name, newModelName)
-	klog.Infof("POD UPDATED. %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
+	klog.V(4).Infof("POD UPDATED. %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
 	c.debugInfo()
 }
 
@@ -179,7 +179,7 @@ func (c *Cache) deletePod(obj interface{}) {
 
 	delete(c.pods, pod.Name)
 	c.deletePodAndModelMapping(pod.Name, modelName)
-	klog.Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
+	klog.V(4).Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
 }
 
@@ -192,7 +192,7 @@ func (c *Cache) addModelAdapter(obj interface{}) {
 		c.addPodAndModelMapping(pod, model.Name)
 	}
 
-	klog.Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
+	klog.V(4).Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
 	c.debugInfo()
 }
 
@@ -211,7 +211,7 @@ func (c *Cache) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 		c.addPodAndModelMapping(pod, newModel.Name)
 	}
 
-	klog.Infof("MODELADAPTER UPDATED. %s/%s %s", oldModel.Namespace, oldModel.Name, newModel.Status.Phase)
+	klog.V(4).Infof("MODELADAPTER UPDATED. %s/%s %s", oldModel.Namespace, oldModel.Name, newModel.Status.Phase)
 	c.debugInfo()
 }
 
@@ -224,7 +224,7 @@ func (c *Cache) deleteModelAdapter(obj interface{}) {
 		c.deletePodAndModelMapping(pod, model.Name)
 	}
 
-	klog.Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
+	klog.V(4).Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
 	c.debugInfo()
 }
 
@@ -263,21 +263,21 @@ func (c *Cache) deletePodAndModelMapping(podName, modelName string) {
 
 func (c *Cache) debugInfo() {
 	for _, pod := range c.pods {
-		klog.Infof("pod: %s, podIP: %v", pod.Name, pod.Status.PodIP)
+		klog.V(4).Infof("pod: %s, podIP: %v", pod.Name, pod.Status.PodIP)
 	}
 	for podName, models := range c.podToModelMapping {
 		var modelList string
 		for modelName := range models {
 			modelList += modelName + " "
 		}
-		klog.Infof("pod: %s, models: %s", podName, modelList)
+		klog.V(4).Infof("pod: %s, models: %s", podName, modelList)
 	}
 	for modelName, pods := range c.modelToPodMapping {
 		var podList string
 		for podName := range pods {
 			podList += podName + " "
 		}
-		klog.Infof("model: %s, pods: %s", modelName, podList)
+		klog.V(4).Infof("model: %s, pods: %s", modelName, podList)
 	}
 }
 
