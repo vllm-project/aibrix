@@ -1,16 +1,24 @@
 import os
 import shutil
 from pathlib import Path
+import time
 from urllib.parse import urljoin
 
+from aibrix.config import EXCLUDE_METRICS_HTTP_ENDPOINTS
+from aibrix.metrics.metrics import (
+    HTTP_COUNTER_METRICS,
+    HTTP_LATENCY_METRICS,
+    INFO_METRICS,
+    REGISTRY,
+)
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.datastructures import State
 from fastapi.responses import JSONResponse
-from prometheus_client import CollectorRegistry, make_asgi_app, multiprocess
+from prometheus_client import make_asgi_app, multiprocess
 from starlette.routing import Mount
 
-from aibrix import envs
+from aibrix import __version__, envs
 from aibrix.logger import init_logger
 from aibrix.metrics.engine_rules import get_metric_standard_rules
 from aibrix.metrics.http_collector import HTTPCollector
@@ -54,21 +62,21 @@ def mount_metrics(app: FastAPI):
     logger.info(
         f"AIBrix to use {prometheus_multiproc_dir_path} as PROMETHEUS_MULTIPROC_DIR"
     )
-    registry = CollectorRegistry()
-    multiprocess.MultiProcessCollector(registry)
+    # registry = CollectorRegistry()
+    multiprocess.MultiProcessCollector(REGISTRY)
 
     # construct scrape metric config
     engine = envs.INFERENCE_ENGINE
 
     scrape_endpoint = urljoin(envs.INFERENCE_ENGINE_ENDPOINT, envs.METRIC_SCRAPE_PATH)
     collector = HTTPCollector(scrape_endpoint, get_metric_standard_rules(engine))
-    registry.register(collector)
+    REGISTRY.register(collector)
     logger.info(
         f"AIBrix to scrape metrics from {scrape_endpoint}, use {engine} standard rules"
     )
 
     # Add prometheus asgi middleware to route /metrics requests
-    metrics_route = Mount("/metrics", make_asgi_app(registry=registry))
+    metrics_route = Mount("/metrics", make_asgi_app(registry=REGISTRY))
 
     app.routes.append(metrics_route)
 
@@ -101,6 +109,13 @@ async def unload_lora_adapter(request: UnloadLoraAdapterRequest, raw_request: Re
 
 def build_app():
     app = FastAPI(debug=False)
+    INFO_METRICS.info(
+        {
+            "version": __version__.__version__,
+            "engine": envs.INFERENCE_ENGINE,
+            "engine_version": envs.INFERENCE_ENGINE_VERSION,
+        }
+    )
     mount_metrics(app)
     init_app_state(app.state)
     app.include_router(router)
@@ -108,4 +123,27 @@ def build_app():
 
 
 app = build_app()
+
+
+@app.middleware("http")
+async def add_router_prometheus_middlerware(request: Request, call_next):
+    method = request.method
+    endpoint = request.scope.get("path")
+    # Exclude endpoints that do not require metrics
+    if endpoint in EXCLUDE_METRICS_HTTP_ENDPOINTS:
+        response = await call_next(request)
+        return response
+
+    start_time = time.perf_counter()
+    response = await call_next(request)
+    process_time = time.perf_counter() - start_time
+
+    status = response.status_code
+    HTTP_LATENCY_METRICS.labels(
+        method=method, endpoint=endpoint, status=status
+    ).observe(process_time)
+    HTTP_COUNTER_METRICS.labels(method=method, endpoint=endpoint, status=status).inc()
+    return response
+
+
 uvicorn.run(app, port=envs.SERVER_PORT)

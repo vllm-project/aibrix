@@ -36,13 +36,19 @@ def mock_exsit_boto3(mock_boto3):
 
 
 env_group = mock.Mock()
-env_group.DOWNLOADER_MODEL_NAME = "model_name"
 env_group.DOWNLOADER_NUM_THREADS = 4
+env_group.DOWNLOADER_AWS_ACCESS_KEY_ID = "AWS_ACCESS_KEY_ID"
+env_group.DOWNLOADER_AWS_SECRET_ACCESS_KEY = "AWS_SECRET_ACCESS_KEY"
 
+env_no_ak = mock.Mock()
+env_no_ak.DOWNLOADER_NUM_THREADS = 4
+env_no_ak.DOWNLOADER_AWS_ACCESS_KEY_ID = ""
+env_no_ak.DOWNLOADER_AWS_SECRET_ACCESS_KEY = "AWS_SECRET_ACCESS_KEY"
 
-env_group_no_model_name = mock.Mock()
-env_group_no_model_name.DOWNLOADER_MODEL_NAME = None
-env_group_no_model_name.DOWNLOADER_NUM_THREADS = 4
+env_no_sk = mock.Mock()
+env_no_sk.DOWNLOADER_NUM_THREADS = 4
+env_no_sk.DOWNLOADER_AWS_ACCESS_KEY_ID = "AWS_ACCESS_KEY_ID"
+env_no_sk.DOWNLOADER_AWS_SECRET_ACCESS_KEY = ""
 
 
 @mock.patch(ENVS_MODULE, env_group)
@@ -87,11 +93,21 @@ def test_get_downloader_s3_path_empty_path(mock_boto3):
     assert "S3 bucket path is not set." in str(exception.value)
 
 
-@mock.patch(ENVS_MODULE, env_group_no_model_name)
+@mock.patch(ENVS_MODULE, env_no_ak)
 @mock.patch(S3_BOTO3_MODULE)
-def test_get_downloader_s3_no_model_name(mock_tos):
-    mock_exsit_boto3(mock_tos)
+def test_get_downloader_s3_no_ak(mock_boto3):
+    mock_exsit_boto3(mock_boto3)
 
     with pytest.raises(AssertionError) as exception:
-        get_downloader("s3://bucket/path")
-    assert "S3 model name is not set" in str(exception.value)
+        get_downloader("s3://bucket/")
+    assert "`AWS_ACCESS_KEY_ID` is not set." in str(exception.value)
+
+
+@mock.patch(ENVS_MODULE, env_no_sk)
+@mock.patch(S3_BOTO3_MODULE)
+def test_get_downloader_s3_no_sk(mock_boto3):
+    mock_exsit_boto3(mock_boto3)
+
+    with pytest.raises(AssertionError) as exception:
+        get_downloader("s3://bucket/")
+    assert "`AWS_SECRET_ACCESS_KEY` is not set." in str(exception.value)

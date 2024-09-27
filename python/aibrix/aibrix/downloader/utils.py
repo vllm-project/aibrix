@@ -93,3 +93,10 @@ def need_to_download(
             f"DOWNLOADER_CHECK_FILE_EXIST={envs.DOWNLOADER_CHECK_FILE_EXIST}"
         )
     return True
+
+
+def infer_model_name(uri: str):
+    if uri is None or uri == "":
+        raise ValueError("Model uri is empty.")
+
+    return uri.strip().strip("/").split("/")[-1]

@@ -23,7 +23,12 @@ from tqdm import tqdm
 
 from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
-from aibrix.downloader.utils import meta_file, need_to_download, save_meta_data
+from aibrix.downloader.utils import (
+    infer_model_name,
+    meta_file,
+    need_to_download,
+    save_meta_data,
+)
 from aibrix.logger import init_logger
 
 tos_logger = logging.getLogger("tos")
@@ -39,8 +44,11 @@ def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
 
 
 class TOSDownloader(BaseDownloader):
-    def __init__(self, model_uri):
-        model_name = envs.DOWNLOADER_MODEL_NAME
+    def __init__(self, model_uri, model_name: Optional[str] = None):
+        if model_name is None:
+            model_name = infer_model_name(model_uri)
+            logger.info(f"model_name is not set, using `{model_name}` as model_name")
+
         ak = envs.DOWNLOADER_TOS_ACCESS_KEY or ""
         sk = envs.DOWNLOADER_TOS_SECRET_KEY or ""
         endpoint = envs.DOWNLOADER_TOS_ENDPOINT or ""
@@ -62,7 +70,7 @@ class TOSDownloader(BaseDownloader):
     def _valid_config(self):
         assert (
             self.model_name is not None and self.model_name != ""
-        ), "TOS model name is not set, please set env variable DOWNLOADER_MODEL_NAME."
+        ), "TOS model name is not set, please check `--model-name`."
         assert (
             self.bucket_name is not None and self.bucket_name != ""
         ), "TOS bucket name is not set."

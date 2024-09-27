@@ -36,11 +36,6 @@ def mock_exsit_tos(mock_tos):
 
 
 env_group = mock.Mock()
-env_group.DOWNLOADER_MODEL_NAME = "model_name"
-
-
-env_group_no_model_name = mock.Mock()
-env_group_no_model_name.DOWNLOADER_MODEL_NAME = None
 
 
 @mock.patch(ENVS_MODULE, env_group)
@@ -83,13 +78,3 @@ def test_get_downloader_tos_path_empty_path(mock_tos):
     with pytest.raises(AssertionError) as exception:
         get_downloader("tos://bucket/")
     assert "TOS bucket path is not set." in str(exception.value)
-
-
-@mock.patch(ENVS_MODULE, env_group_no_model_name)
-@mock.patch(TOS_MODULE)
-def test_get_downloader_tos_no_model_name(mock_tos):
-    mock_exsit_tos(mock_tos)
-
-    with pytest.raises(AssertionError) as exception:
-        get_downloader("tos://bucket/path")
-    assert "TOS model name is not set" in str(exception.value)

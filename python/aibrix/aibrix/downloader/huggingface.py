@@ -31,10 +31,8 @@ def _parse_model_name_from_uri(model_uri: str) -> str:
 class HuggingFaceDownloader(BaseDownloader):
     def __init__(self, model_uri: str, model_name: Optional[str] = None):
         if model_name is None:
-            if envs.DOWNLOADER_MODEL_NAME is not None:
-                model_name = envs.DOWNLOADER_MODEL_NAME
-            else:
-                model_name = _parse_model_name_from_uri(model_uri)
+            model_name = _parse_model_name_from_uri(model_uri)
+            logger.info(f"model_name is not set, using `{model_name}` as model_name")
 
         self.hf_token = envs.DOWNLOADER_HF_TOKEN
         self.hf_endpoint = envs.DOWNLOADER_HF_ENDPOINT

@@ -23,6 +23,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/aibrix/aibrix/pkg/utils"
+	"github.com/go-playground/validator/v10"
 )
 
 type malformedRequest struct {
@@ -34,7 +37,7 @@ func (mr *malformedRequest) Error() string {
 	return mr.msg
 }
 
-func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}) error {
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst *utils.User) error {
 	ct := r.Header.Get("Content-Type")
 	if ct != "" {
 		mediaType := strings.ToLower(strings.TrimSpace(strings.Split(ct, ";")[0]))
@@ -91,5 +94,6 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}) err
 		return &malformedRequest{status: http.StatusBadRequest, msg: msg}
 	}
 
-	return nil
+	validate := validator.New()
+	return validate.Struct(dst)
 }

@@ -25,7 +25,7 @@ import (
 )
 
 type User struct {
-	Name string `json:"name"`
+	Name string `json:"name" validate:"required"`
 	Rpm  int64  `json:"rpm"`
 	Tpm  int64  `json:"tpm"`
 }
@@ -54,6 +54,10 @@ func GetUser(u User, redisClient *redis.Client) (User, error) {
 }
 
 func SetUser(u User, redisClient *redis.Client) error {
+	if u.Rpm < 0 || u.Tpm < 0 {
+		return fmt.Errorf("rpm or tpm can not negative")
+	}
+
 	b, err := json.Marshal(&u)
 	if err != nil {
 		return err

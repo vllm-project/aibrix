@@ -16,10 +16,16 @@ def main():
         "--local-dir",
         type=str,
         default=None,
-        help="dir to save model files",
+        help="base dir of the model file. If not set, it will used with env `DOWNLOADER_LOCAL_DIR`",
+    )
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default=None,
+        help="subdir of the base dir to save model files",
     )
     args = parser.parse_args()
-    download_model(args.model_uri, args.local_dir)
+    download_model(args.model_uri, args.local_dir, args.model_name)
 
 
 if __name__ == "__main__":

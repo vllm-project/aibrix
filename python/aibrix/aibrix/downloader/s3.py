@@ -23,7 +23,12 @@ from tqdm import tqdm
 
 from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
-from aibrix.downloader.utils import meta_file, need_to_download, save_meta_data
+from aibrix.downloader.utils import (
+    infer_model_name,
+    meta_file,
+    need_to_download,
+    save_meta_data,
+)
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -37,13 +42,19 @@ def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
 
 
 class S3Downloader(BaseDownloader):
-    def __init__(self, model_uri):
-        model_name = envs.DOWNLOADER_MODEL_NAME
+    def __init__(self, model_uri, model_name: Optional[str] = None):
+        if model_name is None:
+            model_name = infer_model_name(model_uri)
+            logger.info(f"model_name is not set, using `{model_name}` as model_name")
+
         ak = envs.DOWNLOADER_AWS_ACCESS_KEY_ID
         sk = envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY
         endpoint = envs.DOWNLOADER_AWS_ENDPOINT_URL
         region = envs.DOWNLOADER_AWS_REGION
         bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri)
+
+        assert ak is not None and ak != "", "`AWS_ACCESS_KEY_ID` is not set."
+        assert sk is not None and sk != "", "`AWS_SECRET_ACCESS_KEY` is not set."
 
         # Avoid warning log "Connection pool is full"
         # Refs: https://github.com/boto/botocore/issues/619#issuecomment-583511406
@@ -75,7 +86,7 @@ class S3Downloader(BaseDownloader):
     def _valid_config(self):
         assert (
             self.model_name is not None and self.model_name != ""
-        ), "S3 model name is not set, please set env variable DOWNLOADER_MODEL_NAME."
+        ), "S3 model name is not set, please check `--model-name`."
         assert (
             self.bucket_name is not None and self.bucket_name != ""
         ), "S3 bucket name is not set."

@@ -22,11 +22,13 @@ from aibrix import envs
 from aibrix.config import DOWNLOAD_CACHE_DIR
 from aibrix.downloader.utils import (
     check_file_exist,
+    infer_model_name,
     load_meta_data,
     meta_file,
     need_to_download,
     save_meta_data,
 )
+import pytest
 
 
 def prepare_file_and_meta_data(file_path, meta_path, file_size, etag):
@@ -136,3 +138,14 @@ def test_need_to_download(mock_check: mock.Mock):
     # recover envs
     envs.DOWNLOADER_FORCE_DOWNLOAD = origin_force_download_env
     envs.DOWNLOADER_CHECK_FILE_EXIST = origin_check_file_exist
+
+
+def test_infer_model_name():
+    with pytest.raises(ValueError):
+        infer_model_name("")
+
+    with pytest.raises(ValueError):
+        infer_model_name(None)
+
+    model_name = infer_model_name("s3://bucket/path/to/model")
+    assert model_name == "model"
