@@ -53,6 +53,9 @@ class S3Downloader(BaseDownloader):
         region = envs.DOWNLOADER_AWS_REGION
         bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri)
 
+        assert ak is not None and ak != "", "`AWS_ACCESS_KEY_ID` is not set."
+        assert sk is not None and sk != "", "`AWS_SECRET_ACCESS_KEY` is not set."
+
         # Avoid warning log "Connection pool is full"
         # Refs: https://github.com/boto/botocore/issues/619#issuecomment-583511406
         max_pool_connections = (
