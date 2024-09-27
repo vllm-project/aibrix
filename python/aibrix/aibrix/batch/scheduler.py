@@ -37,11 +37,11 @@ class JobScheduler:
         self._inactive_jobs = set()
         self._due_jobs_list = []
         # Start sliding process in an async way
-        asyncio.create_task(self.time_sliding_process())
+        asyncio.create_task(self.job_cleanup_loop())
         self._policy = policy
 
     def append_job(self, job_id, due_time_seconds):
-        # This submits a job to scheduler. The scheduler will dertermines
+        # This submits a job to scheduler. The scheduler will determine
         # which job gets executed.
         self._jobs_queue.put(job_id)
 
@@ -103,7 +103,7 @@ class JobScheduler:
         else:
             print("Unsupported scheduling policy!")
 
-    async def time_sliding_process(self):
+    async def job_cleanup_loop(self):
         """
         This is a long-running process to check if jobs have expired or not.
         """
