@@ -17,7 +17,9 @@ from typing import Optional
 from aibrix.downloader.base import get_downloader
 
 
-def download_model(model_uri: str, local_path: Optional[str] = None):
+def download_model(
+    model_uri: str, local_path: Optional[str] = None, model_name: Optional[str] = None
+):
     """Download model from model_uri to local_path.
 
     Args:
@@ -25,7 +27,7 @@ def download_model(model_uri: str, local_path: Optional[str] = None):
         local_path (str): local path to save model.
     """
 
-    downloader = get_downloader(model_uri)
+    downloader = get_downloader(model_uri, model_name)
     return downloader.download_model(local_path)
 
 

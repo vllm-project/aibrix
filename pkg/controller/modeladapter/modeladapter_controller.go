@@ -99,7 +99,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	// init scheduler
 	c, err := cache.GetCache()
 	if err != nil {
-		klog.Fatal(err.Error())
+		klog.Fatal(err)
 	}
 
 	// TODO: policy should be configured by users
@@ -164,7 +164,7 @@ type ModelAdapterReconciler struct {
 // Reconcile reads that state of ModelAdapter object and makes changes based on the state read
 // and what is in the ModelAdapter.Spec
 func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	klog.V(5).InfoS("Starting to process ModelAdapter", "modelAdapter", req.NamespacedName)
+	klog.V(4).InfoS("Starting to process ModelAdapter", "modelAdapter", req.NamespacedName)
 
 	// Fetch the ModelAdapter instance
 	modelAdapter := &modelv1alpha1.ModelAdapter{}
@@ -173,7 +173,7 @@ func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if apierrors.IsNotFound(err) {
 			// Object not found, return.
 			// For service, endpoint objects, clean up the resources using finalizers/
-			klog.V(3).InfoS("ModelAdapter resource not found. Ignoring since object mush be deleted", "modelAdapter", req)
+			klog.InfoS("ModelAdapter resource not found. Ignoring since object mush be deleted", "modelAdapter", req)
 			return reconcile.Result{}, nil
 		}
 
@@ -186,7 +186,7 @@ func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		// the object is not being deleted, so if it does not have the finalizer,
 		// then lets add the finalizer and update the object.
 		if !controllerutil.ContainsFinalizer(modelAdapter, ModelAdapterFinalizer) {
-			klog.Info("Adding finalizer for ModelAdapter")
+			klog.InfoS("Adding finalizer for ModelAdapter")
 			if ok := controllerutil.AddFinalizer(modelAdapter, ModelAdapterFinalizer); !ok {
 				klog.Error("Failed to add finalizer for ModelAdapter")
 				return ctrl.Result{Requeue: true}, nil

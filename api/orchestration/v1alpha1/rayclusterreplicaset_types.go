@@ -17,7 +17,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -50,7 +49,7 @@ type RayClusterReplicaSetSpec struct {
 	// insufficient replicas are detected.
 	// More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller#pod-template
 	// +optional
-	Template rayclusterv1.RayClusterSpec `json:"template,omitempty"`
+	Template RayClusterTemplateSpec `json:"template,omitempty"`
 }
 
 // RayClusterReplicaSetStatus defines the observed state of RayClusterReplicaSet

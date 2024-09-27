@@ -26,15 +26,9 @@ Documentation
    :maxdepth: 1
    :caption: Getting Started
 
+   designs/architecture.rst
    getting_started/quickstart.rst
    getting_started/installation.rst
-
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Core Concepts
-
-   designs/architecture.rst
 
 .. toctree::
    :maxdepth: 1
@@ -50,10 +44,12 @@ Documentation
    :maxdepth: 1
    :caption: Development
 
-   development/contribution.rst
+   development/development.rst
+   development/release.rst
 
 .. toctree::
    :maxdepth: 1
    :caption: Community
 
    community/community.rst
+   community/contribution.rst

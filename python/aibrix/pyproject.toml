@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "aibrix"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 description = "AIBrix, the foundational building blocks for constructing your own GenAI inference infrastructure."
 authors = [
     "AIBrix Authors <brosoul@126.com>"
@@ -40,6 +40,8 @@ gunicorn = "^23.0.0"
 uvicorn = "^0.30.6"
 prometheus-client = "^0.20.0"
 types-requests = "^2.31.0"
+httpx = "^0.27.2"
+hf-transfer = "^0.1.8"
 
 
 [tool.poetry.group.dev.dependencies]

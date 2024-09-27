@@ -20,6 +20,7 @@ from aibrix.downloader.base import get_downloader
 from aibrix.downloader.s3 import S3Downloader
 
 S3_BOTO3_MODULE = "aibrix.downloader.s3.boto3"
+ENVS_MODULE = "aibrix.downloader.s3.envs"
 
 
 def mock_not_exsit_boto3(mock_boto3):
@@ -34,6 +35,23 @@ def mock_exsit_boto3(mock_boto3):
     mock_client.head_bucket.return_value = mock.Mock()
 
 
+env_group = mock.Mock()
+env_group.DOWNLOADER_NUM_THREADS = 4
+env_group.DOWNLOADER_AWS_ACCESS_KEY_ID = "AWS_ACCESS_KEY_ID"
+env_group.DOWNLOADER_AWS_SECRET_ACCESS_KEY = "AWS_SECRET_ACCESS_KEY"
+
+env_no_ak = mock.Mock()
+env_no_ak.DOWNLOADER_NUM_THREADS = 4
+env_no_ak.DOWNLOADER_AWS_ACCESS_KEY_ID = ""
+env_no_ak.DOWNLOADER_AWS_SECRET_ACCESS_KEY = "AWS_SECRET_ACCESS_KEY"
+
+env_no_sk = mock.Mock()
+env_no_sk.DOWNLOADER_NUM_THREADS = 4
+env_no_sk.DOWNLOADER_AWS_ACCESS_KEY_ID = "AWS_ACCESS_KEY_ID"
+env_no_sk.DOWNLOADER_AWS_SECRET_ACCESS_KEY = ""
+
+
+@mock.patch(ENVS_MODULE, env_group)
 @mock.patch(S3_BOTO3_MODULE)
 def test_get_downloader_s3(mock_boto3):
     mock_exsit_boto3(mock_boto3)
@@ -42,6 +60,7 @@ def test_get_downloader_s3(mock_boto3):
     assert isinstance(downloader, S3Downloader)
 
 
+@mock.patch(ENVS_MODULE, env_group)
 @mock.patch(S3_BOTO3_MODULE)
 def test_get_downloader_s3_path_not_exist(mock_boto3):
     mock_not_exsit_boto3(mock_boto3)
@@ -51,6 +70,7 @@ def test_get_downloader_s3_path_not_exist(mock_boto3):
     assert "not exist" in str(exception.value)
 
 
+@mock.patch(ENVS_MODULE, env_group)
 @mock.patch(S3_BOTO3_MODULE)
 def test_get_downloader_s3_path_empty(mock_boto3):
     mock_exsit_boto3(mock_boto3)
@@ -62,6 +82,7 @@ def test_get_downloader_s3_path_empty(mock_boto3):
     assert "S3 bucket name is not set." in str(exception.value)
 
 
+@mock.patch(ENVS_MODULE, env_group)
 @mock.patch(S3_BOTO3_MODULE)
 def test_get_downloader_s3_path_empty_path(mock_boto3):
     mock_exsit_boto3(mock_boto3)
@@ -70,3 +91,23 @@ def test_get_downloader_s3_path_empty_path(mock_boto3):
     with pytest.raises(AssertionError) as exception:
         get_downloader("s3://bucket/")
     assert "S3 bucket path is not set." in str(exception.value)
+
+
+@mock.patch(ENVS_MODULE, env_no_ak)
+@mock.patch(S3_BOTO3_MODULE)
+def test_get_downloader_s3_no_ak(mock_boto3):
+    mock_exsit_boto3(mock_boto3)
+
+    with pytest.raises(AssertionError) as exception:
+        get_downloader("s3://bucket/")
+    assert "`AWS_ACCESS_KEY_ID` is not set." in str(exception.value)
+
+
+@mock.patch(ENVS_MODULE, env_no_sk)
+@mock.patch(S3_BOTO3_MODULE)
+def test_get_downloader_s3_no_sk(mock_boto3):
+    mock_exsit_boto3(mock_boto3)
+
+    with pytest.raises(AssertionError) as exception:
+        get_downloader("s3://bucket/")
+    assert "`AWS_SECRET_ACCESS_KEY` is not set." in str(exception.value)

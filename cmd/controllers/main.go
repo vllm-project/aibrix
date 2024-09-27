@@ -23,6 +23,7 @@ import (
 	"os"
 	"time"
 
+	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -69,6 +70,7 @@ func init() {
 
 	scheme.AddUnversionedTypes(metav1.SchemeGroupVersion, &metav1.UpdateOptions{}, &metav1.DeleteOptions{}, &metav1.CreateOptions{})
 	utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(rayclusterv1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 

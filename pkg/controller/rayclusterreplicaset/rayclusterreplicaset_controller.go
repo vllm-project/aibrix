@@ -22,7 +22,6 @@ import (
 	"sync"
 	"time"
 
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/controller/util/expectation"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
@@ -32,18 +31,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
 )
 
 var (
 	controllerName                              = "raycluster-replicaset-controller"
 	defaultRequeueDurationForWaitingExpectation = 5 * time.Second
-	controllerKind                              = modelv1alpha1.GroupVersion.WithKind("RayClusterReplicaSet")
+	controllerKind                              = orchestrationv1alpha1.GroupVersion.WithKind("RayClusterReplicaSet")
 )
 
 // Add creates a new RayClusterReplicaSet Controller and adds it to the Manager with default RBAC.
@@ -106,50 +104,51 @@ type RayClusterReplicaSetReconciler struct {
 
 // Reconcile method moves the RayClusterReplicaSet to desired State
 func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
-
 	replicaset := &orchestrationv1alpha1.RayClusterReplicaSet{}
+	rsKey := req.NamespacedName.String()
 	if err := r.Get(ctx, req.NamespacedName, replicaset); err != nil {
-		klog.ErrorS(err, "unable to fetch raycluster-replicaset")
+		klog.ErrorS(err, "unable to fetch object", "RayClusterReplicaSet", req.NamespacedName)
+		// deletion & recreation will find the exception exist, even it always return true (result is same) but the logic is different.
+		// let's remove the expectation in this case.
+		r.Expectations.DeleteExpectations(rsKey)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	rsKey := req.NamespacedName.String()
-	if r.Expectations.SatisfiedExpectations(rsKey) {
-		klog.InfoS("Expectations not met, requeuing", "replicaset", rsKey)
-		return ctrl.Result{RequeueAfter: defaultRequeueDurationForWaitingExpectation}, nil
-	}
-
+	rsNeedsSync := r.Expectations.SatisfiedExpectations(rsKey)
 	// fetch current ray cluster associated with this replicaset
-	rayclusterList := &rayclusterv1.RayClusterList{}
+	rayClusterList := &rayclusterv1.RayClusterList{}
 	ListOps := []client.ListOption{
 		client.InNamespace(replicaset.Namespace),
-		// Note: we simplify the case a little bit and
-		// there's no need to follow replicaset's implementation to list all clusters here.
 		client.MatchingLabels(replicaset.Spec.Selector.MatchLabels),
 	}
 
-	if err := r.Client.List(ctx, rayclusterList, ListOps...); err != nil {
-		klog.ErrorS(err, "unable to list rayclusters")
+	if err := r.Client.List(ctx, rayClusterList, ListOps...); err != nil {
+		klog.ErrorS(err, "unable to list ray clusters")
 		return ctrl.Result{}, err
 	}
 
-	filteredClusters := filterActiveClusters(rayclusterList.Items)
-	currentReplicas := int32(len(filteredClusters))
+	// ignore inactive clusters.
+	filteredClusters := filterActiveClusters(rayClusterList.Items)
 
-	// Determine the scaling operation (scale up or down)
-	desiredReplicas := *replicaset.Spec.Replicas
+	// manage replica differences
 	var scaleError error
-	if currentReplicas < desiredReplicas {
-		diff := desiredReplicas - currentReplicas
-		_ = r.Expectations.ExpectCreations(rsKey, int(diff))
-		scaleError = r.scaleUp(ctx, replicaset, int(diff))
-	} else if currentReplicas > desiredReplicas {
-		diff := currentReplicas - desiredReplicas
-		_ = r.Expectations.ExpectDeletions(rsKey, int(diff))
-		scaleError = r.scaleDown(ctx, filteredClusters, int(diff))
+	if rsNeedsSync && replicaset.DeletionTimestamp == nil {
+		currentReplicas := int32(len(filteredClusters))
+
+		// Determine the scaling operation (scale up or down)
+		desiredReplicas := *replicaset.Spec.Replicas
+		if currentReplicas < desiredReplicas {
+			diff := desiredReplicas - currentReplicas
+			_ = r.Expectations.ExpectCreations(rsKey, int(diff))
+			scaleError = r.scaleUp(ctx, replicaset, int(diff))
+		} else if currentReplicas > desiredReplicas {
+			diff := currentReplicas - desiredReplicas
+			_ = r.Expectations.ExpectDeletions(rsKey, int(diff))
+			scaleError = r.scaleDown(ctx, replicaset, filteredClusters, int(diff))
+		}
 	}
 
+	// status update if necessary
 	newStatus := calculateStatus(replicaset, filteredClusters, scaleError)
 	if err := r.updateReplicaSetStatus(replicaset, newStatus, rsKey); err != nil {
 		return reconcile.Result{}, err
@@ -163,15 +162,15 @@ func (r *RayClusterReplicaSetReconciler) scaleUp(ctx context.Context, replicaset
 	for i := 0; i < diff; i++ {
 		newCluster := constructRayCluster(replicaset)
 		if err := r.Create(ctx, newCluster); err != nil {
-			r.Expectations.CreationObserved(replicaset.Name)
 			return fmt.Errorf("failed to create pod: %w", err)
 		}
+		r.Expectations.CreationObserved(types.NamespacedName{Namespace: replicaset.Namespace, Name: replicaset.Name}.String())
 	}
 	return nil
 }
 
 // scaleDown handles RayCluster deletion logic when scaling down
-func (r *RayClusterReplicaSetReconciler) scaleDown(ctx context.Context, clusters []rayclusterv1.RayCluster, diff int) error {
+func (r *RayClusterReplicaSetReconciler) scaleDown(ctx context.Context, replicaset *orchestrationv1alpha1.RayClusterReplicaSet, clusters []rayclusterv1.RayCluster, diff int) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, diff)
 
@@ -181,11 +180,11 @@ func (r *RayClusterReplicaSetReconciler) scaleDown(ctx context.Context, clusters
 		go func(cluster rayclusterv1.RayCluster) {
 			defer wg.Done()
 			if err := r.Delete(ctx, &cluster); err != nil {
-				r.Expectations.DeletionObserved(cluster.Name)
 				if !apierrors.IsNotFound(err) {
 					errCh <- fmt.Errorf("failed to delete pod: %w", err)
 				}
 			}
+			r.Expectations.DeletionObserved(types.NamespacedName{Namespace: replicaset.Namespace, Name: replicaset.Name}.String())
 		}(cluster)
 	}
 

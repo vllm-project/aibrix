@@ -23,9 +23,17 @@ from tqdm import tqdm
 
 from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
+from aibrix.downloader.utils import (
+    infer_model_name,
+    meta_file,
+    need_to_download,
+    save_meta_data,
+)
+from aibrix.logger import init_logger
 
 tos_logger = logging.getLogger("tos")
 tos_logger.setLevel(logging.WARNING)
+logger = init_logger(__name__)
 
 
 def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
@@ -36,10 +44,13 @@ def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
 
 
 class TOSDownloader(BaseDownloader):
-    def __init__(self, model_uri):
-        model_name = envs.DOWNLOADER_MODEL_NAME
-        ak = envs.DOWNLOADER_TOS_ACCESS_KEY
-        sk = envs.DOWNLOADER_TOS_SECRET_KEY
+    def __init__(self, model_uri, model_name: Optional[str] = None):
+        if model_name is None:
+            model_name = infer_model_name(model_uri)
+            logger.info(f"model_name is not set, using `{model_name}` as model_name")
+
+        ak = envs.DOWNLOADER_TOS_ACCESS_KEY or ""
+        sk = envs.DOWNLOADER_TOS_SECRET_KEY or ""
         endpoint = envs.DOWNLOADER_TOS_ENDPOINT or ""
         region = envs.DOWNLOADER_TOS_REGION or ""
         enable_crc = envs.DOWNLOADER_TOS_ENABLE_CRC
@@ -57,6 +68,9 @@ class TOSDownloader(BaseDownloader):
         )  # type: ignore
 
     def _valid_config(self):
+        assert (
+            self.model_name is not None and self.model_name != ""
+        ), "TOS model name is not set, please check `--model-name`."
         assert (
             self.bucket_name is not None and self.bucket_name != ""
         ), "TOS bucket name is not set."
@@ -100,15 +114,22 @@ class TOSDownloader(BaseDownloader):
         bucket_name: Optional[str] = None,
         enable_range: bool = True,
     ):
-        # check if file exist
         try:
             meta_data = self.client.head_object(bucket=bucket_name, key=bucket_path)
         except Exception as e:
             raise ValueError(f"TOS bucket path {bucket_path} not exist for {e}.")
 
         _file_name = bucket_path.split("/")[-1]
-        # TOS client does not support Path, convert it to str
-        local_file = str(local_path.joinpath(_file_name).absolute())
+        local_file = local_path.joinpath(_file_name).absolute()
+
+        # check if file exist
+        etag = meta_data.etag
+        file_size = meta_data.content_length
+        meta_data_file = meta_file(local_path=local_path, file_name=_file_name)
+
+        if not need_to_download(local_file, meta_data_file, file_size, etag):
+            return
+
         task_num = envs.DOWNLOADER_NUM_THREADS if enable_range else 1
 
         download_kwargs = {}
@@ -117,7 +138,9 @@ class TOSDownloader(BaseDownloader):
 
         # download file
         total_length = meta_data.content_length
-        with tqdm(total=total_length, unit="b", unit_scale=True) as pbar:
+        with tqdm(
+            desc=_file_name, total=total_length, unit="b", unit_scale=True
+        ) as pbar:
 
             def download_progress(
                 consumed_bytes, total_bytes, rw_once_bytes, type: DataTransferType
@@ -127,8 +150,11 @@ class TOSDownloader(BaseDownloader):
             self.client.download_file(
                 bucket=bucket_name,
                 key=bucket_path,
-                file_path=local_file,
+                file_path=str(
+                    local_file
+                ),  # TOS client does not support Path, convert it to str
                 task_num=task_num,
                 data_transfer_listener=download_progress,
                 **download_kwargs,
             )
+            save_meta_data(meta_data_file, etag)

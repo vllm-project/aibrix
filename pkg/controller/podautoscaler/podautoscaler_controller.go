@@ -128,7 +128,7 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	klog.V(3).InfoS("Reconciling PodAutoscaler", "requestName", req.NamespacedName)
+	klog.V(4).InfoS("Reconciling PodAutoscaler", "requestName", req.NamespacedName)
 
 	var pa autoscalingv1alpha1.PodAutoscaler
 	if err := r.Get(ctx, req.NamespacedName, &pa); err != nil {
@@ -460,7 +460,7 @@ func (r *PodAutoscalerReconciler) updateStatus(ctx context.Context, pa *autoscal
 		return fmt.Errorf("failed to update status for %s: %v", pa.Name, err)
 	}
 	logger := klog.FromContext(ctx)
-	logger.V(2).Info("Successfully updated status", "PodAutoscaler", klog.KObj(pa))
+	logger.V(4).Info("Successfully updated status", "PodAutoscaler", klog.KObj(pa))
 	return nil
 }
 
@@ -492,13 +492,13 @@ func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context,
 		return 0, "", currentTimestamp, fmt.Errorf("error update scaler spec: %w", err)
 	}
 
-	logger.Info("Obtained selector and get ReadyPodsCount", "selector", labelsSelector, "originalReadyPodsCount", originalReadyPodsCount)
+	logger.V(4).Info("Obtained selector and get ReadyPodsCount", "selector", labelsSelector, "originalReadyPodsCount", originalReadyPodsCount)
 	metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.TargetMetric)
 
 	// Calculate the desired number of pods using the autoscaler logic.
 	scaleResult := r.Autoscaler.Scale(int(originalReadyPodsCount), metricKey, currentTimestamp)
 	if scaleResult.ScaleValid {
-		logger.Info("Successfully called Scale Algorithm", "scaleResult", scaleResult)
+		logger.V(4).Info("Successfully called Scale Algorithm", "scaleResult", scaleResult)
 		return scaleResult.DesiredPodCount, metricKey.MetricName, currentTimestamp, nil
 	}
 

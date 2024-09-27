@@ -68,7 +68,7 @@ func (s *httpServer) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := utils.SetUser(u, s.redisClient); err != nil {
-		fmt.Fprintf(w, "error occurred on creating user: %+v", err)
+		http.Error(w, fmt.Sprintf("error occurred on creating user: %+v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -120,7 +120,7 @@ func (s *httpServer) updateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := utils.SetUser(u, s.redisClient); err != nil {
-		fmt.Fprintf(w, "error occurred on updating user: %+v", err)
+		http.Error(w, fmt.Sprintf("error occurred on updating user: %+v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -148,7 +148,7 @@ func (s *httpServer) deleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := utils.DelUser(u, s.redisClient); err != nil {
-		fmt.Fprintf(w, "error occurred on deleting user: %+v", err)
+		http.Error(w, fmt.Sprintf("error occurred on deleting user: %+v", err), http.StatusInternalServerError)
 		return
 	}
 

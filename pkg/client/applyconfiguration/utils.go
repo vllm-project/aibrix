@@ -50,10 +50,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationmodelv1alpha1.ModelAdapterStatusApplyConfiguration{}
 
 		// Group=orchestration, Version=v1alpha1
-	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("FleetCondition"):
-		return &applyconfigurationorchestrationv1alpha1.FleetConditionApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleet"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterFleetApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleetCondition"):
+		return &applyconfigurationorchestrationv1alpha1.RayClusterFleetConditionApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleetSpec"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterFleetSpecApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleetStatus"):
@@ -64,6 +64,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationorchestrationv1alpha1.RayClusterReplicaSetSpecApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterReplicaSetStatus"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterReplicaSetStatusApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterTemplateSpec"):
+		return &applyconfigurationorchestrationv1alpha1.RayClusterTemplateSpecApplyConfiguration{}
 
 	}
 	return nil

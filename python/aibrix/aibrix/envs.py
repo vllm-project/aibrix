@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os
-from typing import Optional
+from typing import List, Optional
 
 ENV_VARS_TRUE_VALUES = {"1", "ON", "YES", "TRUE"}
 
@@ -24,7 +24,7 @@ def _is_true(value: Optional[str]) -> bool:
     return value.upper() in ENV_VARS_TRUE_VALUES
 
 
-def _parse_list_str(value: Optional[str], sep: str = ",") -> Optional[list[str]]:
+def _parse_list_str(value: Optional[str], sep: str = ",") -> Optional[List[str]]:
     if value is None:
         return None
     return [str(item).strip() for item in value.split(sep)]
@@ -45,13 +45,15 @@ SERVER_PORT = int(os.getenv("SERVER_PORT", "8080"))
 DOWNLOADER_LOCAL_DIR = os.getenv("DOWNLOADER_LOCAL_DIR", "/tmp/aibrix/models/")
 
 
-DOWNLOADER_MODEL_NAME = os.getenv("DOWNLOADER_MODEL_NAME")
 DOWNLOADER_NUM_THREADS = int(os.getenv("DOWNLOADER_NUM_THREADS", "4"))
 DOWNLOADER_PART_THRESHOLD = _parse_int_or_none(os.getenv("DOWNLOADER_PART_THRESHOLD"))
 DOWNLOADER_PART_CHUNKSIZE = _parse_int_or_none(os.getenv("DOWNLOADER_PART_CHUNKSIZE"))
 DOWNLOADER_ALLOW_FILE_SUFFIX = _parse_list_str(
     os.getenv("DOWNLOADER_ALLOW_FILE_SUFFIX")
 )
+
+DOWNLOADER_FORCE_DOWNLOAD = _is_true(os.getenv("DOWNLOADER_FORCE_DOWNLOAD", "0"))
+DOWNLOADER_CHECK_FILE_EXIST = _is_true(os.getenv("DOWNLOADER_CHECK_FILE_EXIST", "1"))
 
 # Downloader Regex
 DOWNLOADER_S3_REGEX = r"^s3://"
@@ -77,10 +79,14 @@ DOWNLOADER_AWS_REGION = os.getenv("AWS_REGION")
 
 # Metric Standardizing Related Config
 # Scrape config
-METRIC_SCRAPE_HOST = os.getenv("METRIC_SCRAPE_HOST", "localhost")
-METRIC_SCRAPE_PORT = int(os.getenv("METRIC_SCRAPE_PORT", "8000"))
 METRIC_SCRAPE_PATH = os.getenv("METRIC_SCRAPE_PATH", "/metrics")
-METRIC_SCRAPE_ENGINE = os.getenv("METRIC_SCRAPE_ENGINE", "vllm")
 
 # Runtime Metric config
 PROMETHEUS_MULTIPROC_DIR = os.getenv("PROMETHEUS_MULTIPROC_DIR", "/tmp/aibrix/metrics/")
+
+# Inference Engine Config
+INFERENCE_ENGINE = os.getenv("INFERENCE_ENGINE", "vllm")
+INFERENCE_ENGINE_VERSION = os.getenv("INFERENCE_ENGINE_VERSION", "0.6.1")
+INFERENCE_ENGINE_ENDPOINT = os.getenv(
+    "INFERENCE_ENGINE_ENDPOINT", "http://localhost:8000"
+)

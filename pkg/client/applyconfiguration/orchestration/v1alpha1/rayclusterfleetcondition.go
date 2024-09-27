@@ -23,27 +23,27 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// FleetConditionApplyConfiguration represents an declarative configuration of the FleetCondition type for use
+// RayClusterFleetConditionApplyConfiguration represents an declarative configuration of the RayClusterFleetCondition type for use
 // with apply.
-type FleetConditionApplyConfiguration struct {
-	Type               *v1alpha1.FleetConditionType `json:"type,omitempty"`
-	Status             *v1.ConditionStatus          `json:"status,omitempty"`
-	LastUpdateTime     *metav1.Time                 `json:"lastUpdateTime,omitempty"`
-	LastTransitionTime *metav1.Time                 `json:"lastTransitionTime,omitempty"`
-	Reason             *string                      `json:"reason,omitempty"`
-	Message            *string                      `json:"message,omitempty"`
+type RayClusterFleetConditionApplyConfiguration struct {
+	Type               *v1alpha1.RayClusterFleetConditionType `json:"type,omitempty"`
+	Status             *v1.ConditionStatus                    `json:"status,omitempty"`
+	LastUpdateTime     *metav1.Time                           `json:"lastUpdateTime,omitempty"`
+	LastTransitionTime *metav1.Time                           `json:"lastTransitionTime,omitempty"`
+	Reason             *string                                `json:"reason,omitempty"`
+	Message            *string                                `json:"message,omitempty"`
 }
 
-// FleetConditionApplyConfiguration constructs an declarative configuration of the FleetCondition type for use with
+// RayClusterFleetConditionApplyConfiguration constructs an declarative configuration of the RayClusterFleetCondition type for use with
 // apply.
-func FleetCondition() *FleetConditionApplyConfiguration {
-	return &FleetConditionApplyConfiguration{}
+func RayClusterFleetCondition() *RayClusterFleetConditionApplyConfiguration {
+	return &RayClusterFleetConditionApplyConfiguration{}
 }
 
 // WithType sets the Type field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Type field is set to the value of the last call.
-func (b *FleetConditionApplyConfiguration) WithType(value v1alpha1.FleetConditionType) *FleetConditionApplyConfiguration {
+func (b *RayClusterFleetConditionApplyConfiguration) WithType(value v1alpha1.RayClusterFleetConditionType) *RayClusterFleetConditionApplyConfiguration {
 	b.Type = &value
 	return b
 }
@@ -51,7 +51,7 @@ func (b *FleetConditionApplyConfiguration) WithType(value v1alpha1.FleetConditio
 // WithStatus sets the Status field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Status field is set to the value of the last call.
-func (b *FleetConditionApplyConfiguration) WithStatus(value v1.ConditionStatus) *FleetConditionApplyConfiguration {
+func (b *RayClusterFleetConditionApplyConfiguration) WithStatus(value v1.ConditionStatus) *RayClusterFleetConditionApplyConfiguration {
 	b.Status = &value
 	return b
 }
@@ -59,7 +59,7 @@ func (b *FleetConditionApplyConfiguration) WithStatus(value v1.ConditionStatus) 
 // WithLastUpdateTime sets the LastUpdateTime field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the LastUpdateTime field is set to the value of the last call.
-func (b *FleetConditionApplyConfiguration) WithLastUpdateTime(value metav1.Time) *FleetConditionApplyConfiguration {
+func (b *RayClusterFleetConditionApplyConfiguration) WithLastUpdateTime(value metav1.Time) *RayClusterFleetConditionApplyConfiguration {
 	b.LastUpdateTime = &value
 	return b
 }
@@ -67,7 +67,7 @@ func (b *FleetConditionApplyConfiguration) WithLastUpdateTime(value metav1.Time)
 // WithLastTransitionTime sets the LastTransitionTime field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the LastTransitionTime field is set to the value of the last call.
-func (b *FleetConditionApplyConfiguration) WithLastTransitionTime(value metav1.Time) *FleetConditionApplyConfiguration {
+func (b *RayClusterFleetConditionApplyConfiguration) WithLastTransitionTime(value metav1.Time) *RayClusterFleetConditionApplyConfiguration {
 	b.LastTransitionTime = &value
 	return b
 }
@@ -75,7 +75,7 @@ func (b *FleetConditionApplyConfiguration) WithLastTransitionTime(value metav1.T
 // WithReason sets the Reason field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Reason field is set to the value of the last call.
-func (b *FleetConditionApplyConfiguration) WithReason(value string) *FleetConditionApplyConfiguration {
+func (b *RayClusterFleetConditionApplyConfiguration) WithReason(value string) *RayClusterFleetConditionApplyConfiguration {
 	b.Reason = &value
 	return b
 }
@@ -83,7 +83,7 @@ func (b *FleetConditionApplyConfiguration) WithReason(value string) *FleetCondit
 // WithMessage sets the Message field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Message field is set to the value of the last call.
-func (b *FleetConditionApplyConfiguration) WithMessage(value string) *FleetConditionApplyConfiguration {
+func (b *RayClusterFleetConditionApplyConfiguration) WithMessage(value string) *RayClusterFleetConditionApplyConfiguration {
 	b.Message = &value
 	return b
 }

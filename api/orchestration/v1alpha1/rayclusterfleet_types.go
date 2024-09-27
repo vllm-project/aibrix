@@ -17,7 +17,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,7 +39,7 @@ type RayClusterFleetSpec struct {
 
 	// Template describes the pods that will be created.
 	// The only allowed template.spec.restartPolicy value is "Always".
-	Template rayclusterv1.RayClusterSpec `json:"template" protobuf:"bytes,3,opt,name=template"`
+	Template RayClusterTemplateSpec `json:"template" protobuf:"bytes,3,opt,name=template"`
 
 	// The deployment strategy to use to replace existing pods with new ones.
 	// +optional
@@ -104,7 +103,7 @@ type RayClusterFleetStatus struct {
 	// +patchStrategy=merge
 	// +listType=map
 	// +listMapKey=type
-	Conditions []FleetCondition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,6,rep,name=conditions"`
+	Conditions []RayClusterFleetCondition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,6,rep,name=conditions"`
 
 	// Count of hash collisions for the Deployment. The Deployment controller uses this
 	// field as a collision avoidance mechanism when it needs to create the name for the
@@ -114,9 +113,9 @@ type RayClusterFleetStatus struct {
 }
 
 // DeploymentCondition describes the state of a deployment at a certain point.
-type FleetCondition struct {
+type RayClusterFleetCondition struct {
 	// Type of deployment condition.
-	Type FleetConditionType `json:"type" protobuf:"bytes,1,opt,name=type,casttype=DeploymentConditionType"`
+	Type RayClusterFleetConditionType `json:"type" protobuf:"bytes,1,opt,name=type,casttype=DeploymentConditionType"`
 	// Status of the condition, one of True, False, Unknown.
 	Status v1.ConditionStatus `json:"status" protobuf:"bytes,2,opt,name=status,casttype=k8s.io/api/core/v1.ConditionStatus"`
 	// The last time this condition was updated.
@@ -129,21 +128,21 @@ type FleetCondition struct {
 	Message string `json:"message,omitempty" protobuf:"bytes,5,opt,name=message"`
 }
 
-type FleetConditionType string
+type RayClusterFleetConditionType string
 
 // These are valid conditions of a deployment.
 const (
 	// Available means the deployment is available, ie. at least the minimum available
 	// replicas required are up and running for at least minReadySeconds.
-	FleetAvailable FleetConditionType = "Available"
+	RayClusterFleetAvailable RayClusterFleetConditionType = "Available"
 	// Progressing means the deployment is progressing. Progress for a deployment is
 	// considered when a new replica set is created or adopted, and when new pods scale
 	// up or old pods scale down. Progress is not estimated for paused deployments or
 	// when progressDeadlineSeconds is not specified.
-	FleetProgressing FleetConditionType = "Progressing"
+	RayClusterFleetProgressing RayClusterFleetConditionType = "Progressing"
 	// ReplicaFailure is added in a deployment when one of its pods fails to be created
 	// or deleted.
-	FleetReplicaFailure FleetConditionType = "ReplicaFailure"
+	RayClusterFleetReplicaFailure RayClusterFleetConditionType = "ReplicaFailure"
 )
 
 // +genclient

@@ -1,0 +1,72 @@
+---
+# Source: kuberay-operator/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aibrix-kuberay-operator
+  labels:
+    app.kubernetes.io/name: kuberay-operator
+    helm.sh/chart: kuberay-operator-1.2.1
+    app.kubernetes.io/instance: aibrix-kuberay-operator
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kuberay-operator
+      app.kubernetes.io/instance: aibrix-kuberay-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kuberay-operator
+        app.kubernetes.io/instance: aibrix-kuberay-operator
+        app.kubernetes.io/component: kuberay-operator
+    spec:
+      serviceAccountName: kuberay-operator
+      securityContext:
+        {}
+      containers:
+        - name: kuberay-operator
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          image: "quay.io/kuberay/operator:v1.2.1"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /manager
+          args:
+            - --feature-gates=RayClusterStatusConditions=false
+            - --enable-leader-election=true
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: ENABLE_PROBES_INJECTION
+              value: '"false"'
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 5
+          resources:
+            limits:
+              cpu: 100m
+              memory: 512Mi

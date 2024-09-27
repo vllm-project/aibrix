@@ -23,6 +23,15 @@ from tqdm import tqdm
 
 from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
+from aibrix.downloader.utils import (
+    infer_model_name,
+    meta_file,
+    need_to_download,
+    save_meta_data,
+)
+from aibrix.logger import init_logger
+
+logger = init_logger(__name__)
 
 
 def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
@@ -33,13 +42,19 @@ def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
 
 
 class S3Downloader(BaseDownloader):
-    def __init__(self, model_uri):
-        model_name = envs.DOWNLOADER_MODEL_NAME
+    def __init__(self, model_uri, model_name: Optional[str] = None):
+        if model_name is None:
+            model_name = infer_model_name(model_uri)
+            logger.info(f"model_name is not set, using `{model_name}` as model_name")
+
         ak = envs.DOWNLOADER_AWS_ACCESS_KEY_ID
         sk = envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY
         endpoint = envs.DOWNLOADER_AWS_ENDPOINT_URL
         region = envs.DOWNLOADER_AWS_REGION
         bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri)
+
+        assert ak is not None and ak != "", "`AWS_ACCESS_KEY_ID` is not set."
+        assert sk is not None and sk != "", "`AWS_SECRET_ACCESS_KEY` is not set."
 
         # Avoid warning log "Connection pool is full"
         # Refs: https://github.com/boto/botocore/issues/619#issuecomment-583511406
@@ -69,6 +84,9 @@ class S3Downloader(BaseDownloader):
         )  # type: ignore
 
     def _valid_config(self):
+        assert (
+            self.model_name is not None and self.model_name != ""
+        ), "S3 model name is not set, please check `--model-name`."
         assert (
             self.bucket_name is not None and self.bucket_name != ""
         ), "S3 bucket name is not set."
@@ -110,15 +128,21 @@ class S3Downloader(BaseDownloader):
         bucket_name: Optional[str] = None,
         enable_range: bool = True,
     ):
-        # check if file exist
         try:
             meta_data = self.client.head_object(Bucket=bucket_name, Key=bucket_path)
         except Exception as e:
             raise ValueError(f"S3 bucket path {bucket_path} not exist for {e}.")
 
         _file_name = bucket_path.split("/")[-1]
-        # S3 client does not support Path, convert it to str
-        local_file = str(local_path.joinpath(_file_name).absolute())
+        local_file = local_path.joinpath(_file_name).absolute()
+
+        # check if file exist
+        etag = meta_data.get("ETag", "")
+        file_size = meta_data.get("ContentLength", 0)
+        meta_data_file = meta_file(local_path=local_path, file_name=_file_name)
+
+        if not need_to_download(local_file, meta_data_file, file_size, etag):
+            return
 
         # construct TransferConfig
         config_kwargs = {
@@ -134,7 +158,9 @@ class S3Downloader(BaseDownloader):
 
         # download file
         total_length = int(meta_data.get("ContentLength", 0))
-        with tqdm(total=total_length, unit="b", unit_scale=True) as pbar:
+        with tqdm(
+            desc=_file_name, total=total_length, unit="b", unit_scale=True
+        ) as pbar:
 
             def download_progress(bytes_transferred):
                 pbar.update(bytes_transferred)
@@ -142,7 +168,10 @@ class S3Downloader(BaseDownloader):
             self.client.download_file(
                 Bucket=bucket_name,
                 Key=bucket_path,
-                Filename=local_file,
+                Filename=str(
+                    local_file
+                ),  # S3 client does not support Path, convert it to str
                 Config=config,
                 Callback=download_progress,
             )
+            save_meta_data(meta_data_file, etag)

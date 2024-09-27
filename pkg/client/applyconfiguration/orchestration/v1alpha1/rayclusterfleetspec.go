@@ -18,7 +18,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	rayv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -26,14 +25,14 @@ import (
 // RayClusterFleetSpecApplyConfiguration represents an declarative configuration of the RayClusterFleetSpec type for use
 // with apply.
 type RayClusterFleetSpecApplyConfiguration struct {
-	Replicas                *int32                     `json:"replicas,omitempty"`
-	Selector                *v1.LabelSelector          `json:"selector,omitempty"`
-	Template                *rayv1.RayClusterSpec      `json:"template,omitempty"`
-	Strategy                *appsv1.DeploymentStrategy `json:"strategy,omitempty"`
-	MinReadySeconds         *int32                     `json:"minReadySeconds,omitempty"`
-	RevisionHistoryLimit    *int32                     `json:"revisionHistoryLimit,omitempty"`
-	Paused                  *bool                      `json:"paused,omitempty"`
-	ProgressDeadlineSeconds *int32                     `json:"progressDeadlineSeconds,omitempty"`
+	Replicas                *int32                                    `json:"replicas,omitempty"`
+	Selector                *v1.LabelSelector                         `json:"selector,omitempty"`
+	Template                *RayClusterTemplateSpecApplyConfiguration `json:"template,omitempty"`
+	Strategy                *appsv1.DeploymentStrategy                `json:"strategy,omitempty"`
+	MinReadySeconds         *int32                                    `json:"minReadySeconds,omitempty"`
+	RevisionHistoryLimit    *int32                                    `json:"revisionHistoryLimit,omitempty"`
+	Paused                  *bool                                     `json:"paused,omitempty"`
+	ProgressDeadlineSeconds *int32                                    `json:"progressDeadlineSeconds,omitempty"`
 }
 
 // RayClusterFleetSpecApplyConfiguration constructs an declarative configuration of the RayClusterFleetSpec type for use with
@@ -61,8 +60,8 @@ func (b *RayClusterFleetSpecApplyConfiguration) WithSelector(value v1.LabelSelec
 // WithTemplate sets the Template field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Template field is set to the value of the last call.
-func (b *RayClusterFleetSpecApplyConfiguration) WithTemplate(value rayv1.RayClusterSpec) *RayClusterFleetSpecApplyConfiguration {
-	b.Template = &value
+func (b *RayClusterFleetSpecApplyConfiguration) WithTemplate(value *RayClusterTemplateSpecApplyConfiguration) *RayClusterFleetSpecApplyConfiguration {
+	b.Template = value
 	return b
 }
 

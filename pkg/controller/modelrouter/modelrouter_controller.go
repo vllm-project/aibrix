@@ -48,7 +48,7 @@ const (
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
 
 func Add(mgr manager.Manager) error {
-	klog.Info("Starting modelrouter controller")
+	klog.InfoS("Starting modelrouter controller")
 	cacher := mgr.GetCache()
 
 	deploymentInformer, err := cacher.GetInformer(context.TODO(), &appsv1.Deployment{})
