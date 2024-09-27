@@ -1,6 +1,4 @@
 kind: Kustomization
 
 resources:
-- namespace.yaml
 - envoy-gateway
-- kuberay
