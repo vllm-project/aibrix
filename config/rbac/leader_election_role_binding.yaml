@@ -4,11 +4,11 @@ metadata:
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
-  name: leader-election-rolebinding
+  name: controller-manager-leader-election-rolebinding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: leader-election-role
+  name: controller-manager-leader-election-role
 subjects:
 - kind: ServiceAccount
   name: controller-manager

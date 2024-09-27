@@ -5,7 +5,7 @@ metadata:
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
-  name: leader-election-role
+  name: controller-manager-leader-election-role
 rules:
 - apiGroups:
   - ""

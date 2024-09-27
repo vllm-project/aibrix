@@ -4,11 +4,11 @@ metadata:
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
-  name: manager-rolebinding
+  name: controller-manager-rolebinding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: manager-role
+  name: controller-manager-role
 subjects:
 - kind: ServiceAccount
   name: controller-manager
