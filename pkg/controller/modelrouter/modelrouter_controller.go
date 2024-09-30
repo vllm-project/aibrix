@@ -162,6 +162,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 	}
 	if err := m.Client.Create(context.Background(), &httpRoute); err != nil {
 		klog.Errorln(err)
+		return
 	}
 	klog.Infof("httproute: %v created for model: %v", httpRoute.Name, modelName)
 }
@@ -181,6 +182,7 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string
 
 	if err := m.Client.Delete(context.Background(), &httpRoute); err != nil {
 		klog.Errorln(err)
+		return
 	}
 	klog.Infof("httproute: %v deleted for model: %v", httpRoute.Name, modelName)
 }

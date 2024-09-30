@@ -172,13 +172,20 @@ func (c *Cache) deletePod(obj interface{}) {
 	defer c.mu.Unlock()
 
 	pod := obj.(*v1.Pod)
-	modelName, ok := pod.Labels[modelIdentifier]
+	_, ok := pod.Labels[modelIdentifier]
 	if !ok {
 		return
 	}
 
+	// delete base model and associated lora models on this pod
+	if models, ok := c.podToModelMapping[pod.Name]; ok {
+		for modelName := range models {
+			c.deletePodAndModelMapping(pod.Name, modelName)
+		}
+	}
+	delete(c.podToModelMapping, pod.Name)
 	delete(c.pods, pod.Name)
-	c.deletePodAndModelMapping(pod.Name, modelName)
+
 	klog.V(4).Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
 }
@@ -223,6 +230,7 @@ func (c *Cache) deleteModelAdapter(obj interface{}) {
 	for _, pod := range model.Status.Instances {
 		c.deletePodAndModelMapping(pod, model.Name)
 	}
+	delete(c.modelToPodMapping, model.Name)
 
 	klog.V(4).Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
 	c.debugInfo()
@@ -257,8 +265,15 @@ func (c *Cache) addPodAndModelMapping(podName, modelName string) {
 }
 
 func (c *Cache) deletePodAndModelMapping(podName, modelName string) {
-	delete(c.podToModelMapping, podName)
-	delete(c.modelToPodMapping, modelName)
+	if models, ok := c.podToModelMapping[podName]; ok {
+		delete(models, modelName)
+		c.podToModelMapping[podName] = models
+	}
+
+	if pods, ok := c.modelToPodMapping[modelName]; ok {
+		delete(pods, podName)
+		c.modelToPodMapping[modelName] = pods
+	}
 }
 
 func (c *Cache) debugInfo() {
