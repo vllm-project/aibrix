@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 )
@@ -36,7 +37,7 @@ func TestValidateModelAdapter(t *testing.T) {
 				PodSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"app": "test"},
 				},
-				Replicas: int32Ptr(1),
+				Replicas: ptr.To(int32(1)),
 			},
 		}
 

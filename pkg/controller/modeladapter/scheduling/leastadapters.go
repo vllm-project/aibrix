@@ -35,8 +35,8 @@ func NewLeastAdapters(c *cache.Cache) Scheduler {
 	}
 }
 
-func (r leastAdapters) SelectPod(ctx context.Context, pods []v1.Pod) (*v1.Pod, error) {
-	selectedPod := v1.Pod{}
+func (r leastAdapters) SelectPod(ctx context.Context, pods []*v1.Pod) (*v1.Pod, error) {
+	selectedPod := &v1.Pod{}
 	modelAdapterCountMin := math.MaxInt
 
 	for _, pod := range pods {
@@ -51,5 +51,5 @@ func (r leastAdapters) SelectPod(ctx context.Context, pods []v1.Pod) (*v1.Pod, e
 	}
 
 	klog.Infof("pod selected with least model adapters: %s", selectedPod.Name)
-	return &selectedPod, nil
+	return selectedPod, nil
 }

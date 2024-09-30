@@ -19,30 +19,15 @@ package modeladapter
 import (
 	"errors"
 	"fmt"
+
 	"net/url"
 	"os"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
-
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-func stringPtr(s string) *string {
-	return &s
-}
-
-func protocolPtr(p corev1.Protocol) *corev1.Protocol {
-	return &p
-}
-
-func int32Ptr(i int32) *int32 {
-	return &i
-}
-
-func mapPtr(m map[string]string) *map[string]string {
-	return &m
-}
 
 func validateModelAdapter(instance *modelv1alpha1.ModelAdapter) error {
 	if instance.Spec.ArtifactURL == "" {
@@ -126,4 +111,73 @@ func extractHuggingFacePath(artifactURL string) (string, error) {
 	}
 
 	return path, nil
+}
+
+// ExtractPodNames takes a list of Pods and returns a list of their names.
+func ExtractPodNames(pods []*corev1.Pod) []string {
+	podNames := make([]string, len(pods))
+	for i, pod := range pods {
+		podNames[i] = pod.Name
+	}
+	return podNames
+}
+
+// ExtractPodIPs takes a list of Pods and returns a list of their ips.
+func ExtractPodIPs(pods []*corev1.Pod) []string {
+	podIPs := make([]string, len(pods))
+	for i, pod := range pods {
+		podIPs[i] = pod.Status.PodIP
+	}
+	return podIPs
+}
+
+func getCandidatePods(backendPods []corev1.Pod, podsWithModelAdapter []*corev1.Pod) []*corev1.Pod {
+	// Step 1: Create a set of pod names from podsWithModelAdapter
+	modelAdapterPodNames := make(map[string]bool)
+	for _, pod := range podsWithModelAdapter {
+		modelAdapterPodNames[pod.Name] = true
+	}
+
+	// Step 2: Iterate through backendPods and find pods that are not in podsWithModelAdapter
+	var candidatePods []*corev1.Pod
+	for _, pod := range backendPods {
+		// Create a copy of the loop variable to avoid exporting the same pointer
+		podCopy := pod.DeepCopy()
+		if !modelAdapterPodNames[pod.Name] {
+			// Pod is not in podsWithModelAdapter, add to candidatePods
+			candidatePods = append(candidatePods, podCopy)
+		}
+	}
+
+	return candidatePods
+}
+
+// Difference returns the elements in `a` that are not in `b`
+func Difference(a, b []string) []string {
+	// Create a set (map) to store elements of b for quick lookup
+	bSet := make(map[string]struct{}, len(b))
+	for _, item := range b {
+		bSet[item] = struct{}{}
+	}
+
+	// Iterate over a and keep only elements not in bSet
+	var diff []string
+	for _, item := range a {
+		if _, found := bSet[item]; !found {
+			diff = append(diff, item)
+		}
+	}
+
+	return diff
+}
+
+// NewCondition creates a new replicaset condition.
+func NewCondition(condType string, status metav1.ConditionStatus, reason, msg string) metav1.Condition {
+	return metav1.Condition{
+		Type:               condType,
+		Status:             status,
+		LastTransitionTime: metav1.Now(),
+		Reason:             reason,
+		Message:            msg,
+	}
 }
