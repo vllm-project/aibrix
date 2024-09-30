@@ -150,6 +150,25 @@ func podWithLabelFilter(labelKey, labelValue, modelIdKey string) predicate.Predi
 	}
 }
 
+func lookupLinkedModelAdapterInNamespace(c client.Client) handler.MapFunc {
+	return func(ctx context.Context, a client.Object) []reconcile.Request {
+		modelAdapterList := &modelv1alpha1.ModelAdapterList{}
+		if err := c.List(ctx, modelAdapterList, client.InNamespace(a.GetNamespace())); err != nil {
+			klog.ErrorS(err, "unable to list model adapters in namespace", "namespace", a.GetNamespace())
+			return []reconcile.Request{}
+		}
+
+		requests := make([]reconcile.Request, 0, len(modelAdapterList.Items))
+		for _, modelAdapter := range modelAdapterList.Items {
+			if stringInSlice(modelAdapter.Status.Instances, a.GetName()) {
+				requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: a.GetNamespace(), Name: modelAdapter.GetName()}})
+			}
+		}
+
+		return requests
+	}
+}
+
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// use the builder fashion. If we need more fine grain control later, we can switch to `controller.New()`
@@ -162,7 +181,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		))).
 		Owns(&corev1.Service{}).
 		Owns(&discoveryv1.EndpointSlice{}).
-		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{},
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(lookupLinkedModelAdapterInNamespace(mgr.GetClient())),
 			builder.WithPredicates(podWithLabelFilter(ModelAdapterPodTemplateLabelKey, ModelAdapterPodTemplateLabelValue, ModelIdentifierKey))).
 		Complete(r)
 
