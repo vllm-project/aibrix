@@ -111,13 +111,24 @@ func extractHuggingFacePath(artifactURL string) (string, error) {
 	return path, nil
 }
 
-func stringInSlice(slice []string, str string) bool {
+func StringInSlice(slice []string, str string) bool {
 	for _, v := range slice {
 		if v == str {
 			return true
 		}
 	}
 	return false
+}
+
+// RemoveInstanceFromList removes a string from a slice of strings
+func RemoveInstanceFromList(slice []string, strToRemove string) []string {
+	var result []string
+	for _, s := range slice {
+		if s != strToRemove {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // NewCondition creates a new condition.
