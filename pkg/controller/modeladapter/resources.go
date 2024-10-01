@@ -22,6 +22,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 )
 
 func buildModelAdapterEndpointSlice(instance *modelv1alpha1.ModelAdapter, pod *corev1.Pod) (*discoveryv1.EndpointSlice, error) {
@@ -37,9 +38,9 @@ func buildModelAdapterEndpointSlice(instance *modelv1alpha1.ModelAdapter, pod *c
 
 	ports := []discoveryv1.EndpointPort{
 		{
-			Name:     stringPtr("http"),
-			Protocol: protocolPtr(corev1.ProtocolTCP),
-			Port:     int32Ptr(8000),
+			Name:     ptr.To("http"),
+			Protocol: ptr.To(corev1.ProtocolTCP),
+			Port:     ptr.To(int32(8000)),
 		},
 	}
 

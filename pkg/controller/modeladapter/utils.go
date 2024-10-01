@@ -23,26 +23,9 @@ import (
 	"os"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
-
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-func stringPtr(s string) *string {
-	return &s
-}
-
-func protocolPtr(p corev1.Protocol) *corev1.Protocol {
-	return &p
-}
-
-func int32Ptr(i int32) *int32 {
-	return &i
-}
-
-func mapPtr(m map[string]string) *map[string]string {
-	return &m
-}
 
 func validateModelAdapter(instance *modelv1alpha1.ModelAdapter) error {
 	if instance.Spec.ArtifactURL == "" {
