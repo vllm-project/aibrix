@@ -119,3 +119,14 @@ func stringInSlice(slice []string, str string) bool {
 	}
 	return false
 }
+
+// NewCondition creates a new condition.
+func NewCondition(condType string, status metav1.ConditionStatus, reason, msg string) metav1.Condition {
+	return metav1.Condition{
+		Type:               condType,
+		Status:             status,
+		LastTransitionTime: metav1.Now(),
+		Reason:             reason,
+		Message:            msg,
+	}
+}

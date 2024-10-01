@@ -60,6 +60,23 @@ const (
 	ModelAdapterFinalizer             = "adapter.model.aibrix.ai/finalizer"
 	ModelAdapterPodTemplateLabelKey   = "adapter.model.aibrix.ai/enabled"
 	ModelAdapterPodTemplateLabelValue = "true"
+
+	// Reasons for model adapter conditions
+	// Processing:
+
+	// FailedServiceCreateReason is added in a model adapter when it cannot create a new service.
+	FailedServiceCreateReason = "ServiceCreateError"
+	// FailedEndpointSliceCreateReason is added in a model adapter when it cannot create a new replica set.
+	FailedEndpointSliceCreateReason = "EndpointSliceCreateError"
+	// FailedModelAdapterLoadingReason is added in a model adapter when it cannot be loaded in an engine pod.
+	FailedModelAdapterLoadingReason = "FailedModelAdapterLoadingReason"
+
+	// Available:
+
+	// ModelAdapterAvailable is added in a ModelAdapter when it has replicas available.
+	ModelAdapterAvailable = "ModelAdapterAvailable"
+	// ModelAdapterUnavailable is added in a ModelAdapter when it doesn't have any pod hosting it.
+	ModelAdapterUnavailable = "ModelAdapterUnavailable"
 )
 
 var (
@@ -227,8 +244,8 @@ func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			// Object not found, return.
-			// For service, endpoint objects, clean up the resources using finalizers/
-			klog.InfoS("ModelAdapter resource not found. Ignoring since object mush be deleted", "modelAdapter", req)
+			// For service, endpoint objects, clean up the resources using finalizers
+			klog.InfoS("ModelAdapter resource not found. Ignoring since object mush be deleted", "modelAdapter", req.NamespacedName)
 			return reconcile.Result{}, nil
 		}
 
@@ -279,15 +296,9 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	// Let's set the initial status when no status is available
 	if instance.Status.Conditions == nil || len(instance.Status.Conditions) == 0 {
 		instance.Status.Phase = modelv1alpha1.ModelAdapterPending
-		meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-			Type:               string(modelv1alpha1.ModelAdapterConditionTypeInitialized),
-			Status:             metav1.ConditionUnknown,
-			Reason:             "Reconciling",
-			Message:            "Starting reconciliation",
-			LastTransitionTime: metav1.Now()})
-
-		if err := r.Status().Update(ctx, instance); err != nil {
-			klog.ErrorS(err, "Failed to update ModelAdapter status", "modelAdapter", klog.KObj(instance))
+		condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeInitialized), metav1.ConditionUnknown,
+			"Reconciling", "Starting reconciliation")
+		if err := r.updateStatus(ctx, instance, condition); err != nil {
 			return reconcile.Result{}, err
 		}
 
@@ -305,14 +316,8 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 		klog.Error(err, "Failed to validate the ModelAdapter")
 
 		instance.Status.Phase = modelv1alpha1.ModelAdapterFailed
-		meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-			Type:               string(modelv1alpha1.ModelAdapterConditionTypeResourceCreated),
-			Status:             metav1.ConditionFalse,
-			Reason:             "ValidationFailed",
-			Message:            "ModelAdapter resource is not valid",
-			LastTransitionTime: metav1.Now()})
-
-		if updateErr := r.Status().Update(ctx, instance); updateErr != nil {
+		condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeResourceCreated), metav1.ConditionFalse, "ValidationFailed", "ModelAdapter resource is not valid")
+		if updateErr := r.updateStatus(ctx, instance, condition); updateErr != nil {
 			klog.ErrorS(err, "Failed to update ModelAdapter status", "modelAdapter", klog.KObj(instance))
 			return reconcile.Result{}, updateErr
 		}
@@ -374,15 +379,9 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 		if selectedPod != nil {
 			instance.Status.Phase = modelv1alpha1.ModelAdapterScheduling
 			instance.Status.Instances = []string{selectedPod.Name}
-			meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-				Type:               string(modelv1alpha1.ModelAdapterConditionTypeSelectorMatched),
-				Status:             metav1.ConditionTrue,
-				Reason:             "Reconciling",
-				Message:            fmt.Sprintf("ModelAdapter %s has been allocated to pod %s", klog.KObj(instance), selectedPod.Name),
-				LastTransitionTime: metav1.Now(),
-			})
-
-			if err := r.Status().Update(ctx, instance); err != nil {
+			condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeSelectorMatched), metav1.ConditionTrue,
+				"Reconciling", fmt.Sprintf("ModelAdapter %s has been allocated to pod %s", klog.KObj(instance), selectedPod.Name))
+			if err := r.updateStatus(ctx, instance, condition); err != nil {
 				klog.InfoS("Got error when updating status", "cluster name", req.Name, "error", err, "ModelAdapter", instance)
 				return ctrl.Result{}, err
 			}
@@ -396,6 +395,7 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	if err := r.reconcileLoading(ctx, instance, selectedPod); err != nil {
 		// retry any of the failure.
 		instance.Status.Phase = modelv1alpha1.ModelAdapterFailed
+		// TODO: consider whether we need to set condition here.
 		if err := r.Status().Update(ctx, instance); err != nil {
 			klog.InfoS("Got error when updating status", "cluster name", req.Name, "error", err, "ModelAdapter", instance)
 			return ctrl.Result{RequeueAfter: defaultRequeueDuration}, err
@@ -420,10 +420,13 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 		return ctrlResult, err
 	}
 
-	// Check if need to update the status.
+	// Check if we need to update the status.
 	if r.inconsistentModelAdapterStatus(oldInstance.Status, instance.Status) {
 		klog.InfoS("model adapter reconcile", "Update CR status", req.Name, "status", instance.Status)
-		if err = r.updateStatus(ctx, instance); err != nil {
+		// TODO: I feel here doesn't make sense here, revise the condition
+		condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionTrue,
+			"Reconciling", fmt.Sprintf("ModelAdapter %s is ready", klog.KObj(instance)))
+		if err = r.updateStatus(ctx, instance, condition); err != nil {
 			return reconcile.Result{}, fmt.Errorf("update modelAdapter status error: %v", err)
 		}
 	}
@@ -431,34 +434,20 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-func (r *ModelAdapterReconciler) updateStatus(ctx context.Context, instance *modelv1alpha1.ModelAdapter) error {
-	meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-		Type:               string(modelv1alpha1.ModelAdapterConditionReady),
-		Status:             metav1.ConditionTrue,
-		Reason:             "Reconciling",
-		Message:            fmt.Sprintf("ModelAdapter %s is ready", klog.KObj(instance)),
-		LastTransitionTime: metav1.Now(),
-	})
-
+func (r *ModelAdapterReconciler) updateStatus(ctx context.Context, instance *modelv1alpha1.ModelAdapter, condition metav1.Condition) error {
+	meta.SetStatusCondition(&instance.Status.Conditions, condition)
 	return r.Status().Update(ctx, instance)
 }
 
 func (r *ModelAdapterReconciler) clearModelAdapterInstanceList(ctx context.Context, instance *modelv1alpha1.ModelAdapter) error {
 	stalePodName := instance.Status.Instances[0]
 	instance.Status.Instances = []string{}
-	meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-		Type:               string(modelv1alpha1.ModelAdapterConditionCleanup),
-		Status:             metav1.ConditionTrue,
-		Reason:             "Reconciling",
-		Message:            fmt.Sprintf("Pod (%s) can not be fetched or invalid for model adapter (%s), clean up the list", stalePodName, instance.Name),
-		LastTransitionTime: metav1.Now(),
-	})
-
 	// remove instance means the lora has not targets at this moment.
 	instance.Status.Phase = modelv1alpha1.ModelAdapterPending
+	condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionCleanup), metav1.ConditionTrue,
+		"Reconciling", fmt.Sprintf("Pod (%s) can not be fetched or invalid for model adapter (%s), clean up the list", stalePodName, instance.Name))
 
-	if err := r.Status().Update(ctx, instance); err != nil {
-		klog.Error(err, "Failed to update modelAdapter status")
+	if err := r.updateStatus(ctx, instance, condition); err != nil {
 		return err
 	}
 
@@ -531,15 +520,9 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 
 	// Update the instance status
 	instance.Status.Phase = modelv1alpha1.ModelAdapterBinding
-	meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-		Type:               string(modelv1alpha1.ModelAdapterConditionTypeScheduled),
-		Status:             metav1.ConditionTrue,
-		Reason:             "Reconciling",
-		Message:            fmt.Sprintf("ModelAdapter %s is loaded", klog.KObj(instance)),
-		LastTransitionTime: metav1.Now(),
-	})
-	if err := r.Status().Update(ctx, instance); err != nil {
-		klog.InfoS("Got error when updating status", "error", err, "ModelAdapter", instance)
+	condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeScheduled), metav1.ConditionTrue,
+		"Reconciling", fmt.Sprintf("ModelAdapter %s is loaded", klog.KObj(instance)))
+	if err := r.updateStatus(ctx, instance, condition); err != nil {
 		return err
 	}
 
@@ -696,6 +679,7 @@ func (r *ModelAdapterReconciler) unloadModelAdapter(instance *modelv1alpha1.Mode
 	return nil
 }
 
+// TODO: deprecate this method. use UpdateStatus instead
 func (r *ModelAdapterReconciler) updateModelAdapterState(ctx context.Context, instance *modelv1alpha1.ModelAdapter, phase modelv1alpha1.ModelAdapterPhase) error {
 	if instance.Status.Phase == phase {
 		return nil
@@ -715,16 +699,9 @@ func (r *ModelAdapterReconciler) reconcileService(ctx context.Context, instance 
 		svc, err := buildModelAdapterService(instance)
 		if err != nil {
 			klog.ErrorS(err, "Failed to define new Service resource for ModelAdapter")
-			meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-				Type:               string(modelv1alpha1.ModelAdapterConditionTypeResourceCreated),
-				Status:             metav1.ConditionFalse,
-				Reason:             "Reconciling",
-				Message:            fmt.Sprintf("Failed to create Service for the custom resource (%s): (%s)", instance.Name, err),
-				LastTransitionTime: metav1.Now(),
-			})
-
-			if err := r.Status().Update(ctx, instance); err != nil {
-				klog.Error(err, "Failed to update modelAdapter status")
+			condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeResourceCreated), metav1.ConditionFalse,
+				"Reconciling", fmt.Sprintf("Failed to create Service for the custom resource (%s): (%s)", instance.Name, err))
+			if err := r.updateStatus(ctx, instance, condition); err != nil {
 				return ctrl.Result{}, err
 			}
 
@@ -764,16 +741,9 @@ func (r *ModelAdapterReconciler) reconcileEndpointSlice(ctx context.Context, ins
 		if err != nil {
 			klog.ErrorS(err, "Failed to define new EndpointSlice resource for ModelAdapter")
 			instance.Status.Phase = modelv1alpha1.ModelAdapterFailed
-			meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-				Type:               string(modelv1alpha1.ModelAdapterConditionTypeResourceCreated),
-				Status:             metav1.ConditionFalse,
-				Reason:             "Reconciling",
-				Message:            fmt.Sprintf("Failed to create EndpointSlice for the custom resource (%s): (%s)", instance.Name, err),
-				LastTransitionTime: metav1.Now(),
-			})
-
-			if err := r.Status().Update(ctx, instance); err != nil {
-				klog.Error(err, "Failed to update modelAdapter status")
+			condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeResourceCreated), metav1.ConditionFalse,
+				"Reconciling", fmt.Sprintf("Failed to create EndpointSlice for the custom resource (%s): (%s)", instance.Name, err))
+			if err := r.updateStatus(ctx, instance, condition); err != nil {
 				return ctrl.Result{}, err
 			}
 
