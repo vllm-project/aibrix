@@ -27,18 +27,12 @@ jobs:
       # Build container images
       - name: Build Container Images
         run: |
-          IMG=aibrix/controller-manager:${{ github.ref_name }} make docker-build
-          PLUGINS_IMG=aibrix/plugins:${{ github.ref_name }} make docker-build-plugins
-          RUNTIME_IMG=aibrix/runtime:${{ github.ref_name }} make docker-build-runtime
-          USERS_IMG=aibrix/users:${{ github.ref_name }} make docker-build-users
+          GIT_COMMIT_HASH=${{ github.ref_name }} make docker-build-all
 
       # Push container image to container registry
       - name: Push container image to container registry
         run: |
-          IMG=aibrix/controller-manager:${{ github.ref_name }} make docker-push
-          PLUGINS_IMG=aibrix/plugins:${{ github.ref_name }} make docker-push-plugins
-          RUNTIME_IMG=aibrix/runtime:${{ github.ref_name }} make docker-push-runtime
-          USERS_IMG=aibrix/users:${{ github.ref_name }} make docker-push-users
+          GIT_COMMIT_HASH=${{ github.ref_name }} make docker-push-all
 
   python-wheel-release:
     runs-on: ubuntu-latest

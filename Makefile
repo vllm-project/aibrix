@@ -1,13 +1,14 @@
 # Git Commit Hash
-GIT_COMMIT_HASH := $(shell git rev-parse HEAD)
+GIT_COMMIT_HASH ?= $(shell git rev-parse HEAD)
 
 # Image URL to use all building/pushing image targets
 AIBRIX_CONTAINER_REGISTRY_NAMESPACE ?= aibrix
-IMG ?= ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/controller-manager:${GIT_COMMIT_HASH}
-PLUGINS_IMG ?= ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/plugins:${GIT_COMMIT_HASH}
-RUNTIME_IMG ?= ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/runtime:${GIT_COMMIT_HASH}
-USERS_IMG ?= ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/users:${GIT_COMMIT_HASH}
 DOCKERFILE_PATH ?= build/container
+IMAGES := controller-manager plugins runtime users
+
+# note: this is not being used, only for tracking some commands we have not updated yet.
+IMG ?= ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/controller-manager:${GIT_COMMIT_HASH}
+
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.29.0
 
@@ -121,45 +122,53 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-.PHONY: docker-build
-docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} -f ${DOCKERFILE_PATH}/Dockerfile .
-	$(CONTAINER_TOOL) tag ${IMG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/controller-manager:nightly
+define build_and_tag
+	$(CONTAINER_TOOL) build -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} -f ${DOCKERFILE_PATH}/$(2) .
+	$(CONTAINER_TOOL) tag ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):nightly
+endef
+
+define push_image
+	$(CONTAINER_TOOL) push ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH}
+	$(CONTAINER_TOOL) push ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):nightly
+endef
+
+.PHONY: docker-build-all
+docker-build-all: docker-build-controller-manager docker-build-plugins docker-build-runtime docker-build-users ## Build all docker images
+
+.PHONY: docker-build-controller-manager
+docker-build-controller-manager: ## Build docker image with the manager.
+	$(call build_and_tag,controller-manager,Dockerfile)
 
 .PHONY: docker-build-plugins
-docker-build-plugins: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${PLUGINS_IMG} -f ${DOCKERFILE_PATH}/Dockerfile.gateway .
-	$(CONTAINER_TOOL) tag ${PLUGINS_IMG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/plugins:nightly
+docker-build-plugins: ## Build docker image with the plugins.
+	$(call build_and_tag,plugins,Dockerfile.gateway)
 
 .PHONY: docker-build-runtime
 docker-build-runtime: ## Build docker image with the AI Runtime.
-	$(CONTAINER_TOOL) build -t ${RUNTIME_IMG} -f ${DOCKERFILE_PATH}/Dockerfile.runtime .
-	$(CONTAINER_TOOL) tag ${RUNTIME_IMG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/runtime:nightly
+	$(call build_and_tag,runtime,Dockerfile.runtime)
 
 .PHONY: docker-build-users
-docker-build-users: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${USERS_IMG} -f ${DOCKERFILE_PATH}/Dockerfile.users .
-	$(CONTAINER_TOOL) tag ${USERS_IMG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/users:nightly
+docker-build-users: ## Build docker image with the users.
+	$(call build_and_tag,users,Dockerfile.users)
 
-.PHONY: docker-push
-docker-push: ## Push docker image with the manager.
-	$(CONTAINER_TOOL) push ${IMG}
-	$(CONTAINER_TOOL) push ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/controller-manager:nightly
+.PHONY: docker-push-all
+docker-push-all: docker-push-controller-manager docker-push-plugins docker-push-runtime docker-push-users ## Push all docker images
+
+.PHONY: docker-push-controller-manager
+docker-push-controller-manager: ## Push docker image with the manager.
+	$(call push_image,controller-manager)
 
 .PHONY: docker-push-plugins
-docker-push-plugins: ## Push docker image with the manager.
-	$(CONTAINER_TOOL) push ${PLUGINS_IMG}
-	$(CONTAINER_TOOL) push ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/plugins:nightly
+docker-push-plugins: ## Push docker image with the plugins.
+	$(call push_image,plugins)
 
 .PHONY: docker-push-runtime
-docker-push-runtime: ## Push docker image with the manager.
-	$(CONTAINER_TOOL) push ${RUNTIME_IMG}
-	$(CONTAINER_TOOL) push ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/runtime:nightly
+docker-push-runtime: ## Push docker image with the AI Runtime.
+	$(call push_image,runtime)
 
 .PHONY: docker-push-users
-docker-push-users: ## Push docker image with the manager.
-	$(CONTAINER_TOOL) push ${USERS_IMG}
-	$(CONTAINER_TOOL) push ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/users:nightly
+docker-push-users: ## Push docker image with the users.
+	$(call push_image,users)
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
