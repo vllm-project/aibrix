@@ -22,7 +22,7 @@ spec:
     spec:            # Spec for the container which will be run inside the Pod.
       containers:
       - name: master
-        image: redis
+        image: redis:latest
         resources:
           requests:
             cpu: 100m

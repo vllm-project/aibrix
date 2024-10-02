@@ -38,7 +38,7 @@ spec:
             runAsNonRoot: true
             seccompProfile:
               type: RuntimeDefault
-          image: "quay.io/kuberay/operator:v1.2.1"
+          image: quay.io/kuberay/operator:v1.2.1
           imagePullPolicy: IfNotPresent
           command:
             - /manager
