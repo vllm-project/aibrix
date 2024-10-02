@@ -35,8 +35,8 @@ import (
 	"k8s.io/klog"
 
 	"github.com/aibrix/aibrix/pkg/cache"
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
-	routing "github.com/aibrix/aibrix/pkg/plugins/gateway/routing_algorithms"
+	routing "github.com/aibrix/aibrix/pkg/plugins/gateway/algorithms"
+	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/aibrix/aibrix/pkg/utils"
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -52,7 +52,7 @@ var (
 type Server struct {
 	routers             map[string]routing.Router
 	redisClient         *redis.Client
-	ratelimiter         ratelimiter.AccountRateLimiter
+	ratelimiter         ratelimiter.RateLimiter
 	client              kubernetes.Interface
 	requestCountTracker map[string]int
 	cache               *cache.Cache
