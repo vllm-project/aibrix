@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import time
+import asyncio
 from enum import Enum
 import aibrix.batch.storage as _storage
 
@@ -40,17 +41,56 @@ class JobMetaInfo:
         self._num_requests = 0
         self._started_time = time.time()
         self._end_time = None
-
+        
         self._model_endpoint = model_endpoint
         self._completion_window_str = completion_window
         self._completion_window = 0
 
+        self._async_lock = asyncio.Lock()
+        self._current_request_id = 0
         self._request_progress_bits = []
         self._succeed_num_requests = 0
         self._job_status = JobStatus.CREATED
 
         # extral metadata
         self._meta_data = {}
+    
+    def set_request_bit(self, req_id):
+        #async with self._async_lock:  # Acquire lock for asynchronous function
+        self._request_progress_bits[req_id] = True
+    
+    def get_request_bit(self, req_id):
+        #async with self._async_lock:  
+        return self._request_progress_bits[req_id]
+    
+    def set_job_status(self, status):
+        #async with self._async_lock:  
+        self._job_status = status
+    
+    def get_job_status(self):
+        #async with self._async_lock:  
+        return self._job_status
+
+    def complete_one_request(self, req_id):
+        #async with self._async_lock:  
+        if not self._request_progress_bits[req_id]:
+            self._request_progress_bits[req_id] = True
+            self._succeed_num_requests += 1
+            if self._succeed_num_requests == self._num_requests:
+                self._job_status = JobStatus.COMPLETED
+
+    def next_request_id(self):
+        #async with self._async_lock:  
+        if self._succeed_num_requests == self._num_requests:
+            return -1
+
+        req_id = self._current_request_id
+        while self._request_progress_bits[req_id]:
+            req_id += 1
+            if req_id == self._num_requests:
+                req_id = 0
+        
+        return req_id
 
     def validate_job(self):
         """
@@ -67,7 +107,7 @@ class JobMetaInfo:
             return False
 
         # 2. check window time is a valid time string
-        completion_time_str = self._completion_window
+        completion_time_str = self._completion_window_str
         try:
             # For now, this only supports either minute or hour.
             # A mixed of both h and m, like "4h 40m" needs to be extended later.
@@ -204,8 +244,36 @@ class JobManager:
 
         meta_data = self._pending_jobs[job_id]
         self._in_progress_jobs[job_id] = meta_data
+        meta_data.set_job_status(JobStatus.IN_PROGRESS)
         del self._pending_jobs[job_id]
         return True
+        
+    def get_job_next_request(self, job_id):
+        request_id = -1
+        if job_id not in self._in_progress_jobs:
+            print(f"Job {job_id} has not been scheduled yet.")
+            return request_id
+        meta_data = self._in_progress_jobs[job_id]
+        
+        return meta_data.next_request_id()
+
+    def get_job_window_due(self, job_id):
+        if job_id not in self._pending_jobs:
+            print(f"Job {job_id} is not in pending state, its due may change.")
+            return -1
+
+        meta_data = self._pending_jobs[job_id]
+        return meta_data._completion_window
+    
+    def get_job_endpoint(self, job_id):
+        if job_id in self._pending_jobs:
+            meta_data = self._pending_jobs[job_id]
+        elif job_id in self._in_progress_jobs:
+            meta_data = self._in_progress_jobs[job_id]
+        else:
+            print(f"Job {job_id} is discarded.")
+            return -1
+        return meta_data._model_endpoint
 
     def mark_job_progress(self, job_id, executed_requests):
         """
@@ -217,7 +285,7 @@ class JobManager:
             return False
 
         meta_data = self._in_progress_jobs[job_id]
-        request_len = len(meta_data._request_progress_bits)
+        request_len = meta_data._num_requests
         succeed_num = 0
         invalid_flag = False
 
@@ -226,16 +294,14 @@ class JobManager:
                 print(f"makr job {job_id} progress, request index out of boundary!")
                 invalid_flag = True
                 continue
-            if not meta_data._request_progress_bits[req_id]:
-                meta_data._request_progress_bits[req_id] = True
-                succeed_num += 1
+            meta_data.complete_one_request(req_id)
 
-        meta_data._succeed_num_requests += succeed_num
-        if meta_data._succeed_num_requests == request_len:
+        status = meta_data.get_job_status()
+        if status == JobStatus.COMPLETED:
             # Mark the job to be completed if all requests are finished.
             del self._in_progress_jobs[job_id]
-            meta_data._job_status = JobStatus.COMPLETED
             self._done_jobs[job_id] = meta_data
+            print(f"Job {job_id} is completed.")
         else:
             self._in_progress_jobs[job_id] = meta_data
 
@@ -252,7 +318,7 @@ class JobManager:
 
         if job_id in self._pending_jobs:
             meta_data = self._pending_jobs[job_id]
-            meta_data._job_status = JobStatus.EXPIRED
+            meta_data.set_job_status(JobStatus.EXPIRED)
             self._done_jobs[job_id] = meta_data
             del self._pending_jobs[job_id]
         elif job_id in self._in_progress_jobs:
