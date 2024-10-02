@@ -31,7 +31,7 @@ import (
 	"google.golang.org/grpc/status"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"github.com/aibrix/aibrix/pkg/cache"
 	routing "github.com/aibrix/aibrix/pkg/plugins/gateway/algorithms"
