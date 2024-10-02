@@ -7,6 +7,7 @@ IMG ?= ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/controller-manager:${GIT_COMMIT_HA
 PLUGINS_IMG ?= ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/plugins:${GIT_COMMIT_HASH}
 RUNTIME_IMG ?= ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/runtime:${GIT_COMMIT_HASH}
 USERS_IMG ?= ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/users:${GIT_COMMIT_HASH}
+DOCKERFILE_PATH ?= build/container
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.29.0
 
@@ -122,22 +123,22 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) build -t ${IMG} -f ${DOCKERFILE_PATH}/Dockerfile .
 	$(CONTAINER_TOOL) tag ${IMG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/controller-manager:nightly
 
 .PHONY: docker-build-plugins
 docker-build-plugins: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${PLUGINS_IMG} -f Dockerfile.gateway .
+	$(CONTAINER_TOOL) build -t ${PLUGINS_IMG} -f ${DOCKERFILE_PATH}/Dockerfile.gateway .
 	$(CONTAINER_TOOL) tag ${PLUGINS_IMG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/plugins:nightly
 
 .PHONY: docker-build-runtime
-docker-build-runtime: ## Build docker image with the AI Runime.
-	$(CONTAINER_TOOL) build -t ${RUNTIME_IMG} -f runtime.Dockerfile .
+docker-build-runtime: ## Build docker image with the AI Runtime.
+	$(CONTAINER_TOOL) build -t ${RUNTIME_IMG} -f ${DOCKERFILE_PATH}/Dockerfile.runtime .
 	$(CONTAINER_TOOL) tag ${RUNTIME_IMG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/runtime:nightly
 
 .PHONY: docker-build-users
 docker-build-users: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${USERS_IMG} -f Dockerfile.users .
+	$(CONTAINER_TOOL) build -t ${USERS_IMG} -f ${DOCKERFILE_PATH}/Dockerfile.users .
 	$(CONTAINER_TOOL) tag ${USERS_IMG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/users:nightly
 
 .PHONY: docker-push
