@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"strings"
 	"time"
 
@@ -126,17 +125,17 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			resp = s.HandleResponseBody(ctx, requestID, req, user, targetPodIP)
 
 		default:
-			log.Printf("Unknown Request type %+v\n", v)
+			klog.Infof("Unknown Request type %+v\n", v)
 		}
 
 		if err := srv.Send(resp); err != nil {
-			log.Printf("send error %v", err)
+			klog.Infof("send error %v", err)
 		}
 	}
 }
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, reqeustID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, string, string) {
-	log.Println("--- In RequestHeaders processing ...")
+	klog.Info("--- In RequestHeaders processing ...")
 	var username, model, routingStrategy, targetPodIP string
 	r := req.Request
 	h := r.(*extProcPb.ProcessingRequest_RequestHeaders)
@@ -266,7 +265,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, reqeustID string, req
 }
 
 func (s *Server) HandleRequestBody(req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
-	log.Println("--- In RequestBody processing")
+	klog.Info("--- In RequestBody processing")
 
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestBody{
@@ -295,7 +294,7 @@ func (s *Server) HandleRequestBody(req *extProcPb.ProcessingRequest, targetPodIP
 }
 
 func (s *Server) HandleResponseHeaders(req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
-	log.Println("--- In ResponseHeaders processing")
+	klog.Info("--- In ResponseHeaders processing")
 
 	headers := []*configPb.HeaderValueOption{{
 		Header: &configPb.HeaderValue{
