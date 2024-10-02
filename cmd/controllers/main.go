@@ -112,7 +112,8 @@ func main() {
 	defer klog.Flush()
 	flag.Parse()
 
-	ctrl.SetLogger(klogr.New())
+	// TODO: we will switch to textlogger or zap later
+	ctrl.SetLogger(klogr.New()) // nolint:staticcheck
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
