@@ -81,8 +81,8 @@ jobs:
       # Build Kustomize package
       - name: Build Kustomize
         run: |
-          kustomize build config/dependency > aibrix-dependency-${{ github.ref_name }}.yaml
-          kustomize build config/default > aibrix-core-${{ github.ref_name }}.yaml
+          kustomize build config/dependency/base > aibrix-dependency-${{ github.ref_name }}.yaml
+          kustomize build config/default/base > aibrix-core-${{ github.ref_name }}.yaml
 
       # Upload the Kustomize YAML as a release artifact
       - name: Upload Kustomize YAML

@@ -25,10 +25,10 @@ git clone https://github.com/aibrix/aibrix.git
 cd aibrix
 
 # Install component dependencies
-kubectl create -k config/dependency
+kubectl create -k config/dependency/base
 
 # Install aibrix components
-kubectl create -k config/default
+kubectl create -k config/default/base
 ```
 
 Install stable distribution

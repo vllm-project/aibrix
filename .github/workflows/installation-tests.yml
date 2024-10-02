@@ -50,12 +50,12 @@ jobs:
 
       - name: Deploy controller with the built image
         run: |
-          kubectl create -k config/dependency
+          kubectl create -k config/dependency/base
           cd config/manager && kustomize edit set image controller=aibrix/controller-manager:${{ github.sha }}
           cd ${{ github.workspace }}
           cd config/gateway && kustomize edit set image plugins=aibrix/plugins:${{ github.sha }} && kustomize edit set image users=aibrix/users:${{ github.sha }}
           cd ${{ github.workspace }}
-          kubectl create -k config/default
+          kubectl create -k config/default/base
 
       - name: Check pod status
         run: |
