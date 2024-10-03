@@ -15,6 +15,7 @@ import json
 import asyncio
 from aibrix.batch.driver import BatchDriver
 from aibrix.batch.constant import EXPIRE_INTERVAL
+from aibrix.batch.job_manager import JobStatus
 
 def generate_input_data(num_requests, local_file):
     input_name = "./sample_job_input.json"
@@ -44,8 +45,19 @@ async def driver_proc():
     job_id = _driver.upload_batch_data("./one_job_input.json")
     
     _driver.create_job(job_id, "sample_endpoint", "20m")
+    status = _driver.get_job_status(job_id)
+    assert (status == JobStatus.PENDING)
+    print("Current status: ", status)
 
-    await asyncio.sleep(11 * EXPIRE_INTERVAL)
+    await asyncio.sleep(5 * EXPIRE_INTERVAL)
+    status = _driver.get_job_status(job_id)
+    print("Current status: ", status)
+    assert (status == JobStatus.IN_PROGRESS)
+
+    await asyncio.sleep(6 * EXPIRE_INTERVAL)
+    status = _driver.get_job_status(job_id)
+    print("Current status: ", status)
+    assert (status == JobStatus.COMPLETED)
 
     print("Retrieve results")
     results = _driver.retrieve_job_result(job_id)
