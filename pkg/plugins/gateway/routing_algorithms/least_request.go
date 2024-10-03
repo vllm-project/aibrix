@@ -18,13 +18,12 @@ package routingalgorithms
 
 import (
 	"context"
-	"fmt"
-	"math"
+	"time"
 
 	"github.com/aibrix/aibrix/pkg/cache"
+	"github.com/aibrix/aibrix/pkg/plugins/gateway/metrics"
 	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog/v2"
 )
 
 type leastRequestRouter struct {
@@ -46,20 +45,32 @@ func NewLeastRequestRouter(ratelimiter ratelimiter.AccountRateLimiter) Router {
 
 func (r leastRequestRouter) Get(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
 	var targetPodIP string
-	minCount := math.MaxInt
-	podRequestCounts := r.cache.GetPodRequestCount()
+
+	podList := &v1.PodList{}
 
 	for _, pod := range pods {
-		podIP := pod.Status.PodIP + ":8000"
-		podRequestCount := fmt.Sprintf("%v_REQUEST_COUNT", podIP)
-
-		reqCount := podRequestCounts[podRequestCount]
-		klog.Infof("PodIP: %s, PodRequestCount: %v", podIP, reqCount)
-		if reqCount <= minCount {
-			minCount = reqCount
-			targetPodIP = podIP
-		}
+		podList.Items = append(podList.Items, *pod)
 	}
+
+	metricsClient := metrics.NewKPAMetricsClient()
+	metricsClient.UpdatePodListMetric(ctx, metrics.NamespaceNameMetric{
+		MetricName: "num_requests_running",
+	}, podList, 8000, time.Now())
+
+	// minCount := math.MaxInt
+	// podRequestCounts := r.cache.GetPodRequestCount()
+
+	// for _, pod := range pods {
+	// 	podIP := pod.Status.PodIP + ":8000"
+	// 	podRequestCount := fmt.Sprintf("%v_REQUEST_COUNT", podIP)
+
+	// 	reqCount := podRequestCounts[podRequestCount]
+	// 	klog.Infof("PodIP: %s, PodRequestCount: %v", podIP, reqCount)
+	// 	if reqCount <= minCount {
+	// 		minCount = reqCount
+	// 		targetPodIP = podIP
+	// 	}
+	// }
 
 	return targetPodIP, nil // TODO (varun): remove static port
 }
