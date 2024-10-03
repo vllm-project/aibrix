@@ -1,19 +1,19 @@
 ---
-# Source: kuberay-operator/templates/leader_election_role_binding.yaml
-kind: RoleBinding
+# Source: kuberay-operator/templates/rolebinding.yaml
+kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  labels: 
+  labels:
     app.kubernetes.io/name: kuberay-operator
     helm.sh/chart: kuberay-operator-1.2.1
-    app.kubernetes.io/instance: aibrix-kuberay-operator
+    app.kubernetes.io/instance: kuberay-operator
     app.kubernetes.io/managed-by: Helm
-  name: aibrix-kuberay-operator-leader-election
+  name: kuberay-operator
 subjects:
 - kind: ServiceAccount
   name: kuberay-operator
   namespace: aibrix-system
 roleRef:
-  kind: Role
-  name: aibrix-kuberay-operator-leader-election
+  kind: ClusterRole
+  name: kuberay-operator
   apiGroup: rbac.authorization.k8s.io

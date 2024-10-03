@@ -53,7 +53,7 @@ var (
 )
 
 const (
-	modelIdentifier = "model.aibrix.ai"
+	modelIdentifier = "model.aibrix.ai/name"
 )
 
 func GetCache() (*Cache, error) {
@@ -139,7 +139,7 @@ func (c *Cache) addPod(obj interface{}) {
 
 	c.pods[pod.Name] = pod
 	c.addPodAndModelMapping(pod.Name, modelName)
-	klog.Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
+	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
 }
 
@@ -159,9 +159,11 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 		return
 	}
 
+	delete(c.pods, oldPod.Name)
+	c.pods[newPod.Name] = newPod
 	c.deletePodAndModelMapping(oldPod.Name, oldModelName)
 	c.addPodAndModelMapping(newPod.Name, newModelName)
-	klog.Infof("POD UPDATED. %s/%s %s", oldPod.Namespace, oldPod.Name, newPod.Status.Phase)
+	klog.V(4).Infof("POD UPDATED. %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
 	c.debugInfo()
 }
 
@@ -170,14 +172,21 @@ func (c *Cache) deletePod(obj interface{}) {
 	defer c.mu.Unlock()
 
 	pod := obj.(*v1.Pod)
-	modelName, ok := pod.Labels[modelIdentifier]
+	_, ok := pod.Labels[modelIdentifier]
 	if !ok {
 		return
 	}
 
+	// delete base model and associated lora models on this pod
+	if models, ok := c.podToModelMapping[pod.Name]; ok {
+		for modelName := range models {
+			c.deletePodAndModelMapping(pod.Name, modelName)
+		}
+	}
+	delete(c.podToModelMapping, pod.Name)
 	delete(c.pods, pod.Name)
-	c.deletePodAndModelMapping(pod.Name, modelName)
-	klog.Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
+
+	klog.V(4).Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
 }
 
@@ -190,7 +199,7 @@ func (c *Cache) addModelAdapter(obj interface{}) {
 		c.addPodAndModelMapping(pod, model.Name)
 	}
 
-	klog.Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
+	klog.V(4).Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
 	c.debugInfo()
 }
 
@@ -209,7 +218,7 @@ func (c *Cache) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 		c.addPodAndModelMapping(pod, newModel.Name)
 	}
 
-	klog.Infof("MODELADAPTER UPDATED. %s/%s %s", oldModel.Namespace, oldModel.Name, newModel.Status.Phase)
+	klog.V(4).Infof("MODELADAPTER UPDATED. %s/%s %s", oldModel.Namespace, oldModel.Name, newModel.Status.Phase)
 	c.debugInfo()
 }
 
@@ -221,8 +230,9 @@ func (c *Cache) deleteModelAdapter(obj interface{}) {
 	for _, pod := range model.Status.Instances {
 		c.deletePodAndModelMapping(pod, model.Name)
 	}
+	delete(c.modelToPodMapping, model.Name)
 
-	klog.Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
+	klog.V(4).Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
 	c.debugInfo()
 }
 
@@ -255,27 +265,34 @@ func (c *Cache) addPodAndModelMapping(podName, modelName string) {
 }
 
 func (c *Cache) deletePodAndModelMapping(podName, modelName string) {
-	delete(c.podToModelMapping, podName)
-	delete(c.modelToPodMapping, modelName)
+	if models, ok := c.podToModelMapping[podName]; ok {
+		delete(models, modelName)
+		c.podToModelMapping[podName] = models
+	}
+
+	if pods, ok := c.modelToPodMapping[modelName]; ok {
+		delete(pods, podName)
+		c.modelToPodMapping[modelName] = pods
+	}
 }
 
 func (c *Cache) debugInfo() {
 	for _, pod := range c.pods {
-		klog.Info(pod.Name)
+		klog.V(4).Infof("pod: %s, podIP: %v", pod.Name, pod.Status.PodIP)
 	}
 	for podName, models := range c.podToModelMapping {
 		var modelList string
 		for modelName := range models {
 			modelList += modelName + " "
 		}
-		klog.Infof("pod: %s, models: %s", podName, modelList)
+		klog.V(4).Infof("pod: %s, models: %s", podName, modelList)
 	}
 	for modelName, pods := range c.modelToPodMapping {
 		var podList string
 		for podName := range pods {
 			podList += podName + " "
 		}
-		klog.Infof("model: %s, pods: %s", modelName, podList)
+		klog.V(4).Infof("model: %s, pods: %s", modelName, podList)
 	}
 }
 

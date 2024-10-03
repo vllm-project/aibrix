@@ -29,6 +29,7 @@ import (
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/cache"
 	"github.com/aibrix/aibrix/pkg/controller/modeladapter/scheduling"
+	"github.com/aibrix/aibrix/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -43,23 +44,29 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 const (
 	//ControllerUIDLabelKey = "model-adapter-controller-uid"
-	ModelAdapterFinalizer = "modeladapter.aibrix.ai/finalizer"
+	ModelIdentifierKey                = "model.aibrix.ai/name"
+	ModelAdapterFinalizer             = "adapter.model.aibrix.ai/finalizer"
+	ModelAdapterPodTemplateLabelKey   = "adapter.model.aibrix.ai/enabled"
+	ModelAdapterPodTemplateLabelValue = "true"
 )
 
 var (
 	controllerKind                     = modelv1alpha1.GroupVersion.WithKind("ModelAdapter")
 	controllerName                     = "model-adapter-controller"
 	defaultModelAdapterSchedulerPolicy = "leastAdapters"
-	defaultRequeueDuration             = 1 * time.Second
+	defaultRequeueDuration             = 3 * time.Second
 )
 
 // Add creates a new ModelAdapter Controller and adds it to the Manager with default RBAC.
@@ -120,15 +127,63 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	return reconciler, nil
 }
 
+func podWithLabelFilter(labelKey, labelValue, modelIdKey string) predicate.Predicate {
+	hasLabelAndModelIdentifier := func(labels map[string]string, labelKey, labelValue, modelIdentifierKey string) bool {
+		if _, exists := labels[modelIdentifierKey]; !exists {
+			return false
+		}
+		return labels[labelKey] == labelValue
+	}
+
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return hasLabelAndModelIdentifier(e.Object.GetLabels(), labelKey, labelValue, modelIdKey)
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return hasLabelAndModelIdentifier(e.ObjectNew.GetLabels(), labelKey, labelValue, modelIdKey)
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			return hasLabelAndModelIdentifier(e.Object.GetLabels(), labelKey, labelValue, modelIdKey)
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return hasLabelAndModelIdentifier(e.Object.GetLabels(), labelKey, labelValue, modelIdKey)
+		},
+	}
+}
+
+func lookupLinkedModelAdapterInNamespace(c client.Client) handler.MapFunc {
+	return func(ctx context.Context, a client.Object) []reconcile.Request {
+		modelAdapterList := &modelv1alpha1.ModelAdapterList{}
+		if err := c.List(ctx, modelAdapterList, client.InNamespace(a.GetNamespace())); err != nil {
+			klog.ErrorS(err, "unable to list model adapters in namespace", "namespace", a.GetNamespace())
+			return []reconcile.Request{}
+		}
+
+		requests := make([]reconcile.Request, 0, len(modelAdapterList.Items))
+		for _, modelAdapter := range modelAdapterList.Items {
+			// Originally, we think it's better to check model adapter.Status.Instances, if it includes the pod name, then we put the model adapter into the queue
+			// However, there's other cases like pending model adapter needs to wait for new pods to be scheduled immediately, so we should reconcile all adapters if there're new pods added
+			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: a.GetNamespace(), Name: modelAdapter.GetName()}})
+		}
+
+		return requests
+	}
+}
+
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// use the builder fashion. If we need more fine grain control later, we can switch to `controller.New()`
 	err := ctrl.NewControllerManagedBy(mgr).
 		Named(controllerName).
-		For(&modelv1alpha1.ModelAdapter{}).
+		For(&modelv1alpha1.ModelAdapter{}, builder.WithPredicates(predicate.Or(
+			predicate.GenerationChangedPredicate{},
+			predicate.LabelChangedPredicate{},
+			predicate.AnnotationChangedPredicate{},
+		))).
 		Owns(&corev1.Service{}).
 		Owns(&discoveryv1.EndpointSlice{}).
-		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}).
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(lookupLinkedModelAdapterInNamespace(mgr.GetClient())),
+			builder.WithPredicates(podWithLabelFilter(ModelAdapterPodTemplateLabelKey, ModelAdapterPodTemplateLabelValue, ModelIdentifierKey))).
 		Complete(r)
 
 	klog.V(4).InfoS("Finished to add model-adapter-controller")
@@ -296,6 +351,14 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 				return ctrl.Result{}, r.clearModelAdapterInstanceList(ctx, instance)
 			}
 
+			if !utils.IsPodReady(selectedPod) || utils.IsPodTerminating(selectedPod) {
+				klog.Warning(fmt.Sprintf("current assigned pod %s/%s is not ready, let's clean it up and reschedule the adapter", selectedPod.Namespace, selectedPod.Name))
+				// continue to requeue the object to remove endpoint etc in current loop.
+				if err = r.clearModelAdapterInstanceList(ctx, instance); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
+
 			existPods = true
 		}
 	}
@@ -306,25 +369,27 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 		selectedPod, err = r.schedulePod(ctx, instance)
 		if err != nil {
 			klog.ErrorS(err, "Failed to schedule Pod for ModelAdapter", "modelAdapter", instance.Name)
-			return ctrl.Result{RequeueAfter: defaultRequeueDuration}, err
+			return ctrl.Result{}, err
 		}
+		if selectedPod != nil {
+			instance.Status.Phase = modelv1alpha1.ModelAdapterScheduling
+			instance.Status.Instances = []string{selectedPod.Name}
+			meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+				Type:               string(modelv1alpha1.ModelAdapterConditionTypeSelectorMatched),
+				Status:             metav1.ConditionTrue,
+				Reason:             "Reconciling",
+				Message:            fmt.Sprintf("ModelAdapter %s has been allocated to pod %s", klog.KObj(instance), selectedPod.Name),
+				LastTransitionTime: metav1.Now(),
+			})
 
-		instance.Status.Phase = modelv1alpha1.ModelAdapterScheduling
-		instance.Status.Instances = []string{selectedPod.Name}
-		meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
-			Type:               string(modelv1alpha1.ModelAdapterConditionTypeSelectorMatched),
-			Status:             metav1.ConditionTrue,
-			Reason:             "Reconciling",
-			Message:            fmt.Sprintf("ModelAdapter %s has been allocated to pod %s", klog.KObj(instance), selectedPod.Name),
-			LastTransitionTime: metav1.Now(),
-		})
+			if err := r.Status().Update(ctx, instance); err != nil {
+				klog.InfoS("Got error when updating status", "cluster name", req.Name, "error", err, "ModelAdapter", instance)
+				return ctrl.Result{}, err
+			}
 
-		if err := r.Status().Update(ctx, instance); err != nil {
-			klog.InfoS("Got error when updating status", "cluster name", req.Name, "error", err, "ModelAdapter", instance)
-			return ctrl.Result{RequeueAfter: defaultRequeueDuration}, err
+			return ctrl.Result{Requeue: true}, nil
 		}
-
-		return ctrl.Result{Requeue: true}, nil
+		// selectedPod is nil means there's no valid pods, it should wait for new pods coming pod or any pod related changes like label change.
 	}
 
 	// Step 2: Reconcile Loading
@@ -358,7 +423,6 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	// Check if need to update the status.
 	if r.inconsistentModelAdapterStatus(oldInstance.Status, instance.Status) {
 		klog.InfoS("model adapter reconcile", "Update CR status", req.Name, "status", instance.Status)
-		instance.Status.Phase = modelv1alpha1.ModelAdapterRunning
 		if err = r.updateStatus(ctx, instance); err != nil {
 			return reconcile.Result{}, fmt.Errorf("update modelAdapter status error: %v", err)
 		}
@@ -386,9 +450,12 @@ func (r *ModelAdapterReconciler) clearModelAdapterInstanceList(ctx context.Conte
 		Type:               string(modelv1alpha1.ModelAdapterConditionCleanup),
 		Status:             metav1.ConditionTrue,
 		Reason:             "Reconciling",
-		Message:            fmt.Sprintf("Pod (%s) can not be fetched for model adapter (%s), clean up the list", stalePodName, instance.Name),
+		Message:            fmt.Sprintf("Pod (%s) can not be fetched or invalid for model adapter (%s), clean up the list", stalePodName, instance.Name),
 		LastTransitionTime: metav1.Now(),
 	})
+
+	// remove instance means the lora has not targets at this moment.
+	instance.Status.Phase = modelv1alpha1.ModelAdapterPending
 
 	if err := r.Status().Update(ctx, instance); err != nil {
 		klog.Error(err, "Failed to update modelAdapter status")
@@ -410,21 +477,40 @@ func (r *ModelAdapterReconciler) schedulePod(ctx context.Context, instance *mode
 		return nil, err
 	}
 
-	if len(podList.Items) == 0 {
-		return nil, fmt.Errorf("no pods found matching selector")
+	// filter active pod
+	var activePods []corev1.Pod
+
+	for _, pod := range podList.Items {
+		if !utils.IsPodTerminating(&pod) && utils.IsPodReady(&pod) {
+			activePods = append(activePods, pod)
+		}
 	}
 
-	return r.scheduler.SelectPod(ctx, podList.Items)
+	if len(activePods) == 0 {
+		klog.Warning("no pods found matching selector")
+		return nil, nil
+	}
+
+	return r.scheduler.SelectPod(ctx, activePods)
 }
 
 func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance *modelv1alpha1.ModelAdapter, pod *corev1.Pod) error {
+	if pod == nil {
+		return nil
+	}
+
+	// selectPod could be in termination, in this case, we just do nothing.
+	if pod.DeletionTimestamp != nil {
+		return nil
+	}
+
 	// Define the key you want to check
 	key := "DEBUG_MODE"
 	value, exists := getEnvKey(key)
 	host := fmt.Sprintf("http://%s:8000", pod.Status.PodIP)
 	if exists && value == "on" {
 		// 30080 is the nodePort of the base model service.
-		host = fmt.Sprintf("http://%s:30080", "localhost")
+		host = fmt.Sprintf("http://%s:30081", "localhost")
 	}
 
 	// Check if the model is already loaded
@@ -661,6 +747,7 @@ func (r *ModelAdapterReconciler) reconcileService(ctx context.Context, instance 
 		klog.ErrorS(err, "Failed to get Service")
 		return ctrl.Result{}, err
 	}
+	// TODO: add `else` logic let's compare the service major fields and update to the target state.
 
 	// TODO: Now, we are using the name comparison which is not enough,
 	// compare the object difference in future.
@@ -708,6 +795,25 @@ func (r *ModelAdapterReconciler) reconcileEndpointSlice(ctx context.Context, ins
 		klog.ErrorS(err, "Failed to get EndpointSlice")
 		return ctrl.Result{}, err
 	} else {
+		// Check if pod is nil, and if so, clear the endpoints and set the phase to Pending
+		if pod == nil {
+			klog.InfoS("Pod is nil, clearing all endpoints and setting status to Pending")
+			found.Endpoints = []discoveryv1.Endpoint{}
+
+			if err := r.Update(ctx, found); err != nil {
+				klog.ErrorS(err, "Failed to update EndpointSlice after clearing endpoints", "EndpointSlice", found.Name)
+				return ctrl.Result{}, err
+			}
+
+			instance.Status.Phase = modelv1alpha1.ModelAdapterPending
+			if err := r.Status().Update(ctx, instance); err != nil {
+				klog.Error(err, "Failed to update modelAdapter status to Pending")
+				return ctrl.Result{}, err
+			}
+
+			return ctrl.Result{}, nil
+		}
+
 		// Existing EndpointSlice Found. Check if the Pod IP is already in the EndpointSlice
 		podIP := pod.Status.PodIP
 		alreadyExists := false
@@ -733,9 +839,44 @@ func (r *ModelAdapterReconciler) reconcileEndpointSlice(ctx context.Context, ins
 				klog.ErrorS(err, "Failed to update EndpointSlice", "EndpointSlice", found.Name)
 				return ctrl.Result{}, err
 			}
+			instance.Status.Phase = modelv1alpha1.ModelAdapterRunning
 			klog.InfoS("Successfully updated EndpointSlice", "EndpointSlice", found.Name)
 		} else {
-			klog.InfoS("Pod IP already exists in EndpointSlice", "PodIP", podIP)
+			// pod has been deleted, and we should remove the pod name from the list
+			if pod.DeletionTimestamp != nil {
+				var updatedEndpoints []discoveryv1.Endpoint
+				podIP := pod.Status.PodIP
+
+				for _, endpoint := range found.Endpoints {
+					shouldRemove := false
+					var newAddresses []string
+
+					for _, address := range endpoint.Addresses {
+						if address == podIP {
+							shouldRemove = true
+						} else {
+							newAddresses = append(newAddresses, address)
+						}
+					}
+
+					if !shouldRemove || len(newAddresses) > 0 {
+						endpoint.Addresses = newAddresses
+						updatedEndpoints = append(updatedEndpoints, endpoint)
+					}
+				}
+
+				found.Endpoints = updatedEndpoints
+				if err := r.Update(ctx, found); err != nil {
+					klog.ErrorS(err, "Failed to update EndpointSlice after removing PodIP", "EndpointSlice", found.Name)
+					return ctrl.Result{}, err
+				}
+
+				instance.Status.Phase = modelv1alpha1.ModelAdapterPending
+				klog.InfoS("Successfully removed Pod IP from EndpointSlice", "PodIP", podIP, "EndpointSlice", found.Name)
+			} else {
+				klog.InfoS("Pod IP already exists in EndpointSlice", "PodName", pod.Name, "PodIP", podIP)
+				instance.Status.Phase = modelv1alpha1.ModelAdapterRunning
+			}
 		}
 	}
 

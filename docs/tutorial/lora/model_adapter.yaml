@@ -4,13 +4,13 @@ metadata:
   name: lora-1
   namespace: aibrix-system
   labels:
-    model.aibrix.ai: "lora-1"
+    model.aibrix.ai/name: "lora-1"
     model.aibrix.ai/port: "8000"
 spec:
   baseModel: llama2-70b
   podSelector:
     matchLabels:
-      model.aibrix.ai: llama2-70b
+      model.aibrix.ai/name: llama2-70b
   artifactURL: huggingface://yard1/llama-2-7b-sql-lora-test
   schedulerName: default
 # ---

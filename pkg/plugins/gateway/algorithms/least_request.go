@@ -21,34 +21,42 @@ import (
 	"fmt"
 	"math"
 
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
+	"github.com/aibrix/aibrix/pkg/cache"
+	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/ratelimiter"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
-type throughputRouter struct {
-	ratelimiter ratelimiter.AccountRateLimiter
+type leastRequestRouter struct {
+	ratelimiter ratelimiter.RateLimiter
+	cache       *cache.Cache
 }
 
-func NewThroughputRouter(ratelimiter ratelimiter.AccountRateLimiter) Router {
-	return throughputRouter{
+func NewLeastRequestRouter(ratelimiter ratelimiter.RateLimiter) Router {
+	cache, err := cache.GetCache()
+	if err != nil {
+		panic(err)
+	}
+
+	return leastRequestRouter{
 		ratelimiter: ratelimiter,
+		cache:       cache,
 	}
 }
 
-func (r throughputRouter) Get(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
+func (r leastRequestRouter) Get(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
 	var targetPodIP string
 	minCount := math.MaxInt
+	podRequestCounts := r.cache.GetPodRequestCount()
 
 	for _, pod := range pods {
 		podIP := pod.Status.PodIP + ":8000"
-		reqCount, err := r.ratelimiter.Get(ctx, fmt.Sprintf("%v_THROUGHPUT", podIP))
-		if err != nil {
-			return "", err
-		}
-		klog.Infof("PodIP: %s, PodThroughput: %v", podIP, reqCount)
-		if reqCount <= int64(minCount) {
-			minCount = int(reqCount)
+		podRequestCount := fmt.Sprintf("%v_REQUEST_COUNT", podIP)
+
+		reqCount := podRequestCounts[podRequestCount]
+		klog.Infof("PodIP: %s, PodRequestCount: %v", podIP, reqCount)
+		if reqCount <= minCount {
+			minCount = reqCount
 			targetPodIP = podIP
 		}
 	}

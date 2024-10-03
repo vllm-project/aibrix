@@ -4,6 +4,7 @@ metadata:
   labels:
     models.aibricks.ai: deepseek-coder-6.7b-instruct
     models.aibricks.com/model-name: deepseek-coder-6.7b-instruct
+    adapter.model.aibrix.ai/enabled: "true"
   name: aibricks-model-deepseek-coder-6.7b-instruct
   namespace: default
 spec:

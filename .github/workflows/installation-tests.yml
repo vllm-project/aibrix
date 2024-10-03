@@ -55,7 +55,7 @@ jobs:
           cd ${{ github.workspace }}
           cd config/gateway && kustomize edit set image plugins=aibrix/plugins:${{ github.sha }} && kustomize edit set image users=aibrix/users:${{ github.sha }}
           cd ${{ github.workspace }}
-          kubectl apply -k config/default
+          kubectl create -k config/default
 
       - name: Check pod status
         run: |

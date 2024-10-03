@@ -6,16 +6,17 @@ metadata:
   name: deepseek-33b-instruct
   namespace: default
   labels:
-    model.aibrix.ai: deepseek-33b-instruct
+    model.aibrix.ai/name: deepseek-33b-instruct
+    adapter.model.aibrix.ai/enabled: "true"
 spec:
   replicas: 1
   selector:
     matchLabels:
-      model.aibrix.ai: deepseek-33b-instruct
+      model.aibrix.ai/name: deepseek-33b-instruct
   template:
     metadata:
       labels:
-        model.aibrix.ai: deepseek-33b-instruct
+        model.aibrix.ai/name: deepseek-33b-instruct
     spec:
       containers:
       - name: deepseek-33b-instruct
@@ -59,7 +60,7 @@ spec:
   baseModel: llama2-70b
   podSelector:
     matchLabels:
-      model.aibrix.ai: llama2-70b
+      model.aibrix.ai/name: llama2-70b
   schedulerName: default-model-adapter-scheduler
 status:
   phase: Configuring
@@ -71,8 +72,8 @@ kind: Service
 metadata:
   creationTimestamp: "2024-07-14T21:42:57Z"
   labels:
-    model.aibrix.ai/base-model: llama2-70b
-    model.aibrix.ai/model-adapter: text2sql-lora-1
+    model.aibrix.ai/name: llama2-70b
+    adapter.model.aibrix.ai/name: text2sql-lora-1
   name: text2sql-lora-1
   namespace: default
   ownerReferences:
@@ -99,7 +100,7 @@ spec:
     targetPort: 8000
   publishNotReadyAddresses: true
   selector:
-    model.aibrix.ai: llama2-70b
+    model.aibrix.ai/name: llama2-70b
   sessionAffinity: None
   type: ClusterIP
 status:
@@ -152,8 +153,8 @@ metadata:
     endpoints.kubernetes.io/last-change-trigger-time: "2024-07-14T21:42:57Z"
   creationTimestamp: "2024-07-14T21:42:57Z"
   labels:
-    model.aibrix.ai/base-model: llama2-70b
-    model.aibrix.ai/model-adapter: text2sql-lora-1
+    model.aibrix.ai/name: llama2-70b
+    adapter.model.aibrix.ai/name: text2sql-lora-1
     service.kubernetes.io/headless: ""
   name: text2sql-lora-1
   namespace: default

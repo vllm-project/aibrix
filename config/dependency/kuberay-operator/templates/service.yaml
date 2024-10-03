@@ -3,11 +3,11 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: aibrix-kuberay-operator
+  name: kuberay-operator
   labels:
     app.kubernetes.io/name: kuberay-operator
     helm.sh/chart: kuberay-operator-1.2.1
-    app.kubernetes.io/instance: aibrix-kuberay-operator
+    app.kubernetes.io/instance: kuberay-operator
     app.kubernetes.io/managed-by: Helm
 spec:
   type: ClusterIP
@@ -18,4 +18,4 @@ spec:
       name: http
   selector:
     app.kubernetes.io/name: kuberay-operator
-    app.kubernetes.io/instance: aibrix-kuberay-operator
+    app.kubernetes.io/instance: kuberay-operator

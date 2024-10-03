@@ -1,6 +1,6 @@
 ---
-# Source: kuberay-operator/templates/ray_rayjob_editor_role.yaml
-# permissions for end users to edit rayjobs.
+# Source: kuberay-operator/templates/ray_rayjob_viewer_role.yaml
+# permissions for end users to view rayjobs.
 
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
@@ -8,21 +8,17 @@ metadata:
   labels: 
     app.kubernetes.io/name: kuberay-operator
     helm.sh/chart: kuberay-operator-1.2.1
-    app.kubernetes.io/instance: aibrix-kuberay-operator
+    app.kubernetes.io/instance: kuberay-operator
     app.kubernetes.io/managed-by: Helm
-  name: rayjob-editor-role
+  name: rayjob-viewer-role
 rules:
 - apiGroups:
   - ray.io
   resources:
   - rayjobs
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - ray.io

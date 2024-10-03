@@ -39,7 +39,7 @@ Nightly Version
     kubectl create -k config/dependency
 
     # Install aibrix components
-    kubectl apply -k config/default
+    kubectl create -k config/default
 
 
 Install AIBrix on Kind Cluster

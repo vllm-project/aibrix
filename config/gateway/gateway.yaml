@@ -33,9 +33,10 @@ spec:
         - name: aibrix-gateway-plugins
           port: 50052
       processingMode:
-        request: {}
+        request:
+          body: Buffered
         response: 
-          body: Streamed
+          body: Buffered
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyPatchPolicy

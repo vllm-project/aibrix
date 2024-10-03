@@ -61,8 +61,8 @@ func buildModelAdapterEndpointSlice(instance *modelv1alpha1.ModelAdapter, pod *c
 
 func buildModelAdapterService(instance *modelv1alpha1.ModelAdapter) (*corev1.Service, error) {
 	labels := map[string]string{
-		"model.aibrix.ai/base-model":    instance.Spec.BaseModel,
-		"model.aibrix.ai/model-adapter": instance.Name,
+		"model.aibrix.ai/name":         instance.Spec.BaseModel,
+		"adapter.model.aibrix.ai/name": instance.Name,
 	}
 
 	ports := []corev1.ServicePort{

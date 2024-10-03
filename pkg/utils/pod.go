@@ -30,6 +30,11 @@ const (
 	NAMESPACE = "aibrix-system"
 )
 
+// IsPodTerminating check if pod is in terminating status via whether the deletion timestamp is set
+func IsPodTerminating(pod *v1.Pod) bool {
+	return pod.ObjectMeta.DeletionTimestamp != nil
+}
+
 // IsPodReady returns true if a pod is ready; false otherwise.
 func IsPodReady(pod *v1.Pod) bool {
 	return IsPodReadyConditionTrue(pod.Status)
