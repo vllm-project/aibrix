@@ -47,11 +47,14 @@ async def driver_proc():
 
     await asyncio.sleep(11 * EXPIRE_INTERVAL)
 
-    print("start to read results")
+    print("Retrieve results")
     results = _driver.retrieve_job_result(job_id)
     for i, req_result in enumerate(results):
         print(i, req_result)
 
+    _driver.clear_job(job_id)
+    print(f"Job {job_id} is cleaned.")
+    await asyncio.sleep(2 * EXPIRE_INTERVAL)
 
 if __name__ == "__main__":
     asyncio.run(driver_proc())

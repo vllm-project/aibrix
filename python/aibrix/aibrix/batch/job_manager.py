@@ -56,31 +56,35 @@ class JobMetaInfo:
         self._meta_data = {}
     
     def set_request_bit(self, req_id):
-        #async with self._async_lock:  # Acquire lock for asynchronous function
+        #This marks the request successfully executed.
         self._request_progress_bits[req_id] = True
     
     def get_request_bit(self, req_id):
-        #async with self._async_lock:  
         return self._request_progress_bits[req_id]
     
     def set_job_status(self, status):
-        #async with self._async_lock:  
         self._job_status = status
     
     def get_job_status(self):
-        #async with self._async_lock:  
         return self._job_status
 
     def complete_one_request(self, req_id):
-        #async with self._async_lock:  
+        """
+        This is called after an inference call. If all requests
+        are done, we need to update its status to be completed.
+        """
         if not self._request_progress_bits[req_id]:
-            self._request_progress_bits[req_id] = True
+            self.set_request_bit(req_id)
             self._succeed_num_requests += 1
             if self._succeed_num_requests == self._num_requests:
                 self._job_status = JobStatus.COMPLETED
 
     def next_request_id(self):
-        #async with self._async_lock:  
+        """
+        Returns the next request for inference. Due to the propobility 
+        that some requests are failed, this returns a request that 
+        are not marked as executed.
+        """
         if self._succeed_num_requests == self._num_requests:
             return -1
 

@@ -39,7 +39,7 @@ class JobScheduler:
         self._running_job_pool = [None] * pool_size
         self._running_job_idx = 0
         self._job_pool_size = pool_size
-        # Start sliding process in an async way
+        # Start the loop process in an async way
         asyncio.create_task(self.job_cleanup_loop())
         self._policy = policy
 
@@ -138,7 +138,11 @@ class JobScheduler:
         self._running_job_idx =  self._running_job_idx % len(self._running_job_pool)
         job_id = self._running_job_pool[self._running_job_idx]
         
-        # if found a available slot, shrink job pool size.
+        """
+        The scheduler supports HPA resources. 
+        If scheduler detects pool size small, this shrink job pool size,
+        when there is a available slot, .
+        """
         while not job_id and len(self._running_job_pool) > self._job_pool_size:
             del self._running_job_pool[self._running_job_idx]
             temp_id = self._running_job_idx % len(self._running_job_pool)
@@ -147,9 +151,13 @@ class JobScheduler:
             print("Shrink job pool size by 1 in JobScheduler!", len(self._running_job_pool), self._job_pool_size)
 
         num_empty_slots = 0
-        # two conditions are:
-        # 1. if there is a slot available. schedule a new job in.
-        # 2. if there is real job in the slot, we need to check its status
+        """
+        When the pool size becomes bigger, this is to digest more jobs.
+        Two conditions are:
+        1. if there is a slot available. schedule a new job in.
+        2. if there is real job in the slot, we need to check its status. If it is
+        completed, we also need to schedule a new job in.
+        """
         while not job_id or (job_id and self._job_manager.get_job_status(job_id) == JobStatus.COMPLETED):
             # Schedule a new job and fill in the slot
             job_id = None
