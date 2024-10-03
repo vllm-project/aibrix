@@ -1,0 +1,10 @@
+resources:
+  - ../../../../dependency
+
+patches:
+- path: envoy_config_patch.yaml
+
+images:
+- name: envoyproxy/gateway
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/gateway
+  newTag: v1.1.0

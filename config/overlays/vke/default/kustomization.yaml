@@ -1,0 +1,10 @@
+namespace: aibrix-system
+
+namePrefix: aibrix-
+
+resources:
+- ../../../crd
+- ../../../rbac
+- manager
+- gateway
+- ../dependency/kuberay-operator
