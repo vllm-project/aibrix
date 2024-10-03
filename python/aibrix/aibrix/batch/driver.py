@@ -11,7 +11,7 @@
 # limitations under the License.
 
 import asyncio
-from aibrix.batch.constant import EXPIRE_INTERVAL, DEFAULT_JOB_POOL_SIZE
+from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE
 
 import aibrix.batch.storage as _storage
 from aibrix.batch.scheduler import JobScheduler
@@ -29,20 +29,20 @@ class BatchDriver:
         self._scheduler = JobScheduler(self._job_manager, DEFAULT_JOB_POOL_SIZE)
         self._proxy = RequestProxy(self._storage, self._job_manager)
         asyncio.create_task(self.jobs_running_loop())
-    
+
     def upload_batch_data(self, input_file_name):
         job_id = self._storage.submit_job_input(input_file_name)
         return job_id
 
     def create_job(self, job_id, endpoint, window_due_time):
         self._job_manager.create_job(job_id, endpoint, window_due_time)
-        
+
         due_time = self._job_manager.get_job_window_due(job_id)
         self._scheduler.append_job(job_id, due_time)
-    
+
     def get_job_status(self, job_id):
         return self._job_manager.get_job_status(job_id)
-        
+
     def retrieve_job_result(self, job_id):
         num_requests = _storage.get_job_num_request(job_id)
         req_results = _storage.get_job_results(job_id, 0, num_requests)
@@ -52,11 +52,11 @@ class BatchDriver:
         """
         This loop is going through all active jobs in scheduler.
         For now, the executing unit is one request. Later if necessary,
-        we can support a batch size of request per execution. 
+        we can support a batch size of request per execution.
         """
         while True:
             one_job = self._scheduler.round_robin_get_job()
-            if one_job: 
+            if one_job:
                 await self._proxy.execute_queries(one_job)
             await asyncio.sleep(0)
 

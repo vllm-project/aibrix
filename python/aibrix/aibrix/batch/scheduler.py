@@ -19,12 +19,18 @@ import queue
 from aibrix.batch.constant import EXPIRE_INTERVAL, DEFAULT_JOB_POOL_SIZE
 from aibrix.batch.job_manager import JobStatus
 
+
 class SchedulePolicy(Enum):
     FIFO = 1
 
 
 class JobScheduler:
-    def __init__(self, job_manager, pool_size, policy=SchedulePolicy.FIFO,):
+    def __init__(
+        self,
+        job_manager,
+        pool_size,
+        policy=SchedulePolicy.FIFO,
+    ):
         """
         self._jobs_queue are all the jobs.
         self._due_jobs_list stores all potential jobs that can be marked
@@ -44,10 +50,10 @@ class JobScheduler:
         self._policy = policy
 
     def configure_job_pool_size(self, new_pool_size):
-        assert(new_pool_size >= 1)
+        assert new_pool_size >= 1
         while new_pool_size > len(self._running_job_pool):
             self._running_job_pool.append(None)
-        
+
         self._job_pool_size = new_pool_size
 
     def append_job(self, job_id, due_time_seconds):
@@ -135,9 +141,9 @@ class JobScheduler:
             await asyncio.sleep(time_to_next_run)  # Wait for the remaining time
 
     def round_robin_get_job(self):
-        self._running_job_idx =  self._running_job_idx % len(self._running_job_pool)
+        self._running_job_idx = self._running_job_idx % len(self._running_job_pool)
         job_id = self._running_job_pool[self._running_job_idx]
-        
+
         """
         The scheduler supports HPA resources. 
         If scheduler detects pool size small, this shrink job pool size,
@@ -148,7 +154,11 @@ class JobScheduler:
             temp_id = self._running_job_idx % len(self._running_job_pool)
             self._running_job_idx = temp_id
             job_id = self._running_job_pool[self._running_job_idx]
-            print("Shrink job pool size by 1 in JobScheduler!", len(self._running_job_pool), self._job_pool_size)
+            print(
+                "Shrink job pool size by 1 in JobScheduler!",
+                len(self._running_job_pool),
+                self._job_pool_size,
+            )
 
         num_empty_slots = 0
         """
@@ -158,24 +168,25 @@ class JobScheduler:
         2. if there is real job in the slot, we need to check its status. If it is
         completed, we also need to schedule a new job in.
         """
-        while not job_id or (job_id and self._job_manager.get_job_status(job_id) == JobStatus.COMPLETED):
+        while not job_id or (
+            job_id and self._job_manager.get_job_status(job_id) == JobStatus.COMPLETED
+        ):
             # Schedule a new job and fill in the slot
             job_id = None
             new_job_id = self.schedule_next_job()
-            if not new_job_id :
+            if not new_job_id:
                 num_empty_slots += 1
                 if num_empty_slots == DEFAULT_JOB_POOL_SIZE:
                     break
                 else:
                     continue
-            
+
             self._running_job_pool[self._running_job_idx] = new_job_id
             self._running_job_idx += 1
-            self._running_job_idx =  self._running_job_idx % len(self._running_job_pool)
-        
+            self._running_job_idx = self._running_job_idx % len(self._running_job_pool)
+
             job_id = self._running_job_pool[self._running_job_idx]
-        
+
         if not job_id:
             print("No job is found!")
         return job_id
-        

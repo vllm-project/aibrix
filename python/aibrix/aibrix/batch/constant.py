@@ -1,3 +1,5 @@
+# Copyright 2024 The Aibrix Team.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -10,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The following are all constants.
 
+# The following are all constants.
 # This is the time interval for the sliding window to check.
 EXPIRE_INTERVAL = 1
-# This is the job pool size in job scheduler. 
+# This is the job pool size in job scheduler.
 # It should be proportional to resource size in the backend.
 DEFAULT_JOB_POOL_SIZE = 1

@@ -41,7 +41,7 @@ class JobMetaInfo:
         self._num_requests = 0
         self._started_time = time.time()
         self._end_time = None
-        
+
         self._model_endpoint = model_endpoint
         self._completion_window_str = completion_window
         self._completion_window = 0
@@ -54,17 +54,17 @@ class JobMetaInfo:
 
         # extral metadata
         self._meta_data = {}
-    
+
     def set_request_bit(self, req_id):
-        #This marks the request successfully executed.
+        # This marks the request successfully executed.
         self._request_progress_bits[req_id] = True
-    
+
     def get_request_bit(self, req_id):
         return self._request_progress_bits[req_id]
-    
+
     def set_job_status(self, status):
         self._job_status = status
-    
+
     def get_job_status(self):
         return self._job_status
 
@@ -81,8 +81,8 @@ class JobMetaInfo:
 
     def next_request_id(self):
         """
-        Returns the next request for inference. Due to the propobility 
-        that some requests are failed, this returns a request that 
+        Returns the next request for inference. Due to the propobility
+        that some requests are failed, this returns a request that
         are not marked as executed.
         """
         if self._succeed_num_requests == self._num_requests:
@@ -93,7 +93,7 @@ class JobMetaInfo:
             req_id += 1
             if req_id == self._num_requests:
                 req_id = 0
-        
+
         return req_id
 
     def validate_job(self):
@@ -251,14 +251,14 @@ class JobManager:
         meta_data.set_job_status(JobStatus.IN_PROGRESS)
         del self._pending_jobs[job_id]
         return True
-        
+
     def get_job_next_request(self, job_id):
         request_id = -1
         if job_id not in self._in_progress_jobs:
             print(f"Job {job_id} has not been scheduled yet.")
             return request_id
         meta_data = self._in_progress_jobs[job_id]
-        
+
         return meta_data.next_request_id()
 
     def get_job_window_due(self, job_id):
@@ -268,7 +268,7 @@ class JobManager:
 
         meta_data = self._pending_jobs[job_id]
         return meta_data._completion_window
-    
+
     def get_job_endpoint(self, job_id):
         if job_id in self._pending_jobs:
             meta_data = self._pending_jobs[job_id]
@@ -290,7 +290,6 @@ class JobManager:
 
         meta_data = self._in_progress_jobs[job_id]
         request_len = meta_data._num_requests
-        succeed_num = 0
         invalid_flag = False
 
         for req_id in executed_requests:
