@@ -1,15 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: simulator-llama2-70b
+  name: simulator-llama2-7b
   namespace: aibrix-system
   labels:
     modeladapter.aibricks.ai/enabled: "true"
-    model.aibrix.ai: "llama2-70b"
+    model.aibrix.ai: "llama2-7b"
     model.aibrix.ai/port: "8000"
 spec:
   replicas: 1
+  selector:
+    matchLabels:
+      modeladapter.aibricks.ai/enabled: "true"
+      model.aibrix.ai: "llama2-7b"
   template:
+    metadata:
+      labels:
+        modeladapter.aibricks.ai/enabled: "true"
+        model.aibrix.ai: "llama2-7b"
     spec:
       containers:
         - name: llmengine-simulator
@@ -17,11 +25,11 @@ spec:
           ports:
             - containerPort: 8000
           env:
-            - name: POD_NAME
+            - name: DEPLOYMENT_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            - name: POD_NAMESPACE
+            - name: NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
@@ -29,16 +37,21 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
----
+            - name: MODEL_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['model.aibrix.ai']
+
+# ---
 # Debug only: Make sure pod can be visited from controller that deployed in mac.
 apiVersion: v1
 kind: Service
 metadata:
-  name: simulator-llama2-70b
+  name: llama2-7b
   namespace: aibrix-system
 spec:
   selector:
-    model.aibrix.ai: "llama2-70b"
+    model.aibrix.ai: "llama2-7b"
   ports:
     - protocol: TCP
       port: 8000
@@ -50,7 +63,7 @@ spec:
 # apiVersion: gateway.networking.k8s.io/v1
 # kind: HTTPRoute
 # metadata:
-#   name: llama2-70b-router
+#   name: llama2-7b-router
 #   namespace: aibrix-system
 # spec:
 #   parentRefs:
@@ -60,7 +73,7 @@ spec:
 #         - headers:
 #             - type: Exact
 #               name: model
-#               value: llama2-70b
+#               value: llama2-7b
 #       backendRefs:
-#         - name: llama2-70b
+#         - name: llama2-7b
 #           port: 8000

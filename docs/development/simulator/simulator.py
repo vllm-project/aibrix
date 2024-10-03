@@ -70,7 +70,7 @@ class Simulator:
 
     def start(self):
         logger.info(
-            f"Starting simulation with cluster: {self._cluster}"
+            f"Starting simulation with cluster: {self._cluster}, model: {self._config.cluster_config.replica_config.model_name}, seed: {self._config.seed}"
         )
 
         # Start the event loop

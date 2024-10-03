@@ -5,28 +5,35 @@ import asyncio
 import logging
 from datetime import datetime
 import random
+import sys
 try:
     from kubernetes import client, config
 except Exception as e:
     print(f"Failed to import kubernetes, skip: {e}")
 
 from vidur.config import SimulationConfig
+from vidur.config_optimizer.config_explorer.config import ModelConfig
 from vidur.entities import Request
 from simulator import Simulator
+from transformers import AutoTokenizer
 
-app = Flask(__name__)
-simulator = Simulator(SimulationConfig.create_from_cli_args())
-v1 = None
-
-MODEL_NAME = 'llama2-70b'
+MODEL_NAME = os.getenv('MODEL_NAME', 'llama2-70b')
 DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-70b')
 NAMESPACE = os.getenv('NAMESPACE', 'default')
 DEFAULT_REPLICAS = int(os.getenv('DEFAULT_REPLICAS', '1'))
 
-from transformers import AutoTokenizer
-
 # Load the tokenizer for your model
-tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')  # Replace with your model name
+tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased', clean_up_tokenization_spaces=False)  # Replace with your model name
+
+app = Flask(__name__)
+modelMaps = {
+    "llama2-7b": "meta-llama/Llama-2-7b-hf",
+    "llama2-70b": "meta-llama/Llama-2-70b-hf"
+}
+sys.argv.append(f"--replica_config_model_name={modelMaps.get(MODEL_NAME, MODEL_NAME)}")
+simulator_config: SimulationConfig = SimulationConfig.create_from_cli_args()
+simulator = Simulator(simulator_config)
+v1 = None
 
 def get_token_count(text):
     # Encode the text
@@ -129,26 +136,32 @@ def completion():
     model = request.json.get('model')
     if not prompt or not model:
         return jsonify({"status": "error", "message": "Prompt and model are required"}), 400
+    
+    arrived_at = datetime.now().timestamp()
+    input_tokens = get_token_count(prompt)
+    output_tokens = random.randint(10, 500)
+    latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens))
 
     # Simulated response
     response = {
         "id": "cmpl-uqkvlQyYK7bGYrRHQ0eXlWi7",
         "object": "text_completion",
-        "created": 1589478378,
+        "created": int(arrived_at),
         "model": model,
         "system_fingerprint": "fp_44709d6fcb",
         "choices": [
             {
-                "text": f"This is indeed a test from model {model}!",
+                "text": f"This is simulated message from {model}!",
                 "index": 0,
                 "logprobs": None,
                 "finish_reason": "length"
             }
         ],
         "usage": {
-            "prompt_tokens": 5,
-            "completion_tokens": 7,
-            "total_tokens": 12
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "time": latency
         }
     }
     return jsonify(response), 200
@@ -162,7 +175,7 @@ def chat_completions():
         return jsonify({"status": "error", "message": "Messages and model are required"}), 400
     
     arrived_at = datetime.now().timestamp()
-    input_tokens = get_token_count(messages[0]["content"])
+    input_tokens = sum(get_token_count(message["content"]) for message in messages)
     output_tokens = random.randint(10, 500)
     latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens))
 
@@ -234,7 +247,7 @@ if __name__ == '__main__':
     # except Exception as e:
     #     print(f"Failed to load k8s config: {e}")
 
-    print(f"Starting app. DEPLOYMENT_NAME: {DEPLOYMENT_NAME}, NAMESPACE: {NAMESPACE}")
+    print(f"Starting app. DEPLOYMENT_NAME: {DEPLOYMENT_NAME}, NAMESPACE: {NAMESPACE}, MODEL: {MODEL_NAME}")
    
 
     thread = simulator.start()
