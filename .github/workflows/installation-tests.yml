@@ -36,10 +36,7 @@ jobs:
 
       - name: Build container images
         run: |
-          IMG=aibrix/controller-manager:${{ github.sha }} make docker-build
-          PLUGINS_IMG=aibrix/plugins:${{ github.sha }} make docker-build-plugins
-          RUNTIME_IMG=aibrix/runtime:${{ github.sha }} make docker-build-runtime
-          USERS_IMG=aibrix/users:${{ github.sha }} make docker-build-users
+          GIT_COMMIT_HASH=${{ github.sha }} make docker-build-all
 
       - name: Load image into Kind
         run: |

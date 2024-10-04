@@ -20,7 +20,7 @@ import (
 	"context"
 )
 
-type AccountRateLimiter interface {
+type RateLimiter interface {
 	// Get the rate limit for the given key and return the current value.
 	Get(ctx context.Context, key string) (int64, error)
 

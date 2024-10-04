@@ -21,16 +21,16 @@ import (
 	"fmt"
 	"math"
 
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
+	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/ratelimiter"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
 type throughputRouter struct {
-	ratelimiter ratelimiter.AccountRateLimiter
+	ratelimiter ratelimiter.RateLimiter
 }
 
-func NewThroughputRouter(ratelimiter ratelimiter.AccountRateLimiter) Router {
+func NewThroughputRouter(ratelimiter ratelimiter.RateLimiter) Router {
 	return throughputRouter{
 		ratelimiter: ratelimiter,
 	}

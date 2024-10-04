@@ -30,28 +30,16 @@ jobs:
 
       - name: Build Container Images
         run: |
-          make docker-build
-          make docker-build-plugins
-          make docker-build-runtime
-          make docker-build-users
+          make docker-build-all
 
       - name: Push Container Images to DockerHub
         run: |
-          make docker-push
-          make docker-push-plugins
-          make docker-push-runtime
-          make docker-push-users
+          make docker-push-all
 
       - name: Build Container Images with Github Container Registry prefix
         run: |
-          IMG=ghcr.io/aibrix/controller-manager:${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build
-          PLUGINS_IMG=ghcr.io/aibrix/plugins:${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build-plugins
-          RUNTIME_IMG=ghcr.io/aibrix/runtime:${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build-runtime
-          USERS_IMG=ghcr.io/aibrix/users:${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build-users
+          GIT_COMMIT_HASH=${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build-all
 
       - name: Push Container Images to Github Container Registry
         run: |
-          IMG=ghcr.io/aibrix/controller-manager:${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-push
-          PLUGINS_IMG=ghcr.io/aibrix/plugins:${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-push-plugins
-          RUNTIME_IMG=ghcr.io/aibrix/runtime:${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-push-runtime
-          USERS_IMG=ghcr.io/aibrix/users:${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-push-users
+          GIT_COMMIT_HASH=${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-push-all

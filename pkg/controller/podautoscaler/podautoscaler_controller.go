@@ -134,7 +134,7 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.Get(ctx, req.NamespacedName, &pa); err != nil {
 		if errors.IsNotFound(err) {
 			// Object might have been deleted after reconcile request, ignore and return.
-			klog.InfoS("PodAutoscaler resource not found. Ignoring since object must have been deleted")
+			klog.Infof("PodAutoscaler resource not found. Ignoring since object %s must have been deleted", req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
 		klog.ErrorS(err, "Failed to get PodAutoscaler")

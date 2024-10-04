@@ -28,7 +28,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	v1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned"

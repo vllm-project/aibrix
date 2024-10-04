@@ -28,34 +28,34 @@ import (
 // 用来限制 rate limiter 使用的 key 的数量，需要大于 2
 const binSize = 64
 
-type redisAccountRateLimiter struct {
+type redisRateLimiter struct {
 	client     *redis.Client
 	name       string
 	windowSize time.Duration
 }
 
 // simple fixed window rate limiter
-func NewRedisAccountRateLimiter(name string, client *redis.Client, windowSize time.Duration) AccountRateLimiter {
+func NewRedisAccountRateLimiter(name string, client *redis.Client, windowSize time.Duration) RateLimiter {
 	if windowSize < time.Second {
 		windowSize = time.Second
 	}
 
-	return &redisAccountRateLimiter{
+	return &redisRateLimiter{
 		name:       name,
 		client:     client,
 		windowSize: windowSize,
 	}
 }
 
-func (rrl redisAccountRateLimiter) Get(ctx context.Context, key string) (int64, error) {
+func (rrl redisRateLimiter) Get(ctx context.Context, key string) (int64, error) {
 	return rrl.get(ctx, rrl.genKey(key))
 }
 
-func (rrl redisAccountRateLimiter) GetLimit(ctx context.Context, key string) (int64, error) {
+func (rrl redisRateLimiter) GetLimit(ctx context.Context, key string) (int64, error) {
 	return rrl.get(ctx, fmt.Sprintf("%s:%s", rrl.name, key))
 }
 
-func (rrl redisAccountRateLimiter) get(ctx context.Context, key string) (int64, error) {
+func (rrl redisRateLimiter) get(ctx context.Context, key string) (int64, error) {
 	val, err := rrl.client.Get(ctx, key).Int64()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
@@ -66,15 +66,15 @@ func (rrl redisAccountRateLimiter) get(ctx context.Context, key string) (int64, 
 	return val, err
 }
 
-func (rrl redisAccountRateLimiter) Incr(ctx context.Context, key string, val int64) (int64, error) {
+func (rrl redisRateLimiter) Incr(ctx context.Context, key string, val int64) (int64, error) {
 	return rrl.incrAndExpire(ctx, rrl.genKey(key), val)
 }
 
-func (rrl redisAccountRateLimiter) genKey(key string) string {
+func (rrl redisRateLimiter) genKey(key string) string {
 	return fmt.Sprintf("%s:%s:%d", rrl.name, key, time.Now().Unix()/int64(rrl.windowSize.Seconds())%binSize)
 }
 
-func (rrl redisAccountRateLimiter) incrAndExpire(ctx context.Context, key string, val int64) (int64, error) {
+func (rrl redisRateLimiter) incrAndExpire(ctx context.Context, key string, val int64) (int64, error) {
 	pipe := rrl.client.Pipeline()
 
 	incr := pipe.IncrBy(ctx, key, val)

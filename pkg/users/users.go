@@ -19,12 +19,12 @@ package users
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 
 	"github.com/aibrix/aibrix/pkg/utils"
 	"github.com/gorilla/mux"
 	"github.com/redis/go-redis/v9"
+	"k8s.io/klog/v2"
 )
 
 type httpServer struct {
@@ -56,7 +56,7 @@ func (s *httpServer) createUser(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &mr) {
 			http.Error(w, mr.msg, mr.status)
 		} else {
-			log.Print(err.Error())
+			klog.Info(err.Error())
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		}
 		return
@@ -84,7 +84,7 @@ func (s *httpServer) readUser(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &mr) {
 			http.Error(w, mr.msg, mr.status)
 		} else {
-			log.Print(err.Error())
+			klog.Info(err.Error())
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		}
 		return
@@ -108,7 +108,7 @@ func (s *httpServer) updateUser(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &mr) {
 			http.Error(w, mr.msg, mr.status)
 		} else {
-			log.Print(err.Error())
+			klog.Info(err.Error())
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		}
 		return
@@ -136,7 +136,7 @@ func (s *httpServer) deleteUser(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &mr) {
 			http.Error(w, mr.msg, mr.status)
 		} else {
-			log.Print(err.Error())
+			klog.Info(err.Error())
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		}
 		return

@@ -22,7 +22,7 @@ import (
 
 	"github.com/aibrix/aibrix/pkg/cache"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 type leastAdapters struct {
@@ -50,6 +50,6 @@ func (r leastAdapters) SelectPod(ctx context.Context, pods []v1.Pod) (*v1.Pod, e
 		}
 	}
 
-	klog.Infof("pod selected with least model adapters: %s", selectedPod.Name)
+	klog.InfoS("pod selected with least model adapters", "pod", klog.KObj(&selectedPod))
 	return &selectedPod, nil
 }

@@ -22,16 +22,16 @@ import (
 
 	"github.com/aibrix/aibrix/pkg/cache"
 	"github.com/aibrix/aibrix/pkg/plugins/gateway/metrics"
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
+	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/ratelimiter"
 	v1 "k8s.io/api/core/v1"
 )
 
 type leastRequestRouter struct {
-	ratelimiter ratelimiter.AccountRateLimiter
+	ratelimiter ratelimiter.RateLimiter
 	cache       *cache.Cache
 }
 
-func NewLeastRequestRouter(ratelimiter ratelimiter.AccountRateLimiter) Router {
+func NewLeastRequestRouter(ratelimiter ratelimiter.RateLimiter) Router {
 	cache, err := cache.GetCache()
 	if err != nil {
 		panic(err)

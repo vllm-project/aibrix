@@ -19,7 +19,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -30,6 +29,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog/v2"
 
 	"github.com/aibrix/aibrix/pkg/cache"
 	"github.com/aibrix/aibrix/pkg/plugins/gateway"
@@ -44,6 +44,8 @@ var (
 
 func main() {
 	flag.IntVar(&grpc_port, "port", 50052, "gRPC port")
+	klog.InitFlags(flag.CommandLine)
+	defer klog.Flush()
 	flag.Parse()
 
 	// Connect to Redis
@@ -58,10 +60,10 @@ func main() {
 	// ref: https://github.com/kubernetes-sigs/controller-runtime/issues/878#issuecomment-1002204308
 	kubeConfig := flag.Lookup("kubeconfig").Value.String()
 	if kubeConfig == "" {
-		log.Printf("using in-cluster configuration")
+		klog.Info("using in-cluster configuration")
 		config, err = rest.InClusterConfig()
 	} else {
-		log.Printf("using configuration from '%s'", kubeConfig)
+		klog.Infof("using configuration from '%s'", kubeConfig)
 		config, err = clientcmd.BuildConfigFromFlags("", kubeConfig)
 	}
 
@@ -74,13 +76,13 @@ func main() {
 	// Connect to K8s cluster
 	k8sClient, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		log.Fatal("Error creating kubernetes client:", err)
+		klog.Fatalf("Error creating kubernetes client: %v", err)
 	}
 
 	// grpc server init
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", grpc_port))
 	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
+		klog.Fatalf("failed to listen: %v", err)
 	}
 
 	s := grpc.NewServer()
@@ -88,7 +90,7 @@ func main() {
 	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(redisClient, k8sClient))
 	healthPb.RegisterHealthServer(s, &gateway.HealthServer{})
 
-	log.Println("Starting gRPC server on port :50052")
+	klog.Info("Starting gRPC server on port :50052")
 
 	// shutdown
 	var gracefulStop = make(chan os.Signal, 1)
@@ -96,8 +98,8 @@ func main() {
 	signal.Notify(gracefulStop, syscall.SIGINT)
 	go func() {
 		sig := <-gracefulStop
-		log.Printf("caught sig: %+v", sig)
-		log.Println("Wait for 1 second to finish processing")
+		klog.Infof("caught sig: %+v", sig)
+		klog.Info("Wait for 1 second to finish processing")
 		time.Sleep(1 * time.Second)
 		os.Exit(0)
 	}()
