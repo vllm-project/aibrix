@@ -65,7 +65,7 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (s
 
 		// processing prompt tokens is twice as expensive than generation tokens
 		totalthroughput := 2*promptThroughput + generationThroughput
-		klog.Infof("pod: %v, podIP: %v, promptThroughput: %v, generationThroughput: %v, totalthroughput: %v",
+		klog.V(4).Infof("pod: %v, podIP: %v, promptThroughput: %v, generationThroughput: %v, totalthroughput: %v",
 			pod.Name, pod.Status.PodIP, promptThroughput, generationThroughput, totalthroughput)
 
 		if totalthroughput <= minCount {

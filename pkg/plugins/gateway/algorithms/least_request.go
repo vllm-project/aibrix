@@ -68,7 +68,7 @@ func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod) 
 			continue
 		}
 		totalReq := runningReq + waitingReq + swappedReq
-		klog.Infof("pod: %v, podIP: %v, runningReq: %v, waitingReq: %v, swappedReq: %v, totalReq: %v",
+		klog.V(4).Infof("pod: %v, podIP: %v, runningReq: %v, waitingReq: %v, swappedReq: %v, totalReq: %v",
 			pod.Name, pod.Status.PodIP, runningReq, waitingReq, swappedReq, totalReq)
 
 		if totalReq <= minCount {
