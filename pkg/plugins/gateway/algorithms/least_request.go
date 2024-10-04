@@ -18,12 +18,12 @@ package routingalgorithms
 
 import (
 	"context"
-	"time"
+	"math"
 
 	"github.com/aibrix/aibrix/pkg/cache"
-	"github.com/aibrix/aibrix/pkg/plugins/gateway/metrics"
 	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/ratelimiter"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 type leastRequestRouter struct {
@@ -43,34 +43,39 @@ func NewLeastRequestRouter(ratelimiter ratelimiter.RateLimiter) Router {
 	}
 }
 
-func (r leastRequestRouter) Get(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
+func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
 	var targetPodIP string
-
-	podList := &v1.PodList{}
+	minCount := math.MaxFloat64
 
 	for _, pod := range pods {
-		podList.Items = append(podList.Items, *pod)
+		if pod.Status.PodIP == "" {
+			continue
+		}
+
+		runningReq, err := r.cache.GetPodMetric(pod.Name, num_requests_running)
+		if err != nil {
+			klog.Error(err)
+			continue
+		}
+		waitingReq, err := r.cache.GetPodMetric(pod.Name, num_requests_waiting)
+		if err != nil {
+			klog.Error(err)
+			continue
+		}
+		swappedReq, err := r.cache.GetPodMetric(pod.Name, num_requests_swapped)
+		if err != nil {
+			klog.Error(err)
+			continue
+		}
+		totalReq := runningReq + waitingReq + swappedReq
+		klog.Infof("pod: %v, podIP: %v, runningReq: %v, waitingReq: %v, swappedReq: %v, totalReq: %v",
+			pod.Name, pod.Status.PodIP, runningReq, waitingReq, swappedReq, totalReq)
+
+		if totalReq <= minCount {
+			minCount = totalReq
+			targetPodIP = pod.Status.PodIP
+		}
 	}
 
-	metricsClient := metrics.NewKPAMetricsClient()
-	metricsClient.UpdatePodListMetric(ctx, metrics.NamespaceNameMetric{
-		MetricName: "num_requests_running",
-	}, podList, 8000, time.Now())
-
-	// minCount := math.MaxInt
-	// podRequestCounts := r.cache.GetPodRequestCount()
-
-	// for _, pod := range pods {
-	// 	podIP := pod.Status.PodIP + ":8000"
-	// 	podRequestCount := fmt.Sprintf("%v_REQUEST_COUNT", podIP)
-
-	// 	reqCount := podRequestCounts[podRequestCount]
-	// 	klog.Infof("PodIP: %s, PodRequestCount: %v", podIP, reqCount)
-	// 	if reqCount <= minCount {
-	// 		minCount = reqCount
-	// 		targetPodIP = podIP
-	// 	}
-	// }
-
-	return targetPodIP, nil // TODO (varun): remove static port
+	return targetPodIP, nil
 }

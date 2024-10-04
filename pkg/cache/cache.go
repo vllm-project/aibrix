@@ -19,7 +19,12 @@ package cache
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	crdinformers "github.com/aibrix/aibrix/pkg/client/informers/externalversions"
 	v1 "k8s.io/api/core/v1"
@@ -43,17 +48,21 @@ type Cache struct {
 	mu                sync.RWMutex
 	initialized       bool
 	pods              map[string]*v1.Pod
+	podMetrics        map[string]map[string]float64  // pod_name: map[metric_name]metric_val
 	podToModelMapping map[string]map[string]struct{} // pod_name: map[model_name]struct{}
 	modelToPodMapping map[string]map[string]*v1.Pod  // model_name: map[pod_name]*v1.Pod
-	podRequestTracker map[string]int
 }
 
 var (
-	instance Cache
+	instance    Cache
+	metricNames = []string{"num_requests_running", "num_requests_waiting", "num_requests_swapped",
+		"avg_prompt_throughput_toks_per_s", "avg_generation_throughput_toks_per_s", "e2e_request_latency_seconds_sum"}
 )
 
 const (
-	modelIdentifier = "model.aibrix.ai/name"
+	modelIdentifier                   = "model.aibrix.ai/name"
+	podPort                           = 8000
+	podMetricRefreshIntervalInSeconds = 10
 )
 
 func GetCache() (*Cache, error) {
@@ -65,7 +74,6 @@ func GetCache() (*Cache, error) {
 
 func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 	once.Do(func() {
-
 		if err := v1alpha1scheme.AddToScheme(scheme.Scheme); err != nil {
 			panic(err)
 		}
@@ -90,9 +98,6 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 		factory.Start(stopCh)
 		crdFactory.Start(stopCh)
 
-		// factory.WaitForCacheSync(stopCh)
-		// crdFactory.WaitForCacheSync(stopCh)
-
 		if !cache.WaitForCacheSync(stopCh, podInformer.HasSynced, modelInformer.HasSynced) {
 			runtime.HandleError(fmt.Errorf("timed out waiting for caches to sync"))
 			return
@@ -101,9 +106,9 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 		instance = Cache{
 			initialized:       true,
 			pods:              map[string]*v1.Pod{},
+			podMetrics:        map[string]map[string]float64{},
 			podToModelMapping: map[string]map[string]struct{}{},
 			modelToPodMapping: map[string]map[string]*v1.Pod{},
-			podRequestTracker: map[string]int{},
 		}
 
 		if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -121,6 +126,21 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 		}); err != nil {
 			panic(err)
 		}
+
+		ticker := time.NewTicker(podMetricRefreshIntervalInSeconds * time.Second)
+		go func() {
+			for {
+				select {
+				case <-ticker.C:
+					instance.updatePodMetrics()
+					klog.Info(time.Now())
+					instance.debugInfo()
+				case <-stopCh:
+					ticker.Stop()
+					return
+				}
+			}
+		}()
 	})
 
 	return &instance
@@ -185,6 +205,7 @@ func (c *Cache) deletePod(obj interface{}) {
 	}
 	delete(c.podToModelMapping, pod.Name)
 	delete(c.pods, pod.Name)
+	delete(c.podMetrics, pod.Name)
 
 	klog.V(4).Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
@@ -280,6 +301,11 @@ func (c *Cache) debugInfo() {
 	for _, pod := range c.pods {
 		klog.V(4).Infof("pod: %s, podIP: %v", pod.Name, pod.Status.PodIP)
 	}
+	for podName, metrics := range c.podMetrics {
+		for metricName, metricVal := range metrics {
+			klog.V(4).Infof("%v_%v_%v", podName, metricName, metricVal)
+		}
+	}
 	for podName, models := range c.podToModelMapping {
 		var modelList string
 		for modelName := range models {
@@ -339,25 +365,95 @@ func (c *Cache) GetModelsForPod(podName string) (map[string]struct{}, error) {
 	return models, nil
 }
 
-func (c *Cache) IncrPodRequestCount(podName string) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.podRequestTracker[podName] += 1
-	return c.podRequestTracker[podName]
-}
-
-func (c *Cache) DecrPodRequestCount(podName string) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.podRequestTracker[podName] -= 1
-	return c.podRequestTracker[podName]
-}
-
-func (c *Cache) GetPodRequestCount() map[string]int {
+func (c *Cache) GetPodMetric(podName, metricName string) (float64, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return c.podRequestTracker
+	metrics, ok := c.podMetrics[podName]
+	if !ok {
+		return 0, fmt.Errorf("pod does not exist in the metrics cache")
+	}
+
+	metricVal, ok := metrics[metricName]
+	if !ok {
+		return 0, fmt.Errorf("no metric available for %v", metricName)
+	}
+
+	return metricVal, nil
+}
+
+func (c *Cache) updatePodMetrics() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, pod := range c.pods {
+		if pod.Status.PodIP == "" {
+			continue
+		}
+		podName := pod.Name
+		for _, metricName := range metricNames {
+			metricVal, err := getMetricsForPod(pod, metricName, 8000)
+			if err != nil {
+				continue
+			}
+			if len(c.podMetrics[podName]) == 0 {
+				c.podMetrics[podName] = map[string]float64{}
+			}
+			c.podMetrics[pod.Name][metricName] = metricVal
+		}
+	}
+}
+
+func getMetricsForPod(pod *v1.Pod, metricName string, metricsPort int) (float64, error) {
+	// We should use the primary container port. In future, we can decide whether to use sidecar container's port
+	url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, metricsPort)
+	//// TODO a temp for debugging
+	//url := fmt.Sprintf("http://%s:%d/metrics", "127.0.0.1", metricsPort)
+
+	// scrape metrics
+	resp, err := http.Get(url)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, metricsPort, err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			// Handle the error here. For example, log it or take appropriate corrective action.
+			klog.InfoS("Error closing response body:", err)
+		}
+	}()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read response from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, metricsPort, err)
+	}
+
+	metricValue, err := parseMetricFromBody(body, metricName)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, metricsPort, err)
+	}
+
+	klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", metricsPort, "metricValue", metricValue)
+	return metricValue, nil
+}
+
+func parseMetricFromBody(body []byte, metricName string) (float64, error) {
+	lines := strings.Split(string(body), "\n")
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "#") && strings.Contains(line, metricName) {
+			fmt.Println(line)
+			// format is `http_requests_total 1234.56`
+			parts := strings.Fields(line)
+			if len(parts) < 2 {
+				return 0, fmt.Errorf("unexpected format for metric %s", metricName)
+			}
+
+			// parse to float64
+			value, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+			if err != nil {
+				return 0, fmt.Errorf("failed to parse metric value for %s: %v", metricName, err)
+			}
+
+			return value, nil
+		}
+	}
+	return 0, fmt.Errorf("metrics %s not found", metricName)
 }

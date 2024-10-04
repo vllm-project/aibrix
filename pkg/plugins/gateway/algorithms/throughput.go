@@ -18,9 +18,9 @@ package routingalgorithms
 
 import (
 	"context"
-	"fmt"
 	"math"
 
+	"github.com/aibrix/aibrix/pkg/cache"
 	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/ratelimiter"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -28,30 +28,51 @@ import (
 
 type throughputRouter struct {
 	ratelimiter ratelimiter.RateLimiter
+	cache       *cache.Cache
 }
 
 func NewThroughputRouter(ratelimiter ratelimiter.RateLimiter) Router {
+	cache, err := cache.GetCache()
+	if err != nil {
+		panic(err)
+	}
+
 	return throughputRouter{
 		ratelimiter: ratelimiter,
+		cache:       cache,
 	}
 }
 
-func (r throughputRouter) Get(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
+func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
 	var targetPodIP string
-	minCount := math.MaxInt
+	minCount := math.MaxFloat64
 
 	for _, pod := range pods {
-		podIP := pod.Status.PodIP + ":8000"
-		reqCount, err := r.ratelimiter.Get(ctx, fmt.Sprintf("%v_THROUGHPUT", podIP))
-		if err != nil {
-			return "", err
+		if pod.Status.PodIP == "" {
+			continue
 		}
-		klog.Infof("PodIP: %s, PodThroughput: %v", podIP, reqCount)
-		if reqCount <= int64(minCount) {
-			minCount = int(reqCount)
-			targetPodIP = podIP
+
+		promptThroughput, err := r.cache.GetPodMetric(pod.Name, throughput_prompt)
+		if err != nil {
+			klog.Error(err)
+			continue
+		}
+		generationThroughput, err := r.cache.GetPodMetric(pod.Name, throughput_generation)
+		if err != nil {
+			klog.Error(err)
+			continue
+		}
+
+		// processing prompt tokens is twice as expensive than generation tokens
+		totalthroughput := 2*promptThroughput + generationThroughput
+		klog.Infof("pod: %v, podIP: %v, promptThroughput: %v, generationThroughput: %v, totalthroughput: %v",
+			pod.Name, pod.Status.PodIP, promptThroughput, generationThroughput, totalthroughput)
+
+		if totalthroughput <= minCount {
+			minCount = totalthroughput
+			targetPodIP = pod.Status.PodIP
 		}
 	}
 
-	return targetPodIP, nil // TODO (varun): remove static port
+	return targetPodIP, nil
 }

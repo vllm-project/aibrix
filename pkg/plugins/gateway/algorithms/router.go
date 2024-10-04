@@ -22,8 +22,18 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
+const (
+	num_requests_running  = "num_requests_running"
+	num_requests_waiting  = "num_requests_waiting"
+	num_requests_swapped  = "num_requests_swapped"
+	throughput_prompt     = "avg_prompt_throughput_toks_per_s"
+	throughput_generation = "avg_generation_throughput_toks_per_s"
+	latency               = "e2e_request_latency_seconds_sum"
+
+	podPort = 8000
+)
+
 type Router interface {
 	// Returns the target pod
-	// TODO (varun): replace with cache util package which can watch on pods
-	Get(ctx context.Context, pods map[string]*v1.Pod) (string, error)
+	Route(ctx context.Context, pods map[string]*v1.Pod) (string, error)
 }

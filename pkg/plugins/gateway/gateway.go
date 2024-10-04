@@ -244,8 +244,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, reqeustID string, req
 				RawValue: []byte(targetPodIP),
 			},
 		})
-		podRequestCounter := s.cache.IncrPodRequestCount(fmt.Sprintf("%v_REQUEST_COUNT", targetPodIP))
-		klog.Infof("RequestStart %s: SelectedTargetPodIP: %s, PodRequestCount: %v", reqeustID, targetPodIP, podRequestCounter)
+		klog.Infof("RequestStart %s: SelectedTargetPodIP: %s", reqeustID, targetPodIP)
 	}
 
 	resp := &extProcPb.ProcessingResponse{
@@ -331,13 +330,6 @@ func (s *Server) HandleResponseBody(ctx context.Context, reqeustID string, req *
 	r := req.Request
 	b := r.(*extProcPb.ProcessingRequest_ResponseBody)
 
-	defer func() {
-		if targetPodIP != "" {
-			podRequestCounter := s.cache.DecrPodRequestCount(fmt.Sprintf("%v_REQUEST_COUNT", targetPodIP))
-			klog.Infof("RequestEnd %s: SelectedTargetPodIP: %s, PodRequestCount: %v", reqeustID, targetPodIP, podRequestCounter)
-		}
-	}()
-
 	var res openai.CompletionResponse
 	if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
 		return generateErrorResponse(
@@ -358,15 +350,6 @@ func (s *Server) HandleResponseBody(ctx context.Context, reqeustID string, req *
 			fmt.Sprintf("post query: error on updating tpm: %v", err.Error()))
 	}
 	klog.Infof("RequestEnd %s: TPM: %v for user: %v", reqeustID, tpm, user)
-
-	if targetPodIP != "" {
-		podTpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_THROUGHPUT", targetPodIP), int64(res.Usage.TotalTokens))
-		if err != nil {
-			klog.Error(err)
-		} else {
-			klog.Infof("RequestEnd %s: SelectedTargetPodIP: %s, PodThroughput: %v", reqeustID, targetPodIP, podTpm)
-		}
-	}
 
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ResponseBody{
@@ -441,7 +424,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, po
 		route = s.routers["random"]
 	}
 
-	return route.Get(ctx, pods)
+	return route.Route(ctx, pods)
 }
 
 func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, body string) *extProcPb.ProcessingResponse {

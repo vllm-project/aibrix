@@ -29,7 +29,7 @@ func NewRandomRouter() Router {
 	return randomRouter{}
 }
 
-func (r randomRouter) Get(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
+func (r randomRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
 	var selectedPod *v1.Pod
 	for _, pod := range pods {
 		selectedPod = pod

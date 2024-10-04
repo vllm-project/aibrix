@@ -183,6 +183,8 @@ def metrics():
     avg_prompt_throughput = total / replicas if replicas > 0 else 0
     avg_generation_throughput = total / replicas if replicas > 0 else 0
     running = randint(1, 100)
+    waiting = randint(1, 100)
+    swapped = randint(1, 100)
 
     # construct Prometheus-style Metrics
     metrics_output = f"""# HELP vllm:request_success_total Count of successfully processed requests.
@@ -191,6 +193,12 @@ vllm:request_success_total{{finished_reason="stop",model_name="{model_name}"}} {
 # HELP vllm:num_requests_running Number of requests currently running on GPU.
 # TYPE vllm:num_requests_running gauge
 vllm:num_requests_running{{model_name="{model_name}"}} {running}
+# HELP vllm:num_requests_swapped Number of requests swapped to CPU.
+# TYPE vllm:num_requests_swapped gauge
+vllm:num_requests_swapped{{model_name="{model_name}"}} {swapped}
+# HELP vllm:num_requests_waiting Number of requests waiting to be processed.
+# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{{model_name="{model_name}"}} {waiting}
 # HELP vllm:avg_prompt_throughput_toks_per_s Average prefill throughput in tokens/s.
 # TYPE vllm:avg_prompt_throughput_toks_per_s gauge
 vllm:avg_prompt_throughput_toks_per_s{{model_name="{model_name}"}} {avg_prompt_throughput}
