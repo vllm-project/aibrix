@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: aibrix/controller-manager
-  newTag: 59e8a99c60ef1164af3493ee190d0e5985d87d62
+  newTag: nightly
