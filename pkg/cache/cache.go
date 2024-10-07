@@ -56,7 +56,7 @@ type Cache struct {
 var (
 	instance    Cache
 	metricNames = []string{"num_requests_running", "num_requests_waiting", "num_requests_swapped",
-		"avg_prompt_throughput_toks_per_s", "avg_generation_throughput_toks_per_s", "e2e_request_latency_seconds_sum"}
+		"avg_prompt_throughput_toks_per_s", "avg_generation_throughput_toks_per_s"} //, "e2e_request_latency_seconds_sum"}
 )
 
 const (
@@ -133,7 +133,6 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 				select {
 				case <-ticker.C:
 					instance.updatePodMetrics()
-					klog.Info(time.Now())
 					instance.debugInfo()
 				case <-stopCh:
 					ticker.Stop()
@@ -431,7 +430,6 @@ func parseMetricFromBody(body []byte, metricName string) (float64, error) {
 	lines := strings.Split(string(body), "\n")
 	for _, line := range lines {
 		if !strings.HasPrefix(line, "#") && strings.Contains(line, metricName) {
-			fmt.Println(line)
 			// format is `http_requests_total 1234.56`
 			parts := strings.Fields(line)
 			if len(parts) < 2 {
