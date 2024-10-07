@@ -391,48 +391,40 @@ func (c *Cache) updatePodMetrics() {
 			continue
 		}
 		podName := pod.Name
+		if len(c.podMetrics[podName]) == 0 {
+			c.podMetrics[podName] = map[string]float64{}
+		}
+
+		// We should use the primary container port. In future, we can decide whether to use sidecar container's port
+		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, podPort)
+		resp, err := http.Get(url)
+		if err != nil {
+			klog.Errorf("failed to fetch metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
+			continue
+		}
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				klog.Errorf("Error closing response body: %v", err)
+			}
+		}()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			klog.Errorf("failed to read response from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
+			continue
+		}
+
 		for _, metricName := range metricNames {
-			metricVal, err := getMetricsForPod(pod, metricName, 8000)
+			metricValue, err := parseMetricFromBody(body, metricName)
 			if err != nil {
+				klog.Errorf("failed to parse metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
 				continue
 			}
-			if len(c.podMetrics[podName]) == 0 {
-				c.podMetrics[podName] = map[string]float64{}
-			}
-			c.podMetrics[pod.Name][metricName] = metricVal
+
+			c.podMetrics[pod.Name][metricName] = metricValue
+			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
 		}
 	}
-}
-
-func getMetricsForPod(pod *v1.Pod, metricName string, metricsPort int) (float64, error) {
-	// We should use the primary container port. In future, we can decide whether to use sidecar container's port
-	url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, metricsPort)
-	//// TODO a temp for debugging
-	//url := fmt.Sprintf("http://%s:%d/metrics", "127.0.0.1", metricsPort)
-
-	// scrape metrics
-	resp, err := http.Get(url)
-	if err != nil {
-		return 0, fmt.Errorf("failed to fetch metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, metricsPort, err)
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			// Handle the error here. For example, log it or take appropriate corrective action.
-			klog.InfoS("Error closing response body:", err)
-		}
-	}()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, fmt.Errorf("failed to read response from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, metricsPort, err)
-	}
-
-	metricValue, err := parseMetricFromBody(body, metricName)
-	if err != nil {
-		return 0, fmt.Errorf("failed to parse metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, metricsPort, err)
-	}
-
-	klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", metricsPort, "metricValue", metricValue)
-	return metricValue, nil
 }
 
 func parseMetricFromBody(body []byte, metricName string) (float64, error) {
