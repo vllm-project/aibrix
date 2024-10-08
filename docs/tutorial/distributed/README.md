@@ -1,5 +1,24 @@
 # Run vLLM Distributed Inference with Ray
 
+## Container Image
+
+> Note: some upstream work has not been merged yet. So we need to do some downstream changes
+
+```
+FROM vllm/vllm-openai:v0.6.2
+RUN apt update && apt install -y wget # important for future healthcheck
+RUN pip3 install ray[default] # important for future healthcheck
+COPY utils.py /usr/local/lib/python3.12/dist-packages/vllm/executor/ray_utils.py
+ENTRYPOINT [""]
+```
+
+> Note: copy uitls.py from upstream version and remove the placement group validation logic. See [#228](https://github.com/aibrix/aibrix/issues/228) for more details.
+> Note: No need to downgrade ray to v2.10.0. Seem only ray-project/ray image has issues.
+
+Container Image Combination which supports the distributed multi-host inference.
+- aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/kuberay-operator:v1.2.1-patch
+- aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.6.2-distributed
+
 ## Environment Setup
 
 ### Configure the GPU Cloud Instance

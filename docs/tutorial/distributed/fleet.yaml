@@ -1,23 +1,30 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
-kind: RayClusterReplicaSet
+kind: RayClusterFleet
 metadata:
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
-  name: rs
+  name: facebook-opt-13b
 spec:
   replicas: 1
   selector:
     matchLabels:
-      models.aibricks.ai: llama-2-7b-hf
+      models.aibricks.ai: facebook-opt-13b
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
   template:
     metadata:
       labels:
-        models.aibricks.ai: llama-2-7b-hf
+        models.aibricks.ai: facebook-opt-13b
+      annotations:
+          ray.io/overwrite-container-cmd: "true"
     spec:
       rayVersion: '2.10.0' # should match the Ray version in the image of the containers
       headGroupSpec:
-        rayStartParams: # even disabled, it still injects the dashboard host
+        rayStartParams:
           dashboard-host: '0.0.0.0'
         template:
           spec:
@@ -33,14 +40,17 @@ spec:
                     name: client
                   - containerPort: 8000
                     name: service
+                    command: ["/bin/bash", "-lc", "--"]
+                    args: ["ulimit -n 65536; echo head; $KUBERAY_GEN_RAY_START_CMD"; vllm serve facebook/opt-125m --tensor-parallel-size 2 --distributed-executor-backend ray]
                 resources:
                   limits:
-                    cpu: 1
-                    memory: "1024Mi"
+                    cpu: "1000m"
+                    nvidia.com/gpu: 1
                   requests:
-                    cpu: 1
-                    memory: "1024Mi"
+                    cpu: "200m"
+                    nvidia.com/gpu: 1
       workerGroupSpecs:
+        # the pod replicas in this group typed worker
         - replicas: 1
           minReplicas: 1
           maxReplicas: 5
@@ -57,8 +67,8 @@ spec:
                         command: [ "/bin/sh","-c","ray stop" ]
                   resources:
                     limits:
-                      cpu: 1
-                      memory: "1024Mi"
+                      cpu: "1000m"
+                      nvidia.com/gpu: 1
                     requests:
-                      cpu: 1
-                      memory: "1024Mi"
+                      cpu: "200m"
+                      nvidia.com/gpu: 1
