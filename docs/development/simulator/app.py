@@ -140,7 +140,12 @@ def completion():
     arrived_at = datetime.now().timestamp()
     input_tokens = get_token_count(prompt)
     output_tokens = random.randint(10, 500)
-    latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens))
+    arrived_next = request.json.get('next_in')
+    if not arrived_next:
+        arrived_next = 0.0
+    else:
+        arrived_next += arrived_at
+    latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens, arrived_next=arrived_next))
 
     # Simulated response
     response = {
@@ -177,7 +182,12 @@ def chat_completions():
     arrived_at = datetime.now().timestamp()
     input_tokens = sum(get_token_count(message["content"]) for message in messages)
     output_tokens = random.randint(10, 500)
-    latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens))
+    arrived_next = request.json.get('next_in')
+    if not arrived_next:
+        arrived_next = 0.0
+    else:
+        arrived_next += arrived_at
+    latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens, arrived_next=arrived_next))
 
     # Simulated response
     response = {

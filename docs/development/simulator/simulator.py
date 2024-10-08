@@ -113,10 +113,10 @@ class Simulator:
             # Drive events.
             while self._event_queue and not self._terminate:
                 _, event = heapq.heappop(self._event_queue)
-                logger.debug(f"Executing event: {event}")
                 self._set_time(event._time)
                 new_events = event.handle_event(self._scheduler, self._metric_store)
                 self._add_events(new_events)
+                logger.debug(f"Executed event: {event}")
 
                 if self._config.metrics_config.write_json_trace:
                     self._event_trace.append(event.to_dict())

@@ -41,8 +41,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.labels['model.aibrix.ai']
-
-# ---
+---
 # Debug only: Make sure pod can be visited from controller that deployed in mac.
 apiVersion: v1
 kind: Service
