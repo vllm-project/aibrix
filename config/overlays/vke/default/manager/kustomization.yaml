@@ -4,4 +4,4 @@ resources:
 images:
 - name: aibrix/controller-manager
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
-  newTag: nightly
+  newTag: v0.1.0-rc.3
