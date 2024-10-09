@@ -28,6 +28,11 @@ resources:
 # [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
 #- ../prometheus
 
+images:
+  - name: quay.io/kuberay/operator
+    newName: aibrix/kuberay-operator
+    newTag: v1.2.1-patch
+
 patches:
 # [METRICS] The following patch will enable the metrics endpoint. Ensure that you also protect this endpoint.
 # More info: https://book.kubebuilder.io/reference/metrics
