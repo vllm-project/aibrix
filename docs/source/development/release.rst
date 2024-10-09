@@ -13,30 +13,17 @@ Follow these steps to ensure a smooth and consistent release cycle.
 1. Prepare the code
 -----------------------------
 
-Option 1.1: minor version release without prior release candidates
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Option 1 minor version release
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 For new minor version release like ``v0.1.0``, please checkout a new branch named ``release-0.1``.
 
 .. code-block:: bash
 
-    git checkout -b release-v0.1
+    git checkout -b release-0.1 # cut from main branch
     git fetch origin main
     git rebase origin/main
-    git push origin release-v0.1
-
-.. note::
-    If origin doesn't points to upstream, let's say you fork the remote, ``upstream`` or other remotes should be right remote to push to.
-
-Option 1.2: minor version release with prior release candidates
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-.. code-block:: bash
-
-    git checkout release-v0.1
-    git fetch origin main
-    git rebase origin/main
-    git push origin release-v0.1
+    git push origin release-0.1
 
 .. note::
     If origin doesn't points to upstream, let's say you fork the remote, ``upstream`` or other remotes should be right remote to push to.
@@ -50,13 +37,16 @@ for patch release, we do not rebase ``main`` because it will introduce new featu
 .. code-block:: bash
 
     git checkout release-0.1
+    git fetch origin
+    git rebase origin/release-0.1
+
     # not need to push, it should be update to date.
 
 
 Cut a PR
 --------
 
-Make sure the manifest images tags and updated and python version is updated. A sample PR is `Cut v0.1.0-rc.2 release <https://github.com/aibrix/aibrix/pull/226>`_.
+Make sure the manifest images tags and updated and python version is updated. A sample PR is `Cut v0.1.0-rc.3 release <https://github.com/aibrix/aibrix/pull/280>`_.
 Merge the PR.
 
 .. note::
@@ -111,3 +101,18 @@ Optionally attach binaries, documentation, or other assets. In the end, let's pu
   :alt: draft-release
   :width: 70%
   :align: center
+
+Sync images to Volcano Engine Container Registry
+------------------------------------------------
+
+Currently, release pipeline only push images to dockerhub. In order to use them in VKE,
+we need to retag the images and push to VKE Container Registry.
+
+.. note::
+    It requires you to use a machine that have both VKE and Dockerhub access.
+    Do not forget to get the temporary credential and login the registry service before pushing.
+
+.. code-block:: bash
+
+    ./hack/sync-images.sh v0.1.0-rc.3 aibrix-container-registry-cn-beijing.cr.volces.com
+    ./hack/sync-images.sh v0.1.0-rc.3 aibrix-container-registry-cn-shanghai.cr.volces.com
