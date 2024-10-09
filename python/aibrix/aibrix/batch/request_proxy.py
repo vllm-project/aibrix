@@ -20,6 +20,7 @@ class RequestProxy:
         """ """
         self._storage = storage
         self._job_manager = manager
+        self._inference_client = InferenceEngineClient()
 
     async def execute_queries(self, job_id):
         """
@@ -36,7 +37,9 @@ class RequestProxy:
         request_input = self.fetch_request_input(job_id, request_id)
 
         print(f"executing job {job_id} request {request_id}")
-        request_output = simulate_inference_engine(endpoint, request_input)
+        request_output = self._inference_client.inference_request(
+            endpoint, request_input
+        )
         self.store_output(job_id, request_id, request_output)
 
         self.sync_job_status(job_id, request_id)
@@ -63,6 +66,14 @@ class RequestProxy:
         self._job_manager.mark_job_progress(job_id, [reqeust_id])
 
 
-def simulate_inference_engine(endpoint, prompt_list):
-    time.sleep(1)
-    return prompt_list
+class InferenceEngineClient:
+    def __init__(self):
+        """
+        Initiate client to inference engine, such as account
+        and its authentication.
+        """
+        pass
+
+    def inference_request(self, endpoint, prompt_list):
+        time.sleep(1)
+        return prompt_list

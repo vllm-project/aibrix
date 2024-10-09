@@ -55,7 +55,7 @@ class JobMetaInfo:
         # extral metadata
         self._meta_data = {}
 
-    def set_request_bit(self, req_id):
+    def set_request_executed(self, req_id):
         # This marks the request successfully executed.
         self._request_progress_bits[req_id] = True
 
@@ -74,7 +74,7 @@ class JobMetaInfo:
         are done, we need to update its status to be completed.
         """
         if not self._request_progress_bits[req_id]:
-            self.set_request_bit(req_id)
+            self.set_request_executed(req_id)
             self._succeed_num_requests += 1
             if self._succeed_num_requests == self._num_requests:
                 self._job_status = JobStatus.COMPLETED
