@@ -62,8 +62,8 @@ kubectl port-forward svc/llama2-70b 8000:8000 -n aibrix-system
 It's different from `make run`, since it may reveal the RBAC problem when manager what to watch HPA.
 
 ```shell
-make docker-build IMG=aibrix/aibrix-controller-manager:v0.1.0-rc.0
-make deploy IMG=aibrix/aibrix-controller-manager:v0.1.0-rc.0
+make docker-build IMG=aibrix/aibrix-controller-manager:v0.1.0-rc.3
+make deploy IMG=aibrix/aibrix-controller-manager:v0.1.0-rc.3
 ```
 
 check the deployed manager logs:

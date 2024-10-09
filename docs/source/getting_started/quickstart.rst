@@ -12,8 +12,8 @@ Install AIBrix
 
 .. code-block:: bash
 
-    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.1.0-rc.2/aibrix-dependency-v0.1.0-rc.2.yaml
-    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.1.0-rc.2/aibrix-core-v0.1.0-rc.2.yaml
+    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.1.0-rc.3/aibrix-dependency-v0.1.0-rc.3.yaml
+    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.1.0-rc.3/aibrix-core-v0.1.0-rc.3.yaml
 
 
 Deploy base model
