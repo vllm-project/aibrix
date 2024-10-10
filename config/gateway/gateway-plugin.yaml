@@ -50,3 +50,24 @@ spec:
                 fieldRef:
                   fieldPath: metadata.namespace
       serviceAccountName: aibrix-gateway-plugin
+---
+# this is a dummy route for incoming request and,
+# then request is routed to httproute using model name OR
+# request is routed based on the target for that model service
+# TODO (varun): check if this dummy route can be removed in future
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: dummy-router
+  namespace: aibrix-system
+spec:
+  parentRefs:
+    - name: aibrix-eg
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052

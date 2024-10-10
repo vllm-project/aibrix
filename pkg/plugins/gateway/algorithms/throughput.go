@@ -74,5 +74,5 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (s
 		}
 	}
 
-	return targetPodIP, nil
+	return targetPodIP + ":" + podPort, nil
 }

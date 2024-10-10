@@ -77,5 +77,5 @@ func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod) 
 		}
 	}
 
-	return targetPodIP, nil
+	return targetPodIP + ":" + podPort, nil
 }

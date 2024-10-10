@@ -67,6 +67,8 @@ kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-
 
 # Add rpm/tpm config 
 ```shell
+# note: not mandatory to create user to access gateway API
+
 kubectl -n aibrix-system port-forward svc/aibrix-gateway-users 8090:8090 &
 
 curl http://localhost:8090/CreateUser \
@@ -74,25 +76,33 @@ curl http://localhost:8090/CreateUser \
   -d '{"name": "your-user-name","rpm": 100,"tpm": 1000}'
 ```
 
-Test request (ensure header model name matches with deployment's model name for routing)
+Test request
 ```shell
 curl -v http://localhost:8888/v1/chat/completions \
-  -H "user: your-user-name" \
-  -H "model: llama2-70b" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer any_key" \
   -d '{
      "model": "llama2-70b",
      "messages": [{"role": "user", "content": "Say this is a test!"}],
      "temperature": 0.7
-   }' &
+   }'
+
+curl -v http://localhost:8888/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer any_key" \
+  -H "routing-strategy: random" \
+  -d '{
+     "model": "llama2-70b",
+     "messages": [{"role": "user", "content": "Say this is a test!"}],
+     "temperature": 0.7
+   }'
+
 
 # least-request based
 for i in {1..10}; do
   curl -v http://localhost:8888/v1/chat/completions \
   -H "user: your-user-name" \
   -H "routing-strategy: least-request" \
-  -H "model: llama2-70b" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer any_key" \
   -d '{
@@ -106,8 +116,7 @@ done
 for i in {1..10}; do
   curl -v http://localhost:8888/v1/chat/completions \
   -H "user: your-user-name" \
-  -H "routing-strategy: throughput" \
-  -H "model: llama2-70b" \
+  -H "routing-strategy: random" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer any_key" \
   -d '{

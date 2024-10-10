@@ -46,5 +46,5 @@ func (r randomRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (strin
 		k--
 	}
 
-	return selectedPod.Status.PodIP, nil
+	return selectedPod.Status.PodIP + ":" + podPort, nil
 }

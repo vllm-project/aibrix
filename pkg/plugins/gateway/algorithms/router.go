@@ -30,7 +30,7 @@ const (
 	throughput_generation = "avg_generation_throughput_toks_per_s"
 	latency               = "e2e_request_latency_seconds_sum"
 
-	podPort = 8000
+	podPort = "8000"
 )
 
 type Router interface {
