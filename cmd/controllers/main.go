@@ -186,7 +186,7 @@ func main() {
 		panic(err)
 	}
 
-	cache.NewCache(config, stopCh)
+	cache.NewCache(config, stopCh, nil)
 
 	// Kind controller registration is encapsulated inside the pkg/controller/controller.go
 	// So here we can use more clean registration flow and there's no need to change logics in future.

@@ -17,6 +17,8 @@ limitations under the License.
 package cache
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +30,7 @@ import (
 	"time"
 
 	crdinformers "github.com/aibrix/aibrix/pkg/client/informers/externalversions"
+	"github.com/redis/go-redis/v9"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
@@ -47,6 +50,7 @@ var once sync.Once
 // type global
 type Cache struct {
 	mu                sync.RWMutex
+	redisClient       *redis.Client
 	initialized       bool
 	pods              map[string]*v1.Pod
 	podMetrics        map[string]map[string]float64  // pod_name: map[metric_name]metric_val
@@ -62,9 +66,11 @@ var (
 )
 
 const (
-	modelIdentifier                   = "model.aibrix.ai/name"
-	podPort                           = 8000
-	podMetricRefreshIntervalInSeconds = 10
+	modelIdentifier                       = "model.aibrix.ai/name"
+	podPort                               = 8000
+	podMetricRefreshIntervalInSeconds     = 10
+	writeRequestTraceIntervalInSeconds    = 10
+	expireWriteRequestTraceIntervalInMins = 10
 )
 
 func GetCache() (*Cache, error) {
@@ -74,7 +80,7 @@ func GetCache() (*Cache, error) {
 	return &instance, nil
 }
 
-func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
+func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Cache {
 	once.Do(func() {
 		if err := v1alpha1scheme.AddToScheme(scheme.Scheme); err != nil {
 			panic(err)
@@ -107,6 +113,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 
 		instance = Cache{
 			initialized:       true,
+			redisClient:       redisClient,
 			pods:              map[string]*v1.Pod{},
 			podMetrics:        map[string]map[string]float64{},
 			podToModelMapping: map[string]map[string]struct{}{},
@@ -137,6 +144,26 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 				case <-ticker.C:
 					instance.updatePodMetrics()
 					instance.debugInfo()
+				case <-stopCh:
+					ticker.Stop()
+					return
+				}
+			}
+		}()
+
+		traceTicker := time.NewTicker(writeRequestTraceIntervalInSeconds * time.Second)
+		go func() {
+			if redisClient == nil {
+				return
+			}
+			for {
+				select {
+				case <-traceTicker.C:
+					if len(instance.requestTrace) == 0 {
+						continue
+					}
+					key := fmt.Sprintf("aibrix:request_trace:%v", time.Now().Unix())
+					instance.writeRequestTraceToStorage(key)
 				case <-stopCh:
 					ticker.Stop()
 					return
@@ -324,7 +351,7 @@ func (c *Cache) debugInfo() {
 	}
 	for inputIndex, output := range c.requestTrace {
 		for outputIndex, requestCount := range output {
-			klog.Infof("inputIndex: %v, outputIndex: %v, requestCount: %v", inputIndex, outputIndex, requestCount)
+			klog.V(4).Infof("inputIndex: %v, outputIndex: %v, requestCount: %v", inputIndex, outputIndex, requestCount)
 		}
 	}
 }
@@ -463,7 +490,7 @@ func (c *Cache) AddRequestTrace(inputTokens, outputTokens int) {
 	inputIndex := math.Trunc(math.Log2(float64(inputTokens)))
 	outputIndex := math.Trunc(math.Log2(float64(outputTokens)))
 
-	klog.Infof("inputTokens: %v, inputIndex: %v, outputTokens: %v, outputIndex: %v",
+	klog.V(5).Infof("inputTokens: %v, inputIndex: %v, outputTokens: %v, outputIndex: %v",
 		inputTokens, inputIndex, outputTokens, outputIndex)
 
 	if len(c.requestTrace[int(inputIndex)]) == 0 {
@@ -471,4 +498,29 @@ func (c *Cache) AddRequestTrace(inputTokens, outputTokens int) {
 	}
 
 	c.requestTrace[int(inputIndex)][int(outputIndex)] += 1
+}
+
+func (c *Cache) writeRequestTraceToStorage(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	defer func() {
+		klog.V(5).Infof("writeRequestTraceWithKey: %v", key)
+		c.requestTrace = map[int]map[int]int{}
+	}()
+	data, err := json.Marshal(c.requestTrace)
+	if err != nil {
+		klog.ErrorS(err, "error to marshall request trace for redis set")
+		return
+	}
+	if _, err = c.redisClient.Set(context.Background(), key, data, expireWriteRequestTraceIntervalInMins*time.Minute).Result(); err != nil {
+		klog.Error(err)
+		return
+	}
+	// result, err := c.redisClient.Get(context.Background(), key).Result()
+	// if err != nil {
+	// 	klog.ErrorS(err, "get")
+	// 	return
+	// }
+	// klog.Info(result)
 }

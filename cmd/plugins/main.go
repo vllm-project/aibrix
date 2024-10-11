@@ -51,7 +51,7 @@ func main() {
 	// Connect to Redis
 	redisClient := utils.GetRedisClient()
 
-	fmt.Println("Starting cache")
+	fmt.Println("starting cache")
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 	var config *rest.Config
@@ -71,7 +71,7 @@ func main() {
 		panic(err)
 	}
 
-	cache.NewCache(config, stopCh)
+	cache.NewCache(config, stopCh, redisClient)
 
 	// Connect to K8s cluster
 	k8sClient, err := kubernetes.NewForConfig(config)
@@ -90,7 +90,7 @@ func main() {
 	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(redisClient, k8sClient))
 	healthPb.RegisterHealthServer(s, &gateway.HealthServer{})
 
-	klog.Info("Starting gRPC server on port :50052")
+	klog.Info("starting gRPC server on port :50052")
 
 	// shutdown
 	var gracefulStop = make(chan os.Signal, 1)
