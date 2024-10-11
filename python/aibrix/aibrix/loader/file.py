@@ -12,16 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 from io import BytesIO
 from pathlib import Path
-from typing import Tuple
 from urllib.parse import urlparse
 
-import boto3
 import numpy as np
 from boto3.s3.transfer import TransferConfig
 
+from aibrix.loader.utils import _create_s3_client, _parse_bucket_info_from_uri
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -64,35 +62,10 @@ class LocalFile(LoadFile):
         return arr.tobytes()
 
 
-def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
-    parsed = urlparse(uri, scheme="s3")
-    bucket_name = parsed.netloc
-    bucket_path = parsed.path.lstrip("/")
-    return bucket_name, bucket_path
-
-
-def _create_s3_client():
-    ak = os.getenv("AWS_ACCESS_KEY_ID")
-    sk = os.getenv("AWS_SECRET_ACCESS_KEY")
-    endpoint = os.getenv("AWS_ENDPOINT_URL")
-    region = os.getenv("AWS_REGION")
-    assert ak is not None and ak != "", "`AWS_ACCESS_KEY_ID` is not set."
-    assert sk is not None and sk != "", "`AWS_SECRET_ACCESS_KEY` is not set."
-
-    client = boto3.client(
-        service_name="s3",
-        region_name=region,
-        endpoint_url=endpoint,
-        aws_access_key_id=ak,
-        aws_secret_access_key=sk,
-    )
-    return client
-
-
 class S3File(LoadFile):
     def __init__(self, file: str) -> None:
         self.file = file
-        bucket_name, bucket_path = _parse_bucket_info_from_uri(file)
+        bucket_name, bucket_path = _parse_bucket_info_from_uri(file, "s3")
         self.bucket_name = bucket_name
         self.bucket_path = bucket_path
         try:
