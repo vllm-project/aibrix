@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -51,6 +52,7 @@ type Cache struct {
 	podMetrics        map[string]map[string]float64  // pod_name: map[metric_name]metric_val
 	podToModelMapping map[string]map[string]struct{} // pod_name: map[model_name]struct{}
 	modelToPodMapping map[string]map[string]*v1.Pod  // model_name: map[pod_name]*v1.Pod
+	requestTrace      map[int]map[int]int            // input_token: map[output_token]request_count
 }
 
 var (
@@ -109,6 +111,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 			podMetrics:        map[string]map[string]float64{},
 			podToModelMapping: map[string]map[string]struct{}{},
 			modelToPodMapping: map[string]map[string]*v1.Pod{},
+			requestTrace:      map[int]map[int]int{},
 		}
 
 		if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -319,6 +322,11 @@ func (c *Cache) debugInfo() {
 		}
 		klog.V(4).Infof("model: %s, pods: %s", modelName, podList)
 	}
+	for inputIndex, output := range c.requestTrace {
+		for outputIndex, requestCount := range output {
+			klog.Infof("inputIndex: %v, outputIndex: %v, requestCount: %v", inputIndex, outputIndex, requestCount)
+		}
+	}
 }
 
 func (c *Cache) GetPod(podName string) (*v1.Pod, error) {
@@ -446,4 +454,21 @@ func parseMetricFromBody(body []byte, metricName string) (float64, error) {
 		}
 	}
 	return 0, fmt.Errorf("metrics %s not found", metricName)
+}
+
+func (c *Cache) AddRequestTrace(inputTokens, outputTokens int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	inputIndex := math.Trunc(math.Log2(float64(inputTokens)))
+	outputIndex := math.Trunc(math.Log2(float64(outputTokens)))
+
+	klog.Infof("inputTokens: %v, inputIndex: %v, outputTokens: %v, outputIndex: %v",
+		inputTokens, inputIndex, outputTokens, outputIndex)
+
+	if len(c.requestTrace[int(inputIndex)]) == 0 {
+		c.requestTrace[int(inputIndex)] = map[int]int{}
+	}
+
+	c.requestTrace[int(inputIndex)][int(outputIndex)] += 1
 }

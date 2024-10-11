@@ -137,7 +137,8 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 }
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, string) {
-	klog.Info("\n\n-- In RequestHeaders processing ...")
+	klog.Info("\n\n")
+	klog.Info("-- In RequestHeaders processing ...")
 	var username, routingStrategy string
 	var user utils.User
 	var rpm int64
@@ -307,7 +308,6 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 
 	var res openai.CompletionResponse
-	klog.Info(b.ResponseBody.String())
 	if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
 		return generateErrorResponse(
 			envoyTypePb.StatusCode_InternalServerError,
@@ -316,6 +316,10 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			}}},
 			err.Error())
 	}
+
+	defer func() {
+		s.cache.AddRequestTrace(res.Usage.PromptTokens, res.Usage.CompletionTokens)
+	}()
 
 	headers := []*configPb.HeaderValueOption{}
 	if user.Name != "" {

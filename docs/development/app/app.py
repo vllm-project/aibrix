@@ -108,6 +108,9 @@ def completion():
     if not prompt or not model:
         return jsonify({"status": "error", "message": "Prompt and model are required"}), 400
 
+    prompt_tokens = randint(1, 100)
+    completion_tokens = randint(1, 100)
+    
     # Simulated response
     response = {
         "id": "cmpl-uqkvlQyYK7bGYrRHQ0eXlWi7",
@@ -124,9 +127,9 @@ def completion():
             }
         ],
         "usage": {
-            "prompt_tokens": 5,
-            "completion_tokens": 7,
-            "total_tokens": 12
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens+completion_tokens
         }
     }
     return jsonify(response), 200
@@ -139,6 +142,9 @@ def chat_completions():
     if not messages or not model:
         return jsonify({"status": "error", "message": "Messages and model are required"}), 400
 
+    prompt_tokens = randint(1, 100)
+    completion_tokens = randint(1, 100)
+    
     # Simulated response
     response = {
         "id": "chatcmpl-abc123",
@@ -146,9 +152,9 @@ def chat_completions():
         "created": 1677858242,
         "model": model,
         "usage": {
-            "prompt_tokens": 13,
-            "completion_tokens": 7,
-            "total_tokens": 20
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens+completion_tokens
         },
         "choices": [
             {
