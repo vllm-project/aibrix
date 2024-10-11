@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 
 import boto3
 import torch
+import tos
 
 
 def get_dtype(dtype_str: str):
@@ -51,6 +52,20 @@ def _create_s3_client():
         endpoint_url=endpoint,
         aws_access_key_id=ak,
         aws_secret_access_key=sk,
+    )
+    return client
+
+
+def _create_tos_client():
+    ak = os.getenv("TOS_ACCESS_KEY")
+    sk = os.getenv("TOS_SECRET_KEY")
+    endpoint = os.getenv("TOS_ENDPOINT")
+    region = os.getenv("TOS_REGION")
+    assert ak is not None and ak != "", "`AWS_ACCESS_KEY_ID` is not set."
+    assert sk is not None and sk != "", "`AWS_SECRET_ACCESS_KEY` is not set."
+
+    client = tos.TosClientV2(
+        ak=ak, sk=sk, endpoint=endpoint, region=region, enable_crc=False
     )
     return client
 
