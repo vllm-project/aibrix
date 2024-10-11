@@ -9,7 +9,7 @@ Here are some essential resources for anyone interested in AIBricks:
 - **Project Roadmap**: TODO
 
 Additional resources for contributors:
-
+jj
 - **Kubebuilder Tutorial**: [Learn Kubebuilder](https://book.kubebuilder.io/) - A comprehensive, step-by-step guide to developing with Kubebuilder.
 - **Kubernetes Documentation**: [Explore Kubernetes Docs](https://kubernetes.io/docs/home/) - Detailed explanations of Kubernetes concepts.
 
