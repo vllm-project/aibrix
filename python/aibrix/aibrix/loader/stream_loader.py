@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import array
 import concurrent.futures
 import json
 import queue
@@ -33,6 +32,7 @@ def get_safetensors_metas(file: LoadFile):
     base_offset = length_of_header + LENTH_COUNT
     
     meta_bytes = file.load_to_bytes(offset=LENTH_COUNT, count=length_of_header)
+    
     tensors_meta = json.loads(meta_bytes.decode("utf-8"))
     del tensors_meta["__metadata__"]
     
@@ -75,14 +75,16 @@ class StreamLoader():
                        transfer_out_queue: queue.SimpleQueue[Union[Exception, TensorMeta]]
                        ):
         device = torch.device(device)
+        is_cuda = device.type == "cuda"
         # TODO use stream nonblocking IO
         for tensor_meta in tensor_metas:
-            
-            tensor_buffer = self.file.load_to_bytes(offset=tensor_meta.real_offset, count=tensor_meta.count)
+            tensor_buffer = self.file.load_to_buffer(offset=tensor_meta.real_offset, count=tensor_meta.count)
             tensor = torch.frombuffer(
-                array.array('b', tensor_buffer),
+                tensor_buffer,
                 dtype=tensor_meta.dtype
-                ).reshape(tensor_meta.shape).to(device)
+                ).view(tensor_meta.shape)
+            if is_cuda:
+                tensor = tensor.to(device, non_blocking=True)
             tensor_meta.set_tensor(tensor)
             transfer_out_queue.put(tensor_meta)
     
@@ -121,3 +123,23 @@ class StreamLoader():
                 yield tensor_meta.name, tensor_meta.tensor
         except BaseException:
             raise
+
+    def get_weights_iterator_wo_threads(
+        self,
+        device: Union[torch.device, str] = "cpu"
+    ) -> Generator[Tuple[str, torch.Tensor], None, None]:
+
+        device = torch.device(device)
+        is_cuda = device.type == "cuda"
+        # TODO use stream nonblocking IO
+        for tensor_meta in self.tensors_metas:
+            tensor_buffer = self.file.load_to_bytes(offset=tensor_meta.real_offset, count=tensor_meta.count)
+            tensor = torch.frombuffer(
+                tensor_buffer,
+                dtype=tensor_meta.dtype
+                ).view(tensor_meta.shape)
+            
+            if is_cuda:
+                tensor = tensor.to(device, non_blocking=True)
+            # tensor_meta.set_tensor(tensor)
+            yield tensor_meta.name, tensor

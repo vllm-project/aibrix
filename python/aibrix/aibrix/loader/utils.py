@@ -129,7 +129,7 @@ def split_continue_tensors(tensor_metas: List[TensorMeta], num_readers:int) -> L
     assert num_readers > 0, "num_readers should be greater than 0"
     
     if len(tensor_metas) <= num_readers:
-        return [tuple(item) for item in tensor_metas]
+        return [tuple([item]) for item in tensor_metas]
     
     max_offset = tensor_metas[-1].data_offsets[1]
     avg_size = max_offset // num_readers

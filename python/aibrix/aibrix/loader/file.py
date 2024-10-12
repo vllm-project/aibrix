@@ -15,7 +15,6 @@
 import tempfile
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import urlparse
 
 import numpy as np
 from boto3.s3.transfer import TransferConfig
@@ -40,6 +39,8 @@ class LoadFile:
     def load_to_bytes(self, offset: int, count: int):
         raise NotImplementedError
 
+    def load_to_buffer(self, offset: int, count: int):
+        raise NotImplementedError
 
 class LocalFile(LoadFile):
     def __init__(self, file: str) -> None:
@@ -63,11 +64,37 @@ class LocalFile(LoadFile):
         return tensor_bytes.tobytes()
 
     def load_to_bytes(self, offset: int, count: int):
-        arr = np.fromfile(self.file, dtype=np.uint8, offset=offset, count=count)
-        return arr.tobytes()
+        return self.load_to_buffer(offset=offset, count=count).tobytes()
+
+    def load_to_buffer(self, offset: int, count: int):
+        tensor_mmap = np.memmap(
+            self.file,
+            dtype=np.uint8,
+            mode="r",
+            offset=offset,
+            shape=count,
+        )
+        return tensor_mmap
+        # arr = np.fromfile(self.file, dtype=np.uint8, offset=offset, count=count)
+        # return arr.tobytes()
 
 
-class S3File(LoadFile):
+class RemoteFile(LoadFile):
+    def __init__(self, file: str, file_source: str) -> None:
+        self.file = file
+        super().__init__(file_source=file_source)
+
+    def load_to_buffer(self, offset: int, count: int):
+        tensor_bytes = self.load_to_bytes(offset=offset, count=count)
+        tensor_memmap = np.frombuffer(tensor_bytes, dtype=np.uint8)
+        # tensor_memmap = np.memmap(
+        #     tensor_bytes,
+        #     dtype=np.uint8,
+        #     mode="r",
+        # )
+        return tensor_memmap
+
+class S3File(RemoteFile):
     def __init__(self, file: str) -> None:
         self.file = file
         bucket_name, bucket_path = _parse_bucket_info_from_uri(file, "s3")
@@ -78,7 +105,7 @@ class S3File(LoadFile):
             s3_client.head_object(Bucket=bucket_name, Key=bucket_path)
         except Exception as e:
             raise ValueError(f"S3 bucket path {bucket_path} not exist for {e}.")
-        super().__init__(file_source="s3")
+        super().__init__(file=file, file_source="s3")
 
     def load_whole_file(self, num_threads: int):
         s3_client = _create_s3_client()
@@ -98,36 +125,6 @@ class S3File(LoadFile):
         )
         return data.getbuffer()
 
-    def load_whole_file_v2(self, num_threads: int = 1):
-        _file_name = self.bucket_path.split("/")[-1]
-        local_path = Path("/tmp/aibrix/loader/s3/")
-        local_path.mkdir(parents=True, exist_ok=True)
-        local_file = local_path.joinpath(_file_name).absolute()
-
-        s3_client = _create_s3_client()
-
-        config_kwargs = {
-            "max_concurrency": num_threads,
-            "use_threads": True,
-        }
-        config = TransferConfig(**config_kwargs)
-
-        s3_client.download_file(
-            Bucket=self.bucket_name,
-            Key=self.bucket_path,
-            Filename=str(
-                local_file
-            ),  # S3 client does not support Path, convert it to str
-            Config=config,
-        )
-
-        tensor_bytes = np.memmap(
-            local_file,
-            dtype=np.uint8,
-            mode="c",
-        )
-        return tensor_bytes.tobytes()
-
     def load_to_bytes(self, offset: int, count: int):
         s3_client = _create_s3_client()
 
@@ -137,7 +134,8 @@ class S3File(LoadFile):
         )
         return resp.get("Body").read()
 
-class TOSFile(LoadFile):
+
+class TOSFile(RemoteFile):
     def __init__(self, file: str) -> None:
         self.file = file
         bucket_name, bucket_path = _parse_bucket_info_from_uri(file, "tos")
@@ -147,8 +145,8 @@ class TOSFile(LoadFile):
             tos_client = _create_tos_client()
             tos_client.head_object(bucket=bucket_name, key=bucket_path)
         except Exception as e:
-            raise ValueError(f"S3 bucket path {bucket_path} not exist for {e}.")
-        super().__init__(file_source="tos")
+            raise ValueError(f"TOS bucket path {bucket_path} not exist for {e}.")
+        super().__init__(file=file, file_source="tos")
 
     def load_whole_file(self, num_threads: int = 1):
         _file_name = self.bucket_path.split("/")[-1]
@@ -183,18 +181,3 @@ class TOSFile(LoadFile):
             range=range_header
         )
         return resp.read()
-
-
-
-if __name__ == "__main__":
-    file = "tos://aibrix-artifact-testing/models/HuggingFaceTB/SmolLM-1.7B/model-00001-of-00002.safetensors"
-    s3_file = TOSFile(file)
-
-    length_bytes = s3_file.load_to_bytes(offset=0, count=8)
-    import json
-    import struct
-    length_of_header = struct.unpack("<Q", length_bytes)[0]
-
-    meta_bytes = s3_file.load_to_bytes(offset=8, count=length_of_header)
-    meta_dict = json.loads(meta_bytes.decode("utf-8"))
-    print(meta_dict)
