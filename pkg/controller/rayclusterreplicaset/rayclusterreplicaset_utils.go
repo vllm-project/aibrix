@@ -131,6 +131,7 @@ func isClusterActive(c rayclusterv1.RayCluster) bool {
 	}
 
 	// Case 4: The RayCluster has been provisioned and we need to check if it is ready.
+	// Currently, we consider any Ray Pod failure is unrecoverable and need to recreate a new RayCluster.
 	return rayclusterutil.IsRayClusterReady(&c)
 }
 
