@@ -107,13 +107,7 @@ func oldPodsRunning(newRS *orchestrationv1alpha1.RayClusterReplicaSet, oldRSs []
 			continue
 		}
 		for _, pod := range podList {
-			switch pod.Status.State {
-
-			case rayclusterv1.Failed, rayclusterv1.Unhealthy:
-				// Don't count pods in terminal state.
-				continue
-			default:
-				// Pod is not in terminal phase.
+			if !pod.DeletionTimestamp.IsZero() {
 				return true
 			}
 		}
