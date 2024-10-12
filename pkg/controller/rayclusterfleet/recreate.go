@@ -20,8 +20,8 @@ import (
 	"context"
 
 	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
-	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	rayclusterutil "github.com/aibrix/aibrix/pkg/utils"
+	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 
 	"github.com/aibrix/aibrix/pkg/controller/rayclusterfleet/util"
 	"k8s.io/apimachinery/pkg/types"
@@ -108,7 +108,7 @@ func oldPodsRunning(newRS *orchestrationv1alpha1.RayClusterReplicaSet, oldRSs []
 			continue
 		}
 		for _, pod := range podList {
-			if !pod.DeletionTimestamp.IsZero() && rayclusterutil.IsRayClusterReady(pod){
+			if !pod.DeletionTimestamp.IsZero() && rayclusterutil.IsRayClusterReady(pod) {
 				return true
 			}
 		}
