@@ -116,18 +116,18 @@ func isClusterActive(c rayclusterv1.RayCluster) bool {
 		return false
 	}
 
-	// Case 2: Ray Pod creation or deletion failed
-	isRayPodCreateOrDeleteFailed := meta.IsStatusConditionPresentAndEqual(c.Status.Conditions, string(rayclusterv1.RayClusterReplicaFailure), metav1.ConditionTrue)
-	if isRayPodCreateOrDeleteFailed {
-		return false
-	}
-
-	// Case 3: The RayCluster has not been provisioned yet.
+	// Case 2: The RayCluster has not been provisioned yet.
 	// This means the RayCluster is in the init stage, waiting for all Ray Pods to become ready for the first time.
 	// We consider the RayCluster active, as the ReplicaSet also counts Pods that are in the init stage.
 	isRayClusterProvisioned := meta.IsStatusConditionPresentAndEqual(c.Status.Conditions, string(rayclusterv1.RayClusterProvisioned), metav1.ConditionTrue)
 	if !isRayClusterProvisioned {
 		return true
+	}	
+
+	// Case 3: The RayCluster has been provisioned, but Ray Pod creation or deletion failed afterward.
+	isRayPodCreateOrDeleteFailed := meta.IsStatusConditionPresentAndEqual(c.Status.Conditions, string(rayclusterv1.RayClusterReplicaFailure), metav1.ConditionTrue)
+	if isRayPodCreateOrDeleteFailed {
+		return false
 	}
 
 	// Case 4: The RayCluster has been provisioned and we need to check if it is ready.
