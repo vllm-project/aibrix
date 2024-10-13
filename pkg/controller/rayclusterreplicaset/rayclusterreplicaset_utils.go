@@ -122,7 +122,7 @@ func isClusterActive(c rayclusterv1.RayCluster) bool {
 	isRayClusterProvisioned := meta.IsStatusConditionPresentAndEqual(c.Status.Conditions, string(rayclusterv1.RayClusterProvisioned), metav1.ConditionTrue)
 	if !isRayClusterProvisioned {
 		return true
-	}	
+	}
 
 	// Case 3: The RayCluster has been provisioned, but Ray Pod creation or deletion failed afterward.
 	isRayPodCreateOrDeleteFailed := meta.IsStatusConditionPresentAndEqual(c.Status.Conditions, string(rayclusterv1.RayClusterReplicaFailure), metav1.ConditionTrue)
