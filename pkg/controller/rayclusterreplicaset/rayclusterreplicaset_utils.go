@@ -124,13 +124,7 @@ func isClusterActive(c rayclusterv1.RayCluster) bool {
 		return true
 	}
 
-	// Case 3: The RayCluster has been provisioned, but Ray Pod creation or deletion failed afterward.
-	isRayPodCreateOrDeleteFailed := meta.IsStatusConditionPresentAndEqual(c.Status.Conditions, string(rayclusterv1.RayClusterReplicaFailure), metav1.ConditionTrue)
-	if isRayPodCreateOrDeleteFailed {
-		return false
-	}
-
-	// Case 4: The RayCluster has been provisioned and we need to check if it is ready.
+	// Case 3: The RayCluster has been provisioned and we need to check if it is ready.
 	// Currently, we consider any Ray Pod failure is unrecoverable and need to recreate a new RayCluster.
 	return rayclusterutil.IsRayClusterReady(&c)
 }
