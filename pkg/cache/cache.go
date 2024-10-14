@@ -162,7 +162,9 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 					if len(instance.requestTrace) == 0 {
 						continue
 					}
-					key := fmt.Sprintf("aibrix:request_trace:%v", time.Now().Unix())
+					t := time.Now().Unix()
+					roundT := t - t%writeRequestTraceIntervalInSeconds
+					key := fmt.Sprintf("aibrix:request_trace:%v", roundT)
 					instance.writeRequestTraceToStorage(key)
 				case <-stopCh:
 					ticker.Stop()
