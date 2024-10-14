@@ -318,7 +318,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	}
 
 	defer func() {
-		s.cache.AddRequestTrace(res.Model, res.Usage.PromptTokens, res.Usage.CompletionTokens)
+		go func() {
+			s.cache.AddRequestTrace(res.Model, res.Usage.PromptTokens, res.Usage.CompletionTokens)
+		}()
 	}()
 
 	headers := []*configPb.HeaderValueOption{}
