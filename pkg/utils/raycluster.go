@@ -17,7 +17,10 @@ limitations under the License.
 package utils
 
 import (
+	"time"
+
 	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -27,17 +30,30 @@ func IsRayClusterReady(cluster *rayclusterv1.RayCluster) bool {
 }
 
 func IsRayClusterStateReady(status rayclusterv1.RayClusterStatus) bool {
-	return status.State == rayclusterv1.Ready
+	// IsRayClusterProvisioned indicates whether all Ray Pods are ready for the first time.
+	IsRayClusterProvisioned := meta.IsStatusConditionPresentAndEqual(status.Conditions, string(rayclusterv1.RayClusterProvisioned), metav1.ConditionTrue)
+	isHeadReady := meta.IsStatusConditionPresentAndEqual(status.Conditions, string(rayclusterv1.HeadPodReady), metav1.ConditionTrue)
+	isAllWorkersReady := status.ReadyWorkerReplicas == status.DesiredWorkerReplicas
+	return IsRayClusterProvisioned && isHeadReady && isAllWorkersReady
 }
 
 func IsRayClusterAvailable(cluster *rayclusterv1.RayCluster, minReadySeconds int32, now metav1.Time) bool {
-	// RayCluster doesn't have condition list, it's hard to know it's ready time.
-	/*c := GetRayClusterReadyCondition(cluster.Status)
-	minReadySecondsDuration := time.Duration(minReadySeconds) * time.Second
-	if minReadySeconds == 0 || (!c.LastTransitionTime.IsZero() && c.LastTransitionTime.Add(minReadySecondsDuration).Before(now.Time)) {
-		return true
-	}*/
+	if !IsRayClusterReady(cluster) {
+		return false
+	}
 
-	// TODO: always return true at this moment.
-	return IsRayClusterReady(cluster)
+	headPodReadyCond := meta.FindStatusCondition(cluster.Status.Conditions, string(rayclusterv1.HeadPodReady))
+	provisionedCond := meta.FindStatusCondition(cluster.Status.Conditions, string(rayclusterv1.RayClusterProvisioned))
+
+	lastTransitionTime := provisionedCond.LastTransitionTime
+	if headPodReadyCond.LastTransitionTime.Time.After(provisionedCond.LastTransitionTime.Time) {
+		lastTransitionTime = headPodReadyCond.LastTransitionTime
+	}
+
+	minReadySecondsDuration := time.Duration(minReadySeconds) * time.Second
+	if minReadySeconds == 0 || (!lastTransitionTime.IsZero() && lastTransitionTime.Add(minReadySecondsDuration).Before(now.Time)) {
+		return true
+	}
+
+	return false
 }

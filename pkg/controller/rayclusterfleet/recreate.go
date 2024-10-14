@@ -20,6 +20,7 @@ import (
 	"context"
 
 	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
+	rayclusterutil "github.com/aibrix/aibrix/pkg/utils"
 	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 
 	"github.com/aibrix/aibrix/pkg/controller/rayclusterfleet/util"
@@ -107,13 +108,7 @@ func oldPodsRunning(newRS *orchestrationv1alpha1.RayClusterReplicaSet, oldRSs []
 			continue
 		}
 		for _, pod := range podList {
-			switch pod.Status.State {
-
-			case rayclusterv1.Failed, rayclusterv1.Unhealthy:
-				// Don't count pods in terminal state.
-				continue
-			default:
-				// Pod is not in terminal phase.
+			if !pod.DeletionTimestamp.IsZero() && rayclusterutil.IsRayClusterReady(pod) {
 				return true
 			}
 		}

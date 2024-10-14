@@ -22,6 +22,7 @@ import (
 	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
 	rayclusterutil "github.com/aibrix/aibrix/pkg/utils"
 	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/klog/v2"
@@ -110,10 +111,22 @@ func filterActiveClusters(clusters []rayclusterv1.RayCluster) []rayclusterv1.Ray
 }
 
 func isClusterActive(c rayclusterv1.RayCluster) bool {
-	// Do not use `c.Status.State != rayclusterv1.Ready`, creation staging doesn't have state created.
-	return c.Status.State != rayclusterv1.Failed &&
-		c.Status.State != rayclusterv1.Unhealthy &&
-		c.DeletionTimestamp == nil
+	// Case 1: This RayCluster has been marked for deletion.
+	if !c.DeletionTimestamp.IsZero() {
+		return false
+	}
+
+	// Case 2: The RayCluster has not been provisioned yet.
+	// This means the RayCluster is in the init stage, waiting for all Ray Pods to become ready for the first time.
+	// We consider the RayCluster active, as the ReplicaSet also counts Pods that are in the init stage.
+	isRayClusterProvisioned := meta.IsStatusConditionPresentAndEqual(c.Status.Conditions, string(rayclusterv1.RayClusterProvisioned), metav1.ConditionTrue)
+	if !isRayClusterProvisioned {
+		return true
+	}
+
+	// Case 3: The RayCluster has been provisioned and we need to check if it is ready.
+	// Currently, we consider any Ray Pod failure is unrecoverable and need to recreate a new RayCluster.
+	return rayclusterutil.IsRayClusterReady(&c)
 }
 
 func isStatusSame(rs *orchestrationv1alpha1.RayClusterReplicaSet, newStatus orchestrationv1alpha1.RayClusterReplicaSetStatus) bool {
