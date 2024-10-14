@@ -56,7 +56,7 @@ type Cache struct {
 	podMetrics        map[string]map[string]float64  // pod_name: map[metric_name]metric_val
 	podToModelMapping map[string]map[string]struct{} // pod_name: map[model_name]struct{}
 	modelToPodMapping map[string]map[string]*v1.Pod  // model_name: map[pod_name]*v1.Pod
-	requestTrace      map[int]map[int]int            // input_token: map[output_token]request_count
+	requestTrace      map[string]map[string]int      // model_name: map[Log2(input_token)-Log2(output_token)]request_count
 }
 
 var (
@@ -118,7 +118,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			podMetrics:        map[string]map[string]float64{},
 			podToModelMapping: map[string]map[string]struct{}{},
 			modelToPodMapping: map[string]map[string]*v1.Pod{},
-			requestTrace:      map[int]map[int]int{},
+			requestTrace:      map[string]map[string]int{},
 		}
 
 		if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -164,8 +164,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 					}
 					t := time.Now().Unix()
 					roundT := t - t%writeRequestTraceIntervalInSeconds
-					key := fmt.Sprintf("aibrix:request_trace:%v", roundT)
-					instance.writeRequestTraceToStorage(key)
+					instance.writeRequestTraceToStorage(roundT)
 				case <-stopCh:
 					ticker.Stop()
 					return
@@ -485,7 +484,7 @@ func parseMetricFromBody(body []byte, metricName string) (float64, error) {
 	return 0, fmt.Errorf("metrics %s not found", metricName)
 }
 
-func (c *Cache) AddRequestTrace(inputTokens, outputTokens int) {
+func (c *Cache) AddRequestTrace(modelName string, inputTokens, outputTokens int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -495,34 +494,32 @@ func (c *Cache) AddRequestTrace(inputTokens, outputTokens int) {
 	klog.V(5).Infof("inputTokens: %v, inputIndex: %v, outputTokens: %v, outputIndex: %v",
 		inputTokens, inputIndex, outputTokens, outputIndex)
 
-	if len(c.requestTrace[int(inputIndex)]) == 0 {
-		c.requestTrace[int(inputIndex)] = map[int]int{}
+	if len(c.requestTrace[modelName]) == 0 {
+		c.requestTrace[modelName] = map[string]int{}
 	}
 
-	c.requestTrace[int(inputIndex)][int(outputIndex)] += 1
+	c.requestTrace[modelName][fmt.Sprintf("%v:%v", inputIndex, outputIndex)] += 1
 }
 
-func (c *Cache) writeRequestTraceToStorage(key string) {
+func (c *Cache) writeRequestTraceToStorage(roundT int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	defer func() {
-		klog.V(5).Infof("writeRequestTraceWithKey: %v", key)
-		c.requestTrace = map[int]map[int]int{}
+		klog.V(5).Infof("writeRequestTraceWithKey: %v", roundT)
+		c.requestTrace = map[string]map[string]int{}
 	}()
-	data, err := json.Marshal(c.requestTrace)
-	if err != nil {
-		klog.ErrorS(err, "error to marshall request trace for redis set")
-		return
+
+	for modelName, trace := range c.requestTrace {
+		key := fmt.Sprintf("aibrix:%v_request_trace_%v", modelName, roundT)
+		value, err := json.Marshal(trace)
+		if err != nil {
+			klog.ErrorS(err, "error to marshall request trace for redis set")
+			continue
+		}
+
+		if _, err = c.redisClient.Set(context.Background(), key, value, expireWriteRequestTraceIntervalInMins*time.Minute).Result(); err != nil {
+			klog.Error(err)
+		}
 	}
-	if _, err = c.redisClient.Set(context.Background(), key, data, expireWriteRequestTraceIntervalInMins*time.Minute).Result(); err != nil {
-		klog.Error(err)
-		return
-	}
-	// result, err := c.redisClient.Get(context.Background(), key).Result()
-	// if err != nil {
-	// 	klog.ErrorS(err, "get")
-	// 	return
-	// }
-	// klog.Info(result)
 }
