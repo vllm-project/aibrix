@@ -17,11 +17,8 @@ limitations under the License.
 package algorithm
 
 import (
-	"math"
-	"reflect"
-
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
-	"k8s.io/klog/v2"
+	"math"
 )
 
 type ApaScalingAlgorithm struct{}
@@ -31,27 +28,21 @@ var _ ScalingAlgorithm = (*ApaScalingAlgorithm)(nil)
 // ComputeTargetReplicas - Apa's algorithm references and enhances the algorithm in the following paper:
 // Huo, Qizheng, et al. "High Concurrency Response Strategy based on Kubernetes Horizontal Pod Autoscaler."
 // Journal of Physics: Conference Series. Vol. 2451. No. 1. IOP Publishing, 2023.
-func (a *ApaScalingAlgorithm) ComputeTargetReplicas(currentPodCount float64, currentUsePerPod float64, scalingSpec interface{}) int32 {
-	spec, ok := scalingSpec.(common.ScalingSpec) // Type assertion
-	if !ok {
-		// Handle the case where the type is not what we expected
-		klog.Warningf("Invalid spec type {%s}", reflect.TypeOf(scalingSpec))
-		return int32(currentPodCount)
-	}
-
-	expectedUse := spec.GetTargetValue()
-	upTolerance := spec.GetUpFluctuationTolerance()
-	downTolerance := spec.GetDownFluctuationTolerance()
+func (a *ApaScalingAlgorithm) ComputeTargetReplicas(currentPodCount float64, context common.ScalingContext) int32 {
+	expectedUse := context.GetTargetValue()
+	upTolerance := context.GetUpFluctuationTolerance()
+	downTolerance := context.GetDownFluctuationTolerance()
+	currentUsePerPod := context.GetCurrentUsePerPod()
 
 	if currentUsePerPod/expectedUse > (1 + upTolerance) {
-		maxScaleUp := math.Ceil(spec.GetMaxScaleUpRate() * currentPodCount)
+		maxScaleUp := math.Ceil(context.GetMaxScaleUpRate() * currentPodCount)
 		expectedPods := int32(math.Ceil(currentPodCount * (currentUsePerPod / expectedUse)))
 		if float64(expectedPods) > maxScaleUp {
 			expectedPods = int32(maxScaleUp)
 		}
 		return expectedPods
 	} else if currentUsePerPod/expectedUse < (1 - downTolerance) {
-		maxScaleDown := math.Floor(currentPodCount / spec.GetMaxScaleDownRate())
+		maxScaleDown := math.Floor(currentPodCount / context.GetMaxScaleDownRate())
 		expectedPods := int32(math.Ceil(currentPodCount * (currentUsePerPod / expectedUse)))
 		if float64(expectedPods) < maxScaleDown {
 			expectedPods = int32(maxScaleDown)

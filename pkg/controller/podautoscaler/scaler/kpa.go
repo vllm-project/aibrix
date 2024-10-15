@@ -19,11 +19,13 @@ package scaler
 import (
 	"context"
 	"errors"
+
 	"math"
 	"strconv"
 	"time"
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	scalingcontext "github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 	v1 "k8s.io/api/core/v1"
 
@@ -55,6 +57,7 @@ If the metric no longer exceeds the panic threshold, exit the panic mode.
 
 // DeciderKpaSpec defines parameters for scaling decisions.
 type DeciderKpaSpec struct {
+	scalingcontext.BaseScalingContext
 	// Maximum rate at which to scale up
 	MaxScaleUpRate float64
 	// Maximum rate at which to scale down, a value of 2.5 means the count can reduce to at most 2.5 times less than the current value in one step.
@@ -327,29 +330,4 @@ func (k *KpaAutoscaler) GetSpec() *DeciderKpaSpec {
 	defer k.specMux.Unlock()
 
 	return k.deciderSpec
-}
-
-func (d DeciderKpaSpec) GetTargetValue() float64 {
-	//TODO implement me
-	panic("implement me")
-}
-
-func (d DeciderKpaSpec) GetUpFluctuationTolerance() float64 {
-	//TODO implement me
-	panic("implement me")
-}
-
-func (d DeciderKpaSpec) GetDownFluctuationTolerance() float64 {
-	//TODO implement me
-	panic("implement me")
-}
-
-func (d DeciderKpaSpec) GetMaxScaleUpRate() float64 {
-	//TODO implement me
-	panic("implement me")
-}
-
-func (d DeciderKpaSpec) GetMaxScaleDownRate() float64 {
-	//TODO implement me
-	panic("implement me")
 }

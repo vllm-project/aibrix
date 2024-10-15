@@ -16,12 +16,14 @@ limitations under the License.
 
 package algorithm
 
+import "github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
+
 // HpaScalingAlgorithm can be used by any scaler without customized algorithms
 type HpaScalingAlgorithm struct{}
 
 var _ ScalingAlgorithm = (*HpaScalingAlgorithm)(nil)
 
-func (a *HpaScalingAlgorithm) ComputeTargetReplicas(currentPodCount float64, currentUsePerPod float64, spec interface{}) int32 {
+func (a *HpaScalingAlgorithm) ComputeTargetReplicas(currentPodCount float64, context common.ScalingContext) int32 {
 	// TODO: implement me!
 	return int32(currentPodCount)
 }

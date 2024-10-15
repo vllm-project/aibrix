@@ -15,6 +15,6 @@ which calculates the number of replicas based on current metrics and scaling spe
 
 ```go
 type ScalingAlgorithm interface {
-    ComputeTargetReplicas(currentPodCount float64, currentUsePerPod float64, spec ScalingSpec) int32
+    ComputeTargetReplicas(currentPodCount float64, context ScalingContext) int32
 }
 ```

@@ -35,7 +35,8 @@ import (
 // Refer to:  KpaAutoscaler
 type BaseAutoscaler struct {
 	// specMux guards the current DeciderKpaSpec.
-	specMux        sync.RWMutex
+	specMux sync.RWMutex
+	// TODO: we just need one client which embed all different clients from different sources.
 	metricsClient  metrics.MetricsClient
 	resourceClient client.Client
 }

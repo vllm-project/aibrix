@@ -16,16 +16,17 @@ limitations under the License.
 
 package algorithm
 
+import "github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
+
 type ScalingAlgorithm interface {
 	// ComputeTargetReplicas calculates the number of replicas needed based on current metrics
 	// and the provided scaling specifications.
 	//
 	// Parameters:
 	// currentPodCount - the current number of ready pods
-	// currentUsePerPod - the current resource usage per pod
-	// spec - an interface that provides access to scaling parameters like target values and tolerances
+	// context - an interface that provides access to scaling parameters like target values and tolerances
 	//
 	// Returns:
 	// int32 - the calculated target number of replicas
-	ComputeTargetReplicas(currentPodCount float64, currentUsePerPod float64, spec interface{}) int32
+	ComputeTargetReplicas(currentPodCount float64, context common.ScalingContext) int32
 }

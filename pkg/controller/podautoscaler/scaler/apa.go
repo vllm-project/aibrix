@@ -55,6 +55,7 @@ func getMetrics() (float64, float64, error) {
 
 func (a *ApaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time, strategy autoscalingv1alpha1.ScalingStrategyType) ScaleResult {
 	spec := a.GetSpec()
+	// TODO: fix me
 	//observedStableValue, observedPanicValue, err := apaMetricsClient.StableAndPanicMetrics(metricKey, now)
 	_, observedPanicValue, err := getMetrics()
 	if err != nil {
@@ -63,7 +64,9 @@ func (a *ApaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	}
 
 	currentUsePerPod := observedPanicValue / float64(originalReadyPodsCount)
-	desiredPodCount := a.algorithm.ComputeTargetReplicas(float64(originalReadyPodsCount), currentUsePerPod, spec)
+	spec.SetCurrentUsePerPod(currentUsePerPod)
+
+	desiredPodCount := a.algorithm.ComputeTargetReplicas(float64(originalReadyPodsCount), spec)
 	klog.InfoS("Use APA scaling strategy", "currentPodCount", originalReadyPodsCount, "currentUsePerPod", currentUsePerPod, "desiredPodCount", desiredPodCount)
 	return ScaleResult{
 		DesiredPodCount:     desiredPodCount,
