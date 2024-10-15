@@ -17,13 +17,11 @@ limitations under the License.
 package scaler
 
 import (
-	"sync"
 	"time"
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 /**
@@ -37,17 +35,6 @@ Our implementation specifically mimics and adapts the autoscaling functionality 
 - ScaleResult:			pkg/autoscaler/scaling/multiscaler.go
 
 */
-
-// Autoscaler represents an instance of the autoscaling engine.
-// It encapsulates all the necessary data and state needed for scaling decisions.
-// Refer to:  KpaAutoscaler
-type Autoscaler struct {
-	// specMux guards the current DeciderKpaSpec.
-	specMux        sync.RWMutex
-	metricsClient  metrics.MetricsClient
-	resourceClient client.Client
-	scaler         Scaler
-}
 
 // Scaler is an interface that defines the scaling operations.
 // Any autoscaler implementation, such as KpaAutoscaler (Kubernetes Pod Autoscaler),

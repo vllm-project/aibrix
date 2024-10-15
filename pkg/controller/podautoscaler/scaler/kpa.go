@@ -132,7 +132,7 @@ type DeciderStatus struct {
 }
 
 type KpaAutoscaler struct {
-	*Autoscaler
+	*BaseAutoscaler
 	panicTime    time.Time
 	maxPanicPods int32
 	delayWindow  *aggregation.TimeWindow
@@ -170,47 +170,15 @@ func NewKpaAutoscaler(readyPodsCount int, spec *DeciderKpaSpec) (*KpaAutoscaler,
 
 	// TODO missing MetricClient
 	metricsClient := metrics.NewKPAMetricsClient()
-	autoscaler := &Autoscaler{metricsClient: metricsClient}
+	autoscaler := &BaseAutoscaler{metricsClient: metricsClient}
 
 	return &KpaAutoscaler{
-		Autoscaler:   autoscaler,
-		panicTime:    panicTime,
-		maxPanicPods: int32(readyPodsCount),
-		delayWindow:  delayWindow,
-		deciderSpec:  spec,
+		BaseAutoscaler: autoscaler,
+		panicTime:      panicTime,
+		maxPanicPods:   int32(readyPodsCount),
+		delayWindow:    delayWindow,
+		deciderSpec:    spec,
 	}, nil
-}
-
-// APA_Scale references and enhances the algorithm in the following paper:.
-//
-//	 Huo, Qizheng, et al. "High Concurrency Response Strategy based on Kubernetes Horizontal Pod Autoscaler."
-//		Journal of Physics: Conference Series. Vol. 2451. No. 1. IOP Publishing, 2023.
-func (k *KpaAutoscaler) APA_Scale(currentPodCount float64, currentUsePerPod float64, spec *DeciderKpaSpec) int32 {
-	expectedUse := spec.TargetValue
-	upTolerance := spec.UpFluctuationTolerance
-	downTolerance := spec.DownFluctuationTolerance
-
-	// Check if scaling up is necessary
-	if currentUsePerPod/expectedUse > (1 + upTolerance) {
-		maxScaleUp := math.Ceil(spec.MaxScaleUpRate * currentPodCount)
-		expectedPods := int32(math.Ceil(currentPodCount * (currentUsePerPod / expectedUse)))
-		// Ensure the number of pods does not exceed the maximum scale-up limit
-		if float64(expectedPods) > maxScaleUp {
-			expectedPods = int32(maxScaleUp)
-		}
-		return expectedPods
-	} else if currentUsePerPod/expectedUse < (1 - downTolerance) { // Check if scaling down is necessary
-		maxScaleDown := math.Floor(currentPodCount / spec.MaxScaleDownRate)
-		expectedPods := int32(math.Ceil(currentPodCount * (currentUsePerPod / expectedUse)))
-		// Ensure the number of pods does not fall below the minimum scale-down limit
-		if float64(expectedPods) < maxScaleDown {
-			expectedPods = int32(maxScaleDown)
-		}
-		return expectedPods
-	}
-
-	// If the current utilization is within the expected range, maintain the current pod count
-	return int32(currentPodCount)
 }
 
 // Scale implements Scaler interface in KpaAutoscaler.
@@ -227,17 +195,6 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	if err != nil {
 		klog.Errorf("Failed to get stable and panic metrics for %s: %v", metricKey, err)
 		return ScaleResult{}
-	}
-
-	if strategy == autoscalingv1alpha1.APA {
-		currentUsePerPod := observedPanicValue / float64(originalReadyPodsCount)
-		desiredPodCount := k.APA_Scale(float64(originalReadyPodsCount), currentUsePerPod, spec)
-		klog.InfoS("Use APA scaling strategy", "currentPodCount", originalReadyPodsCount, "currentUsePerPod", currentUsePerPod, "desiredPodCount", desiredPodCount)
-		return ScaleResult{
-			DesiredPodCount:     desiredPodCount,
-			ExcessBurstCapacity: 0,
-			ScaleValid:          true,
-		}
 	}
 
 	// Use 1 if there are zero current pods.
@@ -370,4 +327,29 @@ func (k *KpaAutoscaler) GetSpec() *DeciderKpaSpec {
 	defer k.specMux.Unlock()
 
 	return k.deciderSpec
+}
+
+func (d DeciderKpaSpec) GetTargetValue() float64 {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (d DeciderKpaSpec) GetUpFluctuationTolerance() float64 {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (d DeciderKpaSpec) GetDownFluctuationTolerance() float64 {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (d DeciderKpaSpec) GetMaxScaleUpRate() float64 {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (d DeciderKpaSpec) GetMaxScaleDownRate() float64 {
+	//TODO implement me
+	panic("implement me")
 }

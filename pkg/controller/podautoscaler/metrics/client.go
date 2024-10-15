@@ -114,6 +114,21 @@ func parseMetricFromBody(body []byte, metricName string) (float64, error) {
 	return 0, fmt.Errorf("metrics %s not found", metricName)
 }
 
+type APAMetricsClient struct {
+	*restMetricsClient
+}
+
+func (A APAMetricsClient) UpdatePodListMetric(ctx context.Context, metricKey NamespaceNameMetric, podList *corev1.PodList, containerPort int, now time.Time) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+// NewAPAMetricsClient initializes and returns a APAMetricsClient with specified durations.
+func NewAPAMetricsClient() *APAMetricsClient {
+	client := &APAMetricsClient{}
+	return client
+}
+
 type KPAMetricsClient struct {
 	*restMetricsClient
 	collectionsMutex sync.RWMutex

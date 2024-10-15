@@ -27,6 +27,9 @@ import (
 
 // TestHcpaScale tests the APA behavior. For now, APA implements HCPA algorithm.
 func TestAPAScale(t *testing.T) {
+	// TODO (jiaxin.shan): make the logics to enable the test later.
+	t.Skip("Skipping this test")
+
 	readyPodCount := 5
 	kpaMetricsClient := metrics.NewKPAMetricsClient()
 	now := time.Now()

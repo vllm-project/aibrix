@@ -19,6 +19,7 @@ package scaler
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
@@ -29,7 +30,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func (a *Autoscaler) getReadyPodsCount(namespace string, selector labels.Selector) (int64, error) {
+// BaseAutoscaler represents an instance of the autoscaling engine.
+// It encapsulates all the necessary data and state needed for scaling decisions.
+// Refer to:  KpaAutoscaler
+type BaseAutoscaler struct {
+	// specMux guards the current DeciderKpaSpec.
+	specMux        sync.RWMutex
+	metricsClient  metrics.MetricsClient
+	resourceClient client.Client
+}
+
+func (a *BaseAutoscaler) GetReadyPodsCount(namespace string, selector labels.Selector) (int64, error) {
 	podList := &v1.PodList{}
 	if err := a.resourceClient.List(context.Background(), podList,
 		&client.ListOptions{Namespace: namespace, LabelSelector: selector}); err != nil {
