@@ -173,7 +173,7 @@ func NewKpaAutoscaler(readyPodsCount int, spec *DeciderKpaSpec) (*KpaAutoscaler,
 
 	// TODO missing MetricClient
 	metricsClient := metrics.NewKPAMetricsClient()
-	autoscaler := &BaseAutoscaler{metricsClient: metricsClient}
+	autoscaler := &BaseAutoscaler{metricClient: metricsClient}
 
 	return &KpaAutoscaler{
 		BaseAutoscaler: autoscaler,
@@ -186,14 +186,14 @@ func NewKpaAutoscaler(readyPodsCount int, spec *DeciderKpaSpec) (*KpaAutoscaler,
 
 // Scale implements Scaler interface in KpaAutoscaler.
 // Refer to knative-serving: pkg/autoscaler/scaling/autoscaler.go, Scale function.
-func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time, strategy autoscalingv1alpha1.ScalingStrategyType) ScaleResult {
+func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time) ScaleResult {
 	/**
 	`observedStableValue` and `observedPanicValue` are calculated using different window sizes in the `MetricClient`.
 	 For reference, see the KNative implementation at `pkg/autoscaler/metrics/collector.go：185`.
 	*/
 	spec := k.GetSpec()
 
-	kpaMetricsClient := k.metricsClient.(*metrics.KPAMetricsClient)
+	kpaMetricsClient := k.metricClient.(*metrics.KPAMetricsClient)
 	observedStableValue, observedPanicValue, err := kpaMetricsClient.StableAndPanicMetrics(metricKey, now)
 	if err != nil {
 		klog.Errorf("Failed to get stable and panic metrics for %s: %v", metricKey, err)
@@ -306,7 +306,7 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 }
 
 func (k *KpaAutoscaler) UpdatePodListMetric(ctx context.Context, metricKey metrics.NamespaceNameMetric, list *v1.PodList, port int, now time.Time) {
-	err := k.metricsClient.UpdatePodListMetric(ctx, metricKey, list, port, now)
+	err := k.metricClient.UpdatePodListMetric(ctx, metricKey, list, port, now)
 	if err != nil {
 		return
 	}

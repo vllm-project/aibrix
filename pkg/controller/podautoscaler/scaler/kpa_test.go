@@ -20,8 +20,6 @@ import (
 	"testing"
 	"time"
 
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 )
 
@@ -54,14 +52,14 @@ func TestKpaScale(t *testing.T) {
 			ActivationScale:  2,
 		},
 	)
-	kpaScaler.metricsClient = kpaMetricsClient
+	kpaScaler.metricClient = kpaMetricsClient
 	if err != nil {
 		t.Errorf("Failed to create KpaAutoscaler: %v", err)
 	}
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	result := kpaScaler.Scale(readyPodCount, metricKey, now, autoscalingv1alpha1.KPA)
+	result := kpaScaler.Scale(readyPodCount, metricKey, now)
 	// recent rapid rising metric value make scaler adapt turn on panic mode
 	if result.DesiredPodCount != 10 {
 		t.Errorf("result.DesiredPodCount = 10, got %d", result.DesiredPodCount)

@@ -19,7 +19,6 @@ package scaler
 import (
 	"time"
 
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/algorithm"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 	"k8s.io/klog/v2"
@@ -38,8 +37,9 @@ var _ Scaler = (*ApaAutoscaler)(nil)
 
 // NewApaAutoscaler Initialize ApaAutoscaler
 func NewApaAutoscaler(readyPodsCount int, spec *DeciderKpaSpec) (*ApaAutoscaler, error) {
-	metricsClient := metrics.NewAPAMetricsClient()
-	autoscaler := &BaseAutoscaler{metricsClient: metricsClient}
+	fetcher := &metrics.RestMetricsFetcher{}
+	client := metrics.NewMetricsClient(fetcher)
+	autoscaler := &BaseAutoscaler{metricClient: client}
 	scalingAlgorithm := algorithm.ApaScalingAlgorithm{}
 
 	return &ApaAutoscaler{
@@ -53,7 +53,7 @@ func getMetrics() (float64, float64, error) {
 	return 1.0, 1.0, nil
 }
 
-func (a *ApaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time, strategy autoscalingv1alpha1.ScalingStrategyType) ScaleResult {
+func (a *ApaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time) ScaleResult {
 	spec := a.GetSpec()
 	// TODO: fix me
 	//observedStableValue, observedPanicValue, err := apaMetricsClient.StableAndPanicMetrics(metricKey, now)

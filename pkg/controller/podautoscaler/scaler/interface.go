@@ -19,8 +19,6 @@ package scaler
 import (
 	"time"
 
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 )
 
@@ -36,21 +34,23 @@ Our implementation specifically mimics and adapts the autoscaling functionality 
 
 */
 
-// Scaler is an interface that defines the scaling operations.
+// Scaler defines the interface for autoscaling operations.
 // Any autoscaler implementation, such as KpaAutoscaler (Kubernetes Pod Autoscaler),
-// needs to implement this interface to respond to scale events.
+// must implement this interface to respond to scaling events.
 type Scaler interface {
-	// Scale calculates the necessary scaling action based on the observed metrics
-	// and the current time. This method is the core of the autoscaling logic.
+	// Scale calculates the necessary scaling action based on observed metrics
+	// and the current time. This is the core logic of the autoscaler.
 	//
 	// Parameters:
-	// now - the current time, used to determine if scaling actions are needed based on time-based rules or delays.
+	// originalReadyPodsCount - the current number of ready pods.
+	// metricKey - a unique key to identify the metric for scaling.
+	// now - the current time, used to decide if scaling actions are needed based on timing rules or delays.
 	//
 	// Returns:
-	// ScaleResult which contains the recommended number of pods to scale up or down to.
+	// ScaleResult - contains the recommended number of pods to scale up or down.
 	//
-	// Refer to:  KpaAutoscaler.Scale Implementation
-	Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time, strategy autoscalingv1alpha1.ScalingStrategyType) ScaleResult
+	// For reference: see the implementation in KpaAutoscaler.Scale.
+	Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time) ScaleResult
 }
 
 // ScaleResult contains the results of a scaling decision.

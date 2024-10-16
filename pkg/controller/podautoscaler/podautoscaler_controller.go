@@ -530,7 +530,7 @@ func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context,
 	metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.TargetMetric)
 
 	// Calculate the desired number of pods using the autoscaler logic.
-	scaleResult := r.Autoscaler.Scale(int(originalReadyPodsCount), metricKey, currentTimestamp, pa.Spec.ScalingStrategy)
+	scaleResult := r.Autoscaler.Scale(int(originalReadyPodsCount), metricKey, currentTimestamp)
 	if scaleResult.ScaleValid {
 		logger.V(4).Info("Successfully called Scale Algorithm", "scaleResult", scaleResult)
 		return scaleResult.DesiredPodCount, metricKey.MetricName, currentTimestamp, nil
