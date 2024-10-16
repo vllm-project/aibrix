@@ -23,6 +23,7 @@ require (
 	k8s.io/code-generator v0.29.6
 	k8s.io/klog/v2 v2.130.1
 	k8s.io/kube-openapi v0.0.0-20240620174524-b456828f718b
+	k8s.io/metrics v0.29.6
 	k8s.io/utils v0.0.0-20240502163921-fe8a2dddb1d0
 	sigs.k8s.io/controller-runtime v0.17.5
 	sigs.k8s.io/gateway-api v1.0.0
