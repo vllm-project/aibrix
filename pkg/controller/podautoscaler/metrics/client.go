@@ -21,14 +21,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
-	"strings"
 	"sync"
+
+	v1 "k8s.io/api/core/v1"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
 	"k8s.io/klog/v2"
 
-	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 
 	"time"
@@ -38,26 +37,38 @@ const (
 	metricServerDefaultMetricWindow = time.Minute
 )
 
-// restMetricsClient is a client which supports fetching
-// metrics from the pod metrics prometheus API. In future,
-// it can fetch from the ai runtime api directly.
-type restMetricsClient struct {
+type PodMetricClient struct {
+	fetcher MetricFetcher
 }
 
-func (r restMetricsClient) GetPodContainerMetric(ctx context.Context, metricName string, pod corev1.Pod, containerPort int) (PodMetricsInfo, time.Time, error) {
-	panic("not implemented")
-}
-
-func (r restMetricsClient) GetObjectMetric(ctx context.Context, metricName string, namespace string, objectRef *autoscalingv2.CrossVersionObjectReference, containerPort int) (PodMetricsInfo, time.Time, error) {
-	//TODO implement me
+func (c *PodMetricClient) GetPodContainerMetric(ctx context.Context, metricName string, pod corev1.Pod, containerPort int) (PodMetricsInfo, time.Time, error) {
 	panic("implement me")
 }
 
+func (c *PodMetricClient) UpdatePodListMetric(ctx context.Context, metricKey NamespaceNameMetric, podList *corev1.PodList, containerPort int, now time.Time) error {
+	panic("implement me")
+}
+
+func NewMetricsClient(fetcher MetricFetcher) *PodMetricClient {
+	return &PodMetricClient{fetcher: fetcher}
+}
+
+func (c *PodMetricClient) UpdatePodMetrics(ctx context.Context, podList []v1.Pod, containerPort int, metricName string) ([]float64, error) {
+	var metrics []float64
+	for _, pod := range podList {
+		metric, err := c.fetcher.FetchPodMetrics(ctx, pod, containerPort, metricName)
+		if err != nil {
+			return nil, err
+		}
+		metrics = append(metrics, metric)
+	}
+	return metrics, nil
+}
 func GetMetricsFromPods(pods []corev1.Pod, metricName string, metricsPort int) ([]float64, error) {
 	metrics := make([]float64, 0, len(pods))
 
 	for _, pod := range pods {
-		// We should use the primary container port. In future, we can decide whether to use sidecar container's port
+		// We should use the primary container port. In the future, we can decide whether to use sidecar container's port
 		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, metricsPort)
 		//// TODO a temp for debugging
 		//url := fmt.Sprintf("http://%s:%d/metrics", "127.0.0.1", metricsPort)
@@ -78,7 +89,7 @@ func GetMetricsFromPods(pods []corev1.Pod, metricName string, metricsPort int) (
 			return nil, fmt.Errorf("failed to read response from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, metricsPort, err)
 		}
 
-		metricValue, err := parseMetricFromBody(body, metricName)
+		metricValue, err := ParseMetricFromBody(body, metricName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, metricsPort, err)
 		}
@@ -91,46 +102,8 @@ func GetMetricsFromPods(pods []corev1.Pod, metricName string, metricsPort int) (
 	return metrics, nil
 }
 
-func parseMetricFromBody(body []byte, metricName string) (float64, error) {
-	lines := strings.Split(string(body), "\n")
-
-	for _, line := range lines {
-		if !strings.HasPrefix(line, "#") && strings.Contains(line, metricName) {
-			// format is `http_requests_total 1234.56`
-			parts := strings.Fields(line)
-			if len(parts) < 2 {
-				return 0, fmt.Errorf("unexpected format for metric %s", metricName)
-			}
-
-			// parse to float64
-			value, err := strconv.ParseFloat(parts[len(parts)-1], 64)
-			if err != nil {
-				return 0, fmt.Errorf("failed to parse metric value for %s: %v", metricName, err)
-			}
-
-			return value, nil
-		}
-	}
-	return 0, fmt.Errorf("metrics %s not found", metricName)
-}
-
-type APAMetricsClient struct {
-	*restMetricsClient
-}
-
-func (A APAMetricsClient) UpdatePodListMetric(ctx context.Context, metricKey NamespaceNameMetric, podList *corev1.PodList, containerPort int, now time.Time) error {
-	//TODO implement me
-	panic("implement me")
-}
-
-// NewAPAMetricsClient initializes and returns a APAMetricsClient with specified durations.
-func NewAPAMetricsClient() *APAMetricsClient {
-	client := &APAMetricsClient{}
-	return client
-}
-
 type KPAMetricsClient struct {
-	*restMetricsClient
+	*PodMetricClient
 	collectionsMutex sync.RWMutex
 
 	// the time range of stable metrics
