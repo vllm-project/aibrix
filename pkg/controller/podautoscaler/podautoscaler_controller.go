@@ -23,10 +23,8 @@ import (
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 
-	podutil "github.com/aibrix/aibrix/pkg/utils"
-	"k8s.io/apimachinery/pkg/labels"
-
 	scaler "github.com/aibrix/aibrix/pkg/controller/podautoscaler/scaler"
+	podutil "github.com/aibrix/aibrix/pkg/utils"
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	podutils "github.com/aibrix/aibrix/pkg/utils"
@@ -82,7 +80,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 		// TODO: The following parameters are specific to KPA.
 		//  We use default values based on KNative settings to quickly establish a fully functional workflow.
 		// refer to https://github.com/knative/serving/blob/b6e6baa6dc6697d0e7ddb3a12925f329a1f5064c/config/core/configmaps/autoscaler.yaml#L27
-		scaler.NewDefaultDeciderKpaSpec(),
+		scaler.NewKpaScalingContext(),
 	)
 	if err != nil {
 		return nil, err
@@ -265,7 +263,7 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 	setCondition(&pa, "AbleToScale", metav1.ConditionTrue, "SucceededGetScale", "the HPA controller was able to get the target's current scale")
 
 	// Update the scale required metrics periodically
-	err = r.UpdateMetricsForScale(ctx, pa, scale)
+	err = r.updateMetricsForScale(ctx, pa, scale)
 	if err != nil {
 		r.EventRecorder.Event(&pa, corev1.EventTypeWarning, "FailedUpdateMetrics", err.Error())
 		return ctrl.Result{}, fmt.Errorf("failed to update metrics for scale target reference: %v", err)
@@ -550,69 +548,33 @@ func (r *PodAutoscalerReconciler) updateScalerSpec(ctx context.Context, pa autos
 	if !ok {
 		return fmt.Errorf("failed to assert type as *scaler.KpaAutoscaler")
 	}
-	kpa.UpdateSpec(pa)
-	return nil
+
+	return kpa.UpdateScalingContext(pa)
 }
 
-// extractLabelSelector extracts a LabelSelector from the given scale object.
-func extractLabelSelector(scale *unstructured.Unstructured) (labels.Selector, error) {
-	// Retrieve the selector string from the Scale object's 'spec' field.
-	selectorMap, found, err := unstructured.NestedMap(scale.Object, "spec", "selector")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get 'spec.selector' from scale: %v", err)
-	}
-	if !found {
-		return nil, fmt.Errorf("the 'spec.selector' field was not found in the scale object")
-	}
-
-	// Convert selectorMap to a *metav1.LabelSelector object
-	selector := &metav1.LabelSelector{}
-	err = runtime.DefaultUnstructuredConverter.FromUnstructured(selectorMap, selector)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert 'spec.selector' to LabelSelector: %v", err)
-	}
-
-	labelsSelector, err := metav1.LabelSelectorAsSelector(selector)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert LabelSelector to labels.Selector: %v", err)
-	}
-
-	return labelsSelector, nil
-}
-
-func (r *PodAutoscalerReconciler) UpdateMetricsForScale(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (err error) {
-	logger := klog.FromContext(ctx)
-
-	// TODO: We are hard-code casting Autoscaler to KpaAutoscaler here. Discussion needed.
-	// The `metricsClient` attribute in Autoscaler is used by both
-	// PodAutoscalerReconciler and KpaAutoscaler. However, we initialize PodAutoscalerReconciler
-	// with KpaAutoscaler because Go does not support classical inheritance.
-
-	kpa, ok := r.Autoscaler.(*scaler.KpaAutoscaler)
-
-	if !ok {
-		return fmt.Errorf("failed to assert type as *scaler.KpaAutoscaler")
-	}
+func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (err error) {
 	currentTimestamp := time.Now()
-
 	// Retrieve the selector string from the Scale object's Status,
 	// and convert *metav1.LabelSelector object to labels.Selector structure
 	labelsSelector, err := extractLabelSelector(scale)
 	if err != nil {
 		return err
 	}
-	// get pod list
+
+	// Get pod list managed by scaleTargetRef
 	podList, err := podutil.GetPodListByLabelSelector(ctx, r.Client, pa.Namespace, labelsSelector)
 	if err != nil {
-		logger.Error(err, "failed to get pod list by label selector")
+		klog.ErrorS(err, "failed to get pod list by label selector")
 		return err
 	}
+
+	// TODO: do we need to indicate the metrics source.
+	// Technically, the metrics could come from Kubernetes metrics API (resource or custom), pod prometheus endpoint or ai runtime
 	metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.TargetMetric)
 
-	// TODO: The `containerPort` might only be effective for REST metrics.
-	//  Where exactly should we incorporate it into the autoscaling types? Shall we add an 'other_field_dict' into pa?
-	containerPort := 8000
-	kpa.UpdatePodListMetric(ctx, metricKey, podList, containerPort, currentTimestamp)
-
+	// Update targets
+	if err := r.Autoscaler.UpdateScaleTargetMetrics(ctx, metricKey, podList.Items, currentTimestamp); err != nil {
+		return err
+	}
 	return nil
 }

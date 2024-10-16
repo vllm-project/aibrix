@@ -29,7 +29,8 @@ import (
 // and surpassing the PanicThreshold, the system should enter panic mode and scale up to 10 replicas.
 func TestKpaScale(t *testing.T) {
 	readyPodCount := 5
-	kpaMetricsClient := metrics.NewKPAMetricsClient()
+	metricsFetcher := &metrics.RestMetricsFetcher{}
+	kpaMetricsClient := metrics.NewKPAMetricsClient(metricsFetcher)
 	now := time.Now()
 	metricKey := metrics.NewNamespaceNameMetric("test_ns", "llama-70b", "ttot")
 	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-60*time.Second), 10.0)
@@ -40,7 +41,7 @@ func TestKpaScale(t *testing.T) {
 	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-10*time.Second), 100.0)
 
 	kpaScaler, err := NewKpaAutoscaler(readyPodCount,
-		&DeciderKpaSpec{
+		&KpaScalingContext{
 			MaxScaleUpRate:   2,
 			MaxScaleDownRate: 2,
 			ScalingMetric:    metricKey.MetricName,

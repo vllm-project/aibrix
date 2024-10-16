@@ -19,11 +19,7 @@ package metrics
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"sync"
-
-	v1 "k8s.io/api/core/v1"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
 	"k8s.io/klog/v2"
@@ -41,22 +37,22 @@ type PodMetricClient struct {
 	fetcher MetricFetcher
 }
 
-func (c *PodMetricClient) GetPodContainerMetric(ctx context.Context, metricName string, pod corev1.Pod, containerPort int) (PodMetricsInfo, time.Time, error) {
-	panic("implement me")
+func (c *PodMetricClient) GetPodContainerMetric(ctx context.Context, pod corev1.Pod, metricName string, metricPort int) (PodMetricsInfo, time.Time, error) {
+	_, err := c.fetcher.FetchPodMetrics(ctx, pod, metricPort, metricName)
+	currentTimestamp := time.Now()
+	if err != nil {
+		return nil, currentTimestamp, err
+	}
+
+	// TODO(jiaxin.shan): convert this raw metric to PodMetrics
+	return nil, currentTimestamp, nil
 }
 
-func (c *PodMetricClient) UpdatePodListMetric(ctx context.Context, metricKey NamespaceNameMetric, podList *corev1.PodList, containerPort int, now time.Time) error {
-	panic("implement me")
-}
-
-func NewMetricsClient(fetcher MetricFetcher) *PodMetricClient {
-	return &PodMetricClient{fetcher: fetcher}
-}
-
-func (c *PodMetricClient) UpdatePodMetrics(ctx context.Context, podList []v1.Pod, containerPort int, metricName string) ([]float64, error) {
-	var metrics []float64
-	for _, pod := range podList {
-		metric, err := c.fetcher.FetchPodMetrics(ctx, pod, containerPort, metricName)
+func (c *PodMetricClient) GetMetricsFromPods(ctx context.Context, pods []corev1.Pod, metricName string, metricPort int) ([]float64, error) {
+	metrics := make([]float64, 0, len(pods))
+	for _, pod := range pods {
+		// TODO: Let's optimize the performance for multi-metrics later.
+		metric, err := c.fetcher.FetchPodMetrics(ctx, pod, metricPort, metricName)
 		if err != nil {
 			return nil, err
 		}
@@ -64,66 +60,49 @@ func (c *PodMetricClient) UpdatePodMetrics(ctx context.Context, podList []v1.Pod
 	}
 	return metrics, nil
 }
-func GetMetricsFromPods(pods []corev1.Pod, metricName string, metricsPort int) ([]float64, error) {
-	metrics := make([]float64, 0, len(pods))
 
-	for _, pod := range pods {
-		// We should use the primary container port. In the future, we can decide whether to use sidecar container's port
-		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, metricsPort)
-		//// TODO a temp for debugging
-		//url := fmt.Sprintf("http://%s:%d/metrics", "127.0.0.1", metricsPort)
+func (c *PodMetricClient) UpdatePodListMetric(metricValues []float64, metricKey NamespaceNameMetric, now time.Time) error {
+	// different metrics client implementation should implement this method
+	panic("implement me")
+}
 
-		// scrape metrics
-		resp, err := http.Get(url)
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, metricsPort, err)
-		}
-		defer func() {
-			if err := resp.Body.Close(); err != nil {
-				// Handle the error here. For example, log it or take appropriate corrective action.
-				klog.InfoS("Error closing response body:", err)
-			}
-		}()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read response from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, metricsPort, err)
-		}
-
-		metricValue, err := ParseMetricFromBody(body, metricName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, metricsPort, err)
-		}
-
-		metrics = append(metrics, metricValue)
-
-		klog.InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", metricsPort, "metricValue", metricValue)
-	}
-
-	return metrics, nil
+func NewMetricsClient(fetcher MetricFetcher) *PodMetricClient {
+	return &PodMetricClient{fetcher: fetcher}
 }
 
 type KPAMetricsClient struct {
 	*PodMetricClient
-	collectionsMutex sync.RWMutex
 
+	// collectionsMutex protects access to both panicWindowDict and stableWindowDict,
+	// ensuring thread-safe read and write operations. It uses a read-write mutex to
+	// allow multiple concurrent reads while preventing race conditions during write
+	// operations on the window dictionaries.
+	collectionsMutex sync.RWMutex
 	// the time range of stable metrics
 	stableDuration time.Duration
 	// the time range of panic metrics
 	panicDuration time.Duration
-
+	// granularity represents the time interval at which metrics are aggregated.
+	// It determines the frequency of data points being added to the sliding window
+	// for both stable and panic metrics. Each data point is recorded at a
+	// specific timestamp, and the granularity defines how often these points
+	// are collected and processed within the sliding window.
 	granularity time.Duration
-
 	// the difference between stable and panic metrics is the time window range
 	panicWindowDict  map[NamespaceNameMetric]*aggregation.TimeWindow
 	stableWindowDict map[NamespaceNameMetric]*aggregation.TimeWindow
 }
 
+var _ MetricClient = (*KPAMetricsClient)(nil)
+
 // NewKPAMetricsClient initializes and returns a KPAMetricsClient with specified durations.
-func NewKPAMetricsClient() *KPAMetricsClient {
+func NewKPAMetricsClient(fetcher MetricFetcher) *KPAMetricsClient {
+	podMetricClient := NewMetricsClient(fetcher)
 	client := &KPAMetricsClient{
+		PodMetricClient:  podMetricClient,
 		stableDuration:   60 * time.Second,
 		panicDuration:    10 * time.Second,
-		granularity:      time.Second,
+		granularity:      time.Second, //TODO: check with rong, is the granularity too small?
 		panicWindowDict:  make(map[NamespaceNameMetric]*aggregation.TimeWindow),
 		stableWindowDict: make(map[NamespaceNameMetric]*aggregation.TimeWindow),
 	}
@@ -150,13 +129,7 @@ func (c *KPAMetricsClient) UpdateMetricIntoWindow(metricKey NamespaceNameMetric,
 	return nil
 }
 
-func (c *KPAMetricsClient) UpdatePodListMetric(ctx context.Context, metricKey NamespaceNameMetric, podList *corev1.PodList, containerPort int, now time.Time) error {
-	// Retrieve metrics from a list of pods
-	metricValues, err := GetMetricsFromPods(podList.Items, metricKey.MetricName, containerPort)
-	if err != nil {
-		return err
-	}
-
+func (c *KPAMetricsClient) UpdatePodListMetric(metricValues []float64, metricKey NamespaceNameMetric, now time.Time) error {
 	// Calculate the total value from the retrieved metrics
 	var sumMetricValue float64
 	for _, metricValue := range metricValues {
@@ -166,11 +139,12 @@ func (c *KPAMetricsClient) UpdatePodListMetric(ctx context.Context, metricKey Na
 	c.collectionsMutex.Lock()
 	defer c.collectionsMutex.Unlock()
 
-	err = c.UpdateMetricIntoWindow(metricKey, now, sumMetricValue)
+	// Update metrics into the window for tracking
+	err := c.UpdateMetricIntoWindow(metricKey, now, sumMetricValue)
 	if err != nil {
 		return err
 	}
-	klog.InfoS("Update pod list metrics", "metricKey", metricKey, "podListNum", podList.Size(), "timestamp", now, "metricValue", sumMetricValue)
+	klog.InfoS("Update pod list metrics", "metricKey", metricKey, "podListNum", len(metricValues), "timestamp", now, "metricValue", sumMetricValue)
 	return nil
 }
 
@@ -199,4 +173,95 @@ func (c *KPAMetricsClient) StableAndPanicMetrics(
 	}
 
 	return stableValue, panicValue, nil
+}
+
+type APAMetricsClient struct {
+	*PodMetricClient
+
+	// collectionsMutex protects access to both panicWindowDict and stableWindowDict,
+	// ensuring thread-safe read and write operations. It uses a read-write mutex to
+	// allow multiple concurrent reads while preventing race conditions during write
+	// operations on the window dictionaries.
+	collectionsMutex sync.RWMutex
+	// the time range of metrics
+	duration time.Duration
+	// granularity represents the time interval at which metrics are aggregated.
+	// It determines the frequency of data points being added to the sliding window
+	// for both stable and panic metrics. Each data point is recorded at a
+	// specific timestamp, and the granularity defines how often these points
+	// are collected and processed within the sliding window.
+	granularity time.Duration
+	// stable time window
+	windowDict map[NamespaceNameMetric]*aggregation.TimeWindow
+}
+
+var _ MetricClient = (*APAMetricsClient)(nil)
+
+// NewAPAMetricsClient initializes and returns a KPAMetricsClient with specified durations.
+func NewAPAMetricsClient(fetcher MetricFetcher) *APAMetricsClient {
+	podMetricClient := NewMetricsClient(fetcher)
+
+	client := &APAMetricsClient{
+		PodMetricClient: podMetricClient,
+		duration:        60 * time.Second,
+		granularity:     time.Second,
+		windowDict:      make(map[NamespaceNameMetric]*aggregation.TimeWindow),
+	}
+	return client
+}
+
+func (c *APAMetricsClient) UpdateMetricIntoWindow(metricKey NamespaceNameMetric, now time.Time, metricValue float64) error {
+	// Add to metric window; create a new window if not present in the map
+	// Ensure that windowDict maps are checked and updated
+	updateWindow := func(windowDict map[NamespaceNameMetric]*aggregation.TimeWindow, duration time.Duration) {
+		window, exists := windowDict[metricKey]
+		if !exists {
+			// Create a new TimeWindow if it does not exist
+			windowDict[metricKey] = aggregation.NewTimeWindow(duration, c.granularity)
+			window = windowDict[metricKey]
+		}
+		// Record the maximum metric value in the TimeWindow
+		window.Record(now, metricValue)
+	}
+
+	// Update metrics windows
+	updateWindow(c.windowDict, c.duration)
+	return nil
+}
+
+func (c *APAMetricsClient) UpdatePodListMetric(metricValues []float64, metricKey NamespaceNameMetric, now time.Time) error {
+	// Calculate the total value from the retrieved metrics
+	var sumMetricValue float64
+	for _, metricValue := range metricValues {
+		sumMetricValue += metricValue
+	}
+
+	c.collectionsMutex.Lock()
+	defer c.collectionsMutex.Unlock()
+
+	// Update metrics into the window for tracking
+	err := c.UpdateMetricIntoWindow(metricKey, now, sumMetricValue)
+	if err != nil {
+		return err
+	}
+	klog.InfoS("Update pod list metrics", "metricKey", metricKey, "podListNum", len(metricValues), "timestamp", now, "metricValue", sumMetricValue)
+	return nil
+}
+
+func (c *APAMetricsClient) GetMetricValue(
+	metricKey NamespaceNameMetric, now time.Time) (float64, error) {
+	c.collectionsMutex.RLock()
+	defer c.collectionsMutex.RUnlock()
+
+	window, exists := c.windowDict[metricKey]
+	if !exists {
+		return -1, fmt.Errorf("metrics %s not found", metricKey)
+	}
+
+	metricValue, err := window.Avg()
+	if err != nil {
+		return -1, err
+	}
+
+	return metricValue, nil
 }

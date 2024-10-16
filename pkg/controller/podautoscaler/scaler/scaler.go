@@ -33,7 +33,7 @@ import (
 // BaseAutoscaler represents an instance of the autoscaling engine.
 // It encapsulates all the necessary data and state needed for scaling decisions.
 type BaseAutoscaler struct {
-	// specMux guards the current DeciderKpaSpec.
+	// specMux guards the current ScalingContext.
 	specMux      sync.RWMutex
 	metricClient metrics.MetricClient
 	k8sClient    client.Client

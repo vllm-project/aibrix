@@ -26,13 +26,13 @@ import (
 func NewAutoscalerFactory(strategy autoscalingv1alpha1.ScalingStrategyType) (Scaler, error) {
 	switch strategy {
 	case autoscalingv1alpha1.KPA:
-		autoscaler, err := NewKpaAutoscaler(0, NewDefaultDeciderKpaSpec())
+		autoscaler, err := NewKpaAutoscaler(0, NewKpaScalingContext())
 		if err != nil {
 			return nil, err
 		}
 		return autoscaler, nil
 	case autoscalingv1alpha1.APA:
-		autoscaler, err := NewApaAutoscaler(0, NewDefaultDeciderKpaSpec())
+		autoscaler, err := NewApaAutoscaler(0, NewApaScalingContext())
 		if err != nil {
 			return nil, err
 		}

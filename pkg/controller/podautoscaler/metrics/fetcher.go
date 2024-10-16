@@ -43,18 +43,20 @@ const (
 
 // MetricFetcher defines an interface for fetching metrics. it could be Kubernetes metrics or Pod prometheus metrics.
 type MetricFetcher interface {
-	FetchPodMetrics(ctx context.Context, pod v1.Pod, containerPort int, metricName string) (float64, error)
+	FetchPodMetrics(ctx context.Context, pod v1.Pod, metricsPort int, metricName string) (float64, error)
 }
 
 // RestMetricsFetcher implements MetricFetcher to fetch metrics from Pod's /metrics endpoint.
 type RestMetricsFetcher struct{}
 
-func (f *RestMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, containerPort int, metricName string) (float64, error) {
+func (f *RestMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, metricsPort int, metricName string) (float64, error) {
 	// Use http to fetch pod's /metrics endpoint and parse the value
-	url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, containerPort)
+	url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, metricsPort)
+	// TODO a temp for debugging
+	//url := fmt.Sprintf("http://%s:%d/metrics", "127.0.0.1", metricsPort)
 	resp, err := http.Get(url)
 	if err != nil {
-		return 0, fmt.Errorf("failed to fetch metrics from pod: %v", err)
+		return 0, fmt.Errorf("failed to fetch metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, metricsPort, err)
 	}
 
 	defer func() {
@@ -65,10 +67,17 @@ func (f *RestMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, co
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, fmt.Errorf("failed to read response: %v", err)
+		return 0, fmt.Errorf("failed to read response from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, metricsPort, err)
 	}
 
-	return ParseMetricFromBody(body, metricName)
+	metricValue, err := ParseMetricFromBody(body, metricName)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, metricsPort, err)
+	}
+
+	klog.InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", metricsPort, "metricValue", metricValue)
+
+	return metricValue, nil
 }
 
 // ResourceMetricsFetcher fetches resource metrics from Kubernetes metrics API (metrics.k8s.io).

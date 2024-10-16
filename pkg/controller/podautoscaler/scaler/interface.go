@@ -17,9 +17,13 @@ limitations under the License.
 package scaler
 
 import (
+	"context"
 	"time"
 
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
+	corev1 "k8s.io/api/core/v1"
 )
 
 /**
@@ -29,7 +33,7 @@ Our implementation specifically mimics and adapts the autoscaling functionality 
 
 - autoscaler:			pkg/autoscaler/scaling/autoscaler.go
 - Scaler(interface):	pkg/autoscaler/scaling/autoscaler.go
-- DeciderKpaSpec:		pkg/autoscaler/scaling/multiscaler.go
+- KpaScalingContext:		pkg/autoscaler/scaling/multiscaler.go
 - ScaleResult:			pkg/autoscaler/scaling/multiscaler.go
 
 */
@@ -38,6 +42,20 @@ Our implementation specifically mimics and adapts the autoscaling functionality 
 // Any autoscaler implementation, such as KpaAutoscaler (Kubernetes Pod Autoscaler),
 // must implement this interface to respond to scaling events.
 type Scaler interface {
+	// UpdateScaleTargetMetrics updates the current state of metrics used to determine scaling actions.
+	// It processes the latest metrics for a given scaling target (identified by metricKey) and stores
+	// these values for later use during scaling decisions.
+	//
+	// Parameters:
+	// - ctx: The context used for managing request-scoped values, cancellation, and deadlines.
+	// - metricKey: A unique identifier for the scaling target's metrics (e.g., CPU, memory, or QPS) that
+	//   is used to correlate metrics with the appropriate scaling logic.
+	// - now: The current time at which the metrics are being processed. This timestamp helps track
+	//   when the last metric update occurred and can be used to calculate time-based scaling actions.
+	//
+	// This method ensures that the autoscaler has up-to-date metrics before making any scaling decisions.
+	UpdateScaleTargetMetrics(ctx context.Context, metricKey metrics.NamespaceNameMetric, pods []corev1.Pod, now time.Time) error
+
 	// Scale calculates the necessary scaling action based on observed metrics
 	// and the current time. This is the core logic of the autoscaler.
 	//
@@ -51,6 +69,32 @@ type Scaler interface {
 	//
 	// For reference: see the implementation in KpaAutoscaler.Scale.
 	Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time) ScaleResult
+
+	// UpdateScalingContext updates the internal scaling context for a given PodAutoscaler (PA) instance.
+	// It extracts necessary information from the provided PodAutoscaler resource, such as current
+	// metrics, scaling parameters, and other relevant data to refresh the scaling context.
+	//
+	// Parameters:
+	// - pa: The PodAutoscaler resource containing the desired scaling configuration and current state.
+	//
+	// Returns:
+	// - error: If the context update fails due to invalid input or configuration issues, it returns an error.
+	//
+	// This method ensures that the internal scaling context is always in sync with the latest state
+	// and configuration of the target PodAutoscaler, allowing accurate scaling decisions.
+	UpdateScalingContext(pa autoscalingv1alpha1.PodAutoscaler) error
+
+	// GetScalingContext retrieves the current scaling context used for making scaling decisions.
+	// This method returns a pointer to the ScalingContext, which contains essential data like
+	// target values, current metrics, and scaling tolerances.
+	//
+	// Returns:
+	// - *common.ScalingContext: A pointer to the ScalingContext instance containing the relevant
+	//   data for autoscaling logic.
+	//
+	// This method provides access to the scaling context for external components or logic that
+	// need to read or adjust the current scaling parameters.
+	GetScalingContext() common.ScalingContext
 }
 
 // ScaleResult contains the results of a scaling decision.

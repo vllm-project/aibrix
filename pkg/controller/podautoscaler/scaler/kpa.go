@@ -19,7 +19,6 @@ package scaler
 import (
 	"context"
 	"errors"
-
 	"math"
 	"strconv"
 	"time"
@@ -55,8 +54,8 @@ If the metric no longer exceeds the panic threshold, exit the panic mode.
 
 */
 
-// DeciderKpaSpec defines parameters for scaling decisions.
-type DeciderKpaSpec struct {
+// KpaScalingContext defines parameters for scaling decisions.
+type KpaScalingContext struct {
 	scalingcontext.BaseScalingContext
 	// Maximum rate at which to scale up
 	MaxScaleUpRate float64
@@ -90,7 +89,7 @@ type DeciderKpaSpec struct {
 	// scale-down decision is applied.
 	ScaleDownDelay time.Duration
 
-	// The two following attributes are specific to APA. We may separate them from DeciderKpaSpec later.
+	// The two following attributes are specific to APA. We may separate them from KpaScalingContext later.
 	// UpFluctuationTolerance represents the threshold before scaling up,
 	// which means no scaling up will occur unless the currentMetricValue exceeds the TargetValue by more than UpFluctuationTolerance
 	// UpFluctuationTolerance represents the threshold before scaling down,
@@ -99,9 +98,11 @@ type DeciderKpaSpec struct {
 	DownFluctuationTolerance float64
 }
 
-// NewDefaultDeciderKpaSpec references KPA and sets up a default configuration.
-func NewDefaultDeciderKpaSpec() *DeciderKpaSpec {
-	return &DeciderKpaSpec{
+var _ scalingcontext.ScalingContext = (*KpaScalingContext)(nil)
+
+// NewKpaScalingContext references KPA and sets up a default configuration.
+func NewKpaScalingContext() *KpaScalingContext {
+	return &KpaScalingContext{
 		MaxScaleUpRate:           2,                // Scale up rate of 200%, allowing rapid scaling
 		MaxScaleDownRate:         2,                // Scale down rate of 50%, for more gradual reduction
 		ScalingMetric:            "CPU",            // Metric used for scaling, here set to CPU utilization
@@ -117,36 +118,19 @@ func NewDefaultDeciderKpaSpec() *DeciderKpaSpec {
 	}
 }
 
-// DeciderStatus is the current scale recommendation.
-type DeciderStatus struct {
-	// DesiredScale is the target number of instances that autoscaler
-	// this revision needs.
-	DesiredScale int32
-
-	// TODO: ExcessBurstCapacity might be a general attribute since it describes
-	//  how much capacity users want to keep for preparing for burst traffic.
-
-	// ExcessBurstCapacity is the difference between spare capacity
-	// (how much more load the pods in the revision deployment can take before being
-	// overloaded) and the configured target burst capacity.
-	// If this number is negative: Activator will be threaded in
-	// the request path by the PodAutoscaler controller.
-	ExcessBurstCapacity int32
-}
-
 type KpaAutoscaler struct {
 	*BaseAutoscaler
-	panicTime    time.Time
-	maxPanicPods int32
-	delayWindow  *aggregation.TimeWindow
-	deciderSpec  *DeciderKpaSpec
-	Status       DeciderStatus
+	panicTime      time.Time
+	maxPanicPods   int32
+	delayWindow    *aggregation.TimeWindow
+	scalingContext *KpaScalingContext
+	Status         *ScaleResult
 }
 
 var _ Scaler = (*KpaAutoscaler)(nil)
 
 // NewKpaAutoscaler Initialize KpaAutoscaler: Referenced from `knative/pkg/autoscaler/scaling/autoscaler.go newAutoscaler`
-func NewKpaAutoscaler(readyPodsCount int, spec *DeciderKpaSpec) (*KpaAutoscaler, error) {
+func NewKpaAutoscaler(readyPodsCount int, spec *KpaScalingContext) (*KpaAutoscaler, error) {
 	if spec == nil {
 		return nil, errors.New("spec cannot be nil")
 	}
@@ -172,7 +156,8 @@ func NewKpaAutoscaler(readyPodsCount int, spec *DeciderKpaSpec) (*KpaAutoscaler,
 	}
 
 	// TODO missing MetricClient
-	metricsClient := metrics.NewKPAMetricsClient()
+	metricsFetcher := &metrics.RestMetricsFetcher{}
+	metricsClient := metrics.NewKPAMetricsClient(metricsFetcher)
 	autoscaler := &BaseAutoscaler{metricClient: metricsClient}
 
 	return &KpaAutoscaler{
@@ -180,7 +165,7 @@ func NewKpaAutoscaler(readyPodsCount int, spec *DeciderKpaSpec) (*KpaAutoscaler,
 		panicTime:      panicTime,
 		maxPanicPods:   int32(readyPodsCount),
 		delayWindow:    delayWindow,
-		deciderSpec:    spec,
+		scalingContext: spec,
 	}, nil
 }
 
@@ -191,7 +176,13 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	`observedStableValue` and `observedPanicValue` are calculated using different window sizes in the `MetricClient`.
 	 For reference, see the KNative implementation at `pkg/autoscaler/metrics/collector.go：185`.
 	*/
-	spec := k.GetSpec()
+
+	// Attempt to convert spec to *KpaScalingContext
+	spec, ok := k.GetScalingContext().(*KpaScalingContext)
+	if !ok {
+		// Handle the error if the conversion fails
+		klog.Error("Failed to convert ScalingContext to KpaScalingContext")
+	}
 
 	kpaMetricsClient := k.metricClient.(*metrics.KPAMetricsClient)
 	observedStableValue, observedPanicValue, err := kpaMetricsClient.StableAndPanicMetrics(metricKey, now)
@@ -202,7 +193,6 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 
 	// Use 1 if there are zero current pods.
 	readyPodsCount := math.Max(1, float64(originalReadyPodsCount))
-
 	maxScaleUp := math.Ceil(spec.MaxScaleUpRate * readyPodsCount)
 	maxScaleDown := math.Floor(readyPodsCount / spec.MaxScaleDownRate)
 
@@ -214,12 +204,12 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	desiredPanicPodCount := int32(math.Min(math.Max(dppc, maxScaleDown), maxScaleUp))
 
 	//	If ActivationScale > 1, then adjust the desired pod counts
-	if k.deciderSpec.ActivationScale > 1 {
-		if k.deciderSpec.ActivationScale > desiredStablePodCount {
-			desiredStablePodCount = k.deciderSpec.ActivationScale
+	if k.scalingContext.ActivationScale > 1 {
+		if k.scalingContext.ActivationScale > desiredStablePodCount {
+			desiredStablePodCount = k.scalingContext.ActivationScale
 		}
-		if k.deciderSpec.ActivationScale > desiredPanicPodCount {
-			desiredPanicPodCount = k.deciderSpec.ActivationScale
+		if k.scalingContext.ActivationScale > desiredPanicPodCount {
+			desiredPanicPodCount = k.scalingContext.ActivationScale
 		}
 	}
 
@@ -305,29 +295,40 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	}
 }
 
-func (k *KpaAutoscaler) UpdatePodListMetric(ctx context.Context, metricKey metrics.NamespaceNameMetric, list *v1.PodList, port int, now time.Time) {
-	err := k.metricClient.UpdatePodListMetric(ctx, metricKey, list, port, now)
+func (k *KpaAutoscaler) UpdateScaleTargetMetrics(ctx context.Context, metricKey metrics.NamespaceNameMetric, pods []v1.Pod, now time.Time) error {
+	// TODO: let's update this fix port later.
+	metricPort := 8000
+	metricValues, err := k.metricClient.GetMetricsFromPods(ctx, pods, metricKey.MetricName, metricPort)
 	if err != nil {
-		return
+		return err
 	}
+
+	err = k.metricClient.UpdatePodListMetric(metricValues, metricKey, now)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
-func (k *KpaAutoscaler) UpdateSpec(pa autoscalingv1alpha1.PodAutoscaler) {
+func (k *KpaAutoscaler) UpdateScalingContext(pa autoscalingv1alpha1.PodAutoscaler) error {
 	k.specMux.Lock()
 	defer k.specMux.Unlock()
 
 	targetValue, err := strconv.ParseFloat(pa.Spec.TargetValue, 64)
 	if err != nil {
 		klog.ErrorS(err, "Failed to parse target value", "targetValue", pa.Spec.TargetValue)
-		return
+		return err
 	}
-	k.deciderSpec.TargetValue = targetValue
-	k.deciderSpec.ScalingMetric = pa.Spec.TargetMetric
+	k.scalingContext.TargetValue = targetValue
+	k.scalingContext.ScalingMetric = pa.Spec.TargetMetric
+
+	return nil
 }
 
-func (k *KpaAutoscaler) GetSpec() *DeciderKpaSpec {
+func (k *KpaAutoscaler) GetScalingContext() scalingcontext.ScalingContext {
 	k.specMux.Lock()
 	defer k.specMux.Unlock()
 
-	return k.deciderSpec
+	return k.scalingContext
 }

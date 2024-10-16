@@ -29,7 +29,8 @@ func TestAPAScale(t *testing.T) {
 	t.Skip("Skipping this test")
 
 	readyPodCount := 5
-	kpaMetricsClient := metrics.NewKPAMetricsClient()
+	metricsFetcher := &metrics.RestMetricsFetcher{}
+	kpaMetricsClient := metrics.NewKPAMetricsClient(metricsFetcher)
 	now := time.Now()
 	metricKey := metrics.NewNamespaceNameMetric("test_ns", "llama-70b", "ttot")
 	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-60*time.Second), 10.0)
@@ -40,19 +41,7 @@ func TestAPAScale(t *testing.T) {
 	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-10*time.Second), 100.0)
 
 	apaScaler, err := NewApaAutoscaler(readyPodCount,
-		&DeciderKpaSpec{
-			MaxScaleUpRate:           2,
-			MaxScaleDownRate:         2,
-			ScalingMetric:            metricKey.MetricName,
-			TargetValue:              10,
-			TotalValue:               500,
-			PanicThreshold:           2.0,
-			StableWindow:             60 * time.Second,
-			ScaleDownDelay:           10 * time.Second,
-			ActivationScale:          2,
-			UpFluctuationTolerance:   0.1,
-			DownFluctuationTolerance: 0.2,
-		},
+		&ApaScalingContext{},
 	)
 	apaScaler.metricClient = kpaMetricsClient
 	if err != nil {
@@ -71,7 +60,7 @@ func TestAPAScale(t *testing.T) {
 	// test 2:
 	// 1.1 means APA won't scale up unless current usage > TargetValue * (1+1.1), i.e. 210%
 	// In this test case with UpFluctuationTolerance = 1.1, APA will not scale up.
-	apaScaler.deciderSpec.UpFluctuationTolerance = 1.1
+	apaScaler.scalingContext.UpFluctuationTolerance = 1.1
 	result = apaScaler.Scale(readyPodCount, metricKey, now)
 	// recent rapid rising metric value make scaler adapt turn on panic mode
 	if result.DesiredPodCount != int32(readyPodCount) {
