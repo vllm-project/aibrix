@@ -24,15 +24,33 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
-      # Build container images
+      # Log in to Github Registry
+      - name: Login to the Container registry
+        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build container images with docker registry namespace
       - name: Build Container Images
         run: |
           GIT_COMMIT_HASH=${{ github.ref_name }} make docker-build-all
 
-      # Push container image to container registry
+      # Push container image to DockerHub
       - name: Push container image to container registry
         run: |
           GIT_COMMIT_HASH=${{ github.ref_name }} make docker-push-all
+
+      # Build container images with Github registry namespace
+      - name: Build Container Images with Github Container Registry prefix
+        run: |
+          GIT_COMMIT_HASH=${{ github.ref_name }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build-all
+
+      # Push container image to Github container registry
+      - name: Push Container Images to Github Container Registry
+        run: |
+          GIT_COMMIT_HASH=${{ github.ref_name }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-push-all
 
   python-wheel-release:
     runs-on: ubuntu-latest
