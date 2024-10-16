@@ -6,6 +6,9 @@ on:
 
 jobs:
   build:
+    # This prevents the job from running as other steps cover its functionality.
+    # We use 'if: false' to keep the file for future reference without deleting it.
+    if: false
     runs-on: ubuntu-latest
     steps:
     - name: Check out code
