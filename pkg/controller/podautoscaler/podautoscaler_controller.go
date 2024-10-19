@@ -198,13 +198,14 @@ func (r *PodAutoscalerReconciler) Run(ctx context.Context, errChan chan<- error)
 	for {
 		select {
 		case <-ticker.C:
+			klog.Info("enqueue all autoscalers")
 			// periodically sync all autoscaling objects
 			if err := r.enqueuePodAutoscalers(ctx); err != nil {
 				klog.ErrorS(err, "Failed to enqueue pod autoscalers")
 				errChan <- err
-				return
 			}
 		case <-ctx.Done():
+			klog.Info("context done, stopping running the loop")
 			errChan <- ctx.Err()
 			return
 		}
