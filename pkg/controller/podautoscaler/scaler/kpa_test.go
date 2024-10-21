@@ -17,6 +17,7 @@ limitations under the License.
 package scaler
 
 import (
+	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
 	"testing"
 	"time"
 
@@ -42,15 +43,17 @@ func TestKpaScale(t *testing.T) {
 
 	kpaScaler, err := NewKpaAutoscaler(readyPodCount,
 		&KpaScalingContext{
-			MaxScaleUpRate:   2,
-			MaxScaleDownRate: 2,
-			ScalingMetric:    metricKey.MetricName,
-			TargetValue:      10,
-			TotalValue:       500,
-			PanicThreshold:   2.0,
-			StableWindow:     60 * time.Second,
-			ScaleDownDelay:   10 * time.Second,
-			ActivationScale:  2,
+			BaseScalingContext: common.BaseScalingContext{
+				MaxScaleUpRate:   2,
+				MaxScaleDownRate: 2,
+				ScalingMetric:    metricKey.MetricName,
+				TargetValue:      10,
+				TotalValue:       500,
+			},
+			PanicThreshold:  2.0,
+			StableWindow:    60 * time.Second,
+			ScaleDownDelay:  10 * time.Second,
+			ActivationScale: 2,
 		},
 	)
 	kpaScaler.metricClient = kpaMetricsClient

@@ -28,10 +28,29 @@ type ScalingContext interface {
 
 // BaseScalingContext provides a base implementation of the ScalingContext interface.
 type BaseScalingContext struct {
+	// Maximum rate at which to scale up
+	MaxScaleUpRate float64
+	// Maximum rate at which to scale down, a value of 2.5 means the count can reduce to at most 2.5 times less than the current value in one step.
+	MaxScaleDownRate float64
+	// The metric used for scaling, i.e. CPU, Memory, QPS.
+	ScalingMetric string
+	// The value of scaling metric per pod that we target to maintain.
+	TargetValue float64
+	// The total value of scaling metric that a pod can maintain.
+	TotalValue float64
+	// The current use per pod.
 	currentUsePerPod float64
-	targetValue      float64
-	upTolerance      float64
-	downTolerance    float64
+}
+
+// NewBaseScalingContext creates a new instance of BaseScalingContext with default values.
+func NewBaseScalingContext() *BaseScalingContext {
+	return &BaseScalingContext{
+		MaxScaleUpRate:   2,     // Scale up rate of 200%, allowing rapid scaling
+		MaxScaleDownRate: 2,     // Scale down rate of 50%, for more gradual reduction
+		ScalingMetric:    "CPU", // Metric used for scaling, here set to CPU utilization
+		TargetValue:      30.0,  // Target CPU utilization set at 10%
+		TotalValue:       100.0, // Total CPU utilization capacity for pods is 100%
+	}
 }
 
 func (b *BaseScalingContext) SetCurrentUsePerPod(value float64) {
@@ -49,13 +68,11 @@ func (b *BaseScalingContext) GetDownFluctuationTolerance() float64 {
 }
 
 func (b *BaseScalingContext) GetMaxScaleUpRate() float64 {
-	//TODO implement me
-	panic("implement me")
+	return b.MaxScaleUpRate
 }
 
 func (b *BaseScalingContext) GetMaxScaleDownRate() float64 {
-	//TODO implement me
-	panic("implement me")
+	return b.MaxScaleDownRate
 }
 
 func (b *BaseScalingContext) GetCurrentUsePerPod() float64 {
@@ -63,9 +80,9 @@ func (b *BaseScalingContext) GetCurrentUsePerPod() float64 {
 }
 
 func (b *BaseScalingContext) GetTargetValue() float64 {
-	return b.targetValue
+	return b.TargetValue
 }
 
 func (b *BaseScalingContext) GetScalingTolerance() (up float64, down float64) {
-	return b.upTolerance, b.downTolerance
+	return b.MaxScaleUpRate, b.MaxScaleDownRate
 }

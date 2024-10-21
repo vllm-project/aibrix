@@ -19,8 +19,11 @@ package scaler
 import (
 	"context"
 	"errors"
+	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/algorithm"
 	"math"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"strconv"
+	"sync"
 	"time"
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
@@ -57,16 +60,7 @@ If the metric no longer exceeds the panic threshold, exit the panic mode.
 // KpaScalingContext defines parameters for scaling decisions.
 type KpaScalingContext struct {
 	scalingcontext.BaseScalingContext
-	// Maximum rate at which to scale up
-	MaxScaleUpRate float64
-	// Maximum rate at which to scale down, a value of 2.5 means the count can reduce to at most 2.5 times less than the current value in one step.
-	MaxScaleDownRate float64
-	// The metric used for scaling, i.e. CPU, Memory, QPS.
-	ScalingMetric string
-	// The value of scaling metric per pod that we target to maintain.
-	TargetValue float64
-	// The total value of scaling metric that a pod can maintain.
-	TotalValue float64
+
 	// The burst capacity that user wants to maintain without queuing at the POD level.
 	// Note, that queueing still might happen due to the non-ideal load balancing.
 	TargetBurstCapacity float64
@@ -88,14 +82,6 @@ type KpaScalingContext struct {
 	// ScaleDownDelay is the time that must pass at reduced concurrency before a
 	// scale-down decision is applied.
 	ScaleDownDelay time.Duration
-
-	// The two following attributes are specific to APA. We may separate them from KpaScalingContext later.
-	// UpFluctuationTolerance represents the threshold before scaling up,
-	// which means no scaling up will occur unless the currentMetricValue exceeds the TargetValue by more than UpFluctuationTolerance
-	// UpFluctuationTolerance represents the threshold before scaling down,
-	// which means no scaling down will occur unless the currentMetricValue is less than the TargetValue by more than UpFluctuationTolerance
-	UpFluctuationTolerance   float64
-	DownFluctuationTolerance float64
 }
 
 var _ scalingcontext.ScalingContext = (*KpaScalingContext)(nil)
@@ -103,28 +89,26 @@ var _ scalingcontext.ScalingContext = (*KpaScalingContext)(nil)
 // NewKpaScalingContext references KPA and sets up a default configuration.
 func NewKpaScalingContext() *KpaScalingContext {
 	return &KpaScalingContext{
-		MaxScaleUpRate:           2,                // Scale up rate of 200%, allowing rapid scaling
-		MaxScaleDownRate:         2,                // Scale down rate of 50%, for more gradual reduction
-		ScalingMetric:            "CPU",            // Metric used for scaling, here set to CPU utilization
-		TargetValue:              30.0,             // Target CPU utilization set at 10%
-		TotalValue:               100.0,            // Total CPU utilization capacity for pods is 100%
-		TargetBurstCapacity:      2.0,              // Target burst capacity to handle sudden spikes
-		ActivationScale:          1,                // Initial scaling factor upon activation
-		PanicThreshold:           2.0,              // Panic threshold set at 200% to trigger rapid scaling
-		StableWindow:             60 * time.Second, // Time window to stabilize before altering scale
-		ScaleDownDelay:           30 * time.Minute, // Delay before scaling down to avoid flapping
-		UpFluctuationTolerance:   0.1,              // Tolerance for scaling up, set at 10%
-		DownFluctuationTolerance: 0.2,              // Tolerance for scaling up, set at 10%
+		BaseScalingContext:  *scalingcontext.NewBaseScalingContext(),
+		TargetBurstCapacity: 2.0,              // Target burst capacity to handle sudden spikes
+		ActivationScale:     1,                // Initial scaling factor upon activation
+		PanicThreshold:      2.0,              // Panic threshold set at 200% to trigger rapid scaling
+		StableWindow:        60 * time.Second, // Time window to stabilize before altering scale
+		ScaleDownDelay:      30 * time.Minute, // Delay before scaling down to avoid flapping
 	}
 }
 
 type KpaAutoscaler struct {
-	*BaseAutoscaler
+	specMux      sync.RWMutex
+	metricClient metrics.MetricClient
+	k8sClient    client.Client
+
 	panicTime      time.Time
 	maxPanicPods   int32
 	delayWindow    *aggregation.TimeWindow
-	scalingContext *KpaScalingContext
 	Status         *ScaleResult
+	scalingContext *KpaScalingContext
+	algorithm      algorithm.ScalingAlgorithm
 }
 
 var _ Scaler = (*KpaAutoscaler)(nil)
@@ -158,13 +142,14 @@ func NewKpaAutoscaler(readyPodsCount int, spec *KpaScalingContext) (*KpaAutoscal
 	// TODO missing MetricClient
 	metricsFetcher := &metrics.RestMetricsFetcher{}
 	metricsClient := metrics.NewKPAMetricsClient(metricsFetcher)
-	autoscaler := &BaseAutoscaler{metricClient: metricsClient}
+	scalingAlgorithm := algorithm.KpaScalingAlgorithm{}
 
 	return &KpaAutoscaler{
-		BaseAutoscaler: autoscaler,
+		metricClient:   metricsClient,
 		panicTime:      panicTime,
 		maxPanicPods:   int32(readyPodsCount),
 		delayWindow:    delayWindow,
+		algorithm:      &scalingAlgorithm,
 		scalingContext: spec,
 	}, nil
 }

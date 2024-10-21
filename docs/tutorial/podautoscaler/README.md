@@ -13,14 +13,9 @@ Go into the root directory:
 cd $AIBrix_HOME
 ```
 
-First, build and install the Custom Resource Definitions (CRDs) for AIBrix:
+First, please refer [README](../../../README.md) to build and install AIBrix.
 
-```shell
-
-make manifests && make build && make install
-```
-
-Verify the installation:
+After building the manager, you can verify the installation:
 
 ```shell
 kubectl get crds | grep podautoscalers
@@ -384,7 +379,9 @@ Events:
 
 # Cleanup
 
-To clean up the resources:
+Please refer [README](../../../README.md) to uninstall AIBrix.
+
+To clean up the additional resources created in this tutorial:
 
 ```shell
 # Remove AIBrix resources

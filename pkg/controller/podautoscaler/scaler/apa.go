@@ -18,12 +18,15 @@ package scaler
 
 import (
 	"context"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"strconv"
+	"sync"
 	"time"
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/algorithm"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
+	scalingcontext "github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 
 	v1 "k8s.io/api/core/v1"
@@ -32,25 +35,37 @@ import (
 
 // ApaScalingContext defines parameters for scaling decisions.
 type ApaScalingContext struct {
-	common.ScalingContext
-	// Apa specific algorithms
+	scalingcontext.BaseScalingContext
+
+	// The two following attributes are specific to APA.
+	// UpFluctuationTolerance represents the threshold before scaling up,
+	// which means no scaling up will occur unless the currentMetricValue exceeds the TargetValue by more than UpFluctuationTolerance
+	UpFluctuationTolerance float64
+	// UpFluctuationTolerance represents the threshold before scaling down,
+	// which means no scaling down will occur unless the currentMetricValue is less than the TargetValue by more than UpFluctuationTolerance
+	DownFluctuationTolerance float64
 }
 
 // NewApaScalingContext references KPA and sets up a default configuration.
 func NewApaScalingContext() *ApaScalingContext {
 	return &ApaScalingContext{
-		// TODO: Add context later
+		BaseScalingContext:       *scalingcontext.NewBaseScalingContext(),
+		UpFluctuationTolerance:   0.1, // Tolerance for scaling up, set at 10%
+		DownFluctuationTolerance: 0.2, // Tolerance for scaling up, set at 10%
 	}
 }
 
-var _ common.ScalingContext = (*KpaScalingContext)(nil)
+var _ common.ScalingContext = (*ApaScalingContext)(nil)
 
 type ApaAutoscaler struct {
-	*BaseAutoscaler
+	specMux      sync.RWMutex
+	metricClient metrics.MetricClient
+	k8sClient    client.Client
+
 	panicTime      time.Time
 	maxPanicPods   int32
 	Status         ScaleResult
-	scalingContext *KpaScalingContext
+	scalingContext *ApaScalingContext
 	algorithm      algorithm.ScalingAlgorithm
 }
 
@@ -59,18 +74,18 @@ var _ Scaler = (*ApaAutoscaler)(nil)
 // NewApaAutoscaler Initialize ApaAutoscaler
 func NewApaAutoscaler(readyPodsCount int, spec *ApaScalingContext) (*ApaAutoscaler, error) {
 	metricsFetcher := &metrics.RestMetricsFetcher{}
-	client := metrics.NewAPAMetricsClient(metricsFetcher)
-	autoscaler := &BaseAutoscaler{metricClient: client}
+	metricsClient := metrics.NewAPAMetricsClient(metricsFetcher)
 	scalingAlgorithm := algorithm.ApaScalingAlgorithm{}
 
 	return &ApaAutoscaler{
-		BaseAutoscaler: autoscaler,
+		metricClient:   metricsClient,
 		algorithm:      &scalingAlgorithm,
+		scalingContext: spec,
 	}, nil
 }
 
 func (a *ApaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time) ScaleResult {
-	spec, ok := a.GetScalingContext().(*KpaScalingContext)
+	spec, ok := a.GetScalingContext().(*ApaScalingContext)
 	if !ok {
 		// Handle the error if the conversion fails
 		klog.Error("Failed to convert ScalingContext to ApaScalingContext")

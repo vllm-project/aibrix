@@ -76,9 +76,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 		eventCh:        make(chan event.GenericEvent),
 	}
 
-	// During initialization, KNative passes a podCounter, which may be non-zero if the Scale object already exists.
-	// We currently set the podCounter (readyPodsCount) to 0.
-	// Refer to: pkg/autoscaler/scaling/autoscaler.go:82, function newAutoscaler.
+	// initialize all kinds of autoscalers, such as KPA and APA.
 	kpaScaler, err := scaler.NewKpaAutoscaler(
 		0,
 		// TODO: The following parameters are specific to KPA.
@@ -89,7 +87,23 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	if err != nil {
 		return nil, err
 	}
-	reconciler.Autoscaler = kpaScaler
+	klog.InfoS("Initialized CostumPA: KPA autoscaler successfully")
+
+	apaScaler, err := scaler.NewApaAutoscaler(
+		0,
+		// TODO: The following parameters are specific to APA.
+		//  Adjust these parameters based on your requirements for APA.
+		scaler.NewApaScalingContext(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("Initialized CostumPA: APA autoscaler successfully")
+
+	reconciler.AutoscalerMap = map[autoscalingv1alpha1.ScalingStrategyType]scaler.Scaler{
+		autoscalingv1alpha1.KPA: kpaScaler,
+		autoscalingv1alpha1.APA: apaScaler,
+	}
 	return reconciler, nil
 }
 
@@ -132,7 +146,7 @@ type PodAutoscalerReconciler struct {
 	Scheme         *runtime.Scheme
 	EventRecorder  record.EventRecorder
 	Mapper         apimeta.RESTMapper
-	Autoscaler     scaler.Scaler
+	AutoscalerMap  map[autoscalingv1alpha1.ScalingStrategyType]scaler.Scaler
 	resyncInterval time.Duration
 	eventCh        chan event.GenericEvent
 }
@@ -177,9 +191,8 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	case autoscalingv1alpha1.HPA:
 		return r.reconcileHPA(ctx, pa)
 	case autoscalingv1alpha1.KPA:
-		return r.reconcileKPA(ctx, pa)
 	case autoscalingv1alpha1.APA:
-		return r.reconcileAPA(ctx, pa)
+		return r.reconcileCustomPA(ctx, pa)
 	}
 
 	newStatus := computeStatus(ctx, pa)
@@ -283,7 +296,20 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 	return ctrl.Result{}, nil
 }
 
-func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
+// reconcileCustomPA handles the reconciliation logic for custom PodAutoscaler (PA) types.
+// It encompasses the main stages that are common to all custom PA implementations, such as:
+// - Obtaining the scale reference
+// - Recording events
+// - Executing the scaling actions
+//
+// N.B. each custom PA type (e.g., KPA, APA) has its own unique implementation for certain stages:
+// - Initializing the scaling context
+// - Fetching metrics
+// - Applying the scaling algorithm
+//
+// This function serves as a unified entry point for the reconciliation process of custom PA types,
+// while allowing for customization in the specific stages mentioned above.
+func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
 	paStatusOriginal := pa.Status.DeepCopy()
 	scaleReference := fmt.Sprintf("%s/%s/%s", pa.Spec.ScaleTargetRef.Kind, pa.Namespace, pa.Spec.ScaleTargetRef.Name)
 
@@ -448,13 +474,6 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 	return ctrl.Result{}, nil
 }
 
-func (r *PodAutoscalerReconciler) reconcileAPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
-	// scraper
-	// decider
-
-	return ctrl.Result{}, fmt.Errorf("not implemneted yet")
-}
-
 // scaleForResourceMappings attempts to fetch the scale for the resource with the given name and namespace,
 // trying each RESTMapping in turn until a working one is found.  If none work, the first error is returned.
 // It returns both the scale, as well as the group-resource from the working mapping.
@@ -591,7 +610,11 @@ func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context,
 	metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.TargetMetric)
 
 	// Calculate the desired number of pods using the autoscaler logic.
-	scaleResult := r.Autoscaler.Scale(int(originalReadyPodsCount), metricKey, currentTimestamp)
+	autoScaler, ok := r.AutoscalerMap[pa.Spec.ScalingStrategy]
+	if !ok {
+		return 0, "", currentTimestamp, fmt.Errorf("unsupported scaling strategy: %s", pa.Spec.ScalingStrategy)
+	}
+	scaleResult := autoScaler.Scale(int(originalReadyPodsCount), metricKey, currentTimestamp)
 	if scaleResult.ScaleValid {
 		logger.V(4).Info("Successfully called Scale Algorithm", "scaleResult", scaleResult)
 		return scaleResult.DesiredPodCount, metricKey.MetricName, currentTimestamp, nil
@@ -605,14 +628,11 @@ func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context,
 // kpa create or update deciders in reconcile function.
 // for now, we update the kpascaler.spec when reconciling before calling the Scale function, to make the pa information pass into the Scale algorithm.
 func (r *PodAutoscalerReconciler) updateScalerSpec(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) error {
-	// assert: pa.Spec.ScaleTargetRef.Kind == "KPA"
-	kpa, ok := r.Autoscaler.(*scaler.KpaAutoscaler)
-
+	autoScaler, ok := r.AutoscalerMap[pa.Spec.ScalingStrategy]
 	if !ok {
-		return fmt.Errorf("failed to assert type as *scaler.KpaAutoscaler")
+		return fmt.Errorf("unsupported scaling strategy: %s", pa.Spec.ScalingStrategy)
 	}
-
-	return kpa.UpdateScalingContext(pa)
+	return autoScaler.UpdateScalingContext(pa)
 }
 
 func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (err error) {
@@ -636,7 +656,11 @@ func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa 
 	metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.TargetMetric)
 
 	// Update targets
-	if err := r.Autoscaler.UpdateScaleTargetMetrics(ctx, metricKey, podList.Items, currentTimestamp); err != nil {
+	autoScaler, ok := r.AutoscalerMap[pa.Spec.ScalingStrategy]
+	if !ok {
+		return fmt.Errorf("unsupported scaling strategy: %s", pa.Spec.ScalingStrategy)
+	}
+	if err := autoScaler.UpdateScaleTargetMetrics(ctx, metricKey, podList.Items, currentTimestamp); err != nil {
 		return err
 	}
 	return nil

@@ -17,9 +17,12 @@ limitations under the License.
 package metrics
 
 import (
+	"context"
 	"fmt"
+	corev1 "k8s.io/api/core/v1"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func ParseMetricFromBody(body []byte, metricName string) (float64, error) {
@@ -88,4 +91,28 @@ func GetMetricUsageRatio(metrics PodMetricsInfo, targetUsage int64) (usageRatio 
 	currentUsage = metricsTotal / int64(len(metrics))
 
 	return float64(currentUsage) / float64(targetUsage), currentUsage
+}
+
+func GetPodContainerMetric(ctx context.Context, fetcher MetricFetcher, pod corev1.Pod, metricName string, metricPort int) (PodMetricsInfo, time.Time, error) {
+	_, err := fetcher.FetchPodMetrics(ctx, pod, metricPort, metricName)
+	currentTimestamp := time.Now()
+	if err != nil {
+		return nil, currentTimestamp, err
+	}
+
+	// TODO(jiaxin.shan): convert this raw metric to PodMetrics
+	return nil, currentTimestamp, nil
+}
+
+func GetMetricsFromPods(ctx context.Context, fetcher MetricFetcher, pods []corev1.Pod, metricName string, metricPort int) ([]float64, error) {
+	metrics := make([]float64, 0, len(pods))
+	for _, pod := range pods {
+		// TODO: Let's optimize the performance for multi-metrics later.
+		metric, err := fetcher.FetchPodMetrics(ctx, pod, metricPort, metricName)
+		if err != nil {
+			return nil, err
+		}
+		metrics = append(metrics, metric)
+	}
+	return metrics, nil
 }
