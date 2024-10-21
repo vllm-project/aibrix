@@ -19,8 +19,9 @@ package metrics
 import (
 	"context"
 	"fmt"
-	corev1 "k8s.io/api/core/v1"
 	"sync"
+
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
 	"k8s.io/klog/v2"

@@ -18,10 +18,11 @@ package scaler
 
 import (
 	"context"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"strconv"
 	"sync"
 	"time"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/algorithm"

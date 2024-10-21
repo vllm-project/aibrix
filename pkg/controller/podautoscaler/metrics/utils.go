@@ -19,10 +19,11 @@ package metrics
 import (
 	"context"
 	"fmt"
-	corev1 "k8s.io/api/core/v1"
 	"strconv"
 	"strings"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 func ParseMetricFromBody(body []byte, metricName string) (float64, error) {
