@@ -29,7 +29,7 @@ spec:
       initContainers:
         - name: init-c
           image: busybox:stable
-          command: ['sh', '-c', "until echo \"ping\" | nc aibrix-redis-master 6379  | grep -c PONG; do echo waiting for service aibrix-redis-master; sleep 2; done"]
+          command: ['sh', '-c', 'until echo "ping" | nc aibrix-redis-master 6379 -w 1  | grep -c PONG; do echo waiting for service aibrix-redis-master; sleep 2; done']
       containers:
         - name: gateway-users
           image: users:latest
