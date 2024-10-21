@@ -31,7 +31,7 @@ packages = [
 exclude = ["test"]
 
 [tool.poetry.dependencies]
-python = ">=3.8,<3.12"
+python = ">=3.10,<3.12"
 huggingface-hub = "^0.24.6"
 tos = "^2.7.1"
 boto3 = "^1.35.5"
@@ -48,6 +48,10 @@ hf-transfer = "^0.1.8"
 mypy = "^1.11.1"
 ruff = "^0.6.1"
 pytest = "^8.3.2"
+
+[tool.poetry.group.loader.dependencies]
+torch = "^2.5.0"
+numpy = "^2.1.2"
 
 [build-system]
 requires = ["poetry-core"]
