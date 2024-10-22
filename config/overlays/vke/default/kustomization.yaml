@@ -12,5 +12,5 @@ resources:
 
 images:
 - name: quay.io/kuberay/operator
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/quay.io/kuberay/operator
-  newTag: v1.2.1
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/kuberay-operator
+  newTag: v1.2.1-patch

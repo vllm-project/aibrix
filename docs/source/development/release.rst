@@ -20,9 +20,8 @@ For new minor version release like ``v0.1.0``, please checkout a new branch name
 
 .. code-block:: bash
 
+    git checkout main && git fetch origin main && git rebase origin/main
     git checkout -b release-0.1 # cut from main branch
-    git fetch origin main
-    git rebase origin/main
     git push origin release-0.1
 
 .. note::
@@ -31,6 +30,7 @@ For new minor version release like ``v0.1.0``, please checkout a new branch name
 Option 2: patch version release
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Cut a PR to sync `main` branch changes to `release-0.1`, a example PR is like `Sync main branch changes to release-0.1 for rc4 release <https://github.com/aibrix/aibrix/pull/312>`_
 For patch version like ``v0.1.1``, please reuse the release branch ``release-0.1``, it should be created earlier from the minor version release.
 for patch release, we do not rebase ``main`` because it will introduce new features. All fixes have to be cherry-picked or cut PR against ``release-0.1`` directly.
 
@@ -114,5 +114,5 @@ we need to retag the images and push to VKE Container Registry.
 
 .. code-block:: bash
 
-    ./hack/sync-images.sh v0.1.0-rc.3 aibrix-container-registry-cn-beijing.cr.volces.com
-    ./hack/sync-images.sh v0.1.0-rc.3 aibrix-container-registry-cn-shanghai.cr.volces.com
+    ./hack/sync-images.sh v0.1.0-rc.4 aibrix-container-registry-cn-beijing.cr.volces.com
+    ./hack/sync-images.sh v0.1.0-rc.4 aibrix-container-registry-cn-shanghai.cr.volces.com
