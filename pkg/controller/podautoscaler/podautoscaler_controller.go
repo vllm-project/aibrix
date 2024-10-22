@@ -87,7 +87,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	if err != nil {
 		return nil, err
 	}
-	klog.InfoS("Initialized CostumPA: KPA autoscaler successfully")
+	klog.InfoS("Initialized CustomPA: KPA autoscaler successfully")
 
 	apaScaler, err := scaler.NewApaAutoscaler(
 		0,
