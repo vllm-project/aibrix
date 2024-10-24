@@ -48,6 +48,7 @@ hf-transfer = "^0.1.8"
 mypy = "^1.11.1"
 ruff = "^0.6.1"
 pytest = "^8.3.2"
+transformers = "^4.45.2"
 
 [tool.poetry.group.loader.dependencies]
 torch = "^2.5.0"
