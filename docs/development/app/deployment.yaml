@@ -53,6 +53,60 @@ spec:
       targetPort: 8000
       nodePort: 30081
   type: NodePort
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pod-autoscaler
+  namespace: aibrix-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+  namespace: aibrix-system
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: read-pods
+  namespace: aibrix-system
+subjects:
+  - kind: ServiceAccount
+    name: pod-autoscaler
+    namespace: aibrix-system
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: aibrix-system
+  name: deployment-reader
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deployment-reader-binding
+  namespace: aibrix-system
+subjects:
+  - kind: ServiceAccount
+    name: pod-autoscaler
+    namespace: aibrix-system
+roleRef:
+  kind: Role
+  name: deployment-reader
+  apiGroup: rbac.authorization.k8s.io
 # ---
 # for test-purpose, if need to create HTTPRoute object manually
 # apiVersion: gateway.networking.k8s.io/v1

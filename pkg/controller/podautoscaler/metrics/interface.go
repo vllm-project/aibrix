@@ -23,8 +23,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	v1 "k8s.io/api/core/v1"
-
-	autoscaling "k8s.io/api/autoscaling/v2"
 )
 
 // NamespaceNameMetric contains the namespace, name and the metric name
@@ -39,7 +37,8 @@ func NewNamespaceNameMetric(namespace string, name string, metricName string) Na
 
 // PodMetric contains pod metric value (the metric values are expected to be the metric as a milli-value)
 type PodMetric struct {
-	Timestamp       time.Time
+	Timestamp time.Time
+	// kubernetes metrics return this value.
 	Window          time.Duration
 	Value           int64
 	MetricsName     string
@@ -50,17 +49,16 @@ type PodMetric struct {
 // PodMetricsInfo contains pod metrics as a map from pod names to PodMetricsInfo
 type PodMetricsInfo map[string]PodMetric
 
-// MetricsClient knows how to query a remote interface to retrieve container-level
+// MetricClient knows how to query a remote interface to retrieve container-level
 // resource metrics as well as pod-level arbitrary metrics
-type MetricsClient interface {
+type MetricClient interface {
 	// GetPodContainerMetric gets the given resource metric (and an associated oldest timestamp)
 	// for the specified named container in specific pods in the given namespace and when
 	// the container is an empty string it returns the sum of all the container metrics.
-	GetPodContainerMetric(ctx context.Context, metricName string, pod v1.Pod, containerPort int) (PodMetricsInfo, time.Time, error)
+	// TODO: should we use `metricKey` all the time?
+	GetPodContainerMetric(ctx context.Context, pod v1.Pod, metricName string, metricPort int) (PodMetricsInfo, time.Time, error)
 
-	// GetObjectMetric gets the given metric (and an associated timestamp) for the given
-	// object in the given namespace, it can be used to fetch any object metrics supports /scale interface
-	GetObjectMetric(ctx context.Context, metricName string, namespace string, objectRef *autoscaling.CrossVersionObjectReference, containerPort int) (PodMetricsInfo, time.Time, error)
+	GetMetricsFromPods(ctx context.Context, pods []v1.Pod, metricName string, metricPort int) ([]float64, error)
 
-	UpdatePodListMetric(ctx context.Context, metricKey NamespaceNameMetric, podList *v1.PodList, containerPort int, now time.Time) error
+	UpdatePodListMetric(metricValues []float64, metricKey NamespaceNameMetric, now time.Time) error
 }

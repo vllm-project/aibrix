@@ -23,26 +23,9 @@ import (
 	"os"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
-
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-func stringPtr(s string) *string {
-	return &s
-}
-
-func protocolPtr(p corev1.Protocol) *corev1.Protocol {
-	return &p
-}
-
-func int32Ptr(i int32) *int32 {
-	return &i
-}
-
-func mapPtr(m map[string]string) *map[string]string {
-	return &m
-}
 
 func validateModelAdapter(instance *modelv1alpha1.ModelAdapter) error {
 	if instance.Spec.ArtifactURL == "" {
@@ -128,11 +111,33 @@ func extractHuggingFacePath(artifactURL string) (string, error) {
 	return path, nil
 }
 
-func stringInSlice(slice []string, str string) bool {
+func StringInSlice(slice []string, str string) bool {
 	for _, v := range slice {
 		if v == str {
 			return true
 		}
 	}
 	return false
+}
+
+// RemoveInstanceFromList removes a string from a slice of strings
+func RemoveInstanceFromList(slice []string, strToRemove string) []string {
+	var result []string
+	for _, s := range slice {
+		if s != strToRemove {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// NewCondition creates a new condition.
+func NewCondition(condType string, status metav1.ConditionStatus, reason, msg string) metav1.Condition {
+	return metav1.Condition{
+		Type:               condType,
+		Status:             status,
+		LastTransitionTime: metav1.Now(),
+		Reason:             reason,
+		Message:            msg,
+	}
 }

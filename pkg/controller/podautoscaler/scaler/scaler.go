@@ -29,29 +29,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func (a *Autoscaler) getReadyPodsCount(namespace string, selector labels.Selector) (int64, error) {
-	podList := &v1.PodList{}
-	if err := a.resourceClient.List(context.Background(), podList,
-		&client.ListOptions{Namespace: namespace, LabelSelector: selector}); err != nil {
+func GetReadyPodsCount(ctx context.Context, podLister client.Client, namespace string, selector labels.Selector) (int64, error) {
+	podList, err := podutil.GetPodListByLabelSelector(ctx, podLister, namespace, selector)
+	if err != nil {
 		return 0, fmt.Errorf("unable to get pods while calculating replica count: %v", err)
 	}
 
-	if len(podList.Items) == 0 {
-		return 0, fmt.Errorf("no pods returned by selector while calculating replica count")
-	}
-
-	readyPodCount := 0
-
-	for _, pod := range podList.Items {
-		if pod.Status.Phase == v1.PodRunning && podutil.IsPodReady(&pod) {
-			readyPodCount++
-		}
-	}
-
-	return int64(readyPodCount), nil
+	return podutil.CountReadyPods(podList)
 }
 
-func groupPods(pods []*v1.Pod, metrics metrics.PodMetricsInfo, resource v1.ResourceName, cpuInitializationPeriod, delayOfInitialReadinessStatus time.Duration) (readyPodCount int, unreadyPods, missingPods, ignoredPods sets.Set[string]) {
+func GroupPods(pods []*v1.Pod, metrics metrics.PodMetricsInfo, resource v1.ResourceName, cpuInitializationPeriod, delayOfInitialReadinessStatus time.Duration) (readyPodCount int, unreadyPods, missingPods, ignoredPods sets.Set[string]) {
 	missingPods = sets.New[string]()
 	unreadyPods = sets.New[string]()
 	ignoredPods = sets.New[string]()
@@ -98,16 +85,7 @@ func groupPods(pods []*v1.Pod, metrics metrics.PodMetricsInfo, resource v1.Resou
 	return readyPodCount, unreadyPods, missingPods, ignoredPods
 }
 
-func GetReadyPodsCount(ctx context.Context, podLister client.Client, namespace string, selector labels.Selector) (int64, error) {
-	podList, err := podutil.GetPodListByLabelSelector(ctx, podLister, namespace, selector)
-	if err != nil {
-		return 0, fmt.Errorf("unable to get pods while calculating replica count: %v", err)
-	}
-
-	return podutil.CountReadyPods(podList)
-}
-
-func calculatePodRequests(pods []*v1.Pod, container string, resource v1.ResourceName) (map[string]int64, error) {
+func CalculatePodRequests(pods []*v1.Pod, container string, resource v1.ResourceName) (map[string]int64, error) {
 	requests := make(map[string]int64, len(pods))
 	for _, pod := range pods {
 		podSum := int64(0)
@@ -132,7 +110,7 @@ func calculatePodRequests(pods []*v1.Pod, container string, resource v1.Resource
 	return requests, nil
 }
 
-func removeMetricsForPods(metrics metrics.PodMetricsInfo, pods sets.Set[string]) {
+func RemoveMetricsForPods(metrics metrics.PodMetricsInfo, pods sets.Set[string]) {
 	for _, pod := range pods.UnsortedList() {
 		delete(metrics, pod)
 	}

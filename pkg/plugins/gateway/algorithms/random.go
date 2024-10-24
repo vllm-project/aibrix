@@ -18,7 +18,9 @@ package routingalgorithms
 
 import (
 	"context"
+	"fmt"
 
+	"golang.org/x/exp/rand"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -29,11 +31,20 @@ func NewRandomRouter() Router {
 	return randomRouter{}
 }
 
-func (r randomRouter) Get(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
+func (r randomRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
 	var selectedPod *v1.Pod
-	for _, pod := range pods {
-		selectedPod = pod
+	if len(pods) == 0 {
+		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	return selectedPod.Status.PodIP + ":8000", nil // TODO (varun): remove static port
+	k := rand.Intn(len(pods))
+	for _, pod := range pods {
+		if k == 0 {
+			selectedPod = pod
+			break
+		}
+		k--
+	}
+
+	return selectedPod.Status.PodIP + ":" + podPort, nil
 }

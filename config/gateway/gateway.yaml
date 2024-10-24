@@ -60,15 +60,10 @@ spec:
         match:
           prefix: "/"
           headers:
-            - name: "routing-strategy"
-              string_match:
-                exact: "random"
-            - name: "least-request"
-              string_match:
-                exact: "random"
-            - name: "routing-strategy"
-              string_match:
-                exact: "throughput"
+          - name: "routing-strategy"
+            string_match:
+              safe_regex:
+                regex: .*
         route:  
           cluster: original_destination_cluster
           timeout: 1000s  # Increase route timeout

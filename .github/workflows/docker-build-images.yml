@@ -6,17 +6,14 @@ on:
 
 jobs:
   build:
+    # This prevents the job from running as other steps cover its functionality.
+    # We use 'if: false' to keep the file for future reference without deleting it.
+    if: false
     runs-on: ubuntu-latest
     steps:
     - name: Check out code
       uses: actions/checkout@v4
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
-    - name: Docker Build - Controller Manager
-      run: make docker-build
-    - name: Docker Build - Gateway Plugins
-      run: make docker-build-plugins
-    - name: Docker Build - Runtime
-      run: make docker-build-runtime
-    - name: Docker Build - Users
-      run: make docker-build-users
+    - name: Docker Build Container Images
+      run: make docker-build-all

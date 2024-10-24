@@ -146,4 +146,5 @@ async def add_router_prometheus_middlerware(request: Request, call_next):
     return response
 
 
-uvicorn.run(app, port=envs.SERVER_PORT)
+if __name__ == "__main__":
+    uvicorn.run(app, port=envs.SERVER_PORT)

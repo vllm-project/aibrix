@@ -31,6 +31,8 @@ spec:
                     name: dashboard
                   - containerPort: 10001
                     name: client
+                  - containerPort: 8000
+                    name: service
                 resources:
                   limits:
                     cpu: 1
@@ -38,3 +40,25 @@ spec:
                   requests:
                     cpu: 1
                     memory: "1024Mi"
+      workerGroupSpecs:
+        - replicas: 1
+          minReplicas: 1
+          maxReplicas: 5
+          groupName: small-group
+          rayStartParams: {}
+          template:
+            spec:
+              containers:
+                - name: ray-worker # must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character (e.g. 'my-name',  or '123-abc'
+                  image: rayproject/ray:2.10.0
+                  lifecycle:
+                    preStop:
+                      exec:
+                        command: [ "/bin/sh","-c","ray stop" ]
+                  resources:
+                    limits:
+                      cpu: 1
+                      memory: "1024Mi"
+                    requests:
+                      cpu: 1
+                      memory: "1024Mi"

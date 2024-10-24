@@ -36,3 +36,4 @@ docs/build/
 docs/development/simulator/.venv
 docs/development/simulator/simulator_output
 docs/development/simulator/cache
+python/gpuoptimizer/.venv

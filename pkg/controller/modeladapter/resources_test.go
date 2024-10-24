@@ -43,10 +43,7 @@ func TestBuildModelAdapterEndpointSlice(t *testing.T) {
 	}
 
 	// Call the function to test
-	endpointSlice, err := buildModelAdapterEndpointSlice(instance, pod)
-
-	// Assert no errors
-	assert.NoError(t, err)
+	endpointSlice := buildModelAdapterEndpointSlice(instance, pod)
 
 	// Check EndpointSlice metadata
 	assert.Equal(t, "test-instance", endpointSlice.Name)
@@ -83,10 +80,7 @@ func TestBuildModelAdapterService(t *testing.T) {
 	}
 
 	// Call the function to test
-	service, err := buildModelAdapterService(instance)
-
-	// Assert no errors
-	assert.NoError(t, err)
+	service := buildModelAdapterService(instance)
 
 	// Check Service metadata
 	assert.Equal(t, "test-instance", service.Name)

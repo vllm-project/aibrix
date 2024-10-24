@@ -1,0 +1,4 @@
+kind: Kustomization
+
+resources:
+- envoy-gateway

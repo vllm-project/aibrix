@@ -29,7 +29,7 @@ spec:
       initContainers:
         - name: init-c
           image: busybox
-          command: ['sh', '-c', "until nslookup aibrix-redis-master.aibrix-system.svc.cluster.local; do echo waiting for service aibrix-redis-master; sleep 2; done"]
+          command: ['sh', '-c', 'until echo "ping" | nc aibrix-redis-master 6379 -w 1  | grep -c PONG; do echo waiting for service aibrix-redis-master; sleep 2; done']
       containers:
         - name: gateway-plugin
           image: plugins:latest
@@ -50,3 +50,24 @@ spec:
                 fieldRef:
                   fieldPath: metadata.namespace
       serviceAccountName: aibrix-gateway-plugin
+---
+# this is a dummy route for incoming request and,
+# then request is routed to httproute using model name OR
+# request is routed based on the target for that model service
+# TODO (varun): check if this dummy route can be removed in future
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reserved-router
+  namespace: aibrix-system
+spec:
+  parentRefs:
+    - name: aibrix-eg
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052

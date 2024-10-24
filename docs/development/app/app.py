@@ -1,5 +1,6 @@
 from flask import Flask, request, Response, jsonify
 import time
+from random import randint
 import os
 try:
     from kubernetes import client, config
@@ -11,7 +12,7 @@ v1 = None
 
 MODEL_NAME = 'llama2-70b'
 DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-70b')
-NAMESPACE = os.getenv('NAMESPACE', 'default')
+NAMESPACE = os.getenv('NAMESPACE', 'aibrix-system')
 DEFAULT_REPLICAS = int(os.getenv('DEFAULT_REPLICAS', '1'))
 
 models = [
@@ -107,6 +108,9 @@ def completion():
     if not prompt or not model:
         return jsonify({"status": "error", "message": "Prompt and model are required"}), 400
 
+    prompt_tokens = randint(1, 100)
+    completion_tokens = randint(1, 100)
+    
     # Simulated response
     response = {
         "id": "cmpl-uqkvlQyYK7bGYrRHQ0eXlWi7",
@@ -123,9 +127,9 @@ def completion():
             }
         ],
         "usage": {
-            "prompt_tokens": 5,
-            "completion_tokens": 7,
-            "total_tokens": 12
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens+completion_tokens
         }
     }
     return jsonify(response), 200
@@ -138,6 +142,9 @@ def chat_completions():
     if not messages or not model:
         return jsonify({"status": "error", "message": "Messages and model are required"}), 400
 
+    prompt_tokens = randint(1, 100)
+    completion_tokens = randint(1, 100)
+    
     # Simulated response
     response = {
         "id": "chatcmpl-abc123",
@@ -145,9 +152,9 @@ def chat_completions():
         "created": 1677858242,
         "model": model,
         "usage": {
-            "prompt_tokens": 13,
-            "completion_tokens": 7,
-            "total_tokens": 20
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens+completion_tokens
         },
         "choices": [
             {
@@ -181,11 +188,23 @@ def metrics():
     success_total = total / replicas
     avg_prompt_throughput = total / replicas if replicas > 0 else 0
     avg_generation_throughput = total / replicas if replicas > 0 else 0
+    running = randint(1, 100)
+    waiting = randint(1, 100)
+    swapped = randint(1, 100)
 
     # construct Prometheus-style Metrics
     metrics_output = f"""# HELP vllm:request_success_total Count of successfully processed requests.
 # TYPE vllm:request_success_total counter
 vllm:request_success_total{{finished_reason="stop",model_name="{model_name}"}} {success_total}
+# HELP vllm:num_requests_running Number of requests currently running on GPU.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{{model_name="{model_name}"}} {running}
+# HELP vllm:num_requests_swapped Number of requests swapped to CPU.
+# TYPE vllm:num_requests_swapped gauge
+vllm:num_requests_swapped{{model_name="{model_name}"}} {swapped}
+# HELP vllm:num_requests_waiting Number of requests waiting to be processed.
+# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{{model_name="{model_name}"}} {waiting}
 # HELP vllm:avg_prompt_throughput_toks_per_s Average prefill throughput in tokens/s.
 # TYPE vllm:avg_prompt_throughput_toks_per_s gauge
 vllm:avg_prompt_throughput_toks_per_s{{model_name="{model_name}"}} {avg_prompt_throughput}

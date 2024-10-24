@@ -22,9 +22,10 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 )
 
-func buildModelAdapterEndpointSlice(instance *modelv1alpha1.ModelAdapter, pod *corev1.Pod) (*discoveryv1.EndpointSlice, error) {
+func buildModelAdapterEndpointSlice(instance *modelv1alpha1.ModelAdapter, pod *corev1.Pod) *discoveryv1.EndpointSlice {
 	serviceLabels := map[string]string{
 		"kubernetes.io/service-name": instance.Name,
 	}
@@ -37,9 +38,9 @@ func buildModelAdapterEndpointSlice(instance *modelv1alpha1.ModelAdapter, pod *c
 
 	ports := []discoveryv1.EndpointPort{
 		{
-			Name:     stringPtr("http"),
-			Protocol: protocolPtr(corev1.ProtocolTCP),
-			Port:     int32Ptr(8000),
+			Name:     ptr.To("http"),
+			Protocol: ptr.To(corev1.ProtocolTCP),
+			Port:     ptr.To(int32(8000)),
 		},
 	}
 
@@ -56,10 +57,10 @@ func buildModelAdapterEndpointSlice(instance *modelv1alpha1.ModelAdapter, pod *c
 		AddressType: discoveryv1.AddressTypeIPv4,
 		Endpoints:   addresses,
 		Ports:       ports,
-	}, nil
+	}
 }
 
-func buildModelAdapterService(instance *modelv1alpha1.ModelAdapter) (*corev1.Service, error) {
+func buildModelAdapterService(instance *modelv1alpha1.ModelAdapter) *corev1.Service {
 	labels := map[string]string{
 		"model.aibrix.ai/name":         instance.Spec.BaseModel,
 		"adapter.model.aibrix.ai/name": instance.Name,
@@ -94,5 +95,5 @@ func buildModelAdapterService(instance *modelv1alpha1.ModelAdapter) (*corev1.Ser
 			PublishNotReadyAddresses: true,
 			Ports:                    ports,
 		},
-	}, nil
+	}
 }

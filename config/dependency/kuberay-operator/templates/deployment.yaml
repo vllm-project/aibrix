@@ -43,7 +43,7 @@ spec:
           command:
             - /manager
           args:
-            - --feature-gates=RayClusterStatusConditions=false
+            - --feature-gates=RayClusterStatusConditions=true
             - --enable-leader-election=true
           ports:
             - name: http

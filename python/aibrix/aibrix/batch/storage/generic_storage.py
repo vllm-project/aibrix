@@ -165,15 +165,16 @@ class LocalDiskFiles(PersistentStorage):
             return
         output_file_path = directory_path + "output.json"
 
-        with open(output_file_path, "w") as file:
+        with open(output_file_path, "a+") as file:
             for _ in range(start_index):
-                next(file)
+                next(file, None)
                 if not file:
                     print("writing requests is out of index.")
                     return
 
             for obj in output_list:
                 file.write(json.dumps(obj) + "\n")
+            file.truncate()
 
     def read_job_output_data(self, job_id, start_index, num_requests):
         """Read job results output from local disk as files."""

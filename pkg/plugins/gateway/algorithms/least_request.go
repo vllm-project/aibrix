@@ -18,7 +18,6 @@ package routingalgorithms
 
 import (
 	"context"
-	"fmt"
 	"math"
 
 	"github.com/aibrix/aibrix/pkg/cache"
@@ -44,22 +43,39 @@ func NewLeastRequestRouter(ratelimiter ratelimiter.RateLimiter) Router {
 	}
 }
 
-func (r leastRequestRouter) Get(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
+func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
 	var targetPodIP string
-	minCount := math.MaxInt
-	podRequestCounts := r.cache.GetPodRequestCount()
+	minCount := math.MaxFloat64
 
 	for _, pod := range pods {
-		podIP := pod.Status.PodIP + ":8000"
-		podRequestCount := fmt.Sprintf("%v_REQUEST_COUNT", podIP)
+		if pod.Status.PodIP == "" {
+			continue
+		}
 
-		reqCount := podRequestCounts[podRequestCount]
-		klog.Infof("PodIP: %s, PodRequestCount: %v", podIP, reqCount)
-		if reqCount <= minCount {
-			minCount = reqCount
-			targetPodIP = podIP
+		runningReq, err := r.cache.GetPodMetric(pod.Name, num_requests_running)
+		if err != nil {
+			klog.Error(err)
+			continue
+		}
+		waitingReq, err := r.cache.GetPodMetric(pod.Name, num_requests_waiting)
+		if err != nil {
+			klog.Error(err)
+			continue
+		}
+		swappedReq, err := r.cache.GetPodMetric(pod.Name, num_requests_swapped)
+		if err != nil {
+			klog.Error(err)
+			continue
+		}
+		totalReq := runningReq + waitingReq + swappedReq
+		klog.V(4).Infof("pod: %v, podIP: %v, runningReq: %v, waitingReq: %v, swappedReq: %v, totalReq: %v",
+			pod.Name, pod.Status.PodIP, runningReq, waitingReq, swappedReq, totalReq)
+
+		if totalReq <= minCount {
+			minCount = totalReq
+			targetPodIP = pod.Status.PodIP
 		}
 	}
 
-	return targetPodIP, nil // TODO (varun): remove static port
+	return targetPodIP + ":" + podPort, nil
 }

@@ -17,18 +17,27 @@ limitations under the License.
 package cache
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
+	"net/http"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	crdinformers "github.com/aibrix/aibrix/pkg/client/informers/externalversions"
+	"github.com/redis/go-redis/v9"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	v1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
@@ -41,19 +50,27 @@ var once sync.Once
 // type global
 type Cache struct {
 	mu                sync.RWMutex
+	redisClient       *redis.Client
 	initialized       bool
 	pods              map[string]*v1.Pod
+	podMetrics        map[string]map[string]float64  // pod_name: map[metric_name]metric_val
 	podToModelMapping map[string]map[string]struct{} // pod_name: map[model_name]struct{}
 	modelToPodMapping map[string]map[string]*v1.Pod  // model_name: map[pod_name]*v1.Pod
-	podRequestTracker map[string]int
+	requestTrace      map[string]map[string]int      // model_name: map[Log2(input_token)-Log2(output_token)]request_count
 }
 
 var (
-	instance Cache
+	instance    Cache
+	metricNames = []string{"num_requests_running", "num_requests_waiting", "num_requests_swapped",
+		"avg_prompt_throughput_toks_per_s", "avg_generation_throughput_toks_per_s"} //, "e2e_request_latency_seconds_sum"}
 )
 
 const (
-	modelIdentifier = "model.aibrix.ai/name"
+	modelIdentifier                       = "model.aibrix.ai/name"
+	podPort                               = 8000
+	podMetricRefreshIntervalInSeconds     = 10
+	writeRequestTraceIntervalInSeconds    = 10
+	expireWriteRequestTraceIntervalInMins = 10
 )
 
 func GetCache() (*Cache, error) {
@@ -63,9 +80,8 @@ func GetCache() (*Cache, error) {
 	return &instance, nil
 }
 
-func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
+func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Cache {
 	once.Do(func() {
-
 		if err := v1alpha1scheme.AddToScheme(scheme.Scheme); err != nil {
 			panic(err)
 		}
@@ -90,9 +106,6 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 		factory.Start(stopCh)
 		crdFactory.Start(stopCh)
 
-		// factory.WaitForCacheSync(stopCh)
-		// crdFactory.WaitForCacheSync(stopCh)
-
 		if !cache.WaitForCacheSync(stopCh, podInformer.HasSynced, modelInformer.HasSynced) {
 			runtime.HandleError(fmt.Errorf("timed out waiting for caches to sync"))
 			return
@@ -100,10 +113,12 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 
 		instance = Cache{
 			initialized:       true,
+			redisClient:       redisClient,
 			pods:              map[string]*v1.Pod{},
+			podMetrics:        map[string]map[string]float64{},
 			podToModelMapping: map[string]map[string]struct{}{},
 			modelToPodMapping: map[string]map[string]*v1.Pod{},
-			podRequestTracker: map[string]int{},
+			requestTrace:      map[string]map[string]int{},
 		}
 
 		if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -121,6 +136,41 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 		}); err != nil {
 			panic(err)
 		}
+
+		ticker := time.NewTicker(podMetricRefreshIntervalInSeconds * time.Second)
+		go func() {
+			for {
+				select {
+				case <-ticker.C:
+					instance.updatePodMetrics()
+					instance.debugInfo()
+				case <-stopCh:
+					ticker.Stop()
+					return
+				}
+			}
+		}()
+
+		traceTicker := time.NewTicker(writeRequestTraceIntervalInSeconds * time.Second)
+		go func() {
+			if redisClient == nil {
+				return
+			}
+			for {
+				select {
+				case <-traceTicker.C:
+					if len(instance.requestTrace) == 0 {
+						continue
+					}
+					t := time.Now().Unix()
+					roundT := t - t%writeRequestTraceIntervalInSeconds
+					instance.writeRequestTraceToStorage(roundT)
+				case <-stopCh:
+					ticker.Stop()
+					return
+				}
+			}
+		}()
 	})
 
 	return &instance
@@ -185,6 +235,7 @@ func (c *Cache) deletePod(obj interface{}) {
 	}
 	delete(c.podToModelMapping, pod.Name)
 	delete(c.pods, pod.Name)
+	delete(c.podMetrics, pod.Name)
 
 	klog.V(4).Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
@@ -280,6 +331,11 @@ func (c *Cache) debugInfo() {
 	for _, pod := range c.pods {
 		klog.V(4).Infof("pod: %s, podIP: %v", pod.Name, pod.Status.PodIP)
 	}
+	for podName, metrics := range c.podMetrics {
+		for metricName, metricVal := range metrics {
+			klog.V(4).Infof("%v_%v_%v", podName, metricName, metricVal)
+		}
+	}
 	for podName, models := range c.podToModelMapping {
 		var modelList string
 		for modelName := range models {
@@ -293,6 +349,11 @@ func (c *Cache) debugInfo() {
 			podList += podName + " "
 		}
 		klog.V(4).Infof("model: %s, pods: %s", modelName, podList)
+	}
+	for inputIndex, output := range c.requestTrace {
+		for outputIndex, requestCount := range output {
+			klog.V(4).Infof("inputIndex: %v, outputIndex: %v, requestCount: %v", inputIndex, outputIndex, requestCount)
+		}
 	}
 }
 
@@ -339,25 +400,126 @@ func (c *Cache) GetModelsForPod(podName string) (map[string]struct{}, error) {
 	return models, nil
 }
 
-func (c *Cache) IncrPodRequestCount(podName string) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.podRequestTracker[podName] += 1
-	return c.podRequestTracker[podName]
-}
-
-func (c *Cache) DecrPodRequestCount(podName string) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.podRequestTracker[podName] -= 1
-	return c.podRequestTracker[podName]
-}
-
-func (c *Cache) GetPodRequestCount() map[string]int {
+func (c *Cache) GetPodMetric(podName, metricName string) (float64, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return c.podRequestTracker
+	metrics, ok := c.podMetrics[podName]
+	if !ok {
+		return 0, fmt.Errorf("pod does not exist in the metrics cache")
+	}
+
+	metricVal, ok := metrics[metricName]
+	if !ok {
+		return 0, fmt.Errorf("no metric available for %v", metricName)
+	}
+
+	return metricVal, nil
+}
+
+func (c *Cache) updatePodMetrics() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, pod := range c.pods {
+		if pod.Status.PodIP == "" {
+			continue
+		}
+		podName := pod.Name
+		if len(c.podMetrics[podName]) == 0 {
+			c.podMetrics[podName] = map[string]float64{}
+		}
+
+		// We should use the primary container port. In future, we can decide whether to use sidecar container's port
+		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, podPort)
+		resp, err := http.Get(url)
+		if err != nil {
+			klog.Errorf("failed to fetch metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
+			continue
+		}
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				klog.Errorf("Error closing response body: %v", err)
+			}
+		}()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			klog.Errorf("failed to read response from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
+			continue
+		}
+
+		for _, metricName := range metricNames {
+			metricValue, err := parseMetricFromBody(body, metricName)
+			if err != nil {
+				klog.Errorf("failed to parse metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
+				continue
+			}
+
+			c.podMetrics[pod.Name][metricName] = metricValue
+			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
+		}
+	}
+}
+
+func parseMetricFromBody(body []byte, metricName string) (float64, error) {
+	lines := strings.Split(string(body), "\n")
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "#") && strings.Contains(line, metricName) {
+			// format is `http_requests_total 1234.56`
+			parts := strings.Fields(line)
+			if len(parts) < 2 {
+				return 0, fmt.Errorf("unexpected format for metric %s", metricName)
+			}
+
+			// parse to float64
+			value, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+			if err != nil {
+				return 0, fmt.Errorf("failed to parse metric value for %s: %v", metricName, err)
+			}
+
+			return value, nil
+		}
+	}
+	return 0, fmt.Errorf("metrics %s not found", metricName)
+}
+
+func (c *Cache) AddRequestTrace(modelName string, inputTokens, outputTokens int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	inputIndex := math.Trunc(math.Log2(float64(inputTokens)))
+	outputIndex := math.Trunc(math.Log2(float64(outputTokens)))
+
+	klog.V(5).Infof("inputTokens: %v, inputIndex: %v, outputTokens: %v, outputIndex: %v",
+		inputTokens, inputIndex, outputTokens, outputIndex)
+
+	if len(c.requestTrace[modelName]) == 0 {
+		c.requestTrace[modelName] = map[string]int{}
+	}
+
+	c.requestTrace[modelName][fmt.Sprintf("%v:%v", inputIndex, outputIndex)] += 1
+}
+
+func (c *Cache) writeRequestTraceToStorage(roundT int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	defer func() {
+		klog.V(5).Infof("writeRequestTraceWithKey: %v", roundT)
+		c.requestTrace = map[string]map[string]int{}
+	}()
+
+	for modelName, trace := range c.requestTrace {
+		key := fmt.Sprintf("aibrix:%v_request_trace_%v", modelName, roundT)
+		value, err := json.Marshal(trace)
+		if err != nil {
+			klog.ErrorS(err, "error to marshall request trace for redis set")
+			continue
+		}
+
+		if _, err = c.redisClient.Set(context.Background(), key, value, expireWriteRequestTraceIntervalInMins*time.Minute).Result(); err != nil {
+			klog.Error(err)
+		}
+	}
 }

@@ -64,17 +64,21 @@ type ModelAdapterPhase string
 const (
 	// ModelAdapterPending means the CR has been created and that's the initial status
 	ModelAdapterPending ModelAdapterPhase = "Pending"
-	// ModelAdapterScheduling means the ModelAdapter is pending scheduling
-	ModelAdapterScheduling ModelAdapterPhase = "Scheduling"
-	// ModelAdapterBinding means the controller loads ModelAdapter on a selected pod
-	ModelAdapterBinding ModelAdapterPhase = "Binding"
+	// ModelAdapterScheduled means the ModelAdapter is pending scheduling
+	ModelAdapterScheduled ModelAdapterPhase = "Scheduled"
+	// ModelAdapterBound means the controller loads ModelAdapter on a selected pod
+	ModelAdapterBound ModelAdapterPhase = "Bound"
+	// ModelAdapterResourceCreated means the model adapter owned resources have been created
+	ModelAdapterResourceCreated ModelAdapterPhase = "ResourceCreated"
 	// ModelAdapterRunning means ModelAdapter has been running on the pod
 	ModelAdapterRunning ModelAdapterPhase = "Running"
 	// ModelAdapterFailed means ModelAdapter has terminated in a failure
 	ModelAdapterFailed ModelAdapterPhase = "Failed"
-	// ModelAdapterScaling means ModelAdapter is scaling, could be scaling in or out. won't be enabled until we allow multiple replicas
+	// ModelAdapterUnknown means ModelAdapter clean up some stable resources
+	ModelAdapterUnknown ModelAdapterPhase = "Unknown"
+	// ModelAdapterScaled means ModelAdapter is scaled, could be scaling in or out. won't be enabled until we allow multiple replicas
 	// TODO: not implemented yet.
-	ModelAdapterScaling ModelAdapterPhase = "Scaling"
+	ModelAdapterScaled ModelAdapterPhase = "Scaled"
 )
 
 // ModelAdapterStatus defines the observed state of ModelAdapter
@@ -97,11 +101,10 @@ type ModelAdapterConditionType string
 
 const (
 	ModelAdapterConditionTypeInitialized     ModelAdapterConditionType = "Initialized"
-	ModelAdapterConditionTypeSelectorMatched ModelAdapterConditionType = "SelectorMatched"
 	ModelAdapterConditionTypeScheduled       ModelAdapterConditionType = "Scheduled"
+	ModelAdapterConditionTypeBound           ModelAdapterConditionType = "Bound"
 	ModelAdapterConditionTypeResourceCreated ModelAdapterConditionType = "ResourceCreated"
 	ModelAdapterConditionReady               ModelAdapterConditionType = "Ready"
-	ModelAdapterConditionCleanup             ModelAdapterConditionType = "Cleanup"
 )
 
 // +genclient
