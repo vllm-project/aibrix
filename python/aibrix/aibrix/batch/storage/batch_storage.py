@@ -14,12 +14,11 @@
 
 import uuid
 
-from aibrix.batch.storage.tos_storage import TOSStorage
-
+from aibrix.batch.storage.generic_storage import LocalDiskFiles
 
 current_job_offsets = {}
 job_input_requests = {}
-p_storage = TOSStorage()
+p_storage = LocalDiskFiles()
 NUM_REQUESTS_PER_READ = 1024
 
 
