@@ -181,3 +181,17 @@ class TOSFile(RemoteFile):
             range=range_header
         )
         return resp.read()
+
+    def download_file(self, dist: str, num_threads: int = 1):
+        _file_name = self.bucket_path.split("/")[-1]
+        Path(dist).mkdir(parents=True, exist_ok=True)
+        dist_path = Path(dist).joinpath(_file_name).absolute()
+        tos_client = _create_tos_client()
+        tos_client.download_file(
+            bucket=self.bucket_name,
+            key=self.bucket_path,
+            file_path=str(
+                dist_path
+            ),  # TOS client does not support Path, convert it to str
+            task_num=num_threads,
+        )
