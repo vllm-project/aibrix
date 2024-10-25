@@ -1,4 +1,4 @@
-# Unified AI Runtime
+# AI Runtime
 A versatile sidecar enabling metric standardization, model downloading, and management.
 
 ## Quick Start
