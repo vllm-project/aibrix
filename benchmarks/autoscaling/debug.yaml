@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-pod
+  namespace: default
+spec:
+  containers:
+  - name: debug-container
+    image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/ray:2.10.0
+    command: ["sh", "-c", "sleep infinity"]
+    resources:
+      limits:
+        cpu: "100m"
+        memory: "128Mi"
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+    volumeMounts:
+      - mountPath: /models
+        name: model-hostpath
+  volumes:
+    - name: model-hostpath
+      hostPath:
+        path: /root/models
+        type: DirectoryOrCreate
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: machine.cluster.vke.volcengine.com/gpu-name
+                operator: In
+                values:
+                  - NVIDIA-A10
