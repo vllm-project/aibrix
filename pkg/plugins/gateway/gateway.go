@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
@@ -156,6 +155,10 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		}
 	}
 
+	if routingStrategy == "" {
+		routingStrategy = utils.GetEnv("ROUTING_ALGORITHM", "")
+	}
+
 	if username != "" {
 		user, err = utils.GetUser(utils.User{Name: username}, s.redisClient)
 		if err != nil {
@@ -196,18 +199,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	}, user, rpm, routingStrategy
 }
 
-func getEnv(key, defaultValue string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return defaultValue
-	}
-	return value
-}
-
 func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingStrategy string) (*extProcPb.ProcessingResponse, string) {
-	// dummy line for lint error
-	klog.V(6).Info(routingStrategy)
-
 	klog.Info("--- In RequestBody processing")
 	var model, targetPodIP string
 	var ok bool
@@ -228,7 +220,6 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			"no model in request body"), targetPodIP
 	}
 
-	routingStrategy = getEnv("ROUTING_ALGORITHM", "")
 	headers := []*configPb.HeaderValueOption{}
 	switch {
 	case routingStrategy == "":
@@ -322,6 +313,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 
 	var res openai.CompletionResponse
 	if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
+		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID)
 		return generateErrorResponse(
 			envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
