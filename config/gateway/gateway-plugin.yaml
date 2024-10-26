@@ -41,6 +41,8 @@ spec:
               value: aibrix-redis-master
             - name: REDIS_PORT
               value: "6379" 
+            - name: ROUTING_ALGORITHM
+              value: "least-request" # random, least-request, throughput
             - name: POD_NAME
               valueFrom:
                 fieldRef:

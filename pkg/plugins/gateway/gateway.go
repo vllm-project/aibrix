@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -195,6 +196,14 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	}, user, rpm, routingStrategy
 }
 
+func getEnv(key, defaultValue string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	return value
+}
+
 func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingStrategy string) (*extProcPb.ProcessingResponse, string) {
 	klog.Info("--- In RequestBody processing")
 	var model, targetPodIP string
@@ -216,6 +225,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			"no model in request body"), targetPodIP
 	}
 
+	routingStrategy = getEnv("ROUTING_ALGORITHM", "")
 	headers := []*configPb.HeaderValueOption{}
 	switch {
 	case routingStrategy == "":
