@@ -205,6 +205,9 @@ func getEnv(key, defaultValue string) string {
 }
 
 func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingStrategy string) (*extProcPb.ProcessingResponse, string) {
+	// dummy line for lint error
+	klog.V(6).Info(routingStrategy)
+
 	klog.Info("--- In RequestBody processing")
 	var model, targetPodIP string
 	var ok bool
