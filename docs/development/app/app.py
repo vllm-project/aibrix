@@ -10,6 +10,9 @@ except Exception as e:
 app = Flask(__name__)
 v1 = None
 
+# Global storage for overridden values
+overrides = {}
+
 MODEL_NAME = 'llama2-70b'
 DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-70b')
 NAMESPACE = os.getenv('NAMESPACE', 'aibrix-system')
@@ -170,6 +173,18 @@ def chat_completions():
     }
     return jsonify(response), 200
 
+@app.route('/set_metrics', methods=['POST'])
+def set_metrics():
+    global overrides
+    # Get JSON data from the request
+    data = request.json
+    if data:
+        # Update overrides with new key-value pairs
+        overrides.update(data)
+        return {"status": "success", "message": "Overrides updated"}, 200
+    else:
+        return {"status": "error", "message": "No data provided"}, 400
+
 @app.route('/metrics')
 def metrics():
     # get deployment information
@@ -182,15 +197,17 @@ def metrics():
         replicas = DEFAULT_REPLICAS
 
     # a reasonable mock total value
-    total = 100.0
-    model_name = MODEL_NAME
-    # 计算每个 metrics
-    success_total = total / replicas
-    avg_prompt_throughput = total / replicas if replicas > 0 else 0
-    avg_generation_throughput = total / replicas if replicas > 0 else 0
-    running = randint(1, 100)
-    waiting = randint(1, 100)
-    swapped = randint(1, 100)
+    total = overrides.get("total", 100.0)
+    model_name = overrides.get("model_name", MODEL_NAME)
+    # calculate metrics with potential overrides
+    success_total = overrides.get("success_total", total / replicas)
+    avg_prompt_throughput = overrides.get("avg_prompt_throughput", total / replicas if replicas > 0 else 0)
+    avg_generation_throughput = overrides.get("avg_generation_throughput", total / replicas if replicas > 0 else 0)
+    running = overrides.get("running", randint(1, 100))
+    waiting = overrides.get("waiting", randint(1, 100))
+    swapped = overrides.get("swapped", randint(1, 100))
+    max_running_capacity = 100
+    gpu_cache_usage_perc = overrides.get("gpu_cache_usage_perc", min(100.0, (running / max_running_capacity) * 100))
 
     # construct Prometheus-style Metrics
     metrics_output = f"""# HELP vllm:request_success_total Count of successfully processed requests.
@@ -211,6 +228,9 @@ vllm:avg_prompt_throughput_toks_per_s{{model_name="{model_name}"}} {avg_prompt_t
 # HELP vllm:avg_generation_throughput_toks_per_s Average generation throughput in tokens/s.
 # TYPE vllm:avg_generation_throughput_toks_per_s gauge
 vllm:avg_generation_throughput_toks_per_s{{model_name="{model_name}"}} {avg_generation_throughput}
+# HELP vllm:gpu_cache_usage_perc GPU KV-cache usage. 1 means 100 percent usage.
+# TYPE vllm:gpu_cache_usage_perc gauge
+vllm:gpu_cache_usage_perc{{model_name="model_name"}} {gpu_cache_usage_perc}
 """
     return Response(metrics_output, mimetype='text/plain')
 
