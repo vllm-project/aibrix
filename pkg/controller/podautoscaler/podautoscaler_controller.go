@@ -131,7 +131,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	go func() {
 		for err := range errChan {
-			klog.Error(err, "Run function returned an error")
+			klog.ErrorS(err, "Run function returned an error")
 		}
 	}()
 
@@ -227,8 +227,7 @@ func (r *PodAutoscalerReconciler) Run(ctx context.Context, errChan chan<- error)
 
 func (r *PodAutoscalerReconciler) enqueuePodAutoscalers(ctx context.Context) error {
 	podAutoscalerLists := &autoscalingv2.HorizontalPodAutoscalerList{}
-	opts := client.MatchingFields{}
-	if err := r.List(ctx, podAutoscalerLists, opts); err != nil {
+	if err := r.List(ctx, podAutoscalerLists); err != nil {
 		return err
 	}
 	for _, pa := range podAutoscalerLists.Items {
