@@ -226,7 +226,7 @@ func (r *PodAutoscalerReconciler) Run(ctx context.Context, errChan chan<- error)
 }
 
 func (r *PodAutoscalerReconciler) enqueuePodAutoscalers(ctx context.Context) error {
-	podAutoscalerLists := &autoscalingv2.HorizontalPodAutoscalerList{}
+	podAutoscalerLists := &autoscalingv1alpha1.PodAutoscalerList{}
 	if err := r.List(ctx, podAutoscalerLists); err != nil {
 		return err
 	}
