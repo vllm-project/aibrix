@@ -52,6 +52,15 @@ type RestMetricsFetcher struct{}
 func (f *RestMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, metricsPort int, metricName string) (float64, error) {
 	// Use http to fetch pod's /metrics endpoint and parse the value
 	url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, metricsPort)
+
+	key := "DEBUG_MODE"
+	value, exists := getEnvKey(key)
+
+	if exists && value == "on" {
+		// 30080 is the nodePort of the base model service.
+		url = fmt.Sprintf("http://%s:8000/metrics", "localhost")
+	}
+
 	// TODO a temp for debugging
 	//url := fmt.Sprintf("http://%s:%d/metrics", "127.0.0.1", metricsPort)
 	resp, err := http.Get(url)
