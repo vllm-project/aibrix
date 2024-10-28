@@ -14,5 +14,5 @@ spec:
   minReplicas: 1
   maxReplicas: 10
   targetMetric: "gpu_cache_usage_perc"
-  targetValue: "70000m"
+  targetValue: "50"
   scalingStrategy: "HPA"

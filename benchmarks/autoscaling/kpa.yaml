@@ -13,6 +13,6 @@ spec:
     name: aibrix-model-deepseek-coder-7b-instruct
   minReplicas: 1
   maxReplicas: 10
-  targetMetric: "avg_prompt_throughput_toks_per_s"
-  targetValue: "20"
+  targetMetric: "vllm:gpu_cache_usage_perc"
+  targetValue: "50"
   scalingStrategy: "KPA"
