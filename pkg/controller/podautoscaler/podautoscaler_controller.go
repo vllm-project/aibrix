@@ -647,8 +647,7 @@ func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa 
 
 	for _, source := range pa.Spec.MetricsSources {
 		metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, source.Name)
-		autoScaler.UpdateSourceMetrics(ctx, metricKey, source, currentTimestamp)
-		return nil
+		return autoScaler.UpdateSourceMetrics(ctx, metricKey, source, currentTimestamp)
 	}
 
 	// Retrieve the selector string from the Scale object's Status,

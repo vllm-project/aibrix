@@ -150,9 +150,10 @@ spec:
     name: simulator-llama2-7b
   minReplicas: 1
   maxReplicas: 10
-  targetMetric: "avg_prompt_throughput_toks_per_s" # Will be discarded
+  targetMetric: "avg_prompt_throughput_toks_per_s" # Ignore if metricsSources is configured
+  targetPort: 8000 # Ignore if metricsSources is configured
   metricsSources: 
-    - endpoint: http://gpu-optimizer.aibrix-system.svc.cluster.local:8080
+    - endpoint: gpu-optimizer.aibrix-system.svc.cluster.local:8080
       path: /metrics/aibrix-system/simulator-llama2-7b
       metric: "vllm:deployment_replicas"
   targetValue: "1"

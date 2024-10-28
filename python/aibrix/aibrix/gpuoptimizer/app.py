@@ -13,6 +13,7 @@
 import threading
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse, PlainTextResponse
+from typing import Optional, Tuple
 import logging
 import uvicorn
 import os
@@ -31,19 +32,26 @@ model_monitors = {} # Dictionary to store serving threads
 logger = logging.getLogger("uvicorn")
 logger.setLevel(logging.DEBUG)
 
-def start_serving_thread(deployment, new_deployment) -> bool:
-    """Start model monitor, returns True if a new server thread is created, False otherwise."""
-    logger.debug(f"Starting model monitor for deployment \"{deployment.metadata.name}\"")
-
+def validate_model(deployment) -> Tuple[str, Optional[ModelMonitor]]:
+    """Validate the deployment and return the model monitor if the deployment is valid."""
     labels = deployment.metadata.labels
     if not labels:
-        logger.warning(f"No labels found for this deployment, please specify \"{MODEL_LABEL}\" label in deployment.")
-        return False
+        raise Exception(f"No labels found for this deployment, please specify \"{MODEL_LABEL}\" label in deployment.")
+
     # Access model label
     model_name = labels.get(MODEL_LABEL)
     if not model_name:
-        logger.warning(f"No \"{MODEL_LABEL}\" label found for this deployment, please specify \"{MODEL_LABEL}\" label in deployment.")
-        return False
+        raise Exception(f"No \"{MODEL_LABEL}\" label found for this deployment, please specify \"{MODEL_LABEL}\" label in deployment.")
+
+    if model_name in model_monitors:
+        return model_name, model_monitors[model_name]
+    else:
+        return model_name, None
+
+
+def start_serving_thread(deployment, new_deployment) -> bool:
+    """Start model monitor, returns True if a new server thread is created, False otherwise."""
+    model_name, model_monitor = validate_model(deployment)
 
     # Get deployment specs
     deployment_name = deployment.metadata.name
@@ -52,8 +60,7 @@ def start_serving_thread(deployment, new_deployment) -> bool:
     if not replicas:
         replicas = 1
     
-    if model_name in model_monitors:
-        model_monitor = model_monitors[model_name]
+    if model_monitor != None:
         model_monitor.add_deployment(deployment_name, namespace, replicas)
         logger.info(f"Deployment \"{deployment_name}\" added to the model monitor for \"{model_name}\"")
         return False
@@ -71,24 +78,16 @@ def start_serving_thread(deployment, new_deployment) -> bool:
 
 def remove_deployment(deployment):
     """Remove deployment from model monitor"""
-    labels = deployment.metadata.labels
-    if not labels:
-        logger.warning(f"No labels found for this deployment, please specify \"{MODEL_LABEL}\" label in deployment.")
-        return
-    # Access model label
-    model_name = labels.get(MODEL_LABEL)
-    if not model_name:
-        logger.warning(f"No \"{MODEL_LABEL}\" label found for this deployment, please specify \"{MODEL_LABEL}\" label in deployment.")
-        return
+    model_name, model_monitor = validate_model(deployment)
 
     deployment_name = deployment.metadata.name
     namespace = deployment.metadata.namespace
-    if model_name not in model_monitors:
+    if model_monitor == None:
         logger.warning(f"Removing \"{deployment_name}\" from the model monitor, but \"{model_name}\" has not monitored.")
         return
 
-    if model_monitors[model_name].remove_deployment(deployment_name, namespace) == 0:
-        model_monitors[model_name].stop()
+    if model_monitor.remove_deployment(deployment_name, namespace) == 0:
+        model_monitor.stop()
         del model_monitors[model_name]
         logger.info(f"Removing \"{deployment_name}\" from the model monitor, no deployment left in \"{model_name}\", stopping the model monitor.")
         return
@@ -113,20 +112,23 @@ async def start_deployment_optimization(request):
         return JSONResponse({"error": f"Error starting deployment optimization: {e}"}, status_code=500)
     
 @app.route('/scale/{namespace}/{deployment_name}/{replicas}', methods=['POST'])
-async def start_deployment_optimization(request):
+async def scale_deployment(request):
     namespace = request.path_params['namespace']
     deployment_name = request.path_params['deployment_name']
-    replicas = request.path_params['deployment_name']
+    replicas = request.path_params['replicas']
     try:
         # Verify the deployment exists
         apps_v1 = client.AppsV1Api()
         deployment = apps_v1.read_namespaced_deployment(deployment_name, namespace)
 
-        # Start the deployment optimization
-        if start_serving_thread(deployment):
-            return JSONResponse({"message": "Deployment optimization started"})
-        else:
-            return JSONResponse({"message": "Deployment optimization already started"})
+        _, monitor = validate_model(deployment)
+        if monitor == None:
+            raise Exception(f"Model \"{model_name}\" is not monitored.")
+
+        # Set the scaling metrics
+        monitor.update_deployment_num_replicas(deployment_name, namespace, replicas)
+
+        return JSONResponse({"message": f"Scaled to {replicas}"})
     except Exception as e:
         return JSONResponse({"error": f"Error starting deployment optimization: {e}"}, status_code=500)
 
@@ -138,29 +140,21 @@ async def get_deployment_metrics(request):
     try:
         apps_v1 = client.AppsV1Api()
         deployment = apps_v1.read_namespaced_deployment(deployment_name, namespace)
-        labels = deployment.metadata.labels
-        if not labels:
-            raise Exception(f"No labels found for this deployment")
         
-        # Access model label
-        model_name = labels.get(MODEL_LABEL)
-        if not model_name:
-            raise Exception(f"No \"{MODEL_LABEL}\" label found for this deployment")
-        
-        if model_name not in model_monitors:
-            raise Exception(f"The model {model_name} is not being monitored")
-        monitor = model_monitors[model_name]
+        model_name, monitor = validate_model(deployment)
+        if monitor == None:
+            raise Exception(f"Model \"{model_name}\" is not monitored.")
 
         replicas = monitor.read_deployment_num_replicas(deployment_name, namespace)
-    except Exception as e:
-        return JSONResponse({"error": f"Failed to read metrics: {e}"}, status_code=404)
 
-    # construct Prometheus-style Metrics
-    metrics_output = f"""# HELP vllm:deployment_replicas Number of suggested replicas.
+        # construct Prometheus-style Metrics
+        metrics_output = f"""# HELP vllm:deployment_replicas Number of suggested replicas.
 # TYPE vllm:deployment_replicas gauge
 vllm:deployment_replicas{{model_name="{model_name}"}} {replicas}
 """
-    return PlainTextResponse(metrics_output)
+        return PlainTextResponse(metrics_output)
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to read metrics: {e}"}, status_code=404)
 
 def main():
     try:
@@ -171,7 +165,10 @@ def main():
         deployments = apps_v1.list_namespaced_deployment(namespace=NAMESPACE, label_selector=MODEL_LABEL)
         resource_version = deployments.metadata.resource_version
         for deployment in deployments.items:
-            start_serving_thread(deployment, False)
+            try:
+                start_serving_thread(deployment, False)
+            except Exception as e:
+                logger.warning(f"Error on handle event {event}: {e}")
     except client.rest.ApiException as ae:
         logger.error(f"Error connecting to Kubernetes API: {ae}. Please manually initiate GPU optimizer by calling the /monitor/{{namespace}}/{{deployment_name}} endpoint")
         return
