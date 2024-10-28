@@ -182,3 +182,13 @@ vllm:avg_prompt_throughput_toks_per_s{model_name="llama2-70b"} 20.0
 # TYPE vllm:avg_generation_throughput_toks_per_s gauge
 vllm:avg_generation_throughput_toks_per_s{model_name="llama2-70b"} 20.0
 ```
+
+### Update Override Metrics
+
+```bash
+# check metrics
+curl -X GET http://localhost:8000/metrics
+
+# override metrics
+curl -X POST http://localhost:8000/set_metrics -H "Content-Type: application/json" -d '{"gpu_cache_usage_perc": 75.0}'
+```

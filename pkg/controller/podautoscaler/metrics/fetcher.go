@@ -54,6 +54,7 @@ type MetricFetcher interface {
 type RestMetricsFetcher struct{}
 
 func (f *RestMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, metricsPort int, metricName string) (float64, error) {
+	// Use http to fetch pod's /metrics endpoint and parse the value
 	return f.FetchMetric(ctx, fmt.Sprintf("http://%s:%d", pod.Status.PodIP, metricsPort), "/metrics", metricName)
 }
 

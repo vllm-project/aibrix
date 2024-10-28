@@ -18,7 +18,9 @@ package aggregation
 
 import (
 	"errors"
+	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -116,9 +118,37 @@ func (w *window) Avg() (float64, error) {
 	return sum / float64(count), nil
 }
 
+func (w *window) String() string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("window(size=%d, values=[", w.length))
+
+	for i := 0; i < w.length; i++ {
+		idx := (w.first + i) % len(w.valueList)
+		sb.WriteString(fmt.Sprintf("%v", w.valueList[idx]))
+		if i < w.length-1 {
+			sb.WriteString(", ")
+		}
+	}
+
+	sb.WriteString("])")
+
+	return sb.String()
+}
+
 type TimeWindow struct {
 	window      *window
 	granularity time.Duration
+}
+
+func (tw *TimeWindow) String() string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("TimeWindow(granularity=%v, window=", tw.granularity))
+	sb.WriteString(tw.window.String())
+	sb.WriteString(")")
+
+	return sb.String()
 }
 
 func NewTimeWindow(duration, granularity time.Duration) *TimeWindow {

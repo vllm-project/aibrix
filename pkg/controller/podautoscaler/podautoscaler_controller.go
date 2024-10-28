@@ -98,7 +98,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	if err != nil {
 		return nil, err
 	}
-	klog.InfoS("Initialized CostumPA: APA autoscaler successfully")
+	klog.InfoS("Initialized CustomPA: APA autoscaler successfully")
 
 	reconciler.AutoscalerMap = map[autoscalingv1alpha1.ScalingStrategyType]scaler.Scaler{
 		autoscalingv1alpha1.KPA: kpaScaler,
@@ -131,7 +131,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	go func() {
 		for err := range errChan {
-			klog.Error(err, "Run function returned an error")
+			klog.ErrorS(err, "Run function returned an error")
 		}
 	}()
 
@@ -190,8 +190,7 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	switch pa.Spec.ScalingStrategy {
 	case autoscalingv1alpha1.HPA:
 		return r.reconcileHPA(ctx, pa)
-	case autoscalingv1alpha1.KPA:
-	case autoscalingv1alpha1.APA:
+	case autoscalingv1alpha1.KPA, autoscalingv1alpha1.APA:
 		return r.reconcileCustomPA(ctx, pa)
 	}
 
@@ -226,9 +225,8 @@ func (r *PodAutoscalerReconciler) Run(ctx context.Context, errChan chan<- error)
 }
 
 func (r *PodAutoscalerReconciler) enqueuePodAutoscalers(ctx context.Context) error {
-	podAutoscalerLists := &autoscalingv2.HorizontalPodAutoscalerList{}
-	opts := client.MatchingFields{}
-	if err := r.List(ctx, podAutoscalerLists, opts); err != nil {
+	podAutoscalerLists := &autoscalingv1alpha1.PodAutoscalerList{}
+	if err := r.List(ctx, podAutoscalerLists); err != nil {
 		return err
 	}
 	for _, pa := range podAutoscalerLists.Items {

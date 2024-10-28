@@ -26,11 +26,11 @@ import (
 )
 
 var (
-	redis_host = getEnv("REDIS_HOST", "localhost")
-	redis_port = getEnv("REDIS_PORT", "6379")
+	redis_host = GetEnv("REDIS_HOST", "localhost")
+	redis_port = GetEnv("REDIS_PORT", "6379")
 )
 
-func getEnv(key, defaultValue string) string {
+func GetEnv(key, defaultValue string) string {
 	value := os.Getenv(key)
 	if value == "" {
 		return defaultValue

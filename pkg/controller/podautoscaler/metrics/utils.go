@@ -19,6 +19,7 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -116,4 +117,12 @@ func GetMetricsFromPods(ctx context.Context, fetcher MetricFetcher, pods []corev
 		metrics = append(metrics, metric)
 	}
 	return metrics, nil
+}
+
+// getEnvKey retrieves the value of the environment variable named by the key.
+// If the variable is present, the function returns the value and a boolean true.
+// If the variable is not present, the function returns an empty string and a boolean false.
+func getEnvKey(key string) (string, bool) {
+	value, exists := os.LookupEnv(key)
+	return value, exists
 }

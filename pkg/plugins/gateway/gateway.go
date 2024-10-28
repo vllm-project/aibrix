@@ -155,6 +155,10 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		}
 	}
 
+	if routingStrategy == "" {
+		routingStrategy = utils.GetEnv("ROUTING_ALGORITHM", "")
+	}
+
 	if username != "" {
 		user, err = utils.GetUser(utils.User{Name: username}, s.redisClient)
 		if err != nil {
@@ -309,6 +313,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 
 	var res openai.CompletionResponse
 	if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
+		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID)
 		return generateErrorResponse(
 			envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{

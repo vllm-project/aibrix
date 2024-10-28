@@ -19,6 +19,7 @@ package scaler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"sync"
@@ -251,7 +252,7 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 		}
 		if int32(delayedPodCount) != desiredPodCount {
 			klog.InfoS(
-				"Delaying scale to %d, staying at %d",
+				fmt.Sprintf("Delaying scale to %d, staying at %d", int(desiredPodCount), int(delayedPodCount)),
 				"desiredPodCount", desiredPodCount, "delayedPodCount", delayedPodCount,
 			)
 			desiredPodCount = int32(delayedPodCount)
