@@ -39,7 +39,7 @@ spec:
             - --max-model-len
             - "10240"
             - --api-key
-            - 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
+            - sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi
           image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.6.2-distributed
           imagePullPolicy: Always
           livenessProbe:
