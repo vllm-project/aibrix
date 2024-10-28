@@ -11,7 +11,6 @@ import logging
 
 from transformers import PreTrainedTokenizerBase
 
-from vllm import LLM, SamplingParams
 from vllm.engine.arg_utils import EngineArgs
 from vllm.utils import FlexibleArgumentParser
 
@@ -55,7 +54,7 @@ def build_openai_clients(model_endpoints: Dict[str, str]):
     for model, endpoint in model_endpoints.items():
         # Create an OpenAI client with custom base URL if necessary
         client = openai.AsyncOpenAI(
-            api_key="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",
+            api_key="sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi",
             base_url=endpoint,
         )
 
@@ -67,7 +66,7 @@ def build_openai_clients(model_endpoints: Dict[str, str]):
 def build_openai_endpoints(deployment_plan):
     endpoints = {
         "deployment0": {
-            "deepseek-ai/deepseek-coder-7b-instruct": "http://0.0.0.0:8000/v1",
+            "deepseek-coder-7b-instruct": "http://0.0.0.0:8000/v1",
         },
         "deployment1": {
             "model-1": "http://0.0.0.0:8071/v1",

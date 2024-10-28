@@ -17,7 +17,6 @@ limitations under the License.
 package podautoscaler
 
 import (
-	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -35,10 +34,6 @@ var (
 	controllerKind = pav1.GroupVersion.WithKind("PodAutoScaler") // Define the resource type for the controller
 )
 
-func getHPANameFromPa(pa *pav1.PodAutoscaler) string {
-	return fmt.Sprintf("%s-hpa", pa.Name)
-}
-
 // MakeHPA creates an HPA resource from a PodAutoscaler resource.
 func makeHPA(pa *pav1.PodAutoscaler) *autoscalingv2.HorizontalPodAutoscaler {
 	minReplicas, maxReplicas := pa.Spec.MinReplicas, pa.Spec.MaxReplicas
@@ -48,7 +43,7 @@ func makeHPA(pa *pav1.PodAutoscaler) *autoscalingv2.HorizontalPodAutoscaler {
 	}
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        getHPANameFromPa(pa),
+			Name:        pa.Name,
 			Namespace:   pa.Namespace,
 			Labels:      pa.Labels,
 			Annotations: pa.Annotations,
