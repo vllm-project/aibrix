@@ -1,7 +1,7 @@
 apiVersion: autoscaling.aibrix.ai/v1alpha1
 kind: PodAutoscaler
 metadata:
-  name: autoscaler-llama-2-kpa
+  name: deepseek-coder-7b-instruct-kpa
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
@@ -10,7 +10,7 @@ spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: aibrix-model-llama-2-7b-hf
+    name: aibrix-model-deepseek-coder-7b-instruct
   minReplicas: 1
   maxReplicas: 10
   targetMetric: "avg_prompt_throughput_toks_per_s"
