@@ -4,7 +4,7 @@ import os
 import asyncio
 import logging
 from datetime import datetime
-import random
+from random import randint
 import sys
 try:
     from kubernetes import client, config
@@ -139,7 +139,7 @@ def completion():
     
     arrived_at = datetime.now().timestamp()
     input_tokens = get_token_count(prompt)
-    output_tokens = random.randint(10, 500)
+    output_tokens = randint(10, 500)
     arrived_next = request.json.get('next_in')
     if not arrived_next:
         arrived_next = 0.0
@@ -181,7 +181,7 @@ def chat_completions():
     
     arrived_at = datetime.now().timestamp()
     input_tokens = sum(get_token_count(message["content"]) for message in messages)
-    output_tokens = random.randint(10, 500)
+    output_tokens = randint(10, 500)
     arrived_next = request.json.get('next_in')
     if not arrived_next:
         arrived_next = 0.0
@@ -233,35 +233,49 @@ def metrics():
     success_total = total / replicas
     avg_prompt_throughput = total / replicas if replicas > 0 else 0
     avg_generation_throughput = total / replicas if replicas > 0 else 0
+    running = randint(1, 100)
+    waiting = randint(1, 100)
+    swapped = randint(1, 100)
 
     # construct Prometheus-style Metrics
-    metrics_output = f"""# HELP vllm:request_success_total Count of successfully processed requests.
-# TYPE vllm:request_success_total counter
-vllm:request_success_total{{finished_reason="stop",model_name="{model_name}"}} {success_total}
-# HELP vllm:avg_prompt_throughput_toks_per_s Average prefill throughput in tokens/s.
-# TYPE vllm:avg_prompt_throughput_toks_per_s gauge
-vllm:avg_prompt_throughput_toks_per_s{{model_name="{model_name}"}} {avg_prompt_throughput}
-# HELP vllm:avg_generation_throughput_toks_per_s Average generation throughput in tokens/s.
-# TYPE vllm:avg_generation_throughput_toks_per_s gauge
-vllm:avg_generation_throughput_toks_per_s{{model_name="{model_name}"}} {avg_generation_throughput}
+    metrics_output = f"""# HELP request_success_total Count of successfully processed requests.
+# TYPE request_success_total counter
+request_success_total{{finished_reason="stop",model_name="{model_name}"}} {success_total}
+# HELP num_requests_running Number of requests currently running on GPU.
+# TYPE num_requests_running gauge
+num_requests_running{{model_name="{model_name}"}} {running}
+# HELP num_requests_swapped Number of requests swapped to CPU.
+# TYPE num_requests_swapped gauge
+num_requests_swapped{{model_name="{model_name}"}} {swapped}
+# HELP num_requests_waiting Number of requests waiting to be processed.
+# TYPE num_requests_waiting gauge
+num_requests_waiting{{model_name="{model_name}"}} {waiting}
+# HELP avg_prompt_throughput_toks_per_s Average prefill throughput in tokens/s.
+# TYPE avg_prompt_throughput_toks_per_s gauge
+avg_prompt_throughput_toks_per_s{{model_name="{model_name}"}} {avg_prompt_throughput}
+# HELP avg_generation_throughput_toks_per_s Average generation throughput in tokens/s.
+# TYPE avg_generation_throughput_toks_per_s gauge
+avg_generation_throughput_toks_per_s{{model_name="{model_name}"}} {avg_generation_throughput}
 """
     return Response(metrics_output, mimetype='text/plain')
-
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
 
-    # try:
-    #     # config.load_kube_config()
-    #     config.load_incluster_config()
-    # except Exception as e:
-    #     print(f"Failed to load k8s config: {e}")
-
     print(f"Starting app. DEPLOYMENT_NAME: {DEPLOYMENT_NAME}, NAMESPACE: {NAMESPACE}, MODEL: {MODEL_NAME}")
    
-
     thread = simulator.start()
-    app.run(host='0.0.0.0', port=8000)
+
+    import sys
+    if '--time_limit' not in sys.argv:
+        try:
+            # config.load_kube_config()
+            config.load_incluster_config()
+        except Exception as e:
+            print(f"Failed to load k8s config: {e}")
+
+        # Perform profiling and skip actual run
+        app.run(host='0.0.0.0', port=8000)
 
     # latency = simulator.execute(Request(0, 25, 100))
     # print(f"request latency: {latency}")

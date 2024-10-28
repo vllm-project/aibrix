@@ -1,0 +1,10 @@
+pandas
+incdbscan
+starlette
+kubernetes
+uvicorn
+starlette
+
+#for visualizer only
+# dash
+# matplotlib

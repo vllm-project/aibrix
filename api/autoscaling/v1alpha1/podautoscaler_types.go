@@ -61,6 +61,8 @@ type PodAutoscalerSpec struct {
 	// It cannot be less than minReplicas
 	MaxReplicas int32 `json:"maxReplicas"`
 
+	TargetPort int32 `json:"targetPort"`
+
 	TargetMetric string `json:"targetMetric"`
 
 	TargetValue string `json:"targetValue"`

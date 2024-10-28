@@ -56,6 +56,21 @@ type Scaler interface {
 	// This method ensures that the autoscaler has up-to-date metrics before making any scaling decisions.
 	UpdateScaleTargetMetrics(ctx context.Context, metricKey metrics.NamespaceNameMetric, pods []corev1.Pod, now time.Time) error
 
+	// UpdateSourceMetrics updates the current state of metrics used to determine scaling actions.
+	// It processes the latest metrics for a metrics source and stores
+	// these values for later use during scaling decisions.
+	//
+	// Parameters:
+	// - ctx: The context used for managing request-scoped values, cancellation, and deadlines.
+	// - metricKey: A unique identifier for the scaling target's metrics (e.g., CPU, memory, or QPS) that
+	//   is used to correlate metrics with the appropriate scaling logic.
+	// - source: The MetricSource object containing the desired scaling configuration and current state.
+	// - now: The current time at which the metrics are being processed. This timestamp helps track
+	//   when the last metric update occurred and can be used to calculate time-based scaling actions.
+	//
+	// This method ensures that the autoscaler has up-to-date metrics before making any scaling decisions.
+	UpdateSourceMetrics(ctx context.Context, metricKey metrics.NamespaceNameMetric, source autoscalingv1alpha1.MetricSource, now time.Time) error
+
 	// Scale calculates the necessary scaling action based on observed metrics
 	// and the current time. This is the core logic of the autoscaler.
 	//

@@ -18,7 +18,11 @@ RUN apt update && apt install -y curl jq git
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code into the container
-COPY . /simulator/
+COPY ./*.py /simulator/
+
+ENV MODEL_NAME=llama2-7b
+ # Trigger profiling
+RUN python app.py --time_limit 1000
 
 # Expose the port the app runs on
 EXPOSE 8000
