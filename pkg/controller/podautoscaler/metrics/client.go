@@ -125,6 +125,8 @@ func (c *KPAMetricsClient) StableAndPanicMetrics(
 		return -1, -1, err
 	}
 
+	klog.InfoS("Get panicWindow", "metricKey", metricKey, "panicValue", panicValue, "panicWindow", panicWindow)
+
 	stableWindow, exists := c.stableWindowDict[metricKey]
 	if !exists {
 		return -1, -1, fmt.Errorf("stable metrics %s not found", metricKey)
@@ -133,6 +135,8 @@ func (c *KPAMetricsClient) StableAndPanicMetrics(
 	if err != nil {
 		return -1, -1, err
 	}
+
+	klog.InfoS("Get stableWindow", "metricKey", metricKey, "stableValue", stableValue, "stableWindow", stableWindow)
 
 	return stableValue, panicValue, nil
 }

@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import os
 import random
 import time
 from typing import List, Optional, Tuple, Dict
@@ -126,7 +127,7 @@ async def send_request(client, model, endpoint, prompt, output_file):
         output_file.flush()  # Ensure data is written immediately to the file
 
         logging.info(
-            f"Request for {model} completed in {latency:.2f} seconds with throughput {throughput:.2f} tokens/s")
+            f"Request for {model} completed in {latency:.2f} seconds with throughput {throughput:.2f} tokens/s, answer: {output_text[:30]}...")
         return result
     except Exception as e:
         logging.error(f"Error sending request to {model} at {endpoint}: {str(e)}")
@@ -234,10 +235,15 @@ def main(args):
                                   f"D{args.w_duration_sec}s_I{interval_sec}s.png")
         next_start = start_time + interval_sec
         for idx, each_input_requests in enumerate(workloads):
-            logging.info(f"Sending Batch[{idx}], concurrency={len(each_input_requests)}: {each_input_requests[0]}")
-            asyncio.run(benchmark_requests(openai_clients, openai_endpoints, each_input_requests, len(each_input_requests),
-                                           len(each_input_requests), args.output_file_path))
-            # wait until passing args.w_interval_sec
+
+            if len(each_input_requests) == 0:
+                logging.info(f"===== Sending Batch[{idx}], concurrency={len(each_input_requests)}: not sending in the batch")
+            else:
+                logging.info(f"===== Sending Batch[{idx}], concurrency={len(each_input_requests)}: E.g. question: {each_input_requests[0][:30]}...")
+                asyncio.run(benchmark_requests(openai_clients, openai_endpoints, each_input_requests, len(each_input_requests),
+                                               len(each_input_requests), args.output_file_path))
+
+        # wait until passing args.w_interval_sec
             wait_time = next_start - time.time()
             if wait_time > 0:
                 time.sleep(wait_time)
@@ -261,12 +267,12 @@ if __name__ == "__main__":
     period=0.25, duration_sec: int = None, interval_sec: int = None,
     """
     parser.add_argument('--w-A', type=float, default=5)
-    parser.add_argument('--w-B', type=float, default=10)
+    parser.add_argument('--w-B', type=float, default=5)
     parser.add_argument('--w-sigma', type=float, default=0.1)
-    parser.add_argument('--w_only_rise', action='store_true')
+    parser.add_argument('--w-only-rise', action='store_true')
     parser.add_argument('--w-period', type=float, default=12)
     parser.add_argument('--w-duration-sec', type=int, default=600)
-    parser.add_argument('--w-interval-sec', type=int, default=30)
+    parser.add_argument('--w-interval-sec', type=int, default=10)
 
     parser = EngineArgs.add_cli_args(parser)
     args = parser.parse_args()
