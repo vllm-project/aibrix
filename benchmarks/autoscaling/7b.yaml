@@ -34,7 +34,7 @@ spec:
             - --model
             - /models/deepseek-coder-6.7b-instruct
             - --served-model-name
-            - deepseek-ai/deepseek-coder-7b-instruct
+            - deepseek-coder-7b-instruct
             - --trust-remote-code
             - --max-model-len
             - "10240"
@@ -171,4 +171,4 @@ spec:
       targetPort: 8080
   selector:
     model.aibrix.ai/name: deepseek-coder-7b-instruct
-  type: ClusterIP
+  type: LoadBalancer
