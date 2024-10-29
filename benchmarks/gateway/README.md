@@ -84,3 +84,9 @@ curl  http://localhost:8888/v1/chat/completions \
 ```
 
 > Note: We do not need model or routing strategy in the header now. this is clean and sdk compatibile.
+
+python client.py \
+--dataset-path "/tmp/ShareGPT_V3_unfiltered_cleaned_split.json" \
+--endpoint "http://101.126.24.162:8000" \
+--num-prompts "100" \
+--output-file-path "test.jsonl"
