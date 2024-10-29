@@ -2,7 +2,7 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:
   name: custom-proxy-config
-  namespace: envoy-gateway-system
+  namespace: aibrix-system
 spec:
   provider:
     type: Kubernetes
