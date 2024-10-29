@@ -66,11 +66,11 @@ var (
 )
 
 const (
-	modelIdentifier                       = "model.aibrix.ai/name"
-	podPort                               = 8000
-	podMetricRefreshIntervalInSeconds     = 10
-	writeRequestTraceIntervalInSeconds    = 10
-	expireWriteRequestTraceIntervalInMins = 10
+	modelIdentifier                        = "model.aibrix.ai/name"
+	podPort                                = 8000
+	podMetricRefreshIntervalInMilliseconds = 50
+	writeRequestTraceIntervalInSeconds     = 10
+	expireWriteRequestTraceIntervalInMins  = 10
 )
 
 func GetCache() (*Cache, error) {
@@ -137,7 +137,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			panic(err)
 		}
 
-		ticker := time.NewTicker(podMetricRefreshIntervalInSeconds * time.Second)
+		ticker := time.NewTicker(podMetricRefreshIntervalInMilliseconds * time.Millisecond)
 		go func() {
 			for {
 				select {
