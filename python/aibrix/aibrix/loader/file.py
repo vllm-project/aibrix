@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import tempfile
 from io import BytesIO
 from pathlib import Path
@@ -23,8 +24,10 @@ from aibrix.loader.utils import (
     _create_s3_client,
     _create_tos_client,
     _parse_bucket_info_from_uri,
+    read_to_bytes_io,
 )
 from aibrix.logger import init_logger
+
 
 logger = init_logger(__name__)
 
@@ -36,10 +39,10 @@ class LoadFile:
     def load_whole_file(self, num_threads: int = 1):
         raise NotImplementedError
 
-    def load_to_bytes(self, offset: int, count: int):
+    def load_to_bytes(self, offset: int, count: int) -> io.BytesIO:
         raise NotImplementedError
 
-    def load_to_buffer(self, offset: int, count: int):
+    def load_to_buffer(self, offset: int, count: int) -> memoryview:
         raise NotImplementedError
 
 class LocalFile(LoadFile):
@@ -64,7 +67,7 @@ class LocalFile(LoadFile):
         return tensor_bytes.tobytes()
 
     def load_to_bytes(self, offset: int, count: int):
-        return self.load_to_buffer(offset=offset, count=count).tobytes()
+        return io.BytesIO(self.load_to_buffer(offset=offset, count=count))
 
     def load_to_buffer(self, offset: int, count: int):
         tensor_mmap = np.memmap(
@@ -75,8 +78,6 @@ class LocalFile(LoadFile):
             shape=count,
         )
         return tensor_mmap
-        # arr = np.fromfile(self.file, dtype=np.uint8, offset=offset, count=count)
-        # return arr.tobytes()
 
 
 class RemoteFile(LoadFile):
@@ -86,13 +87,7 @@ class RemoteFile(LoadFile):
 
     def load_to_buffer(self, offset: int, count: int):
         tensor_bytes = self.load_to_bytes(offset=offset, count=count)
-        tensor_memmap = np.frombuffer(tensor_bytes, dtype=np.uint8)
-        # tensor_memmap = np.memmap(
-        #     tensor_bytes,
-        #     dtype=np.uint8,
-        #     mode="r",
-        # )
-        return tensor_memmap
+        return tensor_bytes.getbuffer()
 
 class S3File(RemoteFile):
     def __init__(self, file: str) -> None:
@@ -132,7 +127,7 @@ class S3File(RemoteFile):
         resp = s3_client.get_object(
             Bucket=self.bucket_name, Key=self.bucket_path, Range=range_header
         )
-        return resp.get("Body").read()
+        return read_to_bytes_io(resp.get("Body"))
 
 
 class TOSFile(RemoteFile):
@@ -180,7 +175,7 @@ class TOSFile(RemoteFile):
             key=self.bucket_path,
             range=range_header
         )
-        return resp.read()
+        return read_to_bytes_io(resp)
 
     def download_file(self, dist: str, num_threads: int = 1):
         _file_name = self.bucket_path.split("/")[-1]

@@ -1,3 +1,4 @@
+import io
 import os
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
@@ -5,6 +6,18 @@ from urllib.parse import urlparse
 import boto3
 import torch
 import tos
+from botocore.config import Config
+
+
+def read_to_bytes_io(content, chunk_size=None):
+    chunk_size = int(os.getenv("STREAM_READ_CHUNK_SIZE", 8388608))  # 8MB
+    bytes_io = io.BytesIO()
+    buf = content.read(chunk_size)
+    while buf:
+        bytes_io.write(buf)
+        buf = content.read(chunk_size)
+    bytes_io.seek(0)
+    return bytes_io
 
 
 def get_dtype(dtype_str: str):
@@ -46,12 +59,17 @@ def _create_s3_client():
     assert ak is not None and ak != "", "`AWS_ACCESS_KEY_ID` is not set."
     assert sk is not None and sk != "", "`AWS_SECRET_ACCESS_KEY` is not set."
 
+    my_config = Config(
+        # signature_version = 'v4',
+        s3={'addressing_style': 'virtual'}
+    )
     client = boto3.client(
         service_name="s3",
         region_name=region,
         endpoint_url=endpoint,
         aws_access_key_id=ak,
         aws_secret_access_key=sk,
+        config=my_config
     )
     return client
 

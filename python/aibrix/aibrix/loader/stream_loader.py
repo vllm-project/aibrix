@@ -16,10 +16,9 @@ import concurrent.futures
 import json
 import queue
 import struct
+import torch
 import threading
 from typing import Generator, List, Tuple, Union
-
-import torch
 
 from aibrix.loader.file import LoadFile
 from aibrix.loader.utils import TensorMeta, split_continue_tensors
@@ -28,12 +27,12 @@ from aibrix.loader.utils import TensorMeta, split_continue_tensors
 def get_safetensors_metas(file: LoadFile):
     LENTH_COUNT = 8
     length_bytes = file.load_to_bytes(offset=0, count=LENTH_COUNT)
-    length_of_header = struct.unpack("<Q", length_bytes)[0]
+    length_of_header = struct.unpack("<Q", length_bytes.read())[0]
     base_offset = length_of_header + LENTH_COUNT
     
     meta_bytes = file.load_to_bytes(offset=LENTH_COUNT, count=length_of_header)
     
-    tensors_meta = json.loads(meta_bytes.decode("utf-8"))
+    tensors_meta = json.loads(meta_bytes.read().decode("utf-8"))
     del tensors_meta["__metadata__"]
     
     metas: List[TensorMeta] = []
