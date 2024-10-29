@@ -143,6 +143,37 @@ class TensorMeta:
 
 
 def split_continue_tensors(tensor_metas: List[TensorMeta], num_readers:int) -> List[Tuple[TensorMeta]]:
+    """
+    Note: Usually, the number of groups for splitting tensors
+          is greater than num_deaders
+    """
+    assert len(tensor_metas) > 0, "tensor_metas should not be empty"
+    assert num_readers > 0, "num_readers should be greater than 0"
+
+    if len(tensor_metas) <= num_readers:
+        return [tuple([item]) for item in tensor_metas]
+
+    max_offset = tensor_metas[-1].data_offsets[1]
+    avg_size = max_offset // num_readers
+    group = []
+    groups = []
+    group_size = 0
+    for tensor_meta in tensor_metas:
+        if len(group) == 0 or group_size + tensor_meta.count <= avg_size:
+            group.append(tensor_meta)
+            group_size += tensor_meta.count
+        else:
+            groups.append(tuple(group))
+            group = [tensor_meta]
+            group_size = tensor_meta.count
+
+    if len(group) != 0:
+        groups.append(tuple(group))
+    return groups
+
+
+
+def split_continue_tensors_v1(tensor_metas: List[TensorMeta], num_readers:int) -> List[Tuple[TensorMeta]]:
     assert len(tensor_metas) > 0, "tensor_metas should not be empty"
     assert num_readers > 0, "num_readers should be greater than 0"
     
