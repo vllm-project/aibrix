@@ -48,10 +48,6 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (s
 	var targetPodIP string
 	minCount := math.MaxFloat64
 
-	if len(pods) == 0 {
-		return "", fmt.Errorf("no pods to forward request")
-	}
-
 	for _, pod := range pods {
 		if pod.Status.PodIP == "" {
 			continue
@@ -77,6 +73,10 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (s
 			minCount = totalthroughput
 			targetPodIP = pod.Status.PodIP
 		}
+	}
+
+	if len(pods) == 0 || targetPodIP == "" {
+		return "", fmt.Errorf("no pods to forward request")
 	}
 
 	return targetPodIP + ":" + podPort, nil

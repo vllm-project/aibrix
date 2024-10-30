@@ -240,7 +240,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		}
 
 		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods)
-		if targetPodIP == "" || err != nil {
+		if err != nil {
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
