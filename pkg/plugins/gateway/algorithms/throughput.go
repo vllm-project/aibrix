@@ -18,6 +18,7 @@ package routingalgorithms
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/aibrix/aibrix/pkg/cache"
@@ -46,6 +47,10 @@ func NewThroughputRouter(ratelimiter ratelimiter.RateLimiter) Router {
 func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
 	var targetPodIP string
 	minCount := math.MaxFloat64
+
+	if len(pods) == 0 {
+		return "", fmt.Errorf("no pods to forward request")
+	}
 
 	for _, pod := range pods {
 		if pod.Status.PodIP == "" {
