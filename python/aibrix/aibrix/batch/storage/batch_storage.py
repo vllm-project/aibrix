@@ -23,8 +23,9 @@ job_input_requests = {}
 p_storage = None
 NUM_REQUESTS_PER_READ = 1024
 
+
 def initialize_batch_storage(storage_type=StorageType.LocalDiskFile, params={}):
-    """ Initialize storage type. Now it support files and TOS.
+    """Initialize storage type. Now it support files and TOS.
 
     For some storage type, user needs to pass in other parameters to params.
     """
@@ -35,6 +36,7 @@ def initialize_batch_storage(storage_type=StorageType.LocalDiskFile, params={}):
         p_storage = TOSStorage(**params)
     else:
         raise ValueError("Unknown storage type")
+
 
 def upload_input_data(inputDataFileName):
     """Upload job input data file to storage.

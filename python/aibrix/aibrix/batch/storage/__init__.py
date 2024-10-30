@@ -23,6 +23,7 @@ from aibrix.batch.storage.batch_storage import (
     initialize_batch_storage,
 )
 
+
 def initialize_storage(storage_type=StorageType.LocalDiskFile, params={}):
     """Initialize job storage with storage type.
 

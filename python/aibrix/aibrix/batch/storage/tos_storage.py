@@ -23,45 +23,49 @@ class TOSStorage(PersistentStorage):
         """
         This initializes client configuration to a
         TOS online bucket. All job information will be submitted to this
-        TOS bucket. The two input keys are from Volcano TOS account. 
+        TOS bucket. The two input keys are from Volcano TOS account.
         """
 
         self._client = None
         self._bucket_name = bucket_name
         endpoint = "tos-cn-beijing.volces.com"
         region = "cn-beijing"
-        ak, sk =  access_key, secret_key
+        ak, sk = access_key, secret_key
 
         try:
             self._client = tos.TosClientV2(ak, sk, endpoint, region)
             object_key = "test_key"
             string_io_obj = StringIO("hello world")
-            result = self._client.put_object(self._bucket_name, object_key, content=string_io_obj)
-            
+            result = self._client.put_object(
+                self._bucket_name, object_key, content=string_io_obj
+            )
+
             print("Finished creating TOS client!!!")
             # HTTP状态码
-            print('http status code:{}'.format(result.status_code))
+            print("http status code:{}".format(result.status_code))
             # 请求ID。请求ID是本次请求的唯一标识，建议在日志中添加此参数
-            print('request_id: {}'.format(result.request_id))
+            print("request_id: {}".format(result.request_id))
             # hash_crc64_ecma 表示该对象的64位CRC值, 可用于验证上传对象的完整性
-            print('crc64: {}'.format(result.hash_crc64_ecma))
+            print("crc64: {}".format(result.hash_crc64_ecma))
         except tos.exceptions.TosClientError as e:
             # 操作失败，捕获客户端异常，一般情况为非法请求参数或网络异常
-            print('fail with client error, message:{}, cause: {}'.format(e.message, e.cause))
+            print(
+                "fail with client error, message:{}, cause: {}".format(
+                    e.message, e.cause
+                )
+            )
         except tos.exceptions.TosServerError as e:
             # 操作失败，捕获服务端异常，可从返回信息中获取详细错误信息
-            print('fail with server error, code: {}'.format(e.code))
+            print("fail with server error, code: {}".format(e.code))
             # request id 可定位具体问题，强烈建议日志中保存
-            print('error with request id: {}'.format(e.request_id))
-            print('error with message: {}'.format(e.message))
-            print('error with http code: {}'.format(e.status_code))
-            print('error with ec: {}'.format(e.ec))
-            print('error with request url: {}'.format(e.request_url))
+            print("error with request id: {}".format(e.request_id))
+            print("error with message: {}".format(e.message))
+            print("error with http code: {}".format(e.status_code))
+            print("error with ec: {}".format(e.ec))
+            print("error with request url: {}".format(e.request_url))
         except Exception as e:
-            print('fail with unknown error: {}'.format(e))
-            print(
-                "Attempting to create TOS client failed."
-            )
+            print("fail with unknown error: {}".format(e))
+            print("Attempting to create TOS client failed.")
 
     def write_job_input_data(self, job_id, inputDataFileName):
         """
@@ -85,9 +89,11 @@ class TOSStorage(PersistentStorage):
                 obj_key = f"{object_prefix}/{i}"
                 json_str = json.dumps(req_data)
                 string_io_obj = StringIO(json_str)
-                self._client.put_object(self._bucket_name, obj_key, content=string_io_obj)
+                self._client.put_object(
+                    self._bucket_name, obj_key, content=string_io_obj
+                )
         except Exception as e:
-            print('TOS write fails with unknown error: {}'.format(e))
+            print("TOS write fails with unknown error: {}".format(e))
 
         print(f"TOS receives a job with {num_valid_request} request.")
 
@@ -104,7 +110,7 @@ class TOSStorage(PersistentStorage):
                 json_obj = json.loads(object_stream.read())
                 request_inputs.append(json_obj)
         except Exception as e:
-            print('TOS reading job input fails with unknown error: {}'.format(e))
+            print("TOS reading job input fails with unknown error: {}".format(e))
         return request_inputs
 
     def write_job_output_data(self, job_id, start_index, output_list):
@@ -121,9 +127,11 @@ class TOSStorage(PersistentStorage):
                 obj_key = f"{object_prefix}/{idx}"
                 json_str = json.dumps(req_data)
                 string_io_obj = StringIO(json_str)
-                self._client.put_object(self._bucket_name, obj_key, content=string_io_obj)
+                self._client.put_object(
+                    self._bucket_name, obj_key, content=string_io_obj
+                )
         except Exception as e:
-            print('TOS writing output fails with unknown error: {}'.format(e))
+            print("TOS writing output fails with unknown error: {}".format(e))
         num_valid_request = len(output_list)
         print(f"Write to TOS for job {job_id} with {num_valid_request} request.")
 
@@ -141,44 +149,50 @@ class TOSStorage(PersistentStorage):
                 json_obj = json.loads(object_stream.read())
                 request_results.append(json_obj)
         except Exception as e:
-            print('TOS reading request output fails with unknown error: {}'.format(e))
+            print("TOS reading request output fails with unknown error: {}".format(e))
         return request_results
 
     def delete_job_data(self, job_id):
-        """ This deletes all request data for the given job ID, 
-            including both input data and output data.
+        """This deletes all request data for the given job ID,
+        including both input data and output data.
         """
         object_prefix = f"{job_id}/"
         is_truncated = True
-        marker = ''
+        marker = ""
         try:
             while is_truncated:
-                out = self._client.list_objects(self._bucket_name, prefix=object_prefix, marker=marker)
+                out = self._client.list_objects(
+                    self._bucket_name, prefix=object_prefix, marker=marker
+                )
                 for obj in out.contents:
-                    self._client.delete_object(self._bucket_name, obj.key)    
+                    self._client.delete_object(self._bucket_name, obj.key)
                 is_truncated = out.is_truncated
                 marker = out.next_marker
         except Exception as e:
-            print('Deleting job fails with unknown error: {}'.format(e))
-
+            print("Deleting job fails with unknown error: {}".format(e))
 
     def get_job_number_requests(self, job_id):
         """
-        This read the number of reqeust by listing the number of input requests. 
+        This read the number of reqeust by listing the number of input requests.
         """
         object_prefix = f"{job_id}/input/"
         num_requests = 0
         try:
             is_truncated = True
-            next_continuation_token = ''
+            next_continuation_token = ""
 
             while is_truncated:
-                out = self._client.list_objects_type2(self._bucket_name, delimiter="/", prefix=object_prefix, continuation_token=next_continuation_token)
+                out = self._client.list_objects_type2(
+                    self._bucket_name,
+                    delimiter="/",
+                    prefix=object_prefix,
+                    continuation_token=next_continuation_token,
+                )
                 is_truncated = out.is_truncated
                 next_continuation_token = out.next_continuation_token
                 # This ignore directory in common_prefixes
                 num_requests += len(out.contents)
         except Exception as e:
-            print('Listing number of reqeusts fails with unknown error: {}'.format(e))
+            print("Listing number of reqeusts fails with unknown error: {}".format(e))
 
         return num_requests
