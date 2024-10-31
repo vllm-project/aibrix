@@ -33,6 +33,7 @@ import (
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 )
 
 const (
@@ -41,11 +42,13 @@ const (
 	modelIdentifier       = "model.aibrix.ai/name"
 	modelPortIdentifier   = "model.aibrix.ai/port"
 	// TODO (varun): parameterize it or dynamically resolve it
-	aibrixEnvoyGateway = "aibrix-eg"
+	aibrixEnvoyGateway          = "aibrix-eg"
+	aibrixEnvoyGatewayNamespace = "aibrix-system"
 )
 
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch;create;update;patch;delete
 
 func Add(mgr manager.Manager) error {
 	klog.InfoS("Starting modelrouter controller")
@@ -62,6 +65,7 @@ func Add(mgr manager.Manager) error {
 	}
 
 	utilruntime.Must(gatewayv1.AddToScheme(mgr.GetClient().Scheme()))
+	utilruntime.Must(gatewayv1beta1.AddToScheme(mgr.GetClient().Scheme()))
 
 	modelRouter := &ModelRouter{
 		Client: mgr.GetClient(),
@@ -122,13 +126,14 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-router", modelName),
-			Namespace: namespace,
+			Namespace: aibrixEnvoyGatewayNamespace,
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{
 					{
-						Name: aibrixEnvoyGateway,
+						Name:      aibrixEnvoyGateway,
+						Namespace: ptr.To(gatewayv1.Namespace(aibrixEnvoyGatewayNamespace)),
 					},
 				},
 			},
@@ -150,8 +155,9 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 							BackendRef: gatewayv1.BackendRef{
 								BackendObjectReference: gatewayv1.BackendObjectReference{
 									// TODO (varun): resolve service name from deployment
-									Name: gatewayv1.ObjectName(modelName),
-									Port: ptr.To(gatewayv1.PortNumber(modelPort)),
+									Name:      gatewayv1.ObjectName(modelName),
+									Namespace: (*gatewayv1.Namespace)(&namespace),
+									Port:      ptr.To(gatewayv1.PortNumber(modelPort)),
 								},
 							},
 						},
@@ -165,6 +171,38 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 		return
 	}
 	klog.Infof("httproute: %v created for model: %v", httpRoute.Name, modelName)
+
+	m.createReferenceGrant(modelName, namespace)
+}
+
+func (m *ModelRouter) createReferenceGrant(name, namespace string) {
+	referenceGrant := gatewayv1beta1.ReferenceGrant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: gatewayv1beta1.ReferenceGrantSpec{
+			From: []gatewayv1beta1.ReferenceGrantFrom{
+				{
+					Group:     gatewayv1.GroupName,
+					Kind:      "HTTPRoute",
+					Namespace: aibrixEnvoyGatewayNamespace,
+				},
+			},
+			To: []gatewayv1beta1.ReferenceGrantTo{
+				{
+					Group: "",
+					Kind:  "Service",
+				},
+			},
+		},
+	}
+
+	if err := m.Client.Create(context.Background(), &referenceGrant); err != nil {
+		klog.Errorln(err)
+		return
+	}
+	klog.Infof("referencegrant: %v created for model", name)
 }
 
 func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string) {
@@ -185,4 +223,21 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string
 		return
 	}
 	klog.Infof("httproute: %v deleted for model: %v", httpRoute.Name, modelName)
+
+	m.deleteReferenceGrant(modelName, namespace)
+}
+
+func (m *ModelRouter) deleteReferenceGrant(name, namespace string) {
+	referenceGrant := gatewayv1beta1.ReferenceGrant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+
+	if err := m.Client.Delete(context.Background(), &referenceGrant); err != nil {
+		klog.Errorln(err)
+		return
+	}
+	klog.Infof("referencegrant: %v deleted for model: %v", name)
 }
