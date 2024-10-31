@@ -24,4 +24,4 @@ COPY ./optimizer /optimizer/optimizer/
 EXPOSE 8080
 
 # Run the application
-CMD ["python", "app.py"]
+CMD ["python", "-m", "app"]

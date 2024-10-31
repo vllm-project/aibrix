@@ -25,5 +25,10 @@ debug-scale-simulator:
 		-H "Authorization: Bearer any_key" \
 		-d '{}'
 
+debug-stop-simulator:
+	curl -X DELETE http://localhost:8080/monitor/aibrix-system/simulator-llama2-7b \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Bearer any_key"
+
 debug-metrics:
 	curl http://localhost:8080/metrics/aibrix-system/simulator-llama2-7b

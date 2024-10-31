@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Union
+from typing import Union, List
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -26,6 +26,60 @@ class DataPoint(np.ndarray):
         # see InfoArray.__array_finalize__ for comments
         if obj is None: return
         self.age = getattr(obj, 'age', None)
+
+class DataBuffer:
+    def __init__(self, cap):
+        self._xy = np.empty((cap, 2), dtype=float)
+        self._age = np.empty(cap, dtype=int)
+        self._color = 0 * cap
+        self._size = 0
+
+    def append(self, tokens: List[DataPoint]):
+        self._xy[self._size: self._size+len(tokens)] = tokens
+        self._age[self._size: self._size+len(tokens)] = [token.age for token in tokens]
+        self._size += len(tokens)
+
+    def append_one(self, token: List[DataPoint]):
+        self._xy[self._size] = token
+        self._age[self._size] = token.age
+        self._size += 1
+
+    def trim_head(self, start):
+        self._xy[:-start] = self._xy[start:]
+        if start > 0:
+            self._size -= start
+        else:
+            self._size = -start
+    
+    def clear(self):
+        self._size = 0
+
+    @property
+    def x(self):
+        return self._xy[:self._size, 0]
+    
+    @property
+    def y(self):
+        return self._xy[:self._size, 1]
+    
+    @property
+    def xy(self):
+        return self._xy[:self._size]
+    
+    def datapoint(self, i):
+        return DataPoint(self._xy[i], self._age[i])
+    
+    @property
+    def color(self):
+        return self._color[:self._size]
+    
+    @property
+    def len(self):
+        return self._size
+    
+    @property
+    def cap(self):
+        return self._xy.size
 
 class Centeroid:
     def __init__(self):
@@ -42,15 +96,15 @@ class Centeroid:
             self._sum_center = list(point)
             self._range_min = list(point)
             self._range_max = list(point)
-            self._span_max = point.age
-            self._span_min = point.age
+            # self._span_max = point.age
+            # self._span_min = point.age
         else:
             for i, val in enumerate(point):
                 self._sum_center[i] += val
                 self._range_min[i] = min(self._range_min[i], val)
                 self._range_max[i] = max(self._range_max[i], val)
-            self._span_min = min(self._span_min, point.age)
-            self._span_max = max(self._span_max, point.age)
+            # self._span_min = min(self._span_min, point.age)
+            # self._span_max = max(self._span_max, point.age)
             
         self._size += 1
 
@@ -74,7 +128,7 @@ class Centeroid:
     def moving_size(self):
         return self._size / self.span
     
-    def to_array(self, span=1):
+    def to_array(self):
         ret = list(self.center)
         ret.append(self.radius)
         ret.append(self.moving_size)

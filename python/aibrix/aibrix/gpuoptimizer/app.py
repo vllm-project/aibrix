@@ -15,6 +15,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse, PlainTextResponse
 from typing import Optional, Tuple
 import logging
+from utils import ExcludePathsFilter
 import uvicorn
 import os
 from loadmonitor.monitor import ModelMonitor
@@ -26,11 +27,16 @@ except Exception as e:
 NAMESPACE = os.getenv('NAMESPACE', 'aibrix-system')
 MODEL_LABEL = "model.aibrix.ai/name"
 
-app = Starlette()
+routes = []
 model_monitors = {} # Dictionary to store serving threads
+from loadmonitor.visualizer import mount_to as mount_visulizer
+mount_visulizer(routes, '/dash/{model_name}', 
+                lambda model_name: model_monitors.get(model_name))
+app = Starlette(routes=routes)
 
-logger = logging.getLogger("uvicorn")
-logger.setLevel(logging.DEBUG)
+# Setup default logger
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger("GPUOptimizer")
 
 def validate_model(deployment) -> Tuple[str, Optional[ModelMonitor]]:
     """Validate the deployment and return the model monitor if the deployment is valid."""
@@ -49,7 +55,7 @@ def validate_model(deployment) -> Tuple[str, Optional[ModelMonitor]]:
         return model_name, None
 
 
-def start_serving_thread(deployment, new_deployment) -> bool:
+def start_serving_thread(watch_ver, deployment, new_deployment: bool) -> bool:
     """Start model monitor, returns True if a new server thread is created, False otherwise."""
     model_name, model_monitor = validate_model(deployment)
 
@@ -61,15 +67,12 @@ def start_serving_thread(deployment, new_deployment) -> bool:
         replicas = 1
     
     if model_monitor != None:
-        model_monitor.add_deployment(deployment_name, namespace, replicas)
+        model_monitor.add_deployment(watch_ver, deployment_name, namespace, replicas)
         logger.info(f"Deployment \"{deployment_name}\" added to the model monitor for \"{model_name}\"")
         return False
 
-    model_monitor = ModelMonitor(model_name, deployment_name=deployment_name, namespace=namespace, replicas=replicas)
-    thread = threading.Thread(target=model_monitor.start)
-    thread.daemon = True
-    model_monitor.thread = thread
-    thread.start()
+    model_monitor = ModelMonitor(model_name, watch_ver, deployment_name=deployment_name, namespace=namespace, replicas=replicas)
+    model_monitor.start()
     model_monitors[model_name] = model_monitor
     if new_deployment:
         logger.info(f"New model monitor started for \"{model_name}\". Deployment \"{deployment_name}\" added.")
@@ -104,12 +107,27 @@ async def start_deployment_optimization(request):
         deployment = apps_v1.read_namespaced_deployment(deployment_name, namespace)
 
         # Start the deployment optimization
-        if start_serving_thread(deployment, True):
+        if start_serving_thread(None, deployment, True):
             return JSONResponse({"message": "Deployment optimization started"})
         else:
             return JSONResponse({"message": "Deployment optimization already started"})
     except Exception as e:
         return JSONResponse({"error": f"Error starting deployment optimization: {e}"}, status_code=500)
+    
+@app.route('/monitor/{namespace}/{deployment_name}', methods=['DELETE'])
+async def stop_deployment_optimization(request):
+    namespace = request.path_params['namespace']
+    deployment_name = request.path_params['deployment_name']
+    try:
+        # Verify the deployment exists
+        apps_v1 = client.AppsV1Api()
+        deployment = apps_v1.read_namespaced_deployment(deployment_name, namespace)
+
+        # Start the deployment optimization
+        remove_deployment(deployment)
+        return JSONResponse({"message": "Deployment optimization stopped"})
+    except Exception as e:
+        return JSONResponse({"error": f"Error stopping deployment optimization: {e}"}, status_code=500)
     
 @app.route('/scale/{namespace}/{deployment_name}/{replicas}', methods=['POST'])
 async def scale_deployment(request):
@@ -154,54 +172,103 @@ vllm:deployment_replicas{{model_name="{model_name}"}} {replicas}
 """
         return PlainTextResponse(metrics_output)
     except Exception as e:
+        logger.error(f"Failed to read metrics: {e}")
         return JSONResponse({"error": f"Failed to read metrics: {e}"}, status_code=404)
 
-def main():
-    try:
-        apps_v1 = client.AppsV1Api()
+def main(signal, timeout):
+    while not signal['done']:
+        signal["watch"] = None
 
-        # List existing deployments
-        logger.info(f"Looking for deployments in {NAMESPACE} with {MODEL_LABEL}")
-        deployments = apps_v1.list_namespaced_deployment(namespace=NAMESPACE, label_selector=MODEL_LABEL)
-        resource_version = deployments.metadata.resource_version
-        for deployment in deployments.items:
-            try:
-                start_serving_thread(deployment, False)
-            except Exception as e:
-                logger.warning(f"Error on handle event {event}: {e}")
-    except client.rest.ApiException as ae:
-        logger.error(f"Error connecting to Kubernetes API: {ae}. Please manually initiate GPU optimizer by calling the /monitor/{{namespace}}/{{deployment_name}} endpoint")
-        return
-    except Exception as e:
-        logger.warning(f"Unexpect error on exam exist deployment: {e}")
-        return
-    
-    while True:
+        # Mark all deployments as outdated
+        for model_name, model_monitor in model_monitors.items():
+            model_monitor.mark_deployments_outdated()
+
+        try:
+            apps_v1 = client.AppsV1Api()
+
+            # List existing deployments
+            logger.info(f"Looking for deployments in {NAMESPACE} with {MODEL_LABEL}")
+            deployments = apps_v1.list_namespaced_deployment(
+                namespace=NAMESPACE, 
+                label_selector=MODEL_LABEL)
+            watch_version = deployments.metadata.resource_version
+            logger.debug(f"last watch version: {watch_version}")
+            for deployment in deployments.items:
+                try:
+                    start_serving_thread(watch_version, deployment, False)
+                except Exception as e:
+                    logger.warning(f"Error on handle existing deployment {deployment.metadata.name}: {e}")
+        except client.rest.ApiException as ae:
+            logger.error(f"Error connecting to Kubernetes API: {ae}. Please manually initiate GPU optimizer by calling the /monitor/{{namespace}}/{{deployment_name}} endpoint")
+            return
+        except Exception as e:
+            logger.warning(f"Unexpect error on exam exist deployment: {e}")
+            return
+
+        for model_name, model_monitor in model_monitors.items():
+            if model_monitor.clear_outdated_deployments() == 0:
+                logger.info(f"No deployment exists any more in \"{model_name}\", stopping the model monitor.")
+                model_monitor.stop()
+                del model_monitors[model_name]
+
         try:
             # Watch future deployments
             w = watch.Watch()
+            signal["watch"] = w
             for event in w.stream(apps_v1.list_namespaced_deployment,
                                     namespace=NAMESPACE,
                                     label_selector=MODEL_LABEL,
-                                    resource_version=resource_version):
+                                    resource_version=watch_version,
+                                    timeout_seconds=timeout):
+                if signal['done']:
+                    return
                 try:
                     deployment = event['object']
-                    resource_version = deployment.metadata.resource_version
                     if event['type'] == 'ADDED':
-                        start_serving_thread(deployment, True) 
+                        start_serving_thread(watch_version, deployment, True) 
                     elif event['type'] == 'DELETED':
                         remove_deployment(deployment)
                 except Exception as e:
-                    logger.warning(f"Error on handle event {event}: {e}")
-
+                    logger.warning(f"Error on handle event {event['type']} {deployment.metadata.name}: {e}")
         except client.rest.ApiException as ae:
             logger.warning(f"Error connecting to Kubernetes API: {ae}. Will retry.")
         except Exception as e:
             logger.warning(f"Unexpect error on watch deployment: {e}")
             return
-        
     
 if __name__ == '__main__':
-    config.load_incluster_config()
-    threading.Thread(target=main).start()  # Run Kubernetes informer in a separate thread
-    uvicorn.run(app, host='0.0.0.0', port=8080)
+    logging.getLogger("kubernetes.client.rest").setLevel(logging.ERROR)  # Suppress kubenetes level
+    timeout = 600
+    try:
+        config.load_incluster_config()
+    except Exception as e:
+        # Local debug
+        config.load_kube_config(config_file="~/.kube/config")
+        timeout = 10
+    signal = { "done": False, "watch": None }
+    threading.Thread(target=main, args=(signal,timeout,)).start()  # Run Kubernetes informer in a separate thread
+
+    uvicorn.run(app, host='0.0.0.0', port=8080, 
+        log_config={
+            "version": 1,
+            "disable_existing_loggers": False,
+            "loggers": {
+                "uvicorn.access": {
+                    "filters": ["dash_update_filter"]
+                }
+            },
+            "filters": {
+                "dash_update_filter": {
+                    "()": ExcludePathsFilter,
+                    "exclude_paths": ["/dash/{model_name}/_dash"]  # Paths to exclude
+                },
+            }
+        })
+    
+    signal['done'] = True
+    if signal["watch"] != None:
+        signal["watch"].stop()
+    
+    # clean up
+    for model_name, model_monitor in model_monitors.items():
+        model_monitor.stop()

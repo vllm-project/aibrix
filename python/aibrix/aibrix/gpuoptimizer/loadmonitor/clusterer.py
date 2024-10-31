@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Protocol, List, Callable, Union, Tuple, Dict, Iterable
+from typing import Protocol, List, Callable, Union, Tuple, Dict, Iterable, Optional
 from incdbscan import IncrementalDBSCAN
 import numpy as np
 from datetime import datetime
-from helpers import DataPoint, Centeroid
+from .helpers import DataPoint, Centeroid
 import sys
 
 class Clusterer(Protocol):
@@ -26,7 +26,7 @@ class Clusterer(Protocol):
     def reset(self):
         """Reset the clusterer"""
 
-    def get_cluster_labels(self, points:Iterable[DataPoint]) -> Tuple[Iterable[int], Iterable[Centeroid]]:
+    def get_cluster_labels(self, points:Iterable[DataPoint], uncategorized: Optional[List] = None) -> Tuple[Iterable[int], Iterable[Centeroid]]:
         """Get the cluster labels for the given data points"""
 
     @property
@@ -51,12 +51,14 @@ class DBSCANClusterer:
     def clone(self):
         return DBSCANClusterer(self.eps, self.min_pts)
 
-    def get_cluster_labels(self, points: Iterable[DataPoint]) -> Tuple[Iterable[int], Iterable[Centeroid]]:
+    def get_cluster_labels(self, points: Iterable[DataPoint], uncategorized: Optional[List] = None) -> Tuple[Iterable[int], Iterable[Centeroid]]:
         labels = self.clusterer.get_cluster_labels(points)
         centers = {}
         start_label = sys.maxsize
         for i, label in enumerate(labels):
             if label < 0:
+                if uncategorized != None:
+                    uncategorized.append(points[i])
                 continue
             start_label = min(start_label, label)
             if label not in centers:
@@ -115,8 +117,8 @@ class MovingDBSCANClusterer:
         self.clusterers = [self.clusterers[0].clone()]
         self.frontier = 0
 
-    def get_cluster_labels(self, points: Iterable[DataPoint]) -> Tuple[Iterable[int], Iterable[Centeroid]]:
-        return self.clusterer.get_cluster_labels(points)
+    def get_cluster_labels(self, points: Iterable[DataPoint], uncategorized: Optional[List] = None) -> Tuple[Iterable[int], Iterable[Centeroid]]:
+        return self.clusterer.get_cluster_labels(points, uncategorized=uncategorized)
     
     
     @property

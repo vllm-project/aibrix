@@ -6,5 +6,5 @@ uvicorn
 starlette
 
 #for visualizer only
-# dash
-# matplotlib
+dash
+matplotlib
