@@ -20,11 +20,7 @@ from aibrix.batch.storage.generic_storage import PersistentStorage
 
 
 class TOSStorage(PersistentStorage):
-    def __init__(self, 
-        access_key, secret_key, 
-        endpoint, 
-        region,
-        bucket_name):
+    def __init__(self, access_key, secret_key, endpoint, region, bucket_name):
         """
         This initializes client configuration to a
         TOS online bucket. All job information will be submitted to this
@@ -40,7 +36,7 @@ class TOSStorage(PersistentStorage):
             logging.info("Finished creating TOS client!!!")
         except tos.exceptions.TosClientError as e:
             logging.error(
-                f"fail with client error, message:{e.message}, cause: {e.cause}" 
+                f"fail with client error, message:{e.message}, cause: {e.cause}"
             )
         except tos.exceptions.TosServerError as e:
             logging.error(f"fail with server error, code: {e.code}")
@@ -79,7 +75,7 @@ class TOSStorage(PersistentStorage):
                     self._bucket_name, obj_key, content=string_io_obj
                 )
         except Exception as e:
-            logging.error("TOS write fails with unknown error: {}".format(e))
+            logging.error(f"TOS write fails with unknown error: {e}")
 
         logging.info(f"TOS receives a job with {num_valid_request} request.")
 
@@ -96,7 +92,7 @@ class TOSStorage(PersistentStorage):
                 json_obj = json.loads(object_stream.read())
                 request_inputs.append(json_obj)
         except Exception as e:
-            logging.error("TOS reading job input fails with unknown error: {}".format(e))
+            logging.error(f"TOS reading job input fails with unknown error: {e}")
         return request_inputs
 
     def write_job_output_data(self, job_id, start_index, output_list):
@@ -135,7 +131,7 @@ class TOSStorage(PersistentStorage):
                 json_obj = json.loads(object_stream.read())
                 request_results.append(json_obj)
         except Exception as e:
-            logging.error("TOS reading request output fails with unknown error: {}".format(e))
+            logging.error(f"TOS reading request output fails with unknown error: {e}")
         return request_results
 
     def delete_job_data(self, job_id):
@@ -155,7 +151,7 @@ class TOSStorage(PersistentStorage):
                 is_truncated = out.is_truncated
                 marker = out.next_marker
         except Exception as e:
-            logging.error("Deleting job fails with unknown error: {}".format(e))
+            logging.error(f"Deleting job fails with unknown error: {e}")
 
     def get_job_number_requests(self, job_id):
         """
@@ -179,6 +175,6 @@ class TOSStorage(PersistentStorage):
                 # This ignore directory in common_prefixes
                 num_requests += len(out.contents)
         except Exception as e:
-            logging.error("Listing number of reqeusts fails with unknown error: {}".format(e))
+            logging.error(f"Listing number of reqeusts fails with unknown error: {e}")
 
         return num_requests

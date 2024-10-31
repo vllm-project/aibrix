@@ -104,5 +104,3 @@ def test_job_output():
     _storage.delete_job(job_id)
     print("remove job id:", job_id)
     os.remove("./one_job_input.json")
-
-
