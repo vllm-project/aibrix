@@ -51,7 +51,7 @@ class TOSStorage(PersistentStorage):
             logging.error(f"error with request url: {e.request_url}")
         except Exception as e:
             logging.error(f"fail with unknown error: {e}")
-            logging.error(f"Attempting to create TOS client failed.")
+            logging.error("Attempting to create TOS client failed.")
 
     def write_job_input_data(self, job_id, inputDataFileName):
         """
