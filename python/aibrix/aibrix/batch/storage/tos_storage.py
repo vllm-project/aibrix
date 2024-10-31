@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import tos
 from io import StringIO
 import json
@@ -19,7 +20,11 @@ from aibrix.batch.storage.generic_storage import PersistentStorage
 
 
 class TOSStorage(PersistentStorage):
-    def __init__(self, access_key, secret_key, bucket_name="aibrix-batch"):
+    def __init__(self, 
+        access_key, secret_key, 
+        endpoint, 
+        region,
+        bucket_name):
         """
         This initializes client configuration to a
         TOS online bucket. All job information will be submitted to this
@@ -28,44 +33,25 @@ class TOSStorage(PersistentStorage):
 
         self._client = None
         self._bucket_name = bucket_name
-        endpoint = "tos-cn-beijing.volces.com"
-        region = "cn-beijing"
         ak, sk = access_key, secret_key
 
         try:
             self._client = tos.TosClientV2(ak, sk, endpoint, region)
-            object_key = "test_key"
-            string_io_obj = StringIO("hello world")
-            result = self._client.put_object(
-                self._bucket_name, object_key, content=string_io_obj
-            )
-
-            print("Finished creating TOS client!!!")
-            # HTTP状态码
-            print("http status code:{}".format(result.status_code))
-            # 请求ID。请求ID是本次请求的唯一标识，建议在日志中添加此参数
-            print("request_id: {}".format(result.request_id))
-            # hash_crc64_ecma 表示该对象的64位CRC值, 可用于验证上传对象的完整性
-            print("crc64: {}".format(result.hash_crc64_ecma))
+            logging.info("Finished creating TOS client!!!")
         except tos.exceptions.TosClientError as e:
-            # 操作失败，捕获客户端异常，一般情况为非法请求参数或网络异常
-            print(
-                "fail with client error, message:{}, cause: {}".format(
-                    e.message, e.cause
-                )
+            logging.error(
+                f"fail with client error, message:{e.message}, cause: {e.cause}" 
             )
         except tos.exceptions.TosServerError as e:
-            # 操作失败，捕获服务端异常，可从返回信息中获取详细错误信息
-            print("fail with server error, code: {}".format(e.code))
-            # request id 可定位具体问题，强烈建议日志中保存
-            print("error with request id: {}".format(e.request_id))
-            print("error with message: {}".format(e.message))
-            print("error with http code: {}".format(e.status_code))
-            print("error with ec: {}".format(e.ec))
-            print("error with request url: {}".format(e.request_url))
+            logging.error(f"fail with server error, code: {e.code}")
+            logging.error(f"error with request id: {e.request_id}")
+            logging.error(f"error with message: {e.message}")
+            logging.error(f"error with http code: {e.status_code}")
+            logging.error(f"error with ec: {e.ec}".format())
+            logging.error(f"error with request url: {e.request_url}")
         except Exception as e:
-            print("fail with unknown error: {}".format(e))
-            print("Attempting to create TOS client failed.")
+            logging.error(f"fail with unknown error: {e}")
+            logging.error(f"Attempting to create TOS client failed.")
 
     def write_job_input_data(self, job_id, inputDataFileName):
         """
@@ -93,9 +79,9 @@ class TOSStorage(PersistentStorage):
                     self._bucket_name, obj_key, content=string_io_obj
                 )
         except Exception as e:
-            print("TOS write fails with unknown error: {}".format(e))
+            logging.error("TOS write fails with unknown error: {}".format(e))
 
-        print(f"TOS receives a job with {num_valid_request} request.")
+        logging.info(f"TOS receives a job with {num_valid_request} request.")
 
     def read_job_input_data(self, job_id, start_index=0, num_requests=-1):
         """Read job input request data"""
@@ -110,7 +96,7 @@ class TOSStorage(PersistentStorage):
                 json_obj = json.loads(object_stream.read())
                 request_inputs.append(json_obj)
         except Exception as e:
-            print("TOS reading job input fails with unknown error: {}".format(e))
+            logging.error("TOS reading job input fails with unknown error: {}".format(e))
         return request_inputs
 
     def write_job_output_data(self, job_id, start_index, output_list):
@@ -131,9 +117,9 @@ class TOSStorage(PersistentStorage):
                     self._bucket_name, obj_key, content=string_io_obj
                 )
         except Exception as e:
-            print("TOS writing output fails with unknown error: {}".format(e))
+            logging.error("TOS writing output fails with unknown error: {}".format(e))
         num_valid_request = len(output_list)
-        print(f"Write to TOS for job {job_id} with {num_valid_request} request.")
+        logging.info(f"Write to TOS for job {job_id} with {num_valid_request} request.")
 
     def read_job_output_data(self, job_id, start_index, num_requests):
         """Read job results output from TOS bucket."""
@@ -149,7 +135,7 @@ class TOSStorage(PersistentStorage):
                 json_obj = json.loads(object_stream.read())
                 request_results.append(json_obj)
         except Exception as e:
-            print("TOS reading request output fails with unknown error: {}".format(e))
+            logging.error("TOS reading request output fails with unknown error: {}".format(e))
         return request_results
 
     def delete_job_data(self, job_id):
@@ -169,7 +155,7 @@ class TOSStorage(PersistentStorage):
                 is_truncated = out.is_truncated
                 marker = out.next_marker
         except Exception as e:
-            print("Deleting job fails with unknown error: {}".format(e))
+            logging.error("Deleting job fails with unknown error: {}".format(e))
 
     def get_job_number_requests(self, job_id):
         """
@@ -193,6 +179,6 @@ class TOSStorage(PersistentStorage):
                 # This ignore directory in common_prefixes
                 num_requests += len(out.contents)
         except Exception as e:
-            print("Listing number of reqeusts fails with unknown error: {}".format(e))
+            logging.error("Listing number of reqeusts fails with unknown error: {}".format(e))
 
         return num_requests
