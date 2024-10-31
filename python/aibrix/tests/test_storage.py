@@ -106,5 +106,3 @@ def test_job_output():
     os.remove("./one_job_input.json")
 
 
-if __name__ == "__main__":
-    test_submit_job_input()
