@@ -239,5 +239,5 @@ func (m *ModelRouter) deleteReferenceGrant(name, namespace string) {
 		klog.Errorln(err)
 		return
 	}
-	klog.Infof("referencegrant: %v deleted for model: %v", name)
+	klog.Infof("referencegrant: %v deleted for model", name)
 }
