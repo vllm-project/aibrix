@@ -22,31 +22,32 @@ import (
 	"math"
 
 	"github.com/aibrix/aibrix/pkg/cache"
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/ratelimiter"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
 type leastRequestRouter struct {
-	ratelimiter ratelimiter.RateLimiter
-	cache       *cache.Cache
+	cache *cache.Cache
 }
 
-func NewLeastRequestRouter(ratelimiter ratelimiter.RateLimiter) Router {
+func NewLeastRequestRouter() Router {
 	cache, err := cache.GetCache()
 	if err != nil {
 		panic(err)
 	}
 
 	return leastRequestRouter{
-		ratelimiter: ratelimiter,
-		cache:       cache,
+		cache: cache,
 	}
 }
 
 func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
 	var targetPodIP string
 	minCount := math.MaxFloat64
+
+	if len(pods) == 0 {
+		return "", fmt.Errorf("no pods to forward request")
+	}
 
 	for _, pod := range pods {
 		if pod.Status.PodIP == "" {
@@ -78,7 +79,7 @@ func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod) 
 		}
 	}
 
-	if len(pods) == 0 || targetPodIP == "" {
+	if targetPodIP == "" {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
