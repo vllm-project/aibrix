@@ -65,8 +65,8 @@ func NewServer(redisClient *redis.Client, c kubernetes.Interface) *Server {
 	r := ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
 	routers := map[string]routing.Router{
 		"random":        routing.NewRandomRouter(),
-		"least-request": routing.NewLeastRequestRouter(r),
-		"throughput":    routing.NewThroughputRouter(r),
+		"least-request": routing.NewLeastRequestRouter(),
+		"throughput":    routing.NewThroughputRouter(),
 	}
 
 	return &Server{
@@ -240,7 +240,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		}
 
 		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods)
-		if targetPodIP == "" || err != nil {
+		if err != nil {
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{

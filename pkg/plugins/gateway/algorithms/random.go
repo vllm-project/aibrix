@@ -32,19 +32,25 @@ func NewRandomRouter() Router {
 }
 
 func (r randomRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
-	var selectedPod *v1.Pod
+	var targetPodIP string
 	if len(pods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
 	k := rand.Intn(len(pods))
 	for _, pod := range pods {
+		if pod.Status.PodIP == "" {
+			continue
+		}
 		if k == 0 {
-			selectedPod = pod
+			targetPodIP = pod.Status.PodIP
 			break
 		}
 		k--
 	}
+	if targetPodIP == "" {
+		return "", fmt.Errorf("no pods to forward request")
+	}
 
-	return selectedPod.Status.PodIP + ":" + podPort, nil
+	return targetPodIP + ":" + podPort, nil
 }

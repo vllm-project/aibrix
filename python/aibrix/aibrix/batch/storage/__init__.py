@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+from aibrix.batch.storage.generic_storage import StorageType
 from aibrix.batch.storage.batch_storage import (
     get_job_request_len,
     get_storage_job_results,
@@ -20,7 +20,17 @@ from aibrix.batch.storage.batch_storage import (
     read_job_requests,
     remove_storage_job_data,
     upload_input_data,
+    initialize_batch_storage,
 )
+
+
+def initialize_storage(storage_type=StorageType.LocalDiskFile, params={}):
+    """Initialize job storage with storage type.
+
+    Args:
+        storage_type: the storage type, such files or TOS
+    """
+    initialize_batch_storage(storage_type, params)
 
 
 def submit_job_input(inputDataFile):

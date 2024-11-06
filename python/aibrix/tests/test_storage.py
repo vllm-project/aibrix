@@ -38,6 +38,7 @@ def generate_input_data(num_requests):
 def test_submit_job_input():
     num_request = 100
     generate_input_data(num_request)
+    _storage.initialize_storage()
     job_id = _storage.submit_job_input("./one_job_input.json")
     print("succesfully create job: ", job_id)
 
@@ -53,6 +54,7 @@ def test_submit_job_input():
 def test_read_job_input():
     num_request = 100
     generate_input_data(num_request)
+    _storage.initialize_storage()
     job_id = _storage.submit_job_input("./one_job_input.json")
     print("succesfully create job: ", job_id)
 
@@ -85,6 +87,7 @@ def test_read_job_input():
 def test_job_output():
     num_request = 100
     generate_input_data(num_request)
+    _storage.initialize_storage()
     job_id = _storage.submit_job_input("./one_job_input.json")
     print("succesfully create job: ", job_id)
 

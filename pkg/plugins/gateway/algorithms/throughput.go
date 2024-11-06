@@ -18,34 +18,36 @@ package routingalgorithms
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/aibrix/aibrix/pkg/cache"
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/ratelimiter"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
 type throughputRouter struct {
-	ratelimiter ratelimiter.RateLimiter
-	cache       *cache.Cache
+	cache *cache.Cache
 }
 
-func NewThroughputRouter(ratelimiter ratelimiter.RateLimiter) Router {
+func NewThroughputRouter() Router {
 	cache, err := cache.GetCache()
 	if err != nil {
 		panic(err)
 	}
 
 	return throughputRouter{
-		ratelimiter: ratelimiter,
-		cache:       cache,
+		cache: cache,
 	}
 }
 
 func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
 	var targetPodIP string
 	minCount := math.MaxFloat64
+
+	if len(pods) == 0 {
+		return "", fmt.Errorf("no pods to forward request")
+	}
 
 	for _, pod := range pods {
 		if pod.Status.PodIP == "" {
@@ -72,6 +74,10 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (s
 			minCount = totalthroughput
 			targetPodIP = pod.Status.PodIP
 		}
+	}
+
+	if targetPodIP == "" {
+		return "", fmt.Errorf("no pods to forward request")
 	}
 
 	return targetPodIP + ":" + podPort, nil

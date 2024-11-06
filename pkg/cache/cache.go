@@ -52,10 +52,10 @@ type Cache struct {
 	mu                sync.RWMutex
 	redisClient       *redis.Client
 	initialized       bool
-	pods              map[string]*v1.Pod
-	podMetrics        map[string]map[string]float64  // pod_name: map[metric_name]metric_val
-	podToModelMapping map[string]map[string]struct{} // pod_name: map[model_name]struct{}
-	modelToPodMapping map[string]map[string]*v1.Pod  // model_name: map[pod_name]*v1.Pod
+	Pods              map[string]*v1.Pod
+	PodMetrics        map[string]map[string]float64  // pod_name: map[metric_name]metric_val
+	PodToModelMapping map[string]map[string]struct{} // pod_name: map[model_name]struct{}
+	ModelToPodMapping map[string]map[string]*v1.Pod  // model_name: map[pod_name]*v1.Pod
 	requestTrace      map[string]map[string]int      // model_name: map[Log2(input_token)-Log2(output_token)]request_count
 }
 
@@ -114,10 +114,10 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 		instance = Cache{
 			initialized:       true,
 			redisClient:       redisClient,
-			pods:              map[string]*v1.Pod{},
-			podMetrics:        map[string]map[string]float64{},
-			podToModelMapping: map[string]map[string]struct{}{},
-			modelToPodMapping: map[string]map[string]*v1.Pod{},
+			Pods:              map[string]*v1.Pod{},
+			PodMetrics:        map[string]map[string]float64{},
+			PodToModelMapping: map[string]map[string]struct{}{},
+			ModelToPodMapping: map[string]map[string]*v1.Pod{},
 			requestTrace:      map[string]map[string]int{},
 		}
 
@@ -187,7 +187,7 @@ func (c *Cache) addPod(obj interface{}) {
 		return
 	}
 
-	c.pods[pod.Name] = pod
+	c.Pods[pod.Name] = pod
 	c.addPodAndModelMapping(pod.Name, modelName)
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
@@ -209,8 +209,8 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 		return
 	}
 
-	delete(c.pods, oldPod.Name)
-	c.pods[newPod.Name] = newPod
+	delete(c.Pods, oldPod.Name)
+	c.Pods[newPod.Name] = newPod
 	c.deletePodAndModelMapping(oldPod.Name, oldModelName)
 	c.addPodAndModelMapping(newPod.Name, newModelName)
 	klog.V(4).Infof("POD UPDATED. %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
@@ -228,14 +228,14 @@ func (c *Cache) deletePod(obj interface{}) {
 	}
 
 	// delete base model and associated lora models on this pod
-	if models, ok := c.podToModelMapping[pod.Name]; ok {
+	if models, ok := c.PodToModelMapping[pod.Name]; ok {
 		for modelName := range models {
 			c.deletePodAndModelMapping(pod.Name, modelName)
 		}
 	}
-	delete(c.podToModelMapping, pod.Name)
-	delete(c.pods, pod.Name)
-	delete(c.podMetrics, pod.Name)
+	delete(c.PodToModelMapping, pod.Name)
+	delete(c.Pods, pod.Name)
+	delete(c.PodMetrics, pod.Name)
 
 	klog.V(4).Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
@@ -281,69 +281,69 @@ func (c *Cache) deleteModelAdapter(obj interface{}) {
 	for _, pod := range model.Status.Instances {
 		c.deletePodAndModelMapping(pod, model.Name)
 	}
-	delete(c.modelToPodMapping, model.Name)
+	delete(c.ModelToPodMapping, model.Name)
 
 	klog.V(4).Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
 	c.debugInfo()
 }
 
 func (c *Cache) addPodAndModelMapping(podName, modelName string) {
-	pod, ok := c.pods[podName]
+	pod, ok := c.Pods[podName]
 	if !ok {
 		klog.Errorf("pod %s does not exist in internal-cache", podName)
 		return
 	}
 
-	models, ok := c.podToModelMapping[podName]
+	models, ok := c.PodToModelMapping[podName]
 	if !ok {
-		c.podToModelMapping[podName] = map[string]struct{}{
+		c.PodToModelMapping[podName] = map[string]struct{}{
 			modelName: {},
 		}
 	} else {
 		models[modelName] = struct{}{}
-		c.podToModelMapping[podName] = models
+		c.PodToModelMapping[podName] = models
 	}
 
-	pods, ok := c.modelToPodMapping[modelName]
+	pods, ok := c.ModelToPodMapping[modelName]
 	if !ok {
-		c.modelToPodMapping[modelName] = map[string]*v1.Pod{
+		c.ModelToPodMapping[modelName] = map[string]*v1.Pod{
 			podName: pod,
 		}
 	} else {
 		pods[podName] = pod
-		c.modelToPodMapping[modelName] = pods
+		c.ModelToPodMapping[modelName] = pods
 	}
 }
 
 func (c *Cache) deletePodAndModelMapping(podName, modelName string) {
-	if models, ok := c.podToModelMapping[podName]; ok {
+	if models, ok := c.PodToModelMapping[podName]; ok {
 		delete(models, modelName)
-		c.podToModelMapping[podName] = models
+		c.PodToModelMapping[podName] = models
 	}
 
-	if pods, ok := c.modelToPodMapping[modelName]; ok {
+	if pods, ok := c.ModelToPodMapping[modelName]; ok {
 		delete(pods, podName)
-		c.modelToPodMapping[modelName] = pods
+		c.ModelToPodMapping[modelName] = pods
 	}
 }
 
 func (c *Cache) debugInfo() {
-	for _, pod := range c.pods {
+	for _, pod := range c.Pods {
 		klog.V(4).Infof("pod: %s, podIP: %v", pod.Name, pod.Status.PodIP)
 	}
-	for podName, metrics := range c.podMetrics {
+	for podName, metrics := range c.PodMetrics {
 		for metricName, metricVal := range metrics {
 			klog.V(4).Infof("%v_%v_%v", podName, metricName, metricVal)
 		}
 	}
-	for podName, models := range c.podToModelMapping {
+	for podName, models := range c.PodToModelMapping {
 		var modelList string
 		for modelName := range models {
 			modelList += modelName + " "
 		}
 		klog.V(4).Infof("pod: %s, models: %s", podName, modelList)
 	}
-	for modelName, pods := range c.modelToPodMapping {
+	for modelName, pods := range c.ModelToPodMapping {
 		var podList string
 		for podName := range pods {
 			podList += podName + " "
@@ -361,7 +361,7 @@ func (c *Cache) GetPod(podName string) (*v1.Pod, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	pod, ok := c.pods[podName]
+	pod, ok := c.Pods[podName]
 	if !ok {
 		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
 	}
@@ -373,14 +373,14 @@ func (c *Cache) GetPods() map[string]*v1.Pod {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return c.pods
+	return c.Pods
 }
 
 func (c *Cache) GetPodsForModel(modelName string) (map[string]*v1.Pod, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	podsMap, ok := c.modelToPodMapping[modelName]
+	podsMap, ok := c.ModelToPodMapping[modelName]
 	if !ok {
 		return nil, fmt.Errorf("model does not exist in the cache: %s", modelName)
 	}
@@ -392,7 +392,7 @@ func (c *Cache) GetModelsForPod(podName string) (map[string]struct{}, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	models, ok := c.podToModelMapping[podName]
+	models, ok := c.PodToModelMapping[podName]
 	if !ok {
 		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
 	}
@@ -404,7 +404,7 @@ func (c *Cache) GetPodMetric(podName, metricName string) (float64, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	metrics, ok := c.podMetrics[podName]
+	metrics, ok := c.PodMetrics[podName]
 	if !ok {
 		return 0, fmt.Errorf("pod does not exist in the metrics cache")
 	}
@@ -421,13 +421,13 @@ func (c *Cache) updatePodMetrics() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, pod := range c.pods {
+	for _, pod := range c.Pods {
 		if pod.Status.PodIP == "" {
 			continue
 		}
 		podName := pod.Name
-		if len(c.podMetrics[podName]) == 0 {
-			c.podMetrics[podName] = map[string]float64{}
+		if len(c.PodMetrics[podName]) == 0 {
+			c.PodMetrics[podName] = map[string]float64{}
 		}
 
 		// We should use the primary container port. In future, we can decide whether to use sidecar container's port
@@ -456,7 +456,7 @@ func (c *Cache) updatePodMetrics() {
 				continue
 			}
 
-			c.podMetrics[pod.Name][metricName] = metricValue
+			c.PodMetrics[pod.Name][metricName] = metricValue
 			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
 		}
 	}

@@ -26,6 +26,7 @@ class BatchDriver:
         """
         This is main entrance to bind all components to serve job requests.
         """
+        _storage.initialize_storage()
         self._storage = _storage
         self._job_manager = JobManager()
         self._scheduler = JobScheduler(self._job_manager, DEFAULT_JOB_POOL_SIZE)
