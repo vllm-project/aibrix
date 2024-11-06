@@ -176,9 +176,22 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 }
 
 func (m *ModelRouter) createReferenceGrant(name, namespace string) {
+	referenceGrantName := fmt.Sprintf("%s-reserved-referencegrant-in-%s", aibrixEnvoyGatewayNamespace, namespace)
 	referenceGrant := gatewayv1beta1.ReferenceGrant{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
+			Name:      referenceGrantName,
+			Namespace: namespace,
+		},
+	}
+
+	if err := m.Client.Get(context.Background(), client.ObjectKeyFromObject(&referenceGrant), &referenceGrant); err == nil {
+		klog.V(4).Infof("reference grant already exists in namespace: %s", namespace)
+		return
+	}
+
+	referenceGrant = gatewayv1beta1.ReferenceGrant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      referenceGrantName,
 			Namespace: namespace,
 		},
 		Spec: gatewayv1beta1.ReferenceGrantSpec{
@@ -197,12 +210,11 @@ func (m *ModelRouter) createReferenceGrant(name, namespace string) {
 			},
 		},
 	}
-
 	if err := m.Client.Create(context.Background(), &referenceGrant); err != nil {
 		klog.Errorln(err)
 		return
 	}
-	klog.Infof("referencegrant: %v created for model", name)
+	klog.Infof("referencegrant created in namespace: %s", name)
 }
 
 func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string) {
