@@ -111,12 +111,7 @@ def build_app():
     if envs.ENABLE_FASTAPI_DOC:
         app = FastAPI(debug=False)
     else:
-        app = FastAPI(
-            debug=False,
-            openapi_url=None,
-            docs_url=None,
-            redoc_url=None
-            )
+        app = FastAPI(debug=False, openapi_url=None, docs_url=None, redoc_url=None)
 
     INFO_METRICS.info(
         {
