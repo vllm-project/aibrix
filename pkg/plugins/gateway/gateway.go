@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -46,6 +47,7 @@ import (
 var (
 	defaultRPM           = 100
 	defaultTPMMultiplier = 1000
+	routingStrategies    = []string{"random", "least-request", "throughput"}
 )
 
 type Server struct {
@@ -159,6 +161,14 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		routingStrategy = utils.GetEnv("ROUTING_ALGORITHM", "")
 	}
 
+	if !slices.Contains(routingStrategies, routingStrategy) {
+		return generateErrorResponse(
+			envoyTypePb.StatusCode_BadRequest,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: "x-incorrect-routing-strategy", RawValue: []byte(routingStrategy),
+			}}}, ""), utils.User{}, rpm, routingStrategy
+	}
+
 	if username != "" {
 		user, err = utils.GetUser(utils.User{Name: username}, s.redisClient)
 		if err != nil {
@@ -213,11 +223,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			"error processing request body"), targetPodIP
 	}
 
-	if model, ok = jsonMap["model"].(string); !ok || model == "" {
+	if model, ok = jsonMap["model"].(string); !ok || model == "" || !s.cache.CheckModelExists(model) {
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-no-model", RawValue: []byte("true")}}},
-			"no model in request body"), targetPodIP
+				Key: "x-no-model", RawValue: []byte(model)}}},
+			"no model in request body or model does not exist"), targetPodIP
 	}
 
 	headers := []*configPb.HeaderValueOption{}

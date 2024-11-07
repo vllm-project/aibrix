@@ -108,7 +108,11 @@ async def unload_lora_adapter(request: UnloadLoraAdapterRequest, raw_request: Re
 
 
 def build_app():
-    app = FastAPI(debug=False)
+    if envs.ENABLE_FASTAPI_DOC:
+        app = FastAPI(debug=False)
+    else:
+        app = FastAPI(debug=False, openapi_url=None, docs_url=None, redoc_url=None)
+
     INFO_METRICS.info(
         {
             "version": __version__.__version__,
