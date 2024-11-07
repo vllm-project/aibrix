@@ -11,7 +11,7 @@ kind load docker-image aibrix/vllm-mock:nightly
 
 2. Deploy mocked model image
 ```shell
-kubectl apply -f docs/development/app/deployment.yaml
+kubectl apply -f docs/tutorial/basemodel/base_model.yaml
 kubectl -n aibrix-system port-forward svc/llama2-70b 8000:8000 &
 ```
 
@@ -29,7 +29,7 @@ curl http://localhost:8000/v1/chat/completions \
 ```
 
 ```shell
-kubectl delete -f docs/development/app/deployment.yaml
+kubectl delete -f docs/tutorial/basemodel/base_model.yaml
 ```
 
 

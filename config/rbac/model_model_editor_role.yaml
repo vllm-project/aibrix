@@ -1,0 +1,27 @@
+# permissions for end users to edit models.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: model-model-editor-role
+rules:
+- apiGroups:
+  - model.aibrix.ai
+  resources:
+  - models
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - model.aibrix.ai
+  resources:
+  - models/status
+  verbs:
+  - get

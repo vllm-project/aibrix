@@ -42,12 +42,18 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &autoscalingv1alpha1.PodAutoscalerStatusApplyConfiguration{}
 
 		// Group=model, Version=v1alpha1
+	case modelv1alpha1.SchemeGroupVersion.WithKind("Model"):
+		return &applyconfigurationmodelv1alpha1.ModelApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelAdapter"):
 		return &applyconfigurationmodelv1alpha1.ModelAdapterApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelAdapterSpec"):
 		return &applyconfigurationmodelv1alpha1.ModelAdapterSpecApplyConfiguration{}
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelAdapterStatus"):
 		return &applyconfigurationmodelv1alpha1.ModelAdapterStatusApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelSpec"):
+		return &applyconfigurationmodelv1alpha1.ModelSpecApplyConfiguration{}
+	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelStatus"):
+		return &applyconfigurationmodelv1alpha1.ModelStatusApplyConfiguration{}
 
 		// Group=orchestration, Version=v1alpha1
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleet"):

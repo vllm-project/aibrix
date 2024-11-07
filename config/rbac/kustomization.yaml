@@ -19,6 +19,8 @@ resources:
 - orchestration_rayclusterfleet_viewer_role.yaml
 - orchestration_rayclusterreplicaset_editor_role.yaml
 - orchestration_rayclusterreplicaset_viewer_role.yaml
+- model_model_editor_role.yaml
+- model_model_viewer_role.yaml
 - model_modeladapter_editor_role.yaml
 - model_modeladapter_viewer_role.yaml
 - autoscaling_podautoscaler_editor_role.yaml

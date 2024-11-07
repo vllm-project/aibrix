@@ -58,6 +58,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Autoscaling().V1alpha1().PodAutoscalers().Informer()}, nil
 
 		// Group=model, Version=v1alpha1
+	case modelv1alpha1.SchemeGroupVersion.WithResource("models"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Model().V1alpha1().Models().Informer()}, nil
 	case modelv1alpha1.SchemeGroupVersion.WithResource("modeladapters"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Model().V1alpha1().ModelAdapters().Informer()}, nil
 

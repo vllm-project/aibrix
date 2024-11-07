@@ -1,0 +1,31 @@
+apiVersion: model.aibrix.ai/v1alpha1
+kind: Model
+metadata:
+  name: llama2-70b
+  namespace: aibrix-system
+spec:
+  engine: VLLM
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        random-user-label: random
+    spec:
+      containers:
+        - name: llmengine
+          image: aibrix/vllm-mock:nightly
+          ports:
+            - containerPort: 8000
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP

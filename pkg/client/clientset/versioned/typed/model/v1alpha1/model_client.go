@@ -27,12 +27,17 @@ import (
 
 type ModelV1alpha1Interface interface {
 	RESTClient() rest.Interface
+	ModelsGetter
 	ModelAdaptersGetter
 }
 
 // ModelV1alpha1Client is used to interact with features provided by the model group.
 type ModelV1alpha1Client struct {
 	restClient rest.Interface
+}
+
+func (c *ModelV1alpha1Client) Models(namespace string) ModelInterface {
+	return newModels(c, namespace)
 }
 
 func (c *ModelV1alpha1Client) ModelAdapters(namespace string) ModelAdapterInterface {

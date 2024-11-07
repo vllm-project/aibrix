@@ -27,6 +27,10 @@ type FakeModelV1alpha1 struct {
 	*testing.Fake
 }
 
+func (c *FakeModelV1alpha1) Models(namespace string) v1alpha1.ModelInterface {
+	return &FakeModels{c, namespace}
+}
+
 func (c *FakeModelV1alpha1) ModelAdapters(namespace string) v1alpha1.ModelAdapterInterface {
 	return &FakeModelAdapters{c, namespace}
 }

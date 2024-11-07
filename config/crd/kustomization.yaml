@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/autoscaling.aibrix.ai_podautoscalers.yaml
+- bases/model.aibrix.ai_models.yaml
 - bases/model.aibrix.ai_modeladapters.yaml
 - bases/orchestration.aibrix.ai_rayclusterreplicasets.yaml
 - bases/orchestration.aibrix.ai_rayclusterfleets.yaml
