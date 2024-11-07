@@ -213,11 +213,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			"error processing request body"), targetPodIP
 	}
 
-	if model, ok = jsonMap["model"].(string); !ok || model == "" {
+	if model, ok = jsonMap["model"].(string); !ok || model == "" || !s.cache.CheckModelExists(model) {
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-no-model", RawValue: []byte("true")}}},
-			"no model in request body"), targetPodIP
+				Key: "x-no-model", RawValue: []byte(model)}}},
+			"no model in request body or model does not exist"), targetPodIP
 	}
 
 	headers := []*configPb.HeaderValueOption{}

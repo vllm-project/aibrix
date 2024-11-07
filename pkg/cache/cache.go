@@ -400,6 +400,15 @@ func (c *Cache) GetModelsForPod(podName string) (map[string]struct{}, error) {
 	return models, nil
 }
 
+func (c *Cache) CheckModelExists(modelName string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	_, ok := c.ModelToPodMapping[modelName]
+
+	return ok
+}
+
 func (c *Cache) GetPodMetric(podName, metricName string) (float64, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
