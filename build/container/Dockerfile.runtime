@@ -25,5 +25,5 @@ RUN poetry config virtualenvs.create false \
     && poetry cache clear pypi --all
 
 # Set entrypoint for Runtime
-ENTRYPOINT aibrix_runtime
+ENTRYPOINT ["aibrix_runtime"]
 
