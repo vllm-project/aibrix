@@ -23,13 +23,7 @@ Define the information related to the inference engine side in the container env
 
 .. code-block:: bash
 
-    docker run -it -p 8080:8080 \
-        --name ai-runtime \
-        --network host \
-        -e INFERENCE_ENGINE=vllm \
-        -e INFERENCE_ENGINE_ENDPOINT=http://localhost:8000 \
-        -e METRIC_SCRAPE_PATH=/metrics \
-        aibrix/ai-runtime:latest
+    INFERENCE_ENGINE=vllm INFERENCE_ENGINE_ENDPOINT="http://localhost:8000" aibrix_runtime --port 8080
 
 
 And AI Runtime will provide unified inference metrics on ``http://localhost:8080/metrics``.
