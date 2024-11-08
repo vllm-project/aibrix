@@ -28,6 +28,11 @@ check_command mypy
 RUFF_VERSION=$(ruff --version | awk '{print $2}')
 MYPY_VERSION=$(mypy --version | awk '{print $2}')
 
+# # params: tool name
+tool_version_from_pyproject() {
+    echo $(grep "$1 =" pyproject.toml | cut -d'=' -f2 | sed 's/^[" \t]*//;s/[" \t]*$//')
+}
+
 # # params: tool name, tool version, required version
 tool_version_check() {
     if [[ "$2" != "$3" ]]; then
@@ -36,8 +41,8 @@ tool_version_check() {
     fi
 }
 
-tool_version_check "ruff" "$RUFF_VERSION" "$(grep "ruff =" pyproject.toml | cut -d'=' -f2 | sed 's/^[" \t]*//;s/[" \t]*$//')"
-tool_version_check "mypy" "$MYPY_VERSION" "$(grep "mypy =" pyproject.toml | cut -d'=' -f2 | sed 's/^[" \t]*//;s/[" \t]*$//')"
+tool_version_check "ruff" "$RUFF_VERSION" $(tool_version_from_pyproject "ruff")
+tool_version_check "mypy" "$MYPY_VERSION" $(tool_version_from_pyproject "mypy")
 
 # Run Ruff
 echo 'ruff (lint):'
