@@ -11,8 +11,8 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: aibrix-model-deepseek-coder-7b-instruct
-  minReplicas: 1
+  minReplicas: 2
   maxReplicas: 10
   targetMetric: "vllm:gpu_cache_usage_perc"
-  targetValue: "50"
+  targetValue: "0.5"
   scalingStrategy: "KPA"

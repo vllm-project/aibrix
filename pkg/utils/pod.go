@@ -19,6 +19,7 @@ package utils
 import (
 	"context"
 	"fmt"
+	"k8s.io/klog/v2"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -128,9 +129,11 @@ func CountReadyPods(podList *v1.PodList) (int64, error) {
 
 	readyPodCount := 0
 	for _, pod := range podList.Items {
-		if pod.Status.Phase == v1.PodRunning && IsPodReady(&pod) {
+		isReady := IsPodReady(&pod)
+		if pod.Status.Phase == v1.PodRunning && isReady {
 			readyPodCount++
 		}
+		klog.InfoS("CountReadyPods Pod status", "name", pod.Name, "phase", pod.Status.Phase, "ready", isReady)
 	}
 
 	return int64(readyPodCount), nil
