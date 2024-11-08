@@ -167,7 +167,7 @@ def main():
         help="Enable FastAPI's OpenAPI schema, Swagger UI, and ReDoc endpoint",
     )
     args = parser.parse_args()
-    print(args)
+    logger.info("Use %s to startup runtime server", args)
     app = build_app(args=args)
     uvicorn.run(app, host=args.host, port=args.port)
 
