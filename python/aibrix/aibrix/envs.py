@@ -36,10 +36,6 @@ def _parse_int_or_none(value: Optional[str]) -> Optional[int]:
     return int(value)
 
 
-# Runtime Server Config
-SERVER_PORT = int(os.getenv("SERVER_PORT", "8080"))
-ENABLE_FASTAPI_DOC = _is_true(os.getenv("ENABLE_FASTAPI_DOC", "0"))
-
 # Model Download Related Config
 
 # Downloader Default Directory
