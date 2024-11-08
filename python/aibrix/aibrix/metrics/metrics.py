@@ -14,7 +14,6 @@
 
 from prometheus_client import CollectorRegistry, Counter, Histogram, Info
 
-
 REGISTRY = CollectorRegistry()
 
 INFO_METRICS = Info(

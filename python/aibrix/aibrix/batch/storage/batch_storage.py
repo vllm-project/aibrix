@@ -14,10 +14,10 @@
 
 import uuid
 
+from aibrix.batch.storage.generic_storage import LocalDiskFiles, StorageType
+
 # [TODO] Add S3 as another storage
 from aibrix.batch.storage.tos_storage import TOSStorage
-from aibrix.batch.storage.generic_storage import LocalDiskFiles
-from aibrix.batch.storage.generic_storage import StorageType
 
 current_job_offsets = {}
 job_input_requests = {}

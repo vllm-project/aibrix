@@ -13,12 +13,12 @@
 # limitations under the License.
 
 import asyncio
-from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE
 
 import aibrix.batch.storage as _storage
-from aibrix.batch.scheduler import JobScheduler
+from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE
 from aibrix.batch.job_manager import JobManager
 from aibrix.batch.request_proxy import RequestProxy
+from aibrix.batch.scheduler import JobScheduler
 
 
 class BatchDriver:
