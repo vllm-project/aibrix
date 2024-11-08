@@ -21,11 +21,9 @@ COPY python/aibrix/poetry.lock python/aibrix/pyproject.toml python/aibrix/ /app/
 
 # Install dependencies
 RUN poetry config virtualenvs.create false \
-    && poetry install --no-root \
+    && poetry install --no-interaction \
     && poetry cache clear pypi --all
 
 # Set entrypoint for Runtime
-COPY python/aibrix/scripts/entrypoint.sh /app/
-RUN chmod +x /app/entrypoint.sh
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT ["aibrix_runtime"]
 

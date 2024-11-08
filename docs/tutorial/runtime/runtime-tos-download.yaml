@@ -78,8 +78,9 @@ spec:
       - name: aibrix-runtime
         image: aibrix/runtime:latest
         command:
-        - bash
-        - entrypoint.sh
+        - aibrix_runtime
+        - --port
+        - "8080"
         ports:
         - containerPort: 8080
           protocol: TCP
@@ -140,10 +141,6 @@ spec:
     port: 8000
     protocol: TCP
     targetPort: 8000
-  - name: http
-    port: 8080
-    protocol: TCP
-    targetPort: 8080
   selector:
     models.aibricks.ai: deepseek-coder-6.7b-instruct
   type: ClusterIP

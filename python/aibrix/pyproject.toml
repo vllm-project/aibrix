@@ -30,6 +30,10 @@ packages = [
 ]
 exclude = ["test"]
 
+[tool.poetry.scripts]
+aibrix_runtime = 'aibrix.app:main'
+aibrix_download = 'aibrix.downloader.__main__:main'
+
 [tool.poetry.dependencies]
 python = ">=3.8,<3.12"
 huggingface-hub = "^0.24.6"

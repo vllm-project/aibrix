@@ -22,6 +22,7 @@ import (
 	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -166,13 +167,17 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 			},
 		},
 	}
-	if err := m.Client.Create(context.Background(), &httpRoute); err != nil {
+	err = m.Client.Create(context.Background(), &httpRoute)
+	if err != nil && !apierrors.IsAlreadyExists(err) {
 		klog.Errorln(err)
 		return
 	}
-	klog.Infof("httproute: %v created for model: %v", httpRoute.Name, modelName)
 
-	// m.createReferenceGrant(namespace)
+	if err == nil {
+		klog.Infof("httproute: %v created for model: %v", httpRoute.Name, modelName)
+	}
+
+	m.createReferenceGrant(namespace)
 }
 
 func (m *ModelRouter) createReferenceGrant(namespace string) {
@@ -230,11 +235,13 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string
 		},
 	}
 
-	if err := m.Client.Delete(context.Background(), &httpRoute); err != nil {
+	err := m.Client.Delete(context.Background(), &httpRoute)
+	if err != nil {
 		klog.Errorln(err)
-		return
 	}
-	klog.Infof("httproute: %v deleted for model: %v", httpRoute.Name, modelName)
+	if err == nil {
+		klog.Infof("httproute: %v deleted for model: %v", httpRoute.Name, modelName)
+	}
 
 	m.deleteReferenceGrant(namespace)
 }

@@ -1,3 +1,4 @@
+import argparse
 import os
 import shutil
 from pathlib import Path
@@ -107,8 +108,8 @@ async def unload_lora_adapter(request: UnloadLoraAdapterRequest, raw_request: Re
     return Response(status_code=200, content=response)
 
 
-def build_app():
-    if envs.ENABLE_FASTAPI_DOC:
+def build_app(args: argparse.Namespace):
+    if args.enable_fastapi_docs:
         app = FastAPI(debug=False)
     else:
         app = FastAPI(debug=False, openapi_url=None, docs_url=None, redoc_url=None)
@@ -123,32 +124,53 @@ def build_app():
     mount_metrics(app)
     init_app_state(app.state)
     app.include_router(router)
+
+    @app.middleware("http")
+    async def add_router_prometheus_middlerware(request: Request, call_next):
+        method = request.method
+        endpoint = request.scope.get("path")
+        # Exclude endpoints that do not require metrics
+        if endpoint in EXCLUDE_METRICS_HTTP_ENDPOINTS:
+            response = await call_next(request)
+            return response
+
+        start_time = time.perf_counter()
+        response = await call_next(request)
+        process_time = time.perf_counter() - start_time
+
+        status = response.status_code
+        HTTP_LATENCY_METRICS.labels(
+            method=method, endpoint=endpoint, status=status
+        ).observe(process_time)
+        HTTP_COUNTER_METRICS.labels(
+            method=method, endpoint=endpoint, status=status
+        ).inc()
+        return response
+
     return app
 
 
-app = build_app()
+def nullable_str(val: str):
+    if not val or val == "None":
+        return None
+    return val
 
 
-@app.middleware("http")
-async def add_router_prometheus_middlerware(request: Request, call_next):
-    method = request.method
-    endpoint = request.scope.get("path")
-    # Exclude endpoints that do not require metrics
-    if endpoint in EXCLUDE_METRICS_HTTP_ENDPOINTS:
-        response = await call_next(request)
-        return response
-
-    start_time = time.perf_counter()
-    response = await call_next(request)
-    process_time = time.perf_counter() - start_time
-
-    status = response.status_code
-    HTTP_LATENCY_METRICS.labels(
-        method=method, endpoint=endpoint, status=status
-    ).observe(process_time)
-    HTTP_COUNTER_METRICS.labels(method=method, endpoint=endpoint, status=status).inc()
-    return response
+def main():
+    parser = argparse.ArgumentParser(description="Run aibrix runtime server")
+    parser.add_argument("--host", type=nullable_str, default=None, help="host name")
+    parser.add_argument("--port", type=int, default=8080, help="port number")
+    parser.add_argument(
+        "--enable-fastapi-docs",
+        action="store_true",
+        default=False,
+        help="Enable FastAPI's OpenAPI schema, Swagger UI, and ReDoc endpoint",
+    )
+    args = parser.parse_args()
+    logger.info("Use %s to startup runtime server", args)
+    app = build_app(args=args)
+    uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, port=envs.SERVER_PORT)
+    main()
