@@ -11,21 +11,25 @@
 # limitations under the License.
 
 import threading
-from starlette.applications import Starlette
-from starlette.responses import JSONResponse, PlainTextResponse
 from typing import Optional, Tuple
 import logging
-from utils import ExcludePathsFilter
-import uvicorn
 import os
+
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse, PlainTextResponse
+from kubernetes import client, config, watch
+import uvicorn
+import redis
+
 from loadmonitor.monitor import ModelMonitor
-try:
-    from kubernetes import client, config, watch
-except Exception as e:
-    print(f"Failed to import kubernetes, skip: {e}")
+from loadmonitor.loadreader import GatewayLoadReader
+from utils import ExcludePathsFilter
 
 NAMESPACE = os.getenv('NAMESPACE', 'aibrix-system')
 MODEL_LABEL = "model.aibrix.ai/name"
+REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
+
 
 routes = []
 model_monitors = {} # Dictionary to store serving threads
@@ -33,10 +37,8 @@ from loadmonitor.visualizer import mount_to as mount_visulizer
 mount_visulizer(routes, '/dash/{model_name}', 
                 lambda model_name: model_monitors.get(model_name))
 app = Starlette(routes=routes)
-
-# Setup default logger
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger("GPUOptimizer")
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0) # Default DB
+debug = False
 
 def validate_model(deployment) -> Tuple[str, Optional[ModelMonitor]]:
     """Validate the deployment and return the model monitor if the deployment is valid."""
@@ -66,12 +68,19 @@ def start_serving_thread(watch_ver, deployment, new_deployment: bool) -> bool:
     if not replicas:
         replicas = 1
     
+    #TODO: Update profile if key exists
+
     if model_monitor != None:
         model_monitor.add_deployment(watch_ver, deployment_name, namespace, replicas)
         logger.info(f"Deployment \"{deployment_name}\" added to the model monitor for \"{model_name}\"")
         return False
 
-    model_monitor = ModelMonitor(model_name, watch_ver, deployment_name=deployment_name, namespace=namespace, replicas=replicas)
+    reader = GatewayLoadReader(redis_client, model_name)
+    model_monitor = ModelMonitor(model_name, watch_ver, reader,              
+                                 deployment_name=deployment_name, 
+                                 namespace=namespace, 
+                                 replicas=replicas, 
+                                 debug=debug)
     model_monitor.start()
     model_monitors[model_name] = model_monitor
     if new_deployment:
@@ -176,6 +185,7 @@ vllm:deployment_replicas{{model_name="{model_name}"}} {replicas}
         return JSONResponse({"error": f"Failed to read metrics: {e}"}, status_code=404)
 
 def main(signal, timeout):
+    logger.info(f"Starting GPU optimizer (debug={debug}) ...")
     while not signal['done']:
         signal["watch"] = None
 
@@ -188,6 +198,7 @@ def main(signal, timeout):
 
             # List existing deployments
             logger.info(f"Looking for deployments in {NAMESPACE} with {MODEL_LABEL}")
+            progress = 0
             deployments = apps_v1.list_namespaced_deployment(
                 namespace=NAMESPACE, 
                 label_selector=MODEL_LABEL)
@@ -237,14 +248,22 @@ def main(signal, timeout):
             return
     
 if __name__ == '__main__':
-    logging.getLogger("kubernetes.client.rest").setLevel(logging.ERROR)  # Suppress kubenetes level
+    import sys
+    if '--debug' in sys.argv:
+        debug = True
+
+    # Setup default logger
+    logging.basicConfig(level=logging.DEBUG if debug else logging.INFO)
+    logging.getLogger("kubernetes.client.rest").setLevel(logging.ERROR)  # Suppress kubenetes logs
+    logging.getLogger("pulp.apis.core").setLevel(logging.INFO)  # Suppress pulp logs
+    logger = logging.getLogger("aibrix.gpuoptimizer")
+
     timeout = 600
     try:
         config.load_incluster_config()
     except Exception as e:
         # Local debug
         config.load_kube_config(config_file="~/.kube/config")
-        timeout = 10
     signal = { "done": False, "watch": None }
     threading.Thread(target=main, args=(signal,timeout,)).start()  # Run Kubernetes informer in a separate thread
 

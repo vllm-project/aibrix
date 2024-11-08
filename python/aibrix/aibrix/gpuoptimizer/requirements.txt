@@ -4,6 +4,8 @@ starlette
 kubernetes
 uvicorn
 starlette
+pulp==2.8.0
+redis
 
 #for visualizer only
 dash

@@ -18,22 +18,23 @@ from dash.dependencies import Input, Output
 from starlette.middleware.wsgi import WSGIMiddleware
 from starlette.routing import Mount
 import plotly.graph_objs as go
-import random
+import matplotlib.pyplot as plt
 import pandas as pd
 from datetime import datetime
 import threading
 import numpy as np
-from typing import List, Tuple, Union, Callable, Optional
-from .loadreader import LoadReader, DatasetLoadReader
-from .clusterer import Clusterer, DBSCANClusterer, MovingDBSCANClusterer
-from functools import reduce
-from . import helpers
-from .helpers import DataPoint
+from typing import List, Callable, Optional
 import os
+import logging
+
+from .loadreader import LoadReader, DatasetLoadReader
 from .monitor import ModelMonitor
 
 canvas_size = 1000
 scale = 16
+interval = 1000 # in milliseconds
+reader_interval = 10 # in seconds
+interval_scaling = interval / 1000 / reader_interval
 
 # window = 4000
 # # Load dataset reader
@@ -47,30 +48,49 @@ scale = 16
 # lvl2data = DataBuffer(window)
 
 colors = ['red', 'green', 'pink', 'blue', 'navy', 'orange', 'purple', 'cyan', 'magenta', 'yellow', 'black', 'gray', 'brown', 'olive', 'teal', 'maroon']
-debug_model_monitor = ModelMonitor("sharegpt", "0")
-debug_run = None
-datasource: Callable[[str], Optional[ModelMonitor]] = lambda model_name: debug_model_monitor
-last_figure = dash.no_update
-lock = threading.Lock()
+
+debug_monitor = None
+datasource: Callable[[str], Optional[ModelMonitor]] = lambda model_name: get_debug_model_montior(model_name)
+figure = type('', (), {})() # create a empty object
+figure.__dict__ = {
+   "debug_run": True,
+   "datasource": datasource,
+   "last": dash.no_update,
+   "lock": threading.Lock()
+}
+
+logger = logging.getLogger("aibrix.gpuoptimizer.loadmonitor.visualizer")
+
+def get_debug_model_montior(_:str) -> Optional[ModelMonitor]:
+    global debug_monitor
+
+    if debug_monitor == None:
+        directory = os.path.dirname(os.path.abspath(__file__))
+        reader = DatasetLoadReader(directory + '/data/sharegpt.csv', rps=10, interval=reader_interval)
+        debug_monitor = ModelMonitor("sharegpt", "0", reader, interval=interval, debug=True)
+    
+    return debug_monitor
+
+def make_color(color, alpha=1):
+    rgb = plt.matplotlib.colors.to_rgb(color)
+    return f"rgba({rgb[0]*255}, {rgb[1]*255}, {rgb[2]*255}, {alpha})"
 
 def update_graph(n, model_name):
-    global last_figure
-
     # Reset initial figure
     if n == 0:
-        last_figure = dash.no_update
+        figure.last = dash.no_update
 
     # Acquire the lock at the beginning of the callback
-    if not lock.acquire(blocking=False):
+    if not figure.lock.acquire(blocking=False):
         # If the lock is already acquired, skip this execution
-        return last_figure
+        return figure.last
     
     try:
         start = datetime.now().timestamp()
 
-        monitor = datasource(model_name)
+        monitor: Optional[ModelMonitor] = figure.datasource(model_name)
         if monitor == None:
-            last_figure = {
+            figure.last = {
                 'data': [],
                 'layout': go.Layout(
                     title=f'Live data update of {model_name} is unavailable: model not monitored',
@@ -78,18 +98,18 @@ def update_graph(n, model_name):
                     yaxis=dict(range=[0, scale], title='output_tokens(log2)'),
                 )
             }
-            return last_figure
+            return figure.last
 
-        # if monitor == debug_model_monitor:
-        #     global debug_run
-        #     # Drive the monitor progress for debugging
-        #     if debug_run == None:
-        #         debug_run = monitor._run_yieladble(True)
-        #     next(debug_run)
+        if figure.debug_run:
+            # Drive the monitor progress for debugging
+            if figure.debug_run == True:
+                figure.debug_run = monitor._run_yieldable(True, window_scaling=interval_scaling)
+            
+            next(figure.debug_run) 
 
         data_df = monitor.dataframe
         if data_df is None or len(data_df) == 0:
-            last_figure = {
+            figure.last = {
                 'data': [],
                 'layout': go.Layout(
                     title=f'Live data update of {model_name} is unavailable: insufficient data',
@@ -97,7 +117,7 @@ def update_graph(n, model_name):
                     yaxis=dict(range=[0, scale], title='output_tokens(log2)'),
                 )
             }
-            return last_figure
+            return figure.last
         centers = monitor.centers
         labeled = monitor.labeled
         data_colors = [colors[int(label) % len(colors)] if label >= 0 else 'black' for label in data_df['label']]
@@ -145,7 +165,7 @@ def update_graph(n, model_name):
         if len(centers) > 0:
             center_df = pd.DataFrame(data=np.array([center.to_array() for center in centers]), columns=['x', 'y', 'radius', 'size'])
              # assign color to center_df
-            center_colors = [helpers.make_color(colors[int(idx) % len(colors)], alpha=0.5) 
+            center_colors = [make_color(colors[int(idx) % len(colors)], alpha=0.5) 
                                   for idx in center_df.index]
             # print(center_df['size'])
             plotdata.append(
@@ -163,20 +183,25 @@ def update_graph(n, model_name):
                     )
                 )
             )
-        last_figure = {
+        
+        figure.last = {
             'data': plotdata,
             'layout': go.Layout(
-                title=f'Live Data Update({n}:{round(duration)}ms) of {model_name}, labeled: {round(labeled/len(data_df)*100, 2)}%, processed: {monitor.progress}%',
+                title=f'Live Data Update({n}:{round(duration)}ms) of {model_name}, labeled: {round(labeled/len(data_df)*100, 2)}%, processed: {monitor.progress}',
                 # xaxis=dict(range=[0, max(data['x']) + 1]),
                 # yaxis=dict(range=[0, max(data['y']) + 1])
                 xaxis=dict(range=[0, scale], title='input_tokens(log2)'),
                 yaxis=dict(range=[0, scale], title='output_tokens(log2)'),
             )
         }
-        return last_figure
+        return figure.last
+    except Exception as e:
+        logger.error(f"Failed to prepare figure: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         # Release the lock at the end of the callback
-        lock.release()
+        figure.lock.release()
 
 def store_model_name(pathname):
     # Extract model_name from pathname (e.g., /dash/model_name/)
@@ -194,7 +219,7 @@ def init(prefix=""):
         dcc.Input(id="model-name-input", type="hidden", value=""),
         html.Div(id="model-info"),
         dcc.Interval(id='interval-component',
-            interval=100,  # in milliseconds
+            interval=1000,  # in milliseconds
             n_intervals=0,  # start at 0
         ),
         dcc.Graph(id='live-graph',
@@ -211,10 +236,12 @@ def init(prefix=""):
     return app
 
 def mount_to(routes: List, prefix: str, datasrc: Callable[[str], Optional[ModelMonitor]]):
-    global datasource
-    datasource = datasrc
+    figure.datasource = datasrc
+    figure.debug_run = False
     routes.append(Mount(prefix, WSGIMiddleware(init(prefix).server)))
     return routes
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.DEBUG)
+    logging.getLogger("pulp.apis.core").setLevel(logging.INFO)  # Suppress pulp logs
     init().run_server(debug=True)

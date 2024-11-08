@@ -1,6 +1,5 @@
 import argparse
-from melange.lib.runner import SolverRunner
-
+from python.aibrix.aibrix.gpuoptimizer.optimizer.solver.melange.runner import SolverRunner
 
 def main(config_path: str):
     runner = SolverRunner(config_path)

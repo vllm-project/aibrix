@@ -12,74 +12,133 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Union, List
-import matplotlib.pyplot as plt
+from typing import Union, Tuple, List
 import numpy as np
 
-class DataPoint(np.ndarray):
-    def __new__(cls, data, age: Union[int, float]):
-        obj = np.array(data).view(cls)
-        obj.age = age
-        return obj
+DataSignatures = np.ndarray
+"""ndarray of shape(n, 2)"""
 
-    def __array_finalize__(self, obj):
-        # see InfoArray.__array_finalize__ for comments
-        if obj is None: return
-        self.age = getattr(obj, 'age', None)
+DataSignature = np.ndarray
+"""ndarray of shape(2,)"""
+
+class DataPoint(np.ndarray):
+    def __new__(cls, *args, age:Union[int, float]=0, ndarray:np.ndarray=None, **kwargs):
+        if ndarray is not None:
+            return ndarray.view(cls)
+
+        ins = ndarray = np.empty((3,), *kwargs)
+        if len(args) > 0:
+            ins[0] = args[0]
+        if len(args) > 1:
+            ins[1] = args[1]
+        ins[2] = age
+        return ins
+    
+    @property
+    def age(self):
+        return self[2]
+    
+    @property
+    def signature(self) -> DataSignature:
+        return self[:2]
+    
+class DataPoints(np.ndarray):
+    def __new__(cls, ndarray:np.ndarray):
+        return ndarray.view(cls)
+    
+    @property
+    def signatures(self) -> DataSignatures:
+        return self[:, :2]
+    
+    def datapoint(self, idx):
+        return DataPoint(ndarray=self[idx])
 
 class DataBuffer:
-    def __init__(self, cap):
-        self._xy = np.empty((cap, 2), dtype=float)
-        self._age = np.empty(cap, dtype=int)
-        self._color = 0 * cap
-        self._size = 0
+    def __init__(self, cap: int):
+        self._xy = np.empty((cap, 3), dtype=float)
+        self._commited = 0
+        """The length of data that has been processed and ready to read"""
+        self._head = 0
+        """All length of all data that includes processing data points."""
 
-    def append(self, tokens: List[DataPoint]):
-        self._xy[self._size: self._size+len(tokens)] = tokens
-        self._age[self._size: self._size+len(tokens)] = [token.age for token in tokens]
-        self._size += len(tokens)
+    def reconcile(self, cap: int):
+        if cap < self._xy.shape[0]:
+            # We do not shrink
+            return
+        
+        new_cap = self._xy.shape[0] * 2
+        while new_cap < cap:
+            new_cap *= 2
+        self._xy = np.resize(self._xy, (new_cap, 3))
 
-    def append_one(self, token: List[DataPoint]):
-        self._xy[self._size] = token
-        self._age[self._size] = token.age
-        self._size += 1
+    def append(self, tokens: List[DataPoint], commit: bool=False) -> DataPoints:
+        """Append data points to the buffer. If commit is True, the data points will be committed immediately and could lead to data inconsistent if it takes a long time to process new data."""
+        size_gap = self._commited + len(tokens) - self._xy.shape[0]
+        # Check buffer size.
+        if size_gap > 0:
+            # We do not expand the buffer automatically, simply evicting some records to make room for new data.
+            self.trim_head(size_gap)
+
+        # Check tokens size. If tokens is too large, buffer has been cleared at this point.
+        if len(tokens) > self._xy.shape[0]:
+            tokens = tokens[-self._xy.shape[0]:]
+        
+        print(f"append: {len(tokens)} tokens to [{self._commited}:{self._commited+len(tokens)}], buffer size: {self._xy.shape[0]}")
+        self._xy[self._commited: self._commited+len(tokens)] = tokens
+        ret = DataPoints(self._xy[self._commited: self._commited+len(tokens)])
+        self._head += len(tokens)
+        if commit:
+            self.commit()
+        return ret
+
+    def commit(self):
+        self._commited = self._head
 
     def trim_head(self, start):
-        self._xy[:-start] = self._xy[start:]
+        if self._head != self._commited:
+            raise Exception("Cannot trim head when there are uncommited data points.")
+        
+        if start >= self._commited:
+            # empty(), skip data moving
+            self._head = self._commited = 0
+            return
+        elif start <= -self._commited:
+            # keep all data
+            return
+        
+        # Do compacting.
+        # implement self._xy[:-start] = self._xy[start:] with variable buffer length.
         if start > 0:
-            self._size -= start
+            self._xy[:self._commited-start] = self._xy[start:self._commited]
+            self._commited -= start
         else:
-            self._size = -start
+            self._xy[:-start] = self._xy[self._commited+start:self._commited]
+            self._commited = -start
+        self._head = self._commited
     
     def clear(self):
-        self._size = 0
+        self._commited = 0
+        self._head = 0
 
     @property
     def x(self):
-        return self._xy[:self._size, 0]
+        return self._xy[:self._commited, 0]
     
     @property
     def y(self):
-        return self._xy[:self._size, 1]
+        return self._xy[:self._commited, 1]
     
     @property
-    def xy(self):
-        return self._xy[:self._size]
-    
-    def datapoint(self, i):
-        return DataPoint(self._xy[i], self._age[i])
-    
-    @property
-    def color(self):
-        return self._color[:self._size]
-    
+    def datapoints(self) -> DataPoints:
+        return DataPoints(self._xy[:self._commited])
+
     @property
     def len(self):
-        return self._size
+        return self._commited
     
     @property
     def cap(self):
-        return self._xy.size
+        return self._xy.shape[0]
 
 class Centeroid:
     def __init__(self):
@@ -93,24 +152,24 @@ class Centeroid:
 
     def add(self, point: DataPoint):
         if self._sum_center is None:
-            self._sum_center = list(point)
-            self._range_min = list(point)
-            self._range_max = list(point)
-            # self._span_max = point.age
-            # self._span_min = point.age
+            self._sum_center = list(point.signature)
+            self._range_min = list(point.signature)
+            self._range_max = list(point.signature)
+            self._span_max = point.age
+            self._span_min = point.age
         else:
-            for i, val in enumerate(point):
+            for i, val in enumerate(point.signature):
                 self._sum_center[i] += val
                 self._range_min[i] = min(self._range_min[i], val)
                 self._range_max[i] = max(self._range_max[i], val)
-            # self._span_min = min(self._span_min, point.age)
-            # self._span_max = max(self._span_max, point.age)
+            self._span_min = min(self._span_min, point.age)
+            self._span_max = max(self._span_max, point.age)
             
         self._size += 1
 
     @property
     def center(self):
-        return (val / self.size for val in self._sum_center)
+        return tuple(val / self._size for val in self._sum_center)
 
     @property
     def radius(self):
@@ -125,15 +184,18 @@ class Centeroid:
         return self._span_max - self._span_min + 1
     
     @property
-    def moving_size(self):
+    def signature(self) -> Tuple[float]:
+        return (0, 0)
+    
+    @property
+    def rate(self):
         return self._size / self.span
     
     def to_array(self):
         ret = list(self.center)
         ret.append(self.radius)
-        ret.append(self.moving_size)
+        ret.append(self.rate)
         return ret
     
-def make_color(color, alpha=1):
-    rgb = plt.matplotlib.colors.to_rgb(color)
-    return f"rgba({rgb[0]*255}, {rgb[1]*255}, {rgb[2]*255}, {alpha})"
+    def __str__(self) -> str:
+        return f"Centeroid(center={self.center}, rps={self.rate})"

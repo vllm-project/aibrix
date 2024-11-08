@@ -16,8 +16,9 @@ from typing import Protocol, List, Callable, Union, Tuple, Dict, Iterable, Optio
 from incdbscan import IncrementalDBSCAN
 import numpy as np
 from datetime import datetime
-from .helpers import DataPoint, Centeroid
+from .helpers import DataPoint, DataPoints, Centeroid
 import sys
+import math
 
 class Clusterer(Protocol):
     def insert(self, points):
@@ -38,32 +39,36 @@ class DBSCANClusterer:
         self.eps = eps
         self.min_pts = min_pts
         self.reset()
-        self.created = datetime.now().timestamp()
 
-    def insert(self, points: Iterable[DataPoint]):
-        self.clusterer.insert(points)
+    def insert(self, points: DataPoints):
+        self.clusterer.insert(points.signatures)
         self._length += len(points)
 
     def reset(self):
         self.clusterer = IncrementalDBSCAN(eps=self.eps, min_pts=self.min_pts)
         self._length = 0
+        self.created = datetime.now().timestamp()
 
     def clone(self):
         return DBSCANClusterer(self.eps, self.min_pts)
 
-    def get_cluster_labels(self, points: Iterable[DataPoint], uncategorized: Optional[List] = None) -> Tuple[Iterable[int], Iterable[Centeroid]]:
-        labels = self.clusterer.get_cluster_labels(points)
+    def get_cluster_labels(self, points: DataPoints, uncategorized: Optional[List] = None) -> Tuple[Iterable[int], Iterable[Centeroid]]:
+        labels = self.clusterer.get_cluster_labels(points.signatures)
         centers = {}
         start_label = sys.maxsize
         for i, label in enumerate(labels):
+            if math.isnan(label):
+                continue
             if label < 0:
                 if uncategorized != None:
-                    uncategorized.append(points[i])
+                    uncategorized.append(points.datapoint(i))
                 continue
             start_label = min(start_label, label)
             if label not in centers:
                 centers[label] = Centeroid()
-            centers[label].add(points[i])
+            if len(centers) > 10:
+                print(f"unepxected label:{label}")
+            centers[label].add(points.datapoint(i))
         # Try fixing label index.
         if start_label == sys.maxsize:
             start_label = 0
@@ -109,7 +114,7 @@ class MovingDBSCANClusterer:
             return True
             # data.trim_head(-cluster['clusterers'][0][current].length)
 
-    def insert(self, points:List):
+    def insert(self, points:DataPoints):
         for clusterer in self.clusterers:
             clusterer.insert(points)
 
@@ -117,9 +122,8 @@ class MovingDBSCANClusterer:
         self.clusterers = [self.clusterers[0].clone()]
         self.frontier = 0
 
-    def get_cluster_labels(self, points: Iterable[DataPoint], uncategorized: Optional[List] = None) -> Tuple[Iterable[int], Iterable[Centeroid]]:
+    def get_cluster_labels(self, points:DataPoints, uncategorized: Optional[List] = None) -> Tuple[Iterable[int], Iterable[Centeroid]]:
         return self.clusterer.get_cluster_labels(points, uncategorized=uncategorized)
-    
     
     @property
     def length(self):
@@ -133,4 +137,4 @@ class MovingDBSCANClusterer:
         return lambda clusterer: clusterer.length >= window / self.buffer_size
     
     def _get_time_window_cb(self, window:float) -> Callable[[DBSCANClusterer], bool]:
-        return lambda clusterer: datetime.now().timestamp() - clusterer.created >= window
+        return lambda clusterer: datetime.now().timestamp() - clusterer.created >= window / self.buffer_size

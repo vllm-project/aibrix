@@ -1,10 +1,11 @@
 import pulp
 from pulp import LpVariable, LpProblem, LpMinimize, LpInteger
 
-from melange.lib.util import tputs_to_loads_2d
+from .util import tputs_to_loads_2d
 
-
-# base class
+# This class is adapted from code originally written by Tyler Griggs 
+# found at https://github.com/tyler-griggs/melange-release
+# See: https://tyler-griggs.github.io/blogs/melange
 class Solver:
     def __init__(self, workload_distribution: list, total_request_rate: float, gpu_info: dict):
         self.workload_distribution = workload_distribution
