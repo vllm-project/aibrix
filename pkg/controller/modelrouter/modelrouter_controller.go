@@ -172,10 +172,10 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 	}
 	klog.Infof("httproute: %v created for model: %v", httpRoute.Name, modelName)
 
-	m.createReferenceGrant(modelName, namespace)
+	// m.createReferenceGrant(namespace)
 }
 
-func (m *ModelRouter) createReferenceGrant(name, namespace string) {
+func (m *ModelRouter) createReferenceGrant(namespace string) {
 	referenceGrantName := fmt.Sprintf("%s-reserved-referencegrant-in-%s", aibrixEnvoyGatewayNamespace, namespace)
 	referenceGrant := gatewayv1beta1.ReferenceGrant{
 		ObjectMeta: metav1.ObjectMeta{
@@ -214,7 +214,7 @@ func (m *ModelRouter) createReferenceGrant(name, namespace string) {
 		klog.Errorln(err)
 		return
 	}
-	klog.Infof("referencegrant created in namespace: %s", name)
+	klog.Infof("referencegrant: %s created in namespace: %s", referenceGrantName, namespace)
 }
 
 func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string) {
@@ -236,13 +236,15 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string
 	}
 	klog.Infof("httproute: %v deleted for model: %v", httpRoute.Name, modelName)
 
-	m.deleteReferenceGrant(modelName, namespace)
+	m.deleteReferenceGrant(namespace)
 }
 
-func (m *ModelRouter) deleteReferenceGrant(name, namespace string) {
+func (m *ModelRouter) deleteReferenceGrant(namespace string) {
+	referenceGrantName := fmt.Sprintf("%s-reserved-referencegrant-in-%s", aibrixEnvoyGatewayNamespace, namespace)
+
 	referenceGrant := gatewayv1beta1.ReferenceGrant{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
+			Name:      referenceGrantName,
 			Namespace: namespace,
 		},
 	}
@@ -251,5 +253,5 @@ func (m *ModelRouter) deleteReferenceGrant(name, namespace string) {
 		klog.Errorln(err)
 		return
 	}
-	klog.Infof("referencegrant: %v deleted for model", name)
+	klog.Infof("referencegrant: %s deleted in namespace %s", referenceGrantName, namespace)
 }
