@@ -24,6 +24,21 @@ check_command() {
 check_command ruff
 check_command mypy
 
+# check versions
+RUFF_VERSION=$(ruff --version | awk '{print $2}')
+MYPY_VERSION=$(mypy --version | awk '{print $2}')
+
+# # params: tool name, tool version, required version
+tool_version_check() {
+    if [[ "$2" != "$3" ]]; then
+        echo "❓❓Wrong $1 version installed: $3 is required, not $2."
+        exit 1
+    fi
+}
+
+tool_version_check "ruff" "$RUFF_VERSION" "$(grep "ruff =" pyproject.toml | cut -d'=' -f2 | sed 's/^[" \t]*//;s/[" \t]*$//')"
+tool_version_check "mypy" "$MYPY_VERSION" "$(grep "mypy =" pyproject.toml | cut -d'=' -f2 | sed 's/^[" \t]*//;s/[" \t]*$//')"
+
 # Run Ruff
 echo 'ruff (lint):'
 python -m ruff check . --fix

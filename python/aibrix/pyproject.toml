@@ -49,8 +49,8 @@ hf-transfer = "^0.1.8"
 
 
 [tool.poetry.group.dev.dependencies]
-mypy = "^1.11.1"
-ruff = "^0.6.1"
+mypy = "1.11.1"
+ruff = "0.6.1"
 pytest = "^8.3.2"
 
 [build-system]
