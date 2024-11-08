@@ -44,7 +44,6 @@ poetry install --no-root --with dev
 
 # linting, formatting and type checking
 bash ./scripts/format.sh
-
 ```
 
 ## License

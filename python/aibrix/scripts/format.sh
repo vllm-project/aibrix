@@ -25,16 +25,16 @@ check_command ruff
 check_command mypy
 
 # Run Ruff
-echo 'vLLM ruff (lint):'
+echo 'ruff (lint):'
 python -m ruff check . --fix
-echo 'vLLM ruff (format):'
+echo 'ruff (format):'
 python -m ruff format .
-echo 'vLLM ruff: Done'
+echo 'ruff: Done'
 
 # Run mypy
-echo 'vLLM mypy:'
+echo 'mypy:'
 python -m mypy .
-echo 'vLLM mypy: Done'
+echo 'mypy: Done'
 
 if ! git diff --quiet &>/dev/null; then
     echo 
