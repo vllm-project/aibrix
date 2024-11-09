@@ -36,7 +36,8 @@ spec:
         request:
           body: Buffered
         response: 
-          body: Buffered
+          body: Streamed
+      messageTimeout: 5s
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyPatchPolicy
