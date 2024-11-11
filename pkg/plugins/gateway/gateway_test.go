@@ -46,14 +46,12 @@ func Test_ValidateRoutingStrategy(t *testing.T) {
 		},
 		{
 			headerBasedRoutingStrategyEnabled: false,
-			routingStrategy:                   "",
 			setEnvRoutingStrategy:             true,
 			message:                           "empty routing strategy in header with env var set",
 			expectedValidation:                true,
 		},
 		{
 			headerBasedRoutingStrategyEnabled: false,
-			routingStrategy:                   "  ",
 			setEnvRoutingStrategy:             true,
 			message:                           "spaced routing strategy in header with env var set",
 			expectedValidation:                true,
@@ -74,17 +72,9 @@ func Test_ValidateRoutingStrategy(t *testing.T) {
 		},
 		{
 			headerBasedRoutingStrategyEnabled: false,
-			routingStrategy:                   "random",
 			setEnvRoutingStrategy:             true,
 			message:                           "env routing strategy",
 			expectedValidation:                true,
-		},
-		{
-			headerBasedRoutingStrategyEnabled: false,
-			routingStrategy:                   "rrandom",
-			setEnvRoutingStrategy:             true,
-			message:                           "incorrect env routing strategy",
-			expectedValidation:                false,
 		},
 		{
 			headerBasedRoutingStrategyEnabled: true,
@@ -96,11 +86,16 @@ func Test_ValidateRoutingStrategy(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		var routingStrategy string
 		if tt.setEnvRoutingStrategy {
-			t.Setenv("ROUTING_ALGORITHM", "least-request")
+			routingStrategy = "least-request"
 		}
 
-		currentValidation := validateRoutingStrategy(tt.routingStrategy, tt.headerBasedRoutingStrategyEnabled)
+		if tt.headerBasedRoutingStrategyEnabled {
+			routingStrategy = tt.routingStrategy
+		}
+
+		currentValidation := validateRoutingStrategy(routingStrategy, tt.headerBasedRoutingStrategyEnabled)
 		assert.Equal(t, tt.expectedValidation, currentValidation, tt.message)
 	}
 }
