@@ -226,7 +226,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: "x-no-model", RawValue: []byte(model)}}},
-			"no model in request body or model does not exist"), targetPodIP
+			fmt.Sprintf("no model in request body or model %s does not exist", model)), targetPodIP
 	}
 
 	headers := []*configPb.HeaderValueOption{}
@@ -240,12 +240,13 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		})
 		klog.InfoS("request start", "requestID", requestID, "model", model)
 	case routingStrategy != "":
+		klog.Infof("strategy here? %v", routingStrategy)
 		pods, err := s.cache.GetPodsForModel(model)
 		if len(pods) == 0 || err != nil {
 			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-no-model-deployment", RawValue: []byte("true")}}},
-				"error on getting pods for model"), targetPodIP
+				fmt.Sprintf("error on getting pods for model %s", model)), targetPodIP
 		}
 
 		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods)
