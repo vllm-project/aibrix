@@ -26,6 +26,8 @@ import (
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
 	"k8s.io/klog/v2"
 
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+
 	"time"
 )
 
@@ -92,6 +94,14 @@ func (c *KPAMetricsClient) UpdateMetricIntoWindow(metricKey NamespaceNameMetric,
 }
 
 func (c *KPAMetricsClient) UpdatePodListMetric(metricValues []float64, metricKey NamespaceNameMetric, now time.Time) error {
+	return c.UpdateMetrics(now, metricKey, metricValues...)
+}
+
+func (c *KPAMetricsClient) UpdateMetrics(now time.Time, metricKey NamespaceNameMetric, metricValues ...float64) error {
+	if len(metricValues) == 0 {
+		return nil
+	}
+
 	// Calculate the total value from the retrieved metrics
 	var sumMetricValue float64
 	for _, metricValue := range metricValues {
@@ -106,7 +116,7 @@ func (c *KPAMetricsClient) UpdatePodListMetric(metricValues []float64, metricKey
 	if err != nil {
 		return err
 	}
-	klog.InfoS("Update pod list metrics", "metricKey", metricKey, "podListNum", len(metricValues), "timestamp", now, "metricValue", sumMetricValue)
+	klog.InfoS("Update pod list metrics", "metricKey", metricKey, "valueNum", len(metricValues), "timestamp", now, "metricValue", sumMetricValue)
 	return nil
 }
 
@@ -147,6 +157,11 @@ func (c *KPAMetricsClient) GetPodContainerMetric(ctx context.Context, pod corev1
 
 func (c *KPAMetricsClient) GetMetricsFromPods(ctx context.Context, pods []corev1.Pod, metricName string, metricPort int) ([]float64, error) {
 	return GetMetricsFromPods(ctx, c.fetcher, pods, metricName, metricPort)
+}
+
+func (c *KPAMetricsClient) GetMetricFromSource(ctx context.Context, source autoscalingv1alpha1.MetricSource) (float64, error) {
+	// Retrieve metrics from a list of pods
+	return c.fetcher.FetchMetric(ctx, source.Endpoint, source.Path, source.Name)
 }
 
 type APAMetricsClient struct {
@@ -201,6 +216,10 @@ func (c *APAMetricsClient) UpdateMetricIntoWindow(metricKey NamespaceNameMetric,
 }
 
 func (c *APAMetricsClient) UpdatePodListMetric(metricValues []float64, metricKey NamespaceNameMetric, now time.Time) error {
+	return c.UpdateMetrics(now, metricKey, metricValues...)
+}
+
+func (c *APAMetricsClient) UpdateMetrics(now time.Time, metricKey NamespaceNameMetric, metricValues ...float64) error {
 	// Calculate the total value from the retrieved metrics
 	var sumMetricValue float64
 	for _, metricValue := range metricValues {
@@ -215,7 +234,7 @@ func (c *APAMetricsClient) UpdatePodListMetric(metricValues []float64, metricKey
 	if err != nil {
 		return err
 	}
-	klog.InfoS("Update pod list metrics", "metricKey", metricKey, "podListNum", len(metricValues), "timestamp", now, "metricValue", sumMetricValue)
+	klog.InfoS("Update pod list metrics", "metricKey", metricKey, "valueNum", len(metricValues), "timestamp", now, "metricValue", sumMetricValue)
 	return nil
 }
 
@@ -243,4 +262,8 @@ func (c *APAMetricsClient) GetPodContainerMetric(ctx context.Context, pod corev1
 
 func (c *APAMetricsClient) GetMetricsFromPods(ctx context.Context, pods []corev1.Pod, metricName string, metricPort int) ([]float64, error) {
 	return GetMetricsFromPods(ctx, c.fetcher, pods, metricName, metricPort)
+}
+
+func (c *APAMetricsClient) GetMetricFromSource(ctx context.Context, source autoscalingv1alpha1.MetricSource) (float64, error) {
+	return c.fetcher.FetchMetric(ctx, source.Endpoint, source.Path, source.Name)
 }

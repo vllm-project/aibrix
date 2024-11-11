@@ -23,6 +23,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	v1 "k8s.io/api/core/v1"
+
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 )
 
 // NamespaceNameMetric contains the namespace, name and the metric name
@@ -60,5 +62,10 @@ type MetricClient interface {
 
 	GetMetricsFromPods(ctx context.Context, pods []v1.Pod, metricName string, metricPort int) ([]float64, error)
 
+	GetMetricFromSource(ctx context.Context, source autoscalingv1alpha1.MetricSource) (float64, error)
+
+	// Obsoleted, please use UpdateMetrics
 	UpdatePodListMetric(metricValues []float64, metricKey NamespaceNameMetric, now time.Time) error
+
+	UpdateMetrics(now time.Time, metricKey NamespaceNameMetric, metricValues ...float64) error
 }

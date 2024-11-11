@@ -606,7 +606,12 @@ func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context,
 	}
 
 	logger.V(4).Info("Obtained selector and get ReadyPodsCount", "selector", labelsSelector, "originalReadyPodsCount", originalReadyPodsCount)
-	metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.TargetMetric)
+	var metricKey metrics.NamespaceNameMetric
+	if len(pa.Spec.MetricsSources) > 0 {
+		metricKey = metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.MetricsSources[0].Name)
+	} else {
+		metricKey = metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.TargetMetric)
+	}
 
 	// Calculate the desired number of pods using the autoscaler logic.
 	autoScaler, ok := r.AutoscalerMap[pa.Spec.ScalingStrategy]
@@ -636,6 +641,17 @@ func (r *PodAutoscalerReconciler) updateScalerSpec(ctx context.Context, pa autos
 
 func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (err error) {
 	currentTimestamp := time.Now()
+
+	autoScaler, ok := r.AutoscalerMap[pa.Spec.ScalingStrategy]
+	if !ok {
+		return fmt.Errorf("unsupported scaling strategy: %s", pa.Spec.ScalingStrategy)
+	}
+
+	for _, source := range pa.Spec.MetricsSources {
+		metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, source.Name)
+		return autoScaler.UpdateSourceMetrics(ctx, metricKey, source, currentTimestamp)
+	}
+
 	// Retrieve the selector string from the Scale object's Status,
 	// and convert *metav1.LabelSelector object to labels.Selector structure
 	labelsSelector, err := extractLabelSelector(scale)
@@ -655,12 +671,9 @@ func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa 
 	metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.TargetMetric)
 
 	// Update targets
-	autoScaler, ok := r.AutoscalerMap[pa.Spec.ScalingStrategy]
-	if !ok {
-		return fmt.Errorf("unsupported scaling strategy: %s", pa.Spec.ScalingStrategy)
-	}
 	if err := autoScaler.UpdateScaleTargetMetrics(ctx, metricKey, podList.Items, currentTimestamp); err != nil {
 		return err
 	}
+
 	return nil
 }

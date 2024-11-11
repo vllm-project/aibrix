@@ -307,6 +307,15 @@ func (k *KpaAutoscaler) UpdateScaleTargetMetrics(ctx context.Context, metricKey 
 	return nil
 }
 
+func (k *KpaAutoscaler) UpdateSourceMetrics(ctx context.Context, metricKey metrics.NamespaceNameMetric, source autoscalingv1alpha1.MetricSource, now time.Time) error {
+	metricValue, err := k.metricClient.GetMetricFromSource(ctx, source)
+	if err != nil {
+		return err
+	}
+
+	return k.metricClient.UpdateMetrics(now, metricKey, metricValue)
+}
+
 func (k *KpaAutoscaler) UpdateScalingContext(pa autoscalingv1alpha1.PodAutoscaler) error {
 	k.specMux.Lock()
 	defer k.specMux.Unlock()

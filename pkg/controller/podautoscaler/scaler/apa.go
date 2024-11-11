@@ -127,6 +127,15 @@ func (a *ApaAutoscaler) UpdateScaleTargetMetrics(ctx context.Context, metricKey 
 	return nil
 }
 
+func (a *ApaAutoscaler) UpdateSourceMetrics(ctx context.Context, metricKey metrics.NamespaceNameMetric, source autoscalingv1alpha1.MetricSource, now time.Time) error {
+	metricValue, err := a.metricClient.GetMetricFromSource(ctx, source)
+	if err != nil {
+		return err
+	}
+
+	return a.metricClient.UpdateMetrics(now, metricKey, metricValue)
+}
+
 func (a *ApaAutoscaler) UpdateScalingContext(pa autoscalingv1alpha1.PodAutoscaler) error {
 	a.specMux.Lock()
 	defer a.specMux.Unlock()
