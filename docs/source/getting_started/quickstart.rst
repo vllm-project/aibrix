@@ -27,6 +27,7 @@ Save yaml as `deployment.yaml` and run `kubectl apply -f deployment.yaml`.
     kind: Deployment
     metadata:
       labels:
+        # Note: The label value `model.aibrix.ai/name` here must match with the service name.
         model.aibrix.ai/name: llama-2-7b-hf
         model.aibrix.ai/port: "8000"
         adapter.model.aibrix.ai/enabled: true
@@ -59,7 +60,8 @@ Save yaml as `deployment.yaml` and run `kubectl apply -f deployment.yaml`.
                 - --model
                 - meta-llama/Llama-2-7b-hf
                 - --served-model-name
-                - meta-llama/llama-2-7b-hf
+                # Note: The `--served-model-name` argument value must also match the Service name and the Deployment label `model.aibrix.ai/name`
+                - llama-2-7b-hf
                 - --trust-remote-code
                 - --enable-lora
               env:
@@ -113,6 +115,7 @@ Save yaml as `service.yaml` and run `kubectl apply -f service.yaml`.
     kind: Service
     metadata:
       labels:
+        # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
         model.aibrix.ai/name: llama-2-7b-hf
         prometheus-discovery: "true"
       annotations:
@@ -133,6 +136,14 @@ Save yaml as `service.yaml` and run `kubectl apply -f service.yaml`.
       selector:
         model.aibrix.ai/name: llama-2-7b-hf
       type: ClusterIP
+
+.. note::
+
+   Ensure that:
+
+   1. The `Service` name matches the `model.aibrix.ai/name` label value in the `Deployment`.
+   2. The `--served-model-name` argument value in the `Deployment` command is also consistent with the `Service` name and `model.aibrix.ai/name` label.
+
 
 Register a user to authenticate the gateway
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
