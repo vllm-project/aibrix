@@ -33,6 +33,11 @@ __pycache__
 docs/build/
 !**/*.template.rst
 
+# benchmark logs, result and figs
+benchmarks/autoscaling/logs
+benchmarks/autoscaling/output_stats
+benchmarks/autoscaling/workload_plot
+
 docs/development/simulator/.venv
 docs/development/simulator/simulator_output
 docs/development/simulator/cache

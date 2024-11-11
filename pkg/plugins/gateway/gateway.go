@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -46,6 +47,7 @@ import (
 var (
 	defaultRPM           = 100
 	defaultTPMMultiplier = 1000
+	routingStrategies    = []string{"random", "least-request", "throughput"}
 )
 
 type Server struct {
@@ -65,8 +67,8 @@ func NewServer(redisClient *redis.Client, c kubernetes.Interface) *Server {
 	r := ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
 	routers := map[string]routing.Router{
 		"random":        routing.NewRandomRouter(),
-		"least-request": routing.NewLeastRequestRouter(r),
-		"throughput":    routing.NewThroughputRouter(r),
+		"least-request": routing.NewLeastRequestRouter(),
+		"throughput":    routing.NewThroughputRouter(),
 	}
 
 	return &Server{
@@ -140,6 +142,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	klog.Info("\n\n")
 	klog.Info("-- In RequestHeaders processing ...")
 	var username, routingStrategy string
+	var headerBasedRoutingStrategyEnabled bool
 	var user utils.User
 	var rpm int64
 	var err error
@@ -152,11 +155,16 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		}
 		if strings.ToLower(n.Key) == "routing-strategy" {
 			routingStrategy = string(n.RawValue)
+			headerBasedRoutingStrategyEnabled = true
 		}
 	}
 
-	if routingStrategy == "" {
-		routingStrategy = utils.GetEnv("ROUTING_ALGORITHM", "")
+	if !validateRoutingStrategy(routingStrategy, headerBasedRoutingStrategyEnabled) {
+		return generateErrorResponse(
+			envoyTypePb.StatusCode_BadRequest,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: "x-incorrect-routing-strategy", RawValue: []byte(routingStrategy),
+			}}}, ""), utils.User{}, rpm, routingStrategy
 	}
 
 	if username != "" {
@@ -213,11 +221,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			"error processing request body"), targetPodIP
 	}
 
-	if model, ok = jsonMap["model"].(string); !ok || model == "" {
+	if model, ok = jsonMap["model"].(string); !ok || model == "" || !s.cache.CheckModelExists(model) {
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-no-model", RawValue: []byte("true")}}},
-			"no model in request body"), targetPodIP
+				Key: "x-no-model", RawValue: []byte(model)}}},
+			"no model in request body or model does not exist"), targetPodIP
 	}
 
 	headers := []*configPb.HeaderValueOption{}
@@ -240,7 +248,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		}
 
 		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods)
-		if targetPodIP == "" || err != nil {
+		if err != nil {
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
@@ -468,6 +476,23 @@ func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, po
 	}
 
 	return route.Route(ctx, pods)
+}
+
+func validateRoutingStrategy(routingStrategy string, headerBasedRoutingStrategyEnabled bool) bool {
+	routingStrategy = strings.TrimSpace(routingStrategy)
+	if headerBasedRoutingStrategyEnabled && routingStrategy == "" {
+		return false
+	}
+
+	if routingStrategy == "" {
+		routingStrategy = utils.GetEnv("ROUTING_ALGORITHM", "")
+	}
+
+	if routingStrategy != "" && !slices.Contains(routingStrategies, routingStrategy) {
+		return false
+	}
+
+	return true
 }
 
 func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, body string) *extProcPb.ProcessingResponse {

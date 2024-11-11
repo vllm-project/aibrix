@@ -13,12 +13,12 @@
 # limitations under the License.
 
 import asyncio
-from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE
 
 import aibrix.batch.storage as _storage
-from aibrix.batch.scheduler import JobScheduler
+from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE
 from aibrix.batch.job_manager import JobManager
 from aibrix.batch.request_proxy import RequestProxy
+from aibrix.batch.scheduler import JobScheduler
 
 
 class BatchDriver:
@@ -26,6 +26,7 @@ class BatchDriver:
         """
         This is main entrance to bind all components to serve job requests.
         """
+        _storage.initialize_storage()
         self._storage = _storage
         self._job_manager = JobManager()
         self._scheduler = JobScheduler(self._job_manager, DEFAULT_JOB_POOL_SIZE)

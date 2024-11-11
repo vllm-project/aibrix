@@ -7,6 +7,21 @@ spec:
   provider:
     type: Kubernetes
     kubernetes:
+      envoyService:
+        patch:
+          type: StrategicMerge
+          value:
+            metadata:
+              annotations:
+                service.beta.kubernetes.io/volcengine-loadbalancer-address-type: "PRIVATE"
+            spec:
+              ipFamilies:
+                - IPv4
+                - IPv6
+              ipFamilyPolicy: PreferDualStack
       envoyDeployment:
+        pod:
+          annotations:
+            vci.vke.volcengine.com/pod-ip-family: dualstack
         container:
           image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy:distroless-v1.31.0

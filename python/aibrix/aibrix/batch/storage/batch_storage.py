@@ -14,12 +14,29 @@
 
 import uuid
 
-from aibrix.batch.storage.generic_storage import LocalDiskFiles
+from aibrix.batch.storage.generic_storage import LocalDiskFiles, StorageType
+
+# [TODO] Add S3 as another storage
+from aibrix.batch.storage.tos_storage import TOSStorage
 
 current_job_offsets = {}
 job_input_requests = {}
-p_storage = LocalDiskFiles()
+p_storage = None
 NUM_REQUESTS_PER_READ = 1024
+
+
+def initialize_batch_storage(storage_type=StorageType.LocalDiskFile, params={}):
+    """Initialize storage type. Now it support files and TOS.
+
+    For some storage type, user needs to pass in other parameters to params.
+    """
+    global p_storage
+    if storage_type == StorageType.LocalDiskFile:
+        p_storage = LocalDiskFiles()
+    elif storage_type == StorageType.TOS:
+        p_storage = TOSStorage(**params)
+    else:
+        raise ValueError("Unknown storage type")
 
 
 def upload_input_data(inputDataFileName):

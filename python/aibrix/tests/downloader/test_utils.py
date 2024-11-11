@@ -14,9 +14,11 @@
 
 
 import os
-from pathlib import Path
 import tempfile
+from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from aibrix import envs
 from aibrix.config import DOWNLOAD_CACHE_DIR
@@ -28,7 +30,6 @@ from aibrix.downloader.utils import (
     need_to_download,
     save_meta_data,
 )
-import pytest
 
 
 def prepare_file_and_meta_data(file_path, meta_path, file_size, etag):

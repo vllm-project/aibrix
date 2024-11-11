@@ -3,6 +3,7 @@ import json
 import os
 import random
 import time
+from datetime import datetime
 from typing import List, Optional, Tuple, Dict
 
 import openai
@@ -21,20 +22,48 @@ try:
 except ImportError:
     from backend_request_func import get_tokenizer
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
+
+def setup_logging(log_filename, level=logging.INFO):
+    """
+    Set the global log configuration. The logs will be written into the specified file and output to the console.
+
+    :param log_filename: logging output file
+    """
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    if not os.path.exists((log_dir := os.path.dirname(log_filename))):
+        os.makedirs(log_dir, exist_ok=True)
+
+    logger = logging.getLogger()
+    logger.setLevel(level)
+
+    # create a handler to file
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setLevel(level)
+
+    # create a handler to console
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
+
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    logging.info(f"save log to {log_filename}")
 
 
 # Function to wrap the prompt into OpenAI's chat completion message format.
 def wrap_prompt_as_chat_message(prompt: str):
     """
     Wrap the prompt into OpenAI's chat completion message format.
-    
+
     :param prompt: The user prompt to be converted.
     :return: A list containing chat completion messages.
     """
@@ -96,6 +125,7 @@ PROMPT = "You are a helpful assistant in recognizes the content of tables in mar
 # Asynchronous request handler
 async def send_request(client, model, endpoint, prompt, output_file):
     start_time = asyncio.get_event_loop().time()
+    start_ts = time.time()
     try:
         response = await client.chat.completions.create(
             model=model,
@@ -113,24 +143,34 @@ async def send_request(client, model, endpoint, prompt, output_file):
         result = {
             "model": model,
             "endpoint": endpoint,
+            "start_timestamp": start_ts,
+            "latency": latency,
             "output": output_text,
             "prompt_tokens": prompt_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
-            "latency": latency,
-            "throughput": throughput
+            "throughput": throughput,
         }
-
-        # Write result to JSONL file
-        output_file.write(json.dumps(result) + "\n")
-        output_file.flush()  # Ensure data is written immediately to the file
 
         logging.info(
             f"Request for {model} completed in {latency:.2f} seconds with throughput {throughput:.2f} tokens/s, answer: {output_text[:30]}...")
         return result
     except Exception as e:
         logging.error(f"Error sending request to {model} at {endpoint}: {str(e)}")
+        result = {
+            "model": model,
+            "endpoint": endpoint,
+            "start_timestamp": start_ts,
+            "latency": asyncio.get_event_loop().time() - start_time,
+            "start_time": start_time,
+            "error": str(e),
+        }
         return None
+    finally:
+        # Write result to JSONL file
+        output_file.write(json.dumps(result) + "\n")
+        output_file.flush()  # Ensure data is written immediately to the file
+
 
 
 # Benchmark requests and log results into the specified file
@@ -195,12 +235,17 @@ def sample_sharegpt_requests(
 
 
 def main(args):
+    WORKLOAD_MODE = args.concurrency is not None
     tokenizer = get_tokenizer(args.model, trust_remote_code=True)
     if args.dataset_path is not None:
         logging.info(f"Start to sample {args.num_prompts} prompts from {args.dataset_path}")
+        num_prompts = args.num_prompts
+        if WORKLOAD_MODE:
+            # length * avearge bar
+            num_prompts = int(args.w_B * args.w_duration_sec / args.w_interval_sec)
         input_requests = sample_sharegpt_requests(
             dataset_path=args.dataset_path,
-            num_requests=args.num_prompts,
+            num_requests=num_prompts,
             tokenizer=tokenizer,
             fixed_output_len=args.sharegpt_output_len,
         )
@@ -214,7 +259,7 @@ def main(args):
     openai_clients = build_openai_clients(openai_endpoints)
 
     start_time = time.time()
-    if args.concurrency is not None:
+    if WORKLOAD_MODE:
         logging.info(f"Starting benchmark for {args.num_prompts} prompts with deployment {args.deployment_endpoints}")
         asyncio.run(benchmark_requests(openai_clients, openai_endpoints, input_requests, args.num_prompts, args.concurrency,
                                        args.output_file_path))
@@ -230,8 +275,7 @@ def main(args):
         )
         # if you want to see the workload traffic trend
         plot_workload({"llm": workloads}, interval_sec=interval_sec,
-                      output_path=f"workload_A{args.w_A}_B{args.w_B}_P{args.w_period}_"
-                                  f"D{args.w_duration_sec}s_I{interval_sec}s.png")
+                      output_path=f"workload_plot/{identifier}.png")
         next_start = start_time + interval_sec
         for idx, each_input_requests in enumerate(workloads):
 
@@ -242,7 +286,7 @@ def main(args):
                 asyncio.run(benchmark_requests(openai_clients, openai_endpoints, each_input_requests, len(each_input_requests),
                                                len(each_input_requests), args.output_file_path))
 
-        # wait until passing args.w_interval_sec
+            # wait until passing args.w_interval_sec
             wait_time = next_start - time.time()
             if wait_time > 0:
                 time.sleep(wait_time)
@@ -275,4 +319,14 @@ if __name__ == "__main__":
 
     parser = EngineArgs.add_cli_args(parser)
     args = parser.parse_args()
+
+    if args.concurrency is not None:
+        identifier = f"onestep_np{args.num_prompts}_c{args.concurrency}"
+    else:
+        identifier = f"workload_A{args.w_A}_B{args.w_B}_P{args.w_period}_D{args.w_duration_sec}s_I{args.w_interval_sec}s"
+    identifier += "_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    args.output_file_path = f"output_stats/output_{identifier}.jsonl"
+    os.makedirs(os.path.dirname(args.output_file_path), exist_ok=True)
+
+    setup_logging(f'logs/bench_{identifier}.log')
     main(args)

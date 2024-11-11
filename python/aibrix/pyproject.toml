@@ -30,6 +30,10 @@ packages = [
 ]
 exclude = ["test"]
 
+[tool.poetry.scripts]
+aibrix_runtime = 'aibrix.app:main'
+aibrix_download = 'aibrix.downloader.__main__:main'
+
 [tool.poetry.dependencies]
 python = ">=3.8,<3.12"
 huggingface-hub = "^0.24.6"
@@ -45,8 +49,8 @@ hf-transfer = "^0.1.8"
 
 
 [tool.poetry.group.dev.dependencies]
-mypy = "^1.11.1"
-ruff = "^0.6.1"
+mypy = "1.11.1"
+ruff = "0.6.1"
 pytest = "^8.3.2"
 
 [build-system]
@@ -55,3 +59,18 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.mypy]
 ignore_missing_imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+ignore = []
+
+# Allow fix for all enabled rules (when `--fix`) is provided.
+fixable = ["ALL"]
+unfixable = []
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"

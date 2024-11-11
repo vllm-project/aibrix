@@ -2,16 +2,16 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    models.aibricks.ai: deepseek-coder-6.7b-instruct
-    models.aibricks.com/model-name: deepseek-coder-6.7b-instruct
+    model.aibrix.ai/name: deepseek-coder-7b-instruct
+    model.aibrix.ai/port: "8000"
     adapter.model.aibrix.ai/enabled: "true"
-  name: aibricks-model-deepseek-coder-6.7b-instruct
+  name: aibrix-model-deepseek-coder-7b-instruct
   namespace: default
 spec:
   replicas: 1
   selector:
     matchLabels:
-      models.aibricks.ai: deepseek-coder-6.7b-instruct
+      model.aibrix.ai/name: deepseek-coder-7b-instruct
   strategy:
     rollingUpdate:
       maxSurge: 25%
@@ -20,7 +20,7 @@ spec:
   template:
     metadata:
       labels:
-        models.aibricks.ai: deepseek-coder-6.7b-instruct
+        model.aibrix.ai/name: deepseek-coder-7b-instruct
     spec:
       containers:
       - command:
@@ -32,9 +32,9 @@ spec:
         - --port
         - "8000"
         - --model
-        - /models/deepseek-coder-6.7b-instruct
+        - /models/deepseek-coder-7b-instruct
         - --served-model-name
-        - deepseek-ai/deepseek-coder-6.7b-instruct
+        - deepseek-coder-7b-instruct
         - --distributed-executor-backend
         - ray
         - --trust-remote-code
@@ -78,8 +78,9 @@ spec:
       - name: aibrix-runtime
         image: aibrix/runtime:latest
         command:
-        - bash
-        - entrypoint.sh
+        - aibrix_runtime
+        - --port
+        - "8080"
         ports:
         - containerPort: 8080
           protocol: TCP
@@ -98,7 +99,7 @@ spec:
         - --local-dir
         - /models/
         - --model-name
-        - deepseek-coder-6.7b-instruct
+        - deepseek-coder-7b-instruct
         env:
         - name: DOWNLOADER_ALLOW_FILE_SUFFIX
           value: json, safetensors
@@ -125,12 +126,12 @@ apiVersion: v1
 kind: Service
 metadata:
   labels:
-    models.aibricks.ai: deepseek-coder-6.7b-instruct
+    model.aibrix.ai/name: deepseek-coder-7b-instruct
     prometheus-discovery: "true"
   annotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8080"
-  name: aibricks-model-deepseek-coder-6-7b-instruct-svc
+  name: deepseek-coder-7b-instruct
   namespace: default
 spec:
   ports:
@@ -138,10 +139,6 @@ spec:
     port: 8000
     protocol: TCP
     targetPort: 8000
-  - name: http
-    port: 8080
-    protocol: TCP
-    targetPort: 8080
   selector:
-    models.aibricks.ai: deepseek-coder-6.7b-instruct
+    model.aibrix.ai/name: deepseek-coder-7b-instruct
   type: ClusterIP
