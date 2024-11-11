@@ -142,7 +142,6 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	klog.Info("\n\n")
 	klog.Info("-- In RequestHeaders processing ...")
 	var username, routingStrategy string
-	var routingStrategyEnabled bool
 	var user utils.User
 	var rpm int64
 	var err error
@@ -155,11 +154,14 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		}
 		if strings.ToLower(n.Key) == "routing-strategy" {
 			routingStrategy = string(n.RawValue)
-			routingStrategyEnabled = true
 		}
 	}
 
-	if !validateRoutingStrategy(routingStrategy, routingStrategyEnabled) {
+	if routingStrategy == "" {
+		routingStrategy = utils.GetEnv("ROUTING_ALGORITHM", "")
+	}
+
+	if !slices.Contains(routingStrategies, routingStrategy) {
 		return generateErrorResponse(
 			envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
@@ -476,23 +478,6 @@ func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, po
 	}
 
 	return route.Route(ctx, pods)
-}
-
-func validateRoutingStrategy(routingStrategy string, routingStrategyEnabled bool) bool {
-	routingStrategy = strings.TrimSpace(routingStrategy)
-	if routingStrategyEnabled && routingStrategy == "" {
-		return false
-	}
-
-	if routingStrategy == "" {
-		routingStrategy = utils.GetEnv("ROUTING_ALGORITHM", "")
-	}
-
-	if routingStrategy != "" && !slices.Contains(routingStrategies, routingStrategy) {
-		return false
-	}
-
-	return true
 }
 
 func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, body string) *extProcPb.ProcessingResponse {

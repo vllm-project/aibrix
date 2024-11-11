@@ -1,17 +1,10 @@
 import argparse
 import os
 import shutil
-from pathlib import Path
 import time
+from pathlib import Path
 from urllib.parse import urljoin
 
-from aibrix.config import EXCLUDE_METRICS_HTTP_ENDPOINTS
-from aibrix.metrics.metrics import (
-    HTTP_COUNTER_METRICS,
-    HTTP_LATENCY_METRICS,
-    INFO_METRICS,
-    REGISTRY,
-)
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.datastructures import State
@@ -20,9 +13,16 @@ from prometheus_client import make_asgi_app, multiprocess
 from starlette.routing import Mount
 
 from aibrix import __version__, envs
+from aibrix.config import EXCLUDE_METRICS_HTTP_ENDPOINTS
 from aibrix.logger import init_logger
 from aibrix.metrics.engine_rules import get_metric_standard_rules
 from aibrix.metrics.http_collector import HTTPCollector
+from aibrix.metrics.metrics import (
+    HTTP_COUNTER_METRICS,
+    HTTP_LATENCY_METRICS,
+    INFO_METRICS,
+    REGISTRY,
+)
 from aibrix.openapi.engine.base import InferenceEngine, get_inference_engine
 from aibrix.openapi.protocol import (
     ErrorResponse,

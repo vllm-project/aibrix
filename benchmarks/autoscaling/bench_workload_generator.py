@@ -1,5 +1,6 @@
 import logging
 import math
+import os
 import random
 from typing import List, Any
 
@@ -108,6 +109,7 @@ def plot_workload(workload_dict, interval_sec, output_path: str = None):
     if output_path is None:
         plt.show()
     else:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         plt.savefig(output_path)
         logging.info(f'Saved workload plot to {output_path}')
 

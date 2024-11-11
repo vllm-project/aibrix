@@ -14,9 +14,8 @@
 
 import json
 import os
-from enum import Enum
 from abc import ABC, abstractmethod
-
+from enum import Enum
 
 LOCAL_STORAGE_PATH_VAR = "LOCAL_STORAGE_PATH"
 

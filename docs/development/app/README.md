@@ -1,4 +1,8 @@
-## Mocked vLLM application
+# Mocked vLLM application
+
+Before you move forward, you should follow the README.md to deploy aibrix first.
+
+## Mocked App Deployment
 
 1. Builder mocked base model image
 ```dockerfile
@@ -9,13 +13,28 @@ docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
 kind load docker-image aibrix/vllm-mock:nightly
 ```
 
-2. Deploy mocked model image
+1. Deploy mocked model image
 ```shell
 kubectl apply -f docs/development/app/deployment.yaml
-kubectl -n aibrix-system port-forward svc/llama2-70b 8000:8000 &
+
+# you can run following command to delete the deployment 
+kubectl delete -f docs/development/app/deployment.yaml
 ```
 
-## Test python app separately
+1. Get the service endpoint
+
+You can two options to expose the service:
+
+```shell
+# Option 1: Port forward the envoy service
+kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8000:80 &
+
+# Option 2: Port forward the model service
+kubectl -n default port-forward svc/llama2-70b 8000:8000 &
+```
+
+
+1. Test model invocation
 
 ```shell
 curl http://localhost:8000/v1/chat/completions \
@@ -28,44 +47,8 @@ curl http://localhost:8000/v1/chat/completions \
    }'
 ```
 
-```shell
-kubectl delete -f docs/development/app/deployment.yaml
-```
+## Testing Gateway rpm/tpm configs
 
-
-## Test with envoy gateway
-
-Install envoy gateway and setup HTTP Route
-```shell
-- if setting up from scratch
-
-make docker-build && make docker-build-plugins
-make install && make deploy
-
-OR
-
-- if only want to test gateway plugins
-
-docker build -t aibrix/plugins:v0.1.0 -f Dockerfile.gateway .
-kind load docker-image aibrix/plugins:v0.1.0
-
-kubectl -n aibrix-system apply -f docs/development/app/redis.yaml
-kubectl -n aibrix-system apply -f docs/development/app/gateway-plugin.yaml
-```
-
-Check status
-```shell
-helm status eg -n envoy-gateway-system
-
-helm get all eg -n envoy-gateway-system
-```
-
-Port forward to the Envoy service:
-```shell
-kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc  8888:80 &
-```
-
-# Add rpm/tpm config 
 ```shell
 # note: not mandatory to create user to access gateway API
 
@@ -126,16 +109,6 @@ for i in {1..10}; do
    }' &
 done
 ```
-
-
-Delete envoy gateway and corresponding objects
-```shell
-kubectl -n aibrix-system delete -f docs/development/app/gateway-plugin.yaml
-kubectl -n aibrix-system delete -f docs/development/app/redis.yaml
-OR
-make undeploy && make uninstall
-```
-
 
 ## Test Metrics
 

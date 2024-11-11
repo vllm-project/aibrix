@@ -72,7 +72,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 		Scheme:         mgr.GetScheme(),
 		EventRecorder:  mgr.GetEventRecorderFor("PodAutoscaler"),
 		Mapper:         mgr.GetRESTMapper(),
-		resyncInterval: 30 * time.Second, // TODO: this should be override by an environment variable
+		resyncInterval: 10 * time.Second, // TODO: this should be override by an environment variable
 		eventCh:        make(chan event.GenericEvent),
 	}
 

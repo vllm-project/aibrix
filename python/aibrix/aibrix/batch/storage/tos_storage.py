@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
-import tos
-from io import StringIO
 import json
+import logging
+from io import StringIO
+
+import tos
+
 from aibrix.batch.storage.generic_storage import PersistentStorage
 
 

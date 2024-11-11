@@ -157,7 +157,7 @@ metadata:
   annotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8000"
-  name: aibrix-deepseek-coder-7b-instruct-svc
+  name: deepseek-coder-7b-instruct
   namespace: default
 spec:
   ports:

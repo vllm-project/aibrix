@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from enum import Enum
-import time
 import asyncio
 import bisect
 import queue
+import time
 from abc import ABC, abstractmethod
+from enum import Enum
 
-from aibrix.batch.constant import EXPIRE_INTERVAL, DEFAULT_JOB_POOL_SIZE
+from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE, EXPIRE_INTERVAL
 from aibrix.batch.job_manager import JobStatus
 
 

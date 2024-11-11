@@ -202,6 +202,14 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 
 	isOverPanicThreshold := dppc/readyPodsCount >= spec.PanicThreshold
 
+	klog.V(4).InfoS("--- KPA Details", "readyPodsCount", readyPodsCount,
+		"MaxScaleUpRate", spec.MaxScaleUpRate, "MaxScaleDownRate", spec.MaxScaleDownRate,
+		"TargetValue", spec.TargetValue, "PanicThreshold", spec.PanicThreshold,
+		"StableWindow", spec.StableWindow, "ScaleDownDelay", spec.ScaleDownDelay,
+		"dppc", dppc, "dspc", dspc, "desiredStablePodCount", desiredStablePodCount,
+		"PanicThreshold", spec.PanicThreshold, "isOverPanicThreshold", isOverPanicThreshold,
+	)
+
 	if k.panicTime.IsZero() && isOverPanicThreshold {
 		// Begin panicking when we cross the threshold in the panic window.
 		klog.InfoS("Begin panicking")
@@ -221,10 +229,10 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 		// In some edgecases stable window metric might be larger
 		// than panic one. And we should provision for stable as for panic,
 		// so pick the larger of the two.
+		klog.InfoS("Operating in panic mode.", "desiredPodCount", desiredPodCount, "desiredPanicPodCount", desiredPanicPodCount)
 		if desiredPodCount < desiredPanicPodCount {
 			desiredPodCount = desiredPanicPodCount
 		}
-		klog.InfoS("Operating in panic mode.")
 		// We do not scale down while in panic mode. Only increases will be applied.
 		if desiredPodCount > k.maxPanicPods {
 			klog.InfoS("Increasing pods count.", "originalPodCount", originalReadyPodsCount, "desiredPodCount", desiredPodCount)
@@ -243,6 +251,7 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	// not the same in the case where two Scale()s happen in the same time
 	// interval (because the largest will be picked rather than the most recent
 	// in that case).
+	klog.V(4).InfoS("DelayWindow details", "delayWindow", k.delayWindow.String())
 	if k.delayWindow != nil {
 		k.delayWindow.Record(now, float64(desiredPodCount))
 		delayedPodCount, err := k.delayWindow.Max()
