@@ -21,12 +21,13 @@ from kubernetes import client, config, watch
 import uvicorn
 import redis
 
-from loadmonitor.monitor import ModelMonitor
+from loadmonitor.monitor import ModelMonitor, DeploymentStates
 from loadmonitor.loadreader import GatewayLoadReader
 from utils import ExcludePathsFilter
 
 NAMESPACE = os.getenv('NAMESPACE', 'aibrix-system')
 MODEL_LABEL = "model.aibrix.ai/name"
+MIN_REPLICAS_LABEL = "model.aibrix.ai/min_replicas"
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 
@@ -56,34 +57,43 @@ def validate_model(deployment) -> Tuple[str, Optional[ModelMonitor]]:
     else:
         return model_name, None
 
+def new_deployment(deployment):
+    """Return a new DeploymentStates object from the deployment."""
+    min_replicas = 0
+    labels = deployment.metadata.labels
+    if labels:
+        label = labels.get(MIN_REPLICAS_LABEL)
+        if label:
+            min_replicas = int(label)
+    
+    return DeploymentStates(deployment.metadata.name, 
+                            deployment.spec.replicas if deployment.spec.replicas is not None else 0,
+                            min_replicas,
+                            )
 
-def start_serving_thread(watch_ver, deployment, new_deployment: bool) -> bool:
+def start_serving_thread(watch_ver, deployment, watch_event: bool) -> bool:
     """Start model monitor, returns True if a new server thread is created, False otherwise."""
     model_name, model_monitor = validate_model(deployment)
 
     # Get deployment specs
     deployment_name = deployment.metadata.name
     namespace = deployment.metadata.namespace
-    replicas = deployment.spec.replicas
-    if not replicas:
-        replicas = 1
     
-    #TODO: Update profile if key exists
-
+    #Update profile if key exists
     if model_monitor != None:
-        model_monitor.add_deployment(watch_ver, deployment_name, namespace, replicas)
+        model_monitor.add_deployment(watch_ver, deployment_name, namespace, 
+                                     lambda: new_deployment(deployment))
         logger.info(f"Deployment \"{deployment_name}\" added to the model monitor for \"{model_name}\"")
         return False
 
     reader = GatewayLoadReader(redis_client, model_name)
-    model_monitor = ModelMonitor(model_name, watch_ver, reader,              
-                                 deployment_name=deployment_name, 
+    model_monitor = ModelMonitor(model_name, watch_ver, reader,
+                                 deployment=new_deployment(deployment), 
                                  namespace=namespace, 
-                                 replicas=replicas, 
                                  debug=debug)
     model_monitor.start()
     model_monitors[model_name] = model_monitor
-    if new_deployment:
+    if watch_event:
         logger.info(f"New model monitor started for \"{model_name}\". Deployment \"{deployment_name}\" added.")
     else:
         logger.info(f"Model monitor started for existed \"{model_name}\". Deployment \"{deployment_name}\" added.")

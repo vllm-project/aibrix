@@ -83,7 +83,6 @@ class DataBuffer:
         if len(tokens) > self._xy.shape[0]:
             tokens = tokens[-self._xy.shape[0]:]
         
-        print(f"append: {len(tokens)} tokens to [{self._commited}:{self._commited+len(tokens)}], buffer size: {self._xy.shape[0]}")
         self._xy[self._commited: self._commited+len(tokens)] = tokens
         ret = DataPoints(self._xy[self._commited: self._commited+len(tokens)])
         self._head += len(tokens)

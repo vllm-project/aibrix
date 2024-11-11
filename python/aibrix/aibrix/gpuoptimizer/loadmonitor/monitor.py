@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import threading
-from typing import List, Optional, Iterable
+from typing import List, Optional, Iterable, Union, Callable
 from functools import reduce
 from datetime import datetime
 import os
@@ -41,13 +41,27 @@ debug_gpu_profile = GPUProfile(
 
 class DeploymentStates:
     """States of a deployment with resource version."""
-    def __init__(self, deployment_name: str, replicas: int, watch_ver: str):
-        self.deployment_name = deployment_name
+    def __init__(self, name: str, replicas: int = 1, min_replicas: int = 0):
+        self.name = name
         self.replicas = replicas
-        self.watch_ver = watch_ver
+        """The replicas output, ignore min_replicas in the normal mode."""
+        self.min_replicas = min_replicas
+        """The replicas for minimum mode. Ignore in normal optimization mode."""
+        self.profile: GPUProfile = None
+
+    @property
+    def cost(self):
+        return 0.0 if self.profile == None else self.profile.cost * self.replicas
+    
+    def minimize(self):
+        """Set replica to minimum mode."""
+        self.replicas = max(0, self.min_replicas)
+
+    def __repr__(self):
+        return f"{self.name}: {self.replicas}(${self.cost})"
 
 class ModelMonitor:
-    def __init__(self, model_name: str, watch_ver: str, loadreader: LoadReader, deployment_name: str = None, namespace: str = None, replicas: int = 0, interval: int = 10, window: int = 300, debug: bool = False):
+    def __init__(self, model_name: str, watch_ver: str, loadreader: LoadReader, interval: int = 10, window: int = 300,  deployment: DeploymentStates = None,namespace: str = None, debug: bool = False):
         """Initialize the model monitor.
         
         Args:
@@ -62,7 +76,7 @@ class ModelMonitor:
             debug: (optional) Whether to enable debugging behavior. Defaults to False.
         """
         self.model_name = model_name
-        self.deployments = {}
+        self.deployments: dict[str, DeploymentStates] = {}
         self.thread = None
         self.outdated_watch_version = None
         self.last_watch_version = None
@@ -84,33 +98,38 @@ class ModelMonitor:
         self._labels: Iterable[int] = Empty_Array
         self._data: Optional[DataBuffer] = None
         self._progress: float = 0.0
-        self.cost = 0.0
+        self._cost = 0.0
 
         # Add first deployment
-        if deployment_name is not None and namespace is not None:
-            self.add_deployment(watch_ver, deployment_name, namespace, replicas)
+        if deployment is not None:
+            self.add_deployment(watch_ver, deployment.name, namespace, deployment)
         
         if self.debug:
              # Add debug_gpu_profile anyway if debugging
              self._optimizer.set_profile(debug_gpu_profile)
 
-    def add_deployment(self, watch_ver: str, deployment_name: str, namespace: str, replicas: int = 0):
+    def add_deployment(self, watch_ver: str, deployment_name: str,  namespace: str, deployment: Union[DeploymentStates, Callable[[], DeploymentStates]]):
         # Update optimizer
         key = self._deployment_entry_point(deployment_name, namespace)
         profile = self._match_profile(key, deployment_name)
+        cost_diff = 0
         if profile != None:
             # No lock required here since the deployment has not been added to deployments.
             self._optimizer.set_profile(profile)
-            self._cost += profile.cost * replicas
         else:
             logger.warning(f"No GPU profile found for {key}. Optimizer will skip the GPU.")
 
         # add to deployment registry
-        if key in self.deployments:
-            self.deployments[key].watch_ver = watch_ver
-        else:
-            self.deployments[key] = DeploymentStates(deployment_name, replicas, watch_ver)
+        self._lock.acquire(blocking=True)
+        if key not in self.deployments:
+            self.deployments[key] = deployment() if callable(deployment) else deployment
+        
+        old_cost = self.deployments[key].cost
+        self.deployments[key].profile = profile
+        self.deployments[key].watch_ver = watch_ver
+        self._cost += self.deployments[key].cost - old_cost
         self.last_resource_version = watch_ver
+        self._lock.release()
 
     def remove_deployment(self, deployment_name: str, namespace: str) -> int:
         """remove deployment from monitor, return the number of deployments left."""
@@ -250,14 +269,18 @@ class ModelMonitor:
 
             # Read new tokens
             tokens = list(self._expand_records(self._loadreader.read(datetime.now().timestamp())))  # read data
-            self._data.reconcile(movingCluster.length + len(tokens)) # since databuffer.append will not expand the buffer automatically, we need to reconcile ourself.
-            dps = self._data.append(tokens)
-            movingCluster.insert(dps)
-            self._data.commit()
+            if len(tokens) > 0:
+                self._data.reconcile(movingCluster.length + len(tokens)) # since databuffer.append will not expand the buffer automatically, we need to reconcile ourself.
+                dps = self._data.append(tokens)
+                movingCluster.insert(dps)
+                self._data.commit()
 
             # track domanent token patterns
-            uncategorized = None # Set to [] for further analysis
-            self._labels, self._centers = movingCluster.get_cluster_labels(self._data.datapoints, uncategorized=uncategorized)
+            if self._data.len > 0:
+                uncategorized = None # Set to [] for further analysis
+                self._labels, self._centers = movingCluster.get_cluster_labels(self._data.datapoints, uncategorized=uncategorized)
+            else:
+                self._labels, self._centers = Empty_Array, Empty_Array
 
             n += 1
             duration = (datetime.now().timestamp() - start) * 1000
@@ -265,7 +288,11 @@ class ModelMonitor:
 
             if len(self._centers) > 0:
                 # Optimize
-                self._optimize(self._centers)
+                self._optimize(self._centers, self._data.len)
+            elif self._data.len == 0:
+                self._minimize()
+            else:
+                logger.info("Skip optimization, insufficient data")
 
             if yieldable:
                 # If yieldable, return the _run it self for further processing
@@ -307,13 +334,15 @@ class ModelMonitor:
         
         return None
     
-    def _optimize(self, centers: Iterable[Centeroid]):
-        if not self._optimizer.set_workload_distribution(centers):
+    def _optimize(self, centers: Iterable[Centeroid], total_request_rate: int):
+        if not self._optimizer.set_workload_distribution(centers, total_request_rate):
             return
 
         start = datetime.now().timestamp()
         result = self._optimizer.run()
+        duration = (datetime.now().timestamp() - start) * 1000
         if result is None:
+            logger.info(f"{self.model_name} optimization took {duration} ms, unexpected void rsult, skip.")
             return
         
         cost = result["cost"]
@@ -328,13 +357,24 @@ class ModelMonitor:
                 self._lock.release()
                 return
         # Reset replicas of all deployments.
-        for key, states in self.deployments.itmes():
+        for key, states in self.deployments.items():
             states.replicas = result[key] if key in result else 0
         self._cost = cost
         self._lock.release()
 
-        duration = (datetime.now().timestamp() - start) * 1000
-        logger.info(f"{self.model_name} optimization took {duration}ms ")
+        logger.info(f"{self.model_name} optimization took {duration} ms, cost ${self._cost}, coverage: {self.coverage}%: {list(self.deployments.values())}")
+
+    def _minimize(self):
+        # Update deployment
+        self._lock.acquire(blocking=True)
+        # Reset replicas of all deployments.
+        cost = 0.0
+        for states in self.deployments.values():
+            states.minimize() # Will apply min_replicas obligation.
+            cost += states.cost
+        self._cost = cost
+        self._lock.release()
+        logger.info(f"{self.model_name} scaled to minimum, cost ${self._cost}: {list(self.deployments.values())}")
     
     @property
     def centers(self):
@@ -359,4 +399,14 @@ class ModelMonitor:
         For dataset, it is the percentage of the data read.
         For stream, it is the time elapsed since the start of the monitor."""
         return self._loadreader.progress()
+    
+    @property
+    def cost(self) -> float:
+        """The total cost of the model."""
+        return self._cost
+    
+    @property
+    def coverage(self) -> float:
+        """The coverage of the model."""
+        return self.labeled / self._data.len * 100
     

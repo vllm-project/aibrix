@@ -28,13 +28,16 @@ class Optimizer:
         if gpu in self.config.gpu_info:
             del self.config.gpu_info[gpu]
 
-    def set_workload_distribution(self, profiles: Iterable[WorkloadProfile]) -> bool:
+    def set_workload_distribution(self, profiles: Iterable[WorkloadProfile], total_request_rate: int) -> bool:
         """Update workload distribution and return success or failure."""
-        self.config.total_request_rate = reduce(lambda cnt, center: cnt + center.rate, profiles, 0)
+        # Maintain the overall request scale disregard some request are not covered.
+        self.config.total_request_rate = total_request_rate 
+        # covered_request_rate is used to calculate the workload distribution.
+        covered_request_rate = reduce(lambda cnt, center: cnt + center.rate, profiles, 0)
         success = True
         for profile in profiles:
             try:
-                self.workload_distribution_template[self._validate_workload_index_signature(profile.signature)] = profile.rate / self.config.total_request_rate
+                self.workload_distribution_template[self._validate_workload_index_signature(profile.signature)] = profile.rate / covered_request_rate
             except Exception as e:
                 logger.error(f"Fail to set workload distribution: {profile.signature}: {e}")
                 success = False
