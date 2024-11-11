@@ -142,7 +142,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	klog.Info("\n\n")
 	klog.Info("-- In RequestHeaders processing ...")
 	var username, routingStrategy string
-	var routingStrategyEnabled bool
+	var headerBasedRoutingStrategyEnabled bool
 	var user utils.User
 	var rpm int64
 	var err error
@@ -155,11 +155,11 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		}
 		if strings.ToLower(n.Key) == "routing-strategy" {
 			routingStrategy = string(n.RawValue)
-			routingStrategyEnabled = true
+			headerBasedRoutingStrategyEnabled = true
 		}
 	}
 
-	if !validateRoutingStrategy(routingStrategy, routingStrategyEnabled) {
+	if !validateRoutingStrategy(routingStrategy, headerBasedRoutingStrategyEnabled) {
 		return generateErrorResponse(
 			envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
@@ -478,9 +478,9 @@ func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, po
 	return route.Route(ctx, pods)
 }
 
-func validateRoutingStrategy(routingStrategy string, routingStrategyEnabled bool) bool {
+func validateRoutingStrategy(routingStrategy string, headerBasedRoutingStrategyEnabled bool) bool {
 	routingStrategy = strings.TrimSpace(routingStrategy)
-	if routingStrategyEnabled && routingStrategy == "" {
+	if headerBasedRoutingStrategyEnabled && routingStrategy == "" {
 		return false
 	}
 
