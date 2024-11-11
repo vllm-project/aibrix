@@ -149,6 +149,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	var errRes *extProcPb.ProcessingResponse
 
 	h := req.Request.(*extProcPb.ProcessingRequest_RequestHeaders)
+	routingStrategy = utils.GetEnv("ROUTING_ALGORITHM", "")
 	for _, n := range h.RequestHeaders.Headers.Headers {
 		if strings.ToLower(n.Key) == "user" {
 			username = string(n.RawValue)
@@ -482,10 +483,6 @@ func validateRoutingStrategy(routingStrategy string, headerBasedRoutingStrategyE
 	routingStrategy = strings.TrimSpace(routingStrategy)
 	if headerBasedRoutingStrategyEnabled && routingStrategy == "" {
 		return false
-	}
-
-	if routingStrategy == "" {
-		routingStrategy = utils.GetEnv("ROUTING_ALGORITHM", "")
 	}
 
 	if routingStrategy != "" && !slices.Contains(routingStrategies, routingStrategy) {
