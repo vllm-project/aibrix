@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: llama2-70b
-  namespace: aibrix-system
+  namespace: default
   labels:
     model.aibrix.ai/name: "llama2-70b"
     model.aibrix.ai/port: "8000"
@@ -43,7 +43,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: llama2-70b
-  namespace: aibrix-system
+  namespace: default
 spec:
   selector:
     model.aibrix.ai/name: "llama2-70b"
@@ -58,13 +58,13 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: pod-autoscaler
-  namespace: aibrix-system
+  namespace: default
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: pod-reader
-  namespace: aibrix-system
+  namespace: default
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -74,11 +74,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: read-pods
-  namespace: aibrix-system
+  namespace: default
 subjects:
   - kind: ServiceAccount
     name: pod-autoscaler
-    namespace: aibrix-system
+    namespace: default
 roleRef:
   kind: Role
   name: pod-reader
@@ -87,7 +87,7 @@ roleRef:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  namespace: aibrix-system
+  namespace: default
   name: deployment-reader
 rules:
   - apiGroups: ["apps"]
@@ -98,11 +98,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: deployment-reader-binding
-  namespace: aibrix-system
+  namespace: default
 subjects:
   - kind: ServiceAccount
     name: pod-autoscaler
-    namespace: aibrix-system
+    namespace: default
 roleRef:
   kind: Role
   name: deployment-reader
@@ -113,7 +113,7 @@ roleRef:
 # kind: HTTPRoute
 # metadata:
 #   name: llama2-70b-router
-#   namespace: aibrix-system
+#   namespace: default
 # spec:
 #   parentRefs:
 #     - name: aibrix-eg
