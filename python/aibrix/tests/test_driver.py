@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 import asyncio
-from aibrix.batch.driver import BatchDriver
+import json
+
 from aibrix.batch.constant import EXPIRE_INTERVAL
+from aibrix.batch.driver import BatchDriver
 from aibrix.batch.job_manager import JobStatus
 
 

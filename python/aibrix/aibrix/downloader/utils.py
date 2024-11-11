@@ -19,7 +19,6 @@ from aibrix import envs
 from aibrix.config import DOWNLOAD_CACHE_DIR
 from aibrix.logger import init_logger
 
-
 logger = init_logger(__name__)
 
 

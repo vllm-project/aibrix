@@ -14,5 +14,5 @@ spec:
   minReplicas: 1
   maxReplicas: 10
   targetMetric: "vllm:gpu_cache_usage_perc"
-  targetValue: "50"
+  targetValue: "0.5"
   scalingStrategy: "KPA"

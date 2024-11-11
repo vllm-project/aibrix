@@ -25,7 +25,26 @@ At present, `vLLM` engine is supported, and in the future, `SGLang` and other in
 For more details on integrate with `vLLM`, please refer to our [Runtime docs](https://github.com/aibrix/aibrix/blob/main/docs/source/features/runtime.rst#metric-standardization).
 
 ## Contributing
-We welcome contributions from the community! Check out our [contributing guidelines](https://github.com/aibrix/aibrix/CONTRIBUTING.md) to see how you can make a difference.
+We welcome contributions from the community! Check out our [contributing guidelines](https://github.com/aibrix/aibrix/blob/main/CONTRIBUTING.md) to see how you can make a difference.
+
+### Build from source
+
+```bash
+# This may take several minutes
+pip install -e .
+```
+
+### Lint, Format and Type Check
+
+Before contribute your code, please run the following commands to ensure that your code passes the tests and linting checks.
+
+```bash
+# install dependencies
+poetry install --no-root --with dev
+
+# linting, formatting and type checking
+bash ./scripts/format.sh
+```
 
 ## License
 
