@@ -134,7 +134,7 @@ func CountReadyPods(podList *v1.PodList) (int64, error) {
 		if pod.Status.Phase == v1.PodRunning && isReady {
 			readyPodCount++
 		}
-		klog.InfoS("CountReadyPods Pod status", "name", pod.Name, "phase", pod.Status.Phase, "ready", isReady)
+		klog.V(4).InfoS("CountReadyPods Pod status", "name", pod.Name, "phase", pod.Status.Phase, "ready", isReady)
 	}
 
 	return int64(readyPodCount), nil

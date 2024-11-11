@@ -202,7 +202,7 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 
 	isOverPanicThreshold := dppc/readyPodsCount >= spec.PanicThreshold
 
-	klog.InfoS("--- KPA Details", "readyPodsCount", readyPodsCount,
+	klog.V(4).InfoS("--- KPA Details", "readyPodsCount", readyPodsCount,
 		"MaxScaleUpRate", spec.MaxScaleUpRate, "MaxScaleDownRate", spec.MaxScaleDownRate,
 		"TargetValue", spec.TargetValue, "PanicThreshold", spec.PanicThreshold,
 		"StableWindow", spec.StableWindow, "ScaleDownDelay", spec.ScaleDownDelay,
@@ -251,7 +251,7 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	// not the same in the case where two Scale()s happen in the same time
 	// interval (because the largest will be picked rather than the most recent
 	// in that case).
-	klog.InfoS("DelayWindow details", "delayWindow", k.delayWindow.String())
+	klog.V(4).InfoS("DelayWindow details", "delayWindow", k.delayWindow.String())
 	if k.delayWindow != nil {
 		k.delayWindow.Record(now, float64(desiredPodCount))
 		delayedPodCount, err := k.delayWindow.Max()

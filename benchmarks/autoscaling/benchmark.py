@@ -22,11 +22,12 @@ try:
 except ImportError:
     from backend_request_func import get_tokenizer
 
+
 def setup_logging(log_filename, level=logging.INFO):
     """
-    设置全局日志配置，日志将被写入指定的文件，并同时输出到控制台。
+    Set the global log configuration. The logs will be written into the specified file and output to the console.
 
-    :param log_filename: 日志文件的名称
+    :param log_filename: logging output file
     """
 
     logging.basicConfig(
