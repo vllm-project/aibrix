@@ -31,7 +31,7 @@ Save yaml as `deployment.yaml` and run `kubectl apply -f deployment.yaml`.
         model.aibrix.ai/port: "8000"
         adapter.model.aibrix.ai/enabled: true
       name: llama-2-7b-hf
-      namespace: aibrix-system
+      namespace: default
     spec:
       replicas: 1
       selector:
@@ -119,7 +119,7 @@ Save yaml as `service.yaml` and run `kubectl apply -f service.yaml`.
         prometheus.io/scrape: "true"
         prometheus.io/port: "8080"
       name: llama-2-7b-hf
-      namespace: aibrix-system
+      namespace: default
     spec:
       ports:
         - name: serve
