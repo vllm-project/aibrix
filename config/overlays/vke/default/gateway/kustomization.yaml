@@ -14,13 +14,13 @@ images:
   newTag: stable
 - name: aibrix/plugins
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/plugins
-  newTag: nightly
+  newTag: v0.1.0-rc.5
 - name: envoyproxy/envoy
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy
   newTag: distroless-v1.31.0
 - name: aibrix/users
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/users
-  newTag: nightly
+  newTag: v0.1.0-rc.5
 - name: redis
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/redis
   newTag: latest
