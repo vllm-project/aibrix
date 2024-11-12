@@ -110,9 +110,9 @@ func TestGetRoutingStrategy(t *testing.T) {
 
 	for _, tt := range tests {
 		if tt.setEnvRoutingStrategy {
-			os.Setenv("ROUTING_ALGORITHM", tt.envRoutingStrategy)
+			_ = os.Setenv("ROUTING_ALGORITHM", tt.envRoutingStrategy)
 		} else {
-			os.Unsetenv("ROUTING_ALGORITHM")
+			_ = os.Unsetenv("ROUTING_ALGORITHM")
 		}
 
 		routingStrategy, enabled := GetRoutingStrategy(tt.headers)
@@ -120,6 +120,6 @@ func TestGetRoutingStrategy(t *testing.T) {
 		assert.Equal(t, tt.expectedEnabled, enabled, tt.message)
 
 		// Cleanup environment variable for next test
-		os.Unsetenv("ROUTING_ALGORITHM")
+		_ = os.Unsetenv("ROUTING_ALGORITHM")
 	}
 }
