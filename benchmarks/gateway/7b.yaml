@@ -78,7 +78,7 @@ spec:
             - name: dshm
               mountPath: /dev/shm
         - name: aibrix-runtime
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.1.0-rc.4
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.1.0
           command:
             - gunicorn
             - -b
@@ -94,7 +94,7 @@ spec:
               name: model-hostpath
       initContainers:
         - name: init-model
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.1.0-rc.4
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.1.0
           command:
             - python
             - -m

@@ -22,8 +22,8 @@ Stable Version
 
 .. code:: bash
 
-    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.1.0-rc.5/aibrix-dependency-v0.1.0-rc.5.yaml
-    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.1.0-rc.5/aibrix-core-v0.1.0-rc.5.yaml
+    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.1.0/aibrix-dependency-v0.1.0.yaml
+    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.1.0/aibrix-core-v0.1.0.yaml
 
 
 Nightly Version
