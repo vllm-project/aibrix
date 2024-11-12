@@ -53,7 +53,6 @@ Then use AI Runtime to download the model from HuggingFace:
     python -m aibrix.downloader \
         --model-uri deepseek-ai/deepseek-coder-6.7b-instruct \
         --local-dir /tmp/aibrix/models_hf/
-    
 
 
 Download From S3
@@ -106,7 +105,4 @@ Then use AI Runtime to download the model from TOS:
         --local-dir /tmp/aibrix/models_tos/
     
 
-Model Management
-------------------
-eagerly await
 
