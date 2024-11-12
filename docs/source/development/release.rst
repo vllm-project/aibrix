@@ -46,7 +46,7 @@ for patch release, we do not rebase ``main`` because it will introduce new featu
 Cut a PR
 --------
 
-Make sure the manifest images tags and updated and python version is updated. A sample PR is `Cut v0.1.0-rc.3 release <https://github.com/aibrix/aibrix/pull/280>`_.
+Make sure the manifest images tags and updated and python version is updated. A sample PR is `Cut v0.1.0-rc.4 release <https://github.com/aibrix/aibrix/pull/314>`_.
 Merge the PR.
 
 .. note::
@@ -114,5 +114,5 @@ we need to retag the images and push to VKE Container Registry.
 
 .. code-block:: bash
 
-    ./hack/sync-images.sh v0.1.0-rc.4 aibrix-container-registry-cn-beijing.cr.volces.com
-    ./hack/sync-images.sh v0.1.0-rc.4 aibrix-container-registry-cn-shanghai.cr.volces.com
+    ./hack/sync-images.sh v0.1.0-rc.5 aibrix-container-registry-cn-beijing.cr.volces.com
+    ./hack/sync-images.sh v0.1.0-rc.5 aibrix-container-registry-cn-shanghai.cr.volces.com
