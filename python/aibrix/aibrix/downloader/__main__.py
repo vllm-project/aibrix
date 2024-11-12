@@ -24,8 +24,16 @@ def main():
         default=None,
         help="subdir of the base dir to save model files",
     )
+    parser.add_argument(
+        "--enable-progress-bar",
+        action="store_true",
+        default=False,
+        help="Enable download progress bar during downloading from TOS or S3",
+    )
     args = parser.parse_args()
-    download_model(args.model_uri, args.local_dir, args.model_name)
+    download_model(
+        args.model_uri, args.local_dir, args.model_name, args.enable_progress_bar
+    )
 
 
 if __name__ == "__main__":

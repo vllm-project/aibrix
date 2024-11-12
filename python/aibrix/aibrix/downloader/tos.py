@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+from contextlib import nullcontext
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -44,7 +45,12 @@ def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
 
 
 class TOSDownloader(BaseDownloader):
-    def __init__(self, model_uri, model_name: Optional[str] = None):
+    def __init__(
+        self,
+        model_uri,
+        model_name: Optional[str] = None,
+        enable_progress_bar: bool = False,
+    ):
         if model_name is None:
             model_name = infer_model_name(model_uri)
             logger.info(f"model_name is not set, using `{model_name}` as model_name")
@@ -65,6 +71,7 @@ class TOSDownloader(BaseDownloader):
             model_name=model_name,
             bucket_path=bucket_path,
             bucket_name=bucket_name,
+            enable_progress_bar=enable_progress_bar,
         )  # type: ignore
 
     def _valid_config(self):
@@ -138,9 +145,11 @@ class TOSDownloader(BaseDownloader):
 
         # download file
         total_length = meta_data.content_length
+
+        nullcontext
         with tqdm(
             desc=_file_name, total=total_length, unit="b", unit_scale=True
-        ) as pbar:
+        ) if self.enable_progress_bar else nullcontext() as pbar:
 
             def download_progress(
                 consumed_bytes, total_bytes, rw_once_bytes, type: DataTransferType
@@ -154,7 +163,9 @@ class TOSDownloader(BaseDownloader):
                     local_file
                 ),  # TOS client does not support Path, convert it to str
                 task_num=task_num,
-                data_transfer_listener=download_progress,
+                data_transfer_listener=download_progress
+                if self.enable_progress_bar
+                else None,
                 **download_kwargs,
             )
             save_meta_data(meta_data_file, etag)
