@@ -24,6 +24,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,19 +60,30 @@ type Cache struct {
 	requestTrace      map[string]map[string]int      // model_name: map[Log2(input_token)-Log2(output_token)]request_count
 }
 
+const (
+	modelIdentifier                       = "model.aibrix.ai/name"
+	podPort                               = 8000
+	defaultPodMetricRefreshIntervalInMS   = 50
+	writeRequestTraceIntervalInSeconds    = 10
+	expireWriteRequestTraceIntervalInMins = 10
+)
+
 var (
 	instance    Cache
 	metricNames = []string{"num_requests_running", "num_requests_waiting", "num_requests_swapped",
 		"avg_prompt_throughput_toks_per_s", "avg_generation_throughput_toks_per_s"} //, "e2e_request_latency_seconds_sum"}
+	podMetricRefreshIntervalInMilliseconds = getPodMetricRefreshInterval()
 )
 
-const (
-	modelIdentifier                        = "model.aibrix.ai/name"
-	podPort                                = 8000
-	podMetricRefreshIntervalInMilliseconds = 50
-	writeRequestTraceIntervalInSeconds     = 10
-	expireWriteRequestTraceIntervalInMins  = 10
-)
+func getPodMetricRefreshInterval() time.Duration {
+	value, exists := os.LookupEnv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS")
+	if exists {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return time.Duration(intValue) * time.Millisecond
+		}
+	}
+	return time.Duration(defaultPodMetricRefreshIntervalInMS) * time.Millisecond
+}
 
 func GetCache() (*Cache, error) {
 	if !instance.initialized {
