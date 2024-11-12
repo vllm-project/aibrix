@@ -504,7 +504,6 @@ func GetRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
 	// Check headers for routing strategy
 	for _, header := range headers {
 		if strings.ToLower(header.Key) == "routing-strategy" {
-			klog.InfoS("coming into the solution")
 			routingStrategy = string(header.RawValue)
 			routingStrategyEnabled = true
 			break // Prioritize header value over environment variable
