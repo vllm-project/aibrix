@@ -143,26 +143,21 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, string) {
 	klog.Info("\n\n")
 	klog.Info("-- In RequestHeaders processing ...")
-	var username, routingStrategy string
-	var headerBasedRoutingStrategyEnabled bool
+	var username string
 	var user utils.User
 	var rpm int64
 	var err error
 	var errRes *extProcPb.ProcessingResponse
 
 	h := req.Request.(*extProcPb.ProcessingRequest_RequestHeaders)
-	routingStrategy = utils.GetEnv("ROUTING_ALGORITHM", "")
 	for _, n := range h.RequestHeaders.Headers.Headers {
 		if strings.ToLower(n.Key) == "user" {
 			username = string(n.RawValue)
 		}
-		if strings.ToLower(n.Key) == "routing-strategy" {
-			routingStrategy = string(n.RawValue)
-			headerBasedRoutingStrategyEnabled = true
-		}
 	}
 
-	if !validateRoutingStrategy(routingStrategy, headerBasedRoutingStrategyEnabled) {
+	routingStrategy, routingStrategyEnabled := GetRoutingStrategy(h.RequestHeaders.Headers.Headers)
+	if routingStrategyEnabled && !validateRoutingStrategy(routingStrategy) {
 		return generateErrorResponse(
 			envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
@@ -230,7 +225,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: "x-no-model", RawValue: []byte(model)}}},
-			"no model in request body or model does not exist"), targetPodIP, stream
+			fmt.Sprintf("no model in request body or model %s does not exist", model)), targetPodIP, stream
 	}
 
 	stream, _ = jsonMap["stream"].(bool)
@@ -260,7 +255,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-no-model-deployment", RawValue: []byte("true")}}},
-				"error on getting pods for model"), targetPodIP, stream
+				fmt.Sprintf("error on getting pods for model %s", model)), targetPodIP, stream
 		}
 
 		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods)
@@ -525,17 +520,9 @@ func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, po
 	return route.Route(ctx, pods)
 }
 
-func validateRoutingStrategy(routingStrategy string, headerBasedRoutingStrategyEnabled bool) bool {
+func validateRoutingStrategy(routingStrategy string) bool {
 	routingStrategy = strings.TrimSpace(routingStrategy)
-	if headerBasedRoutingStrategyEnabled && routingStrategy == "" {
-		return false
-	}
-
-	if routingStrategy != "" && !slices.Contains(routingStrategies, routingStrategy) {
-		return false
-	}
-
-	return true
+	return slices.Contains(routingStrategies, routingStrategy)
 }
 
 func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, body string) *extProcPb.ProcessingResponse {
@@ -552,4 +539,30 @@ func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configP
 			},
 		},
 	}
+}
+
+// GetRoutingStrategy retrieves the routing strategy from the headers or environment variable
+// It returns the routing strategy value and whether custom routing strategy is enabled.
+func GetRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
+	var routingStrategy string
+	routingStrategyEnabled := false
+
+	// Check headers for routing strategy
+	for _, header := range headers {
+		if strings.ToLower(header.Key) == "routing-strategy" {
+			routingStrategy = string(header.RawValue)
+			routingStrategyEnabled = true
+			break // Prioritize header value over environment variable
+		}
+	}
+
+	// If header not set, check environment variable
+	if !routingStrategyEnabled {
+		if value, exists := utils.CheckEnvExists("ROUTING_ALGORITHM"); exists {
+			routingStrategy = value
+			routingStrategyEnabled = true
+		}
+	}
+
+	return routingStrategy, routingStrategyEnabled
 }

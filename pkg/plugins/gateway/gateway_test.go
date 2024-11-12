@@ -17,85 +17,109 @@ limitations under the License.
 package gateway
 
 import (
+	"os"
 	"testing"
 
+	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	"github.com/stretchr/testify/assert"
 )
 
 func Test_ValidateRoutingStrategy(t *testing.T) {
 	var tests = []struct {
-		headerBasedRoutingStrategyEnabled bool
-		routingStrategy                   string
-		setEnvRoutingStrategy             bool
-		message                           string
-		expectedValidation                bool
+		routingStrategy    string
+		message            string
+		expectedValidation bool
 	}{
 		{
-			headerBasedRoutingStrategyEnabled: true,
-			routingStrategy:                   "",
-			setEnvRoutingStrategy:             false,
-			message:                           "empty routing strategy in header",
-			expectedValidation:                false,
+			routingStrategy:    "",
+			message:            "empty routing strategy",
+			expectedValidation: false,
 		},
 		{
-			headerBasedRoutingStrategyEnabled: true,
-			routingStrategy:                   "  ",
-			setEnvRoutingStrategy:             false,
-			message:                           "spaced routing strategy in header",
-			expectedValidation:                false,
+			routingStrategy:    "  ",
+			message:            "spaced routing strategy",
+			expectedValidation: false,
 		},
 		{
-			headerBasedRoutingStrategyEnabled: false,
-			setEnvRoutingStrategy:             true,
-			message:                           "empty routing strategy in header with env var set",
-			expectedValidation:                true,
+			routingStrategy:    "random",
+			message:            "random routing strategy",
+			expectedValidation: true,
 		},
 		{
-			headerBasedRoutingStrategyEnabled: false,
-			setEnvRoutingStrategy:             true,
-			message:                           "spaced routing strategy in header with env var set",
-			expectedValidation:                true,
+			routingStrategy:    "least-request",
+			message:            "least-request routing strategy",
+			expectedValidation: true,
 		},
 		{
-			headerBasedRoutingStrategyEnabled: true,
-			routingStrategy:                   "least-request",
-			setEnvRoutingStrategy:             false,
-			message:                           "header routing strategy least-request",
-			expectedValidation:                true,
-		},
-		{
-			headerBasedRoutingStrategyEnabled: true,
-			routingStrategy:                   "rrandom",
-			setEnvRoutingStrategy:             false,
-			message:                           "header routing strategy invalid",
-			expectedValidation:                false,
-		},
-		{
-			headerBasedRoutingStrategyEnabled: false,
-			setEnvRoutingStrategy:             true,
-			message:                           "env routing strategy",
-			expectedValidation:                true,
-		},
-		{
-			headerBasedRoutingStrategyEnabled: true,
-			routingStrategy:                   "random",
-			setEnvRoutingStrategy:             true,
-			message:                           "per request overrides env",
-			expectedValidation:                true,
+			routingStrategy:    "rrandom",
+			message:            "misspell routing strategy",
+			expectedValidation: false,
 		},
 	}
 
 	for _, tt := range tests {
-		var routingStrategy string
-		if tt.setEnvRoutingStrategy {
-			routingStrategy = "least-request"
-		}
-
-		if tt.headerBasedRoutingStrategyEnabled {
-			routingStrategy = tt.routingStrategy
-		}
-
-		currentValidation := validateRoutingStrategy(routingStrategy, tt.headerBasedRoutingStrategyEnabled)
+		currentValidation := validateRoutingStrategy(tt.routingStrategy)
 		assert.Equal(t, tt.expectedValidation, currentValidation, tt.message)
+	}
+}
+
+func TestGetRoutingStrategy(t *testing.T) {
+	var tests = []struct {
+		headers               []*configPb.HeaderValue
+		setEnvRoutingStrategy bool
+		envRoutingStrategy    string
+		expectedStrategy      string
+		expectedEnabled       bool
+		message               string
+	}{
+		{
+			headers:               []*configPb.HeaderValue{},
+			setEnvRoutingStrategy: false,
+			expectedStrategy:      "",
+			expectedEnabled:       false,
+			message:               "no routing strategy in headers or environment variable",
+		},
+		{
+			headers: []*configPb.HeaderValue{
+				{Key: "routing-strategy", RawValue: []byte("random")},
+			},
+			setEnvRoutingStrategy: false,
+			expectedStrategy:      "random",
+			expectedEnabled:       true,
+			message:               "routing strategy from headers",
+		},
+		{
+			headers:               []*configPb.HeaderValue{},
+			setEnvRoutingStrategy: true,
+			envRoutingStrategy:    "random",
+			expectedStrategy:      "random",
+			expectedEnabled:       true,
+			message:               "routing strategy from environment variable",
+		},
+		{
+			headers: []*configPb.HeaderValue{
+				{Key: "routing-strategy", RawValue: []byte("random")},
+			},
+			setEnvRoutingStrategy: true,
+			envRoutingStrategy:    "least-request",
+			expectedStrategy:      "random",
+			expectedEnabled:       true,
+			message:               "header routing strategy takes priority over environment variable",
+		},
+	}
+
+	for _, tt := range tests {
+		if tt.setEnvRoutingStrategy {
+			_ = os.Setenv("ROUTING_ALGORITHM", tt.envRoutingStrategy)
+		} else {
+			_ = os.Unsetenv("ROUTING_ALGORITHM")
+		}
+
+		routingStrategy, enabled := GetRoutingStrategy(tt.headers)
+		assert.Equal(t, tt.expectedStrategy, routingStrategy, tt.message)
+		assert.Equal(t, tt.expectedEnabled, enabled, tt.message)
+
+		// Cleanup environment variable for next test
+		_ = os.Unsetenv("ROUTING_ALGORITHM")
 	}
 }

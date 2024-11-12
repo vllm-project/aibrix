@@ -30,6 +30,13 @@ var (
 	redis_port = GetEnv("REDIS_PORT", "6379")
 )
 
+// CheckEnvExists checks if an environment variable exists.
+// It returns the value and a boolean indicating its existence.
+func CheckEnvExists(envVar string) (string, bool) {
+	value, exists := os.LookupEnv(envVar)
+	return value, exists
+}
+
 func GetEnv(key, defaultValue string) string {
 	value := os.Getenv(key)
 	if value == "" {
