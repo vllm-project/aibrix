@@ -17,6 +17,7 @@ limitations under the License.
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,7 +27,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	openai "github.com/openai/openai-go"
+	"github.com/openai/openai-go"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -39,7 +40,6 @@ import (
 	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/aibrix/aibrix/pkg/utils"
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	filterPb "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
@@ -120,7 +120,6 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 
 		case *extProcPb.ProcessingRequest_RequestHeaders:
 			resp, user, rpm, routingStrategy = s.HandleRequestHeaders(ctx, requestID, req)
-			klog.V(4).Info(rpm)
 
 		case *extProcPb.ProcessingRequest_RequestBody:
 			resp, targetPodIP, stream = s.HandleRequestBody(ctx, requestID, req, user, routingStrategy)
@@ -154,7 +153,6 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	h := req.Request.(*extProcPb.ProcessingRequest_RequestHeaders)
 	routingStrategy = utils.GetEnv("ROUTING_ALGORITHM", "")
 	for _, n := range h.RequestHeaders.Headers.Headers {
-		klog.Infof("request headers: key: %s, value: %s", n.Key, string(n.RawValue))
 		if strings.ToLower(n.Key) == "user" {
 			username = string(n.RawValue)
 		}
@@ -209,9 +207,6 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 				},
 			},
 		},
-		ModeOverride: &filterPb.ProcessingMode{
-			ResponseHeaderMode: filterPb.ProcessingMode_SEND,
-		},
 	}, user, rpm, routingStrategy
 }
 
@@ -242,8 +237,10 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	if stream {
 		stream_options, _ := jsonMap["stream_options"].(map[string]interface{})["include_usage"].(bool)
 		if !stream_options {
-			klog.Info(stream_options)
-			// return error
+			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+					Key: "x-stream-options", RawValue: []byte("stream options not set")}}},
+				"error processing request body"), targetPodIP, stream
 		}
 	}
 
@@ -305,10 +302,6 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
 	klog.Info("--- In ResponseHeaders processing")
-	h := req.Request.(*extProcPb.ProcessingRequest_ResponseHeaders)
-	for _, header := range h.ResponseHeaders.Headers.Headers {
-		klog.Infof("response header: key: %s, value: %s", header.Key, string(header.RawValue))
-	}
 
 	headers := []*configPb.HeaderValueOption{{
 		Header: &configPb.HeaderValue{
@@ -342,16 +335,34 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, targetPodIP string, stream bool) *extProcPb.ProcessingResponse {
 	klog.Infof("--- In ResponseBody processing")
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
-	klog.Info(string(b.ResponseBody.GetBody()))
 	var res openai.ChatCompletion
 	var streamRes openai.ChatCompletionChunk
+	var model string
 	var usage openai.CompletionUsage
 	headers := []*configPb.HeaderValueOption{}
 
-	// need to identify request is completition type or chunk type
-	// set that usage object from both of them
-	// when the usage object is set run remaining stuff
-	if !stream {
+	switch stream {
+	case true:
+		_, value, found := bytes.Cut(b.ResponseBody.GetBody(), []byte(":"))
+		if len(value) > 0 && value[0] == ' ' {
+			value = value[1:]
+		}
+		if found && !bytes.HasPrefix(value, []byte("[DONE]")) {
+			if err := json.Unmarshal(value, &streamRes); err != nil {
+				klog.ErrorS(err, "error to unmarshal response", "requestID", requestID)
+				return generateErrorResponse(
+					envoyTypePb.StatusCode_InternalServerError,
+					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+						Key: "x-error-response-unmarshal", RawValue: []byte("true"),
+					}}},
+					err.Error())
+			}
+			if len(streamRes.Choices) == 0 {
+				model = streamRes.Model
+				usage = streamRes.Usage
+			}
+		}
+	case false:
 		if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
 			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID)
 			return generateErrorResponse(
@@ -361,26 +372,14 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				}}},
 				err.Error())
 		}
-
-	} else {
-		if err := json.Unmarshal(b.ResponseBody.Body, &streamRes); err != nil {
-			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID)
-			return generateErrorResponse(
-				envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-error-response-unmarshal", RawValue: []byte("true"),
-				}}},
-				err.Error())
-		}
-		if len(streamRes.Choices) == 0 {
-			usage = streamRes.Usage
-		}
+		model = res.Model
+		usage = res.Usage
 	}
 
 	if usage.TotalTokens != 0 {
 		defer func() {
 			go func() {
-				s.cache.AddRequestTrace(res.Model, res.Usage.PromptTokens, res.Usage.CompletionTokens)
+				s.cache.AddRequestTrace(model, usage.PromptTokens, usage.CompletionTokens)
 			}()
 		}()
 
