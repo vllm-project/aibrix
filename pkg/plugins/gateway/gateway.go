@@ -22,12 +22,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/packages/ssestream"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -142,7 +144,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, string) {
 	klog.Info("\n\n")
-	klog.Info("-- In RequestHeaders processing ...")
+	klog.InfoS("-- In RequestHeaders processing ...", "requestID", requestID)
 	var username string
 	var user utils.User
 	var rpm int64
@@ -206,14 +208,14 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 }
 
 func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingStrategy string) (*extProcPb.ProcessingResponse, string, bool) {
-	klog.Info("--- In RequestBody processing")
+	klog.InfoS("-- In RequestBody processing ...", "requestID", requestID)
 	var model, targetPodIP string
 	var ok, stream bool
 
 	var jsonMap map[string]interface{}
 
 	body := req.Request.(*extProcPb.ProcessingRequest_RequestBody)
-	klog.Info(string(body.RequestBody.GetBody()))
+	klog.V(4).InfoS(string(body.RequestBody.GetBody()), "requestID", requestID)
 	if err := json.Unmarshal(body.RequestBody.GetBody(), &jsonMap); err != nil {
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
@@ -228,13 +230,20 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			fmt.Sprintf("no model in request body or model %s does not exist", model)), targetPodIP, stream
 	}
 
-	stream, _ = jsonMap["stream"].(bool)
-	if stream {
-		stream_options, _ := jsonMap["stream_options"].(map[string]interface{})["include_usage"].(bool)
-		if !stream_options {
+	stream, ok = jsonMap["stream"].(bool)
+	if stream && ok {
+		streamOptions, ok := jsonMap["stream_options"].(map[string]interface{})
+		if !ok {
 			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-stream-options", RawValue: []byte("stream options not set")}}},
+				"error processing request body"), targetPodIP, stream
+		}
+		includeUsage, ok := streamOptions["include_usage"].(bool)
+		if !includeUsage || !ok {
+			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+					Key: "x-stream-options-include-usage", RawValue: []byte("include usage for stream options not set")}}},
 				"error processing request body"), targetPodIP, stream
 		}
 	}
@@ -296,7 +305,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 }
 
 func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
-	klog.Info("--- In ResponseHeaders processing")
+	klog.InfoS("-- In ResponseHeaders processing ...", "requestID", requestID)
 
 	headers := []*configPb.HeaderValueOption{{
 		Header: &configPb.HeaderValue{
@@ -328,34 +337,36 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 }
 
 func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, targetPodIP string, stream bool) *extProcPb.ProcessingResponse {
-	klog.Infof("--- In ResponseBody processing")
+	klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID)
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
+
 	var res openai.ChatCompletion
-	var streamRes openai.ChatCompletionChunk
 	var model string
 	var usage openai.CompletionUsage
 	headers := []*configPb.HeaderValueOption{}
 
+	klog.V(4).InfoS(string(b.ResponseBody.GetBody()), "requestID", requestID)
+
 	switch stream {
 	case true:
-		_, value, found := bytes.Cut(b.ResponseBody.GetBody(), []byte(":"))
-		if len(value) > 0 && value[0] == ' ' {
-			value = value[1:]
+		t := &http.Response{
+			Body: io.NopCloser(bytes.NewReader(b.ResponseBody.GetBody())),
 		}
-		if found && !bytes.HasPrefix(value, []byte("[DONE]")) {
-			if err := json.Unmarshal(value, &streamRes); err != nil {
-				klog.ErrorS(err, "error to unmarshal response", "requestID", requestID)
-				return generateErrorResponse(
-					envoyTypePb.StatusCode_InternalServerError,
-					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-						Key: "x-error-response-unmarshal", RawValue: []byte("true"),
-					}}},
-					err.Error())
+		streaming := ssestream.NewStream[openai.ChatCompletionChunk](ssestream.NewDecoder(t), nil)
+		for streaming.Next() {
+			evt := streaming.Current()
+			if len(evt.Choices) == 0 {
+				model = evt.Model
+				usage = evt.Usage
 			}
-			if len(streamRes.Choices) == 0 {
-				model = streamRes.Model
-				usage = streamRes.Usage
-			}
+		}
+		if err := streaming.Err(); err != nil {
+			return generateErrorResponse(
+				envoyTypePb.StatusCode_InternalServerError,
+				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+					Key: "x-streaming-error", RawValue: []byte("true"),
+				}}},
+				err.Error())
 		}
 	case false:
 		if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
@@ -379,7 +390,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 		}()
 
 		if user.Name != "" {
-			tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user), int64(res.Usage.TotalTokens))
+			tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user), res.Usage.TotalTokens)
 			if err != nil {
 				return generateErrorResponse(
 					envoyTypePb.StatusCode_InternalServerError,
