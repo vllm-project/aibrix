@@ -9,7 +9,7 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      models.aibricks.ai: llama-2-7b-hf
+      model.aibrix.ai/name: llama-2-7b-hf
   strategy:
     rollingUpdate:
       maxSurge: 25%
@@ -18,7 +18,7 @@ spec:
   template:
     metadata:
       labels:
-        models.aibricks.ai: llama-2-7b-hf
+        model.aibrix.ai/name: llama-2-7b-hf
     spec:
       rayVersion: '2.10.0' # should match the Ray version in the image of the containers
       headGroupSpec:

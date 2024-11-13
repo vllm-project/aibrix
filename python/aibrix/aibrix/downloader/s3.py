@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from contextlib import nullcontext
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -42,7 +43,12 @@ def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
 
 
 class S3Downloader(BaseDownloader):
-    def __init__(self, model_uri, model_name: Optional[str] = None):
+    def __init__(
+        self,
+        model_uri,
+        model_name: Optional[str] = None,
+        enable_progress_bar: bool = False,
+    ):
         if model_name is None:
             model_name = infer_model_name(model_uri)
             logger.info(f"model_name is not set, using `{model_name}` as model_name")
@@ -81,6 +87,7 @@ class S3Downloader(BaseDownloader):
             model_name=model_name,
             bucket_path=bucket_path,
             bucket_name=bucket_name,
+            enable_progress_bar=enable_progress_bar,
         )  # type: ignore
 
     def _valid_config(self):
@@ -160,7 +167,7 @@ class S3Downloader(BaseDownloader):
         total_length = int(meta_data.get("ContentLength", 0))
         with tqdm(
             desc=_file_name, total=total_length, unit="b", unit_scale=True
-        ) as pbar:
+        ) if self.enable_progress_bar else nullcontext() as pbar:
 
             def download_progress(bytes_transferred):
                 pbar.update(bytes_transferred)
@@ -172,6 +179,6 @@ class S3Downloader(BaseDownloader):
                     local_file
                 ),  # S3 client does not support Path, convert it to str
                 Config=config,
-                Callback=download_progress,
+                Callback=download_progress if self.enable_progress_bar else None,
             )
             save_meta_data(meta_data_file, etag)

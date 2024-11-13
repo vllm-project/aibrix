@@ -29,7 +29,12 @@ def _parse_model_name_from_uri(model_uri: str) -> str:
 
 
 class HuggingFaceDownloader(BaseDownloader):
-    def __init__(self, model_uri: str, model_name: Optional[str] = None):
+    def __init__(
+        self,
+        model_uri: str,
+        model_name: Optional[str] = None,
+        enable_progress_bar: bool = False,
+    ):
         if model_name is None:
             model_name = _parse_model_name_from_uri(model_uri)
             logger.info(f"model_name is not set, using `{model_name}` as model_name")
@@ -44,6 +49,7 @@ class HuggingFaceDownloader(BaseDownloader):
             model_name=model_name,
             bucket_path=model_uri,
             bucket_name=None,
+            enable_progress_bar=enable_progress_bar,
         )  # type: ignore
 
         # Dependent on the attributes generated in the base class,

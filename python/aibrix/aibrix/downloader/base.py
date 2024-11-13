@@ -34,6 +34,7 @@ class BaseDownloader(ABC):
     model_name: str
     bucket_path: str
     bucket_name: Optional[str]
+    enable_progress_bar: bool = False
     allow_file_suffix: Optional[List[str]] = field(
         default_factory=lambda: envs.DOWNLOADER_ALLOW_FILE_SUFFIX
     )
@@ -152,17 +153,19 @@ class BaseDownloader(ABC):
         return hash(tuple(self.__dict__))
 
 
-def get_downloader(model_uri: str, model_name: Optional[str] = None) -> BaseDownloader:
+def get_downloader(
+    model_uri: str, model_name: Optional[str] = None, enable_progress_bar: bool = False
+) -> BaseDownloader:
     """Get downloader for model_uri."""
     if re.match(envs.DOWNLOADER_S3_REGEX, model_uri):
         from aibrix.downloader.s3 import S3Downloader
 
-        return S3Downloader(model_uri, model_name)
+        return S3Downloader(model_uri, model_name, enable_progress_bar)
     elif re.match(envs.DOWNLOADER_TOS_REGEX, model_uri):
         from aibrix.downloader.tos import TOSDownloader
 
-        return TOSDownloader(model_uri, model_name)
+        return TOSDownloader(model_uri, model_name, enable_progress_bar)
     else:
         from aibrix.downloader.huggingface import HuggingFaceDownloader
 
-        return HuggingFaceDownloader(model_uri, model_name)
+        return HuggingFaceDownloader(model_uri, model_name, enable_progress_bar)

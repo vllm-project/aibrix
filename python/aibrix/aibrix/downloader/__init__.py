@@ -18,7 +18,10 @@ from aibrix.downloader.base import get_downloader
 
 
 def download_model(
-    model_uri: str, local_path: Optional[str] = None, model_name: Optional[str] = None
+    model_uri: str,
+    local_path: Optional[str] = None,
+    model_name: Optional[str] = None,
+    enable_progress_bar: bool = False,
 ):
     """Download model from model_uri to local_path.
 
@@ -27,7 +30,7 @@ def download_model(
         local_path (str): local path to save model.
     """
 
-    downloader = get_downloader(model_uri, model_name)
+    downloader = get_downloader(model_uri, model_name, enable_progress_bar)
     return downloader.download_model(local_path)
 
 

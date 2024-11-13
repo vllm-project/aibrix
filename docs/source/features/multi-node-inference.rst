@@ -79,7 +79,7 @@ RayClusterReplicaSet
       replicas: 1
       selector:
         matchLabels:
-          models.aibricks.ai: facebook-opt-13b
+          model.aibrix.ai/name: facebook-opt-13b
       strategy:
         rollingUpdate:
           maxSurge: 25%
@@ -88,7 +88,7 @@ RayClusterReplicaSet
       template:
         metadata:
           labels:
-            models.aibricks.ai: facebook-opt-13b
+            model.aibrix.ai/name: facebook-opt-13b
           annotations:
             ray.io/overwrite-container-cmd: "true"
         spec:

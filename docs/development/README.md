@@ -2,7 +2,7 @@
 
 ## Important Links and Resources
 
-Here are some essential resources for anyone interested in AIBricks:
+Here are some essential resources for anyone interested in AIBrix:
 
 - **Documentation and Tutorials**: [View Tutorials](https://github.com/aibrix/aibrix/tree/main/docs/tutorial)
 - **Issue Tracker**: [View Issues](https://github.com/aibrix/aibrix/issues)
@@ -30,7 +30,7 @@ Alternatively, you can use [Kind](https://kind.sigs.k8s.io/) or [Minikube](https
 
 ### Fork and Clone the Repository
 
-- Fork the AIBricks repository on GitHub.
+- Fork the AIBrix repository on GitHub.
 
 - Clone your fork locally:
 
@@ -83,11 +83,11 @@ make deploy IMG=example.com/aibrix:v1
 
 ### Start the Manager through an IDE
 
-Alternatively, for better debugging, you can start AIBricks in debug mode using an IDE like [Goland](https://www.jetbrains.com/go/) or [VSCode](https://code.visualstudio.com/). The main entry point of the project is located at `cmd/controllers/main.go`.
+Alternatively, for better debugging, you can start AIBrix in debug mode using an IDE like [Goland](https://www.jetbrains.com/go/) or [VSCode](https://code.visualstudio.com/). The main entry point of the project is located at `cmd/controllers/main.go`.
 
-### Create AIBricks Sample Instances
+### Create AIBrix Sample Instances
 
-Apply the samples from the `config/samples` directory. These samples create a list of AIBricks CRD instances, such as `PodAutoscaler` and `ModelAdapter`:
+Apply the samples from the `config/samples` directory. These samples create a list of AIBrix CRD instances, such as `PodAutoscaler` and `ModelAdapter`:
 
 ```sh
 kubectl apply -k config/samples/
@@ -95,9 +95,9 @@ kubectl apply -k config/samples/
 
 > **NOTE**: Ensure that the samples have default values for testing purposes.
 
-### Run Demo App to Verify AIBricks Functionality
+### Run Demo App to Verify AIBrix Functionality
 
-Start a demo application on Kubernetes and verify the functionality and effectiveness of the AIBricks suite. We provide some demo application YAMLs at `TODO: link to demo application YAMLs`.
+Start a demo application on Kubernetes and verify the functionality and effectiveness of the AIBrix suite. We provide some demo application YAMLs at `TODO: link to demo application YAMLs`.
 
 ### Uninstall and Undeploy
 

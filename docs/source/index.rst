@@ -1,8 +1,8 @@
 Welcome to AIBrix
 =================
 
-.. image:: ./assets/logos/aibrix-logo-light.png
-  :width: 60%
+.. image:: ./assets/logos/aibrix-logo.jpeg
+  :width: 40%
   :align: center
   :alt: AIBrix
 
