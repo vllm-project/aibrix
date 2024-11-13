@@ -215,8 +215,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	var jsonMap map[string]interface{}
 
 	body := req.Request.(*extProcPb.ProcessingRequest_RequestBody)
-	klog.V(4).InfoS(string(body.RequestBody.GetBody()), "requestID", requestID)
 	if err := json.Unmarshal(body.RequestBody.GetBody(), &jsonMap); err != nil {
+		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "requestBody", string(body.RequestBody.GetBody()))
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: "x-request-body-processing-error", RawValue: []byte("true")}}},
@@ -224,6 +224,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	}
 
 	if model, ok = jsonMap["model"].(string); !ok || model == "" || !s.cache.CheckModelExists(model) {
+		klog.ErrorS(nil, "model error in request", "requestID", requestID, "jsonMap", jsonMap)
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: "x-no-model", RawValue: []byte(model)}}},
@@ -345,8 +346,6 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	var usage openai.CompletionUsage
 	headers := []*configPb.HeaderValueOption{}
 
-	klog.V(4).InfoS(string(b.ResponseBody.GetBody()), "requestID", requestID)
-
 	switch stream {
 	case true:
 		t := &http.Response{
@@ -361,6 +360,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			}
 		}
 		if err := streaming.Err(); err != nil {
+			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
@@ -370,7 +370,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 		}
 	case false:
 		if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
-			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID)
+			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
@@ -381,7 +381,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 		model = res.Model
 		usage = res.Usage
 	}
-
+	var requestEnd string
 	if usage.TotalTokens != 0 {
 		defer func() {
 			go func() {
@@ -414,7 +414,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 					},
 				},
 			)
-			klog.InfoS("request end", "requestID", requestID, "rpm", rpm, "tpm", tpm)
+			requestEnd = fmt.Sprintf(requestEnd+"rpm: %s, tpm: %s", rpm, tpm)
 		}
 		if targetPodIP != "" {
 			headers = append(headers,
@@ -425,7 +425,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 					},
 				},
 			)
+			requestEnd = fmt.Sprintf(requestEnd+", targetPod: %s", targetPodIP)
 		}
+		klog.Infof("request end, requestID: %s - %s", requestID, requestEnd)
 	}
 
 	return &extProcPb.ProcessingResponse{
