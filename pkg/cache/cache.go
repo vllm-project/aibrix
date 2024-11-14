@@ -510,7 +510,7 @@ func parseMetricFromBody(body []byte, metricName string) (float64, error) {
 	return 0, fmt.Errorf("metrics %s not found", metricName)
 }
 
-func (c *Cache) AddRequestTrace(modelName string, inputTokens, outputTokens int) {
+func (c *Cache) AddRequestTrace(modelName string, inputTokens, outputTokens int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
