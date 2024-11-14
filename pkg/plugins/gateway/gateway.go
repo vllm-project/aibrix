@@ -223,7 +223,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			"error processing request body"), targetPodIP, stream
 	}
 
-	if model, ok = jsonMap["model"].(string); !ok || model == "" || !s.cache.CheckModelExists(model) {
+	if model, ok = jsonMap["model"].(string); !ok || model == "" { // || !s.cache.CheckModelExists(model) # enable when dynamic lora is enabled
 		klog.ErrorS(nil, "model error in request", "requestID", requestID, "jsonMap", jsonMap)
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
