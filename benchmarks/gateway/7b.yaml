@@ -80,12 +80,9 @@ spec:
         - name: aibrix-runtime
           image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.1.0
           command:
-            - gunicorn
-            - -b
-            - :8080
-            - app:app
-            - -k
-            - uvicorn.workers.UvicornWorker
+            - aibrix_runtime
+            - --port
+            - "8080"
           ports:
             - containerPort: 8080
               protocol: TCP
@@ -96,9 +93,7 @@ spec:
         - name: init-model
           image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.1.0
           command:
-            - python
-            - -m
-            - aibrix.downloader
+            - aibrix_download
             - --model-uri
             - tos://aibrix-artifact-testing/models/deepseek-ai/deepseek-coder-6.7b-instruct/
             - --local-dir
@@ -163,10 +158,6 @@ spec:
       port: 8000
       protocol: TCP
       targetPort: 8000
-    - name: http
-      port: 8080
-      protocol: TCP
-      targetPort: 8080
   selector:
     model.aibrix.ai/name: deepseek-coder-7b-instruct
   type: LoadBalancer
