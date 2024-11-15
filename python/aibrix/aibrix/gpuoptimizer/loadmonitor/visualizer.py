@@ -50,7 +50,7 @@ interval_scaling = interval / 1000 / reader_interval
 colors = ['red', 'green', 'pink', 'blue', 'navy', 'orange', 'purple', 'cyan', 'magenta', 'yellow', 'black', 'gray', 'brown', 'olive', 'teal', 'maroon']
 
 debug_monitor = None
-datasource: Callable[[str], Optional[ModelMonitor]] = lambda model_name: get_debug_model_montior(model_name)
+datasource: Callable[[str], Optional[ModelMonitor]] = lambda model_name: get_debug_model_montior(None)
 figure = type('', (), {})() # create a empty object
 figure.__dict__ = {
    "debug_run": True,
@@ -61,13 +61,15 @@ figure.__dict__ = {
 
 logger = logging.getLogger("aibrix.gpuoptimizer.loadmonitor.visualizer")
 
-def get_debug_model_montior(_:str) -> Optional[ModelMonitor]:
+def get_debug_model_montior(path:str, scale:float=1.0, profile:str=None) -> Optional[ModelMonitor]:
     global debug_monitor
 
     if debug_monitor == None:
-        directory = os.path.dirname(os.path.abspath(__file__))
-        reader = DatasetLoadReader(directory + '/data/sharegpt.csv', rps=10, interval=reader_interval)
-        debug_monitor = ModelMonitor("sharegpt", "0", reader, interval=interval, debug=True)
+        if path is None:
+            directory = os.path.dirname(os.path.abspath(__file__))
+            path = directory + '/data/sharegpt.csv'
+        reader = DatasetLoadReader(path, rps=10, scale=scale, interval=reader_interval)
+        debug_monitor = ModelMonitor("sharegpt", "0", reader, interval=interval, debug=True, profile_path=profile)
     
     return debug_monitor
 
@@ -177,7 +179,7 @@ def update_graph(n, model_name):
                     marker=dict(
                         sizeref=1,  # Adjust this value to control size
                         sizemode='diameter', 
-                        size=(canvas_size/(scale+2)) * np.log2(center_df['size']),  # Assuming you have a column with size values
+                        size=(canvas_size/(scale+2)) * (np.log2(center_df['size'])+1),  # Assuming you have a column with size values
                         color=center_colors, 
                         symbol='circle' 
                     )
@@ -244,4 +246,13 @@ def mount_to(routes: List, prefix: str, datasrc: Callable[[str], Optional[ModelM
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
     logging.getLogger("pulp.apis.core").setLevel(logging.INFO)  # Suppress pulp logs
+
+    import argparse
+    parser = argparse.ArgumentParser(description="Please provide dataset path:")
+    parser.add_argument("--dataset", type=str, default=None, help="Dataset path.")
+    parser.add_argument("--scaledata", type=float, default=1, help="Dataset path.")
+    parser.add_argument("--profile", type=str, default=None, help="Profile path.")
+    args = parser.parse_args()
+    if args.dataset is not None:
+        figure.datasource = lambda model_name: get_debug_model_montior(args.dataset, args.scaledata, profile=args.profile)
     init().run_server(debug=True)

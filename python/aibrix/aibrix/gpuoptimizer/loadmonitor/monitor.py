@@ -61,7 +61,7 @@ class DeploymentStates:
         return f"{self.name}: {self.replicas}(${self.cost})"
 
 class ModelMonitor:
-    def __init__(self, model_name: str, watch_ver: str, loadreader: LoadReader, interval: int = 10, window: int = 300,  deployment: DeploymentStates = None,namespace: str = None, debug: bool = False):
+    def __init__(self, model_name: str, watch_ver: str, loadreader: LoadReader, interval: int = 10, window: int = 240,  deployment: DeploymentStates = None,namespace: str = None, debug: bool = False, profile_path: str = None):
         """Initialize the model monitor.
         
         Args:
@@ -104,7 +104,9 @@ class ModelMonitor:
         if deployment is not None:
             self.add_deployment(watch_ver, deployment.name, namespace, deployment)
         
-        if self.debug:
+        if profile_path is not None:
+            self.load_profiles(profile_path)
+        elif self.debug:
              # Add debug_gpu_profile anyway if debugging
              self._optimizer.set_profile(debug_gpu_profile)
 
@@ -169,7 +171,22 @@ class ModelMonitor:
     
     def load_profiles(self, filepath: str):
         """Load profiles from a file"""
-        profiles = json.load(open(filepath, 'r'))
+        with open(filepath, 'r') as f:
+            try:
+                # Try parse as singal json
+                profiles = json.load(f)
+            except Exception as e:
+                try:
+                    # Try parse as list of json (jsonl)
+                    profiles = []
+                    for line in f:
+                        if line.strip() == "":
+                            continue
+                        profiles.append(json.loads(line))
+                except Exception as e:
+                    logger.error(f"Invalid profile file format, expected list or dict: {e}")
+                    return
+
         if isinstance(profiles, dict):
             profiles = [profiles]
         elif not isinstance(profiles, list):
@@ -179,6 +196,7 @@ class ModelMonitor:
         for dictProfile in profiles:
             try:
                 profile = GPUProfile(**dictProfile)
+                logger.info(f"Loading {profile.gpu} profile from {filepath}")
                 self._update_profile(profile)
             except Exception as e:
                 logger.error(f"Invalid profile {dictProfile}: {e}")
@@ -201,6 +219,10 @@ class ModelMonitor:
         
         # update the profile of key, note that the profile.gpu is already formalized.
         self._profiles[key] = profile
+        if self.debug:
+            logger.info(f"Profile {profile.gpu} added to optimizer")
+            self._optimizer.set_profile(profile)
+            return
 
         # apply update to optimizer for existing deployments.
         deployment_key = profile.gpu # Fast path, note that the profile.gpu is already formalized if it match any deployments.
@@ -248,7 +270,7 @@ class ModelMonitor:
         """_run implementation. Using a separate yieldable implementation for _run being accepted by Threading"""
         # Define clusterer
         clusterers: List[Clusterer] = [
-            MovingDBSCANClusterer(2, 100, 4, self.window * window_scaling)
+            MovingDBSCANClusterer(2, 10, 4, self.window * window_scaling)
             # MovingDBSCANClusterer(0.8, 100, 4, self.window * window_scaling), 
             # DBSCANClusterer(0.5, 10),
         ]

@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code into the container
 COPY ./*.py /simulator/
+COPY ./model_cache /simulator/model_cache
 
 ENV MODEL_NAME=llama2-7b
  # Trigger profiling

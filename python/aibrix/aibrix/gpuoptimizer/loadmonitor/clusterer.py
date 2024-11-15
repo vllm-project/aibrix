@@ -16,9 +16,14 @@ from typing import Protocol, List, Callable, Union, Tuple, Dict, Iterable, Optio
 from incdbscan import IncrementalDBSCAN
 import numpy as np
 from datetime import datetime
-from .helpers import DataPoint, DataPoints, Centeroid
 import sys
 import math
+import logging 
+
+from .helpers import DataPoint, DataPoints, Centeroid
+from utils import DelayedLog
+
+logger = logging.getLogger("aibrix.gpuoptimizer.clusterer")
 
 class Clusterer(Protocol):
     def insert(self, points):
@@ -95,6 +100,7 @@ class MovingDBSCANClusterer:
         self.buffer_size = buffer_size
         self.frontier = 0
         self.clusterers = [DBSCANClusterer(eps, min_pts)]
+        self._reason = None
    
     def validate(self) -> bool:
         """Do necessary window rotating and return if data refreshing is necessary"""
@@ -106,11 +112,19 @@ class MovingDBSCANClusterer:
         if len(self.clusterers) < self.buffer_size:
             self.clusterers.append(self.clusterers[current].clone())
             self.frontier = len(self.clusterers) - 1
+            logger.debug("test")
+            logger.debug("moving buffer created: %s, buffers: %s", 
+                         self._reason, 
+                         DelayedLog(lambda: [cluster.length for cluster in self.clusterers]))
             return False
         else:
             self.clusterers[current].reset()
             self.frontier = current
             current = (current + 1) % self.buffer_size
+            logger.debug("moving buffer created: %s, now available: %s, buffers: %s", 
+                         self._reason, 
+                         self.clusterer.length,
+                         DelayedLog(lambda: [cluster.length for cluster in self.clusterers]))
             return True
             # data.trim_head(-cluster['clusterers'][0][current].length)
 
@@ -134,7 +148,12 @@ class MovingDBSCANClusterer:
         return self.clusterers[(self.frontier + 1) % len(self.clusterers)]
 
     def _get_points_window_cb(self, window:int) -> Callable[[DBSCANClusterer], bool]:
-        return lambda clusterer: clusterer.length >= window / self.buffer_size
+        return lambda clusterer: clusterer.length >= window / self.buffer_size and self.reason(f"reached {round(window / self.buffer_size)} points")
     
     def _get_time_window_cb(self, window:float) -> Callable[[DBSCANClusterer], bool]:
-        return lambda clusterer: datetime.now().timestamp() - clusterer.created >= window / self.buffer_size
+        return lambda clusterer: datetime.now().timestamp() - clusterer.created >= window / self.buffer_size and self.reason(f"timeout after {round(window / self.buffer_size, 2)} seconds")
+    
+    def reason(self, msg) -> bool:
+        """Provide a reason for the window to be rotated, always return True."""
+        self._reason = msg
+        return True

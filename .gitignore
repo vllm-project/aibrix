@@ -42,3 +42,4 @@ docs/development/simulator/.venv
 docs/development/simulator/simulator_output
 docs/development/simulator/cache
 python/aibrix/aibrix/gpuoptimizer/.venv
+python/aibrix/aibrix/gpuoptimizer/optimizer/profiling/result

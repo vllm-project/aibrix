@@ -23,7 +23,11 @@ NAMESPACE = os.getenv('NAMESPACE', 'default')
 DEFAULT_REPLICAS = int(os.getenv('DEFAULT_REPLICAS', '1'))
 
 # Load the tokenizer for your model
-tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased', clean_up_tokenization_spaces=False)  # Replace with your model name
+tokenizer = AutoTokenizer.from_pretrained(
+    'google/flan-t5-xxl', # Support more tokens
+    cache_dir="model_cache", # Use local cached version
+    model_max_length=16384, # Suppress warning
+    clean_up_tokenization_spaces=True)  
 
 app = Flask(__name__)
 modelMaps = {
@@ -35,14 +39,19 @@ simulator_config: SimulationConfig = SimulationConfig.create_from_cli_args()
 simulator = Simulator(simulator_config)
 v1 = None
 
+logger = logging.getLogger(__name__)
+
 def get_token_count(text):
-    # Encode the text
-    encoded_input = tokenizer(text)
+    try:
+        # Encode the text
+        encoded_input = tokenizer(text)
 
-    # Get the number of tokens
-    token_count = len(encoded_input['input_ids'])
+        # Get the number of tokens
+        return len(encoded_input['input_ids'])
+    except Exception as e:
+        logger.error(f"Failed to get number of tokens: {e}")
 
-    return token_count
+    return 1
 
 models = [
     {
@@ -132,61 +141,77 @@ def unload_model():
 
 @app.route('/v1/completions', methods=['POST'])
 def completion():
-    prompt = request.json.get('prompt')
-    model = request.json.get('model')
-    if not prompt or not model:
-        return jsonify({"status": "error", "message": "Prompt and model are required"}), 400
-    
-    arrived_at = datetime.now().timestamp()
-    input_tokens = get_token_count(prompt)
-    output_tokens = randint(10, 500)
-    arrived_next = request.json.get('next_in')
-    if not arrived_next:
-        arrived_next = 0.0
-    else:
-        arrived_next += arrived_at
-    latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens, arrived_next=arrived_next))
+    try:
+        prompt = request.json.get('prompt')
+        model = request.json.get('model')
+        max_tokens = request.json.get('max_tokens')
+        if not prompt or not model:
+            return jsonify({"status": "error", "message": "Prompt and model are required"}), 400
+        
+        arrived_at = datetime.now().timestamp()
+        input_tokens = get_token_count(prompt)
+        output_tokens = max_tokens if max_tokens else randint(10, 500)
+        arrived_next = request.json.get('next_in')
+        if not arrived_next:
+            arrived_next = 0.0
+        else:
+            arrived_next += arrived_at
 
-    # Simulated response
-    response = {
-        "id": "cmpl-uqkvlQyYK7bGYrRHQ0eXlWi7",
-        "object": "text_completion",
-        "created": int(arrived_at),
-        "model": model,
-        "system_fingerprint": "fp_44709d6fcb",
-        "choices": [
-            {
-                "text": f"This is simulated message from {model}!",
-                "index": 0,
-                "logprobs": None,
-                "finish_reason": "length"
+        start = datetime.now().timestamp()
+        latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens, arrived_next=arrived_next))
+
+        # Simulated response
+        response = {
+            "id": "cmpl-uqkvlQyYK7bGYrRHQ0eXlWi7",
+            "object": "text_completion",
+            "created": int(arrived_at),
+            "model": model,
+            "system_fingerprint": "fp_44709d6fcb",
+            "choices": [
+                {
+                    "text": f"This is simulated message from {model}!",
+                    "index": 0,
+                    "logprobs": None,
+                    "finish_reason": "length"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "time": latency
             }
-        ],
-        "usage": {
-            "prompt_tokens": input_tokens,
-            "completion_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-            "time": latency
         }
-    }
-    return jsonify(response), 200
+        overhead = datetime.now().timestamp()-start
+        if latency > overhead:
+            time.sleep(latency-overhead)
+        else:
+            logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
+        
+        return jsonify(response), 200
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
 
 
 @app.route('/v1/chat/completions', methods=['POST'])
 def chat_completions():
     messages = request.json.get('messages')
     model = request.json.get('model')
+    max_tokens = request.json.get('max_tokens')
     if not messages or not model:
         return jsonify({"status": "error", "message": "Messages and model are required"}), 400
     
     arrived_at = datetime.now().timestamp()
     input_tokens = sum(get_token_count(message["content"]) for message in messages)
-    output_tokens = randint(10, 500)
+    output_tokens = max_tokens if max_tokens else randint(10, 500)
     arrived_next = request.json.get('next_in')
     if not arrived_next:
         arrived_next = 0.0
     else:
         arrived_next += arrived_at
+
+    start = datetime.now().timestamp()
     latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens, arrived_next=arrived_next))
 
     # Simulated response
@@ -213,6 +238,11 @@ def chat_completions():
             }
         ]
     }
+    overhead = datetime.now().timestamp()-start
+    if latency > overhead:
+        time.sleep(latency-overhead)
+    else:
+        logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
     return jsonify(response), 200
 
 @app.route('/metrics')
@@ -261,6 +291,7 @@ avg_generation_throughput_toks_per_s{{model_name="{model_name}"}} {avg_generatio
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
+    logging.getLogger("kubernetes.client.rest").setLevel(logging.ERROR)  # Suppress kubenetes logs
 
     print(f"Starting app. DEPLOYMENT_NAME: {DEPLOYMENT_NAME}, NAMESPACE: {NAMESPACE}, MODEL: {MODEL_NAME}")
    

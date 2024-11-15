@@ -59,10 +59,10 @@ class DatasetLoadReader:
     To match the behavior of the gateway, the input and output tokens are rounded to the nearest integer of log2.
     """
 
-    def __init__(self, filepath, rps:int = 10, interval: int = 10) -> None:
+    def __init__(self, filepath, rps:int = 10, scale:float = 1.0, interval: int = 10) -> None:
         self.df = pd.read_csv(filepath)
-        self.df['input_tokens'] = np.round(np.log2(self.df['input_tokens']))
-        self.df['output_tokens'] = np.round(np.log2(self.df['output_tokens']))
+        self.df['input_tokens'] = np.round(np.log2(self.df['input_tokens'] * scale)) 
+        self.df['output_tokens'] = np.round(np.log2(self.df['output_tokens'] * scale))
 
         self.rps = rps
         self.interval = 10
@@ -128,7 +128,7 @@ class GatewayLoadReader:
                 # Seen
                 return []
             
-            profiles = self.read_key(f"{self.prefix}{ts}")
+            profiles = self.read_key(f"{self.prefix}{int(ts)}", True)
             self.last_ts = ts
 
             if profiles is None or len(profiles) == 0:
@@ -144,7 +144,7 @@ class GatewayLoadReader:
         """Read the first batch of records from the data source."""
         cursor = 0
         matching_keys = []
-        while cursor != 0:
+        while True:
             cursor, keys = self.client.scan(cursor=cursor, match=f"{self.prefix}*")
             for key in keys:
                 # Decode the key from bytes to string
@@ -154,6 +154,11 @@ class GatewayLoadReader:
                     logger.warning(f"Unexpected {strkey} from Redis")
                     continue
                 matching_keys.append((key,int(match.group(1))))
+            if cursor == 0:
+                break
+        if len(matching_keys) == 0:
+            logger.info(f"No pre-existed profiles matching {self.prefix}* found in Redis")
+            return []
         
         # Sort by ts to ensure profiles are processed by time order.
         matching_keys = sorted(matching_keys, key=lambda k: k[1])
@@ -163,7 +168,7 @@ class GatewayLoadReader:
         for key in matching_keys:
             try:
                 # Deserialize by json: dict[string]int
-                profiles = self.read_key(key[0])
+                profiles = self.read_key(key[0], False)
                 if profiles is None or len(profiles) == 0:
                     continue
 
@@ -174,11 +179,14 @@ class GatewayLoadReader:
 
         return records
     
-    def read_key(self, key:Union[str, bytes]) -> Optional[dict]:
+    def read_key(self, key:Union[str, bytes], optional: bool) -> Optional[dict]:
         logging_key = key.decode() if isinstance(key, bytes) else key
         profile_data = self.client.get(key)
         if profile_data is None:
-            logger.debug(f"Failed to retrieve {logging_key} from Redis")
+            if optional:
+                logger.debug(f"No load profile for {logging_key}.")
+            else:
+                logger.warning(f"Failed to retrieve {logging_key} from Redis.")
             return None
         
         # Deserialize by json: dict[string]int
@@ -188,12 +196,12 @@ class GatewayLoadReader:
         
         return profile
     
-    def _parse_profiles(profiles: dict, ts: int, out_records: List[LoadRecord]=[]) -> List[LoadRecord]:
+    def _parse_profiles(self, profiles: dict, ts: int, out_records: List[LoadRecord]=[]) -> List[LoadRecord]:
         for k, v in profiles.items():
             # parse key: log2(input_tokens)-log2(output_tokens)
-            match = re.search(r"^(\d+)-(\d+)$", k)
+            match = re.search(r"^(\d+):(\d+)$", k)
             if match is None:
-                raise Exception(f"Unexpected profile key {k}, expect \"int-int\".")
+                raise Exception(f"Unexpected profile key {k}, expect \"int:int\".")
             
             value = int(v)
             if value == 0 and v != "0":

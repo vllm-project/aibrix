@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Union, Tuple, List
+from typing import Union, Tuple, List, Callable
 import numpy as np
 
 DataSignatures = np.ndarray
@@ -148,6 +148,8 @@ class Centeroid:
         self._span_max = 0
         self._span_min = 0
         self._size = 0
+        self._signature = None
+        self._up_to_date = False # Whether the signature is up to date.
 
     def add(self, point: DataPoint):
         if self._sum_center is None:
@@ -156,6 +158,7 @@ class Centeroid:
             self._range_max = list(point.signature)
             self._span_max = point.age
             self._span_min = point.age
+            self._signature = np.zeros_like(self._sum_center, dtype=int)
         else:
             for i, val in enumerate(point.signature):
                 self._sum_center[i] += val
@@ -163,8 +166,64 @@ class Centeroid:
                 self._range_max[i] = max(self._range_max[i], val)
             self._span_min = min(self._span_min, point.age)
             self._span_max = max(self._span_max, point.age)
+            self._up_to_date = False
             
         self._size += 1
+
+    def get_signature(self, indexes: List[List[float]], error_suppressor: Callable[[int, float, float, float, float], None]=None) -> Tuple[int]:
+        """Generate the index signature of the centroid within the indexes' range.
+        
+        Args:
+            indexes: A list of list of float, each list is a range of values.
+            error_suppressor: A function to handle the error with parameters(value, index assigned, value of index, offset). If None, raise an exception.
+        """
+        if len(self._signature) != len(indexes):
+            raise Exception(f"Indexes and centeroid signature size mismatch, {len(self._signature)}:{len(indexes)}")
+        
+        if self._up_to_date:
+            return self.signature
+        
+        for i, value in enumerate(self.center):
+            if len(indexes[i]) == 0:
+                raise Exception("Indexes size mismatch, at least 1.")
+            elif len(indexes[i]) == 1:
+                self._signature[i] = 0
+                continue
+            
+            # Assuming indexes are ascending ordered.
+            distance = (indexes[i][-1] - indexes[i][0]) / (len(indexes[i]) - 1)
+            if value < indexes[i][0] - distance / 2:
+                if error_suppressor is not None:
+                    self._signature[i] = 0
+                    error_suppressor(i, value, 0, indexes[i][0], - distance / 2)
+                else:
+                    raise Exception(f"Centeroid is out of range: {i}:{value} and accepted minimum {indexes[i][0]} (with offset {- distance / 2}).")
+            elif value > indexes[i][-1] + distance / 2:
+                if error_suppressor is not None:
+                    self._signature[i] = len(indexes[i]) - 1
+                    error_suppressor(i, value, len(indexes[i]) - 1, indexes[i][-1], distance / 2)
+                else:
+                    raise Exception(f"Centeroid is out of range: {i}:{value} and accepted maximum {indexes[i][-1]} (with offset {distance / 2}).")
+            else:
+                # Find the index using binary search.
+                left, right = 0, len(indexes[i]) - 1
+                found = False
+                while left < right - 1:
+                    mid = (left + right) // 2
+                    if value < indexes[i][mid]:
+                        right = mid
+                    elif value > indexes[i][mid]:
+                        left = mid
+                    else:
+                        self._signature[i] = mid
+                        found = True
+                        break
+                if not found:
+                    self._signature[i] = left if value < (indexes[i][left] + indexes[i][left]) / 2 else right
+
+        self._up_to_date = True
+        return self.signature
+                
 
     @property
     def center(self):
@@ -183,8 +242,10 @@ class Centeroid:
         return self._span_max - self._span_min + 1
     
     @property
-    def signature(self) -> Tuple[float]:
-        return (0, 0)
+    def signature(self) -> Tuple[int]:
+        if not self._up_to_date:
+            raise Exception("Signature is not up to date.")
+        return tuple(self._signature.tolist())
     
     @property
     def rate(self):

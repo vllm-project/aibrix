@@ -1,13 +1,13 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: simulator-llama2-7b
+  name: simulator-llama2-7b-a100
   namespace: aibrix-system
   labels:
     modeladapter.aibricks.ai/enabled: "true"
     model.aibrix.ai/name: "llama2-7b"
     model.aibrix.ai/port: "8000"
-    model.aibrix.ai/min_replicas: 1
+    model.aibrix.ai/min_replicas: "1"
 spec:
   replicas: 1
   selector:
@@ -19,13 +19,14 @@ spec:
       labels:
         modeladapter.aibricks.ai/enabled: "true"
         model.aibrix.ai/name: "llama2-7b"
-        app: "simulator-llama2-7b"
+        app: "simulator-llama2-7b-a100"
     spec:
       serviceAccountName: pod-autoscaler
       automountServiceAccountToken: true # Important!
       containers:
         - name: llmengine-simulator
           image: aibrix/vllm-simulator:nightly
+          command: ["python", "app.py", "--replica_config_device", "a100"]
           ports:
             - containerPort: 8000
           env:
@@ -139,7 +140,7 @@ roleRef:
 apiVersion: autoscaling.aibrix.ai/v1alpha1
 kind: PodAutoscaler
 metadata:
-  name: podautoscaler-simulator-llama2-7b
+  name: podautoscaler-simulator-llama2-7b-a100
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
@@ -148,13 +149,14 @@ spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: simulator-llama2-7b
+    name: simulator-llama2-7b-a100
   minReplicas: 1
+  maxReplicas: 10
   targetMetric: "avg_prompt_throughput_toks_per_s" # Ignore if metricsSources is configured
   targetPort: 8000 # Ignore if metricsSources is configured
   metricsSources: 
     - endpoint: gpu-optimizer.aibrix-system.svc.cluster.local:8080
-      path: /metrics/aibrix-system/simulator-llama2-7b
+      path: /metrics/aibrix-system/simulator-llama2-7b-a100
       metric: "vllm:deployment_replicas"
   targetValue: "1"
   scalingStrategy: "KPA"
