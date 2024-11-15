@@ -19,6 +19,19 @@ spec:
       port: 80   
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: client-connection-buffersize
+  namespace: aibrix-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: aibrix-eg
+  connection:
+    bufferLimit: 262144
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
 metadata:
   name: gateway-plugins-extension-policy
