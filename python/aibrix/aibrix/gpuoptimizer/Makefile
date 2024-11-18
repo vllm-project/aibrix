@@ -1,6 +1,6 @@
 all: build
 
-DP ?= "profiling"
+DP ?= profiling
 
 build: 
 	docker build -t aibrix/gpu-optimizer:nightly -f Dockerfile .
@@ -23,7 +23,7 @@ benchmark:
 
 .PHONY: gen-profile
 gen-profile:
-	python optimizer/profiling/gen-profile.py --benchmark optimizer/profiling/result/$(DP).jsonl -o optimizer/profiling/result/$(DP).json
+	python optimizer/profiling/gen-profile.py $(DP) -o "redis://localhost:6379/?model=llama2-7b"
 
 .PHONY: debug-init
 debug-init:
@@ -63,4 +63,4 @@ debug-workload:
 
 .PHONY: visualizer
 visualizer:
-	python -m loadmonitor.visualizer --dataset /Users/bytedance/Studio/gpu/datasets/bird/token_counts.csv --profile optimizer/profiling/result/$(DP).json
+	python -m loadmonitor.visualizer --dataset /Users/bytedance/Studio/gpu/datasets/bird/token_counts.csv --redisprofile "redis://localhost:6379/?model=llama2-7b"

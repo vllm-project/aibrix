@@ -23,11 +23,12 @@ import pandas as pd
 from datetime import datetime
 import threading
 import numpy as np
-from typing import List, Callable, Optional
+from typing import List, Callable, Optional, Tuple, Any
 import os
 import logging
 
 from .loadreader import LoadReader, DatasetLoadReader
+from .profilereader import ProfileReader, FileProfileReader, RedisProfileReader
 from .monitor import ModelMonitor
 
 canvas_size = 1000
@@ -61,17 +62,52 @@ figure.__dict__ = {
 
 logger = logging.getLogger("aibrix.gpuoptimizer.loadmonitor.visualizer")
 
-def get_debug_model_montior(path:str, scale:float=1.0, profile:str=None) -> Optional[ModelMonitor]:
+def get_debug_model_montior(path:str, scale:float=1.0, profile:str=None, redisprofile:str=None) -> Optional[ModelMonitor]:
     global debug_monitor
 
     if debug_monitor == None:
         if path is None:
             directory = os.path.dirname(os.path.abspath(__file__))
             path = directory + '/data/sharegpt.csv'
-        reader = DatasetLoadReader(path, rps=10, scale=scale, interval=reader_interval)
-        debug_monitor = ModelMonitor("sharegpt", "0", reader, interval=interval, debug=True, profile_path=profile)
+        loadReader: LoadReader = DatasetLoadReader(path, rps=10, scale=scale, 
+        interval=reader_interval)
+
+        profileReader: ProfileReader = None
+        if profile is not None:
+            profileReader = FileProfileReader(profile)
+        elif redisprofile is not None:
+            profileReader = RedisProfileReader(*parse_redis_connection_str(redisprofile))
+
+        debug_monitor = ModelMonitor(
+            "sharegpt", "0", loadReader, interval=interval, 
+            profileReader=profileReader,
+            debug=True)
     
     return debug_monitor
+
+def parse_redis_connection_str(connection_str: str) -> Tuple[Any, str]:
+    import redis
+    import json
+    import os
+    import sys
+    from urllib.parse import urlparse, parse_qs
+
+    # Parse the Redis URL
+    url = urlparse(connection_str)
+    
+    # Connect to the Redis server
+    db_name = str(url.path).strip('/')
+    if db_name == "":
+        db_name = "0"
+    redis_client = redis.Redis(host=url.hostname, port=url.port, db=db_name, username=url.username, password=url.password)
+
+    # Store the result in Redis
+    query_params = parse_qs(url.query)
+    model_name = query_params.get("model", [""])[0]
+    if model_name == "":
+        raise Exception("\"model\" in Redic connection arguments is not provided.")
+    
+    return redis_client, model_name
 
 def make_color(color, alpha=1):
     rgb = plt.matplotlib.colors.to_rgb(color)
@@ -252,7 +288,8 @@ if __name__ == '__main__':
     parser.add_argument("--dataset", type=str, default=None, help="Dataset path.")
     parser.add_argument("--scaledata", type=float, default=1, help="Dataset path.")
     parser.add_argument("--profile", type=str, default=None, help="Profile path.")
+    parser.add_argument("--redisprofile", type=str, default=None, help="Redis connection string for profiles.")
     args = parser.parse_args()
     if args.dataset is not None:
-        figure.datasource = lambda model_name: get_debug_model_montior(args.dataset, args.scaledata, profile=args.profile)
+        figure.datasource = lambda model_name: get_debug_model_montior(args.dataset, args.scaledata, profile=args.profile, redisprofile=args.redisprofile)
     init().run_server(debug=True)

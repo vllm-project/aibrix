@@ -21,6 +21,7 @@ class GPUProfile:
     cost: float = 0.0
     tputs: list = field(default_factory=list) # units: requests per second
     indexes: list = field(default_factory=list) # value ticks of tputs columns and rows
+    created: float = 0.0
 
 WorkloadSignatureErrorHandler = Callable[[int, float, float, float, float], None]
 """A function to handle the error with parameters(dimension, value, index assigned, value of index, value offset)."""

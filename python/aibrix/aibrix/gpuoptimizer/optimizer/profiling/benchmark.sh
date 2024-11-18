@@ -16,18 +16,18 @@ mkdir -p `dirname "$OUTPUT_FILE"`
 # echo "" > ${OUTPUT_FILE}
 
 # TODO: Set your preferred request sizes and rates here.
-input_start=4096
+input_start=8
 input_limit=$((2**14)) # 16K
 output_start=4
 output_limit=$((2**9)) # 512
-req_start=1
+rate_start=1
 rate_limit=$((2**6)) # 32
 
 input_len=$input_start
 while [[ $input_len -le $input_limit ]]; do
   output_len=$output_start
   while [[ $output_len -le $output_limit ]]; do
-    req_rate=$req_start
+    req_rate=$rate_start
     while [[ $req_rate -le $rate_limit ]]; do
       python $PATH_PREFIX/gpu-benchmark.py --backend=vllm --port 8000 --model=llama2-7b --request-rate=$req_rate --num-prompts=$TOTAL --input_len $input_len --output_len $output_len >> ${OUTPUT_FILE} 
       req_rate=$((req_rate * 2)) 

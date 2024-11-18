@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import threading
-from typing import List, Optional, Iterable, Union, Callable
+from typing import List, Optional, Iterable, Union, Callable, Dict
 from functools import reduce
 from datetime import datetime
 import os
@@ -24,6 +24,7 @@ import logging
 import json
 
 from .loadreader import LoadReader, LoadRecord
+from .profilereader import ProfileReader
 from .clusterer import Clusterer, DBSCANClusterer, MovingDBSCANClusterer
 from .helpers import DataPoint, DataBuffer, Centeroid
 from optimizer import Optimizer, GPUProfile
@@ -61,7 +62,7 @@ class DeploymentStates:
         return f"{self.name}: {self.replicas}(${self.cost})"
 
 class ModelMonitor:
-    def __init__(self, model_name: str, watch_ver: str, loadreader: LoadReader, interval: int = 10, window: int = 240,  deployment: DeploymentStates = None,namespace: str = None, debug: bool = False, profile_path: str = None):
+    def __init__(self, model_name: str, watch_ver: str, loadreader: LoadReader, interval: int = 10, window: int = 240, deployment: DeploymentStates = None,namespace: str = None, profileReader: ProfileReader = None, debug: bool = False):
         """Initialize the model monitor.
         
         Args:
@@ -89,8 +90,11 @@ class ModelMonitor:
         # Load reader
         self._loadreader: LoadReader = loadreader
 
+        # Profile reader
+        self._profilereader: ProfileReader = profileReader
+
         # Optimizer
-        self._profiles = {}
+        self._profiles: Dict[str, GPUProfile] = {}
         self._optimizer = Optimizer()
 
         # Monitor states
@@ -104,9 +108,7 @@ class ModelMonitor:
         if deployment is not None:
             self.add_deployment(watch_ver, deployment.name, namespace, deployment)
         
-        if profile_path is not None:
-            self.load_profiles(profile_path)
-        elif self.debug:
+        if profileReader is None and self.debug:
              # Add debug_gpu_profile anyway if debugging
              self._optimizer.set_profile(debug_gpu_profile)
 
@@ -114,7 +116,6 @@ class ModelMonitor:
         # Update optimizer
         key = self._deployment_entry_point(deployment_name, namespace)
         profile = self._match_profile(key, deployment_name)
-        cost_diff = 0
         if profile != None:
             # No lock required here since the deployment has not been added to deployments.
             self._optimizer.set_profile(profile)
@@ -169,45 +170,31 @@ class ModelMonitor:
                 del self.deployments[key]
         return len(self.deployments)
     
-    def load_profiles(self, filepath: str):
+    def load_profiles(self, profileReader: ProfileReader = None):
         """Load profiles from a file"""
-        with open(filepath, 'r') as f:
-            try:
-                # Try parse as singal json
-                profiles = json.load(f)
-            except Exception as e:
-                try:
-                    # Try parse as list of json (jsonl)
-                    profiles = []
-                    for line in f:
-                        if line.strip() == "":
-                            continue
-                        profiles.append(json.loads(line))
-                except Exception as e:
-                    logger.error(f"Invalid profile file format, expected list or dict: {e}")
-                    return
+        try:
+            if profileReader is None:
+                profileReader = self._profilereader
+            else:
+                self._profilereader = profileReader
 
-        if isinstance(profiles, dict):
-            profiles = [profiles]
-        elif not isinstance(profiles, list):
-            logger.error("Invalid profile file format, expected list or dict.")
-            return
+            profiles = profileReader.read()
+            for profile in profiles:
+                if self._update_profile(profile):
+                    logger.debug(f"Profile of {profile.gpu} updated.")
+        except Exception as e:
+            logger.error(f"Failed to load profiles:: {e}")
 
-        for dictProfile in profiles:
-            try:
-                profile = GPUProfile(**dictProfile)
-                logger.info(f"Loading {profile.gpu} profile from {filepath}")
-                self._update_profile(profile)
-            except Exception as e:
-                logger.error(f"Invalid profile {dictProfile}: {e}")
-                continue
-
-    def _update_profile(self, profile:GPUProfile):
+    def _update_profile(self, profile:GPUProfile) -> bool:
         """Update a profile, will update the formal alias copy, too."""
         key = profile.gpu
         cost_diff = profile.cost
         log_event = True # log event if the profile is added to non-profile deployments.
         if key in self._profiles:
+            # profile already exists, check if it is updated
+            if profile.created <= self._profiles[key].created:
+                return False
+            
             cost_diff -= self._profiles[key].cost # We can safely assume the existing profile has been added to the optimizer if any deployments match it.
             log_event = False
 
@@ -222,7 +209,7 @@ class ModelMonitor:
         if self.debug:
             logger.info(f"Profile {profile.gpu} added to optimizer")
             self._optimizer.set_profile(profile)
-            return
+            return True
 
         # apply update to optimizer for existing deployments.
         deployment_key = profile.gpu # Fast path, note that the profile.gpu is already formalized if it match any deployments.
@@ -247,6 +234,8 @@ class ModelMonitor:
             self._lock.release()
             if log_event:
                 logger.info(f"Profile added to {profile.gpu}. Optimizer will consider corresponding GPU.")
+
+        return True
 
     def start(self):
         """Start the model monitor thread"""
@@ -357,6 +346,9 @@ class ModelMonitor:
         return None
     
     def _optimize(self, centers: Iterable[Centeroid], total_request_rate: int):
+        # Update profiles.
+        self.load_profiles()
+
         if not self._optimizer.set_workload_distribution(centers, total_request_rate):
             return
 

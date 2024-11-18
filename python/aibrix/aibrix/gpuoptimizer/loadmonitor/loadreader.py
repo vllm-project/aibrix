@@ -21,7 +21,7 @@ import json
 import logging
 import re
 
-logger = logging.getLogger("LoadReader")
+logger = logging.getLogger("aibrix.gpuoptimizer.loadreader")
 
 class LoadRecord(tuple):
     """LoadRecord models a tuple with the following fields: ts, input tokens, output tokens, and frequency."""

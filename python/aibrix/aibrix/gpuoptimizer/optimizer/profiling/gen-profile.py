@@ -3,11 +3,18 @@ import json
 import pandas as pd
 import numpy as np
 import os
+from datetime import datetime
+
+REDIS_PROFILE_KEY = "aibrix:profile_%s_%s"
 
 def main(args):
     # Init dataframe and load benchmark results
+    benchmark = os.path.dirname(__file__) + f"/result/{args.deployment}.jsonl"
+    if args.benchmark is not None:
+        benchmark = args.benchmark
+
     benchmark_results = []
-    with open(args.benchmark, "r") as f:
+    with open(benchmark, "r") as f:
         for line in f:
             if line == "\n":
                 continue
@@ -43,8 +50,6 @@ def main(args):
                 continue
             filtered_df = filtered_df.loc[filtered_df["request_rate"].isin(tt_df["request_rate"])]
 
-            
-
             # Filter the bencmarks by E2E latency SLO
             e2e_df = filtered_df.loc[(filtered_df['metric'] == "E2E") & (filtered_df[percentile_field] <= args.e2e)]
             if len(e2e_df) == 0:
@@ -67,23 +72,60 @@ def main(args):
             slo_tputs[i, j] = np.max(filtered_df.loc[filtered_df["metric"] == "TPUT", "mean"])
 
     # Print the matrix
-    filename = os.path.splitext(os.path.basename(args.benchmark))[0]
+    filename = os.path.splitext(os.path.basename(benchmark))[0]
     result = {
         "gpu": filename,
         "cost": args.cost,
         "tputs": slo_tputs.tolist(),
-        "indexes": [output_tokens.tolist(), input_tokens.tolist()]
+        "indexes": [output_tokens.tolist(), input_tokens.tolist()],
+        "created": datetime.now().timestamp()
     }
     if args.o is not None:
+        if _try_store_redis(args, result):
+            return
+        
         with open(args.o, "w") as f:
             json.dump(result, f)
     else:
-        json.dump(result)
+        print(json.dumps(result))
+
+def _try_store_redis(args, result) -> bool:
+    import redis
+    import json
+    import os
+    import sys
+    from urllib.parse import urlparse, parse_qs
+
+    # Parse the Redis URL
+    url = urlparse(args.o)
+
+    # Connect to the Redis server
+    if url.scheme != "redis":
+        return False
+    
+    # Connect to the Redis server
+    db_name = str(url.path).strip('/')
+    if db_name == "":
+        db_name = "0"
+    redis_client = redis.Redis(host=url.hostname, port=url.port, db=db_name, username=url.username, password=url.password)
+
+    # Store the result in Redis
+    query_params = parse_qs(url.query)
+    model_name = query_params.get("model", [""])[0]
+    if model_name == "":
+        print("\"model\" in Redic connection arguments is not provided.", file=sys.stderr)
+        return True
+    
+    redis_key = REDIS_PROFILE_KEY % (model_name, args.deployment)
+    redis_client.set(redis_key, json.dumps(result))
+    print(f"Result stored in Redis: {redis_key}.")
+    return True
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Benchmark the online serving throughput.")
-    parser.add_argument("--benchmark", type=str, default="result.jsonl",
+    parser.add_argument("deployment", type=str, help="Target deployment", default="result")
+    parser.add_argument("--benchmark", type=str, default=None,
                         help="Benchmark result file.")
     parser.add_argument("--tput", type=int, default=0,
                         help="Throughput SLO target as RPS.")
@@ -101,6 +143,6 @@ if __name__ == "__main__":
     parser.add_argument("--cost", type=float, default=1.0,
                         help="Cost of the GPU.")
     parser.add_argument("-o", type=str, default=None,
-                        help="Output file name.")
+                        help="Output file name. support redis as: redis://[username:password@]hostname:port[/db_name]?model=[model_name]")
     args = parser.parse_args()
     main(args)

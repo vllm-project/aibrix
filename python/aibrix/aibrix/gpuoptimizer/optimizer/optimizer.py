@@ -18,7 +18,7 @@ class Optimizer:
                 self.add_profile(profile)
 
     def set_profile(self, profile: GPUProfile):
-        if self._workload_distribution_template == None:
+        if self._workload_distribution_template is None:
             self._workload_distribution_template = np.zeros_like(profile.tputs)
             self._indexes = profile.indexes
         elif (self._workload_distribution_template.shape != np.shape(profile.tputs) or
