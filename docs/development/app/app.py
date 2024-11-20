@@ -1,4 +1,6 @@
 from flask import Flask, request, Response, jsonify
+from werkzeug import serving
+import re
 import time
 from random import randint
 import os
@@ -6,9 +8,6 @@ try:
     from kubernetes import client, config
 except Exception as e:
     print(f"Failed to import kubernetes, skip: {e}")
-
-app = Flask(__name__)
-v1 = None
 
 # Global storage for overridden values
 overrides = {}
@@ -69,12 +68,32 @@ models = [
     }
 ]
 
+
+# Note: this is to supress /metrics logs, gateway sends request to pods to scrape
+# the metrics and results in lots of meaningless requests that we do not want to log.
+def disable_endpoint_logs():
+    """Disable logs for requests to specific endpoints."""
+    disabled_endpoints = ('/', '/healthz', '/metrics')
+    parent_log_request = serving.WSGIRequestHandler.log_request
+
+    def log_request(self, *args, **kwargs):
+        if not any(re.match(f"{de}$", self.path) for de in disabled_endpoints):
+            parent_log_request(self, *args, **kwargs)
+
+    serving.WSGIRequestHandler.log_request = log_request
+
+
+app = Flask(__name__)
+disable_endpoint_logs()
+
+
 @app.route('/v1/models', methods=['GET'])
 def get_models():
     return jsonify({
         "object": "list",
         "data": models
     })
+
 
 @app.route('/v1/load_lora_adapter', methods=['POST'])
 def load_model():
@@ -113,7 +132,7 @@ def completion():
 
     prompt_tokens = randint(1, 100)
     completion_tokens = randint(1, 100)
-    
+
     # Simulated response
     response = {
         "id": "cmpl-uqkvlQyYK7bGYrRHQ0eXlWi7",
@@ -132,7 +151,7 @@ def completion():
         "usage": {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens+completion_tokens
+            "total_tokens": prompt_tokens + completion_tokens
         }
     }
     return jsonify(response), 200
@@ -147,7 +166,7 @@ def chat_completions():
 
     prompt_tokens = randint(1, 100)
     completion_tokens = randint(1, 100)
-    
+
     # Simulated response
     response = {
         "id": "chatcmpl-abc123",
@@ -157,7 +176,7 @@ def chat_completions():
         "usage": {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens+completion_tokens
+            "total_tokens": prompt_tokens + completion_tokens
         },
         "choices": [
             {
@@ -173,6 +192,7 @@ def chat_completions():
     }
     return jsonify(response), 200
 
+
 @app.route('/set_metrics', methods=['POST'])
 def set_metrics():
     global overrides
@@ -184,6 +204,7 @@ def set_metrics():
         return {"status": "success", "message": "Overrides updated"}, 200
     else:
         return {"status": "error", "message": "No data provided"}, 400
+
 
 @app.route('/metrics')
 def metrics():
@@ -233,6 +254,7 @@ vllm:avg_generation_throughput_toks_per_s{{model_name="{model_name}"}} {avg_gene
 vllm:gpu_cache_usage_perc{{model_name="model_name"}} {gpu_cache_usage_perc}
 """
     return Response(metrics_output, mimetype='text/plain')
+
 
 if __name__ == '__main__':
     try:
