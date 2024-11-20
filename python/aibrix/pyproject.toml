@@ -37,7 +37,7 @@ aibrix_download = 'aibrix.downloader.__main__:main'
 [tool.poetry.dependencies]
 python = ">=3.8,<3.12"
 huggingface-hub = "^0.24.6"
-tos = "^2.7.1"
+tos = "2.8.0"
 boto3 = "^1.35.5"
 fastapi = "^0.112.2"
 gunicorn = "^23.0.0"

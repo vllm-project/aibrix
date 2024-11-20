@@ -1,7 +1,6 @@
 from flask import Flask, request, Response, jsonify
 import time
 import os
-import asyncio
 import logging
 from datetime import datetime
 from random import randint
@@ -38,6 +37,9 @@ sys.argv.append(f"--replica_config_model_name={modelMaps.get(MODEL_NAME, MODEL_N
 simulator_config: SimulationConfig = SimulationConfig.create_from_cli_args()
 simulator = Simulator(simulator_config)
 v1 = None
+
+# Global storage for overridden values
+overrides = {}
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +247,18 @@ def chat_completions():
         logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
     return jsonify(response), 200
 
+@app.route('/set_metrics', methods=['POST'])
+def set_metrics():
+    global overrides
+    # Get JSON data from the request
+    data = request.json
+    if data:
+        # Update overrides with new key-value pairs
+        overrides.update(data)
+        return {"status": "success", "message": "Overrides updated"}, 200
+    else:
+        return {"status": "error", "message": "No data provided"}, 400
+
 @app.route('/metrics')
 def metrics():
     # get deployment information
@@ -257,35 +271,40 @@ def metrics():
         replicas = DEFAULT_REPLICAS
 
     # a reasonable mock total value
-    total = 100.0
-    model_name = MODEL_NAME
-    # 计算每个 metrics
-    success_total = total / replicas
-    avg_prompt_throughput = total / replicas if replicas > 0 else 0
-    avg_generation_throughput = total / replicas if replicas > 0 else 0
-    running = randint(1, 100)
-    waiting = randint(1, 100)
-    swapped = randint(1, 100)
+    total = overrides.get("total", 0)
+    model_name = overrides.get("model_name", MODEL_NAME)
+    # calculate metrics with potential overrides
+    success_total = overrides.get("success_total", total / replicas)
+    avg_prompt_throughput = overrides.get("avg_prompt_throughput", total / replicas if replicas > 0 else 0)
+    avg_generation_throughput = overrides.get("avg_generation_throughput", total / replicas if replicas > 0 else 0)
+    running = overrides.get("running", 0)
+    waiting = overrides.get("waiting", 0)
+    swapped = overrides.get("swapped", 0)
+    max_running_capacity = 100
+    gpu_cache_usage_perc = overrides.get("gpu_cache_usage_perc", min(100.0, (running / max_running_capacity) * 100))
 
     # construct Prometheus-style Metrics
-    metrics_output = f"""# HELP request_success_total Count of successfully processed requests.
-# TYPE request_success_total counter
-request_success_total{{finished_reason="stop",model_name="{model_name}"}} {success_total}
-# HELP num_requests_running Number of requests currently running on GPU.
-# TYPE num_requests_running gauge
-num_requests_running{{model_name="{model_name}"}} {running}
-# HELP num_requests_swapped Number of requests swapped to CPU.
-# TYPE num_requests_swapped gauge
-num_requests_swapped{{model_name="{model_name}"}} {swapped}
-# HELP num_requests_waiting Number of requests waiting to be processed.
-# TYPE num_requests_waiting gauge
-num_requests_waiting{{model_name="{model_name}"}} {waiting}
-# HELP avg_prompt_throughput_toks_per_s Average prefill throughput in tokens/s.
-# TYPE avg_prompt_throughput_toks_per_s gauge
-avg_prompt_throughput_toks_per_s{{model_name="{model_name}"}} {avg_prompt_throughput}
-# HELP avg_generation_throughput_toks_per_s Average generation throughput in tokens/s.
-# TYPE avg_generation_throughput_toks_per_s gauge
-avg_generation_throughput_toks_per_s{{model_name="{model_name}"}} {avg_generation_throughput}
+    metrics_output = f"""# HELP vllm:request_success_total Count of successfully processed requests.
+# TYPE vllm:request_success_total counter
+vllm:request_success_total{{finished_reason="stop",model_name="{model_name}"}} {success_total}
+# HELP vllm:num_requests_running Number of requests currently running on GPU.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{{model_name="{model_name}"}} {running}
+# HELP vllm:num_requests_swapped Number of requests swapped to CPU.
+# TYPE vllm:num_requests_swapped gauge
+vllm:num_requests_swapped{{model_name="{model_name}"}} {swapped}
+# HELP vllm:num_requests_waiting Number of requests waiting to be processed.
+# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{{model_name="{model_name}"}} {waiting}
+# HELP vllm:avg_prompt_throughput_toks_per_s Average prefill throughput in tokens/s.
+# TYPE vllm:avg_prompt_throughput_toks_per_s gauge
+vllm:avg_prompt_throughput_toks_per_s{{model_name="{model_name}"}} {avg_prompt_throughput}
+# HELP vllm:avg_generation_throughput_toks_per_s Average generation throughput in tokens/s.
+# TYPE vllm:avg_generation_throughput_toks_per_s gauge
+vllm:avg_generation_throughput_toks_per_s{{model_name="{model_name}"}} {avg_generation_throughput}
+# HELP vllm:gpu_cache_usage_perc GPU KV-cache usage. 1 means 100 percent usage.
+# TYPE vllm:gpu_cache_usage_perc gauge
+vllm:gpu_cache_usage_perc{{model_name="model_name"}} {gpu_cache_usage_perc}
 """
     return Response(metrics_output, mimetype='text/plain')
 

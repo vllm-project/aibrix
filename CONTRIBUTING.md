@@ -1,4 +1,4 @@
-## About AIBricks
+## About AIBrix
 
 For instructions on building, installing, deploying, and testing this project, 
 please see the [Development Guide](docs/development/README.md) in the `docs/development` directory.
@@ -12,7 +12,7 @@ please see the [Development Guide](docs/development/README.md) in the `docs/deve
 
 ### 1. Understanding the Repository Structure
 
-You can refer to the [Design Doc](https://github.com/aibrix/aibrix/tree/main/docs/tutorial) to quickly understand the layout of the AIBricks directory structure.
+You can refer to the [Design Doc](https://github.com/aibrix/aibrix/tree/main/docs/tutorial) to quickly understand the layout of the AIBrix directory structure.
 
 ### 2. Picking an Issue
 
@@ -30,7 +30,7 @@ Start by picking an [issue](https://github.com/aibrix/aibrix/issues) tagged with
 ## Advanced Contributions
 
 - **Feature Proposals and Bug Reporting**: Report bugs or propose new features by creating an issue on our GitHub page. Provide as much detail as possible to facilitate discussions.
-- **Contributing to Documentation**: Help improve our documentation by proposing changes to issue list. Our documentation is at [AIBricks Doc](https://github.com/aibrix/aibrix/tree/main/docs/tutorial)
+- **Contributing to Documentation**: Help improve our documentation by proposing changes to issue list. Our documentation is at [AIBrix Doc](https://github.com/aibrix/aibrix/tree/main/docs/tutorial)
 - **Organizing Community Events**: If you are interested in organizing meetups or webinars, contact our community manager (TODO: contact information).
 
 ## Community and Communication

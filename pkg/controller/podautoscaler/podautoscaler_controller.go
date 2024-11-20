@@ -123,7 +123,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		WatchesRawSource(src, &handler.EnqueueRequestForObject{}).
 		Complete(r)
 
-	klog.InfoS("Added AIBricks pod-autoscaler-controller successfully")
+	klog.InfoS("Added AIBrix pod-autoscaler-controller successfully")
 
 	errChan := make(chan error)
 	go reconciler.Run(context.Background(), errChan)

@@ -19,6 +19,19 @@ spec:
       port: 80   
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: client-connection-buffersize
+  namespace: aibrix-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: aibrix-eg
+  connection:
+    bufferLimit: 262144
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
 metadata:
   name: gateway-plugins-extension-policy
@@ -36,7 +49,8 @@ spec:
         request:
           body: Buffered
         response: 
-          body: Buffered
+          body: Streamed
+      messageTimeout: 5s
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyPatchPolicy
@@ -66,7 +80,7 @@ spec:
                 regex: .*
         route:  
           cluster: original_destination_cluster
-          timeout: 1000s  # Increase route timeout
+          timeout: 120s  # Increase route timeout
         typed_per_filter_config:
           "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0":
             "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
