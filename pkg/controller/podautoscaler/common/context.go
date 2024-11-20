@@ -17,9 +17,10 @@ limitations under the License.
 package common
 
 import (
+	"strconv"
+
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	"k8s.io/klog/v2"
-	"strconv"
 )
 
 const (
