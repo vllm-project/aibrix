@@ -602,6 +602,7 @@ func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context,
 
 	err = r.updateScalerSpec(ctx, pa)
 	if err != nil {
+		klog.ErrorS(err, "Failed to update scaler spec from pa_types")
 		return 0, "", currentTimestamp, fmt.Errorf("error update scaler spec: %w", err)
 	}
 
