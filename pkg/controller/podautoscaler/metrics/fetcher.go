@@ -66,7 +66,7 @@ func (f *RestMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, me
 
 func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, endpoint string, path string, metricName string) (float64, error) {
 	// Use http to fetch endpoint
-	url := fmt.Sprint("http://%s/%s", endpoint, strings.TrimLeft(path, "/"))
+	url := fmt.Sprintf("http://%s/%s", endpoint, strings.TrimLeft(path, "/"))
 
 	// Create request with context, so that the request will be canceled if the context is canceled
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
