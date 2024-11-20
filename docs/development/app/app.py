@@ -15,7 +15,7 @@ overrides = {}
 
 MODEL_NAME = 'llama2-70b'
 DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-70b')
-NAMESPACE = os.getenv('NAMESPACE', 'aibrix-system')
+NAMESPACE = os.getenv('POD_NAMESPACE', 'default')
 DEFAULT_REPLICAS = int(os.getenv('DEFAULT_REPLICAS', '1'))
 
 models = [
@@ -193,7 +193,8 @@ def metrics():
         resp = apps_v1.read_namespaced_deployment(DEPLOYMENT_NAME, NAMESPACE)
         replicas = resp.spec.replicas if resp.spec.replicas is not None else 1
     except Exception as e:
-        print(f"Failed to get deployment information: {DEPLOYMENT_NAME=} {NAMESPACE=} {e=}, set replicas to {DEFAULT_REPLICAS}")
+        print(f"Failed to get deployment information: {DEPLOYMENT_NAME=} {NAMESPACE=} error={str(e)}")
+        print(f"Due to the failure, replicas {DEFAULT_REPLICAS} will be used to calculate metrics")
         replicas = DEFAULT_REPLICAS
 
     # a reasonable mock total value
