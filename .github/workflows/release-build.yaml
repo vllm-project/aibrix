@@ -1,6 +1,7 @@
 name: Release Build and Push
 
 on:
+  workflow_dispatch:  # Allows manual trigger
   push:
     tags:
       - 'v*'  # This triggers the workflow on any new tag

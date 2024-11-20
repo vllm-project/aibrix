@@ -3,8 +3,22 @@ name: Linter and Unit Tests
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - 'pkg/**'
+      - 'cmd/**'
+      - 'api/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.golangci.yml'
   pull_request:
     branches: [ "main" ]
+    paths:
+      - 'pkg/**'
+      - 'cmd/**'
+      - 'api/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.golangci.yml'
 
 jobs:
   lint:
