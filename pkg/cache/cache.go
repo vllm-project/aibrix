@@ -78,11 +78,16 @@ var (
 func getPodMetricRefreshInterval() time.Duration {
 	value, exists := os.LookupEnv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS")
 	if exists {
-		if intValue, err := strconv.Atoi(value); err == nil {
-			return time.Duration(intValue) * time.Millisecond
+		intValue, err := strconv.Atoi(value)
+		if err != nil {
+			klog.V(4).Infof("Invalid AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: %s, falling back to default", value)
+		} else {
+			klog.V(4).Infof("Using env value for refresh interval: %d ms", intValue)
+			return time.Duration(intValue)
 		}
 	}
-	return time.Duration(defaultPodMetricRefreshIntervalInMS) * time.Millisecond
+	klog.V(4).Infof("Using default refresh interval: %d ms", defaultPodMetricRefreshIntervalInMS)
+	return time.Duration(defaultPodMetricRefreshIntervalInMS)
 }
 
 func GetCache() (*Cache, error) {
