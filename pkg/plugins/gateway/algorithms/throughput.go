@@ -54,24 +54,24 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (s
 			continue
 		}
 
-		promptThroughput, err := r.cache.GetPodMetric(pod.Name, throughput_prompt)
+		promptThroughput, err := r.cache.GetPodMetric(pod.Name, avg_prompt_throughput_toks_per_s)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		generationThroughput, err := r.cache.GetPodMetric(pod.Name, throughput_generation)
+		generationThroughput, err := r.cache.GetPodMetric(pod.Name, avg_generation_throughput_toks_per_s)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
 
 		// processing prompt tokens is twice as expensive than generation tokens
-		totalthroughput := 2*promptThroughput.Value + generationThroughput.Value
-		klog.V(4).Infof("pod: %v, podIP: %v, promptThroughput: %v, generationThroughput: %v, totalthroughput: %v",
-			pod.Name, pod.Status.PodIP, promptThroughput, generationThroughput, totalthroughput)
+		total_throughput := 2*promptThroughput.Value + generationThroughput.Value
+		klog.V(4).Infof("pod: %v, podIP: %v, promptThroughput: %v, generationThroughput: %v, total_throughput: %v",
+			pod.Name, pod.Status.PodIP, promptThroughput, generationThroughput, total_throughput)
 
-		if totalthroughput <= minCount {
-			minCount = totalthroughput
+		if total_throughput <= minCount {
+			minCount = total_throughput
 			targetPodIP = pod.Status.PodIP
 		}
 	}
@@ -80,5 +80,5 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (s
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	return targetPodIP + ":" + podPort, nil
+	return targetPodIP + ":" + podMetricPort, nil
 }

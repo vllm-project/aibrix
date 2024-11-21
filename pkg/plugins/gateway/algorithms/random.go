@@ -52,5 +52,5 @@ func (r randomRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (strin
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	return targetPodIP + ":" + podPort, nil
+	return targetPodIP + ":" + podMetricPort, nil
 }

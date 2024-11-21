@@ -16,13 +16,13 @@ limitations under the License.
 
 package routingalgorithms
 
-import (
-	"context"
+const (
+	num_requests_running                 = "num_requests_running"
+	num_requests_waiting                 = "num_requests_waiting"
+	num_requests_swapped                 = "num_requests_swapped"
+	avg_prompt_throughput_toks_per_s     = "avg_prompt_throughput_toks_per_s"
+	avg_generation_throughput_toks_per_s = "avg_generation_throughput_toks_per_s"
+	e2e_request_latency_seconds          = "e2e_request_latency_seconds"
 
-	v1 "k8s.io/api/core/v1"
+	podMetricPort = "8000"
 )
-
-type Router interface {
-	// Route returns the target pod
-	Route(ctx context.Context, pods map[string]*v1.Pod) (string, error)
-}

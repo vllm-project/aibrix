@@ -106,18 +106,18 @@ func TestWithIPPods(t *testing.T) {
 		},
 		PodMetrics: map[string]map[string]*cache.MetricValue{
 			"p1": {
-				num_requests_running:  &cache.MetricValue{Value: 5},
-				num_requests_waiting:  &cache.MetricValue{Value: 5},
-				num_requests_swapped:  &cache.MetricValue{Value: 5},
-				throughput_prompt:     &cache.MetricValue{Value: 20},
-				throughput_generation: &cache.MetricValue{Value: 20},
+				num_requests_running:                 &cache.MetricValue{Value: 5},
+				num_requests_waiting:                 &cache.MetricValue{Value: 5},
+				num_requests_swapped:                 &cache.MetricValue{Value: 5},
+				avg_prompt_throughput_toks_per_s:     &cache.MetricValue{Value: 20},
+				avg_generation_throughput_toks_per_s: &cache.MetricValue{Value: 20},
 			},
 			"p2": {
-				num_requests_running:  &cache.MetricValue{Value: 15},
-				num_requests_waiting:  &cache.MetricValue{Value: 15},
-				num_requests_swapped:  &cache.MetricValue{Value: 15},
-				throughput_prompt:     &cache.MetricValue{Value: 15},
-				throughput_generation: &cache.MetricValue{Value: 2},
+				num_requests_running:                 &cache.MetricValue{Value: 15},
+				num_requests_waiting:                 &cache.MetricValue{Value: 15},
+				num_requests_swapped:                 &cache.MetricValue{Value: 15},
+				avg_prompt_throughput_toks_per_s:     &cache.MetricValue{Value: 15},
+				avg_generation_throughput_toks_per_s: &cache.MetricValue{Value: 2},
 			},
 		},
 	}
