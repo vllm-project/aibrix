@@ -42,12 +42,12 @@ func CheckUser(u User, redisClient *redis.Client) bool {
 func GetUser(u User, redisClient *redis.Client) (User, error) {
 	val, err := redisClient.Get(context.Background(), genKey(u.Name)).Result()
 	if err != nil {
-		return User{}, err
+		return u, fmt.Errorf("error to read user: %v from storage: %v", u.Name, err)
 	}
 	user := &User{}
 	err = json.Unmarshal([]byte(val), user)
 	if err != nil {
-		return User{}, err
+		return *user, fmt.Errorf("error to unmarshal user: %v, error: %v", user, err)
 	}
 
 	return *user, nil
@@ -60,7 +60,7 @@ func SetUser(u User, redisClient *redis.Client) error {
 
 	b, err := json.Marshal(&u)
 	if err != nil {
-		return err
+		return fmt.Errorf("error to marshal user: %v, error: %v", u, err)
 	}
 
 	return redisClient.Set(context.Background(), genKey(u.Name), string(b), 0).Err()

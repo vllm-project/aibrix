@@ -23,8 +23,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"slices"
-	"strings"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,8 +33,6 @@ import (
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
 	"github.com/aibrix/aibrix/pkg/cache"
@@ -48,21 +46,24 @@ import (
 )
 
 var (
-	defaultRPM           = 100
-	defaultTPMMultiplier = 1000
-	routingStrategies    = []string{"random", "least-request", "throughput"}
+	routingStrategies = []string{"random", "least-request", "throughput"}
+)
+
+const (
+	DefaultRPM           = 100
+	DefaultTPMMultiplier = 1000
+	InternalServerError  = envoyTypePb.StatusCode_InternalServerError
 )
 
 type Server struct {
-	routers             map[string]routing.Router
-	redisClient         *redis.Client
-	ratelimiter         ratelimiter.RateLimiter
-	client              kubernetes.Interface
-	requestCountTracker map[string]int
-	cache               *cache.Cache
+	mu          sync.RWMutex
+	routers     map[string]routing.Router
+	redisClient *redis.Client
+	ratelimiter ratelimiter.RateLimiter
+	cache       *cache.Cache
 }
 
-func NewServer(redisClient *redis.Client, c kubernetes.Interface) *Server {
+func NewServer(redisClient *redis.Client) *Server {
 	cache, err := cache.GetCache()
 	if err != nil {
 		panic(err)
@@ -75,12 +76,10 @@ func NewServer(redisClient *redis.Client, c kubernetes.Interface) *Server {
 	}
 
 	return &Server{
-		routers:             routers,
-		redisClient:         redisClient,
-		ratelimiter:         r,
-		client:              c,
-		requestCountTracker: map[string]int{},
-		cache:               cache,
+		routers:     routers,
+		redisClient: redisClient,
+		ratelimiter: r,
+		cache:       cache,
 	}
 }
 
@@ -96,7 +95,6 @@ func (s *HealthServer) Watch(in *healthPb.HealthCheckRequest, srv healthPb.Healt
 
 func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var user utils.User
-	var rpm int64
 	var routingStrategy, targetPodIP string
 	var stream bool
 	ctx := srv.Context()
@@ -121,19 +119,30 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		switch v := req.Request.(type) {
 
 		case *extProcPb.ProcessingRequest_RequestHeaders:
-			resp, user, rpm, routingStrategy = s.HandleRequestHeaders(ctx, requestID, req)
+			resp, user, routingStrategy = s.HandleRequestHeaders(ctx, requestID, req)
 
 		case *extProcPb.ProcessingRequest_RequestBody:
 			resp, targetPodIP, stream = s.HandleRequestBody(ctx, requestID, req, user, routingStrategy)
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
-			resp = s.HandleResponseHeaders(ctx, requestID, req, targetPodIP)
+			resp = &extProcPb.ProcessingResponse{
+				Response: &extProcPb.ProcessingResponse_ResponseHeaders{
+					ResponseHeaders: &extProcPb.HeadersResponse{
+						Response: &extProcPb.CommonResponse{
+							HeaderMutation: &extProcPb.HeaderMutation{
+								SetHeaders: []*configPb.HeaderValueOption{},
+							},
+						},
+					},
+				},
+			}
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
-			resp = s.HandleResponseBody(ctx, requestID, req, user, rpm, targetPodIP, stream)
+			resp = s.HandleResponseBody(ctx, requestID, req, user, targetPodIP, stream)
 
 		default:
 			klog.Infof("Unknown Request type %+v\n", v)
+			resp = buildErrorResponse(envoyTypePb.StatusCode_NotFound, "unknown processing request to gateway", "x-unknown-processing-request", "true")
 		}
 
 		if err := srv.Send(resp); err != nil {
@@ -142,48 +151,22 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	}
 }
 
-func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, string) {
-	klog.Info("\n\n")
-	klog.InfoS("-- In RequestHeaders processing ...", "requestID", requestID)
-	var username string
-	var user utils.User
-	var rpm int64
-	var err error
-	var errRes *extProcPb.ProcessingResponse
+func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, string) {
+	klog.V(4).InfoS("-- In RequestHeaders processing ...", "requestID", requestID)
 
 	h := req.Request.(*extProcPb.ProcessingRequest_RequestHeaders)
-	for _, n := range h.RequestHeaders.Headers.Headers {
-		if strings.ToLower(n.Key) == "user" {
-			username = string(n.RawValue)
-		}
-	}
-
-	routingStrategy, routingStrategyEnabled := GetRoutingStrategy(h.RequestHeaders.Headers.Headers)
+	routingStrategy, routingStrategyEnabled := getRoutingStrategy(h.RequestHeaders.Headers.Headers)
 	if routingStrategyEnabled && !validateRoutingStrategy(routingStrategy) {
-		return generateErrorResponse(
-			envoyTypePb.StatusCode_BadRequest,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-incorrect-routing-strategy", RawValue: []byte(routingStrategy),
-			}}}, ""), utils.User{}, rpm, routingStrategy
+		errMsg := fmt.Sprintf("invalid routing strategy: %s", routingStrategy)
+		klog.ErrorS(nil, errMsg, "requestID", requestID)
+		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest,
+			errMsg, "x-invalid-routing-strategy", routingStrategy), utils.User{}, routingStrategy
 	}
 
-	if username != "" {
-		user, err = utils.GetUser(utils.User{Name: username}, s.redisClient)
-		if err != nil {
-			klog.ErrorS(err, "unable to process user info", "requestID", requestID, "username", username)
-			return generateErrorResponse(
-				envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-user-error", RawValue: []byte("true"),
-				}}},
-				err.Error()), utils.User{}, rpm, routingStrategy
-		}
-
-		rpm, errRes, err = s.checkLimits(ctx, user)
-		if errRes != nil {
-			klog.ErrorS(err, "error on checking limits", "requestID", requestID, "username", username)
-			return errRes, utils.User{}, rpm, routingStrategy
-		}
+	user, errRes, err := s.validateUserConfig(ctx, h.RequestHeaders.Headers.Headers)
+	if errRes != nil {
+		klog.ErrorS(err, "error on validating user config", "requestID", requestID, "username", user.Name)
+		return errRes, user, routingStrategy
 	}
 
 	return &extProcPb.ProcessingResponse{
@@ -191,24 +174,17 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			RequestHeaders: &extProcPb.HeadersResponse{
 				Response: &extProcPb.CommonResponse{
 					HeaderMutation: &extProcPb.HeaderMutation{
-						SetHeaders: []*configPb.HeaderValueOption{
-							{
-								Header: &configPb.HeaderValue{
-									Key:      "x-went-into-req-headers",
-									RawValue: []byte("true"),
-								},
-							},
-						},
+						SetHeaders: buildEnvoyProxyHeaders([]*configPb.HeaderValueOption{}, "x-went-into-req-headers", "true"),
 					},
 					ClearRouteCache: true,
 				},
 			},
 		},
-	}, user, rpm, routingStrategy
+	}, user, routingStrategy
 }
 
 func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingStrategy string) (*extProcPb.ProcessingResponse, string, bool) {
-	klog.InfoS("-- In RequestBody processing ...", "requestID", requestID)
+	klog.V(4).InfoS("-- In RequestBody processing ...", "requestID", requestID)
 	var model, targetPodIP string
 	var ok, stream bool
 
@@ -216,80 +192,49 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 	body := req.Request.(*extProcPb.ProcessingRequest_RequestBody)
 	if err := json.Unmarshal(body.RequestBody.GetBody(), &jsonMap); err != nil {
-		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "requestBody", string(body.RequestBody.GetBody()))
-		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-request-body-processing-error", RawValue: []byte("true")}}},
-			"error processing request body"), targetPodIP, stream
+		klog.ErrorS(err, "error to unmarshal request body", "requestID", requestID, "requestBody", string(body.RequestBody.GetBody()))
+		return buildErrorResponse(InternalServerError, "error processing request body", "x-error-request-body-processing", "true"), targetPodIP, stream
 	}
 
 	if model, ok = jsonMap["model"].(string); !ok || model == "" { // || !s.cache.CheckModelExists(model) # enable when dynamic lora is enabled
 		klog.ErrorS(nil, "model error in request", "requestID", requestID, "jsonMap", jsonMap)
-		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-no-model", RawValue: []byte(model)}}},
-			fmt.Sprintf("no model in request body or model %s does not exist", model)), targetPodIP, stream
+		return buildErrorResponse(InternalServerError,
+			fmt.Sprintf("no model in request body or model %s does not exist", model), "x-missing-model", "true"), targetPodIP, stream
 	}
 
 	stream, ok = jsonMap["stream"].(bool)
 	if stream && ok {
 		streamOptions, ok := jsonMap["stream_options"].(map[string]interface{})
 		if !ok {
-			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-stream-options", RawValue: []byte("stream options not set")}}},
-				"error processing request body"), targetPodIP, stream
+			return buildErrorResponse(InternalServerError, "stream_options is missing", "x-missing-stream-options", "true"), targetPodIP, stream
 		}
 		includeUsage, ok := streamOptions["include_usage"].(bool)
 		if !includeUsage || !ok {
-			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-stream-options-include-usage", RawValue: []byte("include usage for stream options not set")}}},
-				"error processing request body"), targetPodIP, stream
+			return buildErrorResponse(InternalServerError, "stream_options is incorrect", "x-error-stream-options-include-usage", "true"), targetPodIP, stream
 		}
 	}
 
 	headers := []*configPb.HeaderValueOption{}
 	switch {
 	case routingStrategy == "":
-		headers = append(headers, &configPb.HeaderValueOption{
-			Header: &configPb.HeaderValue{
-				Key:      "model",
-				RawValue: []byte(model),
-			},
-		})
-		klog.InfoS("request start", "requestID", requestID, "model", model)
+		headers = buildEnvoyProxyHeaders(headers, "model", model)
+		klog.InfoS("request start", "requestID", requestID, "model", model, "user", user.Name)
 	case routingStrategy != "":
 		pods, err := s.cache.GetPodsForModel(model)
 		if len(pods) == 0 || err != nil {
-			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-no-model-deployment", RawValue: []byte("true")}}},
-				fmt.Sprintf("error on getting pods for model %s", model)), targetPodIP, stream
+			return buildErrorResponse(InternalServerError,
+				fmt.Sprintf("error on getting pods for model %s", model),
+				"x-no-model-deployment", "true"), targetPodIP, stream
 		}
-
-		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods)
+		targetPodIP, err = s.routers[routingStrategy].Route(ctx, pods)
 		if err != nil {
-			return generateErrorResponse(
-				envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-error-routing", RawValue: []byte("true")}}},
-				"error on selecting target pod"), targetPodIP, stream
+			return buildErrorResponse(InternalServerError,
+				fmt.Sprintf("error on selecting target pod for routingStrategy: %s", routingStrategy),
+				"x-error-routing", "true"), targetPodIP, stream
 		}
 
-		headers = append(headers, &configPb.HeaderValueOption{
-			Header: &configPb.HeaderValue{
-				Key:      "routing-strategy",
-				RawValue: []byte(routingStrategy),
-			},
-		},
-			&configPb.HeaderValueOption{
-				Header: &configPb.HeaderValue{
-					Key:      "target-pod",
-					RawValue: []byte(targetPodIP),
-				},
-			})
-		klog.InfoS("request start", "requestID", requestID, "model", model, "routingStrategy", routingStrategy, "targetPodIP", targetPodIP)
+		headers = buildEnvoyProxyHeaders(headers, "routing-strategy", routingStrategy, "target-pod", targetPodIP)
+		klog.InfoS("request start", "requestID", requestID, "model", model, "user", user.Name, "routingStrategy", routingStrategy, "targetPodIP", targetPodIP)
 	}
 
 	return &extProcPb.ProcessingResponse{
@@ -305,40 +250,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	}, targetPodIP, stream
 }
 
-func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
-	klog.InfoS("-- In ResponseHeaders processing ...", "requestID", requestID)
-
-	headers := []*configPb.HeaderValueOption{{
-		Header: &configPb.HeaderValue{
-			Key:      "x-went-into-resp-headers",
-			RawValue: []byte("true"),
-		},
-	}}
-	if targetPodIP != "" {
-		headers = append(headers, &configPb.HeaderValueOption{
-			Header: &configPb.HeaderValue{
-				Key:      "target-pod",
-				RawValue: []byte(targetPodIP),
-			},
-		})
-	}
-
-	return &extProcPb.ProcessingResponse{
-		Response: &extProcPb.ProcessingResponse_ResponseHeaders{
-			ResponseHeaders: &extProcPb.HeadersResponse{
-				Response: &extProcPb.CommonResponse{
-					HeaderMutation: &extProcPb.HeaderMutation{
-						SetHeaders: headers,
-					},
-					ClearRouteCache: true,
-				},
-			},
-		},
-	}
-}
-
-func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, targetPodIP string, stream bool) *extProcPb.ProcessingResponse {
-	klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID)
+func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, targetPodIP string, stream bool) *extProcPb.ProcessingResponse {
+	klog.V(4).InfoS("-- In ResponseBody processing ...", "requestID", requestID)
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 
 	var res openai.ChatCompletion
@@ -360,29 +273,22 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			}
 		}
 		if err := streaming.Err(); err != nil {
-			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
-			return generateErrorResponse(
-				envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-streaming-error", RawValue: []byte("true"),
-				}}},
-				err.Error())
+			klog.ErrorS(err, "error at chat completion chunk streaming", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+			return buildErrorResponse(InternalServerError, err.Error(), "x-error-chatcompletionchunk-streaming", "true")
 		}
 	case false:
 		if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
-			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
-			return generateErrorResponse(
-				envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-error-response-unmarshal", RawValue: []byte("true"),
-				}}},
-				err.Error())
+			klog.ErrorS(err, "error to unmarshal chat completion response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+			return buildErrorResponse(InternalServerError, err.Error(), "x-error-chatcompletion-unmarshal", "true")
 		}
 		model = res.Model
 		usage = res.Usage
 	}
-	var requestEnd string
+
+	// TODO refactor into separate post response
 	if usage.TotalTokens != 0 {
+		var rpm, tpm int64
+		var err error
 		defer func() {
 			go func() {
 				s.cache.AddRequestTrace(model, usage.PromptTokens, usage.CompletionTokens)
@@ -390,44 +296,26 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 		}()
 
 		if user.Name != "" {
-			tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user), res.Usage.TotalTokens)
+			s.mu.Lock()
+			rpm, err = s.getRPM(ctx, user.Name)
 			if err != nil {
-				return generateErrorResponse(
-					envoyTypePb.StatusCode_InternalServerError,
-					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-						Key: "x-error-update-tpm", RawValue: []byte("true"),
-					}}},
-					err.Error())
+				klog.ErrorS(err, "error to read current rpm", "requestID", requestID, "username", user.Name)
+				return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError, err.Error(), "x-error-get-rpm", "true")
 			}
 
-			headers = append(headers,
-				&configPb.HeaderValueOption{
-					Header: &configPb.HeaderValue{
-						Key:      "x-update-rpm",
-						RawValue: []byte(fmt.Sprintf("%d", rpm)),
-					},
-				},
-				&configPb.HeaderValueOption{
-					Header: &configPb.HeaderValue{
-						Key:      "x-update-tpm",
-						RawValue: []byte(fmt.Sprintf("%d", tpm)),
-					},
-				},
-			)
-			requestEnd = fmt.Sprintf(requestEnd+"rpm: %s, tpm: %s", rpm, tpm)
+			tpm, err = s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user), int64(usage.TotalTokens))
+			if err != nil {
+				klog.ErrorS(err, "error to increment current tpm", "requestID", requestID, "username", user.Name)
+				return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError, err.Error(), "x-error-update-tpm", "true")
+			}
+			s.mu.Unlock()
+
+			headers = buildEnvoyProxyHeaders(headers, "username", user.Name, "x-updated-rpm", strconv.Itoa(int(rpm)), "x-updated-tpm", strconv.Itoa(int(tpm)))
 		}
 		if targetPodIP != "" {
-			headers = append(headers,
-				&configPb.HeaderValueOption{
-					Header: &configPb.HeaderValue{
-						Key:      "target-pod",
-						RawValue: []byte(targetPodIP),
-					},
-				},
-			)
-			requestEnd = fmt.Sprintf(requestEnd+", targetPod: %s", targetPodIP)
+			headers = buildEnvoyProxyHeaders(headers, "target-pod", targetPodIP)
 		}
-		klog.Infof("request end, requestID: %s - %s", requestID, requestEnd)
+		klog.InfoS("request end", "requestID", requestID, "rpm", rpm, "tpm", tpm, "target-pod", targetPodIP)
 	}
 
 	return &extProcPb.ProcessingResponse{
@@ -443,139 +331,70 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	}
 }
 
-func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extProcPb.ProcessingResponse, error) {
+func (s *Server) CheckLimits(ctx context.Context, user utils.User) (*extProcPb.ProcessingResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if user.Rpm == 0 {
-		user.Rpm = int64(defaultRPM)
+		user.Rpm = int64(DefaultRPM)
 	}
 	if user.Tpm == 0 {
-		user.Tpm = user.Rpm * int64(defaultTPMMultiplier)
+		user.Tpm = user.Rpm * int64(DefaultTPMMultiplier)
 	}
 
 	code, err := s.checkRPM(ctx, user.Name, user.Rpm)
 	if err != nil {
-		return 0, generateErrorResponse(
-			code,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-rpm-error", RawValue: []byte("true"),
-			}}},
-			err.Error()), err
-	}
-
-	rpm, code, err := s.incrRPM(ctx, user.Name)
-	if err != nil {
-		return 0, generateErrorResponse(
-			code,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-error-incr-rpm", RawValue: []byte("true"),
-			}}},
-			err.Error()), err
+		return buildErrorResponse(code, err.Error(), "x-exceeded-rpm", "true", "username", user.Name), err
 	}
 
 	code, err = s.checkTPM(ctx, user.Name, user.Tpm)
 	if err != nil {
-		return 0, generateErrorResponse(
-			code,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-tpm-exceeded", RawValue: []byte("true"),
-			}}},
-			err.Error()), err
+		return buildErrorResponse(code, err.Error(), "x-exceeded-tpm", "true", "username", user.Name), err
 	}
 
-	return rpm, nil, nil
+	code, err = s.incrRPM(ctx, user.Name)
+	if err != nil {
+		return buildErrorResponse(code, err.Error(), "x-error-incr-rpm", "true", "username", user.Name), err
+	}
+
+	return nil, nil
+}
+
+func (s *Server) getRPM(ctx context.Context, username string) (int64, error) {
+	return s.ratelimiter.Get(ctx, fmt.Sprintf("%v_RPM_CURRENT", username))
 }
 
 func (s *Server) checkRPM(ctx context.Context, username string, rpmLimit int64) (envoyTypePb.StatusCode, error) {
-	rpmCurrent, err := s.ratelimiter.Get(ctx, fmt.Sprintf("%v_RPM_CURRENT", username))
+	rpmCurrent, err := s.getRPM(ctx, username)
 	if err != nil {
-		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get RPM for user: %v", username)
+		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get current RPM")
 	}
 
 	if rpmCurrent >= rpmLimit {
-		return envoyTypePb.StatusCode_TooManyRequests, fmt.Errorf("user: %v has exceeded RPM: %v", username, rpmLimit)
+		return envoyTypePb.StatusCode_TooManyRequests, fmt.Errorf("exceeded RPM_LIMIT: %v", rpmLimit)
 	}
 
 	return envoyTypePb.StatusCode_OK, nil
 }
 
-func (s *Server) incrRPM(ctx context.Context, username string) (int64, envoyTypePb.StatusCode, error) {
-	rpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_RPM_CURRENT", username), 1)
+func (s *Server) incrRPM(ctx context.Context, username string) (envoyTypePb.StatusCode, error) {
+	_, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_RPM_CURRENT", username), 1)
 	if err != nil {
-		return rpm, envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to increment RPM for user: %v", username)
+		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to increment current RPM")
 	}
 
-	return rpm, envoyTypePb.StatusCode_OK, nil
+	return envoyTypePb.StatusCode_OK, nil
 }
 
 func (s *Server) checkTPM(ctx context.Context, username string, tpmLimit int64) (envoyTypePb.StatusCode, error) {
 	tpmCurrent, err := s.ratelimiter.Get(ctx, fmt.Sprintf("%v_TPM_CURRENT", username))
 	if err != nil {
-		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get TPM for user: %v", username)
+		return envoyTypePb.StatusCode_InternalServerError, fmt.Errorf("fail to get current TPM")
 	}
 
 	if tpmCurrent >= tpmLimit {
-		return envoyTypePb.StatusCode_TooManyRequests, fmt.Errorf("user: %v has exceeded TPM: %v", username, tpmLimit)
+		return envoyTypePb.StatusCode_TooManyRequests, fmt.Errorf("exceeded TPM_LIMIT: %v", tpmLimit)
 	}
 
 	return envoyTypePb.StatusCode_OK, nil
-}
-
-func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, pods map[string]*v1.Pod) (string, error) {
-	var route routing.Router
-	switch routingStrategy {
-	case "least-request":
-		route = s.routers[routingStrategy]
-	case "throughput":
-		route = s.routers[routingStrategy]
-	default:
-		route = s.routers["random"]
-	}
-
-	return route.Route(ctx, pods)
-}
-
-func validateRoutingStrategy(routingStrategy string) bool {
-	routingStrategy = strings.TrimSpace(routingStrategy)
-	return slices.Contains(routingStrategies, routingStrategy)
-}
-
-func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, body string) *extProcPb.ProcessingResponse {
-	return &extProcPb.ProcessingResponse{
-		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
-			ImmediateResponse: &extProcPb.ImmediateResponse{
-				Status: &envoyTypePb.HttpStatus{
-					Code: statusCode,
-				},
-				Headers: &extProcPb.HeaderMutation{
-					SetHeaders: headers,
-				},
-				Body: body,
-			},
-		},
-	}
-}
-
-// GetRoutingStrategy retrieves the routing strategy from the headers or environment variable
-// It returns the routing strategy value and whether custom routing strategy is enabled.
-func GetRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
-	var routingStrategy string
-	routingStrategyEnabled := false
-
-	// Check headers for routing strategy
-	for _, header := range headers {
-		if strings.ToLower(header.Key) == "routing-strategy" {
-			routingStrategy = string(header.RawValue)
-			routingStrategyEnabled = true
-			break // Prioritize header value over environment variable
-		}
-	}
-
-	// If header not set, check environment variable
-	if !routingStrategyEnabled {
-		if value, exists := utils.CheckEnvExists("ROUTING_ALGORITHM"); exists {
-			routingStrategy = value
-			routingStrategyEnabled = true
-		}
-	}
-
-	return routingStrategy, routingStrategyEnabled
 }

@@ -154,13 +154,12 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			panic(err)
 		}
 
-		ticker := time.NewTicker(podMetricRefreshIntervalInMilliseconds * time.Millisecond)
+		ticker := time.NewTicker(podMetricRefreshIntervalInMilliseconds)
 		go func() {
 			for {
 				select {
 				case <-ticker.C:
 					instance.updatePodMetrics()
-					instance.debugInfo()
 				case <-stopCh:
 					ticker.Stop()
 					return

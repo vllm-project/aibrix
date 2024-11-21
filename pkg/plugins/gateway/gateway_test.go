@@ -115,11 +115,24 @@ func TestGetRoutingStrategy(t *testing.T) {
 			_ = os.Unsetenv("ROUTING_ALGORITHM")
 		}
 
-		routingStrategy, enabled := GetRoutingStrategy(tt.headers)
+		routingStrategy, enabled := getRoutingStrategy(tt.headers)
 		assert.Equal(t, tt.expectedStrategy, routingStrategy, tt.message)
 		assert.Equal(t, tt.expectedEnabled, enabled, tt.message)
 
 		// Cleanup environment variable for next test
 		_ = os.Unsetenv("ROUTING_ALGORITHM")
 	}
+}
+
+func Test_buildEnvoyProxyHeaders(t *testing.T) {
+	headers := []*configPb.HeaderValueOption{}
+
+	headers = buildEnvoyProxyHeaders(headers, "key1", "value1", "key2")
+	assert.Equal(t, 0, len(headers))
+
+	headers = buildEnvoyProxyHeaders(headers, "key1", "value1", "key2", "value2")
+	assert.Equal(t, 2, len(headers))
+
+	headers = buildEnvoyProxyHeaders(headers, "key3", "value3")
+	assert.Equal(t, 3, len(headers))
 }

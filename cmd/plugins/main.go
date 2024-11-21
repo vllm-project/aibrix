@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
@@ -73,12 +72,6 @@ func main() {
 
 	cache.NewCache(config, stopCh, redisClient)
 
-	// Connect to K8s cluster
-	k8sClient, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		klog.Fatalf("Error creating kubernetes client: %v", err)
-	}
-
 	// grpc server init
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", grpc_port))
 	if err != nil {
@@ -87,7 +80,7 @@ func main() {
 
 	s := grpc.NewServer()
 
-	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(redisClient, k8sClient))
+	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(redisClient))
 	healthPb.RegisterHealthServer(s, &gateway.HealthServer{})
 
 	klog.Info("starting gRPC server on port :50052")
