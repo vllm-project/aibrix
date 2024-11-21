@@ -35,22 +35,22 @@ jobs:
       # Build container images with docker registry namespace
       - name: Build Container Images
         run: |
-          GIT_COMMIT_HASH=${{ github.ref_name }} make docker-build-all
+          IS_MAIN_BRANCH=false GIT_COMMIT_HASH=${{ github.ref_name }} make docker-build-all
 
       # Push container image to DockerHub
       - name: Push container image to container registry
         run: |
-          GIT_COMMIT_HASH=${{ github.ref_name }} make docker-push-all
+          IS_MAIN_BRANCH=false GIT_COMMIT_HASH=${{ github.ref_name }} make docker-push-all
 
       # Build container images with Github registry namespace
       - name: Build Container Images with Github Container Registry prefix
         run: |
-          GIT_COMMIT_HASH=${{ github.ref_name }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build-all
+          IS_MAIN_BRANCH=false GIT_COMMIT_HASH=${{ github.ref_name }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build-all
 
       # Push container image to Github container registry
       - name: Push Container Images to Github Container Registry
         run: |
-          GIT_COMMIT_HASH=${{ github.ref_name }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-push-all
+          IS_MAIN_BRANCH=false GIT_COMMIT_HASH=${{ github.ref_name }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-push-all
 
   python-wheel-release:
     runs-on: ubuntu-latest
