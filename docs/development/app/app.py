@@ -1,5 +1,6 @@
 from flask import Flask, request, Response, jsonify
 from werkzeug import serving
+import random
 import re
 import time
 from random import randint
@@ -206,6 +207,86 @@ def set_metrics():
         return {"status": "error", "message": "No data provided"}, 400
 
 
+# Generic histogram template
+histogram_template = """
+# HELP vllm:{metric_name} {description}
+# TYPE vllm:{metric_name} {metric_type}
+vllm:{metric_name}_sum{{model_name="{model_name}"}} {value}
+{buckets}
+vllm:{metric_name}_count{{model_name="{model_name}"}} {count}
+"""
+
+counter_gauge_template = """
+# HELP vllm:{metric_name} {description}
+# TYPE vllm:{metric_name} {metric_type}
+vllm:{metric_name}{{model_name="{model_name}"}} {value}
+"""
+
+
+def generate_histogram_metric(metric_name, description, model_name, total_sum, total_count, buckets, metric_type="histogram"):
+    """
+    Generate a histogram metric string for a specific metric type.
+
+    Args:
+        metric_name (str): Name of the metric.
+        description (str): Name of the metric description
+        model_name (str): Name of the model.
+        total_sum (float): Total sum value for the metric.
+        total_count (int): Total count value for the metric.
+
+    Returns:
+        str: Prometheus-formatted histogram string.
+    """
+    # Histogram definitions
+    # Assign random values for each bucket
+    bucket_values = {}
+    cumulative_count = 0
+    for bucket in buckets:
+        value = random.randint(0, 10)  # Assign random values
+        cumulative_count += value
+        bucket_values[bucket] = cumulative_count
+
+    # Format bucket strings
+    bucket_strings = "\n".join(
+        [f'vllm:{metric_type}_bucket{{le="{bucket}",model_name="{model_name}"}} {value}'
+         for bucket, value in bucket_values.items()]
+    )
+
+    # Fill in the histogram template
+    return histogram_template.format(
+        metric_name=metric_name,
+        metric_type=metric_type,
+        description=description,
+        model_name=model_name,
+        value=total_sum,
+        buckets=bucket_strings,
+        count=total_count
+    )
+
+
+def generate_counter_gauge_metric(metric_name, metric_type, description, model_name, value):
+    """
+    Generates a Prometheus metric string for counter or gauge.
+
+    Args:
+        metric_name (str): The name of the metric.
+        metric_type (str): The type of the metric ('counter' or 'gauge').
+        description (str): The HELP description of the metric.
+        model_name (str): The name of the model.
+        value (float): The value of the metric.
+
+    Returns:
+        str: A formatted Prometheus metric string.
+    """
+    return counter_gauge_template.format(
+        metric_name=metric_name,
+        metric_type=metric_type,
+        description=description,
+        model_name=model_name,
+        value=value
+    )
+
+
 @app.route('/metrics')
 def metrics():
     # get deployment information
@@ -231,30 +312,120 @@ def metrics():
     max_running_capacity = 100
     gpu_cache_usage_perc = overrides.get("gpu_cache_usage_perc", min(100.0, (running / max_running_capacity) * 100))
 
-    # construct Prometheus-style Metrics
-    metrics_output = f"""# HELP vllm:request_success_total Count of successfully processed requests.
-# TYPE vllm:request_success_total counter
-vllm:request_success_total{{finished_reason="stop",model_name="{model_name}"}} {success_total}
-# HELP vllm:num_requests_running Number of requests currently running on GPU.
-# TYPE vllm:num_requests_running gauge
-vllm:num_requests_running{{model_name="{model_name}"}} {running}
-# HELP vllm:num_requests_swapped Number of requests swapped to CPU.
-# TYPE vllm:num_requests_swapped gauge
-vllm:num_requests_swapped{{model_name="{model_name}"}} {swapped}
-# HELP vllm:num_requests_waiting Number of requests waiting to be processed.
-# TYPE vllm:num_requests_waiting gauge
-vllm:num_requests_waiting{{model_name="{model_name}"}} {waiting}
-# HELP vllm:avg_prompt_throughput_toks_per_s Average prefill throughput in tokens/s.
-# TYPE vllm:avg_prompt_throughput_toks_per_s gauge
-vllm:avg_prompt_throughput_toks_per_s{{model_name="{model_name}"}} {avg_prompt_throughput}
-# HELP vllm:avg_generation_throughput_toks_per_s Average generation throughput in tokens/s.
-# TYPE vllm:avg_generation_throughput_toks_per_s gauge
-vllm:avg_generation_throughput_toks_per_s{{model_name="{model_name}"}} {avg_generation_throughput}
-# HELP vllm:gpu_cache_usage_perc GPU KV-cache usage. 1 means 100 percent usage.
-# TYPE vllm:gpu_cache_usage_perc gauge
-vllm:gpu_cache_usage_perc{{model_name="model_name"}} {gpu_cache_usage_perc}
-"""
-    return Response(metrics_output, mimetype='text/plain')
+    # Define metrics and their attributes
+    simple_metrics = [
+        {
+            "name": "request_success_total",
+            "type": "counter",
+            "description": "Count of successfully processed requests.",
+            "value": overrides.get("success_total", success_total)
+        },
+        {
+            "name": "num_requests_running",
+            "type": "gauge",
+            "description": "Number of requests currently running on GPU.",
+            "value": overrides.get("running", running)
+        },
+        {
+            "name": "num_requests_swapped",
+            "type": "gauge",
+            "description": "Number of requests swapped to CPU.",
+            "value": overrides.get("swapped", swapped)
+        },
+        {
+            "name": "num_requests_waiting",
+            "type": "gauge",
+            "description": "Number of requests waiting to be processed.",
+            "value": overrides.get("waiting", waiting)
+        },
+        {
+            "name": "avg_prompt_throughput_toks_per_s",
+            "type": "gauge",
+            "description": "Average prefill throughput in tokens/s.",
+            "value": overrides.get("avg_prompt_throughput", avg_prompt_throughput)
+        },
+        {
+            "name": "avg_generation_throughput_toks_per_s",
+            "type": "gauge",
+            "description": "Average generation throughput in tokens/s.",
+            "value": overrides.get("avg_generation_throughput", avg_generation_throughput)
+        },
+        {
+            "name": "gpu_cache_usage_perc",
+            "type": "gauge",
+            "description": "GPU KV-cache usage. 1 means 100 percent usage.",
+            "value": overrides.get(
+                "gpu_cache_usage_perc", gpu_cache_usage_perc
+            )
+        },
+    ]
+
+    # Generate all metrics
+    metrics_output = "".join(
+        generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"], model_name, metric["value"])
+        for metric in simple_metrics
+    )
+
+    histogram_metrics = [
+        {
+            "name": "iteration_tokens_total",
+            "type": "histogram",
+            "description": "Histogram of number of tokens per engine_step.",
+            "buckets": ["1.0", "8.0", "16.0", "32.0", "64.0", "128.0", "256.0",
+                        "512.0", "1024.0", "2048.0", "4096.0", "8192.0", "+Inf"]
+        },
+        {
+            "name": "time_to_first_token_seconds",
+            "type": "histogram",
+            "description": "Histogram of time to first token in seconds.",
+            "buckets": ["0.001", "0.005", "0.01", "0.02", "0.04", "0.06",
+                        "0.08", "0.1", "0.25", "0.5", "+Inf"]
+        },
+        {
+            "name": "time_per_output_token_seconds",
+            "type": "histogram",
+            "description": "Histogram of time per output token in seconds.",
+            "buckets": ["0.01", "0.025", "0.05", "0.075", "0.1", "0.15",
+                        "0.2", "0.3", "0.4", "+Inf"]
+        },
+        {
+            "name": "e2e_request_latency_seconds",
+            "type": "histogram",
+            "description": "Histogram of end to end request latency in seconds.",
+            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"]
+        },
+        {
+            "name": "request_queue_time_seconds",
+            "type": "histogram",
+            "description": "Histogram of time spent in WAITING phase for request.",
+            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"]
+        },
+        {
+            "name": "request_inference_time_seconds",
+            "type": "histogram",
+            "description": "Histogram of time spent in RUNNING phase for request.",
+            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"]
+        },
+        {
+            "name": "request_decode_time_seconds",
+            "type": "histogram",
+            "description": "Histogram of time spent in DECODE phase for request.",
+            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"]
+        },
+        {
+            "name": "request_prefill_time_seconds",
+            "type": "histogram",
+            "description": "Histogram of time spent in PREFILL phase for request.",
+            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"]
+        },
+    ]
+
+    histogram_metrics_output = "".join(
+        generate_histogram_metric(metric["name"],  metric["description"], model_name, 100, 100, metric["buckets"])
+        for metric in histogram_metrics
+    )
+
+    return Response(metrics_output+histogram_metrics_output, mimetype='text/plain')
 
 
 if __name__ == '__main__':
