@@ -26,6 +26,9 @@ go.work.sum
 .DS_Store
 __pycache__
 
+# Python virtual environment directory
+.venv
+
 # Jupyter notebook
 .ipynb_checkpoints/
 
@@ -38,8 +41,9 @@ benchmarks/autoscaling/logs
 benchmarks/autoscaling/output_stats
 benchmarks/autoscaling/workload_plot
 
-docs/development/simulator/.venv
+# simulator cache and output
 docs/development/simulator/simulator_output
 docs/development/simulator/cache
-python/aibrix/aibrix/gpuoptimizer/.venv
+
+# profiling default results
 python/aibrix/aibrix/gpuoptimizer/optimizer/profiling/result

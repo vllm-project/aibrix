@@ -16,6 +16,19 @@ limitations under the License.
 
 package common
 
+import (
+	"strconv"
+
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	"k8s.io/klog/v2"
+)
+
+const (
+	AutoscalingLabelPrefix = "autoscaling.aibrix.ai/"
+	maxScaleUpRateLabel    = AutoscalingLabelPrefix + "max-scale-up-rate"
+	maxScaleDownRateLabel  = AutoscalingLabelPrefix + "max-scale-down-rate"
+)
+
 // ScalingContext defines the generalized common that holds all necessary data for scaling calculations.
 type ScalingContext interface {
 	GetTargetValue() float64
@@ -24,6 +37,7 @@ type ScalingContext interface {
 	GetMaxScaleUpRate() float64
 	GetMaxScaleDownRate() float64
 	GetCurrentUsePerPod() float64
+	UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error
 }
 
 // BaseScalingContext provides a base implementation of the ScalingContext interface.
@@ -42,6 +56,8 @@ type BaseScalingContext struct {
 	currentUsePerPod float64
 }
 
+var _ ScalingContext = (*BaseScalingContext)(nil)
+
 // NewBaseScalingContext creates a new instance of BaseScalingContext with default values.
 func NewBaseScalingContext() *BaseScalingContext {
 	return &BaseScalingContext{
@@ -51,6 +67,36 @@ func NewBaseScalingContext() *BaseScalingContext {
 		TargetValue:      30.0,  // Target CPU utilization set at 10%
 		TotalValue:       100.0, // Total CPU utilization capacity for pods is 100%
 	}
+}
+
+// UpdateByPaTypes should be invoked in any scaling context that embeds BaseScalingContext.
+func (b *BaseScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error {
+	b.ScalingMetric = pa.Spec.TargetMetric
+	// parse target value
+	targetValue, err := strconv.ParseFloat(pa.Spec.TargetValue, 64)
+	if err != nil {
+		klog.ErrorS(err, "Failed to parse target value", "targetValue", pa.Spec.TargetValue)
+		return err
+	}
+	b.TargetValue = targetValue
+
+	for key, value := range pa.Labels {
+		switch key {
+		case maxScaleUpRateLabel:
+			v, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return err
+			}
+			b.MaxScaleUpRate = v
+		case maxScaleDownRateLabel:
+			v, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return err
+			}
+			b.MaxScaleDownRate = v
+		}
+	}
+	return nil
 }
 
 func (b *BaseScalingContext) SetCurrentUsePerPod(value float64) {

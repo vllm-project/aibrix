@@ -19,8 +19,9 @@ spec:
         adapter.model.aibrix.ai/enabled: "true"
         model.aibrix.ai/name: "llama2-70b"
     spec:
+      serviceAccountName: mocked-app-sa
       containers:
-        - name: llmengine
+        - name: llm-engine
           image: aibrix/vllm-mock:nightly
           ports:
             - containerPort: 8000
@@ -57,13 +58,13 @@ spec:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: pod-autoscaler
+  name: mocked-app-sa
   namespace: default
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: pod-reader
+  name: mocked-app-pod-reader-role
   namespace: default
 rules:
   - apiGroups: [""]
@@ -73,22 +74,22 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: read-pods
+  name: mocked-app-pod-reader-role-binding
   namespace: default
 subjects:
   - kind: ServiceAccount
-    name: pod-autoscaler
+    name: mocked-app-sa
     namespace: default
 roleRef:
   kind: Role
-  name: pod-reader
+  name: mocked-app-pod-reader-role
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   namespace: default
-  name: deployment-reader
+  name: mocked-app-deployment-reader-role
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
@@ -97,15 +98,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: deployment-reader-binding
+  name: mocked-app-deployment-reader-role-binding
   namespace: default
 subjects:
   - kind: ServiceAccount
-    name: pod-autoscaler
+    name: mocked-app-sa
     namespace: default
 roleRef:
   kind: Role
-  name: deployment-reader
+  name: mocked-app-deployment-reader-role
   apiGroup: rbac.authorization.k8s.io
 # ---
 # for test-purpose, if need to create HTTPRoute object manually

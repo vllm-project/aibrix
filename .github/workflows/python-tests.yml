@@ -3,9 +3,12 @@ name: Python Tests
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - 'python/**'
   pull_request:
     branches: [ "main" ]
-
+    paths:
+      - 'python/**'
 jobs:
   lint:
     runs-on: ubuntu-latest

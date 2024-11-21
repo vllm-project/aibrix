@@ -64,8 +64,13 @@ const (
 	modelIdentifier                       = "model.aibrix.ai/name"
 	podPort                               = 8000
 	defaultPodMetricRefreshIntervalInMS   = 50
-	writeRequestTraceIntervalInSeconds    = 10
 	expireWriteRequestTraceIntervalInMins = 10
+	keyWriteRequestTraceIntervalInSeconds = "meta_interval_sec"
+	writeRequestTraceIntervalInSeconds    = 10
+	keyPrecisionRequestTrace              = "meta_precision"
+	precisionRequestTrace                 = 0.1
+	keyVersionRequestTrace                = "meta_v"
+	versionRequestTrace                   = 2
 )
 
 var (
@@ -78,11 +83,16 @@ var (
 func getPodMetricRefreshInterval() time.Duration {
 	value, exists := os.LookupEnv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS")
 	if exists {
-		if intValue, err := strconv.Atoi(value); err == nil {
-			return time.Duration(intValue) * time.Millisecond
+		intValue, err := strconv.Atoi(value)
+		if err != nil {
+			klog.V(4).Infof("Invalid AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: %s, falling back to default", value)
+		} else {
+			klog.V(4).Infof("Using env value for refresh interval: %d ms", intValue)
+			return time.Duration(intValue)
 		}
 	}
-	return time.Duration(defaultPodMetricRefreshIntervalInMS) * time.Millisecond
+	klog.V(4).Infof("Using default refresh interval: %d ms", defaultPodMetricRefreshIntervalInMS)
+	return time.Duration(defaultPodMetricRefreshIntervalInMS)
 }
 
 func GetCache() (*Cache, error) {
@@ -509,14 +519,17 @@ func (c *Cache) AddRequestTrace(modelName string, inputTokens, outputTokens int6
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	inputIndex := math.Trunc(math.Log2(float64(inputTokens)))
-	outputIndex := math.Trunc(math.Log2(float64(outputTokens)))
+	inputIndex := int64(math.Round(math.Log2(float64(inputTokens)) / precisionRequestTrace)) // Round to the nearest precision and convert to int
+	outputIndex := int64(math.Round(math.Log2(float64(outputTokens)) / precisionRequestTrace))
 
 	klog.V(5).Infof("inputTokens: %v, inputIndex: %v, outputTokens: %v, outputIndex: %v",
 		inputTokens, inputIndex, outputTokens, outputIndex)
 
 	if len(c.requestTrace[modelName]) == 0 {
 		c.requestTrace[modelName] = map[string]int{}
+		c.requestTrace[modelName][keyWriteRequestTraceIntervalInSeconds] = writeRequestTraceIntervalInSeconds
+		c.requestTrace[modelName][keyPrecisionRequestTrace] = int(1 / precisionRequestTrace)
+		c.requestTrace[modelName][keyVersionRequestTrace] = versionRequestTrace
 	}
 
 	c.requestTrace[modelName][fmt.Sprintf("%v:%v", inputIndex, outputIndex)] += 1

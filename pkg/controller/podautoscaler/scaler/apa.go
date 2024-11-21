@@ -34,6 +34,12 @@ import (
 	"k8s.io/klog/v2"
 )
 
+const (
+	APALabelPrefix                = "apa." + scalingcontext.AutoscalingLabelPrefix
+	upFluctuationToleranceLabel   = APALabelPrefix + "up-fluctuation-tolerance"
+	downFluctuationToleranceLabel = APALabelPrefix + "down-fluctuation-tolerance"
+)
+
 // ApaScalingContext defines parameters for scaling decisions.
 type ApaScalingContext struct {
 	scalingcontext.BaseScalingContext
@@ -83,6 +89,30 @@ func NewApaAutoscaler(readyPodsCount int, spec *ApaScalingContext) (*ApaAutoscal
 		algorithm:      &scalingAlgorithm,
 		scalingContext: spec,
 	}, nil
+}
+
+func (a *ApaScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error {
+	err := a.BaseScalingContext.UpdateByPaTypes(pa)
+	if err != nil {
+		return err
+	}
+	for key, value := range pa.Labels {
+		switch key {
+		case upFluctuationToleranceLabel:
+			v, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return err
+			}
+			a.UpFluctuationTolerance = v
+		case downFluctuationToleranceLabel:
+			v, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return err
+			}
+			a.DownFluctuationTolerance = v
+		}
+	}
+	return nil
 }
 
 func (a *ApaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time) ScaleResult {

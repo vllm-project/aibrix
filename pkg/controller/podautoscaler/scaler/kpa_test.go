@@ -20,6 +20,10 @@ import (
 	"testing"
 	"time"
 
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
@@ -68,5 +72,64 @@ func TestKpaScale(t *testing.T) {
 	// recent rapid rising metric value make scaler adapt turn on panic mode
 	if result.DesiredPodCount != 10 {
 		t.Errorf("result.DesiredPodCount = 10, got %d", result.DesiredPodCount)
+	}
+}
+
+func TestKpaUpdateContext(t *testing.T) {
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				Kind: "Deployment",
+				Name: "example-deployment",
+			},
+			MinReplicas:  nil, // expecting nil as default since it's a pointer and no value is assigned
+			MaxReplicas:  5,
+			TargetValue:  "1",
+			TargetMetric: "test.metrics",
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					Endpoint: "service1.example.com",
+					Path:     "/api/metrics/cpu",
+				},
+			},
+			ScalingStrategy: "KPA",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				"autoscaling.aibrix.ai/max-scale-up-rate":         "32.1",
+				"autoscaling.aibrix.ai/max-scale-down-rate":       "12.3",
+				"kpa.autoscaling.aibrix.ai/target-burst-capacity": "45.6",
+				"kpa.autoscaling.aibrix.ai/activation-scale":      "3",
+				"kpa.autoscaling.aibrix.ai/panic-threshold":       "2.5",
+				"kpa.autoscaling.aibrix.ai/stable-window":         "60s",
+				"kpa.autoscaling.aibrix.ai/scale-down-delay":      "30s",
+			},
+		},
+	}
+	kpaSpec := NewKpaScalingContext()
+	err := kpaSpec.UpdateByPaTypes(pa)
+	if err != nil {
+		t.Errorf("Failed to update KpaScalingContext: %v", err)
+	}
+	if kpaSpec.MaxScaleUpRate != 32.1 {
+		t.Errorf("expected MaxScaleDownRate = 32.1, got %f", kpaSpec.MaxScaleDownRate)
+	}
+	if kpaSpec.MaxScaleDownRate != 12.3 {
+		t.Errorf("expected MaxScaleDownRate = 12.3, got %f", kpaSpec.MaxScaleDownRate)
+	}
+	if kpaSpec.TargetBurstCapacity != 45.6 {
+		t.Errorf("expected TargetBurstCapacity = 45.6, got %f", kpaSpec.TargetBurstCapacity)
+	}
+	if kpaSpec.ActivationScale != 3 {
+		t.Errorf("expected ActivationScale = 3, got %d", kpaSpec.ActivationScale)
+	}
+	if kpaSpec.PanicThreshold != 2.5 {
+		t.Errorf("expected PanicThreshold = 2.5, got %f", kpaSpec.PanicThreshold)
+	}
+	if kpaSpec.StableWindow != 60*time.Second {
+		t.Errorf("expected StableWindow = 60s, got %v", kpaSpec.StableWindow)
+	}
+	if kpaSpec.ScaleDownDelay != 30*time.Second {
+		t.Errorf("expected ScaleDownDelay = 10s, got %v", kpaSpec.ScaleDownDelay)
 	}
 }

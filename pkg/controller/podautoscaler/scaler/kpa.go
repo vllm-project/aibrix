@@ -59,6 +59,15 @@ If the metric no longer exceeds the panic threshold, exit the panic mode.
 
 */
 
+const (
+	KPALabelPrefix           = "kpa." + scalingcontext.AutoscalingLabelPrefix
+	targetBurstCapacityLabel = KPALabelPrefix + "target-burst-capacity"
+	activationScaleLabel     = KPALabelPrefix + "activation-scale"
+	panicThresholdLabel      = KPALabelPrefix + "panic-threshold"
+	stableWindowLabel        = KPALabelPrefix + "stable-window"
+	scaleDownDelayLabel      = KPALabelPrefix + "scale-down-delay"
+)
+
 // KpaScalingContext defines parameters for scaling decisions.
 type KpaScalingContext struct {
 	scalingcontext.BaseScalingContext
@@ -100,6 +109,57 @@ func NewKpaScalingContext() *KpaScalingContext {
 	}
 }
 
+func (k *KpaScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error {
+	err := k.BaseScalingContext.UpdateByPaTypes(pa)
+	if err != nil {
+		return err
+	}
+	for key, value := range pa.Labels {
+		switch key {
+		case targetBurstCapacityLabel:
+			v, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return err
+			}
+			k.TargetBurstCapacity = v
+		case activationScaleLabel:
+			v, err := strconv.ParseInt(value, 10, 32)
+			if err != nil {
+				return err
+			}
+			k.ActivationScale = int32(v)
+		case panicThresholdLabel:
+			v, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return err
+			}
+			k.PanicThreshold = v
+		case stableWindowLabel:
+			v, err := time.ParseDuration(value)
+			if err != nil {
+				return err
+			}
+			k.StableWindow = v
+		case scaleDownDelayLabel:
+			v, err := time.ParseDuration(value)
+			if err != nil {
+				return err
+			}
+			k.ScaleDownDelay = v
+		}
+	}
+	// unset some attribute if there are no configuration
+	if _, exists := pa.Labels[scaleDownDelayLabel]; !exists {
+		// TODO N.B. three parts of KPAScaler are stateful : panic_window, stable_window and delay windows.
+		//  reconcile() updates KpaScalingContext periodically, but doesn't reset these three parts.
+		//  These three parts are only initialized when controller starts.
+		//  Therefore, apply kpa.yaml cannot modify the panic_duration, stable_duration and delay_window duration
+		k.ScaleDownDelay = 0
+	}
+
+	return nil
+}
+
 type KpaAutoscaler struct {
 	specMux      sync.RWMutex
 	metricClient metrics.MetricClient
@@ -122,10 +182,14 @@ func NewKpaAutoscaler(readyPodsCount int, spec *KpaScalingContext) (*KpaAutoscal
 	}
 
 	// Create a new delay window based on the ScaleDownDelay specified in the spec
-	if spec.ScaleDownDelay <= 0 {
+	if spec.ScaleDownDelay < 0 {
 		return nil, errors.New("ScaleDownDelay must be positive")
 	}
-	delayWindow := aggregation.NewTimeWindow(spec.ScaleDownDelay, 1*time.Second)
+	var delayWindow *aggregation.TimeWindow
+	// If specify ScaleDownDelay, KpaAutoscaler.delayWindow will be initialized
+	if spec.ScaleDownDelay > 0 {
+		delayWindow = aggregation.NewTimeWindow(spec.ScaleDownDelay, 1*time.Second)
+	}
 
 	// As KNative stated:
 	//   We always start in the panic mode, if the deployment is scaled up over 1 pod.
@@ -144,6 +208,7 @@ func NewKpaAutoscaler(readyPodsCount int, spec *KpaScalingContext) (*KpaAutoscal
 	// TODO missing MetricClient
 	metricsFetcher := &metrics.RestMetricsFetcher{}
 	metricsClient := metrics.NewKPAMetricsClient(metricsFetcher)
+
 	scalingAlgorithm := algorithm.KpaScalingAlgorithm{}
 
 	return &KpaAutoscaler{
@@ -253,6 +318,7 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	// in that case).
 	klog.V(4).InfoS("DelayWindow details", "delayWindow", k.delayWindow.String())
 	if k.delayWindow != nil {
+		// the actual desiredPodCount will be recorded, but return the max replicas during passed delayWindow
 		k.delayWindow.Record(now, float64(desiredPodCount))
 		delayedPodCount, err := k.delayWindow.Max()
 		if err != nil {
@@ -319,15 +385,10 @@ func (k *KpaAutoscaler) UpdateSourceMetrics(ctx context.Context, metricKey metri
 func (k *KpaAutoscaler) UpdateScalingContext(pa autoscalingv1alpha1.PodAutoscaler) error {
 	k.specMux.Lock()
 	defer k.specMux.Unlock()
-
-	targetValue, err := strconv.ParseFloat(pa.Spec.TargetValue, 64)
+	err := k.scalingContext.UpdateByPaTypes(&pa)
 	if err != nil {
-		klog.ErrorS(err, "Failed to parse target value", "targetValue", pa.Spec.TargetValue)
 		return err
 	}
-	k.scalingContext.TargetValue = targetValue
-	k.scalingContext.ScalingMetric = pa.Spec.TargetMetric
-
 	return nil
 }
 
