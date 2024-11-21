@@ -26,6 +26,9 @@ go.work.sum
 .DS_Store
 __pycache__
 
+# Python virtual environment directory
+.venv
+
 # Jupyter notebook
 .ipynb_checkpoints/
 
