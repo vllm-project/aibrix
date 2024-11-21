@@ -259,7 +259,7 @@ class ModelMonitor:
         """_run implementation. Using a separate yieldable implementation for _run being accepted by Threading"""
         # Define clusterer
         clusterers: List[Clusterer] = [
-            MovingDBSCANClusterer(2, 10, 4, self.window * window_scaling)
+            MovingDBSCANClusterer(0.5, 10, 4, self.window * window_scaling)
             # MovingDBSCANClusterer(0.8, 100, 4, self.window * window_scaling), 
             # DBSCANClusterer(0.5, 10),
         ]

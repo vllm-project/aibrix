@@ -23,6 +23,8 @@ import re
 
 logger = logging.getLogger("aibrix.gpuoptimizer.loadreader")
 
+unittest_filepath = "unittest_694cb6cf-f5b3-42ca-b3c1-55ff0b358bdb"
+
 class LoadRecord(tuple):
     """LoadRecord models a tuple with the following fields: ts, input tokens, output tokens, and frequency."""
 
@@ -60,14 +62,29 @@ class DatasetLoadReader:
     """
 
     def __init__(self, filepath, rps:int = 10, scale:float = 1.0, interval: int = 10) -> None:
-        self.df = pd.read_csv(filepath)
-        self.df['input_tokens'] = np.round(np.log2(self.df['input_tokens'] * scale)) 
-        self.df['output_tokens'] = np.round(np.log2(self.df['output_tokens'] * scale))
+        if filepath != unittest_filepath:
+            self.df = pd.read_csv(filepath)
+            self.df['input_tokens'] = self.log2_aggregate(self.df['input_tokens'] * scale, 1)
+            self.df['output_tokens'] = self.log2_aggregate(self.df['output_tokens'] * scale, 1)
+            # self.df['input_tokens'] = self.stair_aggregate(self.df['input_tokens'] * scale)
+            # self.df['output_tokens'] = self.stair_aggregate(self.df['output_tokens'] * scale)
 
         self.rps = rps
         self.interval = 10
         self.n_read = 0
         self.n = 0
+
+    def log2_aggregate(self, series: List, precision: int=0) -> List:
+        return np.round(np.log2(series), precision) 
+    
+    def stair_aggregate(self, series: List, skip_log2: bool = False) -> List:
+        BaseBucketBits = 3
+        ScalingBits = 4
+
+        scale = np.maximum(np.floor(np.log2(series)) - BaseBucketBits, 0) // ScalingBits + 1
+        bucketbits = np.maximum((scale - 1) * ScalingBits + BaseBucketBits - 1, BaseBucketBits)
+        aggregated = np.maximum(series - np.mod(series, 2**bucketbits), 1)
+        return aggregated if skip_log2 else np.log2(aggregated)
         
 
     def read(self, ts: float=0.0) -> List[LoadRecord]:
