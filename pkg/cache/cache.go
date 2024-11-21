@@ -64,8 +64,9 @@ const (
 	modelIdentifier                       = "model.aibrix.ai/name"
 	podPort                               = 8000
 	defaultPodMetricRefreshIntervalInMS   = 50
-	writeRequestTraceIntervalInSeconds    = 10
 	expireWriteRequestTraceIntervalInMins = 10
+	keyWriteRequestTraceIntervalInSeconds = "meta_interval_sec"
+	writeRequestTraceIntervalInSeconds    = 10
 	keyPrecisionRequestTrace              = "meta_precision"
 	precisionRequestTrace                 = 0.1
 	keyVersionRequestTrace                = "meta_v"
@@ -526,6 +527,7 @@ func (c *Cache) AddRequestTrace(modelName string, inputTokens, outputTokens int6
 
 	if len(c.requestTrace[modelName]) == 0 {
 		c.requestTrace[modelName] = map[string]int{}
+		c.requestTrace[modelName][keyWriteRequestTraceIntervalInSeconds] = writeRequestTraceIntervalInSeconds
 		c.requestTrace[modelName][keyPrecisionRequestTrace] = int(1 / precisionRequestTrace)
 		c.requestTrace[modelName][keyVersionRequestTrace] = versionRequestTrace
 	}
