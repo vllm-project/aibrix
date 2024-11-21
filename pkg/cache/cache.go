@@ -54,10 +54,10 @@ type Cache struct {
 	redisClient       *redis.Client
 	initialized       bool
 	Pods              map[string]*v1.Pod
-	PodMetrics        map[string]map[string]float64  // pod_name: map[metric_name]metric_val
-	PodToModelMapping map[string]map[string]struct{} // pod_name: map[model_name]struct{}
-	ModelToPodMapping map[string]map[string]*v1.Pod  // model_name: map[pod_name]*v1.Pod
-	requestTrace      map[string]map[string]int      // model_name: map[Log2(input_token)-Log2(output_token)]request_count
+	PodMetrics        map[string]map[string]*MetricValue // pod_name: map[metric_name]metric_val
+	PodToModelMapping map[string]map[string]struct{}     // pod_name: map[model_name]struct{}
+	ModelToPodMapping map[string]map[string]*v1.Pod      // model_name: map[pod_name]*v1.Pod
+	requestTrace      map[string]map[string]int          // model_name: map[Log2(input_token)-Log2(output_token)]request_count
 }
 
 const (
@@ -69,9 +69,13 @@ const (
 )
 
 var (
-	instance    Cache
-	metricNames = []string{"num_requests_running", "num_requests_waiting", "num_requests_swapped",
-		"avg_prompt_throughput_toks_per_s", "avg_generation_throughput_toks_per_s"} //, "e2e_request_latency_seconds_sum"}
+	instance                Cache
+	counterGaugeMetricNames = []string{"num_requests_running", "num_requests_waiting", "num_requests_swapped",
+		"avg_prompt_throughput_toks_per_s", "avg_generation_throughput_toks_per_s"}
+	// histogram metric example - time_to_first_token_seconds, _sum, _bucket _count.
+	histogramMetricNames = []string{"iteration_tokens_total", "time_to_first_token_seconds", "time_per_output_token_seconds",
+		"e2e_request_latency_seconds", "request_queue_time_seconds", "request_inference_time_seconds", "request_decode_time_seconds", "request_prefill_time_seconds"}
+
 	podMetricRefreshIntervalInMilliseconds = getPodMetricRefreshInterval()
 )
 
@@ -132,7 +136,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			initialized:       true,
 			redisClient:       redisClient,
 			Pods:              map[string]*v1.Pod{},
-			PodMetrics:        map[string]map[string]float64{},
+			PodMetrics:        map[string]map[string]*MetricValue{},
 			PodToModelMapping: map[string]map[string]struct{}{},
 			ModelToPodMapping: map[string]map[string]*v1.Pod{},
 			requestTrace:      map[string]map[string]int{},
@@ -426,18 +430,18 @@ func (c *Cache) CheckModelExists(modelName string) bool {
 	return ok
 }
 
-func (c *Cache) GetPodMetric(podName, metricName string) (float64, error) {
+func (c *Cache) GetPodMetric(podName, metricName string) (*MetricValue, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	metrics, ok := c.PodMetrics[podName]
 	if !ok {
-		return 0, fmt.Errorf("pod does not exist in the metrics cache")
+		return nil, fmt.Errorf("pod does not exist in the metrics cache")
 	}
 
 	metricVal, ok := metrics[metricName]
 	if !ok {
-		return 0, fmt.Errorf("no metric available for %v", metricName)
+		return nil, fmt.Errorf("no metric available for %v", metricName)
 	}
 
 	return metricVal, nil
@@ -453,7 +457,7 @@ func (c *Cache) updatePodMetrics() {
 		}
 		podName := pod.Name
 		if len(c.PodMetrics[podName]) == 0 {
-			c.PodMetrics[podName] = map[string]float64{}
+			c.PodMetrics[podName] = map[string]*MetricValue{}
 		}
 
 		// We should use the primary container port. In future, we can decide whether to use sidecar container's port
@@ -475,14 +479,27 @@ func (c *Cache) updatePodMetrics() {
 			continue
 		}
 
-		for _, metricName := range metricNames {
+		// parse counterGaugeMetricsNames
+		for _, metricName := range counterGaugeMetricNames {
 			metricValue, err := parseMetricFromBody(body, metricName)
 			if err != nil {
 				klog.Errorf("failed to parse metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
 				continue
 			}
 
-			c.PodMetrics[pod.Name][metricName] = metricValue
+			c.PodMetrics[pod.Name][metricName] = &MetricValue{Value: metricValue}
+			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
+		}
+
+		// parse histogramMetrics
+		for _, metricName := range histogramMetricNames {
+			metricValue, err := parseHistogramFromBody(body, metricName)
+			if err != nil {
+				klog.Errorf("failed to parse metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
+				continue
+			}
+
+			c.PodMetrics[pod.Name][metricName] = &MetricValue{Histogram: metricValue}
 			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
 		}
 	}
@@ -508,6 +525,77 @@ func parseMetricFromBody(body []byte, metricName string) (float64, error) {
 		}
 	}
 	return 0, fmt.Errorf("metrics %s not found", metricName)
+}
+
+func parseHistogramFromBody(body []byte, metricName string) (*HistogramMetric, error) {
+	lines := strings.Split(string(body), "\n")
+	histogram := &HistogramMetric{
+		Buckets: make(map[string]float64),
+	}
+	found := false
+
+	for _, line := range lines {
+		if strings.Contains(line, metricName+"_sum") {
+			parts := strings.Fields(line)
+			if len(parts) < 2 {
+				return nil, fmt.Errorf("unexpected format for metric %s_sum", metricName)
+			}
+			value, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse sum for metric %s: %v", metricName, err)
+			}
+			histogram.Sum = value
+			found = true
+		} else if strings.Contains(line, metricName+"_count") {
+			parts := strings.Fields(line)
+			if len(parts) < 2 {
+				return nil, fmt.Errorf("unexpected format for metric %s_count", metricName)
+			}
+			value, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse count for metric %s: %v", metricName, err)
+			}
+			histogram.Count = value
+			found = true
+		} else if strings.Contains(line, metricName+"_bucket") {
+			parts := strings.Fields(line)
+			if len(parts) < 2 {
+				return nil, fmt.Errorf("unexpected format for bucket in metric %s", metricName)
+			}
+
+			// Extract the bucket boundary (le="...")
+			bucketBoundary := extractBucketBoundary(line)
+			if bucketBoundary == "" {
+				return nil, fmt.Errorf("failed to extract bucket boundary for metric %s", metricName)
+			}
+
+			value, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse bucket value for %s: %v", metricName, err)
+			}
+			histogram.Buckets[bucketBoundary] = value
+			found = true
+		}
+	}
+
+	if !found {
+		return nil, fmt.Errorf("metrics %s not found", metricName)
+	}
+	return histogram, nil
+}
+
+func extractBucketBoundary(line string) string {
+	// Extract `le="value"` from bucket lines
+	startIndex := strings.Index(line, `le="`)
+	if startIndex == -1 {
+		return ""
+	}
+	startIndex += len(`le="`)
+	endIndex := strings.Index(line[startIndex:], `"`)
+	if endIndex == -1 {
+		return ""
+	}
+	return line[startIndex : startIndex+endIndex]
 }
 
 func (c *Cache) AddRequestTrace(modelName string, inputTokens, outputTokens int64) {

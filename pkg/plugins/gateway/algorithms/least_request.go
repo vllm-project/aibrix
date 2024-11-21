@@ -69,7 +69,7 @@ func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod) 
 			klog.Error(err)
 			continue
 		}
-		totalReq := runningReq + waitingReq + swappedReq
+		totalReq := runningReq.Value + waitingReq.Value + swappedReq.Value
 		klog.V(4).Infof("pod: %v, podIP: %v, runningReq: %v, waitingReq: %v, swappedReq: %v, totalReq: %v",
 			pod.Name, pod.Status.PodIP, runningReq, waitingReq, swappedReq, totalReq)
 
