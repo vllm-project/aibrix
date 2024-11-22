@@ -69,9 +69,6 @@ spec:
                 type: string
               targetMetric:
                 type: string
-              targetPort:
-                format: int32
-                type: integer
               targetValue:
                 type: string
             required:
@@ -79,7 +76,6 @@ spec:
             - scaleTargetRef
             - scalingStrategy
             - targetMetric
-            - targetPort
             - targetValue
             type: object
           status:
