@@ -1,13 +1,15 @@
 import threading
-from kubernetes import client, config, watch
 import time
+
+from kubernetes import client, config, watch
+
 
 def watch_deployments(namespace):
     """Watches for deployment events and can be stopped externally."""
     try:
         try:
             config.load_incluster_config()
-        except Exception as e:
+        except Exception:
             config.load_kube_config(config_file="~/.kube/config")
         apps_v1 = client.AppsV1Api()
         w = watch.Watch()

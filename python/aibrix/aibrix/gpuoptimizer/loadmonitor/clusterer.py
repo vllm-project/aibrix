@@ -12,16 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Protocol, List, Callable, Union, Tuple, Dict, Iterable, Optional
-from incdbscan import IncrementalDBSCAN
-import numpy as np
-from datetime import datetime
-import sys
+import logging
 import math
-import logging 
+import sys
+from datetime import datetime
+from typing import (Callable, Dict, Iterable, List, Optional, Protocol, Tuple,
+                    Union)
 
-from .helpers import DataPoint, DataPoints, Centeroid
+import numpy as np
+from incdbscan import IncrementalDBSCAN
 from utils import DelayedLog
+
+from .helpers import Centeroid, DataPoint, DataPoints
 
 logger = logging.getLogger("aibrix.gpuoptimizer.clusterer")
 

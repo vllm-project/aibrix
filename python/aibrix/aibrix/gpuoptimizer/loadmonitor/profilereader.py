@@ -1,6 +1,6 @@
-from typing import Protocol, List, Union
 import json
 import logging
+from typing import List, Protocol
 
 from optimizer import GPUProfile
 

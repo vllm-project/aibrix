@@ -1,6 +1,7 @@
 import logging
 from urllib.parse import quote
 
+
 class ExcludePathsFilter(logging.Filter):
     def __init__(self, exclude_paths):
         super().__init__()

@@ -12,23 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import threading
-from typing import List, Optional, Iterable, Union, Callable, Dict
-from functools import reduce
-from datetime import datetime
-import os
-import time
-import pandas as pd
-import numpy as np
 import logging
-import json
+import threading
+import time
+from datetime import datetime
+from functools import reduce
+from typing import Callable, Dict, Iterable, List, Optional, Union
 
+import numpy as np
+import pandas as pd
+from optimizer import GPUProfile, Optimizer
+
+from .clusterer import Clusterer, MovingDBSCANClusterer
+from .helpers import Centeroid, DataBuffer, DataPoint
 from .loadreader import LoadReader, LoadRecord
 from .profilereader import ProfileReader
-from .clusterer import Clusterer, DBSCANClusterer, MovingDBSCANClusterer
-from .helpers import DataPoint, DataBuffer, Centeroid
-from optimizer import Optimizer, GPUProfile
-
 
 Empty_Array = []
 

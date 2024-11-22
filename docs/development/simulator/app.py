@@ -1,20 +1,22 @@
-from flask import Flask, request, Response, jsonify
-import time
-import os
 import logging
+import os
+import sys
+import time
 from datetime import datetime
 from random import randint
-import sys
+
+from flask import Flask, Response, jsonify, request
+
 try:
     from kubernetes import client, config
 except Exception as e:
     print(f"Failed to import kubernetes, skip: {e}")
 
+from simulator import Simulator
+from transformers import AutoTokenizer
 from vidur.config import SimulationConfig
 from vidur.config_optimizer.config_explorer.config import ModelConfig
 from vidur.entities import Request
-from simulator import Simulator
-from transformers import AutoTokenizer
 
 MODEL_NAME = os.getenv('MODEL_NAME', 'llama2-70b')
 DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-70b')

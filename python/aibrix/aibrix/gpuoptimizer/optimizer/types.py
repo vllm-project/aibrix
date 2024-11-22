@@ -1,5 +1,6 @@
-from typing import Protocol, Tuple, List, Callable, Optional
 from dataclasses import dataclass, field
+from typing import Callable, List, Optional, Protocol, Tuple
+
 
 @dataclass
 class GPUProfile:

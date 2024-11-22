@@ -1,21 +1,20 @@
+import asyncio
 import atexit
 import heapq
 import json
-import asyncio
-import threading
 import sys
+import threading
 from typing import List
 
 from vidur.config import SimulationConfig
-from vidur.entities import Cluster
-from vidur.events import RequestArrivalEvent, BaseEvent
+from vidur.entities import Cluster, Request
+from vidur.events import BaseEvent, RequestArrivalEvent
 from vidur.logger import init_logger
 from vidur.metrics import MetricsStore
 from vidur.request_generator import RequestGeneratorRegistry
 from vidur.scheduler import BaseGlobalScheduler, GlobalSchedulerRegistry
-from vidur.utils.random import set_seeds
-from vidur.entities import Request
 from vidur.types import EventType
+from vidur.utils.random import set_seeds
 
 logger = init_logger(__name__)
 

@@ -1,7 +1,8 @@
 import pulp
-from pulp import LpVariable, LpProblem, LpMinimize, LpInteger
+from pulp import LpInteger, LpMinimize, LpProblem, LpVariable
 
 from .util import tputs_to_loads_2d
+
 
 # This class is adapted from code originally written by Tyler Griggs 
 # found at https://github.com/tyler-griggs/melange-release

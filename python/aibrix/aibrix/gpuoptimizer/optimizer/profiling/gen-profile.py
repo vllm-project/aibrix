@@ -1,9 +1,10 @@
 import argparse
 import json
-import pandas as pd
-import numpy as np
 import os
 from datetime import datetime
+
+import numpy as np
+import pandas as pd
 
 REDIS_PROFILE_KEY = "aibrix:profile_%s_%s"
 
@@ -90,11 +91,11 @@ def main(args):
         print(json.dumps(result))
 
 def _try_store_redis(args, result) -> bool:
-    import redis
     import json
-    import os
     import sys
-    from urllib.parse import urlparse, parse_qs
+    from urllib.parse import parse_qs, urlparse
+
+    import redis
 
     # Parse the Redis URL
     url = urlparse(args.o)

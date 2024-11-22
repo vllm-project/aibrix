@@ -12,14 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Protocol, List, Union, Optional
-from datetime import datetime
-import pandas as pd
-import numpy as np
-from redis import Redis
 import json
 import logging
 import re
+from datetime import datetime
+from typing import List, Optional, Protocol, Union
+
+import numpy as np
+import pandas as pd
+from redis import Redis
 
 logger = logging.getLogger("aibrix.gpuoptimizer.loadreader")
 

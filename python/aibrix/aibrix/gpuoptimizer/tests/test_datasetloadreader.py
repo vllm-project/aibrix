@@ -1,7 +1,8 @@
 import unittest
-import numpy as np
 
+import numpy as np
 from loadmonitor.loadreader import DatasetLoadReader, unittest_filepath
+
 
 class TestDatasetLoadReader(unittest.TestCase):
     def __init__(self, methodName: str = "runTest") -> None:

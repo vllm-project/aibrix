@@ -10,20 +10,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import threading
-from typing import Optional, Tuple
 import logging
 import os
+import threading
+from typing import Optional, Tuple
 
+import redis
+import uvicorn
+from kubernetes import client, config, watch
+from loadmonitor.loadreader import GatewayLoadReader
+from loadmonitor.monitor import DeploymentStates, ModelMonitor
+from loadmonitor.profilereader import RedisProfileReader
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse, PlainTextResponse
-from kubernetes import client, config, watch
-import uvicorn
-import redis
-
-from loadmonitor.monitor import ModelMonitor, DeploymentStates
-from loadmonitor.loadreader import GatewayLoadReader
-from loadmonitor.profilereader import RedisProfileReader
 from utils import ExcludePathsFilter
 
 NAMESPACE = os.getenv('NAMESPACE', 'aibrix-system')
@@ -32,10 +31,10 @@ MIN_REPLICAS_LABEL = "model.aibrix.ai/min_replicas"
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 
-
 routes = []
 model_monitors = {} # Dictionary to store serving threads
 from loadmonitor.visualizer import mount_to as mount_visulizer
+
 mount_visulizer(routes, '/dash/{model_name}', 
                 lambda model_name: model_monitors.get(model_name))
 app = Starlette(routes=routes)

@@ -1,11 +1,12 @@
-from typing import Optional, Iterable, Tuple
-from functools import reduce
-import numpy as np
 import logging
+from functools import reduce
+from typing import Iterable, Optional, Tuple
 
+import numpy as np
+
+from .solver.melange import Config as MelangConfig
+from .solver.melange import SolverRunner
 from .types import GPUProfile, WorkloadProfile
-from .solver.melange import Config as MelangConfig, SolverRunner
-from utils import DelayedLog
 
 logger = logging.getLogger("aibrix.gpuoptimizer.optimizer")
 

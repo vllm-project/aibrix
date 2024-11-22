@@ -10,7 +10,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Any
+from typing import Any, Callable
+
 
 class DelayedLog:
     def __init__(self, expr: Callable[[], Any]):

@@ -12,24 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+import os
+import threading
+from datetime import datetime
+from typing import Any, Callable, List, Optional, Tuple
+
 import dash
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import plotly.graph_objs as go
 from dash import dcc, html
 from dash.dependencies import Input, Output
 from starlette.middleware.wsgi import WSGIMiddleware
 from starlette.routing import Mount
-import plotly.graph_objs as go
-import matplotlib.pyplot as plt
-import pandas as pd
-from datetime import datetime
-import threading
-import numpy as np
-from typing import List, Callable, Optional, Tuple, Any
-import os
-import logging
 
-from .loadreader import LoadReader, DatasetLoadReader
-from .profilereader import ProfileReader, FileProfileReader, RedisProfileReader
+from .loadreader import DatasetLoadReader, LoadReader
 from .monitor import ModelMonitor
+from .profilereader import FileProfileReader, ProfileReader, RedisProfileReader
 
 canvas_size = 1000
 scale = 16
@@ -86,11 +87,12 @@ def get_debug_model_montior(path:str, scale:float=1.0, profile:str=None, redispr
     return debug_monitor
 
 def parse_redis_connection_str(connection_str: str) -> Tuple[Any, str]:
-    import redis
     import json
     import os
     import sys
-    from urllib.parse import urlparse, parse_qs
+    from urllib.parse import parse_qs, urlparse
+
+    import redis
 
     # Parse the Redis URL
     url = urlparse(connection_str)
