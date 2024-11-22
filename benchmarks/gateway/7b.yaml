@@ -78,7 +78,7 @@ spec:
             - name: dshm
               mountPath: /dev/shm
         - name: aibrix-runtime
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.1.0
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.1.1
           command:
             - aibrix_runtime
             - --port
@@ -91,7 +91,7 @@ spec:
               name: model-hostpath
       initContainers:
         - name: init-model
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.1.0
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.1.1
           command:
             - aibrix_download
             - --model-uri
