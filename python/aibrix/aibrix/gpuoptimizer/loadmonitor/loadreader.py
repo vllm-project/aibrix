@@ -56,6 +56,9 @@ class LoadReader(Protocol):
     def progress(self) -> str:
         """Return the progress description of the data source."""
 
+    def next_available(self) -> float:
+        """Return the timestamp next batch of data will be available."""
+
 class DatasetLoadReader:
     """DatasetLoadReader reads the load records from a dataset.
     To match the behavior of the gateway, the input and output tokens are rounded to the nearest integer of log2.
@@ -111,6 +114,10 @@ class DatasetLoadReader:
     
     def progress(self) -> str:
         return f"{round(self.n_read / len(self.df) * 100, 2)}%"
+    
+    def next_available(self) -> float:
+        """Dataset is available to read anytime."""
+        return datetime.now().timestamp()
     
 class GatewayLoadReader:
     """GatewayLoadReader reads the load records from gateway generated statistics stored in Redis.
@@ -174,7 +181,8 @@ class GatewayLoadReader:
             if cursor == 0:
                 break
         if len(matching_keys) == 0:
-            logger.info(f"No pre-existed profiles matching {self.prefix}* found in Redis")
+            self.last_ts = datetime.now().timestamp()
+            logger.info(f"No pre-existed load profile matching {self.prefix}* found in Redis")
             return []
         
         # Sort by ts to ensure profiles are processed by time order.
@@ -185,6 +193,7 @@ class GatewayLoadReader:
         for key in matching_keys:
             try:
                 # Deserialize by json: dict[string]int
+                self.last_ts = key[1]
                 profiles = self.read_key(key[0], False)
                 if profiles is None or len(profiles) == 0:
                     continue
@@ -207,25 +216,41 @@ class GatewayLoadReader:
             return None
         
         # Deserialize by json: dict[string]int
+        print(profile_data)
         profile = json.loads(profile_data)
         if not isinstance(profile, dict):
-            raise Exception(f"Profile is not a dictionary")
+            raise Exception(f"Load profile is not a dictionary")
         
         return profile
     
+    def next_available(self) -> float:
+        """Dataset is available to read anytime."""
+        return self.last_ts + self.key_ts_alignment
+    
     def _parse_profiles(self, profiles: dict, ts: int, out_records: List[LoadRecord]=[]) -> List[LoadRecord]:
+        # Load metainfo.
+        version = profiles.get("meta_version", 1)
+        precision = profiles.get("meta_precision", 1)
+        if version >= 2:
+            self.key_ts_alignment = profiles.get("meta_interval_sec", 10)
+
+        # Parse load profile entries.
         for k, v in profiles.items():
+            # skip metainfos.
+            if re.match(r"^meta_", k):
+                continue
+
             # parse key: log2(input_tokens)-log2(output_tokens)
             match = re.search(r"^(\d+):(\d+)$", k)
             if match is None:
-                raise Exception(f"Unexpected profile key {k}, expect \"int:int\".")
+                raise Exception(f"Unexpected load profile key {k}, expect \"int:int\".")
             
             value = int(v)
             if value == 0 and v != "0":
-                raise Exception(f"Profile value is not an integer: {v}")
+                raise Exception(f"Load profile value is not an integer: {v}")
             
-            input_tokens = int(match.group(1))
-            output_tokens = int(match.group(2))
+            input_tokens = int(match.group(1)) / precision
+            output_tokens = int(match.group(2)) / precision
             out_records.append(LoadRecord(ts, input_tokens, output_tokens, value))
         
         return out_records

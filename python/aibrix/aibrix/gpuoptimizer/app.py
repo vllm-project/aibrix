@@ -23,6 +23,7 @@ import redis
 
 from loadmonitor.monitor import ModelMonitor, DeploymentStates
 from loadmonitor.loadreader import GatewayLoadReader
+from loadmonitor.profilereader import RedisProfileReader
 from utils import ExcludePathsFilter
 
 NAMESPACE = os.getenv('NAMESPACE', 'aibrix-system')
@@ -87,9 +88,11 @@ def start_serving_thread(watch_ver, deployment, watch_event: bool) -> bool:
         return False
 
     reader = GatewayLoadReader(redis_client, model_name)
+    profile = RedisProfileReader(redis_client, model_name)
     model_monitor = ModelMonitor(model_name, watch_ver, reader,
                                  deployment=new_deployment(deployment), 
-                                 namespace=namespace, 
+                                 namespace=namespace,
+                                 profilereader=profile,
                                  debug=debug)
     model_monitor.start()
     model_monitors[model_name] = model_monitor

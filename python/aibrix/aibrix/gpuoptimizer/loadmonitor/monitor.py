@@ -62,7 +62,7 @@ class DeploymentStates:
         return f"{self.name}: {self.replicas}(${self.cost})"
 
 class ModelMonitor:
-    def __init__(self, model_name: str, watch_ver: str, loadreader: LoadReader, interval: int = 10, window: int = 240, deployment: DeploymentStates = None,namespace: str = None, profileReader: ProfileReader = None, debug: bool = False):
+    def __init__(self, model_name: str, watch_ver: str, loadreader: LoadReader, window: int = 240, deployment: DeploymentStates = None,namespace: str = None, profilereader: ProfileReader = None, debug: bool = False):
         """Initialize the model monitor.
         
         Args:
@@ -83,7 +83,6 @@ class ModelMonitor:
         self.last_watch_version = None
         self.debug = debug
         self.done = False
-        self.interval = interval
         self.window = float(window)
         self._lock = threading.Lock()
 
@@ -91,7 +90,7 @@ class ModelMonitor:
         self._loadreader: LoadReader = loadreader
 
         # Profile reader
-        self._profilereader: ProfileReader = profileReader
+        self._profilereader: ProfileReader = profilereader
 
         # Optimizer
         self._profiles: Dict[str, GPUProfile] = {}
@@ -103,14 +102,16 @@ class ModelMonitor:
         self._data: Optional[DataBuffer] = None
         self._progress: float = 0.0
         self._cost = 0.0
+        
+        if profilereader is not None:
+            self.load_profiles(profilereader)
+        elif self.debug:
+             # Add debug_gpu_profile anyway if debugging
+             self._optimizer.set_profile(debug_gpu_profile)
 
         # Add first deployment
         if deployment is not None:
             self.add_deployment(watch_ver, deployment.name, namespace, deployment)
-        
-        if profileReader is None and self.debug:
-             # Add debug_gpu_profile anyway if debugging
-             self._optimizer.set_profile(debug_gpu_profile)
 
     def add_deployment(self, watch_ver: str, deployment_name: str,  namespace: str, deployment: Union[DeploymentStates, Callable[[], DeploymentStates]]):
         # Update optimizer
@@ -183,7 +184,7 @@ class ModelMonitor:
                 if self._update_profile(profile):
                     logger.debug(f"Profile of {profile.gpu} updated.")
         except Exception as e:
-            logger.error(f"Failed to load profiles:: {e}")
+            logger.error(f"Failed to load profiles: {e}")
 
     def _update_profile(self, profile:GPUProfile) -> bool:
         """Update a profile, will update the formal alias copy, too."""
@@ -206,10 +207,6 @@ class ModelMonitor:
         
         # update the profile of key, note that the profile.gpu is already formalized.
         self._profiles[key] = profile
-        if self.debug:
-            logger.info(f"Profile {profile.gpu} added to optimizer")
-            self._optimizer.set_profile(profile)
-            return True
 
         # apply update to optimizer for existing deployments.
         deployment_key = profile.gpu # Fast path, note that the profile.gpu is already formalized if it match any deployments.
@@ -310,7 +307,10 @@ class ModelMonitor:
                 # This allows caller controls the progress.
                 yield
             else:
-                time.sleep(self.interval)
+                time.sleep(self._loadreader.next_available() - datetime.now().timestamp())
+                # Validate time elapsed
+                while datetime.now().timestamp() < self._loadreader.next_available():
+                    time.sleep(1)
 
     def stop(self):
         """Stop the model monitor thread"""
@@ -328,13 +328,6 @@ class ModelMonitor:
         return f"{namespace}/{deployment_name}"
     
     def _match_profile(self, key, deployment_name) -> Optional[GPUProfile]:
-        """TODO: implement matching logic"""
-        if self.debug:
-            # Copy the debug profile and override the gpu name with given key
-            copy = GPUProfile(**debug_gpu_profile.__dict__)
-            copy.gpu = key
-            return copy
-        
         if key in self._profiles:
             return self._profiles[key]
         elif deployment_name in self._profiles:
@@ -342,6 +335,11 @@ class ModelMonitor:
             profile:GPUProfile = self._profiles[deployment_name]
             profile.gpu = key
             return profile
+        elif self.debug:
+            # Copy the debug profile and override the gpu name with given key
+            copy = GPUProfile(**debug_gpu_profile.__dict__)
+            copy.gpu = key
+            return copy
         
         return None
     

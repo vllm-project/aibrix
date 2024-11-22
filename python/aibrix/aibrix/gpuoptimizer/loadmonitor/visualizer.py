@@ -72,15 +72,15 @@ def get_debug_model_montior(path:str, scale:float=1.0, profile:str=None, redispr
         loadReader: LoadReader = DatasetLoadReader(path, rps=10, scale=scale, 
         interval=reader_interval)
 
-        profileReader: ProfileReader = None
+        profilereader: ProfileReader = None
         if profile is not None:
-            profileReader = FileProfileReader(profile)
+            profilereader = FileProfileReader(profile)
         elif redisprofile is not None:
-            profileReader = RedisProfileReader(*parse_redis_connection_str(redisprofile))
+            profilereader = RedisProfileReader(*parse_redis_connection_str(redisprofile))
 
         debug_monitor = ModelMonitor(
             "sharegpt", "0", loadReader, interval=interval, 
-            profileReader=profileReader,
+            profilereader=profilereader,
             debug=True)
     
     return debug_monitor

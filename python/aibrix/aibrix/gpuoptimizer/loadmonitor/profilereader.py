@@ -7,7 +7,7 @@ from optimizer import GPUProfile
 logger = logging.getLogger("aibrix.gpuoptimizer.profilereader")
 
 class ProfileReader(Protocol):
-    def read(self) -> Union[GPUProfile, List[GPUProfile]]:
+    def read(self) -> List[GPUProfile]:
         """Read the next batch of records from the data source."""
 
 class FileProfileReader:

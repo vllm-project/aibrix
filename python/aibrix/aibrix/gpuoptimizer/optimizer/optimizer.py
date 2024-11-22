@@ -5,6 +5,7 @@ import logging
 
 from .types import GPUProfile, WorkloadProfile
 from .solver.melange import Config as MelangConfig, SolverRunner
+from utils import DelayedLog
 
 logger = logging.getLogger("aibrix.gpuoptimizer.optimizer")
 
@@ -23,8 +24,9 @@ class Optimizer:
             self._indexes = profile.indexes
         elif (self._workload_distribution_template.shape != np.shape(profile.tputs) or
             self._indexes != profile.indexes):
-            raise Exception("Profile added should keep a same shape and value ticks.")
+            raise Exception(f"Profile({profile.gpu}) applied should keep a same shape and value ticks. shapes: {self._workload_distribution_template.shape} vs {np.shape(profile.tputs)}, indexes: {self._indexes} vs {profile.indexes}")
         
+        logger.debug("Applied profile for %s, shape: %s, indees: %s", profile.gpu, profile.tputs, self._indexes)
         self._config.gpu_info[profile.gpu] = profile.__dict__
 
     def delete_profile(self, gpu):
