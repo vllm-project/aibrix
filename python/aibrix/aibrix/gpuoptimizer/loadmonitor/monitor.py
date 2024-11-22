@@ -37,7 +37,8 @@ logger = logging.getLogger("aibrix.gpuoptimizer.loadmonitor")
 debug_gpu_profile = GPUProfile(
     gpu = "default",
     cost = 1.0,
-    tputs = [[100]]
+    tputs = [[100]],
+    indexes = [[10], [10]]
 )
 
 class DeploymentStates:
@@ -175,6 +176,8 @@ class ModelMonitor:
         """Load profiles from a file"""
         try:
             if profileReader is None:
+                if self._profilereader is None:
+                    return
                 profileReader = self._profilereader
             else:
                 self._profilereader = profileReader

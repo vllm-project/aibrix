@@ -79,7 +79,7 @@ def get_debug_model_montior(path:str, scale:float=1.0, profile:str=None, redispr
             profilereader = RedisProfileReader(*parse_redis_connection_str(redisprofile))
 
         debug_monitor = ModelMonitor(
-            "sharegpt", "0", loadReader, interval=interval, 
+            "sharegpt", "0", loadReader, 
             profilereader=profilereader,
             debug=True)
     
@@ -215,7 +215,7 @@ def update_graph(n, model_name):
                     marker=dict(
                         sizeref=1,  # Adjust this value to control size
                         sizemode='diameter', 
-                        size=(canvas_size/(scale+2)) * (np.log2(center_df['size'])+1),  # Assuming you have a column with size values
+                        size=np.maximum((canvas_size/(scale+2)) * (np.log2(center_df['size'])+1), 10),  # Assuming you have a column with size values
                         color=center_colors, 
                         symbol='circle' 
                     )

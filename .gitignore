@@ -44,6 +44,3 @@ benchmarks/autoscaling/workload_plot
 # simulator cache and output
 docs/development/simulator/simulator_output
 docs/development/simulator/cache
-
-# profiling default results
-python/aibrix/aibrix/gpuoptimizer/optimizer/profiling/result
