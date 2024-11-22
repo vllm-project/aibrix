@@ -23,8 +23,7 @@ DEFAULT_REPLICAS = int(os.getenv('DEFAULT_REPLICAS', '1'))
 
 # Load the tokenizer for your model
 tokenizer = AutoTokenizer.from_pretrained(
-    'google/flan-t5-xxl', # Support more tokens
-    cache_dir="model_cache", # Use local cached version
+    'bert-base-uncased',
     model_max_length=16384, # Suppress warning
     clean_up_tokenization_spaces=True)  
 
