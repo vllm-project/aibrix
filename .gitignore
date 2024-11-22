@@ -40,6 +40,7 @@ docs/build/
 benchmarks/autoscaling/logs
 benchmarks/autoscaling/output_stats
 benchmarks/autoscaling/workload_plot
+benchmarks/generator/traces/*
 
 # simulator cache and output
 docs/development/simulator/simulator_output

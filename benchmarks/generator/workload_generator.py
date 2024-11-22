@@ -8,6 +8,7 @@ from transformers import PreTrainedTokenizerBase
 import matplotlib.pyplot as plt
 import numpy as np
 import argparse
+import csv
 
 
 def sample_sharegpt_requests(
@@ -43,6 +44,37 @@ def sample_sharegpt_requests(
 
     return filtered_dataset
 
+def generate_from_QPS_csv(input_requests: List[Any],
+                          file_path: str,
+                          sampling_granularity_seconds: int = 15,
+                        ) -> List[List[Any]]:
+    total_requests_from_trace = []
+    with open(file_path, 'r') as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            if 'Total' in row:
+                total_value = row['Total']
+                if total_value:
+                    total_requests_from_trace.append(float(total_value))
+    workloads = []
+    base = 0
+    end = False
+    for interval_requests in total_requests_from_trace:
+        if end:
+            break
+        mean_rate = round(interval_requests/sampling_granularity_seconds)
+        print(f"mean_rate {mean_rate} for next {sampling_granularity_seconds} interval" )
+        for _ in range(0, sampling_granularity_seconds):
+            bound = min(base + mean_rate, len(input_requests))
+            workloads.append(input_requests[base : bound])
+            base += mean_rate
+            if base >= len(input_requests):
+                end = True
+                break
+    print(f"workloads {workloads}")
+    return workloads
+    
+    
 def generate_synthetic(input_requests: List[Any], A=1, B=1,
                       sigma=0.1,
                       only_rise: bool = False,
@@ -146,10 +178,12 @@ def plot_workload(workload_dict, interval_sec, output_path: str = None):
         workload_dict (dict): A dictionary where the keys are workload names (labels) and the values are lists of lists representing the workload.
         interval_sec (int):
     """
+    fig, ax = plt.subplots()
     for workload_name, workload in workload_dict.items():
         concurrency_values = [len(item) for item in workload]
-        plt.plot(np.arange(len(concurrency_values)) * interval_sec, concurrency_values, label=workload_name)
+        ax.plot(np.arange(len(concurrency_values)) * interval_sec, concurrency_values, label=workload_name)
 
+    ax.set_ylim(0,)
     plt.xlabel('Time (Sec)')
     plt.ylabel('Concurrency')
     plt.title('Workload Concurrency')
@@ -166,6 +200,7 @@ if __name__ == '__main__':
     parser.add_argument('--prompt-file', type=str, required=True, help='File containing prompts')
     parser.add_argument('--num-prompts', type=int, default=100, help='Number of prompts to sample')
     parser.add_argument('--num-requests', type=int, default=10000, help='Number of requests in total')
+    parser.add_argument('--trace-file', type=str, required=False, default=None, help='File containing trace CSV')
     args = parser.parse_args()
     
     # Load prompts from a file
@@ -174,20 +209,24 @@ if __name__ == '__main__':
     # Generate input requests (ascending integers)
     demo_requests = list(range(1, 1 + args.num_requests))
     interval = 30
-    # Generate workloads with different parameters
-    scenarios = {
-        'Quick Rising': {'duration_sec': 600, 'interval_sec': interval, 'A': 5, 'period': 5, 'only_rise': True},
-        'Slow Rising': {'duration_sec': 600, 'interval_sec': interval, 'A': 5, 'period': 0.25, 'only_rise': True},
-        'Slight Fluctuation': {'duration_sec': 600, 'interval_sec': interval, 'A': 5, 'B': 5, 'period': 1, 'only_rise': False},
-        'Severe Fluctuation': {'duration_sec': 600, 'interval_sec': interval, 'A': 5, 'B': 10, 'period': 12, 'only_rise': False},
-    }
-
     # Generate workloads and pair with prompts
     workload_dict = {}
-    for scenario_name, params in scenarios.items():
-        generated_workload = generate_synthetic(demo_requests, **params)
-        paired_workload = pair_requests_with_prompts(generated_workload, prompts, f'traces/{scenario_name}.json')
-        workload_dict[scenario_name] = paired_workload
+    if args.trace_file is None:
+        # Generate workloads with different parameters
+        scenarios = {
+            'Quick Rising': {'duration_sec': 600, 'interval_sec': interval, 'A': 5, 'period': 5, 'only_rise': True},
+            'Slow Rising': {'duration_sec': 600, 'interval_sec': interval, 'A': 5, 'period': 0.25, 'only_rise': True},
+            'Slight Fluctuation': {'duration_sec': 600, 'interval_sec': interval, 'A': 5, 'B': 5, 'period': 1, 'only_rise': False},
+            'Severe Fluctuation': {'duration_sec': 600, 'interval_sec': interval, 'A': 5, 'B': 10, 'period': 12, 'only_rise': False},
+        } 
+        for scenario_name, params in scenarios.items():
+            generated_workload = generate_synthetic(demo_requests, **params)
+            paired_workload = pair_requests_with_prompts(generated_workload, prompts, f'traces/{scenario_name}.json')
+            workload_dict[scenario_name] = paired_workload
+    else:
+        generated_workload = generate_from_QPS_csv(demo_requests, file_path=args.trace_file, sampling_granularity_seconds=15)
+        paired_workload = pair_requests_with_prompts(generated_workload, prompts, f'traces/from_csv.json')
+        workload_dict["from_csv"] = paired_workload
 
     # Plot the workloads
     plot_workload(workload_dict, interval_sec=interval)
