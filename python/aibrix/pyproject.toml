@@ -46,6 +46,7 @@ prometheus-client = "^0.20.0"
 types-requests = "^2.31.0"
 httpx = "^0.27.2"
 hf-transfer = "^0.1.8"
+types-redis = "^4.6.0.20241004"
 
 
 [tool.poetry.group.dev.dependencies]
