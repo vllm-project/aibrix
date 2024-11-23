@@ -135,7 +135,7 @@ def parse_redis_connection_str(connection_str: str) -> Tuple[Any, str]:
         db=int(db_name),
         username=url.username,
         password=url.password,
-    ) 
+    )
 
     # Store the result in Redis
     query_params = parse_qs(url.query)

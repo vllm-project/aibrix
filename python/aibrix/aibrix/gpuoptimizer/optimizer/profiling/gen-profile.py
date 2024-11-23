@@ -159,7 +159,7 @@ def _try_store_redis(args, result) -> bool:
         db=int(db_name),
         username=url.username,
         password=url.password,
-    ) 
+    )
 
     # Store the result in Redis
     query_params = parse_qs(url.query)
