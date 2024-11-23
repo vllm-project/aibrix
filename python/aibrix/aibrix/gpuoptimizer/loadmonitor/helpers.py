@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, List, Optional, Tuple, TypeAlias, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 import numpy as np
+from typing_extensions import TypeAlias
 
 DataSignatures: TypeAlias = np.ndarray
 """ndarray of shape(n, 2)"""
