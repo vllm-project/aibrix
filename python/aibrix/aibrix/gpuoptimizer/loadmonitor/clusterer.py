@@ -21,7 +21,7 @@ from typing import Callable, Iterable, List, Optional, Protocol, Tuple, Union
 from incdbscan import IncrementalDBSCAN
 from utils import DelayedLog
 
-from .helpers import Centeroid, DataPoint, DataPoints
+from .helpers import Centeroid, DataPoints
 
 logger = logging.getLogger("aibrix.gpuoptimizer.clusterer")
 
