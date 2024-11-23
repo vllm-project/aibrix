@@ -6,6 +6,7 @@ uvicorn
 starlette
 pulp==2.8.0
 redis
+types-redis
 
 #for visualizer only
 dash

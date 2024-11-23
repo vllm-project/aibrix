@@ -130,12 +130,12 @@ def parse_redis_connection_str(connection_str: str) -> Tuple[Any, str]:
     if db_name == "":
         db_name = "0"
     redis_client = redis.Redis(
-        host=url.hostname,
-        port=url.port,
-        db=db_name,
+        host=str(url.hostname),
+        port=6379 if url.port is None else int(url.port),
+        db=int(db_name),
         username=url.username,
         password=url.password,
-    )
+    ) 
 
     # Store the result in Redis
     query_params = parse_qs(url.query)
