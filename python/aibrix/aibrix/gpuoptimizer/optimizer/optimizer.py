@@ -15,7 +15,7 @@ class Optimizer:
         self._config = MelangConfig()
         self._workload_distribution_template = None
         self._indexes = None # Values ticks of tputs columns and rows
-        if profiles != None:
+        if profiles is not None:
             for profile in profiles:
                 self.add_profile(profile)
 

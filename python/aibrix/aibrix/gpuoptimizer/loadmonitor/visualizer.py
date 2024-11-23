@@ -56,6 +56,7 @@ datasource: Callable[[str], Optional[ModelMonitor]] = lambda model_name: get_deb
 figure = type('', (), {})() # create a empty object
 figure.__dict__ = {
    "debug_run": True,
+   "debug_driver": None,
    "datasource": datasource,
    "last": dash.no_update,
    "lock": threading.Lock()
@@ -66,7 +67,7 @@ logger = logging.getLogger("aibrix.gpuoptimizer.loadmonitor.visualizer")
 def get_debug_model_montior(path:str, scale:float=1.0, profile:str=None, redisprofile:str=None) -> Optional[ModelMonitor]:
     global debug_monitor
 
-    if debug_monitor == None:
+    if debug_monitor is None:
         if path is None:
             directory = os.path.dirname(os.path.abspath(__file__))
             path = directory + '/data/sharegpt.csv'
@@ -87,9 +88,6 @@ def get_debug_model_montior(path:str, scale:float=1.0, profile:str=None, redispr
     return debug_monitor
 
 def parse_redis_connection_str(connection_str: str) -> Tuple[Any, str]:
-    import json
-    import os
-    import sys
     from urllib.parse import parse_qs, urlparse
 
     import redis
@@ -129,7 +127,7 @@ def update_graph(n, model_name):
         start = datetime.now().timestamp()
 
         monitor: Optional[ModelMonitor] = figure.datasource(model_name)
-        if monitor == None:
+        if monitor is None:
             figure.last = {
                 'data': [],
                 'layout': go.Layout(
@@ -142,10 +140,10 @@ def update_graph(n, model_name):
 
         if figure.debug_run:
             # Drive the monitor progress for debugging
-            if figure.debug_run == True:
-                figure.debug_run = monitor._run_yieldable(True, window_scaling=interval_scaling)
+            if figure.debug_driver is None:
+                figure.debug_driver = monitor._run_yieldable(True, window_scaling=interval_scaling)
             
-            next(figure.debug_run) 
+            next(figure.debug_driver) 
 
         data_df = monitor.dataframe
         if data_df is None or len(data_df) == 0:
@@ -161,7 +159,7 @@ def update_graph(n, model_name):
         centers = monitor.centers
         labeled = monitor.labeled
         data_colors = [colors[int(label) % len(colors)] if label >= 0 else 'black' for label in data_df['label']]
-        label_seen = len(centers)
+        # label_seen = len(centers)
 
         # recluster level 2
         # lvl2data.clear()

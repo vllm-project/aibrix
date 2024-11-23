@@ -220,7 +220,7 @@ class GatewayLoadReader:
         print(profile_data)
         profile = json.loads(profile_data)
         if not isinstance(profile, dict):
-            raise Exception(f"Load profile is not a dictionary")
+            raise Exception("Load profile is not a dictionary")
         
         return profile
     

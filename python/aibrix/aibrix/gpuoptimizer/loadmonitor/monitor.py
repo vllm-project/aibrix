@@ -51,7 +51,7 @@ class DeploymentStates:
 
     @property
     def cost(self):
-        return 0.0 if self.profile == None else self.profile.cost * self.replicas
+        return 0.0 if self.profile is None else self.profile.cost * self.replicas
     
     def minimize(self):
         """Set replica to minimum mode."""
@@ -116,7 +116,7 @@ class ModelMonitor:
         # Update optimizer
         key = self._deployment_entry_point(deployment_name, namespace)
         profile = self._match_profile(key, deployment_name)
-        if profile != None:
+        if profile is not None:
             # No lock required here since the deployment has not been added to deployments.
             self._optimizer.set_profile(profile)
         else:

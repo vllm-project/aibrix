@@ -20,7 +20,7 @@ class FileProfileReader:
             try:
                 # Try parse as singal json
                 profiles = json.load(f)
-            except Exception as e:
+            except Exception:
                 try:
                     # Try parse as list of json (jsonl)
                     profiles = []
@@ -67,7 +67,7 @@ class RedisProfileReader:
             # Deserialize by json: dict[string]int
             profile = json.loads(profile_data)
             if not isinstance(profile, dict):
-                raise Exception(f"Profile is not a dictionary")
+                raise Exception("Profile is not a dictionary")
 
             records.append(GPUProfile(**profile))
 

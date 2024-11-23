@@ -16,10 +16,8 @@ import logging
 import math
 import sys
 from datetime import datetime
-from typing import (Callable, Dict, Iterable, List, Optional, Protocol, Tuple,
-                    Union)
+from typing import Callable, Iterable, List, Optional, Protocol, Tuple, Union
 
-import numpy as np
 from incdbscan import IncrementalDBSCAN
 from utils import DelayedLog
 
@@ -67,7 +65,7 @@ class DBSCANClusterer:
             if math.isnan(label):
                 continue
             if label < 0:
-                if uncategorized != None:
+                if uncategorized is not None:
                     uncategorized.append(points.datapoint(i))
                 continue
             start_label = min(start_label, label)

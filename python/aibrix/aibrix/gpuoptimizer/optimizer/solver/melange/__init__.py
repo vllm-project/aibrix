@@ -1,1 +1,2 @@
-from .runner import Config, SolverRunner
+from .runner import Config as Config
+from .runner import SolverRunner as SolverRunner

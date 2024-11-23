@@ -1,2 +1,2 @@
-from .optimizer import Optimizer
-from .types import GPUProfile
+from .optimizer import Optimizer as Optimizer
+from .types import GPUProfile as GPUProfile
