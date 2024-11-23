@@ -51,18 +51,21 @@ interval_scaling = interval / 1000 / reader_interval
 
 colors = ['red', 'green', 'pink', 'blue', 'navy', 'orange', 'purple', 'cyan', 'magenta', 'yellow', 'black', 'gray', 'brown', 'olive', 'teal', 'maroon']
 
+def default_datasource(_:str) -> Optional[ModelMonitor]:
+    return get_debug_model_montior(None)
+
 debug_monitor = None
-datasource: Callable[[str], Optional[ModelMonitor]] = lambda model_name: get_debug_model_montior(None)
 figure = type('', (), {})() # create a empty object
 figure.__dict__ = {
    "debug_run": True,
    "debug_driver": None,
-   "datasource": datasource,
+   "datasource": default_datasource,
    "last": dash.no_update,
    "lock": threading.Lock()
 }
 
 logger = logging.getLogger("aibrix.gpuoptimizer.loadmonitor.visualizer")
+
 
 def get_debug_model_montior(path:str, scale:float=1.0, profile:str=None, redisprofile:str=None) -> Optional[ModelMonitor]:
     global debug_monitor
@@ -291,5 +294,5 @@ if __name__ == '__main__':
     parser.add_argument("--redisprofile", type=str, default=None, help="Redis connection string for profiles.")
     args = parser.parse_args()
     if args.dataset is not None:
-        figure.datasource = lambda model_name: get_debug_model_montior(args.dataset, args.scaledata, profile=args.profile, redisprofile=args.redisprofile)
+        figure.datasource = lambda _: get_debug_model_montior(args.dataset, args.scaledata, profile=args.profile, redisprofile=args.redisprofile)
     init().run_server(debug=True)

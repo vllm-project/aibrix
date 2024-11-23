@@ -21,6 +21,7 @@ from kubernetes import client, config, watch
 from loadmonitor.loadreader import GatewayLoadReader
 from loadmonitor.monitor import DeploymentStates, ModelMonitor
 from loadmonitor.profilereader import RedisProfileReader
+from loadmonitor.visualizer import mount_to as mount_visulizer
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse, PlainTextResponse
 from utils import ExcludePathsFilter
@@ -33,7 +34,6 @@ REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 
 routes = []
 model_monitors = {} # Dictionary to store serving threads
-from loadmonitor.visualizer import mount_to as mount_visulizer
 
 mount_visulizer(routes, '/dash/{model_name}', 
                 lambda model_name: model_monitors.get(model_name))
@@ -80,7 +80,7 @@ def start_serving_thread(watch_ver, deployment, watch_event: bool) -> bool:
     namespace = deployment.metadata.namespace
     
     #Update profile if key exists
-    if model_monitor != None:
+    if model_monitor is not None:
         model_monitor.add_deployment(watch_ver, deployment_name, namespace, 
                                      lambda: new_deployment(deployment))
         logger.info(f"Deployment \"{deployment_name}\" added to the model monitor for \"{model_name}\"")
@@ -106,7 +106,7 @@ def remove_deployment(deployment):
 
     deployment_name = deployment.metadata.name
     namespace = deployment.metadata.namespace
-    if model_monitor == None:
+    if model_monitor is None:
         logger.warning(f"Removing \"{deployment_name}\" from the model monitor, but \"{model_name}\" has not monitored.")
         return
 
@@ -161,7 +161,7 @@ async def scale_deployment(request):
         deployment = apps_v1.read_namespaced_deployment(deployment_name, namespace)
 
         _, monitor = validate_model(deployment)
-        if monitor == None:
+        if monitor is None:
             raise Exception(f"Model \"{model_name}\" is not monitored.")
 
         # Set the scaling metrics
@@ -181,7 +181,7 @@ async def get_deployment_metrics(request):
         deployment = apps_v1.read_namespaced_deployment(deployment_name, namespace)
         
         model_name, monitor = validate_model(deployment)
-        if monitor == None:
+        if monitor is None:
             raise Exception(f"Model \"{model_name}\" is not monitored.")
 
         replicas = monitor.read_deployment_num_replicas(deployment_name, namespace)
@@ -210,7 +210,6 @@ def main(signal, timeout):
 
             # List existing deployments
             logger.info(f"Looking for deployments in {NAMESPACE} with {MODEL_LABEL}")
-            progress = 0
             deployments = apps_v1.list_namespaced_deployment(
                 namespace=NAMESPACE, 
                 label_selector=MODEL_LABEL)
@@ -273,7 +272,7 @@ if __name__ == '__main__':
     timeout = 600
     try:
         config.load_incluster_config()
-    except Exception as e:
+    except Exception:
         # Local debug
         config.load_kube_config(config_file="~/.kube/config")
     signal = { "done": False, "watch": None }
@@ -297,7 +296,7 @@ if __name__ == '__main__':
         })
     
     signal['done'] = True
-    if signal["watch"] != None:
+    if signal["watch"] is not None:
         signal["watch"].stop()
     
     # clean up

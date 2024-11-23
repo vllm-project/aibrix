@@ -109,10 +109,10 @@ class MelangeSolver(Solver):
 
         # Print the results if needed
         if logs:
-            print(f"Decision Matrix:")
+            print("Decision Matrix:")
             for row in decision_matrix:
                 print([var.value() for var in row])
-            print(f"Decision Vector:")
+            print("Decision Vector:")
             print(f"{[var.value() for var in decision_vector]}")
 
         if pulp.LpStatus[problem.status] != "Optimal":
