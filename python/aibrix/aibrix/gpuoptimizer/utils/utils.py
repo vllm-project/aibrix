@@ -9,7 +9,7 @@ class ExcludePathsFilter(logging.Filter):
 
     def filter(self, record):
         # Check if the record is an access log and extract the path
-        if hasattr(record, 'args') and len(record.args) >= 3:
+        if hasattr(record, "args") and len(record.args) >= 3:
             request_path = record.args[2]
             return not any(request_path.startswith(path) for path in self.exclude_paths)
         return True  # Allow other log records

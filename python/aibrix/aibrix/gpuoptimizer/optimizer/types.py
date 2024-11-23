@@ -18,11 +18,13 @@ class GPUProfile:
     | # INs 1 | 2 | 1 |
     | # INs s 2 | 5 | 2 |
     """
+
     gpu: str = ""
     cost: float = 0.0
-    tputs: list = field(default_factory=list) # units: requests per second
-    indexes: list = field(default_factory=list) # value ticks of tputs columns and rows
+    tputs: list = field(default_factory=list)  # units: requests per second
+    indexes: list = field(default_factory=list)  # value ticks of tputs columns and rows
     created: float = 0.0
+
 
 WorkloadSignatureErrorHandler = Callable[[int, float, float, float, float], None]
 """A function to handle the error with parameters(dimension, value, index assigned, value of index, value offset)."""
@@ -30,7 +32,12 @@ WorkloadSignatureErrorHandler = Callable[[int, float, float, float, float], None
 
 class WorkloadProfile(Protocol):
     """Description of worklaod characteristic"""
-    def get_signature(self, indexes: List[List[float]], error_suppressor: Optional[WorkloadSignatureErrorHandler]=None) -> Tuple[int]:
+
+    def get_signature(
+        self,
+        indexes: List[List[float]],
+        error_suppressor: Optional[WorkloadSignatureErrorHandler] = None,
+    ) -> Tuple[int]:
         """Generate the index signature of the WorkloadProfile within the indexes' range.
 
         Args:

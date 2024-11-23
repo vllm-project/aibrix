@@ -10,4 +10,3 @@ def tputs_to_loads_2d(max_tputs: List[List[float]]):
             load = 1 / max_tputs[i][j]
             loads[-1].append(load)
     return loads
-

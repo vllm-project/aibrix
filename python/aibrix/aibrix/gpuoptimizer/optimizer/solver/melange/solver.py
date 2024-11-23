@@ -4,11 +4,13 @@ from pulp import LpInteger, LpMinimize, LpProblem, LpVariable
 from .util import tputs_to_loads_2d
 
 
-# This class is adapted from code originally written by Tyler Griggs 
+# This class is adapted from code originally written by Tyler Griggs
 # found at https://github.com/tyler-griggs/melange-release
 # See: https://tyler-griggs.github.io/blogs/melange
 class Solver:
-    def __init__(self, workload_distribution: list, total_request_rate: float, gpu_info: dict):
+    def __init__(
+        self, workload_distribution: list, total_request_rate: float, gpu_info: dict
+    ):
         self.workload_distribution = workload_distribution
         self.overall_rate = total_request_rate
         self.gpu_info = gpu_info
@@ -18,7 +20,13 @@ class Solver:
 
 
 class MelangeSolver(Solver):
-    def __init__(self, workload_distribution: list, total_request_rate: float, gpu_info: dict, slice_factor: int):
+    def __init__(
+        self,
+        workload_distribution: list,
+        total_request_rate: float,
+        gpu_info: dict,
+        slice_factor: int,
+    ):
         super().__init__(workload_distribution, total_request_rate, gpu_info)
         self.slice_factor = slice_factor
 

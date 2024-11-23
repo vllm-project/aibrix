@@ -33,14 +33,13 @@ Empty_Array = []
 logger = logging.getLogger("aibrix.gpuoptimizer.loadmonitor")
 
 debug_gpu_profile = GPUProfile(
-    gpu = "default",
-    cost = 1.0,
-    tputs = [[100]],
-    indexes = [[10], [10]]
+    gpu="default", cost=1.0, tputs=[[100]], indexes=[[10], [10]]
 )
+
 
 class DeploymentStates:
     """States of a deployment with resource version."""
+
     def __init__(self, name: str, replicas: int = 1, min_replicas: int = 0):
         self.name = name
         self.replicas = replicas
@@ -52,7 +51,7 @@ class DeploymentStates:
     @property
     def cost(self):
         return 0.0 if self.profile is None else self.profile.cost * self.replicas
-    
+
     def minimize(self):
         """Set replica to minimum mode."""
         self.replicas = max(0, self.min_replicas)
@@ -60,10 +59,21 @@ class DeploymentStates:
     def __repr__(self):
         return f"{self.name}: {self.replicas}(${self.cost})"
 
+
 class ModelMonitor:
-    def __init__(self, model_name: str, watch_ver: str, loadreader: LoadReader, window: int = 240, deployment: DeploymentStates = None,namespace: str = None, profilereader: ProfileReader = None, debug: bool = False):
+    def __init__(
+        self,
+        model_name: str,
+        watch_ver: str,
+        loadreader: LoadReader,
+        window: int = 240,
+        deployment: DeploymentStates = None,
+        namespace: str = None,
+        profilereader: ProfileReader = None,
+        debug: bool = False,
+    ):
         """Initialize the model monitor.
-        
+
         Args:
             model_name: The name of the model to monitor. This should be a unique identifier for the model.
             watch_ver: The k8s resource version of the deployment watching. This is used to keep track of the deployment's state.
@@ -101,18 +111,24 @@ class ModelMonitor:
         self._data: Optional[DataBuffer] = None
         self._progress: float = 0.0
         self._cost = 0.0
-        
+
         if profilereader is not None:
             self.load_profiles(profilereader)
         elif self.debug:
-             # Add debug_gpu_profile anyway if debugging
-             self._optimizer.set_profile(debug_gpu_profile)
+            # Add debug_gpu_profile anyway if debugging
+            self._optimizer.set_profile(debug_gpu_profile)
 
         # Add first deployment
         if deployment is not None:
             self.add_deployment(watch_ver, deployment.name, namespace, deployment)
 
-    def add_deployment(self, watch_ver: str, deployment_name: str,  namespace: str, deployment: Union[DeploymentStates, Callable[[], DeploymentStates]]):
+    def add_deployment(
+        self,
+        watch_ver: str,
+        deployment_name: str,
+        namespace: str,
+        deployment: Union[DeploymentStates, Callable[[], DeploymentStates]],
+    ):
         # Update optimizer
         key = self._deployment_entry_point(deployment_name, namespace)
         profile = self._match_profile(key, deployment_name)
@@ -120,13 +136,15 @@ class ModelMonitor:
             # No lock required here since the deployment has not been added to deployments.
             self._optimizer.set_profile(profile)
         else:
-            logger.warning(f"No GPU profile found for {key}. Optimizer will skip the GPU.")
+            logger.warning(
+                f"No GPU profile found for {key}. Optimizer will skip the GPU."
+            )
 
         # add to deployment registry
         self._lock.acquire(blocking=True)
         if key not in self.deployments:
             self.deployments[key] = deployment() if callable(deployment) else deployment
-        
+
         old_cost = self.deployments[key].cost
         self.deployments[key].profile = profile
         self.deployments[key].watch_ver = watch_ver
@@ -148,13 +166,19 @@ class ModelMonitor:
     def read_deployment_num_replicas(self, deployment_name: str, namespace: str) -> int:
         key = self._deployment_entry_point(deployment_name, namespace)
         if key not in self.deployments:
-            raise Exception(f"Deployment {namespace}:{deployment_name} of model {self.model_name} is not monitored")
+            raise Exception(
+                f"Deployment {namespace}:{deployment_name} of model {self.model_name} is not monitored"
+            )
         return self.deployments[key].replicas
-    
-    def update_deployment_num_replicas(self, deployment_name: str, namespace: str, replicas: int):
+
+    def update_deployment_num_replicas(
+        self, deployment_name: str, namespace: str, replicas: int
+    ):
         key = self._deployment_entry_point(deployment_name, namespace)
         if key not in self.deployments:
-            raise Exception(f"Deployment {namespace}:{deployment_name} of model {self.model_name} is not monitored")
+            raise Exception(
+                f"Deployment {namespace}:{deployment_name} of model {self.model_name} is not monitored"
+            )
 
         self.deployments[key].replicas = replicas
 
@@ -169,7 +193,7 @@ class ModelMonitor:
             if states.watch_ver == self.outdated_watch_version:
                 del self.deployments[key]
         return len(self.deployments)
-    
+
     def load_profiles(self, profileReader: ProfileReader = None):
         """Load profiles from a file"""
         try:
@@ -187,17 +211,21 @@ class ModelMonitor:
         except Exception as e:
             logger.error(f"Failed to load profiles: {e}")
 
-    def _update_profile(self, profile:GPUProfile) -> bool:
+    def _update_profile(self, profile: GPUProfile) -> bool:
         """Update a profile, will update the formal alias copy, too."""
         key = profile.gpu
         cost_diff = profile.cost
-        log_event = True # log event if the profile is added to non-profile deployments.
+        log_event = (
+            True  # log event if the profile is added to non-profile deployments.
+        )
         if key in self._profiles:
             # profile already exists, check if it is updated
             if profile.created <= self._profiles[key].created:
                 return False
-            
-            cost_diff -= self._profiles[key].cost # We can safely assume the existing profile has been added to the optimizer if any deployments match it.
+
+            cost_diff -= self._profiles[
+                key
+            ].cost  # We can safely assume the existing profile has been added to the optimizer if any deployments match it.
             log_event = False
 
             if self._profiles[key].gpu != key:
@@ -205,13 +233,13 @@ class ModelMonitor:
                 profile.gpu = self._profiles[key].gpu
                 if profile.gpu in self._profiles:
                     self._profiles[profile.gpu] = profile
-        
+
         # update the profile of key, note that the profile.gpu is already formalized.
         self._profiles[key] = profile
 
         # apply update to optimizer for existing deployments.
-        deployment_key = profile.gpu # Fast path, note that the profile.gpu is already formalized if it match any deployments.
-        if profile.gpu not in self.deployments: 
+        deployment_key = profile.gpu  # Fast path, note that the profile.gpu is already formalized if it match any deployments.
+        if profile.gpu not in self.deployments:
             deployment_key = None
             # slow path, find deployment by deployment_name
             # noted that the profile.gpu is not formalized if the code reaches here.
@@ -219,19 +247,21 @@ class ModelMonitor:
                 if states.deployment_name != profile.gpu:
                     continue
 
-                deployment_key = profile.gpu = key # formalize the gpu field
+                deployment_key = profile.gpu = key  # formalize the gpu field
                 break
         # deployment existed
         if deployment_key is not None:
             self._lock.acquire(blocking=True)
-            if profile.gpu in self.deployments: # double check
+            if profile.gpu in self.deployments:  # double check
                 self._optimizer.set_profile(profile)
                 self._cost += cost_diff * self.deployments[key].replicas
             else:
                 log_event = False
             self._lock.release()
             if log_event:
-                logger.info(f"Profile added to {profile.gpu}. Optimizer will consider corresponding GPU.")
+                logger.info(
+                    f"Profile added to {profile.gpu}. Optimizer will consider corresponding GPU."
+                )
 
         return True
 
@@ -252,20 +282,22 @@ class ModelMonitor:
             logger.error(f"Unexpected error on monitoring {self.model_name}: {e}")
         logger.info(f"{self.model_name} stopped")
         return
-    
+
     def _run_yieldable(self, yieldable: bool, window_scaling: float = 1.0):
         """_run implementation. Using a separate yieldable implementation for _run being accepted by Threading"""
         # Define clusterer
         clusterers: List[Clusterer] = [
             MovingDBSCANClusterer(0.5, 10, 4, self.window * window_scaling)
-            # MovingDBSCANClusterer(0.8, 100, 4, self.window * window_scaling), 
+            # MovingDBSCANClusterer(0.8, 100, 4, self.window * window_scaling),
             # DBSCANClusterer(0.5, 10),
         ]
-        self._data = DataBuffer(int(self.window) * 10) # Assume 10 RPS, will expand according to the actual RPS
+        self._data = DataBuffer(
+            int(self.window) * 10
+        )  # Assume 10 RPS, will expand according to the actual RPS
         # lvl2data = DataBuffer(window)
 
         logger.debug(f"{self.model_name} initialized")
-       
+
         n = 0
         while not self.done:
             start = datetime.now().timestamp()
@@ -273,27 +305,35 @@ class ModelMonitor:
             # Keep window rotating
             movingCluster: MovingDBSCANClusterer = clusterers[0]
             if movingCluster.validate():
-                # Data refreshing 
+                # Data refreshing
                 self._data.trim_head(-movingCluster.length)
 
             # Read new tokens
-            tokens = list(self._expand_records(self._loadreader.read(datetime.now().timestamp())))  # read data
+            tokens = list(
+                self._expand_records(self._loadreader.read(datetime.now().timestamp()))
+            )  # read data
             if len(tokens) > 0:
-                self._data.reconcile(movingCluster.length + len(tokens)) # since databuffer.append will not expand the buffer automatically, we need to reconcile ourself.
+                self._data.reconcile(
+                    movingCluster.length + len(tokens)
+                )  # since databuffer.append will not expand the buffer automatically, we need to reconcile ourself.
                 dps = self._data.append(tokens)
                 movingCluster.insert(dps)
                 self._data.commit()
 
             # track domanent token patterns
             if self._data.len > 0:
-                uncategorized = None # Set to [] for further analysis
-                self._labels, self._centers = movingCluster.get_cluster_labels(self._data.datapoints, uncategorized=uncategorized)
+                uncategorized = None  # Set to [] for further analysis
+                self._labels, self._centers = movingCluster.get_cluster_labels(
+                    self._data.datapoints, uncategorized=uncategorized
+                )
             else:
                 self._labels, self._centers = Empty_Array, Empty_Array
 
             n += 1
             duration = (datetime.now().timestamp() - start) * 1000
-            logger.debug(f"{self.model_name} batch {n} took {duration}ms: {len(self._centers)} centers: {[str(center) for center in self._centers]}")
+            logger.debug(
+                f"{self.model_name} batch {n} took {duration}ms: {len(self._centers)} centers: {[str(center) for center in self._centers]}"
+            )
 
             if len(self._centers) > 0:
                 # Optimize
@@ -308,7 +348,9 @@ class ModelMonitor:
                 # This allows caller controls the progress.
                 yield
             else:
-                time.sleep(self._loadreader.next_available() - datetime.now().timestamp())
+                time.sleep(
+                    self._loadreader.next_available() - datetime.now().timestamp()
+                )
                 # Validate time elapsed
                 while datetime.now().timestamp() < self._loadreader.next_available():
                     time.sleep(1)
@@ -319,21 +361,23 @@ class ModelMonitor:
         logger.debug(f"Model monitor {self.model_name} stop signaled")
         pass
 
-    def _expand_records(self, records:Iterable[LoadRecord]):
+    def _expand_records(self, records: Iterable[LoadRecord]):
         for record in records:
             for i in range(record.freq):
-                yield DataPoint(record.input_tokens, record.output_tokens, age=record.ts)
-        
+                yield DataPoint(
+                    record.input_tokens, record.output_tokens, age=record.ts
+                )
+
     def _deployment_entry_point(self, deployment_name: str, namespace: str):
         """Entry point for each deployment"""
         return f"{namespace}/{deployment_name}"
-    
+
     def _match_profile(self, key, deployment_name) -> Optional[GPUProfile]:
         if key in self._profiles:
             return self._profiles[key]
         elif deployment_name in self._profiles:
             # Update the gpu name to formalized key.
-            profile:GPUProfile = self._profiles[deployment_name]
+            profile: GPUProfile = self._profiles[deployment_name]
             profile.gpu = key
             return profile
         elif self.debug:
@@ -341,9 +385,9 @@ class ModelMonitor:
             copy = GPUProfile(**debug_gpu_profile.__dict__)
             copy.gpu = key
             return copy
-        
+
         return None
-    
+
     def _optimize(self, centers: Iterable[Centeroid], total_request_rate: int):
         # Update profiles.
         self.load_profiles()
@@ -355,18 +399,22 @@ class ModelMonitor:
         result = self._optimizer.run()
         duration = (datetime.now().timestamp() - start) * 1000
         if result is None:
-            logger.info(f"{self.model_name} optimization took {duration} ms, unexpected void rsult, skip.")
+            logger.info(
+                f"{self.model_name} optimization took {duration} ms, unexpected void rsult, skip."
+            )
             return
-        
+
         cost = result["cost"]
         del result["cost"]
-        
+
         # Update deployment
         self._lock.acquire(blocking=True)
         # Insure all deployments are up to date.
         for key, replicas in result.items():
             if key not in self.deployments and replicas > 0:
-                logger.warning(f"Not all deployments in optimization result available: {key}, discard result")
+                logger.warning(
+                    f"Not all deployments in optimization result available: {key}, discard result"
+                )
                 self._lock.release()
                 return
         # Reset replicas of all deployments.
@@ -375,7 +423,9 @@ class ModelMonitor:
         self._cost = cost
         self._lock.release()
 
-        logger.info(f"{self.model_name} optimization took {duration} ms, cost ${self._cost}, coverage: {self.coverage}%: {list(self.deployments.values())}")
+        logger.info(
+            f"{self.model_name} optimization took {duration} ms, cost ${self._cost}, coverage: {self.coverage}%: {list(self.deployments.values())}"
+        )
 
     def _minimize(self):
         # Update deployment
@@ -383,43 +433,46 @@ class ModelMonitor:
         # Reset replicas of all deployments.
         cost = 0.0
         for states in self.deployments.values():
-            states.minimize() # Will apply min_replicas obligation.
+            states.minimize()  # Will apply min_replicas obligation.
             cost += states.cost
         self._cost = cost
         self._lock.release()
-        logger.info(f"{self.model_name} scaled to minimum, cost ${self._cost}: {list(self.deployments.values())}")
-    
+        logger.info(
+            f"{self.model_name} scaled to minimum, cost ${self._cost}: {list(self.deployments.values())}"
+        )
+
     @property
     def centers(self):
         return self._centers
-    
+
     @property
     def dataframe(self):
         if self._data is None:
             return None
-        
+
         df = pd.DataFrame(
-            data=np.array([self._data.x, self._data.y, self._labels]).transpose(), columns=['input_tokens', 'output_tokens', 'label'])
+            data=np.array([self._data.x, self._data.y, self._labels]).transpose(),
+            columns=["input_tokens", "output_tokens", "label"],
+        )
         return df
-    
+
     @property
     def labeled(self):
-        return reduce(lambda cnt, center: cnt+center.size, self._centers, 0)
-    
+        return reduce(lambda cnt, center: cnt + center.size, self._centers, 0)
+
     @property
     def progress(self) -> str:
         """A progress indicator of the data source.
         For dataset, it is the percentage of the data read.
         For stream, it is the time elapsed since the start of the monitor."""
         return self._loadreader.progress()
-    
+
     @property
     def cost(self) -> float:
         """The total cost of the model."""
         return self._cost
-    
+
     @property
     def coverage(self) -> float:
         """The coverage of the model."""
         return self.labeled / self._data.len * 100
-    

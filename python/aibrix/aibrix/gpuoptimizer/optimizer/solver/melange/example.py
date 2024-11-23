@@ -8,6 +8,7 @@ def main(config_path: str):
     runner.run()
     runner.export()
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # Input arguments
