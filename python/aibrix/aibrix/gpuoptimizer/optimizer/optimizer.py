@@ -14,11 +14,11 @@ logger = logging.getLogger("aibrix.gpuoptimizer.optimizer")
 class Optimizer:
     def __init__(self, profiles: Optional[Iterable[GPUProfile]] = None):
         self._config = MelangConfig()
-        self._workload_distribution_template = None
-        self._indexes = None  # Values ticks of tputs columns and rows
+        self._workload_distribution_template: Optional[np.ndarray] = None
+        self._indexes: Optional[list] = None  # Values ticks of tputs columns and rows
         if profiles is not None:
             for profile in profiles:
-                self.add_profile(profile)
+                self.set_profile(profile)
 
     def set_profile(self, profile: GPUProfile):
         if self._workload_distribution_template is None:
@@ -48,18 +48,21 @@ class Optimizer:
         self, profiles: Iterable[WorkloadProfile], total_request_rate: int
     ) -> bool:
         """Update workload distribution and return success or failure."""
+        if self._workload_distribution_template is None:
+            return False
+
         # Maintain the overall request scale disregard some request are not covered.
         self._config.total_request_rate = total_request_rate
         # covered_request_rate is used to calculate the workload distribution.
         covered_request_rate = reduce(
-            lambda cnt, center: cnt + center.rate, profiles, 0
+            lambda cnt, center: cnt + center.rate, profiles, 0.0
         )
         success = True
         for profile in profiles:
             try:
                 self._workload_distribution_template[
                     self._validate_workload_signature(profile)
-                ] = profile.rate / covered_request_rate
+                ] = profile.rate / covered_request_rate  # type: ignore
             except Exception as e:
                 logger.error(
                     f"Fail to set workload distribution: {profile.signature}: {e}"
@@ -93,6 +96,9 @@ class Optimizer:
     def _validate_workload_signature(self, profile: WorkloadProfile) -> Tuple[int]:
         """Validate workload's signature by regard each element in signature tuple a index.
         return valid index tuple for accessing  self._workload_distribution_template"""
+        if self._workload_distribution_template is None or self._indexes is None:
+            raise Exception("Load profile not set.")
+
         signature = profile.get_signature(self._indexes, self._log_signature_error)
         if len(signature) != self._workload_distribution_template.ndim:
             raise Exception(

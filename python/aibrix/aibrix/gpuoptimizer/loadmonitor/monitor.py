@@ -22,13 +22,14 @@ from typing import Callable, Dict, Iterable, List, Optional, Union
 import numpy as np
 import pandas as pd
 from optimizer import GPUProfile, Optimizer
+from utils import DelayedLog
 
 from .clusterer import Clusterer, MovingDBSCANClusterer
 from .helpers import Centeroid, DataBuffer, DataPoint
 from .loadreader import LoadReader, LoadRecord
 from .profilereader import ProfileReader
 
-Empty_Array = []
+Empty_Array: Iterable = []
 
 logger = logging.getLogger("aibrix.gpuoptimizer.loadmonitor")
 
@@ -46,7 +47,8 @@ class DeploymentStates:
         """The replicas output, ignore min_replicas in the normal mode."""
         self.min_replicas = min_replicas
         """The replicas for minimum mode. Ignore in normal optimization mode."""
-        self.profile: GPUProfile = None
+        self.profile: Optional[GPUProfile] = None
+        self.watch_ver: Optional[str] = None
 
     @property
     def cost(self):
@@ -67,9 +69,9 @@ class ModelMonitor:
         watch_ver: str,
         loadreader: LoadReader,
         window: int = 240,
-        deployment: DeploymentStates = None,
-        namespace: str = None,
-        profilereader: ProfileReader = None,
+        deployment: Optional[DeploymentStates] = None,
+        namespace: Optional[str] = None,
+        profilereader: Optional[ProfileReader] = None,
         debug: bool = False,
     ):
         """Initialize the model monitor.
@@ -99,7 +101,7 @@ class ModelMonitor:
         self._loadreader: LoadReader = loadreader
 
         # Profile reader
-        self._profilereader: ProfileReader = profilereader
+        self._profilereader: Optional[ProfileReader] = profilereader
 
         # Optimizer
         self._profiles: Dict[str, GPUProfile] = {}
@@ -126,7 +128,7 @@ class ModelMonitor:
         self,
         watch_ver: str,
         deployment_name: str,
-        namespace: str,
+        namespace: Optional[str],
         deployment: Union[DeploymentStates, Callable[[], DeploymentStates]],
     ):
         # Update optimizer
@@ -194,7 +196,7 @@ class ModelMonitor:
                 del self.deployments[key]
         return len(self.deployments)
 
-    def load_profiles(self, profileReader: ProfileReader = None):
+    def load_profiles(self, profileReader: Optional[ProfileReader] = None):
         """Load profiles from a file"""
         try:
             if profileReader is None:
@@ -238,13 +240,15 @@ class ModelMonitor:
         self._profiles[key] = profile
 
         # apply update to optimizer for existing deployments.
-        deployment_key = profile.gpu  # Fast path, note that the profile.gpu is already formalized if it match any deployments.
+        deployment_key: Optional[str] = (
+            profile.gpu
+        )  # Fast path, note that the profile.gpu is already formalized if it match any deployments.
         if profile.gpu not in self.deployments:
             deployment_key = None
             # slow path, find deployment by deployment_name
             # noted that the profile.gpu is not formalized if the code reaches here.
             for key, states in self.deployments.items():
-                if states.deployment_name != profile.gpu:
+                if states.name != profile.gpu:
                     continue
 
                 deployment_key = profile.gpu = key  # formalize the gpu field
@@ -303,7 +307,7 @@ class ModelMonitor:
             start = datetime.now().timestamp()
 
             # Keep window rotating
-            movingCluster: MovingDBSCANClusterer = clusterers[0]
+            movingCluster: MovingDBSCANClusterer = clusterers[0]  # type: ignore
             if movingCluster.validate():
                 # Data refreshing
                 self._data.trim_head(-movingCluster.length)
@@ -331,13 +335,19 @@ class ModelMonitor:
 
             n += 1
             duration = (datetime.now().timestamp() - start) * 1000
+            centers = list(self._centers)
             logger.debug(
-                f"{self.model_name} batch {n} took {duration}ms: {len(self._centers)} centers: {[str(center) for center in self._centers]}"
+                "%s batch %d took %d ms: %d centers: %s",
+                self.model_name,
+                n,
+                round(duration),
+                len(centers),
+                DelayedLog(lambda: str([str(center) for center in self._centers])),
             )
 
-            if len(self._centers) > 0:
+            if len(centers) > 0:
                 # Optimize
-                self._optimize(self._centers, self._data.len)
+                self._optimize(centers, self._data.len)
             elif self._data.len == 0:
                 self._minimize()
             else:
@@ -368,8 +378,11 @@ class ModelMonitor:
                     record.input_tokens, record.output_tokens, age=record.ts
                 )
 
-    def _deployment_entry_point(self, deployment_name: str, namespace: str):
+    def _deployment_entry_point(self, deployment_name: str, namespace: Optional[str]):
         """Entry point for each deployment"""
+        if namespace is None:
+            return deployment_name
+
         return f"{namespace}/{deployment_name}"
 
     def _match_profile(self, key, deployment_name) -> Optional[GPUProfile]:
@@ -475,4 +488,7 @@ class ModelMonitor:
     @property
     def coverage(self) -> float:
         """The coverage of the model."""
+        if self._data is None:
+            return 0.0
+
         return self.labeled / self._data.len * 100

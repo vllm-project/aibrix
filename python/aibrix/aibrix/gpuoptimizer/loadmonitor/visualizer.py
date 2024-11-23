@@ -87,7 +87,10 @@ logger = logging.getLogger("aibrix.gpuoptimizer.loadmonitor.visualizer")
 
 
 def get_debug_model_montior(
-    path: str, scale: float = 1.0, profile: str = None, redisprofile: str = None
+    path: Optional[str],
+    scale: float = 1.0,
+    profile: Optional[str] = None,
+    redisprofile: Optional[str] = None,
 ) -> Optional[ModelMonitor]:
     global debug_monitor
 
@@ -99,7 +102,7 @@ def get_debug_model_montior(
             path, rps=10, scale=scale, interval=reader_interval
         )
 
-        profilereader: ProfileReader = None
+        profilereader: Optional[ProfileReader] = None
         if profile is not None:
             profilereader = FileProfileReader(profile)
         elif redisprofile is not None:

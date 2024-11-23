@@ -16,7 +16,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import List, Optional, Protocol, Union
+from typing import Any, List, Optional, Protocol, Union
 
 import numpy as np
 import pandas as pd
@@ -30,8 +30,8 @@ unittest_filepath = "unittest_694cb6cf-f5b3-42ca-b3c1-55ff0b358bdb"
 class LoadRecord(tuple):
     """LoadRecord models a tuple with the following fields: ts, input tokens, output tokens, and frequency."""
 
-    def __new__(cls, *args):
-        return tuple.__new__(cls, args)
+    def __new__(cls, *args: Any, **kwargs: Any) -> "LoadRecord":
+        return super(LoadRecord, cls).__new__(cls, args)
 
     @property
     def ts(self) -> float:
@@ -87,7 +87,7 @@ class DatasetLoadReader:
         self.n_read = 0
         self.n = 0
 
-    def log2_aggregate(self, series: List, precision: int = 0) -> List:
+    def log2_aggregate(self, series: pd.Series, precision: int = 0) -> List:
         return np.round(np.log2(series), precision)
 
     def stair_aggregate(self, series: List, skip_log2: bool = False) -> List:
@@ -154,8 +154,8 @@ class GatewayLoadReader:
         self, redis_client: Redis, model_name: str, key_ts_alignment: int = 10
     ) -> None:
         self.client: Redis = redis_client
-        self.start = 0
-        self.last_ts = 0
+        self.start = 0.0
+        self.last_ts = 0.0
         self.prefix = f"aibrix:{model_name}_request_trace_"
         self.key_ts_alignment = key_ts_alignment
 
@@ -189,7 +189,7 @@ class GatewayLoadReader:
         cursor = 0
         matching_keys = []
         while True:
-            cursor, keys = self.client.scan(cursor=cursor, match=f"{self.prefix}*")
+            cursor, keys = self.client.scan(cursor=cursor, match=f"{self.prefix}*")  # type: ignore
             for key in keys:
                 # Decode the key from bytes to string
                 strkey = key.decode()
@@ -211,7 +211,7 @@ class GatewayLoadReader:
         matching_keys = sorted(matching_keys, key=lambda k: k[1])
 
         # Retrieve the objects associated with the keys
-        records = []
+        records: List[LoadRecord] = []
         for key in matching_keys:
             try:
                 # Deserialize by json: dict[string]int
@@ -238,19 +238,21 @@ class GatewayLoadReader:
             return None
 
         # Deserialize by json: dict[string]int
-        print(profile_data)
-        profile = json.loads(profile_data)
+        profile = json.loads(str(profile_data))
         if not isinstance(profile, dict):
             raise Exception("Load profile is not a dictionary")
 
         return profile
+
+    def progress(self) -> str:
+        return ""
 
     def next_available(self) -> float:
         """Dataset is available to read anytime."""
         return self.last_ts + self.key_ts_alignment
 
     def _parse_profiles(
-        self, profiles: dict, ts: int, out_records: List[LoadRecord] = []
+        self, profiles: dict, ts: float, out_records: List[LoadRecord] = []
     ) -> List[LoadRecord]:
         # Load metainfo.
         version = profiles.get("meta_version", 1)
@@ -278,6 +280,3 @@ class GatewayLoadReader:
             out_records.append(LoadRecord(ts, input_tokens, output_tokens, value))
 
         return out_records
-
-    def progress(self) -> str:
-        return self.n_read / len(self.df)

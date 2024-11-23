@@ -13,7 +13,7 @@
 import logging
 import os
 import threading
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import redis
 import uvicorn
@@ -32,8 +32,8 @@ MIN_REPLICAS_LABEL = "model.aibrix.ai/min_replicas"
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
-routes = []
-model_monitors = {}  # Dictionary to store serving threads
+routes = []  # type: ignore
+model_monitors: Dict[str, ModelMonitor] = {}  # Dictionary to store serving threads
 
 mount_visulizer(
     routes, "/dash/{model_name}", lambda model_name: model_monitors.get(model_name)
@@ -119,6 +119,7 @@ def start_serving_thread(watch_ver, deployment, watch_event: bool) -> bool:
         logger.info(
             f'Model monitor started for existed "{model_name}". Deployment "{deployment_name}" added.'
         )
+    return True
 
 
 def remove_deployment(deployment):
@@ -355,7 +356,7 @@ if __name__ == "__main__":
 
     signal["done"] = True
     if signal["watch"] is not None:
-        signal["watch"].stop()
+        signal["watch"].stop()  # type: ignore
 
     # clean up
     for model_name, model_monitor in model_monitors.items():

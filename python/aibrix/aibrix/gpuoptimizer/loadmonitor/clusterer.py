@@ -34,7 +34,7 @@ class Clusterer(Protocol):
         """Reset the clusterer"""
 
     def get_cluster_labels(
-        self, points: Iterable[DataPoint], uncategorized: Optional[List] = None
+        self, points: DataPoints, uncategorized: Optional[List] = None
     ) -> Tuple[Iterable[int], Iterable[Centeroid]]:
         """Get the cluster labels for the given data points"""
 
@@ -99,7 +99,7 @@ class MovingDBSCANClusterer:
 
     def __init__(
         self,
-        eps: int,
+        eps: float,
         min_pts: int,
         buffer_size=4,
         window: Union[int, float, Callable[[DBSCANClusterer], bool]] = 4000,

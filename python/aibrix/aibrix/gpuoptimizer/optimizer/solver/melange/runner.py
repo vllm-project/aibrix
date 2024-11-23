@@ -30,7 +30,7 @@ class SolverRunner:
             gpu_info=self.config.gpu_info,
             slice_factor=self.config.slice_factor,
         )
-        self.execution_result = {}
+        self.execution_result = {}  # type: ignore
 
     def run(self):
         self.execution_result = self.solver.run()

@@ -46,9 +46,9 @@ class WorkloadProfile(Protocol):
         """
 
     @property
-    def signature() -> Tuple[int]:
+    def signature(self) -> Tuple[int]:
         """The signature of the workload"""
 
     @property
-    def rate() -> float:
+    def rate(self) -> float:
         """The request rate of the workload in the unit RPS"""

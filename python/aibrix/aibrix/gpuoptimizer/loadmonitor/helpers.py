@@ -12,25 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, List, Tuple, Union
+from typing import Callable, List, Optional, Tuple, TypeAlias, Union
 
 import numpy as np
 
-DataSignatures = np.ndarray
+DataSignatures: TypeAlias = np.ndarray
 """ndarray of shape(n, 2)"""
 
-DataSignature = np.ndarray
+DataSignature: TypeAlias = np.ndarray
 """ndarray of shape(2,)"""
 
 
 class DataPoint(np.ndarray):
     def __new__(
-        cls, *args, age: Union[int, float] = 0, ndarray: np.ndarray = None, **kwargs
+        cls,
+        *args,
+        age: Union[int, float] = 0,
+        ndarray: Optional[np.ndarray] = None,
+        **kwargs,
     ):
         if ndarray is not None:
             return ndarray.view(cls)
 
-        ins = ndarray = np.empty((3,), *kwargs)
+        ins = np.empty((3,))
         if len(args) > 0:
             ins[0] = args[0]
         if len(args) > 1:
@@ -167,7 +171,7 @@ class Centeroid:
             self._span_min = point.age
             self._signature = np.zeros_like(self._sum_center, dtype=int)
         else:
-            for i, val in enumerate(point.signature):
+            for i, val in enumerate(point.signature):  # type: ignore
                 self._sum_center[i] += val
                 self._range_min[i] = min(self._range_min[i], val)
                 self._range_max[i] = max(self._range_max[i], val)
@@ -180,7 +184,9 @@ class Centeroid:
     def get_signature(
         self,
         indexes: List[List[float]],
-        error_suppressor: Callable[[int, float, float, float, float], None] = None,
+        error_suppressor: Optional[
+            Callable[[int, float, float, float, float], None]
+        ] = None,
     ) -> Tuple[int]:
         """Generate the index signature of the centroid within the indexes' range.
 

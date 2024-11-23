@@ -38,16 +38,15 @@ async def get_request(
     input_requests: List[Tuple[str, int, int]],
     request_rate: float,
     num_requests: int,
-) -> AsyncGenerator[Tuple[str, int, int], None]:
-    input_requests = iter(input_requests)
-    for i, request in enumerate(input_requests):
+) -> AsyncGenerator[Tuple[str, int, int, float], None]:
+    requests = iter(input_requests)
+    for i, request in enumerate(requests):
         interval = 0.0
         if i < num_requests - 1 and request_rate != float("inf"):
             # Sample the request interval from the exponential distribution.
             interval = np.random.exponential(1.0 / request_rate)
 
-        request_with_next = list(request)
-        request_with_next.append(interval)
+        request_with_next = (request[0], request[1], request[2], interval)
         yield request_with_next
 
         if request_rate == float("inf"):

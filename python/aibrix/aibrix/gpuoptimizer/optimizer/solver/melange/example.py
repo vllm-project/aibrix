@@ -5,8 +5,7 @@ from .runner import SolverRunner
 
 def main(config_path: str):
     runner = SolverRunner(config_path)
-    runner.run()
-    runner.export()
+    print(runner.run())
 
 
 if __name__ == "__main__":
