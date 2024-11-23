@@ -88,7 +88,7 @@ class ModelMonitor:
             debug: (optional) Whether to enable debugging behavior. Defaults to False.
         """
         self.model_name = model_name
-        self.deployments: dict[str, DeploymentStates] = {}
+        self.deployments: Dict[str, DeploymentStates] = {}
         self.thread = None
         self.outdated_watch_version = None
         self.last_watch_version = None
