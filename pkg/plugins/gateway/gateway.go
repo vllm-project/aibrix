@@ -268,7 +268,6 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 				fmt.Sprintf("error on getting pods for model %s", model)), targetPodIP, stream
 		}
 
-		// Should we extend to support pod associated metrics?
 		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods)
 		if err != nil {
 			return generateErrorResponse(

@@ -575,7 +575,7 @@ func (c *Cache) updateModelMetrics() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, metricName := range prometheusMetricNames {
-		for modelName, _ := range c.ModelToPodMapping {
+		for modelName := range c.ModelToPodMapping {
 			queryLabels := map[string]string{
 				"model_name": modelName,
 			}

@@ -392,6 +392,12 @@ def metrics():
         for metric in simple_metrics
     )
 
+    lora_metrics_output = "".join(
+        generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"], "lora-model-1",
+                                      metric["value"])
+        for metric in simple_metrics
+    )
+
     histogram_metrics = [
         {
             "name": "iteration_tokens_total",
@@ -459,7 +465,19 @@ def metrics():
             new_requests=new_requests
         )
 
-    return Response(metrics_output + histogram_metrics_output, mimetype='text/plain')
+    lora_histogram_metrics_output = ""
+    for metric in histogram_metrics:
+        # Simulate random new requests for the metric
+        new_requests = {bucket: random.randint(0, 5) for bucket in metric["buckets"]}
+        lora_histogram_metrics_output += generate_histogram_metric(
+            metric_name=metric["name"],
+            description=metric["description"],
+            model_name="lora-model-1",
+            buckets=metric["buckets"],
+            new_requests=new_requests
+        )
+
+    return Response(metrics_output + lora_metrics_output + histogram_metrics_output + lora_histogram_metrics_output, mimetype='text/plain')
 
 
 if __name__ == '__main__':
