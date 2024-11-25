@@ -45,11 +45,18 @@ kind: Service
 metadata:
   name: llama2-70b
   namespace: default
+  labels:
+    prometheus-discovery: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "8000"
 spec:
   selector:
     model.aibrix.ai/name: "llama2-70b"
   ports:
     - protocol: TCP
+      name: metrics
       port: 8000
       targetPort: 8000
       nodePort: 30081

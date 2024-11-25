@@ -5,6 +5,7 @@ import re
 import time
 from random import randint
 import os
+
 try:
     from kubernetes import client, config
 except Exception as e:
@@ -207,60 +208,78 @@ def set_metrics():
         return {"status": "error", "message": "No data provided"}, 400
 
 
-# Generic histogram template
-histogram_template = """
+# Initialize global state to keep track of metrics data
+metrics_state = {}
+
+
+def generate_histogram_metric(metric_name, description, model_name, buckets, new_requests):
+    """
+    Generate Prometheus histogram metrics with dynamically updated bucket values.
+
+    Args:
+        metric_name (str): Name of the metric.
+        description (str): Metric description.
+        model_name (str): Model name.
+        buckets (list): List of bucket boundaries.
+        new_requests (dict): Dictionary with new requests to update bucket values.
+
+    Returns:
+        str: Prometheus-formatted histogram metric.
+    """
+    global metrics_state
+
+    # Initialize state if not already present
+    if metric_name not in metrics_state:
+        metrics_state[metric_name] = {
+            "buckets": {bucket: 0 for bucket in buckets},  # Bucket values
+            "total_sum": 0,  # Total sum of all values
+            "total_count": 0  # Total count of all events
+        }
+
+    # Retrieve current metric state
+    current_state = metrics_state[metric_name]
+
+    # Update buckets and ensure cumulative nature
+    for bucket in buckets:
+        if bucket in new_requests:
+            # Add new requests for this bucket
+            current_state["buckets"][bucket] += new_requests[bucket]
+
+        # Ensure cumulative updates for histogram buckets
+        if bucket != buckets[0]:  # Skip the first bucket
+            current_state["buckets"][bucket] = max(
+                current_state["buckets"][bucket],
+                current_state["buckets"][buckets[buckets.index(bucket) - 1]]
+            )
+
+    # Update total_count and total_sum
+    current_state["total_count"] = current_state["buckets"][buckets[-1]]  # `+Inf` bucket is the total count
+    current_state["total_sum"] += sum(
+        float(bucket) * value for bucket, value in new_requests.items() if bucket != "+Inf"
+    )
+
+    # Generate Prometheus bucket strings
+    bucket_strings = "\n".join(
+        [f'vllm:{metric_name}_bucket{{le="{bucket}",model_name="{model_name}"}} {current_state["buckets"][bucket]}'
+         for bucket in buckets]
+    )
+
+    # Return formatted histogram metric
+    histogram_template = """
 # HELP vllm:{metric_name} {description}
-# TYPE vllm:{metric_name} {metric_type}
+# TYPE vllm:{metric_name} histogram
 vllm:{metric_name}_sum{{model_name="{model_name}"}} {value}
 {buckets}
 vllm:{metric_name}_count{{model_name="{model_name}"}} {count}
 """
 
-counter_gauge_template = """
-# HELP vllm:{metric_name} {description}
-# TYPE vllm:{metric_name} {metric_type}
-vllm:{metric_name}{{model_name="{model_name}"}} {value}
-"""
-
-
-def generate_histogram_metric(metric_name, description, model_name, total_sum, total_count, buckets, metric_type="histogram"):
-    """
-    Generate a histogram metric string for a specific metric type.
-
-    Args:
-        metric_name (str): Name of the metric.
-        description (str): Name of the metric description
-        model_name (str): Name of the model.
-        total_sum (float): Total sum value for the metric.
-        total_count (int): Total count value for the metric.
-
-    Returns:
-        str: Prometheus-formatted histogram string.
-    """
-    # Histogram definitions
-    # Assign random values for each bucket
-    bucket_values = {}
-    cumulative_count = 0
-    for bucket in buckets:
-        value = random.randint(0, 10)  # Assign random values
-        cumulative_count += value
-        bucket_values[bucket] = cumulative_count
-
-    # Format bucket strings
-    bucket_strings = "\n".join(
-        [f'vllm:{metric_type}_bucket{{le="{bucket}",model_name="{model_name}"}} {value}'
-         for bucket, value in bucket_values.items()]
-    )
-
-    # Fill in the histogram template
     return histogram_template.format(
         metric_name=metric_name,
-        metric_type=metric_type,
         description=description,
         model_name=model_name,
-        value=total_sum,
+        value=current_state["total_sum"],
         buckets=bucket_strings,
-        count=total_count
+        count=current_state["total_count"]
     )
 
 
@@ -278,6 +297,12 @@ def generate_counter_gauge_metric(metric_name, metric_type, description, model_n
     Returns:
         str: A formatted Prometheus metric string.
     """
+    counter_gauge_template = """
+# HELP vllm:{metric_name} {description}
+# TYPE vllm:{metric_name} {metric_type}
+vllm:{metric_name}{{model_name="{model_name}"}} {value}
+"""
+
     return counter_gauge_template.format(
         metric_name=metric_name,
         metric_type=metric_type,
@@ -362,7 +387,8 @@ def metrics():
 
     # Generate all metrics
     metrics_output = "".join(
-        generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"], model_name, metric["value"])
+        generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"], model_name,
+                                      metric["value"])
         for metric in simple_metrics
     )
 
@@ -420,12 +446,20 @@ def metrics():
         },
     ]
 
-    histogram_metrics_output = "".join(
-        generate_histogram_metric(metric["name"],  metric["description"], model_name, 100, 100, metric["buckets"])
-        for metric in histogram_metrics
-    )
+    # Generate metrics output
+    histogram_metrics_output = ""
+    for metric in histogram_metrics:
+        # Simulate random new requests for the metric
+        new_requests = {bucket: random.randint(0, 5) for bucket in metric["buckets"]}
+        histogram_metrics_output += generate_histogram_metric(
+            metric_name=metric["name"],
+            description=metric["description"],
+            model_name=model_name,
+            buckets=metric["buckets"],
+            new_requests=new_requests
+        )
 
-    return Response(metrics_output+histogram_metrics_output, mimetype='text/plain')
+    return Response(metrics_output + histogram_metrics_output, mimetype='text/plain')
 
 
 if __name__ == '__main__':

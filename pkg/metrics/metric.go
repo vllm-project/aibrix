@@ -16,13 +16,43 @@ limitations under the License.
 
 package cache
 
+// MetricSource defines the metric source
+type MetricSource string
+
+const (
+	PrometheusEndpoint MetricSource = "Prometheus"
+	PodMetrics         MetricSource = "Pod"
+)
+
+// MetricType defines the prometheus metrics type
+type MetricType string
+
+const (
+	Gauge     MetricType = "Gauge"
+	Counter   MetricType = "Counter"
+	Histogram MetricType = "Histogram"
+)
+
 type MetricValue struct {
 	Value     float64          // For simple metrics (e.g., gauge or counter)
 	Histogram *HistogramMetric // For histogram metrics
+}
+
+// Metric defines a unique metrics
+type Metric struct {
+	Name        string
+	Source      MetricSource
+	Type        MetricType
+	PromQL      string
+	Description string
 }
 
 type HistogramMetric struct {
 	Sum     float64
 	Count   float64
 	Buckets map[string]float64
+}
+
+type MetricSubscriber interface {
+	SubscribedMetrics() []string
 }
