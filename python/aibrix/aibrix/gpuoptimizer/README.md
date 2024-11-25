@@ -12,9 +12,16 @@ docker build -t aibrix/gpu-optimizer:nightly -f Dockerfile .
 make build
 ```
 
-3. Prepare performance benchmark using optimizer/profiling/benchmark.sh. If using CPU based vLLM simulator, a sample profile is included in optimizer/profiling/result.
+3. Prepare performance benchmark using optimizer/profiling/benchmark.sh. See optimizer/profiling/README.md. You may need to expose pod interface first:
+```shell
+# Make sure pod is accessable locally:
+kubectl -n aibrix-system port-forward [pod_name] 8010:8000 1>/dev/null 2>&1 &
+```
 
-4. Generate profile based on SLO target using optimizer/profiling/gen-profile.py. If using CPU based vLLM simulator, execute
+If using CPU based vLLM simulator, sample profiles is included in optimizer/profiling/result.
+	
+
+1. Generate profile based on SLO target using optimizer/profiling/gen-profile.py. If using CPU based vLLM simulator, execute
 ```shell
 # Make sure Redis is accessable locally:
 kubectl -n aibrix-system port-forward svc/aibrix-redis-master 6379:6379 1>/dev/null 2>&1 &

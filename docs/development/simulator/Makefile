@@ -1,15 +1,26 @@
 all: build
 
-build: 
+build-a100: 
 	docker build -t aibrix/vllm-simulator:nightly -f Dockerfile .
 
-deploy:
+build-a40: 
+	docker build -t aibrix/vllm-simulator-a40:nightly -f Dockerfile-a40 .
+
+build: build-a100
+
+deploy-a100:
 	kubectl apply -f deployment-a100.yaml
+
+deploy-a40:
+	kubectl apply -f deployment-a40.yaml
+
+deploy: deploy-a100
 	sleep 2
 	kubectl -n aibrix-system port-forward svc/llama2-7b 8000:8000 1>/dev/null 2>&1 &
 
 clean:
-	kubectl delete -f deployment.yaml
+	kubectl delete -f deployment-a100.yaml
+	kubectl delete -f deployment-a40.yaml
 	sleep 1
 	curl http://localhost:8000/metrics
 

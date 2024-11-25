@@ -24,7 +24,7 @@ spec:
       automountServiceAccountToken: true # Important!
       containers:
         - name: llmengine-simulator
-          image: aibrix/vllm-simulator:nightly
+          image: aibrix/vllm-simulator-a40:nightly
           command: ["python", "app.py", "--replica_config_device", "a40"]
           ports:
             - containerPort: 8000

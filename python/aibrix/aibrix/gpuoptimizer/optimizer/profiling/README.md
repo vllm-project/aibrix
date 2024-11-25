@@ -13,6 +13,8 @@ Once your model is up and running, modify `benchmark.sh` to configure the follow
 * output_limit: The ending output length for profling
 * rate_start: The starting request rate for profling
 * rate_limit: The ending request rate for profling
+  
+Run `pip install -r requirements.txt` to install dependency.
 
 Finally, run `benchmark.sh [your deployment name]`, the results will be in the result directory.
 

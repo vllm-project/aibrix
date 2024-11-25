@@ -23,7 +23,7 @@ COPY ./*.py /simulator/
 
 ENV MODEL_NAME=llama2-7b
  # Trigger profiling
-RUN python app.py --time_limit 1000 --replica_config_device a100
+RUN python app.py --time_limit 1000 --replica_config_device a40
 
 # Expose the port the app runs on
 EXPOSE 8000
