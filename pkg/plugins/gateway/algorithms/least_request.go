@@ -85,3 +85,11 @@ func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod) 
 
 	return targetPodIP + ":" + podMetricPort, nil
 }
+
+func (r *leastRequestRouter) SubscribedMetrics() []string {
+	return []string{
+		num_requests_running,
+		num_requests_waiting,
+		num_requests_swapped,
+	}
+}

@@ -54,3 +54,7 @@ func (r randomRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (strin
 
 	return targetPodIP + ":" + podMetricPort, nil
 }
+
+func (r *randomRouter) SubscribedMetrics() []string {
+	return []string{}
+}

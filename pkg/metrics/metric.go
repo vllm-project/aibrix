@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cache
+package metrics
 
 // MetricSource defines the metric source
 type MetricSource string
@@ -31,6 +31,7 @@ const (
 	Gauge     MetricType = "Gauge"
 	Counter   MetricType = "Counter"
 	Histogram MetricType = "Histogram"
+	PromQL    MetricType = "PromQL"
 )
 
 type MetricValue struct {
@@ -40,7 +41,6 @@ type MetricValue struct {
 
 // Metric defines a unique metrics
 type Metric struct {
-	Name        string
 	Source      MetricSource
 	Type        MetricType
 	PromQL      string
@@ -56,3 +56,28 @@ type HistogramMetric struct {
 type MetricSubscriber interface {
 	SubscribedMetrics() []string
 }
+
+var (
+	Metrics = map[string]Metric{
+		// Counter metrics
+		"num_requests_running":                 {PodMetrics, Counter, "", "Number of running requests"},
+		"num_requests_waiting":                 {PodMetrics, Counter, "", "Number of waiting requests"},
+		"num_requests_swapped":                 {PodMetrics, Counter, "", "Number of swapped requests"},
+		"avg_prompt_throughput_toks_per_s":     {PodMetrics, Gauge, "", "Average prompt throughput in tokens per second"},
+		"avg_generation_throughput_toks_per_s": {PodMetrics, Gauge, "", "Average generation throughput in tokens per second"},
+
+		// Histogram metrics
+		"iteration_tokens_total":         {PodMetrics, Histogram, "", "Total iteration tokens"},
+		"time_to_first_token_seconds":    {PodMetrics, Histogram, "", "Time to first token in seconds"},
+		"time_per_output_token_seconds":  {PodMetrics, Histogram, "", "Time per output token in seconds"},
+		"e2e_request_latency_seconds":    {PodMetrics, Histogram, "", "End-to-end request latency in seconds"},
+		"request_queue_time_seconds":     {PodMetrics, Histogram, "", "Request queue time in seconds"},
+		"request_inference_time_seconds": {PodMetrics, Histogram, "", "Request inference time in seconds"},
+		"request_decode_time_seconds":    {PodMetrics, Histogram, "", "Request decode time in seconds"},
+		"request_prefill_time_seconds":   {PodMetrics, Histogram, "", "Request prefill time in seconds"},
+
+		// Prometheus metrics
+		// TODO: what's the result.Value here. depends on the query type. We need to build an abstraction then.
+		"p95_ttft_5m": {PrometheusEndpoint, Gauge, `histogram_quantile(0.95, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name="${model_name}", job="pods"}[5m])))`, "95th ttft in last 5 mins"},
+	}
+)

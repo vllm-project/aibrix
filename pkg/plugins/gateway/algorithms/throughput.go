@@ -66,12 +66,12 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (s
 		}
 
 		// processing prompt tokens is twice as expensive than generation tokens
-		total_throughput := 2*promptThroughput.Value + generationThroughput.Value
-		klog.V(4).Infof("pod: %v, podIP: %v, promptThroughput: %v, generationThroughput: %v, total_throughput: %v",
-			pod.Name, pod.Status.PodIP, promptThroughput, generationThroughput, total_throughput)
+		totalThroughput := 2*promptThroughput.Value + generationThroughput.Value
+		klog.V(4).Infof("pod: %v, podIP: %v, promptThroughput: %v, generationThroughput: %v, totalThroughput: %v",
+			pod.Name, pod.Status.PodIP, promptThroughput, generationThroughput, totalThroughput)
 
-		if total_throughput <= minCount {
-			minCount = total_throughput
+		if totalThroughput <= minCount {
+			minCount = totalThroughput
 			targetPodIP = pod.Status.PodIP
 		}
 	}
@@ -81,4 +81,11 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (s
 	}
 
 	return targetPodIP + ":" + podMetricPort, nil
+}
+
+func (r *throughputRouter) SubscribedMetrics() []string {
+	return []string{
+		avg_prompt_throughput_toks_per_s,
+		avg_generation_throughput_toks_per_s,
+	}
 }

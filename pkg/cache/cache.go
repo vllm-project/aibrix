@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+
 	"io"
 	"math"
 	"net/http"
@@ -43,6 +45,10 @@ import (
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	v1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
 	v1alpha1scheme "github.com/aibrix/aibrix/pkg/client/clientset/versioned/scheme"
+	"github.com/aibrix/aibrix/pkg/metrics"
+	"github.com/prometheus/client_golang/api"
+	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/common/config"
 	"k8s.io/client-go/kubernetes/scheme"
 )
 
@@ -52,12 +58,16 @@ var once sync.Once
 type Cache struct {
 	mu                sync.RWMutex
 	redisClient       *redis.Client
+	prometheusApi     prometheusv1.API
 	initialized       bool
+	subscribers       []metrics.MetricSubscriber
+	metrics           map[string]interface{}
+	ModelMetrics      map[string]map[string]interface{}
 	Pods              map[string]*v1.Pod
-	PodMetrics        map[string]map[string]*MetricValue // pod_name: map[metric_name]metric_val
-	PodToModelMapping map[string]map[string]struct{}     // pod_name: map[model_name]struct{}
-	ModelToPodMapping map[string]map[string]*v1.Pod      // model_name: map[pod_name]*v1.Pod
-	requestTrace      map[string]map[string]int          // model_name: map[Log2(input_token)-Log2(output_token)]request_count
+	PodMetrics        map[string]map[string]*metrics.MetricValue // pod_name: map[metric_name]metric_val
+	PodToModelMapping map[string]map[string]struct{}             // pod_name: map[model_name]struct{}
+	ModelToPodMapping map[string]map[string]*v1.Pod              // model_name: map[pod_name]*v1.Pod
+	requestTrace      map[string]map[string]int                  // model_name: map[Log2(input_token)-Log2(output_token)]request_count
 }
 
 const (
@@ -80,6 +90,8 @@ var (
 	// histogram metric example - time_to_first_token_seconds, _sum, _bucket _count.
 	histogramMetricNames = []string{"iteration_tokens_total", "time_to_first_token_seconds", "time_per_output_token_seconds",
 		"e2e_request_latency_seconds", "request_queue_time_seconds", "request_inference_time_seconds", "request_decode_time_seconds", "request_prefill_time_seconds"}
+
+	prometheusMetricNames = []string{"p95_ttft_5m"}
 
 	podMetricRefreshIntervalInMilliseconds = getPodMetricRefreshInterval()
 )
@@ -104,6 +116,34 @@ func GetCache() (*Cache, error) {
 		return nil, errors.New("cache is not initialized")
 	}
 	return &instance, nil
+}
+
+// LoadEnv loads an environment variable or returns a default value if not set.
+func LoadEnv(key, defaultValue string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		klog.Warningf("Environment variable %s is not set, using default value: %s", key, defaultValue)
+		return defaultValue
+	}
+	return value
+}
+
+// InitializePrometheusAPI initializes the Prometheus API client.
+func InitializePrometheusAPI(endpoint string, username string, password string) (prometheusv1.API, error) {
+	if endpoint == "" {
+		return nil, fmt.Errorf("prometheus endpoint is not provided")
+	}
+
+	client, err := api.NewClient(api.Config{
+		Address: endpoint,
+		RoundTripper: config.NewBasicAuthRoundTripper(config.NewInlineSecret(username),
+			config.NewInlineSecret(password), api.DefaultRoundTripper),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Prometheus client: %w", err)
+	}
+
+	return prometheusv1.NewAPI(client), nil
 }
 
 func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Cache {
@@ -137,11 +177,29 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			return
 		}
 
+		// Load environment variables
+		prometheusEndpoint := LoadEnv("PROMETHEUS_ENDPOINT", "")
+		prometheusBasicAuthUsername := LoadEnv("PROMETHEUS_BASIC_AUTH_USERNAME", "")
+		prometheusBasicAuthPassword := LoadEnv("PROMETHEUS_BASIC_AUTH_PASSWORD", "")
+
+		// Initialize Prometheus API
+		var prometheusApi prometheusv1.API
+		if prometheusEndpoint != "" {
+			api, err := InitializePrometheusAPI(prometheusEndpoint, prometheusBasicAuthUsername, prometheusBasicAuthPassword)
+			if err != nil {
+				klog.Errorf("Error initializing Prometheus API: %v", err)
+			} else {
+				prometheusApi = api
+				klog.Infof("Prometheus API initialized successfully")
+			}
+		}
+
 		instance = Cache{
 			initialized:       true,
 			redisClient:       redisClient,
+			prometheusApi:     prometheusApi,
 			Pods:              map[string]*v1.Pod{},
-			PodMetrics:        map[string]map[string]*MetricValue{},
+			PodMetrics:        map[string]map[string]*metrics.MetricValue{},
 			PodToModelMapping: map[string]map[string]struct{}{},
 			ModelToPodMapping: map[string]map[string]*v1.Pod{},
 			requestTrace:      map[string]map[string]int{},
@@ -169,6 +227,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 				select {
 				case <-ticker.C:
 					instance.updatePodMetrics()
+					instance.updateModelMetrics()
 					instance.debugInfo()
 				case <-stopCh:
 					ticker.Stop()
@@ -435,7 +494,7 @@ func (c *Cache) CheckModelExists(modelName string) bool {
 	return ok
 }
 
-func (c *Cache) GetPodMetric(podName, metricName string) (*MetricValue, error) {
+func (c *Cache) GetPodMetric(podName, metricName string) (*metrics.MetricValue, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -462,7 +521,7 @@ func (c *Cache) updatePodMetrics() {
 		}
 		podName := pod.Name
 		if len(c.PodMetrics[podName]) == 0 {
-			c.PodMetrics[podName] = map[string]*MetricValue{}
+			c.PodMetrics[podName] = map[string]*metrics.MetricValue{}
 		}
 
 		// We should use the primary container port. In future, we can decide whether to use sidecar container's port
@@ -484,6 +543,8 @@ func (c *Cache) updatePodMetrics() {
 			continue
 		}
 
+		// the metrics should come from those router subscribers
+
 		// parse counterGaugeMetricsNames
 		for _, metricName := range counterGaugeMetricNames {
 			metricValue, err := parseMetricFromBody(body, metricName)
@@ -492,7 +553,7 @@ func (c *Cache) updatePodMetrics() {
 				continue
 			}
 
-			c.PodMetrics[pod.Name][metricName] = &MetricValue{Value: metricValue}
+			c.PodMetrics[pod.Name][metricName] = &metrics.MetricValue{Value: metricValue}
 			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
 		}
 
@@ -504,10 +565,88 @@ func (c *Cache) updatePodMetrics() {
 				continue
 			}
 
-			c.PodMetrics[pod.Name][metricName] = &MetricValue{Histogram: metricValue}
+			c.PodMetrics[pod.Name][metricName] = &metrics.MetricValue{Histogram: metricValue}
 			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
 		}
 	}
+}
+
+func (c *Cache) updateModelMetrics() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, metricName := range prometheusMetricNames {
+		for modelName, _ := range c.ModelToPodMapping {
+			queryLabels := map[string]string{
+				"model_name": modelName,
+			}
+			metric, ok := metrics.Metrics[metricName]
+			if !ok {
+				klog.Warningf("Can not find the %v from metric list", metricName)
+				continue
+			}
+			query := BuildQuery(metric.PromQL, queryLabels)
+			// Querying metrics
+			result, warnings, err := c.prometheusApi.Query(context.Background(), query, time.Now())
+			if err != nil {
+				// let's skip this model fetching if error thrown
+				klog.Warningf("Error executing query: %v", err)
+				continue
+			}
+			if len(warnings) > 0 {
+				klog.Warningf("Warnings: %v\n", warnings)
+			}
+
+			klog.Infof("Query Result:\n%v\n", result)
+			// Update metrics
+			c.ModelMetrics[modelName][metricName] = result
+		}
+	}
+}
+
+// BuildQuery builds a PromQL query by dynamically injecting labels
+// It replaces placeholders in the query (e.g., ${key}) with actual values from queryLabels
+// and appends any additional labels to the query.
+func BuildQuery(queryTemplate string, queryLabels map[string]string) string {
+	// Regular expression to find placeholders like ${key}
+	placeholderPattern := regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+
+	// Replace placeholders with actual values from queryLabels
+	queryWithReplacements := placeholderPattern.ReplaceAllStringFunc(queryTemplate, func(match string) string {
+		// Extract the key from ${key}
+		key := placeholderPattern.FindStringSubmatch(match)[1]
+		if value, exists := queryLabels[key]; exists {
+			return value // Replace ${key} with its value
+		}
+		return match // Keep the placeholder if no match in queryLabels
+	})
+
+	// Collect all labels from queryLabels not already in the query
+	existingLabels := map[string]bool{}
+	matches := placeholderPattern.FindAllStringSubmatch(queryTemplate, -1)
+	for _, match := range matches {
+		existingLabels[match[1]] = true
+	}
+
+	var additionalLabels []string
+	for key, value := range queryLabels {
+		if !existingLabels[key] {
+			additionalLabels = append(additionalLabels, fmt.Sprintf(`%s="%s"`, key, value))
+		}
+	}
+
+	// If there are additional labels, append them to the query
+	if len(additionalLabels) > 0 {
+		labels := strings.Join(additionalLabels, ",")
+		if strings.Contains(queryWithReplacements, "{") {
+			// Add to existing label set
+			queryWithReplacements = strings.Replace(queryWithReplacements, "{", fmt.Sprintf("{%s,", labels), 1)
+		} else {
+			// Create a new label set
+			queryWithReplacements = fmt.Sprintf("%s{%s}", queryWithReplacements, labels)
+		}
+	}
+
+	return queryWithReplacements
 }
 
 func parseMetricFromBody(body []byte, metricName string) (float64, error) {
@@ -532,9 +671,9 @@ func parseMetricFromBody(body []byte, metricName string) (float64, error) {
 	return 0, fmt.Errorf("metrics %s not found", metricName)
 }
 
-func parseHistogramFromBody(body []byte, metricName string) (*HistogramMetric, error) {
+func parseHistogramFromBody(body []byte, metricName string) (*metrics.HistogramMetric, error) {
 	lines := strings.Split(string(body), "\n")
-	histogram := &HistogramMetric{
+	histogram := &metrics.HistogramMetric{
 		Buckets: make(map[string]float64),
 	}
 	found := false
@@ -642,6 +781,22 @@ func (c *Cache) writeRequestTraceToStorage(roundT int64) {
 
 		if _, err = c.redisClient.Set(context.Background(), key, value, expireWriteRequestTraceIntervalInMins*time.Minute).Result(); err != nil {
 			klog.Error(err)
+		}
+	}
+}
+
+func (c *Cache) AddSubscriber(subscriber metrics.MetricSubscriber) {
+	c.subscribers = append(c.subscribers, subscriber)
+	c.aggregateMetrics()
+}
+
+func (c *Cache) aggregateMetrics() {
+	for _, subscriber := range c.subscribers {
+		for _, metric := range subscriber.SubscribedMetrics() {
+			if _, exists := c.metrics[metric]; !exists {
+				// TODO: refactor to
+				c.metrics[metric] = "yes"
+			}
 		}
 	}
 }
