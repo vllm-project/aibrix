@@ -39,7 +39,7 @@ const (
 type MetricValue struct {
 	Value            float64          // For simple metrics (e.g., gauge or counter)
 	Histogram        *HistogramMetric // For histogram metrics
-	PrometheusResult *model.Value     // For prometheus metrics s
+	PrometheusResult *model.Value     // For prometheus metrics
 }
 
 // Metric defines a unique metrics
@@ -96,7 +96,8 @@ var (
 		RequestDecodeTimeSeconds:    {PodMetrics, Histogram, "", "Request decode time in seconds"},
 		RequestPrefillTimeSeconds:   {PodMetrics, Histogram, "", "Request prefill time in seconds"},
 
-		// Prometheus metrics
-		P95TTFT5m: {PrometheusEndpoint, Gauge, `histogram_quantile(0.95, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name="${model_name}", job="pods"}[5m])))`, "95th ttft in last 5 mins"},
+		// Aggregated Prometheus metrics
+		// Please use label_key=${label_key} for dynamic injection
+		P95TTFT5m: {PrometheusEndpoint, PromQL, `histogram_quantile(0.95, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name="${model_name}", job="pods"}[5m])))`, "95th ttft in last 5 mins"},
 	}
 )
