@@ -185,12 +185,14 @@ if __name__ == "__main__":
         "--benchmark", type=str, default=None, help="Benchmark result file."
     )
     parser.add_argument(
-        "--tput", type=int, default=0, help="Throughput SLO target as RPS."
+        "--tput", type=float, default=0, help="Throughput SLO target as RPS."
     )
     parser.add_argument(
-        "--tt", type=int, default=0, help="Token Throughput SLO target."
+        "--tt", type=float, default=0, help="Token Throughput SLO target."
     )
-    parser.add_argument("--e2e", type=float, default=60, help="E2E latency SLO target.")
+    parser.add_argument(
+        "--e2e", type=float, default=300, help="E2E latency SLO target."
+    )
     parser.add_argument(
         "--ttft", type=float, default=60, help="Time To First Token SLO target."
     )

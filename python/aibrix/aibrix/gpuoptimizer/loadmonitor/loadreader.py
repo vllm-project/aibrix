@@ -172,7 +172,10 @@ class GatewayLoadReader:
                 # Seen
                 return []
 
-            profiles = self.read_key(f"{self.prefix}{int(ts)}", True)
+            # TODO: Now profile seems to be have a interval delay. Further investigation is needed.
+            profiles = self.read_key(
+                f"{self.prefix}{int(ts - self.key_ts_alignment)}", True
+            )
             self.last_ts = ts
 
             if profiles is None or len(profiles) == 0:
@@ -229,27 +232,35 @@ class GatewayLoadReader:
 
     def read_key(self, key: Union[str, bytes], optional: bool) -> Optional[dict]:
         logging_key = key.decode() if isinstance(key, bytes) else key
+        logger.debug(
+            f"Loading profile {logging_key} at {datetime.now().timestamp()}..."
+        )
         profile_data = self.client.get(key)
         if profile_data is None:
             if optional:
-                logger.debug(f"No load profile for {logging_key}.")
+                logger.debug(f"No load profile for {logging_key}")
             else:
-                logger.warning(f"Failed to retrieve {logging_key} from Redis.")
+                logger.warning(f"Failed to retrieve {logging_key} from Redis")
             return None
 
         # Deserialize by json: dict[string]int
-        profile = json.loads(str(profile_data))
-        if not isinstance(profile, dict):
-            raise Exception("Load profile is not a dictionary")
+        try:
+            profile = json.loads(profile_data.decode())
+            if not isinstance(profile, dict):
+                raise Exception("Load profile is not a dictionary")
 
-        return profile
+            return profile
+        except Exception as e:
+            raise Exception(f"{e}, raw: {profile_data.decode()}")
 
     def progress(self) -> str:
         return ""
 
     def next_available(self) -> float:
         """Dataset is available to read anytime."""
-        return self.last_ts + self.key_ts_alignment
+        return (
+            self.last_ts + self.key_ts_alignment + 2
+        )  # Add 1 second to tolerate possible delay
 
     def _parse_profiles(
         self, profiles: dict, ts: float, out_records: List[LoadRecord] = []

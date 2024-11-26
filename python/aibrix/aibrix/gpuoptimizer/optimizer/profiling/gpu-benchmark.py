@@ -67,20 +67,22 @@ async def send_request(
     next_in: float,
     best_of: int,
     use_beam_search: bool,
+    log_error: bool,
 ) -> None:
     headers = {"User-Agent": "Benchmark Client"}
+    streaming = True
     if backend == "vllm":
         pload = {
             "model": model,
             "prompt": prompt,
-            "n": 1,
-            "best_of": best_of,
-            "use_beam_search": use_beam_search,
+            # "n": 1,
+            # "best_of": best_of,
+            # "use_beam_search": use_beam_search,
             "temperature": 0.0 if use_beam_search else TEMPERATURE,
-            "top_p": 1.0,
+            # "top_p": 1.0,
             "max_tokens": output_len,
-            "ignore_eos": True,
-            "stream": True,
+            # "ignore_eos": True,
+            # "stream": stream,
         }
         if next_in > 0.0:
             pload["next_in"] = next_in
@@ -97,29 +99,40 @@ async def send_request(
                 token_latencies = []
                 previous_token_time = time.perf_counter()
                 first = True
-                async for chunk, _ in response.content.iter_chunks():
-                    # Stream on: Each chunk in the response is the full response so far
-                    chunks = [chunk]
+                if streaming:
+                    async for chunk, _ in response.content.iter_chunks():
+                        # Stream on: Each chunk in the response is the full response so far
+                        chunks = [chunk]
 
-                    now_time = time.perf_counter()
-                    if first:
-                        time_to_first = now_time - previous_token_time
-                        first = False
-                    else:
-                        token_latencies.append(now_time - previous_token_time)
-                    previous_token_time = now_time
+                        now_time = time.perf_counter()
+                        if first:
+                            time_to_first = now_time - previous_token_time
+                            first = False
+                        else:
+                            token_latencies.append(now_time - previous_token_time)
+                        previous_token_time = now_time
 
-                    # Stream off: Chunks are full response.
-                    # chunks.append(chunk)
-            output = b"".join(chunks).decode("utf-8")
-            output = output[:-1]  # Get rid of EOF
-            output = json.loads(output)
-            if len(token_latencies) == 0:
-                token_latencies = [0]
+                        # Stream off: Chunks are full response.
+                        # chunks.append(chunk)
 
-            # Re-send the request if it failed.
-            if "error" not in output:
-                break
+                    output = b"".join(chunks).decode("utf-8")
+                    santicized = output[:-1]  # Get rid of EOF
+                else:
+                    time_to_first = time.perf_counter() - previous_token_time
+                    output = await response.text()
+                    santicized = output
+            try:
+                response = json.loads(santicized)
+                if len(token_latencies) == 0:
+                    token_latencies = [0]
+
+                # Re-send the request if it failed.
+                if "error" not in response:
+                    break
+            except Exception:
+                # Will retry
+                if log_error:
+                    print(f"Invalid response: {output}")
 
     request_end_time = time.perf_counter()
     request_latency = request_end_time - request_start_time
@@ -137,6 +150,7 @@ async def benchmark(
     use_beam_search: bool,
     request_rate: float,
     num_requests: int,
+    log_error: bool,
 ) -> None:
     tasks: List[asyncio.Task] = []
 
@@ -153,6 +167,7 @@ async def benchmark(
                 next_in,
                 best_of,
                 use_beam_search,
+                log_error,
             )
         )
         tasks.append(task)
@@ -189,6 +204,7 @@ def main(args: argparse.Namespace):
             args.use_beam_search,
             args.request_rate,
             args.num_prompts,
+            args.verbose,
         )
     )
     benchmark_end_time = time.perf_counter()
@@ -312,6 +328,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("--input_len", type=int, default=0)
     parser.add_argument("--output_len", type=int, default=0)
-    parser.add_argument("--verbose", type=bool, default=False)
+    parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     main(args)

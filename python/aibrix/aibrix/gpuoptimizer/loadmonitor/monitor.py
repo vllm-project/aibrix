@@ -358,12 +358,14 @@ class ModelMonitor:
                 # This allows caller controls the progress.
                 yield
             else:
-                time.sleep(
-                    self._loadreader.next_available() - datetime.now().timestamp()
-                )
-                # Validate time elapsed
-                while datetime.now().timestamp() < self._loadreader.next_available():
-                    time.sleep(1)
+                wait = self._loadreader.next_available() - datetime.now().timestamp()
+                if wait > 0:
+                    time.sleep(wait)
+                    # Validate time elapsed
+                    while (
+                        datetime.now().timestamp() < self._loadreader.next_available()
+                    ):
+                        time.sleep(1)
 
     def stop(self):
         """Stop the model monitor thread"""

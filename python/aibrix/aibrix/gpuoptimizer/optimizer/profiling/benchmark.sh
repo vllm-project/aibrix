@@ -16,8 +16,8 @@ mkdir -p `dirname "$OUTPUT_FILE"`
 # echo "" > ${OUTPUT_FILE}
 
 # TODO: Set your preferred request sizes and rates here.
-input_start=8
-input_limit=$((2**12)) # 4K
+input_start=128
+input_limit=$((2**11)) # 2K
 output_start=4
 output_limit=$((2**9)) # 512
 rate_start=1
