@@ -77,6 +77,17 @@ jobs:
         run: |
           cd python/aibrix
           poetry publish --build
+      - name: Add package to release artifact
+        run: |
+          cd python/aibrix
+          poetry build
+          mkdir -p $GITHUB_WORKSPACE/artifacts
+          cp dist/* $GITHUB_WORKSPACE/artifacts/
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: aibrix-python-packages
+          path: $GITHUB_WORKSPACE/artifacts/
 
   artifact-release:
     runs-on: ubuntu-latest
@@ -129,6 +140,11 @@ jobs:
         uses: actions/download-artifact@v3
         with:
           name: aibrix-core-${{ github.ref_name }}.yaml
+
+      - name: Download PYTHON wheels
+        uses: actions/download-artifact@v3
+        with:
+          name: aibrix-python-packages
 
       # Determine if this is a prerelease based on the tag name
       # if it contains
