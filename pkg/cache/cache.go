@@ -85,13 +85,28 @@ const (
 
 var (
 	instance                Cache
-	counterGaugeMetricNames = []string{"num_requests_running", "num_requests_waiting", "num_requests_swapped",
-		"avg_prompt_throughput_toks_per_s", "avg_generation_throughput_toks_per_s"}
+	counterGaugeMetricNames = []string{
+		metrics.NumRequestsRunning,
+		metrics.NumRequestsWaiting,
+		metrics.NumRequestsSwapped,
+		metrics.AvgPromptThroughputToksPerS,
+		metrics.AvgGenerationThroughputToksPerS,
+	}
 	// histogram metric example - time_to_first_token_seconds, _sum, _bucket _count.
-	histogramMetricNames = []string{"iteration_tokens_total", "time_to_first_token_seconds", "time_per_output_token_seconds",
-		"e2e_request_latency_seconds", "request_queue_time_seconds", "request_inference_time_seconds", "request_decode_time_seconds", "request_prefill_time_seconds"}
+	histogramMetricNames = []string{
+		metrics.IterationTokensTotal,
+		metrics.TimeToFirstTokenSeconds,
+		metrics.TimePerOutputTokenSeconds,
+		metrics.E2ERequestLatencySeconds,
+		metrics.RequestQueueTimeSeconds,
+		metrics.RequestInferenceTimeSeconds,
+		metrics.RequestDecodeTimeSeconds,
+		metrics.RequestPrefillTimeSeconds,
+	}
 
-	prometheusMetricNames = []string{"p95_ttft_5m"}
+	prometheusMetricNames = []string{
+		metrics.P95TTFT5m,
+	}
 
 	podMetricRefreshIntervalInMilliseconds = getPodMetricRefreshInterval()
 )
@@ -568,27 +583,23 @@ func (c *Cache) updatePodMetrics() {
 			c.PodMetrics[pod.Name][metricName] = &metrics.MetricValue{Histogram: metricValue}
 			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
 		}
-	}
-}
 
-func (c *Cache) updateModelMetrics() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, metricName := range prometheusMetricNames {
-		for modelName := range c.ModelToPodMapping {
+		for _, metricName := range prometheusMetricNames {
+			modelName := pod.Labels["model.aibrix.ai/name"]
 			queryLabels := map[string]string{
 				"model_name": modelName,
+				"instance":   fmt.Sprintf("%s/%d", pod.Status.PodIP, podPort),
 			}
 			metric, ok := metrics.Metrics[metricName]
 			if !ok {
-				klog.Warningf("Can not find the %v from metric list", metricName)
+				klog.Warningf("Cannot find %v in the metric list", metricName)
 				continue
 			}
 			query := BuildQuery(metric.PromQL, queryLabels)
 			// Querying metrics
 			result, warnings, err := c.prometheusApi.Query(context.Background(), query, time.Now())
 			if err != nil {
-				// let's skip this model fetching if error thrown
+				// Skip this model fetching if an error is thrown
 				klog.Warningf("Error executing query: %v", err)
 				continue
 			}
@@ -596,7 +607,50 @@ func (c *Cache) updateModelMetrics() {
 				klog.Warningf("Warnings: %v\n", warnings)
 			}
 
-			klog.Infof("Query Result:\n%v\n", result)
+			klog.Infof("Query Result:%v\n", result)
+			// Update metrics
+			c.PodMetrics[pod.Name][metricName] = &metrics.MetricValue{PrometheusResult: &result}
+		}
+	}
+}
+
+func (c *Cache) updateModelMetrics() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, metricName := range prometheusMetricNames {
+		for modelName := range c.ModelToPodMapping {
+			// Ensure ModelMetrics is initialized
+			if c.ModelMetrics == nil {
+				c.ModelMetrics = make(map[string]map[string]interface{})
+			}
+
+			// Ensure the map for the specific modelName is initialized
+			if c.ModelMetrics[modelName] == nil {
+				c.ModelMetrics[modelName] = make(map[string]interface{})
+			}
+
+			queryLabels := map[string]string{
+				"model_name": modelName,
+			}
+			metric, ok := metrics.Metrics[metricName]
+			if !ok {
+				klog.Warningf("Cannot find %v in the metric list", metricName)
+				continue
+			}
+			query := BuildQuery(metric.PromQL, queryLabels)
+			// Querying metrics
+			result, warnings, err := c.prometheusApi.Query(context.Background(), query, time.Now())
+			if err != nil {
+				// Skip this model fetching if an error is thrown
+				klog.Warningf("Error executing query: %v", err)
+				continue
+			}
+			if len(warnings) > 0 {
+				klog.Warningf("Warnings: %v\n", warnings)
+			}
+
+			klog.Infof("Query Result:%v\n", result)
 			// Update metrics
 			c.ModelMetrics[modelName][metricName] = result
 		}

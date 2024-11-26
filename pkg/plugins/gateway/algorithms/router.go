@@ -22,6 +22,8 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
+const podMetricPort = "8000"
+
 type Router interface {
 	// Route returns the target pod
 	Route(ctx context.Context, pods map[string]*v1.Pod) (string, error)

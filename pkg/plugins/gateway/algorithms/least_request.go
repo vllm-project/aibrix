@@ -22,6 +22,7 @@ import (
 	"math"
 
 	"github.com/aibrix/aibrix/pkg/cache"
+	"github.com/aibrix/aibrix/pkg/metrics"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -54,17 +55,17 @@ func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod) 
 			continue
 		}
 
-		runningReq, err := r.cache.GetPodMetric(pod.Name, num_requests_running)
+		runningReq, err := r.cache.GetPodMetric(pod.Name, metrics.NumRequestsRunning)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		waitingReq, err := r.cache.GetPodMetric(pod.Name, num_requests_waiting)
+		waitingReq, err := r.cache.GetPodMetric(pod.Name, metrics.NumRequestsWaiting)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		swappedReq, err := r.cache.GetPodMetric(pod.Name, num_requests_swapped)
+		swappedReq, err := r.cache.GetPodMetric(pod.Name, metrics.NumRequestsSwapped)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -88,8 +89,8 @@ func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod) 
 
 func (r *leastRequestRouter) SubscribedMetrics() []string {
 	return []string{
-		num_requests_running,
-		num_requests_waiting,
-		num_requests_swapped,
+		metrics.NumRequestsRunning,
+		metrics.NumRequestsWaiting,
+		metrics.NumRequestsSwapped,
 	}
 }

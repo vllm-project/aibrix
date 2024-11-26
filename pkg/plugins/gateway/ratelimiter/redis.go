@@ -25,7 +25,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// 用来限制 rate limiter 使用的 key 的数量，需要大于 2
 const binSize = 64
 
 type redisRateLimiter struct {
@@ -34,7 +33,7 @@ type redisRateLimiter struct {
 	windowSize time.Duration
 }
 
-// simple fixed window rate limiter
+// NewRedisAccountRateLimiter is a simple fixed window rate limiter
 func NewRedisAccountRateLimiter(name string, client *redis.Client, windowSize time.Duration) RateLimiter {
 	if windowSize < time.Second {
 		windowSize = time.Second

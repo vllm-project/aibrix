@@ -22,6 +22,7 @@ import (
 	"math"
 
 	"github.com/aibrix/aibrix/pkg/cache"
+	"github.com/aibrix/aibrix/pkg/metrics"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -54,12 +55,12 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (s
 			continue
 		}
 
-		promptThroughput, err := r.cache.GetPodMetric(pod.Name, avg_prompt_throughput_toks_per_s)
+		promptThroughput, err := r.cache.GetPodMetric(pod.Name, metrics.AvgPromptThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		generationThroughput, err := r.cache.GetPodMetric(pod.Name, avg_generation_throughput_toks_per_s)
+		generationThroughput, err := r.cache.GetPodMetric(pod.Name, metrics.AvgGenerationThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -85,7 +86,7 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (s
 
 func (r *throughputRouter) SubscribedMetrics() []string {
 	return []string{
-		avg_prompt_throughput_toks_per_s,
-		avg_generation_throughput_toks_per_s,
+		metrics.AvgPromptThroughputToksPerS,
+		metrics.AvgGenerationThroughputToksPerS,
 	}
 }

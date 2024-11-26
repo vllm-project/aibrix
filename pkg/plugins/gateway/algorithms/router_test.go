@@ -107,18 +107,18 @@ func TestWithIPPods(t *testing.T) {
 		},
 		PodMetrics: map[string]map[string]*metrics.MetricValue{
 			"p1": {
-				num_requests_running:                 &metrics.MetricValue{Value: 5},
-				num_requests_waiting:                 &metrics.MetricValue{Value: 5},
-				num_requests_swapped:                 &metrics.MetricValue{Value: 5},
-				avg_prompt_throughput_toks_per_s:     &metrics.MetricValue{Value: 20},
-				avg_generation_throughput_toks_per_s: &metrics.MetricValue{Value: 20},
+				metrics.NumRequestsRunning:              &metrics.MetricValue{Value: 5},
+				metrics.NumRequestsWaiting:              &metrics.MetricValue{Value: 5},
+				metrics.NumRequestsSwapped:              &metrics.MetricValue{Value: 5},
+				metrics.AvgPromptThroughputToksPerS:     &metrics.MetricValue{Value: 20},
+				metrics.AvgGenerationThroughputToksPerS: &metrics.MetricValue{Value: 20},
 			},
 			"p2": {
-				num_requests_running:                 &metrics.MetricValue{Value: 15},
-				num_requests_waiting:                 &metrics.MetricValue{Value: 15},
-				num_requests_swapped:                 &metrics.MetricValue{Value: 15},
-				avg_prompt_throughput_toks_per_s:     &metrics.MetricValue{Value: 15},
-				avg_generation_throughput_toks_per_s: &metrics.MetricValue{Value: 2},
+				metrics.NumRequestsRunning:              &metrics.MetricValue{Value: 15},
+				metrics.NumRequestsWaiting:              &metrics.MetricValue{Value: 15},
+				metrics.NumRequestsSwapped:              &metrics.MetricValue{Value: 15},
+				metrics.AvgPromptThroughputToksPerS:     &metrics.MetricValue{Value: 15},
+				metrics.AvgGenerationThroughputToksPerS: &metrics.MetricValue{Value: 2},
 			},
 		},
 	}
