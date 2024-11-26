@@ -18,6 +18,7 @@ COPY pkg/controller/ pkg/controller/
 COPY pkg/utils/ pkg/utils/
 COPY pkg/cache/ pkg/cache/
 COPY pkg/client/ pkg/client/
+COPY pkg/metrics/ pkg/metrics/
 
 # Build
 # the GOARCH has not a default value to allow the binary be built according to the host where the command
