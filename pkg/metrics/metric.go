@@ -74,7 +74,7 @@ const (
 	RequestInferenceTimeSeconds     = "request_inference_time_seconds"
 	RequestDecodeTimeSeconds        = "request_decode_time_seconds"
 	RequestPrefillTimeSeconds       = "request_prefill_time_seconds"
-	P95TTFT5m                       = "p95_ttf_5m"
+	P95TTFT5m                       = "p95_ttft_5m"
 )
 
 var (
