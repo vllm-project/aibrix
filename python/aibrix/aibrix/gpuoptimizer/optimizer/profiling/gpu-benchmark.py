@@ -58,6 +58,7 @@ async def get_request(
 
 
 async def send_request(
+    idx: int,
     backend: str,
     api_url: str,
     model: str,
@@ -69,7 +70,11 @@ async def send_request(
     use_beam_search: bool,
     log_error: bool,
 ) -> None:
-    headers = {"User-Agent": "Benchmark Client"}
+    headers = {
+        "User-Agent": "Benchmark Client",
+        "user": "your-user-name",
+        "model": model,
+    }
     streaming = True
     if backend == "vllm":
         pload = {
@@ -99,32 +104,35 @@ async def send_request(
                 token_latencies = []
                 previous_token_time = time.perf_counter()
                 first = True
-                if streaming:
-                    async for chunk, _ in response.content.iter_chunks():
-                        # Stream on: Each chunk in the response is the full response so far
-                        chunks = [chunk]
+                try:
+                    if streaming:
+                        async for chunk, _ in response.content.iter_chunks():
+                            # Stream on: Each chunk in the response is the full response so far
+                            chunks = [chunk]
 
-                        now_time = time.perf_counter()
-                        if first:
-                            time_to_first = now_time - previous_token_time
-                            first = False
-                        else:
-                            token_latencies.append(now_time - previous_token_time)
-                        previous_token_time = now_time
+                            now_time = time.perf_counter()
+                            if first:
+                                time_to_first = now_time - previous_token_time
+                                first = False
+                            else:
+                                token_latencies.append(now_time - previous_token_time)
+                            previous_token_time = now_time
 
-                        # Stream off: Chunks are full response.
-                        # chunks.append(chunk)
+                            # Stream off: Chunks are full response.
+                            # chunks.append(chunk)
 
-                    output = b"".join(chunks).decode("utf-8")
-                    santicized = output[:-1]  # Get rid of EOF
-                else:
-                    time_to_first = time.perf_counter() - previous_token_time
-                    output = await response.text()
-                    santicized = output
+                        output = b"".join(chunks).decode("utf-8")
+                        santicized = output[:-1]  # Get rid of EOF
+                    else:
+                        time_to_first = time.perf_counter() - previous_token_time
+                        output = await response.text()
+                        santicized = output
+                except Exception as e:
+                    if log_error:
+                        print(f"Failed to read response for request {idx}: {e}")
+                    break
             try:
                 response = json.loads(santicized)
-                if len(token_latencies) == 0:
-                    token_latencies = [0]
 
                 # Re-send the request if it failed.
                 if "error" not in response:
@@ -132,10 +140,13 @@ async def send_request(
             except Exception:
                 # Will retry
                 if log_error:
-                    print(f"Invalid response: {output}")
+                    print(f"Invalid response for request {idx}: {output}")
+                break
 
     request_end_time = time.perf_counter()
     request_latency = request_end_time - request_start_time
+    if len(token_latencies) == 0:
+        token_latencies = [0]
     REQUEST_LATENCY.append((prompt_len, output_len, request_latency))
     TOKEN_LATENCY.append((prompt_len, output_len, token_latencies))
     TIME_TO_FIRST_TOKEN.append(time_to_first)
@@ -158,6 +169,7 @@ async def benchmark(
         prompt, prompt_len, output_len, next_in = request
         task = asyncio.create_task(
             send_request(
+                len(tasks),
                 backend,
                 api_url,
                 model,
