@@ -235,69 +235,96 @@ def sample_sharegpt_requests(
 
 
 def main(args):
+    FROM_GENERATOR = args.generated_path is not None
     WORKLOAD_MODE = args.concurrency is not None
     tokenizer = get_tokenizer(args.model, trust_remote_code=True)
-    if args.dataset_path is not None:
-        logging.info(f"Start to sample {args.num_prompts} prompts from {args.dataset_path}")
-        num_prompts = args.num_prompts
-        if WORKLOAD_MODE:
-            # length * avearge bar
-            num_prompts = int(args.w_B * args.w_duration_sec / args.w_interval_sec)
-        input_requests = sample_sharegpt_requests(
-            dataset_path=args.dataset_path,
-            num_requests=num_prompts,
-            tokenizer=tokenizer,
-            fixed_output_len=args.sharegpt_output_len,
-        )
-    else:
-        prompt_len = len(tokenizer(PROMPT).input_ids)
-        input_requests = [(PROMPT, prompt_len, args.output_len, None)] * args.num_prompts
-
-    logging.info(f"Samples results: {input_requests[0]}")
-
     openai_endpoints = build_openai_endpoints(args.deployment_endpoints)
     openai_clients = build_openai_clients(openai_endpoints)
+    if not FROM_GENERATOR:
+        if args.dataset_path is not None:
+            logging.info(f"Start to sample {args.num_prompts} prompts from {args.dataset_path}")
+            num_prompts = args.num_prompts
+            if WORKLOAD_MODE:
+                # length * avearge bar
+                num_prompts = int(args.w_B * args.w_duration_sec / args.w_interval_sec)
+            input_requests = sample_sharegpt_requests(
+                dataset_path=args.dataset_path,
+                num_requests=num_prompts,
+                tokenizer=tokenizer,
+                fixed_output_len=args.sharegpt_output_len,
+            )
+        else:
+            prompt_len = len(tokenizer(PROMPT).input_ids)
+            input_requests = [(PROMPT, prompt_len, args.output_len, None)] * args.num_prompts
 
-    start_time = time.time()
-    if WORKLOAD_MODE:
-        logging.info(f"Starting benchmark for {args.num_prompts} prompts with deployment {args.deployment_endpoints}")
-        asyncio.run(benchmark_requests(openai_clients, openai_endpoints, input_requests, args.num_prompts, args.concurrency,
-                                       args.output_file_path))
+        logging.info(f"Samples results: {input_requests[0]}")
+
+        start_time = time.time()       
+        if WORKLOAD_MODE:
+            logging.info(f"Starting benchmark for {args.num_prompts} prompts with deployment {args.deployment_endpoints}")
+            asyncio.run(benchmark_requests(openai_clients, openai_endpoints, input_requests, args.num_prompts, args.concurrency,
+                                        args.output_file_path))
+        else:
+            interval_sec = args.w_interval_sec
+            logging.info(f"args.concurrency is None, generate workload: "
+                        f"A={args.w_A}, B={args.w_B}, sigma={args.w_sigma}, period={args.w_period}, "
+                        f"duration_sec={args.w_duration_sec}, interval_sec={interval_sec}")
+            workloads = generate_workload(
+                input_requests,
+                A=args.w_A, B=args.w_B, sigma=args.w_sigma, only_rise=args.w_only_rise,
+                period=args.w_period, duration_sec=args.w_duration_sec, interval_sec=interval_sec,
+            )
+            # if you want to see the workload traffic trend
+            plot_workload({"llm": workloads}, interval_sec=interval_sec,
+                        output_path=f"workload_plot/{identifier}.png")
+            next_start = start_time + interval_sec
+            for idx, each_input_requests in enumerate(workloads):
+                if len(each_input_requests) == 0:
+                    logging.info(f"===== Sending Batch[{idx}], concurrency={len(each_input_requests)}: not sending in the batch")
+                else:
+                    logging.info(f"===== Sending Batch[{idx}], concurrency={len(each_input_requests)}: E.g. question: {each_input_requests[0][:30]}...")
+                    asyncio.run(benchmark_requests(openai_clients, openai_endpoints, each_input_requests, len(each_input_requests),
+                                                len(each_input_requests), args.output_file_path))
+                # wait until passing args.w_interval_sec
+                wait_time = next_start - time.time()
+                if wait_time > 0:
+                    time.sleep(wait_time)
+                next_start += interval_sec
+        end_time = time.time()
+        logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
     else:
-        interval_sec = args.w_interval_sec
-        logging.info(f"args.concurrency is None, generate workload: "
-                     f"A={args.w_A}, B={args.w_B}, sigma={args.w_sigma}, period={args.w_period}, "
-                     f"duration_sec={args.w_duration_sec}, interval_sec={interval_sec}")
-        workloads = generate_workload(
-            input_requests,
-            A=args.w_A, B=args.w_B, sigma=args.w_sigma, only_rise=args.w_only_rise,
-            period=args.w_period, duration_sec=args.w_duration_sec, interval_sec=interval_sec,
-        )
-        # if you want to see the workload traffic trend
-        plot_workload({"llm": workloads}, interval_sec=interval_sec,
-                      output_path=f"workload_plot/{identifier}.png")
-        next_start = start_time + interval_sec
-        for idx, each_input_requests in enumerate(workloads):
-
-            if len(each_input_requests) == 0:
-                logging.info(f"===== Sending Batch[{idx}], concurrency={len(each_input_requests)}: not sending in the batch")
-            else:
-                logging.info(f"===== Sending Batch[{idx}], concurrency={len(each_input_requests)}: E.g. question: {each_input_requests[0][:30]}...")
-                asyncio.run(benchmark_requests(openai_clients, openai_endpoints, each_input_requests, len(each_input_requests),
-                                               len(each_input_requests), args.output_file_path))
-
-            # wait until passing args.w_interval_sec
-            wait_time = next_start - time.time()
-            if wait_time > 0:
-                time.sleep(wait_time)
-            next_start += interval_sec
-    end_time = time.time()
-    logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
+        try:
+            interval_sec = args.w_interval_sec
+            with open(args.generated_path, 'r') as file:
+                generated_workloads = json.load(file)
+                start_time = time.time()    
+                next_start = start_time + interval_sec 
+                for idx, each_input_requests in enumerate(generated_workloads):
+                    if len(each_input_requests) == 0:
+                        logging.info(f"===== Sending Batch[{idx}], concurrency={len(each_input_requests)}: not sending in the batch")
+                    else:
+                        logging.info(f"===== Sending Batch[{idx}], concurrency={len(each_input_requests)}: E.g. question: {each_input_requests[0][:30]}...")
+                        asyncio.run(benchmark_requests(openai_clients, openai_endpoints, each_input_requests, len(each_input_requests),
+                                                    len(each_input_requests), args.output_file_path))
+                        # wait until passing args.w_interval_sec
+                        wait_time = next_start - time.time()
+                        if wait_time > 0:
+                            time.sleep(wait_time)
+                        next_start += interval_sec
+                end_time = time.time()
+        except FileNotFoundError:
+            print("The file was not found")
+        except json.JSONDecodeError:
+            print("The file contains invalid JSON")
+        except Exception as e:
+            print(f"An error occurred: {e}")
+    
 
 
 if __name__ == "__main__":
     parser = FlexibleArgumentParser(description='Benchmark the performance of multi-loras.')
     parser.add_argument("--dataset-path", type=str, default='/Users/kangrong.cn/data/AIBrix/ShareGPT_V3_unfiltered_cleaned_split.json', help="Path to the dataset.")
+    parser.add_argument('--generated-path', type=str, default=None, help="Path to generated trace. ")
     parser.add_argument("--sharegpt-output-len", type=int, default=None,
                         help="Output length for each request. Overrides the output length from the ShareGPT dataset.")
     parser.add_argument('--num-prompts', type=int, default=200, help="Number of the prompts sampled from dataset")

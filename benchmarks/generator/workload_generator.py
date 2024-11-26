@@ -160,7 +160,7 @@ def pair_requests_with_prompts(workload: List[List[Any]], prompts: List[Tuple[st
     
     for requests in workload:
         requests_with_prompts = [
-            (request, prompts[request % prompt_count]) for request in requests
+            prompts[request % prompt_count] for request in requests
         ]
         paired_workload.append(requests_with_prompts)
     
