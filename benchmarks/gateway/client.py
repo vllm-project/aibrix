@@ -137,6 +137,7 @@ def main(args):
     tokenizer = get_tokenizer(args.model, trust_remote_code=True)
     num_prompts = args.num_prompts
     if args.workload is not None:
+        workload = None
         try:
             with open(args.workload, 'r') as file:
                 workload = json.load(file)
