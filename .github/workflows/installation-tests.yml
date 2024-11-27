@@ -94,6 +94,13 @@ jobs:
           cd ${{ github.workspace }}
           kubectl create -k config/default
 
+      - name: Deploy Workload
+        run: |
+          cd docs/development/app
+          docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
+          kind load docker-image aibrix/vllm-mock:nightly --name installation-test
+          kubectl apply -f deployment.yaml
+
       - name: Check pod status
         run: |
           sleep 60s
