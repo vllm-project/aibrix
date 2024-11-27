@@ -572,6 +572,11 @@ func (c *Cache) updatePodMetrics() {
 			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
 		}
 
+		if c.prometheusApi == nil {
+			klog.V(4).InfoS("Prometheus api is not initialized, PROMETHEUS_ENDPOINT is not configured, skip fetching prometheus metrics")
+			continue
+		}
+
 		for _, metricName := range prometheusMetricNames {
 			modelName := pod.Labels["model.aibrix.ai/name"]
 			queryLabels := map[string]string{
@@ -605,6 +610,11 @@ func (c *Cache) updatePodMetrics() {
 func (c *Cache) updateModelMetrics() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.prometheusApi == nil {
+		klog.V(4).InfoS("Prometheus api is not initialized, PROMETHEUS_ENDPOINT is not configured, skip fetching prometheus metrics")
+		return
+	}
 
 	for _, metricName := range prometheusMetricNames {
 		for modelName := range c.ModelToPodMapping {
