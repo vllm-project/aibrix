@@ -20,6 +20,7 @@ import (
 	"context"
 	"math/rand"
 	"testing"
+	"time"
 
 	"github.com/aibrix/aibrix/pkg/cache"
 	"github.com/aibrix/aibrix/pkg/metrics"
@@ -87,6 +88,9 @@ func TestWithNoIPPods(t *testing.T) {
 }
 
 func TestWithIPPods(t *testing.T) {
+	// two case:
+	// case 1: pod ready
+	// case 2: pod ready & terminating -> we can send request at this moment.
 	c := cache.Cache{
 		Pods: map[string]*v1.Pod{
 			"p1": {
@@ -95,14 +99,27 @@ func TestWithIPPods(t *testing.T) {
 				},
 				Status: v1.PodStatus{
 					PodIP: "0.0.0.0",
+					Conditions: []v1.PodCondition{
+						{
+							Type:   v1.PodReady,
+							Status: v1.ConditionTrue,
+						},
+					},
 				},
 			},
 			"p2": {
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "p2",
+					Name:              "p2",
+					DeletionTimestamp: &metav1.Time{Time: time.Now()},
 				},
 				Status: v1.PodStatus{
 					PodIP: "1.0.0.0",
+					Conditions: []v1.PodCondition{
+						{
+							Type:   v1.PodReady,
+							Status: v1.ConditionTrue,
+						},
+					},
 				},
 			},
 		},
@@ -155,7 +172,15 @@ func TestSelectRandomPod(t *testing.T) {
 			name: "Single ready pod",
 			pods: map[string]*v1.Pod{
 				"pod1": {
-					Status: v1.PodStatus{PodIP: "10.0.0.1"},
+					Status: v1.PodStatus{
+						PodIP: "10.0.0.1",
+						Conditions: []v1.PodCondition{
+							{
+								Type:   v1.PodReady,
+								Status: v1.ConditionTrue,
+							},
+						},
+					},
 				},
 			},
 			expectErr: false,
@@ -164,13 +189,37 @@ func TestSelectRandomPod(t *testing.T) {
 			name: "Multiple ready pods",
 			pods: map[string]*v1.Pod{
 				"pod1": {
-					Status: v1.PodStatus{PodIP: "10.0.0.1"},
+					Status: v1.PodStatus{
+						PodIP: "10.0.0.1",
+						Conditions: []v1.PodCondition{
+							{
+								Type:   v1.PodReady,
+								Status: v1.ConditionTrue,
+							},
+						},
+					},
 				},
 				"pod2": {
-					Status: v1.PodStatus{PodIP: "10.0.0.2"},
+					Status: v1.PodStatus{
+						PodIP: "10.0.0.2",
+						Conditions: []v1.PodCondition{
+							{
+								Type:   v1.PodReady,
+								Status: v1.ConditionTrue,
+							},
+						},
+					},
 				},
 				"pod3": {
-					Status: v1.PodStatus{PodIP: "10.0.0.3"},
+					Status: v1.PodStatus{
+						PodIP: "10.0.0.3",
+						Conditions: []v1.PodCondition{
+							{
+								Type:   v1.PodReady,
+								Status: v1.ConditionTrue,
+							},
+						},
+					},
 				},
 			},
 			expectErr: false,
