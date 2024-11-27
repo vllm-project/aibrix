@@ -21,14 +21,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
-
 	"io"
 	"math"
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -46,9 +43,7 @@ import (
 	v1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
 	v1alpha1scheme "github.com/aibrix/aibrix/pkg/client/clientset/versioned/scheme"
 	"github.com/aibrix/aibrix/pkg/metrics"
-	"github.com/prometheus/client_golang/api"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
-	"github.com/prometheus/common/config"
 	"k8s.io/client-go/kubernetes/scheme"
 )
 
@@ -64,10 +59,10 @@ type Cache struct {
 	metrics           map[string]interface{}
 	ModelMetrics      map[string]map[string]interface{}
 	Pods              map[string]*v1.Pod
-	PodMetrics        map[string]map[string]*metrics.MetricValue // pod_name: map[metric_name]metric_val
-	PodToModelMapping map[string]map[string]struct{}             // pod_name: map[model_name]struct{}
-	ModelToPodMapping map[string]map[string]*v1.Pod              // model_name: map[pod_name]*v1.Pod
-	requestTrace      map[string]map[string]int                  // model_name: map[Log2(input_token)-Log2(output_token)]request_count
+	PodMetrics        map[string]map[string]metrics.MetricValue // pod_name: map[metric_name]metric_val
+	PodToModelMapping map[string]map[string]struct{}            // pod_name: map[model_name]struct{}
+	ModelToPodMapping map[string]map[string]*v1.Pod             // model_name: map[pod_name]*v1.Pod
+	requestTrace      map[string]map[string]int                 // model_name: map[Log2(input_token)-Log2(output_token)]request_count
 }
 
 const (
@@ -143,24 +138,6 @@ func LoadEnv(key, defaultValue string) string {
 	return value
 }
 
-// InitializePrometheusAPI initializes the Prometheus API client.
-func InitializePrometheusAPI(endpoint string, username string, password string) (prometheusv1.API, error) {
-	if endpoint == "" {
-		return nil, fmt.Errorf("prometheus endpoint is not provided")
-	}
-
-	client, err := api.NewClient(api.Config{
-		Address: endpoint,
-		RoundTripper: config.NewBasicAuthRoundTripper(config.NewInlineSecret(username),
-			config.NewInlineSecret(password), api.DefaultRoundTripper),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Prometheus client: %w", err)
-	}
-
-	return prometheusv1.NewAPI(client), nil
-}
-
 func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Cache {
 	once.Do(func() {
 		if err := v1alpha1scheme.AddToScheme(scheme.Scheme); err != nil {
@@ -200,7 +177,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 		// Initialize Prometheus API
 		var prometheusApi prometheusv1.API
 		if prometheusEndpoint != "" {
-			api, err := InitializePrometheusAPI(prometheusEndpoint, prometheusBasicAuthUsername, prometheusBasicAuthPassword)
+			api, err := metrics.InitializePrometheusAPI(prometheusEndpoint, prometheusBasicAuthUsername, prometheusBasicAuthPassword)
 			if err != nil {
 				klog.Errorf("Error initializing Prometheus API: %v", err)
 			} else {
@@ -214,7 +191,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			redisClient:       redisClient,
 			prometheusApi:     prometheusApi,
 			Pods:              map[string]*v1.Pod{},
-			PodMetrics:        map[string]map[string]*metrics.MetricValue{},
+			PodMetrics:        map[string]map[string]metrics.MetricValue{},
 			PodToModelMapping: map[string]map[string]struct{}{},
 			ModelToPodMapping: map[string]map[string]*v1.Pod{},
 			requestTrace:      map[string]map[string]int{},
@@ -515,16 +492,16 @@ func (c *Cache) CheckModelExists(modelName string) bool {
 	return ok
 }
 
-func (c *Cache) GetPodMetric(podName, metricName string) (*metrics.MetricValue, error) {
+func (c *Cache) GetPodMetric(podName, metricName string) (metrics.MetricValue, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	metrics, ok := c.PodMetrics[podName]
+	podMetrics, ok := c.PodMetrics[podName]
 	if !ok {
-		return nil, fmt.Errorf("pod does not exist in the metrics cache")
+		return nil, fmt.Errorf("pod does not exist in the podMetrics cache")
 	}
 
-	metricVal, ok := metrics[metricName]
+	metricVal, ok := podMetrics[metricName]
 	if !ok {
 		return nil, fmt.Errorf("no metric available for %v", metricName)
 	}
@@ -542,10 +519,10 @@ func (c *Cache) updatePodMetrics() {
 		}
 		podName := pod.Name
 		if len(c.PodMetrics[podName]) == 0 {
-			c.PodMetrics[podName] = map[string]*metrics.MetricValue{}
+			c.PodMetrics[podName] = map[string]metrics.MetricValue{}
 		}
 
-		// We should use the primary container port. In future, we can decide whether to use sidecar container's port
+		// We should use the primary container port. In the future, we can decide whether to use sidecar container's port
 		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, podPort)
 		resp, err := http.Get(url)
 		if err != nil {
@@ -564,29 +541,37 @@ func (c *Cache) updatePodMetrics() {
 			continue
 		}
 
-		// the metrics should come from those router subscribers
+		// TODO: the metrics should come from those router subscribers in future
 
 		// parse counterGaugeMetricsNames
 		for _, metricName := range counterGaugeMetricNames {
-			metricValue, err := parseMetricFromBody(body, metricName)
+			metricValue, err := metrics.ParseMetricFromBody(body, metricName)
 			if err != nil {
 				klog.Errorf("failed to parse metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
 				continue
 			}
 
-			c.PodMetrics[pod.Name][metricName] = &metrics.MetricValue{Value: metricValue}
+			c.PodMetrics[pod.Name][metricName] = &metrics.SimpleMetricValue{Value: metricValue}
 			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
 		}
 
 		// parse histogramMetrics
 		for _, metricName := range histogramMetricNames {
-			metricValue, err := parseHistogramFromBody(body, metricName)
+			metricValue, err := metrics.ParseHistogramFromBody(body, metricName)
 			if err != nil {
 				klog.Errorf("failed to parse metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
 				continue
 			}
 
-			c.PodMetrics[pod.Name][metricName] = &metrics.MetricValue{Histogram: metricValue}
+			value, ok := metricValue.GetHistogramValue()
+			if !ok {
+				continue
+			}
+			c.PodMetrics[pod.Name][metricName] = &metrics.HistogramMetricValue{
+				Sum:     value.Sum,
+				Count:   value.Count,
+				Buckets: value.Buckets,
+			}
 			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
 		}
 
@@ -601,7 +586,7 @@ func (c *Cache) updatePodMetrics() {
 				klog.Warningf("Cannot find %v in the metric list", metricName)
 				continue
 			}
-			query := BuildQuery(metric.PromQL, queryLabels)
+			query := metrics.BuildQuery(metric.PromQL, queryLabels)
 			// Querying metrics
 			result, warnings, err := c.prometheusApi.Query(context.Background(), query, time.Now())
 			if err != nil {
@@ -615,7 +600,7 @@ func (c *Cache) updatePodMetrics() {
 
 			klog.Infof("Query Result:%v\n", result)
 			// Update metrics
-			c.PodMetrics[pod.Name][metricName] = &metrics.MetricValue{PrometheusResult: &result}
+			c.PodMetrics[pod.Name][metricName] = &metrics.PrometheusMetricValue{Result: &result}
 		}
 	}
 }
@@ -644,7 +629,7 @@ func (c *Cache) updateModelMetrics() {
 				klog.Warningf("Cannot find %v in the metric list", metricName)
 				continue
 			}
-			query := BuildQuery(metric.PromQL, queryLabels)
+			query := metrics.BuildQuery(metric.PromQL, queryLabels)
 			// Querying metrics
 			result, warnings, err := c.prometheusApi.Query(context.Background(), query, time.Now())
 			if err != nil {
@@ -661,145 +646,6 @@ func (c *Cache) updateModelMetrics() {
 			c.ModelMetrics[modelName][metricName] = result
 		}
 	}
-}
-
-// BuildQuery builds a PromQL query by dynamically injecting labels
-// It replaces placeholders in the query (e.g., ${key}) with actual values from queryLabels
-// and appends any additional labels to the query.
-func BuildQuery(queryTemplate string, queryLabels map[string]string) string {
-	// Regular expression to find placeholders like ${key}
-	placeholderPattern := regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
-
-	// Replace placeholders with actual values from queryLabels
-	queryWithReplacements := placeholderPattern.ReplaceAllStringFunc(queryTemplate, func(match string) string {
-		// Extract the key from ${key}
-		key := placeholderPattern.FindStringSubmatch(match)[1]
-		if value, exists := queryLabels[key]; exists {
-			return value // Replace ${key} with its value
-		}
-		return match // Keep the placeholder if no match in queryLabels
-	})
-
-	// Collect all labels from queryLabels not already in the query
-	existingLabels := map[string]bool{}
-	matches := placeholderPattern.FindAllStringSubmatch(queryTemplate, -1)
-	for _, match := range matches {
-		existingLabels[match[1]] = true
-	}
-
-	var additionalLabels []string
-	for key, value := range queryLabels {
-		if !existingLabels[key] {
-			additionalLabels = append(additionalLabels, fmt.Sprintf(`%s="%s"`, key, value))
-		}
-	}
-
-	// If there are additional labels, append them to the query
-	if len(additionalLabels) > 0 {
-		labels := strings.Join(additionalLabels, ",")
-		if strings.Contains(queryWithReplacements, "{") {
-			// Add to existing label set
-			queryWithReplacements = strings.Replace(queryWithReplacements, "{", fmt.Sprintf("{%s,", labels), 1)
-		} else {
-			// Create a new label set
-			queryWithReplacements = fmt.Sprintf("%s{%s}", queryWithReplacements, labels)
-		}
-	}
-
-	return queryWithReplacements
-}
-
-func parseMetricFromBody(body []byte, metricName string) (float64, error) {
-	lines := strings.Split(string(body), "\n")
-	for _, line := range lines {
-		if !strings.HasPrefix(line, "#") && strings.Contains(line, metricName) {
-			// format is `http_requests_total 1234.56`
-			parts := strings.Fields(line)
-			if len(parts) < 2 {
-				return 0, fmt.Errorf("unexpected format for metric %s", metricName)
-			}
-
-			// parse to float64
-			value, err := strconv.ParseFloat(parts[len(parts)-1], 64)
-			if err != nil {
-				return 0, fmt.Errorf("failed to parse metric value for %s: %v", metricName, err)
-			}
-
-			return value, nil
-		}
-	}
-	return 0, fmt.Errorf("metrics %s not found", metricName)
-}
-
-func parseHistogramFromBody(body []byte, metricName string) (*metrics.HistogramMetric, error) {
-	lines := strings.Split(string(body), "\n")
-	histogram := &metrics.HistogramMetric{
-		Buckets: make(map[string]float64),
-	}
-	found := false
-
-	for _, line := range lines {
-		if strings.Contains(line, metricName+"_sum") {
-			parts := strings.Fields(line)
-			if len(parts) < 2 {
-				return nil, fmt.Errorf("unexpected format for metric %s_sum", metricName)
-			}
-			value, err := strconv.ParseFloat(parts[len(parts)-1], 64)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse sum for metric %s: %v", metricName, err)
-			}
-			histogram.Sum = value
-			found = true
-		} else if strings.Contains(line, metricName+"_count") {
-			parts := strings.Fields(line)
-			if len(parts) < 2 {
-				return nil, fmt.Errorf("unexpected format for metric %s_count", metricName)
-			}
-			value, err := strconv.ParseFloat(parts[len(parts)-1], 64)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse count for metric %s: %v", metricName, err)
-			}
-			histogram.Count = value
-			found = true
-		} else if strings.Contains(line, metricName+"_bucket") {
-			parts := strings.Fields(line)
-			if len(parts) < 2 {
-				return nil, fmt.Errorf("unexpected format for bucket in metric %s", metricName)
-			}
-
-			// Extract the bucket boundary (le="...")
-			bucketBoundary := extractBucketBoundary(line)
-			if bucketBoundary == "" {
-				return nil, fmt.Errorf("failed to extract bucket boundary for metric %s", metricName)
-			}
-
-			value, err := strconv.ParseFloat(parts[len(parts)-1], 64)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse bucket value for %s: %v", metricName, err)
-			}
-			histogram.Buckets[bucketBoundary] = value
-			found = true
-		}
-	}
-
-	if !found {
-		return nil, fmt.Errorf("metrics %s not found", metricName)
-	}
-	return histogram, nil
-}
-
-func extractBucketBoundary(line string) string {
-	// Extract `le="value"` from bucket lines
-	startIndex := strings.Index(line, `le="`)
-	if startIndex == -1 {
-		return ""
-	}
-	startIndex += len(`le="`)
-	endIndex := strings.Index(line[startIndex:], `"`)
-	if endIndex == -1 {
-		return ""
-	}
-	return line[startIndex : startIndex+endIndex]
 }
 
 func (c *Cache) AddRequestTrace(modelName string, inputTokens, outputTokens int64) {
