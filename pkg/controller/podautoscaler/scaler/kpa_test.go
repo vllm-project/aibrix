@@ -20,11 +20,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
+	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/algorithm"
+	scalingcontext "github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
+
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 )
@@ -35,36 +37,42 @@ import (
 // and surpassing the PanicThreshold, the system should enter panic mode and scale up to 10 replicas.
 func TestKpaScale(t *testing.T) {
 	readyPodCount := 5
-	metricsFetcher := &metrics.RestMetricsFetcher{}
-	kpaMetricsClient := metrics.NewKPAMetricsClient(metricsFetcher)
-	now := time.Now()
-	metricKey := metrics.NewNamespaceNameMetric("test_ns", "llama-70b", "ttot")
-	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-60*time.Second), 10.0)
-	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-50*time.Second), 11.0)
-	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-40*time.Second), 12.0)
-	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-30*time.Second), 13.0)
-	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-20*time.Second), 14.0)
-	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-10*time.Second), 100.0)
-
-	kpaScaler, err := NewKpaAutoscaler(readyPodCount,
-		&KpaScalingContext{
-			BaseScalingContext: common.BaseScalingContext{
-				MaxScaleUpRate:   2,
-				MaxScaleDownRate: 2,
-				ScalingMetric:    metricKey.MetricName,
-				TargetValue:      10,
-				TotalValue:       500,
-			},
-			PanicThreshold:  2.0,
-			StableWindow:    60 * time.Second,
-			ScaleDownDelay:  10 * time.Second,
-			ActivationScale: 2,
+	spec := KpaScalingContext{
+		BaseScalingContext: scalingcontext.BaseScalingContext{
+			MaxScaleUpRate:   2,
+			MaxScaleDownRate: 2,
+			ScalingMetric:    "ttot",
+			TargetValue:      10,
+			TotalValue:       500,
 		},
-	)
-	kpaScaler.metricClient = kpaMetricsClient
-	if err != nil {
-		t.Errorf("Failed to create KpaAutoscaler: %v", err)
+		TargetBurstCapacity: 2.0,
+		ActivationScale:     2,
+		PanicThreshold:      2.0,
+		StableWindow:        60 * time.Second,
+		PanicWindow:         10 * time.Second,
+		ScaleDownDelay:      30 * time.Minute,
 	}
+	metricsFetcher := &metrics.RestMetricsFetcher{}
+	kpaMetricsClient := metrics.NewKPAMetricsClient(metricsFetcher, spec.StableWindow, spec.PanicWindow)
+	now := time.Now()
+	metricKey := metrics.NewNamespaceNameMetric("test_ns", "llama-70b", spec.ScalingMetric)
+	_ = kpaMetricsClient.UpdateMetricIntoWindow(now.Add(-60*time.Second), 10.0)
+	_ = kpaMetricsClient.UpdateMetricIntoWindow(now.Add(-50*time.Second), 11.0)
+	_ = kpaMetricsClient.UpdateMetricIntoWindow(now.Add(-40*time.Second), 12.0)
+	_ = kpaMetricsClient.UpdateMetricIntoWindow(now.Add(-30*time.Second), 13.0)
+	_ = kpaMetricsClient.UpdateMetricIntoWindow(now.Add(-20*time.Second), 14.0)
+	_ = kpaMetricsClient.UpdateMetricIntoWindow(now.Add(-10*time.Second), 100.0)
+
+	kpaScaler := KpaAutoscaler{
+		metricClient:   kpaMetricsClient,
+		panicTime:      now,
+		maxPanicPods:   int32(readyPodCount),
+		delayWindow:    aggregation.NewTimeWindow(spec.ScaleDownDelay, time.Second),
+		algorithm:      &algorithm.KpaScalingAlgorithm{},
+		scalingContext: &spec,
+	}
+
+	kpaScaler.metricClient = kpaMetricsClient
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 

@@ -24,15 +24,17 @@ import (
 
 // NewAutoscalerFactory creates an Autoscaler based on the given ScalingStrategy
 func NewAutoscalerFactory(strategy autoscalingv1alpha1.ScalingStrategyType) (Scaler, error) {
+	// after update, the XpaAutoscaler must be associated with an instantiated PA, rather than an empty scaler that awaits filling.
+	// But NewAutoscalerFactory doesn't be used, so we temporarily pass into nil
 	switch strategy {
 	case autoscalingv1alpha1.KPA:
-		autoscaler, err := NewKpaAutoscaler(0, NewKpaScalingContext())
+		autoscaler, err := NewKpaAutoscaler(0, nil)
 		if err != nil {
 			return nil, err
 		}
 		return autoscaler, nil
 	case autoscalingv1alpha1.APA:
-		autoscaler, err := NewApaAutoscaler(0, NewApaScalingContext())
+		autoscaler, err := NewApaAutoscaler(0, nil)
 		if err != nil {
 			return nil, err
 		}

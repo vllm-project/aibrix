@@ -34,6 +34,10 @@ type entry struct {
 	index int
 }
 
+func (e entry) String() string {
+	return fmt.Sprintf("{%d, %.2f}", e.index, e.value)
+}
+
 // window is a sliding window that keeps track of recent {size} values.
 type window struct {
 	valueList     []entry
@@ -125,7 +129,7 @@ func (w *window) String() string {
 
 	for i := 0; i < w.length; i++ {
 		idx := (w.first + i) % len(w.valueList)
-		sb.WriteString(fmt.Sprintf("%v", w.valueList[idx]))
+		sb.WriteString(fmt.Sprintf("%v", w.valueList[idx].String()))
 		if i < w.length-1 {
 			sb.WriteString(", ")
 		}

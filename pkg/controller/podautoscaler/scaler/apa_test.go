@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/algorithm"
+
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,24 +35,24 @@ func TestAPAScale(t *testing.T) {
 	t.Skip("Skipping this test")
 
 	readyPodCount := 5
+	spec := NewApaScalingContext()
 	metricsFetcher := &metrics.RestMetricsFetcher{}
-	kpaMetricsClient := metrics.NewKPAMetricsClient(metricsFetcher)
+	apaMetricsClient := metrics.NewAPAMetricsClient(metricsFetcher, spec.Window)
 	now := time.Now()
 	metricKey := metrics.NewNamespaceNameMetric("test_ns", "llama-70b", "ttot")
-	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-60*time.Second), 10.0)
-	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-50*time.Second), 11.0)
-	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-40*time.Second), 12.0)
-	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-30*time.Second), 13.0)
-	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-20*time.Second), 14.0)
-	_ = kpaMetricsClient.UpdateMetricIntoWindow(metricKey, now.Add(-10*time.Second), 100.0)
+	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-60*time.Second), 10.0)
+	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-50*time.Second), 11.0)
+	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-40*time.Second), 12.0)
+	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-30*time.Second), 13.0)
+	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-20*time.Second), 14.0)
+	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-10*time.Second), 100.0)
 
-	apaScaler, err := NewApaAutoscaler(readyPodCount,
-		&ApaScalingContext{},
-	)
-	apaScaler.metricClient = kpaMetricsClient
-	if err != nil {
-		t.Errorf("Failed to create KpaAutoscaler: %v", err)
+	apaScaler := ApaAutoscaler{
+		metricClient:   apaMetricsClient,
+		algorithm:      &algorithm.ApaScalingAlgorithm{},
+		scalingContext: spec,
 	}
+	apaScaler.metricClient = apaMetricsClient
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
