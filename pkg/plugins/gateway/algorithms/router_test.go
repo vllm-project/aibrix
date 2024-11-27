@@ -193,8 +193,10 @@ func TestSelectRandomPod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rand.Seed(42) // Seed randomness for consistent results in tests
-			podIP, err := selectRandomPod(tt.pods)
+			// Create a new random generator with a fixed seed for consistent test results
+			// Seed randomness for consistent results in tests
+			r := rand.New(rand.NewSource(42))
+			podIP, err := selectRandomPod(tt.pods, r.Intn)
 			if tt.expectErr {
 				if err == nil {
 					t.Errorf("expected an error but got none")

@@ -19,7 +19,8 @@ package routingalgorithms
 import (
 	"context"
 	"fmt"
-	"math/rand"
+
+	"github.com/aibrix/aibrix/pkg/utils"
 
 	v1 "k8s.io/api/core/v1"
 )
@@ -32,33 +33,13 @@ type Router interface {
 	Route(ctx context.Context, pods map[string]*v1.Pod) (string, error)
 }
 
-// selectRandomPod selects a random pod from the provided pod map.
+// selectRandomPodWithRand selects a random pod from the provided pod map.
 // It returns an error if no ready pods are available.
-func selectRandomPod(pods map[string]*v1.Pod) (string, error) {
-	readyPods := filterReadyPods(pods)
+func selectRandomPod(pods map[string]*v1.Pod, randomFn func(int) int) (string, error) {
+	readyPods := utils.FilterReadyPods(pods)
 	if len(readyPods) == 0 {
-		return "", fmt.Errorf("no ready pods available among %d provided", len(pods))
+		return "", fmt.Errorf("no ready pods available for fallback")
 	}
-	randomPod := readyPods[rand.Intn(len(readyPods))]
+	randomPod := readyPods[randomFn(len(readyPods))]
 	return randomPod.Status.PodIP, nil
-}
-
-// filterReadyPods filters and returns a list of pods that have a valid PodIP.
-func filterReadyPods(pods map[string]*v1.Pod) []*v1.Pod {
-	var readyPods []*v1.Pod
-	for _, pod := range pods {
-		if pod.Status.PodIP != "" && isPodReady(pod) {
-			readyPods = append(readyPods, pod)
-		}
-	}
-	return readyPods
-}
-
-func isPodReady(pod *v1.Pod) bool {
-	for _, condition := range pod.Status.Conditions {
-		if condition.Type == v1.PodReady && condition.Status == v1.ConditionTrue {
-			return true
-		}
-	}
-	return false
 }

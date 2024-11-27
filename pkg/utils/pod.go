@@ -139,3 +139,14 @@ func CountReadyPods(podList *v1.PodList) (int64, error) {
 
 	return int64(readyPodCount), nil
 }
+
+// FilterReadyPods filters and returns a list of pods that have a valid PodIP.
+func FilterReadyPods(pods map[string]*v1.Pod) []*v1.Pod {
+	var readyPods []*v1.Pod
+	for _, pod := range pods {
+		if pod.Status.PodIP != "" && IsPodReady(pod) {
+			readyPods = append(readyPods, pod)
+		}
+	}
+	return readyPods
+}

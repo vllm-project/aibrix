@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/rand"
 
 	"github.com/aibrix/aibrix/pkg/cache"
 	"github.com/aibrix/aibrix/pkg/metrics"
@@ -85,7 +86,7 @@ func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod) 
 	if targetPodIP == "" {
 		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPodIP, err = selectRandomPod(pods)
+		targetPodIP, err = selectRandomPod(pods, rand.Intn)
 		if err != nil {
 			return "", err
 		}

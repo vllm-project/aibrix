@@ -29,6 +29,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aibrix/aibrix/pkg/utils"
+
 	crdinformers "github.com/aibrix/aibrix/pkg/client/informers/externalversions"
 	"github.com/redis/go-redis/v9"
 	v1 "k8s.io/api/core/v1"
@@ -514,7 +516,8 @@ func (c *Cache) updatePodMetrics() {
 	defer c.mu.Unlock()
 
 	for _, pod := range c.Pods {
-		if pod.Status.PodIP == "" {
+		// Only scrape healthy Pod
+		if pod.Status.PodIP == "" || utils.IsPodTerminating(pod) || utils.IsPodReady(pod) {
 			continue
 		}
 		podName := pod.Name
