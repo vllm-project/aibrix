@@ -18,9 +18,10 @@ package metrics
 
 import (
 	"fmt"
-	"github.com/prometheus/common/model"
 	"sort"
 	"strconv"
+
+	"github.com/prometheus/common/model"
 )
 
 // MetricSource defines the metric source

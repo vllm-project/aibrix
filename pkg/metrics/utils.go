@@ -18,12 +18,13 @@ package metrics
 
 import (
 	"fmt"
-	"github.com/prometheus/client_golang/api"
-	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
-	"github.com/prometheus/common/config"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/prometheus/client_golang/api"
+	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/common/config"
 )
 
 // ParseHistogramFromBody parses a histogram metric from the Prometheus response body.

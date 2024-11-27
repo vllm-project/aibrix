@@ -17,9 +17,10 @@ limitations under the License.
 package metrics
 
 import (
+	"testing"
+
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
-	"testing"
 )
 
 func TestMetricType(t *testing.T) {
