@@ -101,32 +101,6 @@ async def benchmark_requests(endpoint, prompts, num_requests, interval, output_f
         await asyncio.gather(*batch_tasks)
         logging.info(f"All {num_requests} requests completed for deployment.")
         
-async def benchmark_workload(endpoint, workload, interval, output_file_path):
-    client = openai.AsyncOpenAI(
-        api_key="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",
-        base_url=endpoint+"/v1",
-    )
-
-    with open(output_file_path, 'a', encoding='utf-8') as output_file:
-        batch_tasks = []
-        next_start = time.time() + interval
-        for request_idx, prompts in enumerate(workload):
-            wrapped_prompts = [wrap_prompt_as_chat_message(prompt) for (prompt, _, _, _,) in prompts]
-            for wrapper_prompt in wrapped_prompts:
-                task = asyncio.create_task(
-                    send_request(client, endpoint, wrapper_prompt, output_file)
-                )
-                batch_tasks.append(task)
-            wait_time = next_start - time.time()
-            logging.info(f"Submitting request batch {request_idx}, sleeping for {wait_time} seconds")
-            if wait_time > 0:
-                time.sleep(wait_time)
-            next_start += interval
-            await asyncio.sleep(interval)
-
-        await asyncio.gather(*batch_tasks)
-        logging.info(f"All requests completed for deployment.")
-
 
 def sample_sharegpt_requests(
         dataset_path: str,
@@ -174,10 +148,15 @@ def main(args):
             print(f"An error occurred: {e}")      
         logging.info(f"Starting benchmark for {num_prompts} prompts on endpoint {args.endpoint}")
         start_time = time.time()
-        asyncio.run(benchmark_workload(args.endpoint, workload, num_prompts, args.interval, args.output_file_path))
+        next_start = time.time() + args.interval
+        for prompts in workload:
+            asyncio.run(benchmark_requests(args.endpoint, prompts, len(prompts), 0, args.output_file_path))
+            wait_time = next_start - time.time()
+            if wait_time > 0:
+                time.sleep(wait_time)
+            next_start += args.interval
         end_time = time.time()
         logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
-  
     else:
         if args.dataset_path is not None:
             logging.info(f"Sampling {num_prompts} prompts from {args.dataset_path}")

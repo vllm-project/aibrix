@@ -177,6 +177,31 @@ async def benchmark_requests(clients, model_endpoints, prompts, num_requests, co
 
         logging.info(f"All {num_requests} requests completed for deployment.")
 
+async def benchmark_workloads(clients, model_endpoints, workload, interval, output_file_path):
+    models = list(model_endpoints.keys())
+    batch_tasks = []
+
+    with open(output_file_path, 'a', encoding='utf-8') as output_file:
+        start_time = time.time()   
+        next_start = start_time + interval  
+        for idx, prompts in enumerate(workload):
+            if len(prompts) == 0:
+                logging.info(f"===== Sending Batch[{idx}], concurrency={len(prompts)}: not sending in the batch")
+            else:
+                wrapped_prompts = [wrap_prompt_as_chat_message(prompt) for (prompt, _, _, _,) in prompts]
+                for wrapper_prompt in wrapped_prompts:
+                    model = random.choice(models)
+                    client = clients[model]
+                    endpoint = model_endpoints[model]
+                    task = asyncio.create_task(send_request(client, model, endpoint, wrapper_prompt, output_file))
+                    batch_tasks.append(task)
+                wait_time = next_start - time.time()
+                logging.info(f"===== Sending Batch[{idx}], concurrency={len(prompts)}: E.g. question: {prompts[0][:30]}...")
+                if wait_time > 0:
+                    time.sleep(wait_time)
+                next_start += interval
+        await asyncio.gather(*batch_tasks)
+
 
 def sample_sharegpt_requests(
     dataset_path: str,
