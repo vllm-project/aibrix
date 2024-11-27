@@ -18,6 +18,7 @@ package routingalgorithms
 
 import (
 	"context"
+	"math/rand"
 	"testing"
 
 	"github.com/aibrix/aibrix/pkg/cache"
@@ -141,4 +142,79 @@ func TestWithIPPods(t *testing.T) {
 	targetPodIP, err = r3.Route(context.TODO(), c.Pods)
 	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
 	assert.NoError(t, err)
+}
+
+// TestSelectRandomPod tests the selectRandomPod function.
+func TestSelectRandomPod(t *testing.T) {
+	tests := []struct {
+		name      string
+		pods      map[string]*v1.Pod
+		expectErr bool
+	}{
+		{
+			name: "Single ready pod",
+			pods: map[string]*v1.Pod{
+				"pod1": {
+					Status: v1.PodStatus{PodIP: "10.0.0.1"},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "Multiple ready pods",
+			pods: map[string]*v1.Pod{
+				"pod1": {
+					Status: v1.PodStatus{PodIP: "10.0.0.1"},
+				},
+				"pod2": {
+					Status: v1.PodStatus{PodIP: "10.0.0.2"},
+				},
+				"pod3": {
+					Status: v1.PodStatus{PodIP: "10.0.0.3"},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name:      "No pods",
+			pods:      map[string]*v1.Pod{},
+			expectErr: true,
+		},
+		{
+			name: "Pods without IP",
+			pods: map[string]*v1.Pod{
+				"pod1": {
+					Status: v1.PodStatus{PodIP: ""},
+				},
+			},
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rand.Seed(42) // Seed randomness for consistent results in tests
+			podIP, err := selectRandomPod(tt.pods)
+			if tt.expectErr {
+				if err == nil {
+					t.Errorf("expected an error but got none")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				// Verify that the returned pod IP exists in the input map
+				found := false
+				for _, pod := range tt.pods {
+					if pod.Status.PodIP == podIP {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("returned pod IP %v is not in the input pods", podIP)
+				}
+			}
+		})
+	}
 }

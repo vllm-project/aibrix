@@ -81,6 +81,16 @@ func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod) 
 		}
 	}
 
+	// Use fallback if no valid metrics
+	if targetPodIP == "" {
+		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
+		var err error
+		targetPodIP, err = selectRandomPod(pods)
+		if err != nil {
+			return "", err
+		}
+	}
+
 	if targetPodIP == "" {
 		return "", fmt.Errorf("no pods to forward request")
 	}
