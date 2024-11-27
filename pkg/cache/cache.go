@@ -563,10 +563,7 @@ func (c *Cache) updatePodMetrics() {
 				continue
 			}
 
-			value, ok := metricValue.GetHistogramValue()
-			if !ok {
-				continue
-			}
+			value := metricValue.GetHistogramValue()
 			c.PodMetrics[pod.Name][metricName] = &metrics.HistogramMetricValue{
 				Sum:     value.Sum,
 				Count:   value.Count,
