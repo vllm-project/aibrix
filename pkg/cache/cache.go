@@ -298,22 +298,28 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 	defer c.mu.Unlock()
 
 	oldPod := oldObj.(*v1.Pod)
-	oldModelName, ok := oldPod.Labels[modelIdentifier]
-	if !ok {
-		return
-	}
-
 	newPod := newObj.(*v1.Pod)
-	newModelName, ok := oldPod.Labels[modelIdentifier]
-	if !ok {
-		return
+
+	oldModelName, oldOk := oldPod.Labels[modelIdentifier]
+	newModelName, newOk := newPod.Labels[modelIdentifier]
+
+	if !oldOk && !newOk {
+		return // No model information to track in either old or new pod
 	}
 
-	delete(c.Pods, oldPod.Name)
-	c.Pods[newPod.Name] = newPod
-	c.deletePodAndModelMapping(oldPod.Name, oldModelName)
-	c.addPodAndModelMapping(newPod.Name, newModelName)
-	klog.V(4).Infof("POD UPDATED. %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
+	// Remove old mappings if present
+	if oldOk {
+		delete(c.Pods, oldPod.Name)
+		c.deletePodAndModelMapping(oldPod.Name, oldModelName)
+	}
+
+	// Add new mappings if present
+	if newOk {
+		c.Pods[newPod.Name] = newPod
+		c.addPodAndModelMapping(newPod.Name, newModelName)
+	}
+
+	klog.V(4).Infof("POD UPDATED: %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
 	c.debugInfo()
 }
 
