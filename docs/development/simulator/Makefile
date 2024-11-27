@@ -4,7 +4,7 @@ build-a100:
 	docker build -t aibrix/vllm-simulator:nightly -f Dockerfile .
 
 build-a40: 
-	docker build -t aibrix/vllm-simulator-a40:nightly -f Dockerfile-a40 .
+	docker build -t aibrix/vllm-simulator-a40:nightly --build-arg GPU_TYPE=a40 -f Dockerfile .
 
 build: build-a100
 

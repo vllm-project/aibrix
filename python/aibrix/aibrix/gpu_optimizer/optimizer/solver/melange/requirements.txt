@@ -1,0 +1,5 @@
+# used for the solver
+numpy
+pulp==2.8.0
+pandas
+ruamel.yaml==0.18.6

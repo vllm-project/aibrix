@@ -73,34 +73,3 @@ curl -v http://localhost:8888/v1/chat/completions \
      "messages": [{"role": "user", "content": "Say this is a test!"}],
      "temperature": 0.7
    }' &
-
-# least-request based
-for i in {1..10}; do
-  curl -v http://localhost:8888/v1/chat/completions \
-  -H "user: your-user-name" \
-  -H "routing-strategy: least-request" \
-  -H "model: llama2-7b" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer any_key" \
-  -d '{
-     "model": "llama2-7b",
-     "messages": [{"role": "user", "content": "Say this is a test!"}],
-     "temperature": 0.7
-   }' &
-done
-
-# throughput based
-for i in {1..10}; do
-  curl -v http://localhost:8888/v1/chat/completions \
-  -H "user: your-user-name" \
-  -H "routing-strategy: throughput" \
-  -H "model: llama2-7b" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer any_key" \
-  -d '{
-     "model": "llama2-7b",
-     "messages": [{"role": "user", "content": "Say this is a test!"}],
-     "temperature": 0.7
-   }' &
-done
-```

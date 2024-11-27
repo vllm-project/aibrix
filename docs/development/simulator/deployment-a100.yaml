@@ -7,7 +7,7 @@ metadata:
     modeladapter.aibricks.ai/enabled: "true"
     model.aibrix.ai/name: "llama2-7b"
     model.aibrix.ai/port: "8000"
-    model.aibrix.ai/min_replicas: "1"
+    model.aibrix.ai/min_replicas: "1" # min replica for gpu optimizer when no workloads.
 spec:
   replicas: 1
   selector:
@@ -150,7 +150,7 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: simulator-llama2-7b-a100
-  minReplicas: 1
+  minReplicas: 0
   maxReplicas: 10
   targetMetric: "avg_prompt_throughput_toks_per_s" # Ignore if metricsSources is configured
   metricsSources: 

@@ -22,8 +22,9 @@ COPY ./*.py /simulator/
 # COPY ./model_cache /simulator/model_cache
 
 ENV MODEL_NAME=llama2-7b
+ARG GPU_TYPE=a100
  # Trigger profiling
-RUN python app.py --time_limit 1000 --replica_config_device a100
+RUN python app.py --time_limit 1000 --replica_config_device ${GPU_TYPE}
 
 # Expose the port the app runs on
 EXPOSE 8000

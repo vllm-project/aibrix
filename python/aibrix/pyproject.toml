@@ -35,7 +35,7 @@ aibrix_runtime = 'aibrix.app:main'
 aibrix_download = 'aibrix.downloader.__main__:main'
 
 [tool.poetry.dependencies]
-python = ">=3.8,<3.12"
+python = ">=3.10,<3.12"
 huggingface-hub = "^0.24.6"
 tos = "2.8.0"
 boto3 = "^1.35.5"
@@ -47,6 +47,15 @@ types-requests = "^2.31.0"
 httpx = "^0.27.2"
 hf-transfer = "^0.1.8"
 types-redis = "^4.6.0.20241004"
+redis = "^5.2.0"
+kubernetes = "^31.0.0"
+numpy = "1.26.4"
+pandas = "^2.2.3"
+pulp = "2.8.0"
+incdbscan = "^0.1.0"
+aiohttp = "^3.11.7"
+dash = "^2.18.2"
+matplotlib = "^3.9.2"
 
 
 [tool.poetry.group.dev.dependencies]
