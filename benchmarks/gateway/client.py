@@ -100,7 +100,7 @@ async def benchmark_requests(endpoint, prompts, num_requests, interval, output_f
 
         await asyncio.gather(*batch_tasks)
         logging.info(f"All {num_requests} requests completed for deployment.")
-        
+
 
 def sample_sharegpt_requests(
         dataset_path: str,
@@ -136,52 +136,28 @@ def sample_sharegpt_requests(
 def main(args):
     tokenizer = get_tokenizer(args.model, trust_remote_code=True)
     num_prompts = args.num_prompts
-    if args.workload is not None:
-        workload = None
-        try:
-            with open(args.workload, 'r') as file:
-                workload = json.load(file)
-        except FileNotFoundError:
-            print("The file was not found")
-        except json.JSONDecodeError:
-            print("The file contains invalid JSON")
-        except Exception as e:
-            print(f"An error occurred: {e}")      
-        logging.info(f"Starting benchmark for {num_prompts} prompts on endpoint {args.endpoint}")
-        start_time = time.time()
-        next_start = time.time() + args.interval
-        for prompts in workload:
-            asyncio.run(benchmark_requests(args.endpoint, prompts, len(prompts), 0, args.output_file_path))
-            wait_time = next_start - time.time()
-            if wait_time > 0:
-                time.sleep(wait_time)
-            next_start += args.interval
-        end_time = time.time()
-        logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
+    if args.dataset_path is not None:
+        logging.info(f"Sampling {num_prompts} prompts from {args.dataset_path}")
+        input_requests = sample_sharegpt_requests(
+            dataset_path=args.dataset_path,
+            num_requests=num_prompts,
+            tokenizer=tokenizer,
+            fixed_output_len=args.sharegpt_output_len,
+        )
     else:
-        if args.dataset_path is not None:
-            logging.info(f"Sampling {num_prompts} prompts from {args.dataset_path}")
-            input_requests = sample_sharegpt_requests(
-                dataset_path=args.dataset_path,
-                num_requests=num_prompts,
-                tokenizer=tokenizer,
-                fixed_output_len=args.sharegpt_output_len,
-            )
-        else:
-            prompt_len = len(tokenizer(PROMPT).input_ids)
-            input_requests = [(PROMPT, prompt_len, args.output_len, None)] * num_prompts
+        prompt_len = len(tokenizer(PROMPT).input_ids)
+        input_requests = [(PROMPT, prompt_len, args.output_len, None)] * num_prompts
 
-        logging.info(f"Starting benchmark for {num_prompts} prompts on endpoint {args.endpoint}")
-        start_time = time.time()
-        asyncio.run(benchmark_requests(args.endpoint, input_requests, num_prompts, args.interval, args.output_file_path))
-        end_time = time.time()
-        logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
+    logging.info(f"Starting benchmark for {num_prompts} prompts on endpoint {args.endpoint}")
+    start_time = time.time()
+    asyncio.run(benchmark_requests(args.endpoint, input_requests, num_prompts, args.interval, args.output_file_path))
+    end_time = time.time()
+    logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
 
 
 if __name__ == "__main__":
     parser = FlexibleArgumentParser(description='Benchmark the performance of multi-loras.')
     parser.add_argument("--dataset-path", type=str, default=None, help="Path to the dataset.")
-    parser.add_argument("--workload", type=str, default=None, help="Path to generated workload trace.")
     parser.add_argument("--sharegpt-output-len", type=int, default=512, help="Output length for each request.")
     parser.add_argument('--num-prompts', type=int, default=1000, help="Number of the prompts sampled from dataset")
     parser.add_argument('--interval', type=float, default=0.2, help="Interval between requests in seconds.")
