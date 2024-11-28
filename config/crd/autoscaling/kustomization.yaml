@@ -1,0 +1,2 @@
+resources:
+- autoscaling.aibrix.ai_podautoscalers.yaml

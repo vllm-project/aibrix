@@ -1,0 +1,8 @@
+# controller manager are common sa, role, rolebindings that could be reused
+
+resources:
+  - leader_election_role.yaml
+  - leader_election_role_binding.yaml
+  - role.yaml
+  - role_binding.yaml
+  - service_account_controller_manager.yaml

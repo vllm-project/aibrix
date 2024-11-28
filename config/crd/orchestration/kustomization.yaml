@@ -1,0 +1,3 @@
+resources:
+- orchestration.aibrix.ai_rayclusterreplicasets.yaml
+- orchestration.aibrix.ai_rayclusterfleets.yaml

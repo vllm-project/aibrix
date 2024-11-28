@@ -25,6 +25,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aibrix/aibrix/pkg/features"
+
 	"google.golang.org/grpc"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -71,7 +73,11 @@ func main() {
 		panic(err)
 	}
 
-	cache.NewCache(config, stopCh, redisClient)
+	if features.IsControllerEnabled(features.ModelAdapterController) {
+		// cache is being used in model adapter scheduler.
+		// we need to initialize the cache here.
+		cache.NewCache(config, stopCh, redisClient)
+	}
 
 	// Connect to K8s cluster
 	k8sClient, err := kubernetes.NewForConfig(config)

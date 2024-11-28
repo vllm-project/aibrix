@@ -1,0 +1,5 @@
+resources:
+- orchestration_rayclusterfleet_editor_role.yaml
+- orchestration_rayclusterfleet_viewer_role.yaml
+- orchestration_rayclusterreplicaset_editor_role.yaml
+- orchestration_rayclusterreplicaset_viewer_role.yaml

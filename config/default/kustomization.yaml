@@ -15,6 +15,7 @@ namePrefix: aibrix-
 #    someName: someValue
 
 resources:
+- namespace.yaml
 - ../crd
 - ../rbac
 - ../manager

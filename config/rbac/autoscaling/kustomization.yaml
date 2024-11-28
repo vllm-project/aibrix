@@ -1,0 +1,3 @@
+resources:
+- autoscaling_podautoscaler_editor_role.yaml
+- autoscaling_podautoscaler_viewer_role.yaml

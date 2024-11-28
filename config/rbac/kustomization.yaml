@@ -4,23 +4,18 @@ resources:
 # if your manager will use a service account that exists at
 # runtime. Be sure to update RoleBinding and ClusterRoleBinding
 # subjects if changing service account names.
-- service_account_controller_manager.yaml
-- service_account_plugin.yaml
-- role.yaml
-- role_gateway.yaml
-- role_binding.yaml
-- leader_election_role.yaml
-- leader_election_role_binding.yaml
+- controller-manager
 # For each CRD, "Editor" and "Viewer" roles are scaffolded by
 # default, aiding admins in cluster management. Those roles are
 # not used by the Project itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- orchestration_rayclusterfleet_editor_role.yaml
-- orchestration_rayclusterfleet_viewer_role.yaml
-- orchestration_rayclusterreplicaset_editor_role.yaml
-- orchestration_rayclusterreplicaset_viewer_role.yaml
-- model_modeladapter_editor_role.yaml
-- model_modeladapter_viewer_role.yaml
-- autoscaling_podautoscaler_editor_role.yaml
-- autoscaling_podautoscaler_viewer_role.yaml
-
+- orchestration/orchestration_rayclusterfleet_editor_role.yaml
+- orchestration/orchestration_rayclusterfleet_viewer_role.yaml
+- orchestration/orchestration_rayclusterreplicaset_editor_role.yaml
+- orchestration/orchestration_rayclusterreplicaset_viewer_role.yaml
+- model/model_modeladapter_editor_role.yaml
+- model/model_modeladapter_viewer_role.yaml
+- autoscaling/autoscaling_podautoscaler_editor_role.yaml
+- autoscaling/autoscaling_podautoscaler_viewer_role.yaml
+# other components
+- gateway

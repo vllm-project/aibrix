@@ -2,8 +2,8 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - ../../crd/model
-  - ../../rbac/model
+  - ../../crd/orchestration
+  - ../../rbac/orchestration
   - ../../rbac/controller-manager
   - ../../manager
 
@@ -15,7 +15,7 @@ namespace: aibrix-system
 # "wordpress" becomes "alices-wordpress".
 # Note that it should also match with the prefix (text before '-') of the namespace
 # field above.
-namePrefix: aibrix-lora-
+namePrefix: aibrix-orchestration-
 
 images:
   - name: controller
