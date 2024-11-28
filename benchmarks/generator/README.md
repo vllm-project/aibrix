@@ -1,4 +1,4 @@
-# Generate workload file 
+# Generate workload file
 
 ## Generate a workload file based on .csv trace file
 ```
@@ -27,7 +27,7 @@ This generator generate workload file (in .json format) under ```traces``` folde
 If no trace file path is specified, the generator will generate workload file based on 4 synthetic pattern described [here](https://github.com/aibrix/aibrix/blob/main/benchmarks/autoscaling/bench_workload_generator.py):
 
 ```
-python workload_generator.py --prompt-file $SHARE_GPT_PATH --num-prompts 100 --num-requests 10000 
+python workload_generator.py --prompt-file $SHARE_GPT_PATH --num-prompts 100 --num-requests 10000
 ```
 
-The file would be stored under ```traces``` folder based on the name of different patterns. 
+The file would be stored under ```traces``` folder based on the name of different patterns.

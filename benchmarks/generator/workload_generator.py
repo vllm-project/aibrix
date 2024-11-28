@@ -73,8 +73,7 @@ def generate_from_QPS_csv(input_requests: List[Any],
                 break
     print(f"workloads {workloads}")
     return workloads
-    
-    
+
 def generate_synthetic(input_requests: List[Any], A=1, B=1,
                       sigma=0.1,
                       only_rise: bool = False,
@@ -157,17 +156,17 @@ def generate_synthetic(input_requests: List[Any], A=1, B=1,
 def pair_requests_with_prompts(workload: List[List[Any]], prompts: List[Tuple[str, int, int, None]], output_file: str = 'trace_output.json') -> List[List[Tuple[Any, str]]]:
     paired_workload = []
     prompt_count = len(prompts)
-    
+
     for requests in workload:
         requests_with_prompts = [
             prompts[request % prompt_count] for request in requests
         ]
         paired_workload.append(requests_with_prompts)
-    
+
     # Save to file
     with open(output_file, 'w') as file:
         json.dump(paired_workload, file)
-    
+
     return paired_workload
 
 def plot_workload(workload_dict, interval_sec, output_path: str = None):
@@ -203,7 +202,7 @@ if __name__ == '__main__':
     parser.add_argument('--trace-file', type=str, required=False, default=None, help='File containing trace CSV')
     parser.add_argument('--output', type=str, required=False, default="output.json", help='Output file name')
     args = parser.parse_args()
-    
+
     # Load prompts from a file
     prompts = sample_sharegpt_requests(args.prompt_file, args.num_prompts)
 
@@ -219,7 +218,7 @@ if __name__ == '__main__':
             'Slow Rising': {'duration_sec': 600, 'interval_sec': interval, 'A': 5, 'period': 0.25, 'only_rise': True},
             'Slight Fluctuation': {'duration_sec': 600, 'interval_sec': interval, 'A': 5, 'B': 5, 'period': 1, 'only_rise': False},
             'Severe Fluctuation': {'duration_sec': 600, 'interval_sec': interval, 'A': 5, 'B': 10, 'period': 12, 'only_rise': False},
-        } 
+        }
         for scenario_name, params in scenarios.items():
             generated_workload = generate_synthetic(demo_requests, **params)
             paired_workload = pair_requests_with_prompts(generated_workload, prompts, f'traces/{scenario_name}.json')
