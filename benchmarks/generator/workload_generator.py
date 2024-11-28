@@ -201,6 +201,7 @@ if __name__ == '__main__':
     parser.add_argument('--num-prompts', type=int, default=100, help='Number of prompts to sample')
     parser.add_argument('--num-requests', type=int, default=10000, help='Number of requests in total')
     parser.add_argument('--trace-file', type=str, required=False, default=None, help='File containing trace CSV')
+    parser.add_argument('--output', type=str, required=False, default="output.json", help='Output file name')
     args = parser.parse_args()
     
     # Load prompts from a file
@@ -225,7 +226,7 @@ if __name__ == '__main__':
             workload_dict[scenario_name] = paired_workload
     else:
         generated_workload = generate_from_QPS_csv(demo_requests, file_path=args.trace_file, sampling_granularity_seconds=15)
-        paired_workload = pair_requests_with_prompts(generated_workload, prompts, f'traces/from_csv.json')
+        paired_workload = pair_requests_with_prompts(generated_workload, prompts, f'traces/{args.output}')
         workload_dict["from_csv"] = paired_workload
 
     # Plot the workloads
