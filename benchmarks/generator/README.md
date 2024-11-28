@@ -10,7 +10,7 @@ python workload_generator.py --prompt-file $SHARE_GPT_PATH --num-prompts 100 --n
 This generator assumes trace file to be in the following format
 ```
 "Time","Total","Success","4xx Error"
-2024-10-1 00:00:00,100,99,10.9
+2024-10-1 00:00:00,100,99,1
 ```
 
 This generator generate workload file (in .json format) under ```traces``` folder. The file would look like the following:
@@ -24,7 +24,7 @@ This generator generate workload file (in .json format) under ```traces``` folde
 ```
 
 ## Generate a workload file based on workload patterns
-If no trace file path is specified, the generator will generate workload file based on 4 synthetic pattern described here: 
+If no trace file path is specified, the generator will generate workload file based on 4 synthetic pattern described [here](https://github.com/aibrix/aibrix/blob/main/benchmarks/autoscaling/bench_workload_generator.py):
 
 ```
 python workload_generator.py --prompt-file $SHARE_GPT_PATH --num-prompts 100 --num-requests 10000 
