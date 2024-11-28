@@ -1,0 +1,32 @@
+resources:
+  - ../../crd  # Reference the directory with kustomization.yaml
+  - ../../rbac
+  - manager.yaml
+
+patches:
+  - patch: |
+      $patch: delete
+      apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      metadata:
+        name: modeladapters.model.aibrix.ai
+  - patch: |
+      $patch: delete
+      apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      metadata:
+        name: rayclusterreplicasets.orchestration.aibrix.ai
+  - patch: |
+      $patch: delete
+      apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      metadata:
+        name: rayclusterfleets.orchestration.aibrix.ai
+
+namespace: aibrix-system
+namePrefix: aibrix-
+
+images:
+  - name: controller
+    newName: aibrix/controller-manager 
+    newTag: nightly

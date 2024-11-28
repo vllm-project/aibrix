@@ -1,0 +1,12 @@
+resources:
+- ../../gateway # Reference to the gateway configuration
+- modeladapters.yaml # Your model adapters configuration
+
+namespace: aibrix-system # Ensure it uses the same namespace
+
+# If you have any model adapter specific images
+images:
+- name: modeladapter
+  newName: aibrix/modeladapter
+  newTag: nightly
+

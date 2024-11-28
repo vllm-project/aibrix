@@ -61,18 +61,54 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 	//restConfigQPS   = flag.Int("rest-config-qps", 30, "QPS of rest config.")
 	//restConfigBurst = flag.Int("rest-config-burst", 50, "Burst of rest config.")
+
+	// Declare as strings for linker compatibility
+	enableAutoscaler   bool
+	enableKubeRay      bool
+	enableModelAdapter bool
 )
 
+type featureScheme struct {
+	enabled *bool
+	schemes []runtime.SchemeBuilder
+}
+
+var featureSchemes = map[string]featureScheme{
+	"autoScaler": {
+		enabled: &enableAutoscaler,
+		schemes: []runtime.SchemeBuilder{autoscalingv1alpha1.SchemeBuilder.SchemeBuilder},
+	},
+	"modelAdapter": {
+		enabled: &enableModelAdapter,
+		schemes: []runtime.SchemeBuilder{modelv1alpha1.SchemeBuilder.SchemeBuilder},
+	},
+	"kubeRay": {
+		enabled: &enableKubeRay,
+		schemes: []runtime.SchemeBuilder{
+			orchestrationv1alpha1.SchemeBuilder.SchemeBuilder,
+			rayclusterv1.SchemeBuilder.SchemeBuilder,
+		},
+	},
+}
+
 func init() {
+	// Only register the base kubernetes scheme here
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
-	utilruntime.Must(autoscalingv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(modelv1alpha1.AddToScheme(scheme))
+	flag.BoolVar(&enableAutoscaler, "enable-autoscaler", false, "Enable autoscaler feature")
+	flag.BoolVar(&enableKubeRay, "enable-kuberay", false, "Enable KubeRay feature")
+	flag.BoolVar(&enableModelAdapter, "enable-model-adapter", false, "Enable model adapter feature")
 
-	scheme.AddUnversionedTypes(metav1.SchemeGroupVersion, &metav1.UpdateOptions{}, &metav1.DeleteOptions{}, &metav1.CreateOptions{})
-	utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(rayclusterv1.AddToScheme(scheme))
-	//+kubebuilder:scaffold:scheme
+	if val, exists := os.LookupEnv("ENABLE_AUTOSCALER"); exists {
+		enableAutoscaler = val == "true"
+	}
+	if val, exists := os.LookupEnv("ENABLE_KUBERAY"); exists {
+		enableKubeRay = val == "true"
+	}
+	if val, exists := os.LookupEnv("ENABLE_MODEL_ADAPTER"); exists {
+		enableModelAdapter = val == "true"
+	}
+
 }
 
 func main() {
@@ -114,6 +150,21 @@ func main() {
 
 	// TODO: we will switch to textlogger or zap later
 	ctrl.SetLogger(klogr.New()) // nolint:staticcheck
+
+	setupLog.Info("Feature flags",
+		"enableAutoscaler", enableAutoscaler,
+		"enableKubeRay", enableKubeRay,
+		"enableModelAdapter", enableModelAdapter)
+
+	// Register schemes based on enabled features
+	for name, feature := range featureSchemes {
+		if *feature.enabled {
+			setupLog.Info("registering scheme for feature", "feature", name)
+			for _, schemeBuilder := range feature.schemes {
+				utilruntime.Must(schemeBuilder.AddToScheme(scheme))
+			}
+		}
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -186,10 +237,22 @@ func main() {
 		panic(err)
 	}
 
-	cache.NewCache(config, stopCh, nil)
+	cacheOpts := &cache.Options{
+		EnableAutoscaler:   enableAutoscaler,
+		EnableKuberay:      enableKubeRay,
+		EnableModelAdapter: enableModelAdapter,
+	}
 
-	// Kind controller registration is encapsulated inside the pkg/controller/controller.go
-	// So here we can use more clean registration flow and there's no need to change logics in future.
+	cache.NewCache(config, stopCh, cacheOpts, nil)
+
+	// Initialize controllers based on feature flags
+	controller.Initialize(controller.Options{
+		EnableAutoscaler:   enableAutoscaler,
+		EnableKuberay:      enableKubeRay,
+		EnableModelAdapter: enableModelAdapter,
+	})
+
+	// Then setup with manager
 	if err = controller.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to setup controller")
 		os.Exit(1)
