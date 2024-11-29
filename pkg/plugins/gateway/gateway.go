@@ -268,7 +268,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 				fmt.Sprintf("error on getting pods for model %s", model)), targetPodIP, stream
 		}
 
-		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods)
+		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods, model)
 		if err != nil {
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
@@ -519,7 +519,7 @@ func (s *Server) checkTPM(ctx context.Context, username string, tpmLimit int64) 
 	return envoyTypePb.StatusCode_OK, nil
 }
 
-func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, pods map[string]*v1.Pod) (string, error) {
+func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, pods map[string]*v1.Pod, model string) (string, error) {
 	var route routing.Router
 	switch routingStrategy {
 	case "least-request":
@@ -530,7 +530,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, po
 		route = s.routers["random"]
 	}
 
-	return route.Route(ctx, pods)
+	return route.Route(ctx, pods, model)
 }
 
 func validateRoutingStrategy(routingStrategy string) bool {

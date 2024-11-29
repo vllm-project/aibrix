@@ -43,7 +43,7 @@ func NewLeastRequestRouter() Router {
 	}
 }
 
-func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (string, error) {
+func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model string) (string, error) {
 	var targetPodIP string
 	minCount := math.MaxFloat64
 
