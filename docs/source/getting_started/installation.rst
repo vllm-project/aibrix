@@ -42,6 +42,22 @@ Nightly Version
     kubectl create -k config/default
 
 
+Install Individual AIBrix Components
+------------------------------------
+
+.. code:: bash
+
+    # autoscaler controller
+    kubectl apply -k config/standalone/autoscaler-controller/
+
+    # distributed inference orchestrations controller
+    kubectl apply -k config/standalone/distributed-inference-controller/
+
+    # model adapter controller
+    kubectl apply -k config/standalone/model-adapter-controller
+
+
+
 Install AIBrix on Kind Cluster
 ------------------------------
 

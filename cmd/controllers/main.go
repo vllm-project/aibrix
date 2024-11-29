@@ -23,6 +23,8 @@ import (
 	"os"
 	"time"
 
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
@@ -32,7 +34,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -66,13 +67,30 @@ var (
 func init() {
 	// Only register the base kubernetes scheme here
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(autoscalingv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(modelv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(rayclusterv1.AddToScheme(scheme))
 
 	scheme.AddUnversionedTypes(metav1.SchemeGroupVersion, &metav1.UpdateOptions{}, &metav1.DeleteOptions{}, &metav1.CreateOptions{})
 	//+kubebuilder:scaffold:scheme
+}
+
+func RegisterSchemas(scheme *runtime.Scheme) error {
+
+	if features.IsControllerEnabled(features.PodAutoscalerController) {
+		utilruntime.Must(autoscalingv1alpha1.AddToScheme(scheme))
+	}
+
+	if features.IsControllerEnabled(features.ModelAdapterController) {
+		utilruntime.Must(modelv1alpha1.AddToScheme(scheme))
+	}
+
+	if features.IsControllerEnabled(features.DistributedInferenceController) {
+		utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
+		utilruntime.Must(rayclusterv1.AddToScheme(scheme))
+	}
+
+	scheme.AddUnversionedTypes(metav1.SchemeGroupVersion, &metav1.UpdateOptions{}, &metav1.DeleteOptions{}, &metav1.CreateOptions{})
+	//+kubebuilder:scaffold:scheme
+
+	return nil
 }
 
 func main() {
@@ -109,9 +127,6 @@ func main() {
 		"leader-election-id determines the name of the resource that leader election will use for holding the leader lock, Default is aibrix-controller-manager.")
 	flag.StringVar(&controllers, "controllers", "*", "Comma-separated list of controllers to enable or disable, default value is * which indicates all controllers should be started.")
 
-	// initialize the controllers
-	features.InitControllers(controllers)
-
 	// Initialize the klog
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
@@ -119,6 +134,19 @@ func main() {
 
 	// TODO: we will switch to textlogger or zap later
 	ctrl.SetLogger(klogr.New()) // nolint:staticcheck
+
+	// initialize the controllers
+	if err := features.ValidateControllers(controllers); err != nil {
+		setupLog.Error(err, "unable to validate the controllers, please type the right controller names through --controllers")
+		os.Exit(1)
+	}
+
+	features.InitControllers(controllers)
+
+	if err := RegisterSchemas(scheme); err != nil {
+		setupLog.Error(err, "unable to register schemas")
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -191,7 +219,10 @@ func main() {
 		panic(err)
 	}
 
-	cache.NewCache(config, stopCh, nil)
+	if features.IsControllerEnabled(features.ModelAdapterController) {
+		// cache is enabled for model adapter scheduling.
+		cache.NewCache(config, stopCh, nil)
+	}
 
 	// Initialize controllers
 	controller.Initialize()
