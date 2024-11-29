@@ -212,7 +212,7 @@ def set_metrics():
 metrics_state = {}
 
 
-def generate_histogram_metric(metric_name, description, model_name, buckets, new_requests):
+def generate_histogram_metric(metric_name, description, model_name, buckets, new_requests, help_header=True):
     """
     Generate Prometheus histogram metrics with dynamically updated bucket values.
 
@@ -222,6 +222,7 @@ def generate_histogram_metric(metric_name, description, model_name, buckets, new
         model_name (str): Model name.
         buckets (list): List of bucket boundaries.
         new_requests (dict): Dictionary with new requests to update bucket values.
+        help_header: the flag to include HELP Header
 
     Returns:
         str: Prometheus-formatted histogram metric.
@@ -271,6 +272,10 @@ def generate_histogram_metric(metric_name, description, model_name, buckets, new
 vllm:{metric_name}_sum{{model_name="{model_name}"}} {value}
 {buckets}
 vllm:{metric_name}_count{{model_name="{model_name}"}} {count}
+""" if help_header else """
+vllm:{metric_name}_sum{{model_name="{model_name}"}} {value}
+{buckets}
+vllm:{metric_name}_count{{model_name="{model_name}"}} {count}
 """
 
     return histogram_template.format(
@@ -283,7 +288,7 @@ vllm:{metric_name}_count{{model_name="{model_name}"}} {count}
     )
 
 
-def generate_counter_gauge_metric(metric_name, metric_type, description, model_name, value):
+def generate_counter_gauge_metric(metric_name, metric_type, description, model_name, value, help_header=True):
     """
     Generates a Prometheus metric string for counter or gauge.
 
@@ -293,6 +298,7 @@ def generate_counter_gauge_metric(metric_name, metric_type, description, model_n
         description (str): The HELP description of the metric.
         model_name (str): The name of the model.
         value (float): The value of the metric.
+        help_header: the flag to include HELP Header
 
     Returns:
         str: A formatted Prometheus metric string.
@@ -300,6 +306,8 @@ def generate_counter_gauge_metric(metric_name, metric_type, description, model_n
     counter_gauge_template = """
 # HELP vllm:{metric_name} {description}
 # TYPE vllm:{metric_name} {metric_type}
+vllm:{metric_name}{{model_name="{model_name}"}} {value}
+""" if help_header else """
 vllm:{metric_name}{{model_name="{model_name}"}} {value}
 """
 
@@ -386,17 +394,12 @@ def metrics():
     ]
 
     # Generate all metrics
-    metrics_output = "".join(
-        generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"], model_name,
-                                      metric["value"])
-        for metric in simple_metrics
-    )
-
-    lora_metrics_output = "".join(
-        generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"], "lora-model-1",
-                                      metric["value"])
-        for metric in simple_metrics
-    )
+    metrics_output = ""
+    for metric in simple_metrics:
+        metrics_output += generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"],
+                                                        model_name, metric["value"])
+        metrics_output += generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"],
+                                                        "lora-model-1", metric["value"], help_header=False)
 
     histogram_metrics = [
         {
@@ -464,20 +467,17 @@ def metrics():
             buckets=metric["buckets"],
             new_requests=new_requests
         )
-
-    lora_histogram_metrics_output = ""
-    for metric in histogram_metrics:
-        # Simulate random new requests for the metric
         new_requests = {bucket: random.randint(0, 5) for bucket in metric["buckets"]}
-        lora_histogram_metrics_output += generate_histogram_metric(
+        histogram_metrics_output += generate_histogram_metric(
             metric_name=metric["name"],
             description=metric["description"],
             model_name="lora-model-1",
             buckets=metric["buckets"],
-            new_requests=new_requests
+            new_requests=new_requests,
+            help_header=False
         )
 
-    return Response(metrics_output + lora_metrics_output + histogram_metrics_output + lora_histogram_metrics_output, mimetype='text/plain')
+    return Response(metrics_output  + histogram_metrics_output, mimetype='text/plain')
 
 
 if __name__ == '__main__':
