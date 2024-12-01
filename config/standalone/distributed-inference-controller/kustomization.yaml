@@ -6,6 +6,7 @@ resources:
   - ../../rbac/orchestration
   - ../../rbac/controller-manager
   - ../../manager
+  - ../../dependency/kuberay-operator
 
 # Adds namespace to all resources.
 namespace: aibrix-system
@@ -29,3 +30,21 @@ patches:
       version: v1
       kind: Deployment
       name: controller-manager
+  - patch: |
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: kuberay-operator
+      subjects:
+        - kind: ServiceAccount
+          name: aibrix-orchestration-kuberay-operator
+          namespace: aibrix-system
+  - patch: |
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: kuberay-operator-leader-election
+      subjects:
+        - kind: ServiceAccount
+          name: aibrix-orchestration-kuberay-operator-leader-election
+          namespace: aibrix-system

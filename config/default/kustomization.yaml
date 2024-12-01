@@ -1,3 +1,6 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
 # Adds namespace to all resources.
 namespace: aibrix-system
 
@@ -30,116 +33,22 @@ resources:
 #- ../prometheus
 
 patches:
-# [METRICS] The following patch will enable the metrics endpoint. Ensure that you also protect this endpoint.
-# More info: https://book.kubebuilder.io/reference/metrics
-# If you want to expose the metric endpoint of your controller-manager uncomment the following line.
-#- path: manager_metrics_patch.yaml
+- patch: |
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: kuberay-operator
+    subjects:
+      - kind: ServiceAccount
+        name: aibrix-kuberay-operator
+        namespace: aibrix-system
 
-# [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
-# crd/kustomization.yaml
-#- path: manager_webhook_patch.yaml
-
-# [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'.
-# Uncomment 'CERTMANAGER' sections in crd/kustomization.yaml to enable the CA injection in the admission webhooks.
-# 'CERTMANAGER' needs to be enabled to use ca injection
-#- path: webhookcainjection_patch.yaml
-
-# [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER' prefix.
-# Uncomment the following replacements to add the cert-manager CA injection annotations
-#replacements:
-#  - source: # Add cert-manager annotation to ValidatingWebhookConfiguration, MutatingWebhookConfiguration and CRDs
-#      kind: Certificate
-#      group: cert-manager.io
-#      version: v1
-#      name: serving-cert # this name should match the one in certificate.yaml
-#      fieldPath: .metadata.namespace # namespace of the certificate CR
-#    targets:
-#      - select:
-#          kind: ValidatingWebhookConfiguration
-#        fieldPaths:
-#          - .metadata.annotations.[cert-manager.io/inject-ca-from]
-#        options:
-#          delimiter: '/'
-#          index: 0
-#          create: true
-#      - select:
-#          kind: MutatingWebhookConfiguration
-#        fieldPaths:
-#          - .metadata.annotations.[cert-manager.io/inject-ca-from]
-#        options:
-#          delimiter: '/'
-#          index: 0
-#          create: true
-#      - select:
-#          kind: CustomResourceDefinition
-#        fieldPaths:
-#          - .metadata.annotations.[cert-manager.io/inject-ca-from]
-#        options:
-#          delimiter: '/'
-#          index: 0
-#          create: true
-#  - source:
-#      kind: Certificate
-#      group: cert-manager.io
-#      version: v1
-#      name: serving-cert # this name should match the one in certificate.yaml
-#      fieldPath: .metadata.name
-#    targets:
-#      - select:
-#          kind: ValidatingWebhookConfiguration
-#        fieldPaths:
-#          - .metadata.annotations.[cert-manager.io/inject-ca-from]
-#        options:
-#          delimiter: '/'
-#          index: 1
-#          create: true
-#      - select:
-#          kind: MutatingWebhookConfiguration
-#        fieldPaths:
-#          - .metadata.annotations.[cert-manager.io/inject-ca-from]
-#        options:
-#          delimiter: '/'
-#          index: 1
-#          create: true
-#      - select:
-#          kind: CustomResourceDefinition
-#        fieldPaths:
-#          - .metadata.annotations.[cert-manager.io/inject-ca-from]
-#        options:
-#          delimiter: '/'
-#          index: 1
-#          create: true
-#  - source: # Add cert-manager annotation to the webhook Service
-#      kind: Service
-#      version: v1
-#      name: webhook-service
-#      fieldPath: .metadata.name # namespace of the service
-#    targets:
-#      - select:
-#          kind: Certificate
-#          group: cert-manager.io
-#          version: v1
-#        fieldPaths:
-#          - .spec.dnsNames.0
-#          - .spec.dnsNames.1
-#        options:
-#          delimiter: '.'
-#          index: 0
-#          create: true
-#  - source:
-#      kind: Service
-#      version: v1
-#      name: webhook-service
-#      fieldPath: .metadata.namespace # namespace of the service
-#    targets:
-#      - select:
-#          kind: Certificate
-#          group: cert-manager.io
-#          version: v1
-#        fieldPaths:
-#          - .spec.dnsNames.0
-#          - .spec.dnsNames.1
-#        options:
-#          delimiter: '.'
-#          index: 1
-#          create: true
+- patch: |
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: kuberay-operator-leader-election
+    subjects:
+      - kind: ServiceAccount
+        name: aibrix-kuberay-operator-leader-election
+        namespace: aibrix-system
