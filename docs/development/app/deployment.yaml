@@ -39,7 +39,7 @@ spec:
                 fieldRef:
                   fieldPath: status.podIP
         - name: aibrix-runtime
-          image: aibrix/runtime:latest
+          image: aibrix/runtime:nightly
           command:
             - aibrix_runtime
             - --port
