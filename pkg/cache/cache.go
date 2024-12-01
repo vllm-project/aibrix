@@ -541,7 +541,7 @@ func (c *Cache) updatePodMetrics() {
 
 	for _, pod := range c.Pods {
 		// Only scrape healthy Pod
-		if pod.Status.PodIP == "" || utils.IsPodTerminating(pod) || utils.IsPodReady(pod) {
+		if pod.Status.PodIP == "" || utils.IsPodTerminating(pod) || !utils.IsPodReady(pod) {
 			continue
 		}
 		podName := pod.Name
