@@ -52,9 +52,6 @@ spec:
           ports:
             - containerPort: 8080
               protocol: TCP
-          volumeMounts:
-            - mountPath: /models
-              name: model-hostpath
           livenessProbe:
             httpGet:
               path: /healthz
