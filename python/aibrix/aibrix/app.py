@@ -90,6 +90,16 @@ def init_app_state(state: State) -> None:
     )
 
 
+def inference_engine_ready() -> bool:
+    try:
+        # Check if the engine is initialized
+        # Seems no need to check engine's status since main container has its own checks.
+        return True if envs.INFERENCE_ENGINE and envs.INFERENCE_ENGINE_ENDPOINT else False
+    except Exception as e:
+        logger.error(f"Readiness check failed: {e}")
+        return False
+
+
 @router.post("/v1/lora_adapter/load")
 async def load_lora_adapter(request: LoadLoraAdapterRequest, raw_request: Request):
     response = await inference_engine(raw_request).load_lora_adapter(request)
@@ -106,6 +116,20 @@ async def unload_lora_adapter(request: UnloadLoraAdapterRequest, raw_request: Re
         return JSONResponse(content=response.model_dump(), status_code=response.code)
 
     return Response(status_code=200, content=response)
+
+
+@router.get("/healthz")
+async def liveness_check():
+    # Simply return a 200 status for liveness check
+    return JSONResponse(content={"status": "ok"}, status_code=200)
+
+
+@router.get("/ready")
+async def readiness_check():
+    # Check if the inference engine is ready
+    if inference_engine_ready():
+        return JSONResponse(content={"status": "ready"}, status_code=200)
+    return JSONResponse(content={"status": "not ready"}, status_code=503)
 
 
 def build_app(args: argparse.Namespace):

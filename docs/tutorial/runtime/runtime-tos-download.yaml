@@ -81,12 +81,29 @@ spec:
         - aibrix_runtime
         - --port
         - "8080"
+        env:
+          - name: INFERENCE_ENGINE
+            value: vllm
+          - name: INFERENCE_ENGINE_ENDPOINT
+            value: http://localhost:8000
         ports:
         - containerPort: 8080
           protocol: TCP
         volumeMounts:
         - mountPath: /models
           name: model-hostpath
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 3
+          periodSeconds: 2
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
       initContainers:
       - name: model-init
         image: aibrix/runtime:latest
