@@ -535,6 +535,30 @@ func (c *Cache) GetPodModelMetric(podName, modelName string, metricName string) 
 	return metricVal, nil
 }
 
+// Update `PodMetrics` and `PodModelMetrics` according to the metric scope
+func (c *Cache) updatePodRecord(podName string, modelName string, metricName string, scope metrics.MetricScope, metricValue metrics.MetricValue) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if scope == metrics.PodMetricScope {
+		if modelName != "" {
+			return fmt.Errorf("modelName should be empty for scope %v", scope)
+		}
+		c.PodMetrics[podName][metricName] = metricValue
+	} else if scope == metrics.PodModelMetricScope {
+		if modelName == "" {
+			return fmt.Errorf("modelName should not be empty for scope %v", scope)
+		}
+		if len(c.PodModelMetrics[podName][modelName]) == 0 {
+			c.PodModelMetrics[podName][modelName] = map[string]metrics.MetricValue{}
+		}
+		c.PodModelMetrics[podName][modelName][metricName] = metricValue
+	} else {
+		return fmt.Errorf("scope %v is not supported", scope)
+	}
+	return nil
+}
+
 func (c *Cache) updatePodMetrics() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -576,45 +600,32 @@ func (c *Cache) updatePodMetrics() {
 		for _, metricName := range counterGaugeMetricNames {
 			metric, exists := metrics.Metrics[metricName]
 			if !exists {
-				klog.Errorf("failed to parse metrics: Metrics not contains %s", metricName)
+				klog.Warningf("Cannot find %v in the metric list", metricName)
 				continue
 			}
 
 			// TODO: we should refact metricName to fit other engine
 			metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", metricName)]
 			if !exists {
-				klog.Errorf("failed to parse metrics from pod %s %s %d: Pod metrics not contains %s", pod.Name, pod.Status.PodIP, podPort, metricName)
+				klog.Warningf("Cannot find %v in the pod metrics", metricName)
 				continue
 			}
 			scope := metric.MetricScope
 			for _, familyMetric := range metricFamily.Metric {
-				modelName, err := metrics.GetLabelValueForKey(familyMetric, "model_name")
+				modelName, _ := metrics.GetLabelValueForKey(familyMetric, "model_name")
 
 				metricValue, err := metrics.GetCounterGaugeValue(familyMetric, metricFamily.GetType())
 				if err != nil {
-					klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
+					klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
 					continue
 				}
 
-				if scope == metrics.PodMetricScope {
-					if modelName != "" {
-						klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
-						continue
-					}
-					c.PodMetrics[pod.Name][metricName] = &metrics.SimpleMetricValue{Value: metricValue}
-				} else if scope == metrics.PodModelMetricScope {
-					if modelName == "" {
-						klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
-						continue
-					}
-					if len(c.PodModelMetrics[podName][modelName]) == 0 {
-						c.PodModelMetrics[podName][modelName] = map[string]metrics.MetricValue{}
-					}
-					c.PodModelMetrics[pod.Name][modelName][metricName] = &metrics.SimpleMetricValue{Value: metricValue}
-				} else {
-					klog.Errorf("failed to parse metrics %s from pod %s %s %d: Scope %v not supported", metricName, pod.Name, pod.Status.PodIP, podPort, scope)
+				err = c.updatePodRecord(podName, modelName, metricName, scope, &metrics.SimpleMetricValue{Value: metricValue})
+				if err != nil {
+					klog.Errorf("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
 					continue
 				}
+
 				klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
 			}
 		}
@@ -623,18 +634,18 @@ func (c *Cache) updatePodMetrics() {
 		for _, metricName := range histogramMetricNames {
 			metric, exists := metrics.Metrics[metricName]
 			if !exists {
-				klog.Errorf("failed to parse metrics: Metrics not contains %s", metricName)
+				klog.Warningf("Cannot find %v in the metric list", metricName)
 				continue
 			}
 
 			metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", metricName)]
 			if !exists {
-				klog.Errorf("failed to parse metrics from pod %s %s %d: Pod metrics not contains %s", pod.Name, pod.Status.PodIP, podPort, metricName)
+				klog.Warningf("Cannot find %v in the pod metrics", metricName)
 				continue
 			}
 			scope := metric.MetricScope
 			for _, familyMetric := range metricFamily.Metric {
-				modelName, err := metrics.GetLabelValueForKey(familyMetric, "model_name")
+				modelName, _ := metrics.GetLabelValueForKey(familyMetric, "model_name")
 				metricValue, err := metrics.GetHistogramValue(familyMetric)
 				if err != nil {
 					klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
@@ -646,26 +657,12 @@ func (c *Cache) updatePodMetrics() {
 					Count:   metricValue.Count,
 					Buckets: metricValue.Buckets,
 				}
-
-				if scope == metrics.PodMetricScope {
-					if modelName != "" {
-						klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
-						continue
-					}
-					c.PodMetrics[pod.Name][metricName] = histogramValue
-				} else if scope == metrics.PodModelMetricScope {
-					if modelName == "" {
-						klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
-						continue
-					}
-					if len(c.PodModelMetrics[podName][modelName]) == 0 {
-						c.PodModelMetrics[podName][modelName] = map[string]metrics.MetricValue{}
-					}
-					c.PodModelMetrics[pod.Name][modelName][metricName] = histogramValue
-				} else {
-					klog.Errorf("failed to parse metrics %s from pod %s %s %d: Scope %v not supported", metricName, pod.Name, pod.Status.PodIP, podPort, scope)
+				err = c.updatePodRecord(podName, modelName, metricName, scope, histogramValue)
+				if err != nil {
+					klog.Errorf("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
 					continue
 				}
+
 				klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
 
 			}
@@ -688,6 +685,7 @@ func (c *Cache) updatePodMetrics() {
 				klog.Warningf("Cannot find %v in the metric list", metricName)
 				continue
 			}
+			scope := metric.MetricScope
 			query := metrics.BuildQuery(metric.PromQL, queryLabels)
 			// Querying metrics
 			result, warnings, err := c.prometheusApi.Query(context.Background(), query, time.Now())
@@ -702,10 +700,11 @@ func (c *Cache) updatePodMetrics() {
 
 			klog.Infof("Query Result:%v\n", result)
 			// Update metrics
-			if len(c.PodModelMetrics[podName][modelName]) == 0 {
-				c.PodModelMetrics[podName][modelName] = map[string]metrics.MetricValue{}
+			err = c.updatePodRecord(podName, modelName, metricName, scope, &metrics.PrometheusMetricValue{Result: &result})
+			if err != nil {
+				klog.Errorf("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
+				continue
 			}
-			c.PodModelMetrics[pod.Name][modelName][metricName] = &metrics.PrometheusMetricValue{Result: &result}
 		}
 	}
 }
