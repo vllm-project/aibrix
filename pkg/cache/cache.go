@@ -537,9 +537,6 @@ func (c *Cache) GetPodModelMetric(podName, modelName string, metricName string) 
 
 // Update `PodMetrics` and `PodModelMetrics` according to the metric scope
 func (c *Cache) updatePodRecord(podName string, modelName string, metricName string, scope metrics.MetricScope, metricValue metrics.MetricValue) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	if scope == metrics.PodMetricScope {
 		if modelName != "" {
 			return fmt.Errorf("modelName should be empty for scope %v", scope)
@@ -578,6 +575,7 @@ func (c *Cache) updatePodMetrics() {
 
 		// We should use the primary container port. In the future, we can decide whether to use sidecar container's port
 		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, podPort)
+
 		resp, err := http.Get(url)
 		if err != nil {
 			klog.Errorf("failed to fetch metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
@@ -700,11 +698,13 @@ func (c *Cache) updatePodMetrics() {
 
 			klog.Infof("Query Result:%v\n", result)
 			// Update metrics
-			err = c.updatePodRecord(podName, modelName, metricName, scope, &metrics.PrometheusMetricValue{Result: &result})
+			metricValue := &metrics.PrometheusMetricValue{Result: &result}
+			err = c.updatePodRecord(podName, modelName, metricName, scope, metricValue)
 			if err != nil {
-				klog.Errorf("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
+				klog.Errorf("Failed to update metrics %s from prometheus %s: %v", metricName, podName, err)
 				continue
 			}
+			klog.V(5).InfoS("Successfully parsed metrics from prometheus", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
 		}
 	}
 }
