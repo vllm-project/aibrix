@@ -38,6 +38,7 @@ var (
 	Metrics = map[string]Metric{
 		// Counter metrics
 		NumRequestsRunning: {
+			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Counter,
@@ -45,6 +46,7 @@ var (
 			Description: "Number of running requests",
 		},
 		NumRequestsWaiting: {
+			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Counter,
@@ -52,6 +54,7 @@ var (
 			Description: "Number of waiting requests",
 		},
 		NumRequestsSwapped: {
+			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Counter,
@@ -60,6 +63,7 @@ var (
 		},
 		// Gauge metrics
 		AvgPromptThroughputToksPerS: {
+			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Gauge,
@@ -67,6 +71,7 @@ var (
 			Description: "Average prompt throughput in tokens per second",
 		},
 		AvgGenerationThroughputToksPerS: {
+			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Gauge,
@@ -75,6 +80,7 @@ var (
 		},
 		// Histogram metrics
 		IterationTokensTotal: {
+			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Histogram,
@@ -82,6 +88,7 @@ var (
 			Description: "Total iteration tokens",
 		},
 		TimeToFirstTokenSeconds: {
+			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Histogram,
@@ -89,6 +96,7 @@ var (
 			Description: "Time to first token in seconds",
 		},
 		TimePerOutputTokenSeconds: {
+			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Histogram,
@@ -96,6 +104,7 @@ var (
 			Description: "Time per output token in seconds",
 		},
 		E2ERequestLatencySeconds: {
+			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Histogram,
@@ -103,6 +112,7 @@ var (
 			Description: "End-to-end request latency in seconds",
 		},
 		RequestQueueTimeSeconds: {
+			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Histogram,
@@ -110,6 +120,7 @@ var (
 			Description: "Request queue time in seconds",
 		},
 		RequestInferenceTimeSeconds: {
+			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Histogram,
@@ -117,6 +128,7 @@ var (
 			Description: "Request inference time in seconds",
 		},
 		RequestDecodeTimeSeconds: {
+			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Histogram,
@@ -124,6 +136,7 @@ var (
 			Description: "Request decode time in seconds",
 		},
 		RequestPrefillTimeSeconds: {
+			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Histogram,
@@ -132,6 +145,7 @@ var (
 		},
 		// Query-based metrics
 		P95TTFT5m: {
+			MetricScope:  PodModelMetricScope,
 			MetricSource: PrometheusEndpoint,
 			MetricType: MetricType{
 				Query: PromQL,

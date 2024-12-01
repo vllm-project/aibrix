@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"os"
@@ -46,6 +45,7 @@ import (
 	v1alpha1scheme "github.com/aibrix/aibrix/pkg/client/clientset/versioned/scheme"
 	"github.com/aibrix/aibrix/pkg/metrics"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/common/expfmt"
 	"k8s.io/client-go/kubernetes/scheme"
 )
 
@@ -61,10 +61,11 @@ type Cache struct {
 	metrics           map[string]interface{}
 	ModelMetrics      map[string]map[string]interface{}
 	Pods              map[string]*v1.Pod
-	PodMetrics        map[string]map[string]metrics.MetricValue // pod_name: map[metric_name]metric_val
-	PodToModelMapping map[string]map[string]struct{}            // pod_name: map[model_name]struct{}
-	ModelToPodMapping map[string]map[string]*v1.Pod             // model_name: map[pod_name]*v1.Pod
-	requestTrace      map[string]map[string]int                 // model_name: map[Log2(input_token)-Log2(output_token)]request_count
+	PodMetrics        map[string]map[string]metrics.MetricValue            // pod_name: map[metric_name]metric_val
+	PodModelMetrics   map[string]map[string]map[string]metrics.MetricValue // pod_name: map[model_name]map[metric_name]metric_val
+	PodToModelMapping map[string]map[string]struct{}                       // pod_name: map[model_name]struct{}
+	ModelToPodMapping map[string]map[string]*v1.Pod                        // model_name: map[pod_name]*v1.Pod
+	requestTrace      map[string]map[string]int                            // model_name: map[Log2(input_token)-Log2(output_token)]request_count
 }
 
 const (
@@ -194,6 +195,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			prometheusApi:     prometheusApi,
 			Pods:              map[string]*v1.Pod{},
 			PodMetrics:        map[string]map[string]metrics.MetricValue{},
+			PodModelMetrics:   map[string]map[string]map[string]metrics.MetricValue{},
 			PodToModelMapping: map[string]map[string]struct{}{},
 			ModelToPodMapping: map[string]map[string]*v1.Pod{},
 			requestTrace:      map[string]map[string]int{},
@@ -511,6 +513,28 @@ func (c *Cache) GetPodMetric(podName, metricName string) (metrics.MetricValue, e
 	return metricVal, nil
 }
 
+func (c *Cache) GetPodModelMetric(podName, modelName string, metricName string) (metrics.MetricValue, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	podMetrics, ok := c.PodModelMetrics[podName]
+	if !ok {
+		return nil, fmt.Errorf("pod does not exist in the podMetrics cache")
+	}
+
+	modelMetrics, ok := podMetrics[modelName]
+	if !ok {
+		return nil, fmt.Errorf("model does not exist in the podMetrics cache")
+	}
+
+	metricVal, ok := modelMetrics[metricName]
+	if !ok {
+		return nil, fmt.Errorf("no metric available for %v", metricName)
+	}
+
+	return metricVal, nil
+}
+
 func (c *Cache) updatePodMetrics() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -523,6 +547,9 @@ func (c *Cache) updatePodMetrics() {
 		podName := pod.Name
 		if len(c.PodMetrics[podName]) == 0 {
 			c.PodMetrics[podName] = map[string]metrics.MetricValue{}
+		}
+		if len(c.PodModelMetrics[podName]) == 0 {
+			c.PodModelMetrics[podName] = make(map[string]map[string]metrics.MetricValue)
 		}
 
 		// We should use the primary container port. In the future, we can decide whether to use sidecar container's port
@@ -538,41 +565,110 @@ func (c *Cache) updatePodMetrics() {
 			}
 		}()
 
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			klog.Errorf("failed to read response from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
-			continue
-		}
-
 		// TODO: the metrics should come from those router subscribers in future
+		var parser expfmt.TextParser
+		allMetrics, err := parser.TextToMetricFamilies(resp.Body)
+		if err != nil {
+			fmt.Printf("Error parsing metric families: %v\n", err)
+		}
 
 		// parse counterGaugeMetricsNames
 		for _, metricName := range counterGaugeMetricNames {
-			metricValue, err := metrics.ParseMetricFromBody(body, metricName)
-			if err != nil {
-				klog.Errorf("failed to parse metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
+			metric, exists := metrics.Metrics[metricName]
+			if !exists {
+				klog.Errorf("failed to parse metrics: Metrics not contains %s", metricName)
 				continue
 			}
 
-			c.PodMetrics[pod.Name][metricName] = &metrics.SimpleMetricValue{Value: metricValue}
-			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
+			// TODO: we should refact metricName to fit other engine
+			metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", metricName)]
+			if !exists {
+				klog.Errorf("failed to parse metrics from pod %s %s %d: Pod metrics not contains %s", pod.Name, pod.Status.PodIP, podPort, metricName)
+				continue
+			}
+			scope := metric.MetricScope
+			for _, familyMetric := range metricFamily.Metric {
+				modelName, err := metrics.GetLabelValueForKey(familyMetric, "model_name")
+
+				metricValue, err := metrics.GetCounterGaugeValue(familyMetric, metricFamily.GetType())
+				if err != nil {
+					klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
+					continue
+				}
+
+				if scope == metrics.PodMetricScope {
+					if modelName != "" {
+						klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
+						continue
+					}
+					c.PodMetrics[pod.Name][metricName] = &metrics.SimpleMetricValue{Value: metricValue}
+				} else if scope == metrics.PodModelMetricScope {
+					if modelName == "" {
+						klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
+						continue
+					}
+					if len(c.PodModelMetrics[podName][modelName]) == 0 {
+						c.PodModelMetrics[podName][modelName] = map[string]metrics.MetricValue{}
+					}
+					c.PodModelMetrics[pod.Name][modelName][metricName] = &metrics.SimpleMetricValue{Value: metricValue}
+				} else {
+					klog.Errorf("failed to parse metrics %s from pod %s %s %d: Scope %v not supported", metricName, pod.Name, pod.Status.PodIP, podPort, scope)
+					continue
+				}
+				klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
+			}
 		}
 
 		// parse histogramMetrics
 		for _, metricName := range histogramMetricNames {
-			metricValue, err := metrics.ParseHistogramFromBody(body, metricName)
-			if err != nil {
-				klog.Errorf("failed to parse metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
+			metric, exists := metrics.Metrics[metricName]
+			if !exists {
+				klog.Errorf("failed to parse metrics: Metrics not contains %s", metricName)
 				continue
 			}
 
-			value := metricValue.GetHistogramValue()
-			c.PodMetrics[pod.Name][metricName] = &metrics.HistogramMetricValue{
-				Sum:     value.Sum,
-				Count:   value.Count,
-				Buckets: value.Buckets,
+			metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", metricName)]
+			if !exists {
+				klog.Errorf("failed to parse metrics from pod %s %s %d: Pod metrics not contains %s", pod.Name, pod.Status.PodIP, podPort, metricName)
+				continue
 			}
-			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
+			scope := metric.MetricScope
+			for _, familyMetric := range metricFamily.Metric {
+				modelName, err := metrics.GetLabelValueForKey(familyMetric, "model_name")
+				metricValue, err := metrics.GetHistogramValue(familyMetric)
+				if err != nil {
+					klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
+					continue
+				}
+
+				histogramValue := &metrics.HistogramMetricValue{
+					Sum:     metricValue.Sum,
+					Count:   metricValue.Count,
+					Buckets: metricValue.Buckets,
+				}
+
+				if scope == metrics.PodMetricScope {
+					if modelName != "" {
+						klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
+						continue
+					}
+					c.PodMetrics[pod.Name][metricName] = histogramValue
+				} else if scope == metrics.PodModelMetricScope {
+					if modelName == "" {
+						klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
+						continue
+					}
+					if len(c.PodModelMetrics[podName][modelName]) == 0 {
+						c.PodModelMetrics[podName][modelName] = map[string]metrics.MetricValue{}
+					}
+					c.PodModelMetrics[pod.Name][modelName][metricName] = histogramValue
+				} else {
+					klog.Errorf("failed to parse metrics %s from pod %s %s %d: Scope %v not supported", metricName, pod.Name, pod.Status.PodIP, podPort, scope)
+					continue
+				}
+				klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
+
+			}
 		}
 
 		if c.prometheusApi == nil {
@@ -581,10 +677,11 @@ func (c *Cache) updatePodMetrics() {
 		}
 
 		for _, metricName := range prometheusMetricNames {
+			// TODO: Get another model PromQL value from the same pod
 			modelName := pod.Labels["model.aibrix.ai/name"]
 			queryLabels := map[string]string{
 				"model_name": modelName,
-				"instance":   fmt.Sprintf("%s/%d", pod.Status.PodIP, podPort),
+				"instance":   fmt.Sprintf("%s:%d", pod.Status.PodIP, podPort),
 			}
 			metric, ok := metrics.Metrics[metricName]
 			if !ok {
@@ -605,7 +702,10 @@ func (c *Cache) updatePodMetrics() {
 
 			klog.Infof("Query Result:%v\n", result)
 			// Update metrics
-			c.PodMetrics[pod.Name][metricName] = &metrics.PrometheusMetricValue{Result: &result}
+			if len(c.PodModelMetrics[podName][modelName]) == 0 {
+				c.PodModelMetrics[podName][modelName] = map[string]metrics.MetricValue{}
+			}
+			c.PodModelMetrics[pod.Name][modelName][metricName] = &metrics.PrometheusMetricValue{Result: &result}
 		}
 	}
 }

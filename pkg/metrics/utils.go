@@ -24,6 +24,7 @@ import (
 
 	"github.com/prometheus/client_golang/api"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/config"
 )
 
@@ -158,4 +159,40 @@ func InitializePrometheusAPI(endpoint, username, password string) (prometheusv1.
 	}
 
 	return prometheusv1.NewAPI(client), nil
+}
+
+func GetLabelValueForKey(metric *dto.Metric, key string) (string, error) {
+	for _, labelPair := range metric.Label {
+		if labelPair.GetName() == key {
+			return labelPair.GetValue(), nil
+		}
+	}
+	return "", fmt.Errorf("Label %s not found", key)
+}
+
+func GetCounterGaugeValue(metric *dto.Metric, metricType dto.MetricType) (float64, error) {
+	if metricType == dto.MetricType_COUNTER {
+		return metric.GetCounter().GetValue(), nil
+	} else if metricType == dto.MetricType_GAUGE {
+		return metric.GetGauge().GetValue(), nil
+	}
+	return 0, fmt.Errorf("Metric type not supported: %v", metricType)
+}
+
+func GetHistogramValue(metric *dto.Metric) (*HistogramMetricValue, error) {
+	histogram := &HistogramMetricValue{
+		Buckets: make(map[string]float64),
+	}
+	histogramMetric := metric.GetHistogram()
+	if histogramMetric == nil {
+		return nil, fmt.Errorf("Histogram metric not found")
+	}
+
+	histogram.Sum = histogramMetric.GetSampleSum()
+	histogram.Count = float64(histogramMetric.GetSampleCount())
+	for _, bucket := range histogramMetric.GetBucket() {
+		bound := fmt.Sprintf("%f", bucket.GetUpperBound())
+		histogram.Buckets[bound] = float64(bucket.GetCumulativeCount())
+	}
+	return histogram, nil
 }

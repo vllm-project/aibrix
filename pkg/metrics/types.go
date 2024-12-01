@@ -65,12 +65,22 @@ func (m MetricType) IsQuery() bool {
 	return m.Query != ""
 }
 
+// MetricScope defines the scope of a metric (e.g., model or pod or podmodel).
+type MetricScope string
+
+const (
+	ModelMetricScope    MetricScope = "Model"
+	PodMetricScope      MetricScope = "Pod"
+	PodModelMetricScope MetricScope = "PodModel" // model in pod
+)
+
 // Metric defines a unique metric with metadata.
 type Metric struct {
 	MetricSource MetricSource
 	MetricType   MetricType
 	PromQL       string // Optional: Only applicable for PromQL-based metrics
 	Description  string
+	MetricScope  MetricScope
 }
 
 // MetricValue is the interface for all metric values.
