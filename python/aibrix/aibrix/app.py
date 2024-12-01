@@ -94,7 +94,9 @@ def inference_engine_ready() -> bool:
     try:
         # Check if the engine is initialized
         # Seems no need to check engine's status since main container has its own checks.
-        return True if envs.INFERENCE_ENGINE and envs.INFERENCE_ENGINE_ENDPOINT else False
+        return (
+            True if envs.INFERENCE_ENGINE and envs.INFERENCE_ENGINE_ENDPOINT else False
+        )
     except Exception as e:
         logger.error(f"Readiness check failed: {e}")
         return False
