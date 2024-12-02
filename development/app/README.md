@@ -1,25 +1,36 @@
 # Mocked vLLM application
 
-Before you move forward, you should follow the README.md to deploy aibrix first.
+## Usage options
 
-## Mocked App Deployment
+1. You should follow the README.md to deploy aibrix first. After that, you can deploy mocked app as a deployment
+2. You can launch `app.py` directly on your dev environment without containers.
 
+## Mocked vLLM Basic Deployment
+
+### Deploy the mocked app
 1. Builder mocked base model image
 ```dockerfile
 docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
+```
 
-# If you are using Docker-Desktop on Mac, Kubernetes shares the local image repository with Docker.
-# Therefore, the following command is not necessary.
+1. (Optional) Load container image to docker context
+
+> Note: If you are using Docker-Desktop on Mac, Kubernetes shares the local image repository with Docker.
+> Therefore, the following command is not necessary. Only kind user need this step.
+
+```shell
 kind load docker-image aibrix/vllm-mock:nightly
 ```
 
 1. Deploy mocked model image
 ```shell
-kubectl apply -f docs/development/app/deployment.yaml
+kubectl apply -f deployment.yaml
 
 # you can run following command to delete the deployment 
-kubectl delete -f docs/development/app/deployment.yaml
+kubectl delete -f deployment.yaml
 ```
+
+### Test the metric invocation
 
 1. Get the service endpoint
 
@@ -47,7 +58,15 @@ curl http://localhost:8000/v1/chat/completions \
    }'
 ```
 
-## Testing Gateway rpm/tpm configs
+## Mocked vLLM Features
+
+- metrics
+- openAI compatible interface
+
+
+## How to test AIBrix features
+
+### Gateway rpm/tpm configs
 
 ```shell
 # note: not mandatory to create user to access gateway API
@@ -61,7 +80,7 @@ curl http://localhost:8090/CreateUser \
 
 Test request
 ```shell
-curl -v http://localhost:8888/v1/chat/completions \
+curl -v http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer any_key" \
   -d '{
@@ -69,48 +88,25 @@ curl -v http://localhost:8888/v1/chat/completions \
      "messages": [{"role": "user", "content": "Say this is a test!"}],
      "temperature": 0.7
    }'
-
-curl -v http://localhost:8888/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer any_key" \
-  -H "routing-strategy: random" \
-  -d '{
-     "model": "llama2-70b",
-     "messages": [{"role": "user", "content": "Say this is a test!"}],
-     "temperature": 0.7
-   }'
-
-
-# least-request based
-for i in {1..10}; do
-  curl -v http://localhost:8888/v1/chat/completions \
-  -H "user: your-user-name" \
-  -H "routing-strategy: least-request" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer any_key" \
-  -d '{
-     "model": "llama2-70b",
-     "messages": [{"role": "user", "content": "Say this is a test!"}],
-     "temperature": 0.7
-   }' &
-done
-
-# throughput based
-for i in {1..10}; do
-  curl -v http://localhost:8888/v1/chat/completions \
-  -H "user: your-user-name" \
-  -H "routing-strategy: random" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer any_key" \
-  -d '{
-     "model": "llama2-70b",
-     "messages": [{"role": "user", "content": "Say this is a test!"}],
-     "temperature": 0.7
-   }' &
-done
 ```
 
-## Test Metrics
+### Routing Strategy
+
+valid options: `random`, `least-latency`, `throughput`
+
+```shell
+curl -v http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer any_key" \
+  -H "routing-strategy: random" \
+  -d '{
+     "model": "llama2-70b",
+     "messages": [{"role": "user", "content": "Say this is a test!"}],
+     "temperature": 0.7
+   }'
+```
+
+### Metrics
 
 In order to facilitate the testing of Metrics, we make the Metrics value returned by
 this mocked vllm deployment inversely proportional to the replica.
@@ -156,7 +152,7 @@ vllm:avg_prompt_throughput_toks_per_s{model_name="llama2-70b"} 20.0
 vllm:avg_generation_throughput_toks_per_s{model_name="llama2-70b"} 20.0
 ```
 
-### Update Override Metrics
+#### Update Override Metrics
 
 ```bash
 # check metrics
