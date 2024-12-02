@@ -103,7 +103,7 @@ jobs:
 
       - name: Deploy Workload
         run: |
-          cd docs/development/app
+          cd development/app
           docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
           kind load docker-image aibrix/vllm-mock:nightly --name installation-test
           kubectl apply -f deployment.yaml
