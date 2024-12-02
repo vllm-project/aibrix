@@ -2,7 +2,7 @@ apiVersion: model.aibrix.ai/v1alpha1
 kind: ModelAdapter
 metadata:
   name: lora-1
-  namespace: aibrix-system
+  namespace: default
   labels:
     model.aibrix.ai/name: "lora-1"
     model.aibrix.ai/port: "8000"

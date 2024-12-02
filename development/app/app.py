@@ -399,7 +399,7 @@ def metrics():
         metrics_output += generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"],
                                                         model_name, metric["value"])
         metrics_output += generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"],
-                                                        "lora-model-1", metric["value"], help_header=False)
+                                                        "lora-1", metric["value"], help_header=False)
 
     histogram_metrics = [
         {
@@ -471,7 +471,7 @@ def metrics():
         histogram_metrics_output += generate_histogram_metric(
             metric_name=metric["name"],
             description=metric["description"],
-            model_name="lora-model-1",
+            model_name="lora-1",
             buckets=metric["buckets"],
             new_requests=new_requests,
             help_header=False
