@@ -82,7 +82,14 @@ jobs:
         run: |
           for image in controller-manager plugins runtime users; do
             docker load < ${image}-image/${image}.tar
+          
+            # Retag the image
+            # This is for application integration, since it is not that easy to override all commits in manifest
+            # It is better to use nightly to represent the latest image
+            docker tag aibrix/${image}:${{ github.sha }} aibrix/${image}:nightly
+          
             kind load docker-image aibrix/${image}:${{ github.sha }} --name installation-test
+            kind load docker-image aibrix/${image}:nightly --name installation-test
           done
           
       - name: Deploy controller with the built image
