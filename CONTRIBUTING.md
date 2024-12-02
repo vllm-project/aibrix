@@ -1,7 +1,7 @@
 ## About AIBrix
 
 For instructions on building, installing, deploying, and testing this project, 
-please see the [Development Guide](docs/development/README.md) in the `docs/development` directory.
+please see the [Development Guide](development/README.md) in the `docs/development` directory.
 
 ## How to Contribute
 

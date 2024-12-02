@@ -228,7 +228,7 @@ Events:
 
 The Mocked Llama is a simulation of a vllm-based Llama deployment. It provides mocked metrics for scaling purposes, following the standard Prometheus protocol.
 
-For a detailed introduction, refer to the [README.md](../../development/app/README.md).
+For a detailed introduction, refer to the [README.md](../../../development/app/README.md).
 
 ### Deployment on K8S
 
@@ -310,7 +310,7 @@ The Mocked Llama has an average prompt throughput of 100 tokens per second (`avg
 
 The Mocked Llama is a simulation of a vllm-based Llama deployment. It provides mocked metrics for scaling purposes, following the standard Prometheus protocol.
 
-For a detailed introduction, refer to the [README.md](../../development/app/README.md).
+For a detailed introduction, refer to the [README.md](../../../development/app/README.md).
 
 ### Deployment on K8S
 

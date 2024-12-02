@@ -43,5 +43,5 @@ benchmarks/autoscaling/workload_plot
 benchmarks/generator/traces/*
 
 # simulator cache and output
-docs/development/simulator/simulator_output
-docs/development/simulator/cache
+development/simulator/simulator_output
+development/simulator/cache
