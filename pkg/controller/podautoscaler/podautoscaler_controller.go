@@ -623,7 +623,7 @@ func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa 
 		klog.InfoS("Scaler not found, creating new scaler", "metricKey", metricKey, "type", pa.Spec.ScalingStrategy)
 
 		switch pa.Spec.ScalingStrategy {
-		case autoscalingv1alpha1.HPA:
+		case autoscalingv1alpha1.KPA:
 			// initialize all kinds of autoscalers, such as KPA and APA.
 			// TODO Currently, we initialize kpa with default config and allocate window with default length.
 			//  We then reallocate window according to pa until UpdateScalingContext.
