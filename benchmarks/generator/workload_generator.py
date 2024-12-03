@@ -1,50 +1,17 @@
 import logging
 import math
-import os
 import random
 import json
-from typing import Tuple, Optional, List, Any
-from transformers import PreTrainedTokenizerBase
-import matplotlib.pyplot as plt
-import numpy as np
+import pandas as pd
 import argparse
 import csv
 
+from typing import Tuple, List, Any
+from transformers import PreTrainedTokenizerBase
+from datetime import datetime, timedelta
+from utils import (sample_sharegpt_requests, load_sharegpt_requests,sample_sharegpt_requests_len_range, get_tokenizer, plot_workload, make_serializable)
 
-def sample_sharegpt_requests(
-        dataset_path: str,
-        num_requests: int,
-        tokenizer: Optional[PreTrainedTokenizerBase] = None,
-        fixed_output_len: Optional[int] = None,
-) -> List[Tuple[str, int, int, None]]:
-    # Load the dataset
-    with open(dataset_path, encoding='utf-8') as f:
-        dataset = json.load(f)
-    dataset = [data for data in dataset if len(data["conversations"]) >= 2]
-    dataset = [(data["conversations"][0]["value"], data["conversations"][1]["value"]) for data in dataset]
-
-    filtered_dataset: List[Tuple[str, int, int]] = []
-    for i in range(len(dataset)):
-        if len(filtered_dataset) == num_requests:
-            break
-        prompt = dataset[i][0]
-        if tokenizer is not None:
-            prompt_token_ids = tokenizer(prompt).input_ids
-            completion = dataset[i][1]
-            completion_token_ids = tokenizer(completion).input_ids
-            prompt_len = len(prompt_token_ids)
-            output_len = len(completion_token_ids) if fixed_output_len is None else fixed_output_len
-            if prompt_len < 4 or (fixed_output_len is None and output_len < 4):
-                continue
-            if prompt_len > 1024 or prompt_len + output_len > 2048:
-                continue
-            filtered_dataset.append((prompt, prompt_len, output_len, None))
-        else:
-            filtered_dataset.append((prompt, -1, -1, None))
-
-    return filtered_dataset
-
-def generate_from_QPS_csv(input_requests: List[Any],
+def generate_from_summary_csv(input_requests: List[Any],
                           file_path: str,
                           sampling_granularity_seconds: int = 15,
                         ) -> List[List[Any]]:
@@ -63,7 +30,6 @@ def generate_from_QPS_csv(input_requests: List[Any],
         if end:
             break
         mean_rate = round(interval_requests/sampling_granularity_seconds)
-        print(f"mean_rate {mean_rate} for next {sampling_granularity_seconds} interval" )
         for _ in range(0, sampling_granularity_seconds):
             bound = min(base + mean_rate, len(input_requests))
             workloads.append(input_requests[base : bound])
@@ -71,7 +37,6 @@ def generate_from_QPS_csv(input_requests: List[Any],
             if base >= len(input_requests):
                 end = True
                 break
-    print(f"workloads {workloads}")
     return workloads
 
 def generate_synthetic(input_requests: List[Any], A=1, B=1,
@@ -150,10 +115,9 @@ def generate_synthetic(input_requests: List[Any], A=1, B=1,
         end_index += current_concurrency
         workload.append([input_requests[i % input_length] for i in range(start_index, end_index)])
         t += 1
-    print(workload)
     return workload
 
-def pair_requests_with_prompts(workload: List[List[Any]], prompts: List[Tuple[str, int, int, None]], output_file: str = 'trace_output.json') -> List[List[Tuple[Any, str]]]:
+def pair_requests_with_prompts(workload: List[List[Any]], prompts: List[Tuple[str, int, int, None]], output_file: str = 'output/output.json') -> List[List[Tuple[Any, str]]]:
     paired_workload = []
     prompt_count = len(prompts)
 
@@ -166,52 +130,92 @@ def pair_requests_with_prompts(workload: List[List[Any]], prompts: List[Tuple[st
     # Save to file
     with open(output_file, 'w') as file:
         json.dump(paired_workload, file)
-
+    
     return paired_workload
 
-def plot_workload(workload_dict, interval_sec, output_path: str = None):
-    """
-    Plots the concurrency (item length) of the generated workload.
+# generated_workload = generate_from_azure_csv(demo_requests, file_path=args.trace_file, sampling_granularity_seconds=15, output_file=args.output)
+def generate_from_azure_csv(file_path: str,
+                            prompt_file_path: str,
+                            tokenizer: PreTrainedTokenizerBase,
+                            group_interval_seconds: int = 1,
+                            output_file: str = 'output/output.json',
+                        ) -> List[List[Any]]:
+    # Load the CSV file
+    df = pd.read_csv(file_path)
 
-    Args:
-        workload_dict (dict): A dictionary where the keys are workload names (labels) and the values are lists of lists representing the workload.
-        interval_sec (int):
-    """
-    fig, ax = plt.subplots()
-    for workload_name, workload in workload_dict.items():
-        concurrency_values = [len(item) for item in workload]
-        ax.plot(np.arange(len(concurrency_values)) * interval_sec, concurrency_values, label=workload_name)
+    # Ensure TIMESTAMP is a datetime object
+    df['TIMESTAMP'] = pd.to_datetime(df['TIMESTAMP'])
 
-    ax.set_ylim(0,)
-    plt.xlabel('Time (Sec)')
-    plt.ylabel('Concurrency')
-    plt.title('Workload Concurrency')
-    plt.legend()
-    if output_path is None:
-        plt.show()
-    else:
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        plt.savefig(output_path)
-        logging.info(f'Saved workload plot to {output_path}')
+    # Define the grouping time range (e.g., 1 second)
+    time_range = timedelta(seconds=group_interval_seconds)
+
+    # Initialize a list to hold the grouped requests
+    grouped_requests = []
+
+    # Group requests by the time range
+    df.set_index('TIMESTAMP', inplace=True)
+    current_time = df.index.min()
+    end_time = df.index.max()
+    logging.INFO(f"Start generation from time {current_time} to {end_time}")
+   
+    sharegpt_df = load_sharegpt_requests(dataset_path = prompt_file_path, tokenizer = tokenizer)
+    
+    while current_time <= end_time:
+        # Select requests within the current time range
+        mask = (df.index >= current_time) & (df.index < current_time + time_range)
+        group = df.loc[mask]
+        input_lens = []
+        output_lens = []
+        for _, row in group.iterrows():
+            input_lens.append(int(row['ContextTokens']))
+            output_lens.append(int(row['GeneratedTokens']))
+        logging.info(f"Sample iteration {len(grouped_requests)} for {len(input_lens)} requests")
+        sampled_requests = sample_sharegpt_requests_len_range(
+                df = sharegpt_df,
+                num_requests = len(input_lens),
+                input_lens = input_lens, 
+                output_lens = output_lens,
+                initial_err_perc = 0.5,
+                err_step = 0.05
+                )
+        
+        if sampled_requests:  # Only add non-empty groups
+            grouped_requests.append(sampled_requests)
+        
+        # Move to the next time range
+        current_time += time_range
+
+    # Print or process grouped_requests as needed
+    # Save to file
+    grouped_requests = make_serializable(grouped_requests)
+    with open(output_file, 'w') as file:
+        json.dump(grouped_requests, file)
+    
+    print(grouped_requests)
+    return grouped_requests
+    
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Workload Generator')
     parser.add_argument('--prompt-file', type=str, required=True, help='File containing prompts')
     parser.add_argument('--num-prompts', type=int, default=100, help='Number of prompts to sample')
     parser.add_argument('--num-requests', type=int, default=10000, help='Number of requests in total')
+    parser.add_argument('--group-interval-seconds', type=int, default=1, help='Grouping interval seconds')
+    parser.add_argument('--trace-type', type=str, required=True, default="synthetic", help='Type of trace consumed')
     parser.add_argument('--trace-file', type=str, required=False, default=None, help='File containing trace CSV')
-    parser.add_argument('--output', type=str, required=False, default="output.json", help='Output file name')
+    parser.add_argument('--model', type=str, required=False, default="meta-llama/Llama-2-7b-hf", help='Target model tokenizer')
+    parser.add_argument('--output', type=str, required=False, default="output/output", help='Output path')
     args = parser.parse_args()
 
     # Load prompts from a file
     prompts = sample_sharegpt_requests(args.prompt_file, args.num_prompts)
 
-    # Generate input requests (ascending integers)
+    # Generate input requests (ascending integers)quit
     demo_requests = list(range(1, 1 + args.num_requests))
     interval = 30
     # Generate workloads and pair with prompts
     workload_dict = {}
-    if args.trace_file is None:
+    if args.trace_type == "synthetic":
         # Generate workloads with different parameters
         scenarios = {
             'Quick Rising': {'duration_sec': 600, 'interval_sec': interval, 'A': 5, 'period': 5, 'only_rise': True},
@@ -221,12 +225,19 @@ if __name__ == '__main__':
         }
         for scenario_name, params in scenarios.items():
             generated_workload = generate_synthetic(demo_requests, **params)
-            paired_workload = pair_requests_with_prompts(generated_workload, prompts, f'traces/{scenario_name}.json')
+            paired_workload = pair_requests_with_prompts(generated_workload, prompts, f"{args.output}/{scenario_name}.json")
             workload_dict[scenario_name] = paired_workload
-    else:
-        generated_workload = generate_from_QPS_csv(demo_requests, file_path=args.trace_file, sampling_granularity_seconds=15)
-        paired_workload = pair_requests_with_prompts(generated_workload, prompts, f'traces/{args.output}')
-        workload_dict["from_csv"] = paired_workload
-
-    # Plot the workloads
-    plot_workload(workload_dict, interval_sec=interval)
+        # Plot the workloads
+        plot_workload(workload_dict, interval_sec=interval, output_file=f"plot/synthetic.pdf")
+    elif args.trace_type == "summary":
+        generated_workload = generate_from_summary_csv(demo_requests, file_path=args.trace_file, sampling_granularity_seconds=15)
+        generated_workload = pair_requests_with_prompts(generated_workload, prompts, f"{args.output}/summary.json")
+        workload_dict["summary"] = generated_workload
+        # Plot the workloads
+        plot_workload(workload_dict, interval_sec=interval, output_file=f"plot/summary.pdf")
+    elif args.trace_type == "azure":
+        tokenizer = get_tokenizer(pretrained_model_name_or_path = args.model, trust_remote_code = True)
+        generated_workload = generate_from_azure_csv(file_path=args.trace_file, prompt_file_path = args.prompt_file, tokenizer = tokenizer, group_interval_seconds=1, output_file=f"{args.output}/azure.json")
+        workload_dict["azure"] = generated_workload
+        # Plot the workloads
+        plot_workload(workload_dict, interval_sec=interval, output_file=f"plot/azure.pdf")
