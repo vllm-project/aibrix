@@ -4,10 +4,10 @@ docker-build-mock:
 	docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
 
 docker-build-simulator: 
-	docker build -t aibrix/vllm-simulator:nightly --build-arg GPU_TYPE=a100 -f Dockerfile .
+	docker build -t aibrix/vllm-simulator:nightly --build-arg SIMULATION=a100 -f Dockerfile .
 
 docker-build-simulator-a40:
-	docker build -t aibrix/vllm-simulator-a40:nightly --build-arg GPU_TYPE=a40 -f Dockerfile .
+	docker build -t aibrix/vllm-simulator-a40:nightly --build-arg SIMULATION=a40 -f Dockerfile .
 
 docker-build: docker-build-mock
 

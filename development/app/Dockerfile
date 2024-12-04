@@ -21,16 +21,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY ./*.py /app/
 
 ENV MODEL_NAME=llama2-7b
-ARG GPU_TYPE=disabled
+ENV HUGGINGFACE_TOKEN="your huggingface token"
+ARG SIMULATION=disabled
 
 # Trigger profiling
-RUN if [ "$GPU_TYPE" != "disabled" ]; then \
-        python app.py --time_limit 1000 --replica_config_device ${GPU_TYPE}; \
+RUN if [ "$SIMULATION" != "disabled" ]; then \
+        python app.py --time_limit 1000 --replica_config_device ${SIMULATION}; \
     fi
 
 # Expose the port the app runs on
 EXPOSE 8000
 
 # Run the application, environment variable is necessary to apply ARG
-ENV GPU_TYPE=$GPU_TYPE
-CMD python app.py --replica_config_device ${GPU_TYPE}
+ENV SIMULATION=$SIMULATION
+CMD python app.py --replica_config_device ${SIMULATION}

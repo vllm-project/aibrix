@@ -26,6 +26,7 @@ MODEL_NAME = os.getenv('MODEL_NAME', 'llama2-70b')
 DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-70b')
 NAMESPACE = os.getenv('POD_NAMESPACE', 'default')
 DEFAULT_REPLICAS = int(os.getenv('DEFAULT_REPLICAS', '1'))
+HUGGINGFACE_TOKEN = os.getenv('HUGGINGFACE_TOKEN', "your huggingface token")
 
 modelMaps = {
     "llama2-7b": "meta-llama/Llama-2-7b-hf",
@@ -589,10 +590,20 @@ if __name__ == '__main__':
     if gpu_device != "disabled":
         # Load the tokenizer for your model
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
-            'bert-base-uncased',
-            model_max_length=16384, # Suppress warning
-            clean_up_tokenization_spaces=True)
+        default_model = 'bert-base-uncased'
+        try:
+            token_model = modelMaps.get(MODEL_NAME, default_model)
+            tokenizer = AutoTokenizer.from_pretrained(
+                token_model,
+                token=HUGGINGFACE_TOKEN,
+                model_max_length=16384, # Suppress warning
+                clean_up_tokenization_spaces=True)
+        except Exception as e:
+            logger.error(f"Failed to initialize tokenizer, will use default tokenizer model: {e}")
+            tokenizer = AutoTokenizer.from_pretrained(
+                default_model,
+                model_max_length=16384, # Suppress warning
+                clean_up_tokenization_spaces=True)
 
         simulator = Simulator(SimulationConfig.create_from_cli_args())
         overrides = {
