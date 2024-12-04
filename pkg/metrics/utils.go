@@ -18,6 +18,7 @@ package metrics
 
 import (
 	"fmt"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ import (
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/config"
+	"github.com/prometheus/common/expfmt"
 )
 
 // ParseHistogramFromBody parses a histogram metric from the Prometheus response body.
@@ -195,4 +197,23 @@ func GetHistogramValue(metric *dto.Metric) (*HistogramMetricValue, error) {
 		histogram.Buckets[bound] = float64(bucket.GetCumulativeCount())
 	}
 	return histogram, nil
+}
+
+func ParseMetricsURL(url string) (map[string]*dto.MetricFamily, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return make(map[string]*dto.MetricFamily), fmt.Errorf("Failed to fetch metrics from %s: %v", url, err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("failed to close response body: %v", err)
+		}
+	}()
+
+	var parser expfmt.TextParser
+	allMetrics, err := parser.TextToMetricFamilies(resp.Body)
+	if err != nil {
+		return make(map[string]*dto.MetricFamily), fmt.Errorf("Error parsing metric families: %v\n", err)
+	}
+	return allMetrics, nil
 }

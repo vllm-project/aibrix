@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net/http"
 	"os"
 	"strconv"
 	"sync"
@@ -45,7 +44,6 @@ import (
 	v1alpha1scheme "github.com/aibrix/aibrix/pkg/client/clientset/versioned/scheme"
 	"github.com/aibrix/aibrix/pkg/metrics"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
-	"github.com/prometheus/common/expfmt"
 	"k8s.io/client-go/kubernetes/scheme"
 )
 
@@ -599,25 +597,10 @@ func (c *Cache) updatePodMetrics() {
 
 		// We should use the primary container port. In the future, we can decide whether to use sidecar container's port
 		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, podPort)
-
-		resp, err := http.Get(url)
+		allMetrics, err := metrics.ParseMetricsURL(url)
 		if err != nil {
-			klog.Errorf("failed to fetch metrics from pod %s %s %d: %v", pod.Name, pod.Status.PodIP, podPort, err)
-			continue
+			klog.Warningf("Error parsing metric families: %v\n", err)
 		}
-		defer func() {
-			if err := resp.Body.Close(); err != nil {
-				klog.Errorf("Error closing response body: %v", err)
-			}
-		}()
-
-		// TODO: the metrics should come from those router subscribers in future
-		var parser expfmt.TextParser
-		allMetrics, err := parser.TextToMetricFamilies(resp.Body)
-		if err != nil {
-			fmt.Printf("Error parsing metric families: %v\n", err)
-		}
-
 		// parse counterGaugeMetricsNames
 		for _, metricName := range counterGaugeMetricNames {
 			metric, exists := metrics.Metrics[metricName]
@@ -696,10 +679,6 @@ func (c *Cache) updatePodMetrics() {
 		}
 
 		for _, metricName := range prometheusMetricNames {
-			modelNames, ok := c.PodToModelMapping[pod.Name]
-			if !ok {
-				continue
-			}
 			queryLabels := map[string]string{
 				"instance": fmt.Sprintf("%s:%d", pod.Status.PodIP, podPort),
 			}
@@ -710,21 +689,23 @@ func (c *Cache) updatePodMetrics() {
 			}
 			scope := metric.MetricScope
 			if scope == metrics.PodMetricScope {
-				// metric metrics.Metric, queryLabels map[string]string, podName string, modelName string, metricName string
 				err := c.queryUpdatePromQLMetrics(metric, queryLabels, podName, "", metricName)
 				if err != nil {
 					klog.Errorf("Failed to query and update PromQL metrics: %v", err)
 					continue
 				}
-
 			} else if scope == metrics.PodModelMetricScope {
-				for modelName := range modelNames {
-					queryLabels["model_name"] = modelName
-					err := c.queryUpdatePromQLMetrics(metric, queryLabels, podName, modelName, metricName)
-					if err != nil {
-						klog.Errorf("Failed to query and update PromQL metrics: %v", err)
-						continue
+				if modelNames, ok := c.PodToModelMapping[podName]; ok {
+					for modelName := range modelNames {
+						queryLabels["model_name"] = modelName
+						err := c.queryUpdatePromQLMetrics(metric, queryLabels, podName, modelName, metricName)
+						if err != nil {
+							klog.Errorf("Failed to query and update PromQL metrics: %v", err)
+							continue
+						}
 					}
+				} else {
+					klog.Warningf("Cannot find model names for pod %s", podName)
 				}
 			} else {
 				klog.Warningf("Scope %v is not supported", scope)
