@@ -13,7 +13,7 @@
 docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
 ```
 
-1. (Optional) Load container image to docker context
+1.b (Optional) Load container image to docker context
 
 > Note: If you are using Docker-Desktop on Mac, Kubernetes shares the local image repository with Docker.
 > Therefore, the following command is not necessary. Only kind user need this step.
@@ -22,12 +22,27 @@ docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
 kind load docker-image aibrix/vllm-mock:nightly
 ```
 
-1. Deploy mocked model image
+2. Deploy mocked model image
 ```shell
-kubectl apply -f deployment.yaml
+kubectl create -k config/mock
 
 # you can run following command to delete the deployment 
-kubectl delete -f deployment.yaml
+kubectl delete -k config/mock
+```
+
+### Deploy the simulator app
+Alternatively, [vidur](https://github.com/microsoft/vidur) is integrated for high-fidality vLLM simulation:
+1. Builder simulator base model image
+```dockerfile
+docker build -t aibrix/vllm-simulator:nightly --build-arg GPU_TYPE=a100 -f Dockerfile .
+```
+
+2. Deploy simulator model image
+```shell
+kubectl create -k config/simulator
+
+# you can run following command to delete the deployment 
+kubectl delete -k config/simulator
 ```
 
 ### Test the metric invocation

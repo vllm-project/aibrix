@@ -1,0 +1,15 @@
+# Pod autoscaler works with gpu-optimizer
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: podautoscaler-simulator-llama2-7b-a40
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: simulator-llama2-7b-a40
+  metricsSources: 
+    - endpoint: gpu-optimizer.aibrix-system.svc.cluster.local:8080
+      path: /metrics/default/simulator-llama2-7b-a40
+      metric: "vllm:deployment_replicas"
+  targetValue: "1"

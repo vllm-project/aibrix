@@ -1,75 +1,8 @@
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: llama2-70b
-  namespace: default
-  labels:
-    model.aibrix.ai/name: "llama2-70b"
-    model.aibrix.ai/port: "8000"
-    adapter.model.aibrix.ai/enabled: "true"
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      adapter.model.aibrix.ai/enabled: "true"
-      model.aibrix.ai/name: "llama2-70b"
-  template:
-    metadata:
-      labels:
-        adapter.model.aibrix.ai/enabled: "true"
-        model.aibrix.ai/name: "llama2-70b"
-    spec:
-      serviceAccountName: mocked-app-sa
-      containers:
-        - name: llm-engine
-          image: aibrix/vllm-mock:nightly
-          ports:
-            - containerPort: 8000
-          env:
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: MY_POD_IP
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.podIP
-        - name: aibrix-runtime
-          image: aibrix/runtime:nightly
-          command:
-            - aibrix_runtime
-            - --port
-            - "8080"
-          env:
-            - name: INFERENCE_ENGINE
-              value: vllm
-            - name: INFERENCE_ENGINE_ENDPOINT
-              value: http://localhost:8000
-          ports:
-            - containerPort: 8080
-              protocol: TCP
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: 8080
-            initialDelaySeconds: 3
-            periodSeconds: 2
-          readinessProbe:
-            httpGet:
-              path: /ready
-              port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 10
----
 # Debug only: Make sure pod can be visited from controller that deployed in mac.
 apiVersion: v1
 kind: Service
 metadata:
-  name: llama2-70b
+  name: llama2-7b
   namespace: default
   labels:
     prometheus-discovery: "true"
@@ -79,7 +12,7 @@ metadata:
     prometheus.io/port: "8000"
 spec:
   selector:
-    model.aibrix.ai/name: "llama2-70b"
+    model.aibrix.ai/name: "llama2-7b"
   ports:
     - protocol: TCP
       name: metrics
@@ -146,7 +79,7 @@ roleRef:
 # apiVersion: gateway.networking.k8s.io/v1
 # kind: HTTPRoute
 # metadata:
-#   name: llama2-70b-router
+#   name: llama2-7b-router
 #   namespace: default
 # spec:
 #   parentRefs:
@@ -156,7 +89,7 @@ roleRef:
 #         - headers:
 #             - type: Exact
 #               name: model
-#               value: llama2-70b
+#               value: llama2-7b
 #       backendRefs:
-#         - name: llama2-70b
+#         - name: llama2-7b
 #           port: 8000

@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simulator-llama2-7b-a40
+  labels:
+    model.aibrix.ai/name: "llama2-7b"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: "llama2-7b"
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: "llama2-7b"
+        app: "simulator-llama2-7b-a40"
+    spec:
+      containers:
+        - name: llm-engine
+          image: aibrix/vllm-simulator-a40:nightly
+          env:
+            - name: MODEL_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['model.aibrix.ai/name']

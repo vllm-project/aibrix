@@ -1,28 +1,55 @@
 all: build
 
-build-a100: 
-	docker build -t aibrix/vllm-simulator:nightly -f Dockerfile .
+docker-build-mock:
+	docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
 
-build-a40: 
+docker-build-simulator: 
+	docker build -t aibrix/vllm-simulator:nightly --build-arg GPU_TYPE=a100 -f Dockerfile .
+
+docker-build-simulator-a40:
 	docker build -t aibrix/vllm-simulator-a40:nightly --build-arg GPU_TYPE=a40 -f Dockerfile .
 
-build: build-a100
+docker-build: docker-build-mock
 
-deploy-a100:
-	kubectl apply -f deployment-a100.yaml
-
-deploy-a40:
-	kubectl apply -f deployment-a40.yaml
-
-deploy: deploy-a100
+deploy-mock:
+	kubectl create -k config/mock
 	sleep 2
-	kubectl -n aibrix-system port-forward svc/llama2-7b 8000:8000 1>/dev/null 2>&1 &
+	kubectl port-forward svc/llama2-7b 8000:8000 1>/dev/null 2>&1 &
+	kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 1>/dev/null 2>&1 &
 
-clean:
-	kubectl delete -f deployment-a100.yaml
-	kubectl delete -f deployment-a40.yaml
+deploy-simulator:
+	kubectl create -k config/simulator
+	sleep 2
+	kubectl port-forward svc/llama2-7b 8000:8000 1>/dev/null 2>&1 &
+	kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 1>/dev/null 2>&1 &
+
+deploy-heterogeneous:
+	kubectl create -k config/heterogeneous
+	sleep 2
+	kubectl port-forward svc/llama2-7b 8000:8000 1>/dev/null 2>&1 &
+	kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 1>/dev/null 2>&1 &
+
+deploy: deploy-mock
+
+clean-mock:
+	kubectl delete -k config/mock
 	sleep 1
 	curl http://localhost:8000/metrics
+	curl http://localhost:8888/metrics
+
+clean-simulator:
+	kubectl delete -k config/simulator
+	sleep 1
+	curl http://localhost:8000/metrics
+	curl http://localhost:8888/metrics
+
+clean-heterogeneous:
+	kubectl delete -k config/heterogeneous
+	sleep 1
+	curl http://localhost:8000/metrics
+	curl http://localhost:8888/metrics
+
+clean: clean-mock
 
 test:
 	curl http://localhost:8000/v1/chat/completions \
@@ -56,17 +83,8 @@ test-long:
 			"max_tokens": 50 \
 		}'
 
-init-local-gateway-call:
-	kubectl -n aibrix-system port-forward svc/aibrix-gateway-users 8090:8090 1>/dev/null 2>&1 &
-	kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 1>/dev/null 2>&1 &
-	sleep 1
-	curl http://localhost:8090/CreateUser \
-		-H "Content-Type: application/json" \
-		-d '{"name": "your-user-name","rpm": 1000,"tpm": 100000}'
-
 test-gateway:
 	curl -v http://localhost:8888/v1/chat/completions \
-		-H "user: your-user-name" \
 		-H "model: llama2-7b" \
 		-H "Content-Type: application/json" \
 		-H "Authorization: Bearer any_key" \

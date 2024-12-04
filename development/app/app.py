@@ -2,22 +2,53 @@ from flask import Flask, request, Response, jsonify
 from werkzeug import serving
 import random
 import re
+import logging
+import sys
 import time
+from datetime import datetime
 from random import randint
 import os
+from typing import Optional
 
 try:
     from kubernetes import client, config
 except Exception as e:
     print(f"Failed to import kubernetes, skip: {e}")
 
+from simulator import Simulator
+from vidur.config import SimulationConfig
+from vidur.entities import Request
+
 # Global storage for overridden values
 overrides = {}
 
-MODEL_NAME = 'llama2-70b'
+MODEL_NAME = os.getenv('MODEL_NAME', 'llama2-70b')
 DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-70b')
 NAMESPACE = os.getenv('POD_NAMESPACE', 'default')
 DEFAULT_REPLICAS = int(os.getenv('DEFAULT_REPLICAS', '1'))
+
+modelMaps = {
+    "llama2-7b": "meta-llama/Llama-2-7b-hf",
+    "llama2-70b": "meta-llama/Llama-2-70b-hf"
+}
+sys.argv.append(f"--replica_config_model_name={modelMaps.get(MODEL_NAME, MODEL_NAME)}")
+
+tokenizer = None
+simulator: Optional[Simulator] = None
+
+logger = logging.getLogger(__name__)
+
+def get_token_count(text):
+    try:
+        # Encode the text
+        encoded_input = tokenizer(text)
+
+        # Get the number of tokens
+        return len(encoded_input['input_ids'])
+    except Exception as e:
+        logger.error(f"Failed to get number of tokens: {e}")
+
+    return 1
 
 models = [
     {
@@ -127,73 +158,128 @@ def unload_model():
 
 @app.route('/v1/completions', methods=['POST'])
 def completion():
-    prompt = request.json.get('prompt')
-    model = request.json.get('model')
-    if not prompt or not model:
-        return jsonify({"status": "error", "message": "Prompt and model are required"}), 400
+    try:
+        prompt = request.json.get('prompt')
+        model = request.json.get('model')
+        max_tokens = request.json.get('max_tokens')
+        if not prompt or not model:
+            return jsonify({"status": "error", "message": "Prompt and model are required"}), 400
+        
+        arrived_at = datetime.now().timestamp()
+        input_tokens = get_token_count(prompt)
+        output_tokens = max_tokens if max_tokens else randint(10, 500)
+        arrived_next = request.json.get('next_in')
+        if not arrived_next:
+            arrived_next = 0.0
+        else:
+            arrived_next += arrived_at
 
-    prompt_tokens = randint(1, 100)
-    completion_tokens = randint(1, 100)
+        start = datetime.now().timestamp()
+        latency = 0.0
+        if simulator is not None:
+            latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens, arrived_next=arrived_next))
 
-    # Simulated response
-    response = {
-        "id": "cmpl-uqkvlQyYK7bGYrRHQ0eXlWi7",
-        "object": "text_completion",
-        "created": 1589478378,
-        "model": model,
-        "system_fingerprint": "fp_44709d6fcb",
-        "choices": [
-            {
-                "text": f"This is indeed a test from model {model}!",
-                "index": 0,
-                "logprobs": None,
-                "finish_reason": "length"
+        # Simulated response
+        response = {
+            "id": "cmpl-uqkvlQyYK7bGYrRHQ0eXlWi7",
+            "object": "text_completion",
+            "created": int(arrived_at),
+            "model": model,
+            "system_fingerprint": "fp_44709d6fcb",
+            "choices": [
+                {
+                    "text": f"This is simulated message from {model}!",
+                    "index": 0,
+                    "logprobs": None,
+                    "finish_reason": "length"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "time": latency
             }
-        ],
-        "usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens
         }
-    }
-    return jsonify(response), 200
+        overhead = datetime.now().timestamp()-start
+        if latency > overhead:
+            time.sleep(latency-overhead)
+        elif latency > 0.0:
+            logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
+        
+        return jsonify(response), 200
+    except Exception as e:
+        err = {
+            "error": {
+                "message": f"The server had an error while processing your request: {e}",
+                "type": "server_error"
+            }
+        }
+        return jsonify(err), 500
 
 
 @app.route('/v1/chat/completions', methods=['POST'])
 def chat_completions():
-    messages = request.json.get('messages')
-    model = request.json.get('model')
-    if not messages or not model:
-        return jsonify({"status": "error", "message": "Messages and model are required"}), 400
+    try:
+        messages = request.json.get('messages')
+        model = request.json.get('model')
+        max_tokens = request.json.get('max_tokens')
+        if not messages or not model:
+            return jsonify({"status": "error", "message": "Messages and model are required"}), 400
+        
+        arrived_at = datetime.now().timestamp()
+        input_tokens = sum(get_token_count(message["content"]) for message in messages)
+        output_tokens = max_tokens if max_tokens else randint(10, 500)
+        arrived_next = request.json.get('next_in')
+        if not arrived_next:
+            arrived_next = 0.0
+        else:
+            arrived_next += arrived_at
 
-    prompt_tokens = randint(1, 100)
-    completion_tokens = randint(1, 100)
+        start = datetime.now().timestamp()
+        latency = 0.0
+        if simulator is not None:
+            latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens, arrived_next=arrived_next))
 
-    # Simulated response
-    response = {
-        "id": "chatcmpl-abc123",
-        "object": "chat.completion",
-        "created": 1677858242,
-        "model": model,
-        "usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens
-        },
-        "choices": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": f"\n\nThis is a test from{model}!"
-                },
-                "logprobs": None,
-                "finish_reason": "stop",
-                "index": 0
+        # Simulated response
+        response = {
+            "id": "chatcmpl-abc123",
+            "object": "chat.completion",
+            "created": int(arrived_at),
+            "model": model,
+            "usage": {
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "time": latency
+            },
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": f"\n\nThis is simulated message from {model}!"
+                    },
+                    "logprobs": None,
+                    "finish_reason": "stop",
+                    "index": 0
+                }
+            ]
+        }
+        overhead = datetime.now().timestamp()-start
+        if latency > overhead:
+            time.sleep(latency-overhead)
+        else:
+            logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
+
+        return jsonify(response), 200
+    except Exception as e:
+        err = {
+            "error": {
+                "message": f"The server had an error while processing your request: {e}",
+                "type": "server_error"
             }
-        ]
-    }
-    return jsonify(response), 200
-
+        }
+        return jsonify(err), 500
 
 @app.route('/set_metrics', methods=['POST'])
 def set_metrics():
@@ -481,11 +567,57 @@ def metrics():
 
 
 if __name__ == '__main__':
-    try:
-        # config.load_kube_config()
-        config.load_incluster_config()
-    except Exception as e:
-        print(f"Failed to load k8s config: {e}")
+    logging.basicConfig(level=logging.DEBUG)
+    logging.getLogger("kubernetes.client.rest").setLevel(logging.ERROR)  # Suppress kubenetes logs
 
-    print(f"Starting app. DEPLOYMENT_NAME: {DEPLOYMENT_NAME}, NAMESPACE: {NAMESPACE}")
-    app.run(host='0.0.0.0', port=8000)
+    print(f"Starting app. DEPLOYMENT_NAME: {DEPLOYMENT_NAME}, NAMESPACE: {NAMESPACE}, MODEL: {MODEL_NAME}")
+
+    # Extract gpu_device without call argparse
+    gpu_device = "disabled"
+    try:
+        index = sys.argv.index("--replica_config_device")
+        if index + 1 < len(sys.argv):
+            gpu_device = sys.argv[index + 1]
+    except ValueError:
+        pass
+    
+    # Restore -h functionality
+    if '-h' in sys.argv:
+        SimulationConfig.create_from_cli_args()
+
+    # Launch simulator
+    if gpu_device != "disabled":
+        # Load the tokenizer for your model
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(
+            'bert-base-uncased',
+            model_max_length=16384, # Suppress warning
+            clean_up_tokenization_spaces=True)
+
+        simulator = Simulator(SimulationConfig.create_from_cli_args())
+        overrides = {
+            "total": 100.0,
+            "running": 0,
+            "waiting": 0,
+            "swapped": 0
+        }
+
+    thread = None
+    if simulator is not None:
+        thread = simulator.start()
+
+    # Perform profiling and skip actual run
+    if '--time_limit' not in sys.argv:
+        try:
+            # config.load_kube_config()
+            config.load_incluster_config()
+        except Exception as e:
+            print(f"Failed to load k8s config: {e}")
+
+        app.run(host='0.0.0.0', port=8000)
+
+    if simulator is not None:
+        simulator.stop()
+
+    if thread is not None:
+        thread.join()
