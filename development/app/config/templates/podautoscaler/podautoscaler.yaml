@@ -5,6 +5,7 @@ metadata:
   name: podautoscaler-mock-llama2-7b
   labels:
     app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
   namespace: default
 spec:
   scaleTargetRef:

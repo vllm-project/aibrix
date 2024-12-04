@@ -37,6 +37,15 @@ Alternatively, [vidur](https://github.com/microsoft/vidur) is integrated for hig
 docker build -t aibrix/vllm-simulator:nightly --build-arg GPU_TYPE=a100 -f Dockerfile .
 ```
 
+1.b (Optional) Load container image to docker context
+
+> Note: If you are using Docker-Desktop on Mac, Kubernetes shares the local image repository with Docker.
+> Therefore, the following command is not necessary. Only kind user need this step.
+
+```shell
+kind load docker-image aibrix/vllm-simulator:nightly
+```
+
 2. Deploy simulator model image
 ```shell
 kubectl create -k config/simulator
