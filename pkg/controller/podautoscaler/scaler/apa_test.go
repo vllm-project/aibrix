@@ -39,7 +39,20 @@ func TestAPAScale(t *testing.T) {
 	metricsFetcher := &metrics.RestMetricsFetcher{}
 	apaMetricsClient := metrics.NewAPAMetricsClient(metricsFetcher, spec.Window)
 	now := time.Now()
-	metricKey := metrics.NewNamespaceNameMetric("test_ns", "llama-70b", "ttot")
+
+	pa := autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "test_ns",
+		},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			TargetMetric: "ttot", // Set TargetMetric to "ttot"
+			ScaleTargetRef: corev1.ObjectReference{
+				Name: "llama-70b",
+			},
+		},
+	}
+
+	metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, &pa)
 	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-60*time.Second), 10.0)
 	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-50*time.Second), 11.0)
 	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-40*time.Second), 12.0)
