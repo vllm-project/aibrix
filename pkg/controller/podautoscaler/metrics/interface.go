@@ -33,8 +33,19 @@ type NamespaceNameMetric struct {
 	MetricName string
 }
 
-func NewNamespaceNameMetric(namespace string, name string, metricName string) NamespaceNameMetric {
-	return NamespaceNameMetric{NamespacedName: types.NamespacedName{Namespace: namespace, Name: name}, MetricName: metricName}
+func NewNamespaceNameMetric(namespace, name string, pa *autoscalingv1alpha1.PodAutoscaler) NamespaceNameMetric {
+	metricName := pa.Spec.TargetMetric
+	if len(pa.Spec.MetricsSources) > 0 {
+		metricName = pa.Spec.MetricsSources[0].Name
+	}
+
+	return NamespaceNameMetric{
+		NamespacedName: types.NamespacedName{
+			Namespace: namespace,
+			Name:      name,
+		},
+		MetricName: metricName,
+	}
 }
 
 // PodMetric contains pod metric value (the metric values are expected to be the metric as a milli-value)

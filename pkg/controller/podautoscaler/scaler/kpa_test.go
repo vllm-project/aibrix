@@ -55,7 +55,6 @@ func TestKpaScale(t *testing.T) {
 	metricsFetcher := &metrics.RestMetricsFetcher{}
 	kpaMetricsClient := metrics.NewKPAMetricsClient(metricsFetcher, spec.StableWindow, spec.PanicWindow)
 	now := time.Now()
-	metricKey := metrics.NewNamespaceNameMetric("test_ns", "llama-70b", spec.ScalingMetric)
 	_ = kpaMetricsClient.UpdateMetricIntoWindow(now.Add(-60*time.Second), 10.0)
 	_ = kpaMetricsClient.UpdateMetricIntoWindow(now.Add(-50*time.Second), 11.0)
 	_ = kpaMetricsClient.UpdateMetricIntoWindow(now.Add(-40*time.Second), 12.0)
@@ -75,6 +74,26 @@ func TestKpaScale(t *testing.T) {
 	kpaScaler.metricClient = kpaMetricsClient
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+
+	pa := autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "test_ns",
+		},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			TargetMetric: spec.ScalingMetric,
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					Name: spec.ScalingMetric,
+				},
+			},
+			ScaleTargetRef: corev1.ObjectReference{
+				Name: "llama-70b",
+			},
+		},
+	}
+
+	// metricKey := metrics.NewNamespaceNameMetric("test_ns", "llama-70b", spec.ScalingMetric)
+	metricKey := metrics.NewNamespaceNameMetric("test_ns", "llama-70b", &pa)
 
 	result := kpaScaler.Scale(readyPodCount, metricKey, now)
 	// recent rapid rising metric value make scaler adapt turn on panic mode

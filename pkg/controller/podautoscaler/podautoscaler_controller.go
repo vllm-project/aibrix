@@ -284,7 +284,7 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	paStatusOriginal := pa.Status.DeepCopy()
 	paType := pa.Spec.ScalingStrategy
 	scaleReference := fmt.Sprintf("%s/%s/%s", pa.Spec.ScaleTargetRef.Kind, pa.Namespace, pa.Spec.ScaleTargetRef.Name)
-	metricKey := createMetricKey(pa)
+	metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, &pa)
 
 	targetGV, err := schema.ParseGroupVersion(pa.Spec.ScaleTargetRef.APIVersion)
 	if err != nil {
@@ -595,13 +595,6 @@ func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context,
 	}
 
 	return 0, "", currentTimestamp, fmt.Errorf("can not calculate metrics for scale %s", pa.Spec.ScaleTargetRef.Name)
-}
-
-func createMetricKey(pa autoscalingv1alpha1.PodAutoscaler) metrics.NamespaceNameMetric {
-	if len(pa.Spec.MetricsSources) > 0 {
-		return metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.MetricsSources[0].Name)
-	}
-	return metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.TargetMetric)
 }
 
 // refer to knative-serving.
