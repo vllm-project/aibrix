@@ -99,6 +99,5 @@ def sample_sharegpt_requests_len_range(
         if err_perc < 0:
             raise Exception(f"No match found for request {i + 1} even after relaxing err_perc to 0")
 
-    logging.warn(f"Successfully found {len(filtered_results)} requests")
     return filtered_results
 

@@ -170,7 +170,6 @@ def generate_from_azure_csv(file_path: str,
         for _, row in group.iterrows():
             input_lens.append(int(row['ContextTokens']))
             output_lens.append(int(row['GeneratedTokens']))
-        logging.warn(f"Sample iteration {len(grouped_requests)} for {len(input_lens)} requests")
         sampled_requests = sample_sharegpt_requests_len_range(
                 df = sharegpt_df,
                 num_requests = len(input_lens),
