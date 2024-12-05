@@ -13,15 +13,20 @@ WORKDIR /app
 COPY requirements.txt /app/
 
 # Install dependencies
-RUN apt update && apt install -y curl jq git
+RUN apt update && apt install -y curl jq git git-lfs
 
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code into the container
 COPY ./*.py /app/
+COPY ./*.json /app/
+
+# Python base image has no zScaler root CA, we need add it manually
+COPY ./zscaler_root_ca.crt /usr/local/share/ca-certificates/
+RUN update-ca-certificates
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
 ENV MODEL_NAME=llama2-7b
-ENV HUGGINGFACE_TOKEN="your huggingface token"
 ARG SIMULATION=disabled
 
 # Trigger profiling
@@ -34,4 +39,4 @@ EXPOSE 8000
 
 # Run the application, environment variable is necessary to apply ARG
 ENV SIMULATION=$SIMULATION
-CMD python app.py --replica_config_device ${SIMULATION}
+CMD ["python", "app.py"]

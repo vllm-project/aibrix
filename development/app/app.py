@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 from random import randint
 import os
+import json
 from typing import Optional
 
 try:
@@ -26,18 +27,43 @@ MODEL_NAME = os.getenv('MODEL_NAME', 'llama2-70b')
 DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-70b')
 NAMESPACE = os.getenv('POD_NAMESPACE', 'default')
 DEFAULT_REPLICAS = int(os.getenv('DEFAULT_REPLICAS', '1'))
-HUGGINGFACE_TOKEN = os.getenv('HUGGINGFACE_TOKEN', "your huggingface token")
+SIMULATION=os.getenv('SIMULATION', 'disabled')
 
 modelMaps = {
     "llama2-7b": "meta-llama/Llama-2-7b-hf",
     "llama2-70b": "meta-llama/Llama-2-70b-hf"
 }
-sys.argv.append(f"--replica_config_model_name={modelMaps.get(MODEL_NAME, MODEL_NAME)}")
+
+# Polifill the necessary arguments.
+if "--replica_config_device" not in sys.argv:
+    sys.argv.append("--replica_config_device")
+    sys.argv.append(SIMULATION)
+if "--replica_config_model_name" not in sys.argv:
+    sys.argv.append("--replica_config_model_name")
+    sys.argv.append(modelMaps.get(MODEL_NAME, MODEL_NAME))
 
 tokenizer = None
 simulator: Optional[Simulator] = None
 
 logger = logging.getLogger(__name__)
+
+def read_configs(file_path):
+  """
+  Reads a JSON file that store sensitive information.
+  """
+  try:
+    with open(file_path, "r") as f:
+      data = json.load(f)
+      if not isinstance(data, dict):
+          raise Exception("invalid config format, dict expected.")
+      return data
+  except Exception as e:
+    print(f"Error reading JSON file: {e}")
+    return {}
+  
+
+configs = read_configs("config.json")
+HUGGINGFACE_TOKEN = configs.get("huggingface_token", "your huggingface token")
 
 def get_token_count(text):
     try:

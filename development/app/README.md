@@ -32,9 +32,11 @@ kubectl delete -k config/mock
 
 ### Deploy the simulator app
 Alternatively, [vidur](https://github.com/microsoft/vidur) is integrated for high-fidality vLLM simulation:
-0. Config HuggingFace token for model tokenizer by changing HUGGINGFACE_TOKEN in Dockerfile
-```
-ENV HUGGINGFACE_TOKEN="your huggingface token"
+0. Config HuggingFace token for model tokenizer by changing huggingface_token in config.json
+```json
+{
+    "huggingface_token": "your huggingface token"
+}
 ```
 
 1. Builder simulator base model image
