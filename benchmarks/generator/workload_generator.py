@@ -118,7 +118,10 @@ def generate_synthetic(A=1, B=1,
         t += 1
     return workload
 
-def pair_requests_with_prompts_round_robin(workload: List[List[Any]], prompts: List[Tuple[str, int, int, None]], output_file: str = 'output/output.json') -> List[List[Tuple[Any, str]]]:
+def pair_requests_with_prompts_round_robin(workload: List[List[Any]], 
+                                           prompts: List[Tuple[str, int, int, None]], 
+                                           output_file: str = 'output/output.json', 
+                                           to_jsonl: bool = False) -> List[List[Tuple[Any, str]]]:
     paired_workload = []
     prompt_count = len(prompts)
     for ts, requests in workload:
@@ -128,7 +131,7 @@ def pair_requests_with_prompts_round_robin(workload: List[List[Any]], prompts: L
         paired_workload.append((ts, requests_with_prompts))
 
     # Save to file
-    save_workload(paired_workload, output_file)
+    save_workload(paired_workload, output_file, use_jsonl = to_jsonl)
     
     return paired_workload
 
@@ -139,6 +142,7 @@ def generate_from_azure_csv(file_path: str,
                             tokenizer: PreTrainedTokenizerBase,
                             interval_ms: int,
                             output_file: str = 'output/output.json',
+                            to_jsonl: bool = False,
                         ) -> List[List[Any]]:
     # Load the CSV file
     df = pd.read_csv(file_path)
@@ -190,7 +194,7 @@ def generate_from_azure_csv(file_path: str,
     # Print or process grouped_requests as needed
     # Save to file
     grouped_requests = make_serializable(grouped_requests)
-    save_workload(grouped_requests, output_file)
+    save_workload(grouped_requests, output_file, use_jsonl = to_jsonl)
     
     return grouped_requests
     
@@ -200,12 +204,13 @@ if __name__ == '__main__':
     parser.add_argument('--prompt-file', type=str, required=True, help='File containing prompts.')
     parser.add_argument('--num-prompts', type=int, default=100, help='Number of prompts to sample.')
     parser.add_argument('--group-interval-seconds', type=int, default=1, help='Grouping interval seconds.')
-    parser.add_argument('--trace-type', type=str, required=True, default="synthetic", help='Type of trace consumed.')
-    parser.add_argument('--trace-file', type=str, required=False, default=None, help='File containing trace CSV.')
-    parser.add_argument('--model', type=str, required=False, default="meta-llama/Llama-2-7b-hf", help='Target model tokenizer.')
-    parser.add_argument('--output', type=str, required=False, default="output/output", help='Output path to the workload.')
+    parser.add_argument('--trace-type', type=str, required=True, default="synthetic", help='Type of trace consumed. Choose among: synthetic, internal, azure')
+    parser.add_argument('--trace-file', type=str, required=False, default=None, help='File containing original trace file csv, which workload generator depends upon to convert to workload format. This is only needed for for internal/azure trace type. ')
+    parser.add_argument('--model', type=str, required=False, default="Qwen/Qwen2.5-Coder-7B-Instruct", help='Target model tokenizer.')
+    parser.add_argument('--output', type=str, required=False, default="output", help='Output path to the workload.')
     parser.add_argument('--interval-ms', type=int, required=False, default=1000, help='Granularity of request injection interval in milliseconds.')
     parser.add_argument('--duration-ms', type=int, default=60000, help='Duration of the trace generated.')
+    parser.add_argument('--to-jsonl', type=bool, default=False, help='Set output data format to .jsonl (default .json).')
     args = parser.parse_args()
 
     # Generate workloads and pair with prompts
@@ -223,7 +228,10 @@ if __name__ == '__main__':
         }
         for scenario_name, params in scenarios.items():
             generated_workload = generate_synthetic(**params)
-            paired_workload = pair_requests_with_prompts_round_robin(generated_workload, prompts, f"{args.output}/{scenario_name}.json")
+            paired_workload = pair_requests_with_prompts_round_robin(workload = generated_workload, 
+                                                                     prompts = prompts, 
+                                                                     output_file = f"{args.output}/{scenario_name}.json",
+                                                                     to_jsonl = args.to_jsonl)
             workload_dict[scenario_name] = paired_workload
         # Plot the workloads
         plot_workload(workload_dict, interval_ms=args.interval_ms, output_file=f"plot/synthetic.pdf")
@@ -232,12 +240,21 @@ if __name__ == '__main__':
         prompts = sample_sharegpt_requests(dataset_path = args.prompt_file, num_requests = args.num_prompts, tokenizer = tokenizer)
         # Generate input requests (ascending integers)quit
         generated_workload = generate_from_internal_csv(file_path=args.trace_file, duration_ms = args.duration_ms, summary_interval_ms=15000, interval_ms=args.interval_ms)
-        generated_workload = pair_requests_with_prompts_round_robin(generated_workload, prompts, f"{args.output}/internal.json")
+        generated_workload = pair_requests_with_prompts_round_robin(workload = generated_workload, 
+                                                                    prompts = prompts, 
+                                                                    output_file = f"{args.output}/internal.json",
+                                                                    to_jsonl = args.to_jsonl)
         workload_dict["internal"] = generated_workload
         # Plot the workloads
         plot_workload(workload_dict, interval_ms=args.interval_ms, output_file=f"plot/internal.pdf")
     elif args.trace_type == "azure":
-        generated_workload = generate_from_azure_csv(file_path=args.trace_file, prompt_file_path = args.prompt_file, duration_ms = args.duration_ms, tokenizer = tokenizer, interval_ms=args.interval_ms, output_file=f"{args.output}/azure.json")
+        generated_workload = generate_from_azure_csv(file_path=args.trace_file, 
+                                                     prompt_file_path = args.prompt_file, 
+                                                     duration_ms = args.duration_ms, 
+                                                     tokenizer = tokenizer, 
+                                                     interval_ms = args.interval_ms, 
+                                                     output_file = f"{args.output}/azure.json",
+                                                     to_jsonl = args.to_jsonl)
         workload_dict["azure"] = generated_workload
         # Plot the workloads
         plot_workload(workload_dict, interval_ms=args.interval_ms, output_file=f"plot/azure.pdf")
