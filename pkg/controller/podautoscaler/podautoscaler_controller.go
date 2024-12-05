@@ -284,6 +284,7 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	paStatusOriginal := pa.Status.DeepCopy()
 	paType := pa.Spec.ScalingStrategy
 	scaleReference := fmt.Sprintf("%s/%s/%s", pa.Spec.ScaleTargetRef.Kind, pa.Namespace, pa.Spec.ScaleTargetRef.Name)
+	metricKey := createMetricKey(pa)
 
 	targetGV, err := schema.ParseGroupVersion(pa.Spec.ScaleTargetRef.APIVersion)
 	if err != nil {
@@ -324,7 +325,7 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	setCondition(&pa, "AbleToScale", metav1.ConditionTrue, "SucceededGetScale", "the %s controller was able to get the target's current scale", paType)
 
 	// Update the scale required metrics periodically
-	err = r.updateMetricsForScale(ctx, pa, scale)
+	err = r.updateMetricsForScale(ctx, pa, scale, metricKey)
 	if err != nil {
 		r.EventRecorder.Event(&pa, corev1.EventTypeWarning, "FailedUpdateMetrics", err.Error())
 		return ctrl.Result{}, fmt.Errorf("failed to update metrics for scale target reference: %v", err)
@@ -366,7 +367,7 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 		// if the currentReplicas is within the range, we should
 		// computeReplicasForMetrics gives
 		// TODO: check why it return the metrics name here?
-		metricDesiredReplicas, metricName, metricTimestamp, err := r.computeReplicasForMetrics(ctx, pa, scale)
+		metricDesiredReplicas, metricName, metricTimestamp, err := r.computeReplicasForMetrics(ctx, pa, scale, metricKey)
 		if err != nil && metricDesiredReplicas == -1 {
 			r.setCurrentReplicasAndMetricsInStatus(&pa, currentReplicas)
 			if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
@@ -556,7 +557,7 @@ func (r *PodAutoscalerReconciler) updateStatus(ctx context.Context, pa *autoscal
 // It may return both valid metricDesiredReplicas and an error,
 // when some metrics still work and PA should perform scaling based on them.
 // If PodAutoscaler cannot do anything due to error, it returns -1 in metricDesiredReplicas as a failure signal.
-func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (replicas int32, relatedMetrics string, timestamp time.Time, err error) {
+func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured, metricKey metrics.NamespaceNameMetric) (replicas int32, relatedMetrics string, timestamp time.Time, err error) {
 	logger := klog.FromContext(ctx)
 	currentTimestamp := time.Now()
 
@@ -574,19 +575,13 @@ func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context,
 	}
 
 	// TODO UpdateScalingContext (in updateScalerSpec) is duplicate invoked in computeReplicasForMetrics and updateMetricsForScale
-	err = r.updateScalerSpec(ctx, pa)
+	err = r.updateScalerSpec(ctx, pa, metricKey)
 	if err != nil {
 		klog.ErrorS(err, "Failed to update scaler spec from pa_types")
 		return 0, "", currentTimestamp, fmt.Errorf("error update scaler spec: %w", err)
 	}
 
 	logger.V(4).Info("Obtained selector and get ReadyPodsCount", "selector", labelsSelector, "originalReadyPodsCount", originalReadyPodsCount)
-	var metricKey metrics.NamespaceNameMetric
-	if len(pa.Spec.MetricsSources) > 0 {
-		metricKey = metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.MetricsSources[0].Name)
-	} else {
-		metricKey = metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.TargetMetric)
-	}
 
 	// Calculate the desired number of pods using the autoscaler logic.
 	autoScaler, ok := r.AutoscalerMap[metricKey]
@@ -612,8 +607,7 @@ func createMetricKey(pa autoscalingv1alpha1.PodAutoscaler) metrics.NamespaceName
 // refer to knative-serving.
 // In pkg/reconciler/autoscaling/kpa/kpa.go:198, kpa maintains a list of deciders into multi-scaler, each of them corresponds to a pa (PodAutoscaler).
 // We create or update the scaler instance according to the pa passed in
-func (r *PodAutoscalerReconciler) updateScalerSpec(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) error {
-    metricKey := createMetricKey(pa)
+func (r *PodAutoscalerReconciler) updateScalerSpec(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, metricKey metrics.NamespaceNameMetric) error {
 	autoScaler, ok := r.AutoscalerMap[metricKey]
 	if !ok {
 		return fmt.Errorf("unsupported scaling strategy: %s", pa.Spec.ScalingStrategy)
@@ -621,9 +615,8 @@ func (r *PodAutoscalerReconciler) updateScalerSpec(ctx context.Context, pa autos
 	return autoScaler.UpdateScalingContext(pa)
 }
 
-func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (err error) {
+func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured, metricKey metrics.NamespaceNameMetric) (err error) {
 	currentTimestamp := time.Now()
-	metricKey := createMetricKey(pa)
 	var autoScaler scaler.Scaler
 	autoScaler, exists := r.AutoscalerMap[metricKey]
 	if !exists {
@@ -656,7 +649,6 @@ func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa 
 
 	// update metrics
 	for _, source := range pa.Spec.MetricsSources {
-		metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, source.Name)
 		return autoScaler.UpdateSourceMetrics(ctx, metricKey, source, currentTimestamp)
 	}
 
