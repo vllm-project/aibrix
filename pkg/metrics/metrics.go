@@ -37,8 +37,8 @@ const (
 	AvgTPOT5mPod                         = "avg_tpot_pod_5m"
 	AvgPromptToksPerReq                  = "avg_prompt_toks_per_req"
 	AvgGenerationToksPerReq              = "avg_generation_toks_per_req"
-	GPUCacheUsagePercPod                 = "gpu_cache_usage_perc_pod"
-	CPUCacheUsagePercPod                 = "cpu_cache_usage_perc_pod"
+	GPUCacheUsagePerc                    = "gpu_cache_usage_perc"
+	CPUCacheUsagePerc                    = "cpu_cache_usage_perc"
 	AvgE2ELatencyPod                     = "avg_e2e_latency_pod"
 	AvgRequestsPerMinPod                 = "avg_requests_per_min_pod"
 	AvgPromptThroughputToksPerMinPod     = "avg_prompt_throughput_toks_per_min_pod"
@@ -219,22 +219,20 @@ var (
 			PromQL:      `increase(vllm:request_generation_tokens_sum{model_name="${model_name}", job="pods"}[1d]) / increase(vllm:request_generation_tokens_count{model_name="${model_name}", job="pods"}[1d])`,
 			Description: "Average generation tokens per request in last day",
 		},
-		GPUCacheUsagePercPod: {
-			MetricScope:  PodMetricScope,
-			MetricSource: PrometheusEndpoint,
+		GPUCacheUsagePerc: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Query: PromQL,
+				Raw: Counter,
 			},
-			PromQL:      `avg(vllm:gpu_cache_usage_perc{job="pods"})`,
 			Description: "GPU cache usage percentage",
 		},
-		CPUCacheUsagePercPod: {
-			MetricScope:  PodMetricScope,
-			MetricSource: PrometheusEndpoint,
+		CPUCacheUsagePerc: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Query: PromQL,
+				Raw: Counter,
 			},
-			PromQL:      `avg(vllm:cpu_cache_usage_perc{job="pods"})`,
 			Description: "CPU cache usage percentage",
 		},
 		AvgE2ELatencyPod: {
