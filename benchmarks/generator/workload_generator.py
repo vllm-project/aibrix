@@ -11,7 +11,7 @@ from datetime import timedelta
 from sample_request import (load_sharegpt_requests, sample_sharegpt_requests, sample_sharegpt_requests_len_range)
 from utils import (get_tokenizer, plot_workload, make_serializable, save_workload)
 
-def generate_from_summary_csv(file_path: str,
+def generate_from_internal_csv(file_path: str,
                           duration_ms: int,
                           summary_interval_ms: int,
                           interval_ms: int = 1000,
@@ -34,8 +34,7 @@ def generate_from_summary_csv(file_path: str,
             base += mean_rate
         ts += summary_interval_ms
         if ts > duration_ms:
-            break
-            
+            break     
     return workloads
 
 def generate_synthetic(A=1, B=1,
@@ -229,15 +228,15 @@ if __name__ == '__main__':
             workload_dict[scenario_name] = paired_workload
         # Plot the workloads
         plot_workload(workload_dict, interval_ms=args.interval_ms, output_file=f"plot/synthetic.pdf")
-    elif args.trace_type == "summary":
+    elif args.trace_type == "internal":
         # Load prompts from a file
         prompts = sample_sharegpt_requests(dataset_path = args.prompt_file, num_requests = args.num_prompts, tokenizer = tokenizer)
         # Generate input requests (ascending integers)quit
-        generated_workload = generate_from_summary_csv(file_path=args.trace_file, duration_ms = args.duration_ms, summary_interval_ms=15000, interval_ms=args.interval_ms)
-        generated_workload = pair_requests_with_prompts_round_robin(generated_workload, prompts, f"{args.output}/summary.json")
-        workload_dict["summary"] = generated_workload
+        generated_workload = generate_from_internal_csv(file_path=args.trace_file, duration_ms = args.duration_ms, summary_interval_ms=15000, interval_ms=args.interval_ms)
+        generated_workload = pair_requests_with_prompts_round_robin(generated_workload, prompts, f"{args.output}/internal.json")
+        workload_dict["internal"] = generated_workload
         # Plot the workloads
-        plot_workload(workload_dict, interval_ms=args.interval_ms, output_file=f"plot/summary.pdf")
+        plot_workload(workload_dict, interval_ms=args.interval_ms, output_file=f"plot/internal.pdf")
     elif args.trace_type == "azure":
         generated_workload = generate_from_azure_csv(file_path=args.trace_file, prompt_file_path = args.prompt_file, duration_ms = args.duration_ms, tokenizer = tokenizer, interval_ms=args.interval_ms, output_file=f"{args.output}/azure.json")
         workload_dict["azure"] = generated_workload

@@ -5,7 +5,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-from typing import List, Union, Any
+from typing import List, Union, Any, Optional
 from transformers import (AutoTokenizer, PreTrainedTokenizer, 
                           PreTrainedTokenizerFast)
 
@@ -40,7 +40,7 @@ def plot_workload(workload_dict, interval_ms, output_file: str = None):
     """
     fig, ax = plt.subplots()
     for workload_name, workload in workload_dict.items():
-        concurrency_values = [len(item) for item in workload]
+        concurrency_values = [len(item) for (_, item) in workload]
         ax.plot(np.arange(len(concurrency_values)) * interval_ms, concurrency_values, label=workload_name)
 
     ax.set_ylim(0,)
@@ -55,6 +55,26 @@ def plot_workload(workload_dict, interval_ms, output_file: str = None):
         plt.savefig(output_file)
         logging.warn(f'Saved workload plot to {output_file}')
         
-def save_workload(load_struct: List[Any], output_path: str):
-    with open(output_path, 'w') as file:
-        json.dump(load_struct, file)
+def save_workload(load_struct: List[Any], 
+                  output_path: str, 
+                  use_jsonl: Optional[bool] = False):
+    if use_jsonl:
+        with open(output_path, "w") as file:
+            for row in load_struct:
+                json_line = json.dumps(row)  # Convert list to JSON string
+                file.write(json_line + "\n")
+    else:
+        with open(output_path, 'w') as file:
+            json.dump(load_struct, file, indent=4)
+            
+def load_workload(load_struct: List[Any], 
+                  input_path: str, 
+                  use_jsonl: Optional[bool] = False) -> List[Any]:
+    load_struct = None
+    if use_jsonl:
+        with open(input_path, "r") as file:
+            load_struct = [json.loads(line) for line in file]
+    else:
+        with open(input_path, "r") as file:
+            load_struct = json.load(file)
+    return load_struct
