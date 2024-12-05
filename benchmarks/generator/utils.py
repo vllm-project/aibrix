@@ -59,13 +59,15 @@ def save_workload(load_struct: List[Any],
                   output_path: str, 
                   use_jsonl: Optional[bool] = False):
     if use_jsonl:
-        with open(output_path, "w") as file:
+        with open(output_path + ".jsonl", "w") as file:
             for row in load_struct:
                 json_line = json.dumps(row)  # Convert list to JSON string
                 file.write(json_line + "\n")
+                logging.warn(f'Saved workload file to {output_path + ".jsonl"}')
     else:
-        with open(output_path, 'w') as file:
+        with open(output_path + ".json", 'w') as file:
             json.dump(load_struct, file, indent=4)
+            logging.warn(f'Saved workload file to {output_path + ".json"}')
             
 def load_workload(load_struct: List[Any], 
                   input_path: str, 

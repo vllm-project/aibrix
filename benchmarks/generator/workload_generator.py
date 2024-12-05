@@ -120,7 +120,7 @@ def generate_synthetic(A=1, B=1,
 
 def pair_requests_with_prompts_round_robin(workload: List[List[Any]], 
                                            prompts: List[Tuple[str, int, int, None]], 
-                                           output_file: str = 'output/output.json', 
+                                           output_file: str = 'output/output', 
                                            to_jsonl: bool = False) -> List[List[Tuple[Any, str]]]:
     paired_workload = []
     prompt_count = len(prompts)
@@ -230,7 +230,7 @@ if __name__ == '__main__':
             generated_workload = generate_synthetic(**params)
             paired_workload = pair_requests_with_prompts_round_robin(workload = generated_workload, 
                                                                      prompts = prompts, 
-                                                                     output_file = f"{args.output}/{scenario_name}.json",
+                                                                     output_file = f"{args.output}/{scenario_name}",
                                                                      to_jsonl = args.to_jsonl)
             workload_dict[scenario_name] = paired_workload
         # Plot the workloads
@@ -242,7 +242,7 @@ if __name__ == '__main__':
         generated_workload = generate_from_internal_csv(file_path=args.trace_file, duration_ms = args.duration_ms, summary_interval_ms=15000, interval_ms=args.interval_ms)
         generated_workload = pair_requests_with_prompts_round_robin(workload = generated_workload, 
                                                                     prompts = prompts, 
-                                                                    output_file = f"{args.output}/internal.json",
+                                                                    output_file = f"{args.output}/internal",
                                                                     to_jsonl = args.to_jsonl)
         workload_dict["internal"] = generated_workload
         # Plot the workloads
@@ -253,7 +253,7 @@ if __name__ == '__main__':
                                                      duration_ms = args.duration_ms, 
                                                      tokenizer = tokenizer, 
                                                      interval_ms = args.interval_ms, 
-                                                     output_file = f"{args.output}/azure.json",
+                                                     output_file = f"{args.output}/azure",
                                                      to_jsonl = args.to_jsonl)
         workload_dict["azure"] = generated_workload
         # Plot the workloads
