@@ -121,7 +121,8 @@ def generate_synthetic(A=1, B=1,
 def pair_requests_with_prompts_round_robin(workload: List[List[Any]], 
                                            prompts: List[Tuple[str, int, int, None]], 
                                            output_file: str = 'output/output', 
-                                           to_jsonl: bool = False) -> List[List[Tuple[Any, str]]]:
+                                           to_jsonl: bool = False
+                                        ) -> List[List[Tuple[Any, str]]]:
     paired_workload = []
     prompt_count = len(prompts)
     for ts, requests in workload:
@@ -210,7 +211,7 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=str, required=False, default="output", help='Output path to the workload.')
     parser.add_argument('--interval-ms', type=int, required=False, default=1000, help='Granularity of request injection interval in milliseconds.')
     parser.add_argument('--duration-ms', type=int, default=60000, help='Duration of the trace generated.')
-    parser.add_argument('--to-jsonl', type=bool, default=False, help='Set output data format to .jsonl (default .json).')
+    parser.add_argument('--to-jsonl', dest='to_jsonl', action='store_true', help='Set output data format to .jsonl (default .json).')
     args = parser.parse_args()
 
     # Generate workloads and pair with prompts
