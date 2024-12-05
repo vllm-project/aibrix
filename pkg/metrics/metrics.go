@@ -162,7 +162,7 @@ var (
 			MetricType: MetricType{
 				Query: PromQL,
 			},
-			PromQL:      `histogram_quantile(0.95, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{model_name="${model_name}", job="pods"}[5m])))`,
+			PromQL:      `histogram_quantile(0.95, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{instance="${instance}", model_name="${model_name}", job="pods"}[5m])))`,
 			Description: "95th ttft in last 5 mins",
 		},
 		P95TTFT5mPod: {
@@ -171,7 +171,7 @@ var (
 			MetricType: MetricType{
 				Query: PromQL,
 			},
-			PromQL:      `histogram_quantile(0.95, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{job="pods"}[5m])))`,
+			PromQL:      `histogram_quantile(0.95, sum by(le) (rate(vllm:time_to_first_token_seconds_bucket{instance="${instance}", job="pods"}[5m])))`,
 			Description: "95th ttft in last 5 mins",
 		},
 		AvgTTFT5mPod: {
@@ -180,7 +180,7 @@ var (
 			MetricType: MetricType{
 				Query: PromQL,
 			},
-			PromQL:      `increase(vllm:time_to_first_token_seconds_sum{job="pods"}[5m]) / increase(vllm:time_to_first_token_seconds_count{job="pods"}[5m])`,
+			PromQL:      `increase(vllm:time_to_first_token_seconds_sum{instance="${instance}", job="pods"}[5m]) / increase(vllm:time_to_first_token_seconds_count{instance="${instance}", job="pods"}[5m])`,
 			Description: "Average ttft in last 5 mins",
 		},
 		P95TPOT5mPod: {
@@ -189,7 +189,7 @@ var (
 			MetricType: MetricType{
 				Query: PromQL,
 			},
-			PromQL:      `histogram_quantile(0.95, sum by(le) (rate(vllm:time_per_output_token_seconds_bucket{job="pods"}[5m])))`,
+			PromQL:      `histogram_quantile(0.95, sum by(le) (rate(vllm:time_per_output_token_seconds_bucket{instance="${instance}", job="pods"}[5m])))`,
 			Description: "95th tpot in last 5 mins",
 		},
 		AvgTPOT5mPod: {
@@ -198,7 +198,7 @@ var (
 			MetricType: MetricType{
 				Query: PromQL,
 			},
-			PromQL:      `increase(vllm:time_per_output_token_seconds_sum{job="pods"}[5m]) / increase(vllm:time_per_output_token_seconds_sum{job="pods"}[5m])`,
+			PromQL:      `increase(vllm:time_per_output_token_seconds_sum{instance="${instance}", job="pods"}[5m]) / increase(vllm:time_per_output_token_seconds_sum{instance="${instance}", job="pods"}[5m])`,
 			Description: "Average tpot in last 5 mins",
 		},
 		AvgPromptToksPerReq: {
@@ -207,7 +207,7 @@ var (
 			MetricType: MetricType{
 				Query: PromQL,
 			},
-			PromQL:      `increase(vllm:request_prompt_tokens_sum{model_name="${model_name}", job="pods"}[1d]) / increase(vllm:request_prompt_tokens_count{model_name="${model_name}", job="pods"}[1d])`,
+			PromQL:      `increase(vllm:request_prompt_tokens_sum{instance="${instance}", model_name="${model_name}", job="pods"}[1d]) / increase(vllm:request_prompt_tokens_count{instance="${instance}", model_name="${model_name}", job="pods"}[1d])`,
 			Description: "Average prompt tokens per request in last day",
 		},
 		AvgGenerationToksPerReq: {
@@ -216,7 +216,7 @@ var (
 			MetricType: MetricType{
 				Query: PromQL,
 			},
-			PromQL:      `increase(vllm:request_generation_tokens_sum{model_name="${model_name}", job="pods"}[1d]) / increase(vllm:request_generation_tokens_count{model_name="${model_name}", job="pods"}[1d])`,
+			PromQL:      `increase(vllm:request_generation_tokens_sum{instance="${instance}", model_name="${model_name}", job="pods"}[1d]) / increase(vllm:request_generation_tokens_count{instance="${instance}", model_name="${model_name}", job="pods"}[1d])`,
 			Description: "Average generation tokens per request in last day",
 		},
 		GPUCacheUsagePerc: {
@@ -241,7 +241,7 @@ var (
 			MetricType: MetricType{
 				Query: PromQL,
 			},
-			PromQL:      `increase(vllm:e2e_request_latency_seconds_sum{job="pods"}[5m]) / increase(vllm:e2e_request_latency_seconds_count{job="pods"}[5m])`,
+			PromQL:      `increase(vllm:e2e_request_latency_seconds_sum{instance="${instance}", job="pods"}[5m]) / increase(vllm:e2e_request_latency_seconds_count{instance="${instance}", job="pods"}[5m])`,
 			Description: "Average End-to-end latency in last 5 mins",
 		},
 		AvgRequestsPerMinPod: {
@@ -250,7 +250,7 @@ var (
 			MetricType: MetricType{
 				Query: PromQL,
 			},
-			PromQL:      `increase(vllm:request_success_total{job="pods"}[5m]) / 5`,
+			PromQL:      `increase(vllm:request_success_total{instance="${instance}", job="pods"}[5m]) / 5`,
 			Description: "Average requests throughput per minute in last 5 mins",
 		},
 		AvgPromptThroughputToksPerMinPod: {
@@ -259,7 +259,7 @@ var (
 			MetricType: MetricType{
 				Query: PromQL,
 			},
-			PromQL:      `increase(vllm:prompt_tokens_total{job="pods"}[5m]) / 5`,
+			PromQL:      `increase(vllm:prompt_tokens_total{instance="${instance}", job="pods"}[5m]) / 5`,
 			Description: "Average prompt throughput in tokens per minute in last 5 mins",
 		},
 		AvgGenerationThroughputToksPerMinPod: {
@@ -268,7 +268,7 @@ var (
 			MetricType: MetricType{
 				Query: PromQL,
 			},
-			PromQL:      `increase(vllm:generation_tokens_total{job="pods"}[5m]) / 5`,
+			PromQL:      `increase(vllm:generation_tokens_total{instance="${instance}", job="pods"}[5m]) / 5`,
 			Description: "Average generation throughput in tokens per minute in last 5 mins",
 		},
 	}
