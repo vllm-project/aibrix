@@ -602,11 +602,18 @@ func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context,
 	return 0, "", currentTimestamp, fmt.Errorf("can not calculate metrics for scale %s", pa.Spec.ScaleTargetRef.Name)
 }
 
+func createMetricKey(pa autoscalingv1alpha1.PodAutoscaler) metrics.NamespaceNameMetric {
+	if len(pa.Spec.MetricsSources) > 0 {
+		return metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.MetricsSources[0].Name)
+	}
+	return metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.TargetMetric)
+}
+
 // refer to knative-serving.
 // In pkg/reconciler/autoscaling/kpa/kpa.go:198, kpa maintains a list of deciders into multi-scaler, each of them corresponds to a pa (PodAutoscaler).
 // We create or update the scaler instance according to the pa passed in
 func (r *PodAutoscalerReconciler) updateScalerSpec(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) error {
-	metricKey := NewNamespaceNameMetricByPa(pa)
+    metricKey := createMetricKey(pa)
 	autoScaler, ok := r.AutoscalerMap[metricKey]
 	if !ok {
 		return fmt.Errorf("unsupported scaling strategy: %s", pa.Spec.ScalingStrategy)
@@ -616,7 +623,7 @@ func (r *PodAutoscalerReconciler) updateScalerSpec(ctx context.Context, pa autos
 
 func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured) (err error) {
 	currentTimestamp := time.Now()
-	metricKey := NewNamespaceNameMetricByPa(pa)
+	metricKey := createMetricKey(pa)
 	var autoScaler scaler.Scaler
 	autoScaler, exists := r.AutoscalerMap[metricKey]
 	if !exists {
