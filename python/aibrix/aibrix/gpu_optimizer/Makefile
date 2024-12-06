@@ -3,18 +3,6 @@ all: build
 DP ?= profiling
 DATASET ?= [set your DATASET path]
 
-.PHONY: deploy
-deploy:
-	kubectl apply -f deployment.yaml
-	sleep 2
-	kubectl -n aibrix-system port-forward svc/aibrix-gpu-optimizer 8080:8080 1>/dev/null 2>&1 &
-
-.PHONY: clean
-clean:
-	kubectl delete -f deployment.yaml
-	sleep 1
-	curl http://localhost:8080/metrics/aibrix-system/simulator-llama2-7b-a100
-
 .PHONY: benchmark
 benchmark:
 	optimizer/profiling/benchmark.sh $(DP)
