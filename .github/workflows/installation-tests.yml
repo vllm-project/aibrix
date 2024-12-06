@@ -4,6 +4,7 @@ on:
   push:
     branches: [ "main" ]
     paths:
+      - '.github/workflows/**'
       - 'config/**'
       - 'pkg/**'
       - 'cmd/**'
@@ -14,6 +15,7 @@ on:
   pull_request:
     branches: [ "main" ]
     paths:
+      - '.github/workflows/**'
       - 'config/**'
       - 'pkg/**'
       - 'cmd/**'
@@ -106,7 +108,7 @@ jobs:
           cd development/app
           docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
           kind load docker-image aibrix/vllm-mock:nightly --name installation-test
-          kubectl apply -f deployment.yaml
+          kubectl create -k config/mock
 
       - name: Check pod status
         run: |
