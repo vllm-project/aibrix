@@ -92,8 +92,7 @@ func TestKpaScale(t *testing.T) {
 		},
 	}
 
-	// metricKey := metrics.NewNamespaceNameMetric("test_ns", "llama-70b", spec.ScalingMetric)
-	metricKey := metrics.NewNamespaceNameMetric("test_ns", "llama-70b", &pa)
+	metricKey := metrics.NewNamespaceNameMetric(&pa)
 
 	result := kpaScaler.Scale(readyPodCount, metricKey, now)
 	// recent rapid rising metric value make scaler adapt turn on panic mode

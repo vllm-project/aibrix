@@ -54,5 +54,5 @@ func extractLabelSelector(scale *unstructured.Unstructured) (labels.Selector, er
 }
 
 func NewNamespaceNameMetricByPa(pa autoscalingv1alpha1.PodAutoscaler) metrics.NamespaceNameMetric {
-	return metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, &pa)
+	return metrics.NewNamespaceNameMetric(&pa)
 }
