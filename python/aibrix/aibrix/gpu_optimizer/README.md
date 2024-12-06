@@ -2,26 +2,23 @@
 
 ## Run in kubernetes
 
-1. Make sure Aibrix components are up-to-date.
-
-2. For now, build GPU Optimizer base image using Dockerfile within this folder.
-```dockerfile
-docker build -t aibrix/gpu-optimizer:nightly -f Dockerfile .
-
-# Or use make
-make build
+1. Make sure Aibrix components are up-to-date. In particular, GPU Optimizer can be updated independently by:
+```shell
+cd ../../../../ && make docker-build-runtime
+kubectl create -k config/gpu-optimizer
 ```
 
-3. Prepare performance benchmark using optimizer/profiling/benchmark.sh. See optimizer/profiling/README.md. You may need to expose pod interface first:
+2. Deploy your vLLM model. If run locally a CPU based vLLM simulator is provided. See development/app for details
+
+3. [Optional] Prepare performance benchmark using optimizer/profiling/benchmark.sh. See optimizer/profiling/README.md. You may need to expose pod interface first:
 ```shell
 # Make sure pod is accessable locally:
-kubectl -n aibrix-system port-forward [pod_name] 8010:8000 1>/dev/null 2>&1 &
+kubectl port-forward [pod_name] 8010:8000 1>/dev/null 2>&1 &
 ```
 
 If using CPU based vLLM simulator, sample profiles is included in optimizer/profiling/result.
-	
 
-1. Generate profile based on SLO target using optimizer/profiling/gen-profile.py. If using CPU based vLLM simulator, execute
+4. Generate profile based on SLO target using optimizer/profiling/gen-profile.py. If using CPU based vLLM simulator, execute
 ```shell
 # Make sure Redis is accessable locally:
 kubectl -n aibrix-system port-forward svc/aibrix-redis-master 6379:6379 1>/dev/null 2>&1 &
@@ -32,17 +29,16 @@ python optimizer/profiling/gen_profile.py simulator-llama2-7b-a100 -o "redis://l
 # Or use make
 make DP=simulator-llama2-7b-a100 gen-profile
 ```
+Replace simulator-llama2-7b-a100 with your deployment name.
 
-5. Deploy GPU Optimizer
+4. Notify GPU optimizer that profiles are ready
 ```shell
-kubectl apply -f deployment.yaml
 kubectl -n aibrix-system port-forward svc/aibrix-gpu-optimizer 8080:8080 1>/dev/null 2>&1 &
 
-# Or use make
-make deploy
+curl http://localhost:8080/update_profile/llama2-7b
 ```
+Replace llama2-7b with your model name.
 
-4. Deploy your vLLM model. If run locally a CPU based vLLM simulator is provided. See docs/development/simulator for details
 
 5. Start workload and see how model scale. Benchmark toolkit can be used to generate workload as:
 ```shell
