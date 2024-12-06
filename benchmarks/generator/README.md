@@ -1,6 +1,7 @@
-# Generate workload file
+# Using Workload Generator
 
-## Generate a workload file based on workload patterns (synthetic patterns)
+## Generate workload file
+### Generate a workload file based on workload patterns (synthetic patterns)
 If no trace file path is specified, the generator will generate workload file based on 4 synthetic pattern described [here](https://github.com/aibrix/aibrix/blob/main/benchmarks/autoscaling/bench_workload_generator.py):
 
 ```
@@ -11,7 +12,7 @@ python workload_generator.py --prompt-file $SHARE_GPT_PATH --num-prompts 100 --n
 The file would be stored under ```output``` folder based on the name of different patterns. And the plot illustrates the workload pattern will be under the ```plot``` directory. 
 
 
-## Generate a workload file based on load summary .csv file
+### Generate a workload file based on load summary .csv file
 ```
 export SUMMARY_FILE=${PATH_TO_SUMMARY_FILE}
 export SHARE_GPT_PATH=${PATH_TO_SHARE_GPT_FILE}
@@ -36,7 +37,7 @@ This generator generate workload file (in .json format) under ```output``` folde
 And the plot illustrates the workload pattern will be under the ```plot``` directory. 
 
 
-## Generate a workload file based on load summary .csv file
+### Generate a workload file based on load summary .csv file
 
 To produce a workload based on [Azure LLM Trace](https://github.com/Azure/AzurePublicDataset/tree/master/data), use the following commands:
 
@@ -47,3 +48,28 @@ python workload_generator.py --prompt-file $SHARE_GPT_PATH --num-prompts 100 --n
 ```
 
 Note that the trace file contains both input and output lengths. And therefore dataset in ```$SHARE_GPT_PATH``` needs to be tokenized to be able to sampled based on their input/output token lengths. Therefore it is required to specify tokenizer to generate based on this trace. Use ```--group-interval-seconds``` to specify grouping interval from the origianl trace. The file would be stored under ```output``` folder and the plot illustrates the workload pattern will be under the ```plot``` directory. 
+
+
+## Run Workload Generator
+
+Starting vllm server:
+
+```
+python3 -m vllm.entrypoints.openai.api_server --host 0.0.0.0 \
+--port "8000" --model /root/models/deepseek-coder-6.7b-instruct \
+--trust-remote-code --max-model-len "14304" \
+--api-key sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi \
+--enable-chunked-prefill
+```
+
+Using a sample workload in a client:
+```
+python3 client.py --workload-path "output/Quick Rising.jsonl" \
+--endpoint "http://localhost:8000" \
+--model /root/models/deepseek-coder-6.7b-instruct \
+--api-key sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi \
+--output-file-path output.jsonl
+
+```
+
+The output will be stored as a ```.jsonl``` file in ```output.jsonl```
