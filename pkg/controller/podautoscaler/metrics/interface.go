@@ -33,7 +33,7 @@ type NamespaceNameMetric struct {
 	MetricName string
 }
 
-func NewNamespaceNameMetric(namespace, name string, pa *autoscalingv1alpha1.PodAutoscaler) NamespaceNameMetric {
+func NewNamespaceNameMetric(pa *autoscalingv1alpha1.PodAutoscaler) NamespaceNameMetric {
 	metricName := pa.Spec.TargetMetric
 	if len(pa.Spec.MetricsSources) > 0 {
 		metricName = pa.Spec.MetricsSources[0].Name
@@ -41,8 +41,8 @@ func NewNamespaceNameMetric(namespace, name string, pa *autoscalingv1alpha1.PodA
 
 	return NamespaceNameMetric{
 		NamespacedName: types.NamespacedName{
-			Namespace: namespace,
-			Name:      name,
+			Namespace: pa.Namespace,
+			Name:      pa.Spec.ScaleTargetRef.Name,
 		},
 		MetricName: metricName,
 	}

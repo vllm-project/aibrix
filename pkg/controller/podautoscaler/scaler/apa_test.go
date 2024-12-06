@@ -52,7 +52,7 @@ func TestAPAScale(t *testing.T) {
 		},
 	}
 
-	metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, &pa)
+	metricKey := metrics.NewNamespaceNameMetric(&pa)
 	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-60*time.Second), 10.0)
 	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-50*time.Second), 11.0)
 	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-40*time.Second), 12.0)
