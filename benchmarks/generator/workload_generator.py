@@ -125,7 +125,7 @@ def pair_requests_with_prompts(workload: List[List[Any]], prompts: List[Tuple[st
         requests_with_prompts = [
             prompts[request % prompt_count] for request in requests
         ]
-        paired_workload.append(requests_with_prompts)
+        paired_workload.append({"Timestamp": ts, "Requests": requests_with_prompts})
 
     # Save to file
     with open(output_file, 'w') as file:
@@ -180,8 +180,10 @@ def generate_from_azure_csv(file_path: str,
                 )
         
         if sampled_requests:  # Only add non-empty groups
-            grouped_requests.append(sampled_requests)
-        
+            grouped_requests.append({"Timestamp": ts, "Requests": sampled_requests})
+        ts += interval_ms
+        if ts > duration_ms:
+            break
         # Move to the next time range
         current_time += time_range
 
