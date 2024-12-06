@@ -265,7 +265,9 @@ def main(signal, timeout):
 
             # List existing deployments
             logger.info(f"Looking for deployments with {MODEL_LABEL}")
-            deployments = apps_v1.list_deployment_for_all_namespaces(label_selector=MODEL_LABEL)
+            deployments = apps_v1.list_deployment_for_all_namespaces(
+                label_selector=MODEL_LABEL
+            )
             watch_version = deployments.metadata.resource_version
             logger.debug(f"last watch version: {watch_version}")
             for deployment in deployments.items:
