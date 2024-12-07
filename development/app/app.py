@@ -27,7 +27,7 @@ MODEL_NAME = os.getenv('MODEL_NAME', 'llama2-70b')
 DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-70b')
 NAMESPACE = os.getenv('POD_NAMESPACE', 'default')
 DEFAULT_REPLICAS = int(os.getenv('DEFAULT_REPLICAS', '1'))
-SIMULATION=os.getenv('SIMULATION', 'disabled')
+SIMULATION = os.getenv('SIMULATION', 'disabled')
 
 modelMaps = {
     "llama2-7b": "meta-llama/Llama-2-7b-hf",
@@ -47,23 +47,25 @@ simulator: Optional[Simulator] = None
 
 logger = logging.getLogger(__name__)
 
+
 def read_configs(file_path):
-  """
-  Reads a JSON file that store sensitive information.
-  """
-  try:
-    with open(file_path, "r") as f:
-      data = json.load(f)
-      if not isinstance(data, dict):
-          raise Exception("invalid config format, dict expected.")
-      return data
-  except Exception as e:
-    print(f"Error reading JSON file: {e}")
-    return {}
-  
+    """
+    Reads a JSON file that store sensitive information.
+    """
+    try:
+        with open(file_path, "r") as f:
+            data = json.load(f)
+            if not isinstance(data, dict):
+                raise Exception("invalid config format, dict expected.")
+            return data
+    except Exception as e:
+        print(f"Error reading JSON file: {e}")
+        return {}
+
 
 configs = read_configs("config.json")
 HUGGINGFACE_TOKEN = configs.get("huggingface_token", "your huggingface token")
+
 
 def get_token_count(text):
     try:
@@ -76,6 +78,7 @@ def get_token_count(text):
         logger.error(f"Failed to get number of tokens: {e}")
 
     return 1
+
 
 models = [
     {
@@ -191,7 +194,7 @@ def completion():
         max_tokens = request.json.get('max_tokens')
         if not prompt or not model:
             return jsonify({"status": "error", "message": "Prompt and model are required"}), 400
-        
+
         arrived_at = datetime.now().timestamp()
         input_tokens = get_token_count(prompt)
         output_tokens = max_tokens if max_tokens else randint(10, 500)
@@ -228,12 +231,12 @@ def completion():
                 "time": latency
             }
         }
-        overhead = datetime.now().timestamp()-start
+        overhead = datetime.now().timestamp() - start
         if latency > overhead:
-            time.sleep(latency-overhead)
+            time.sleep(latency - overhead)
         elif latency > 0.0:
             logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
-        
+
         return jsonify(response), 200
     except Exception as e:
         err = {
@@ -253,7 +256,7 @@ def chat_completions():
         max_tokens = request.json.get('max_tokens')
         if not messages or not model:
             return jsonify({"status": "error", "message": "Messages and model are required"}), 400
-        
+
         arrived_at = datetime.now().timestamp()
         input_tokens = sum(get_token_count(message["content"]) for message in messages)
         output_tokens = max_tokens if max_tokens else randint(10, 500)
@@ -292,9 +295,9 @@ def chat_completions():
                 }
             ]
         }
-        overhead = datetime.now().timestamp()-start
+        overhead = datetime.now().timestamp() - start
         if latency > overhead:
-            time.sleep(latency-overhead)
+            time.sleep(latency - overhead)
         else:
             logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
 
@@ -307,6 +310,7 @@ def chat_completions():
             }
         }
         return jsonify(err), 500
+
 
 @app.route('/set_metrics', methods=['POST'])
 def set_metrics():
@@ -590,7 +594,7 @@ def metrics():
             help_header=False
         )
 
-    return Response(metrics_output  + histogram_metrics_output, mimetype='text/plain')
+    return Response(metrics_output + histogram_metrics_output, mimetype='text/plain')
 
 
 if __name__ == '__main__':
@@ -607,7 +611,7 @@ if __name__ == '__main__':
             gpu_device = sys.argv[index + 1]
     except ValueError:
         pass
-    
+
     # Restore -h functionality
     if '-h' in sys.argv:
         SimulationConfig.create_from_cli_args()
@@ -616,21 +620,25 @@ if __name__ == '__main__':
     if gpu_device != "disabled":
         # Load the tokenizer for your model
         from transformers import AutoTokenizer
+
         default_model = 'bert-base-uncased'
         try:
+            # can we make this as an application argument.
+            # no need to use such map, we can use huggingface id directly.
             token_model = modelMaps.get(MODEL_NAME, default_model)
             tokenizer = AutoTokenizer.from_pretrained(
                 token_model,
                 token=HUGGINGFACE_TOKEN,
-                model_max_length=16384, # Suppress warning
+                model_max_length=16384,  # Suppress warning
                 clean_up_tokenization_spaces=True)
         except Exception as e:
             logger.error(f"Failed to initialize tokenizer, will use default tokenizer model: {e}")
             tokenizer = AutoTokenizer.from_pretrained(
                 default_model,
-                model_max_length=16384, # Suppress warning
+                model_max_length=16384,  # Suppress warning
                 clean_up_tokenization_spaces=True)
 
+        # TODO: check whether able to use argparse to build SimulationConfig
         simulator = Simulator(SimulationConfig.create_from_cli_args())
         overrides = {
             "total": 100.0,
@@ -641,6 +649,7 @@ if __name__ == '__main__':
 
     thread = None
     if simulator is not None:
+        # TODO: Move simulation to a separate workflow, independent of the main web service
         thread = simulator.start()
 
     # Perform profiling and skip actual run

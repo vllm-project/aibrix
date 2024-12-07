@@ -29,6 +29,7 @@ ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 ENV MODEL_NAME=llama2-7b
 ARG SIMULATION=disabled
 
+# TODO: skip doing the simulation in docker build.
 # Trigger profiling
 RUN if [ "$SIMULATION" != "disabled" ]; then \
         python app.py --time_limit 1000 --replica_config_device ${SIMULATION}; \

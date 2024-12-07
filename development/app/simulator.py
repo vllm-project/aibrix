@@ -24,6 +24,7 @@ class Simulator:
         self._config: SimulationConfig = config
         set_seeds(config.seed)
 
+        self._done = None
         self._time = 0
         self._terminate = False
         self._time_limit = self._config.time_limit
@@ -84,7 +85,7 @@ class Simulator:
         asyncio.run_coroutine_threadsafe(self._serve(), self._loop)
 
         return t
-    
+
     def _run(self):
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
@@ -92,7 +93,7 @@ class Simulator:
     def stop(self):
         asyncio.run_coroutine_threadsafe(self._wait_done(asyncio.all_tasks(loop=self._loop)), self._loop).result()
         self._loop.call_soon_threadsafe(self._loop.stop)
-        
+
     async def _wait_done(self, pending):
         # Graceful shutdown (if needed)
         logger.info(f"pending:{len(pending)}")
@@ -106,9 +107,9 @@ class Simulator:
             if not self._queue.empty():
                 request: Request = await self._queue.get()
                 self._serve_request(request)
-                self._queue.task_done() # Signal that the task is complete
+                self._queue.task_done()  # Signal that the task is complete
                 continue
-            
+
             # Drive events.
             while self._event_queue and not self._terminate:
                 _, event = heapq.heappop(self._event_queue)
@@ -124,7 +125,7 @@ class Simulator:
                     chrome_trace = event.to_chrome_trace()
                     if chrome_trace:
                         self._event_chrome_trace.append(chrome_trace)
-                
+
                 if event.event_type == EventType.REQUEST_END and event._request.response != None:
                     event._request.response.set_result(event._time - event._request.arrived_at)
 
@@ -136,12 +137,11 @@ class Simulator:
             # Reset expecting next request.
             # if self._expect_next_tick == 0 and (not self._event_queue or self._terminate):
             #     return
-            
+
             # Expecting next request
             request: Request = await self._queue.get()
             self._serve_request(request)
             self._queue.task_done()  # Signal that the task is complete
-
 
     def _serve_request(self, request: Request):
         # Update next expected request.
@@ -154,18 +154,17 @@ class Simulator:
 
     def execute(self, request: Request) -> float:
         return asyncio.run_coroutine_threadsafe(self._execute(request), self._loop).result()
-        
+
     async def _execute(self, request: Request) -> float:
-        if self._queue == None:
+        if self._queue is None:
             self._queue_buffer.append(request)
             return 0.0
-        
+
         request.response = self._loop.create_future()
         await self._queue.put(request)
 
         result = await request.response
         return result
-        
 
     def _write_output(self) -> None:
         logger.info("Writing output")
@@ -183,7 +182,7 @@ class Simulator:
             logger.info("Chrome event trace written")
 
     def _add_event(self, event: BaseEvent, queue=None) -> None:
-        if queue == None:
+        if queue is None:
             queue = self._event_queue
         heapq.heappush(queue, (event._priority_number, event))
 

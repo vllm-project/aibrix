@@ -72,7 +72,7 @@ You can two options to expose the service:
 kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8000:80 &
 
 # Option 2: Port forward the model service
-kubectl -n default port-forward svc/llama2-70b 8000:8000 &
+kubectl -n default port-forward svc/llama2-7b 8000:8000 &
 ```
 
 
