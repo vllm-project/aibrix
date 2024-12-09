@@ -1,17 +1,36 @@
-namespace: aibrix-system
-
-namePrefix: aibrix-
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
 
 resources:
-- ../../../crd
-- ../../../rbac
-- manager
-- gateway
-- gpu-optimizer
-- ../../../dependency/kuberay-operator
+- ../../../default
+- gateway/envoyproxy.yaml
 
+patches:
+  - path: gateway/gateway_patch.yaml
 
 images:
 - name: quay.io/kuberay/operator
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/kuberay-operator
   newTag: v1.2.1-patch
+- name: envoyproxy/envoy
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy
+  newTag: distroless-v1.31.0
+- name: busybox
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/busybox
+  newTag: stable
+- name: redis
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/redis
+  newTag: latest
+- name: aibrix/plugins
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/plugins
+  newTag: v0.1.1
+- name: aibrix/users
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/users
+  newTag: v0.1.1
+- name: aibrix/controller-manager
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
+  newTag: v0.1.1
+- name: aibrix/gpu-optimizer
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gpu-optimizer
+  # not release yet.
+  newTag: nightly

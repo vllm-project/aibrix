@@ -1,7 +1,0 @@
-resources:
-  - ../../../../gpu-optimizer
-
-images:
-- name: aibrix/gpu-optimizer
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gpu-optimizer
-  newTag: nightly
