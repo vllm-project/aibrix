@@ -249,6 +249,20 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 		return ScaleResult{}
 	}
 
+	// Old logic:
+	// readyPodsCount = min(1, originalReadyPodsCount)
+	// maxScaleUp = ceil(spec.MaxScaleUpRate*readyPodsCount)
+	// maxScaleDown = floor(readyPodsCount / spec.MaxScaleDownRate)
+	//
+	// The problems with old way was:
+	// 1. readyPodsCount did not reflect real pods count in "KPA Details" log.
+	// 2. If originalReadyPodsCount == 0 and spec.MaxScaleDownRate == 1, maxScaleDown will reset to 1,
+	//    preventing down scale to 0.
+	//
+	// New implementation does follows:
+	// 1. readyPodsCount now reflects real pods count.
+	// 2. maxScaleUp is at lease to 1 to ensure 0 to 1 activation.
+	// 3. maxScaleDown will remain 0 in case spec.MaxScaleDownRate == 0
 	readyPodsCount := math.Max(0, float64(originalReadyPodsCount))           // A little sanitizing.
 	maxScaleUp := math.Max(1, math.Ceil(spec.MaxScaleUpRate*readyPodsCount)) // Keep scale up non zero
 	maxScaleDown := math.Floor(readyPodsCount / spec.MaxScaleDownRate)       // Make scale down zero-able
@@ -271,7 +285,8 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 		}
 	}
 
-	isOverPanicThreshold := dppc/math.Max(1, readyPodsCount) >= spec.PanicThreshold // Keep denominator of panic level >= 1 to avoid unexpected panic.
+	// Now readyPodsCount can be 0, use max(1, readyPodsCount) to prevent error.
+	isOverPanicThreshold := dppc/math.Max(1, readyPodsCount) >= spec.PanicThreshold
 
 	klog.V(4).InfoS("--- KPA Details", "readyPodsCount", readyPodsCount,
 		"MaxScaleUpRate", spec.MaxScaleUpRate, "MaxScaleDownRate", spec.MaxScaleDownRate,
