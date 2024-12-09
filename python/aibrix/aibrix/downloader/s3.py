@@ -54,7 +54,7 @@ class S3BaseDownloader(BaseDownloader):
         if model_name is None:
             model_name = infer_model_name(model_uri)
             logger.info(f"model_name is not set, using `{model_name}` as model_name")
-        
+
         auth_config = self._get_auth_config()
         bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri, scheme=scheme)
 
@@ -71,9 +71,7 @@ class S3BaseDownloader(BaseDownloader):
         )
 
         self.client = boto3.client(
-            service_name="s3",
-            config=client_config,
-            **auth_config
+            service_name="s3", config=client_config, **auth_config
         )
 
         super().__init__(
@@ -85,26 +83,26 @@ class S3BaseDownloader(BaseDownloader):
         )  # type: ignore
 
     @abstractmethod
-    def _get_auth_config(self) -> Dict[str, str]:
+    def _get_auth_config(self) -> Dict[str, Optional[str]]:
         """Get auth config for S3 client.
-        
+
         Returns:
             Dict[str, str]: auth config for S3 client, containing following keys:
             - region_name: region name of S3 bucket
             - endpoint_url: endpoint url of S3 bucket
             - aws_access_key_id: access key id of S3 bucket
             - aws_secret_access_key: secret access key of S3 bucket
-            
+
         Example return value:
             {
                 region_name: "region-name",
                 endpoint_url: "URL_ADDRESS3.region-name.com",
                 aws_access_key_id: "AK****",
-                aws_secret_access_key: "SK****",,  
+                aws_secret_access_key: "SK****",,
             }
         """
         pass
-    
+
     @lru_cache()
     def _is_directory(self) -> bool:
         """Check if model_uri is a directory."""
@@ -214,9 +212,12 @@ class S3Downloader(S3BaseDownloader):
             self.client.head_bucket(Bucket=self.bucket_name)
         except Exception as e:
             assert False, f"S3 bucket {self.bucket_name} not exist for {e}."
-    
-    def _get_auth_config(self) -> Dict[str, str]:
-        ak, sk = envs.DOWNLOADER_AWS_ACCESS_KEY_ID, envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY
+
+    def _get_auth_config(self) -> Dict[str, Optional[str]]:
+        ak, sk = (
+            envs.DOWNLOADER_AWS_ACCESS_KEY_ID,
+            envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY,
+        )
         assert ak is not None and ak != "", "`AWS_ACCESS_KEY_ID` is not set."
         assert sk is not None and sk != "", "`AWS_SECRET_ACCESS_KEY` is not set."
 
@@ -226,7 +227,6 @@ class S3Downloader(S3BaseDownloader):
             "aws_access_key_id": ak,
             "aws_secret_access_key": sk,
         }
-
 
 
 class TOSDownloader(S3BaseDownloader):
@@ -258,11 +258,10 @@ class TOSDownloader(S3BaseDownloader):
         except Exception as e:
             assert False, f"TOS bucket {self.bucket_name} not exist for {e}."
 
-    def _get_auth_config(self) -> Dict[str, str]:
+    def _get_auth_config(self) -> Dict[str, Optional[str]]:
         return {
             "region_name": envs.DOWNLOADER_TOS_REGION or "",
             "endpoint_url": envs.DOWNLOADER_TOS_ENDPOINT or "",
             "aws_access_key_id": envs.DOWNLOADER_TOS_ACCESS_KEY or "",
             "aws_secret_access_key": envs.DOWNLOADER_TOS_SECRET_KEY or "",
         }
-        
