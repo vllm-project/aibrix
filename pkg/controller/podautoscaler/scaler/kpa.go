@@ -313,7 +313,7 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 		}
 		desiredPodCount = k.maxPanicPods
 	} else {
-		klog.InfoS("Operating in stable mode.")
+		klog.InfoS("Operating in stable mode.", "desiredPodCount", desiredPodCount)
 	}
 
 	// Delay scale down decisions, if a ScaleDownDelay was specified.
@@ -322,8 +322,9 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	// not the same in the case where two Scale()s happen in the same time
 	// interval (because the largest will be picked rather than the most recent
 	// in that case).
-	klog.V(4).InfoS("DelayWindow details", "delayWindow", k.delayWindow.String())
 	if k.delayWindow != nil {
+		klog.V(4).InfoS("DelayWindow details", "delayWindow", k.delayWindow.String())
+
 		// the actual desiredPodCount will be recorded, but return the max replicas during passed delayWindow
 		k.delayWindow.Record(now, float64(desiredPodCount))
 		delayedPodCount, err := k.delayWindow.Max()
@@ -338,6 +339,8 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 			)
 			desiredPodCount = int32(delayedPodCount)
 		}
+	} else {
+		klog.V(4).InfoS("No DelayWindow set")
 	}
 
 	// Compute excess burst capacity

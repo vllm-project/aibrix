@@ -125,7 +125,7 @@ func GetPodListByLabelSelector(ctx context.Context, podLister client.Client, nam
 
 func CountReadyPods(podList *v1.PodList) (int64, error) {
 	if podList == nil || len(podList.Items) == 0 {
-		return 0, fmt.Errorf("no pods provided or list is empty")
+		return 0, nil
 	}
 
 	readyPodCount := 0

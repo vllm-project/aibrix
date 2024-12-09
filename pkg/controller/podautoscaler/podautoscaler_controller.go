@@ -368,7 +368,7 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 		// computeReplicasForMetrics gives
 		// TODO: check why it return the metrics name here?
 		metricDesiredReplicas, metricName, metricTimestamp, err := r.computeReplicasForMetrics(ctx, pa, scale, metricKey)
-		if err != nil && metricDesiredReplicas == -1 {
+		if err != nil {
 			r.setCurrentReplicasAndMetricsInStatus(&pa, currentReplicas)
 			if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
 				return ctrl.Result{}, fmt.Errorf("failed to update the resource status")
