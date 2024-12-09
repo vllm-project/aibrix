@@ -250,7 +250,7 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	}
 
 	readyPodsCount := math.Max(0, float64(originalReadyPodsCount))           // A little sanitizing.
-	maxScaleUp := math.Min(1, math.Ceil(spec.MaxScaleUpRate*readyPodsCount)) // Keep scale up non zero
+	maxScaleUp := math.Max(1, math.Ceil(spec.MaxScaleUpRate*readyPodsCount)) // Keep scale up non zero
 	maxScaleDown := math.Floor(readyPodsCount / spec.MaxScaleDownRate)       // Make scale down zero-able
 
 	dspc := math.Ceil(observedStableValue / spec.TargetValue)
