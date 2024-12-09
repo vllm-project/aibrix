@@ -40,6 +40,7 @@ debug_gpu_profile = GPUProfile(
 
 DeploymentStates_Replicas_No_Overriden = -1
 
+
 class DeploymentStates:
     """States of a deployment with resource version."""
 
@@ -60,11 +61,11 @@ class DeploymentStates:
     @property
     def cost(self):
         return 0.0 if self.profile is None else self.profile.cost * self.replicas
-    
+
     @property
     def replicas(self):
         return self._replicas_overriden if self.overriden else self._replicas
-    
+
     @replicas.setter
     def replicas(self, value):
         self._replicas = value
@@ -204,7 +205,11 @@ class ModelMonitor:
         return self.deployments[key].replicas
 
     def update_deployment_num_replicas(
-        self, deployment_name: str, namespace: str, replicas: int, overriding: bool = False
+        self,
+        deployment_name: str,
+        namespace: str,
+        replicas: int,
+        overriding: bool = False,
     ):
         key = self._deployment_entry_point(deployment_name, namespace)
         if key not in self.deployments:
@@ -218,7 +223,7 @@ class ModelMonitor:
                 for states in self.deployments.values():
                     states.override_replicas(replicas)
                 return
-            
+
             self.deployments[key].override_replicas(replicas)
         else:
             self.deployments[key].replicas = replicas

@@ -22,7 +22,11 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse, PlainTextResponse
 
 from aibrix.gpu_optimizer.load_monitor.load_reader import GatewayLoadReader
-from aibrix.gpu_optimizer.load_monitor.monitor import DeploymentStates, ModelMonitor, DeploymentStates_Replicas_No_Overriden
+from aibrix.gpu_optimizer.load_monitor.monitor import (
+    DeploymentStates,
+    DeploymentStates_Replicas_No_Overriden,
+    ModelMonitor,
+)
 from aibrix.gpu_optimizer.load_monitor.profile_reader import RedisProfileReader
 from aibrix.gpu_optimizer.load_monitor.visualizer import mount_to as mount_visulizer
 from aibrix.gpu_optimizer.utils import ExcludePathsFilter
@@ -210,13 +214,13 @@ async def scale_deployment(request):
     """
     namespace = request.path_params["namespace"]
     deployment_name = request.path_params["deployment_name"]
-    data = await request.json() 
+    data = await request.json()
     try:
         replicas = int(data.get("replicas", DeploymentStates_Replicas_No_Overriden))
         if replicas < DeploymentStates_Replicas_No_Overriden:
             replicas = DeploymentStates_Replicas_No_Overriden
     except ValueError:
-        replicas = DeploymentStates_Replicas_No_Overriden # reset
+        replicas = DeploymentStates_Replicas_No_Overriden  # reset
 
     try:
         # Verify the deployment exists
@@ -228,7 +232,9 @@ async def scale_deployment(request):
             raise Exception(f'Model "{model_name}" is not monitored.')
 
         # Set the scaling metrics
-        monitor.update_deployment_num_replicas(deployment_name, namespace, replicas, overriding=True)
+        monitor.update_deployment_num_replicas(
+            deployment_name, namespace, replicas, overriding=True
+        )
 
         return JSONResponse({"message": f"Scaled to {replicas}"})
     except Exception as e:
