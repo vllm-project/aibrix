@@ -155,6 +155,8 @@ class S3BaseDownloader(BaseDownloader):
         config_kwargs = {
             "max_concurrency": envs.DOWNLOADER_NUM_THREADS,
             "use_threads": enable_range,
+            "max_io_queue": envs.DOWNLOADER_S3_MAX_IO_QUEUE,
+            "io_chunksize": envs.DOWNLOADER_S3_IO_CHUNKSIZE,
         }
         if envs.DOWNLOADER_PART_THRESHOLD is not None:
             config_kwargs["multipart_threshold"] = envs.DOWNLOADER_PART_THRESHOLD
