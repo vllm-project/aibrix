@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: gpu-optimizer
-  namespace: aibrix-system
+  namespace: system
 spec:
   selector:
     app: gpu-optimizer

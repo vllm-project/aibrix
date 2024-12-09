@@ -38,13 +38,19 @@ debug_gpu_profile = GPUProfile(
     gpu="default", cost=1.0, tputs=[[100]], indexes=[[10], [10]]
 )
 
+DeploymentStates_Replicas_No_Overriden = -1
 
 class DeploymentStates:
     """States of a deployment with resource version."""
 
     def __init__(self, name: str, replicas: int = 1, min_replicas: int = 0):
         self.name = name
-        self.replicas = replicas
+
+        # _replicas stores optimized value
+        self._replicas = replicas
+        # _replicas_overriden stores replicas value for debugging
+        self._replicas_overriden = DeploymentStates_Replicas_No_Overriden
+
         """The replicas output, ignore min_replicas in the normal mode."""
         self.min_replicas = min_replicas
         """The replicas for minimum mode. Ignore in normal optimization mode."""
@@ -54,13 +60,31 @@ class DeploymentStates:
     @property
     def cost(self):
         return 0.0 if self.profile is None else self.profile.cost * self.replicas
+    
+    @property
+    def replicas(self):
+        return self._replicas_overriden if self.overriden else self._replicas
+    
+    @replicas.setter
+    def replicas(self, value):
+        self._replicas = value
+
+    @property
+    def overriden(self):
+        return self._replicas_overriden != DeploymentStates_Replicas_No_Overriden
+
+    def override_replicas(self, value):
+        self._replicas_overriden = value
 
     def minimize(self):
         """Set replica to minimum mode."""
         self.replicas = max(0, self.min_replicas)
 
     def __repr__(self):
-        return f"{self.name}: {self.replicas}(${self.cost})"
+        if self.overriden:
+            return f"overriden {self.name}: {self.replicas}(${self.cost}), should be {self._replicas}"
+        else:
+            return f"{self.name}: {self.replicas}(${self.cost})"
 
 
 class ModelMonitor:
@@ -180,7 +204,7 @@ class ModelMonitor:
         return self.deployments[key].replicas
 
     def update_deployment_num_replicas(
-        self, deployment_name: str, namespace: str, replicas: int
+        self, deployment_name: str, namespace: str, replicas: int, overriding: bool = False
     ):
         key = self._deployment_entry_point(deployment_name, namespace)
         if key not in self.deployments:
@@ -188,7 +212,16 @@ class ModelMonitor:
                 f"Deployment {namespace}:{deployment_name} of model {self.model_name} is not monitored"
             )
 
-        self.deployments[key].replicas = replicas
+        if overriding:
+            # Disable all override once for all if no overriden is detected.
+            if replicas == DeploymentStates_Replicas_No_Overriden:
+                for states in self.deployments.values():
+                    states.override_replicas(replicas)
+                return
+            
+            self.deployments[key].override_replicas(replicas)
+        else:
+            self.deployments[key].replicas = replicas
 
     def mark_deployments_outdated(self):
         """Save last resource version and start the validation"""

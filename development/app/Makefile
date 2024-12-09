@@ -12,19 +12,19 @@ docker-build-simulator-a40:
 docker-build: docker-build-mock
 
 deploy-mock:
-	kubectl create -k config/mock
+	kubectl apply -k config/mock
 	sleep 2
 	kubectl port-forward svc/llama2-7b 8000:8000 1>/dev/null 2>&1 &
 	kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 1>/dev/null 2>&1 &
 
 deploy-simulator:
-	kubectl create -k config/simulator
+	kubectl apply -k config/simulator
 	sleep 2
 	kubectl port-forward svc/llama2-7b 8000:8000 1>/dev/null 2>&1 &
 	kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 1>/dev/null 2>&1 &
 
 deploy-heterogeneous:
-	kubectl create -k config/heterogeneous
+	kubectl apply -k config/heterogeneous
 	sleep 2
 	kubectl port-forward svc/llama2-7b 8000:8000 1>/dev/null 2>&1 &
 	kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 1>/dev/null 2>&1 &

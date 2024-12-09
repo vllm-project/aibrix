@@ -6,6 +6,7 @@ metadata:
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
+    kpa.autoscaling.aibrix.ai/scale-down-delay: "0"
   namespace: default
 spec:
   scaleTargetRef:

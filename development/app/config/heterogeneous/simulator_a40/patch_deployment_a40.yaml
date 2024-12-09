@@ -5,7 +5,7 @@ metadata:
   labels:
     model.aibrix.ai/name: "llama2-7b"
 spec:
-  replicas: 1
+  replicas: 0
   selector:
     matchLabels:
       model.aibrix.ai/name: "llama2-7b"

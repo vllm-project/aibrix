@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: gpu-optimizer
-  namespace: aibrix-system
+  namespace: system
 spec:
   replicas: 1
   selector:

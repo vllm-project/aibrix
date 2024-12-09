@@ -13,6 +13,7 @@ gen-profile:
 
 .PHONY: debug-init
 debug-init:
+	kubectl -n aibrix-system port-forward svc/aibrix-gpu-optimizer 8080:8080 1>/dev/null 2>&1 &
 	kubectl -n aibrix-system port-forward svc/aibrix-redis-master 6379:6379 1>/dev/null 2>&1 &
 
 .PHONY: debug
@@ -28,10 +29,10 @@ debug-init-simulator:
 
 .PHONY: debug-scale-simulator	
 debug-scale-simulator:
-	curl http://localhost:8080/scale/default/simulator-llama2-7b-a100-a100/2 \
+	curl -X PUT http://localhost:8080/scale/default/simulator-llama2-7b-a100\
 		-H "Content-Type: application/json" \
 		-H "Authorization: Bearer any_key" \
-		-d '{}'
+		-d '{"replicas":"0"}'
 
 .PHONY: debug-stop-simulator
 debug-stop-simulator:
@@ -45,7 +46,7 @@ debug-update-profile:
 
 .PHONY: debug-metrics
 debug-metrics:
-	curl http://localhost:8080/metrics/aibrix-system/simulator-llama2-7b-a100
+	curl http://localhost:8080/metrics/default/simulator-llama2-7b-a100
 
 .PHONY: debug-workload
 debug-workload:

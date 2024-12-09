@@ -22,7 +22,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse, PlainTextResponse
 
 from aibrix.gpu_optimizer.load_monitor.load_reader import GatewayLoadReader
-from aibrix.gpu_optimizer.load_monitor.monitor import DeploymentStates, ModelMonitor
+from aibrix.gpu_optimizer.load_monitor.monitor import DeploymentStates, ModelMonitor, DeploymentStates_Replicas_No_Overriden
 from aibrix.gpu_optimizer.load_monitor.profile_reader import RedisProfileReader
 from aibrix.gpu_optimizer.load_monitor.visualizer import mount_to as mount_visulizer
 from aibrix.gpu_optimizer.utils import ExcludePathsFilter
@@ -201,11 +201,23 @@ async def update_profile(request):
         )
 
 
-@app.route("/scale/{namespace}/{deployment_name}/{replicas}", methods=["POST"])
+@app.route("/scale/{namespace}/{deployment_name}", methods=["PUT"])
 async def scale_deployment(request):
+    """Scale deployment manually by overriding replicas number. Once overriden, optimization result will be ignored. Reset overriden by pass -1.
+
+    Args:
+        replicas: The overriden number of replicas. Pass -1 to disable overriden for all deployments of the model.
+    """
     namespace = request.path_params["namespace"]
     deployment_name = request.path_params["deployment_name"]
-    replicas = request.path_params["replicas"]
+    data = await request.json() 
+    try:
+        replicas = int(data.get("replicas", DeploymentStates_Replicas_No_Overriden))
+        if replicas < DeploymentStates_Replicas_No_Overriden:
+            replicas = DeploymentStates_Replicas_No_Overriden
+    except ValueError:
+        replicas = DeploymentStates_Replicas_No_Overriden # reset
+
     try:
         # Verify the deployment exists
         apps_v1 = client.AppsV1Api()
@@ -216,7 +228,7 @@ async def scale_deployment(request):
             raise Exception(f'Model "{model_name}" is not monitored.')
 
         # Set the scaling metrics
-        monitor.update_deployment_num_replicas(deployment_name, namespace, replicas)
+        monitor.update_deployment_num_replicas(deployment_name, namespace, replicas, overriding=True)
 
         return JSONResponse({"message": f"Scaled to {replicas}"})
     except Exception as e:

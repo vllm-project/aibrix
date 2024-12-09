@@ -1,0 +1,12 @@
+namespace: aibrix-system
+
+namePrefix: aibrix-
+
+resources:
+- namespace.yaml
+- ../../../crd
+- ../../../rbac
+- ../../../manager
+- ../../../gateway
+- ../../../gpu-optimizer
+- ../../../dependency/kuberay-operator
