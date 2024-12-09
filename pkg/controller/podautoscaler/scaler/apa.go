@@ -147,6 +147,11 @@ func (a *ApaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 		return ScaleResult{}
 	}
 
+	if originalReadyPodsCount == 0 {
+		klog.Errorf("Unexpected pod count for %s: %d", metricKey, originalReadyPodsCount)
+		return ScaleResult{}
+	}
+
 	currentUsePerPod := observedValue / float64(originalReadyPodsCount)
 	spec.SetCurrentUsePerPod(currentUsePerPod)
 
