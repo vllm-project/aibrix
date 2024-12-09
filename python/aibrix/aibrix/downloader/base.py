@@ -162,7 +162,7 @@ def get_downloader(
 
         return S3Downloader(model_uri, model_name, enable_progress_bar)
     elif re.match(envs.DOWNLOADER_TOS_REGEX, model_uri):
-        from aibrix.downloader.tos import TOSDownloader
+        from aibrix.downloader.s3 import TOSDownloader
 
         return TOSDownloader(model_uri, model_name, enable_progress_bar)
     else:
