@@ -17,40 +17,41 @@ from unittest import mock
 import pytest
 
 from aibrix.downloader.base import get_downloader
-from aibrix.downloader.tos import TOSDownloader
+from aibrix.downloader.s3 import TOSDownloader
 
-TOS_MODULE = "aibrix.downloader.tos.tos"
-ENVS_MODULE = "aibrix.downloader.tos.envs"
+S3_BOTO3_MODULE = "aibrix.downloader.s3.boto3"
+ENVS_MODULE = "aibrix.downloader.s3.envs"
 
 
-def mock_not_exsit_tos(mock_tos):
+def mock_not_exsit_tos(mock_boto3):
     mock_client = mock.Mock()
-    mock_tos.TosClientV2.return_value = mock_client
+    mock_boto3.client.return_value = mock_client
     mock_client.head_bucket.side_effect = Exception("head bucket error")
 
 
-def mock_exsit_tos(mock_tos):
+def mock_exsit_tos(mock_boto3):
     mock_client = mock.Mock()
-    mock_tos.TosClientV2.return_value = mock_client
+    mock_boto3.client.return_value = mock_client
     mock_client.head_bucket.return_value = mock.Mock()
 
 
 env_group = mock.Mock()
+env_group.DOWNLOADER_NUM_THREADS = 4
 
 
 @mock.patch(ENVS_MODULE, env_group)
-@mock.patch(TOS_MODULE)
-def test_get_downloader_tos(mock_tos):
-    mock_exsit_tos(mock_tos)
+@mock.patch(S3_BOTO3_MODULE)
+def test_get_downloader_tos(mock_boto3):
+    mock_exsit_tos(mock_boto3)
 
     downloader = get_downloader("tos://bucket/path")
     assert isinstance(downloader, TOSDownloader)
 
 
 @mock.patch(ENVS_MODULE, env_group)
-@mock.patch(TOS_MODULE)
-def test_get_downloader_tos_path_not_exist(mock_tos):
-    mock_not_exsit_tos(mock_tos)
+@mock.patch(S3_BOTO3_MODULE)
+def test_get_downloader_tos_path_not_exist(mock_boto3):
+    mock_not_exsit_tos(mock_boto3)
 
     with pytest.raises(AssertionError) as exception:
         get_downloader("tos://bucket/not_exsit_path")
@@ -58,9 +59,9 @@ def test_get_downloader_tos_path_not_exist(mock_tos):
 
 
 @mock.patch(ENVS_MODULE, env_group)
-@mock.patch(TOS_MODULE)
-def test_get_downloader_tos_path_empty(mock_tos):
-    mock_exsit_tos(mock_tos)
+@mock.patch(S3_BOTO3_MODULE)
+def test_get_downloader_tos_path_empty(mock_boto3):
+    mock_exsit_tos(mock_boto3)
 
     # Bucket name and path both are empty,
     # will first assert the name
@@ -70,9 +71,9 @@ def test_get_downloader_tos_path_empty(mock_tos):
 
 
 @mock.patch(ENVS_MODULE, env_group)
-@mock.patch(TOS_MODULE)
-def test_get_downloader_tos_path_empty_path(mock_tos):
-    mock_exsit_tos(mock_tos)
+@mock.patch(S3_BOTO3_MODULE)
+def test_get_downloader_tos_path_empty_path(mock_boto3):
+    mock_exsit_tos(mock_boto3)
 
     # bucket path is empty
     with pytest.raises(AssertionError) as exception:

@@ -214,11 +214,15 @@ class S3Downloader(S3BaseDownloader):
             assert False, f"S3 bucket {self.bucket_name} not exist for {e}."
     
     def _get_auth_config(self) -> Dict[str, str]:
+        ak, sk = envs.DOWNLOADER_AWS_ACCESS_KEY_ID, envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY
+        assert ak is not None and ak != "", "`AWS_ACCESS_KEY_ID` is not set."
+        assert sk is not None and sk != "", "`AWS_SECRET_ACCESS_KEY` is not set."
+
         return {
             "region_name": envs.DOWNLOADER_AWS_REGION,
             "endpoint_url": envs.DOWNLOADER_AWS_ENDPOINT_URL,
-            "aws_access_key_id": envs.DOWNLOADER_AWS_ACCESS_KEY_ID,
-            "aws_secret_access_key": envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY,
+            "aws_access_key_id": ak,
+            "aws_secret_access_key": sk,
         }
 
 
