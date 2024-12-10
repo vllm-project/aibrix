@@ -42,9 +42,13 @@ def _parse_int_or_none(value: Optional[str]) -> Optional[int]:
 DOWNLOADER_LOCAL_DIR = os.getenv("DOWNLOADER_LOCAL_DIR", "/tmp/aibrix/models/")
 
 
-DOWNLOADER_NUM_THREADS = int(os.getenv("DOWNLOADER_NUM_THREADS", "4"))
-DOWNLOADER_PART_THRESHOLD = _parse_int_or_none(os.getenv("DOWNLOADER_PART_THRESHOLD"))
-DOWNLOADER_PART_CHUNKSIZE = _parse_int_or_none(os.getenv("DOWNLOADER_PART_CHUNKSIZE"))
+DOWNLOADER_NUM_THREADS = int(os.getenv("DOWNLOADER_NUM_THREADS", "32"))
+DOWNLOADER_PART_THRESHOLD = _parse_int_or_none(
+    os.getenv("DOWNLOADER_PART_THRESHOLD", "67108864")
+)  # 64MB
+DOWNLOADER_PART_CHUNKSIZE = _parse_int_or_none(
+    os.getenv("DOWNLOADER_PART_CHUNKSIZE", "67108864")
+)  # 64MB
 DOWNLOADER_ALLOW_FILE_SUFFIX = _parse_list_str(
     os.getenv("DOWNLOADER_ALLOW_FILE_SUFFIX")
 )
@@ -53,7 +57,7 @@ DOWNLOADER_S3_MAX_IO_QUEUE = _parse_int_or_none(
 )
 DOWNLOADER_S3_IO_CHUNKSIZE = _parse_int_or_none(
     os.getenv("DOWNLOADER_S3_IO_CHUNKSIZE", "16777216")
-)
+)  # 16MB
 
 DOWNLOADER_FORCE_DOWNLOAD = _is_true(os.getenv("DOWNLOADER_FORCE_DOWNLOAD", "0"))
 DOWNLOADER_CHECK_FILE_EXIST = _is_true(os.getenv("DOWNLOADER_CHECK_FILE_EXIST", "1"))
