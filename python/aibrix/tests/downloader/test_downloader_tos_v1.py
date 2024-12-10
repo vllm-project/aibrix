@@ -21,7 +21,8 @@ from aibrix.downloader.tos import TOSDownloaderV1
 
 TOS_MODULE = "aibrix.downloader.tos.tos"
 ENVS_MODULE = "aibrix.downloader.tos.envs"
-
+ENVS_DOWNLOADER_TOS_VERSION = "aibrix.downloader.base.envs.DOWNLOADER_TOS_VERSION"
+DOWNLOADER_TOS_VERSION = "v1"
 
 def mock_not_exsit_tos(mock_tos):
     mock_client = mock.Mock()
@@ -36,9 +37,9 @@ def mock_exsit_tos(mock_tos):
 
 
 env_group = mock.Mock()
-env_group.DOWNLOADER_TOS_VERSION = "v1"
 
 
+@mock.patch(ENVS_DOWNLOADER_TOS_VERSION, DOWNLOADER_TOS_VERSION)
 @mock.patch(ENVS_MODULE, env_group)
 @mock.patch(TOS_MODULE)
 def test_get_downloader_tos(mock_tos):
@@ -48,6 +49,7 @@ def test_get_downloader_tos(mock_tos):
     assert isinstance(downloader, TOSDownloaderV1)
 
 
+@mock.patch(ENVS_DOWNLOADER_TOS_VERSION, DOWNLOADER_TOS_VERSION)
 @mock.patch(ENVS_MODULE, env_group)
 @mock.patch(TOS_MODULE)
 def test_get_downloader_tos_path_not_exist(mock_tos):
@@ -58,6 +60,7 @@ def test_get_downloader_tos_path_not_exist(mock_tos):
     assert "not exist" in str(exception.value)
 
 
+@mock.patch(ENVS_DOWNLOADER_TOS_VERSION, DOWNLOADER_TOS_VERSION)
 @mock.patch(ENVS_MODULE, env_group)
 @mock.patch(TOS_MODULE)
 def test_get_downloader_tos_path_empty(mock_tos):
@@ -70,6 +73,7 @@ def test_get_downloader_tos_path_empty(mock_tos):
     assert "TOS bucket name is not set." in str(exception.value)
 
 
+@mock.patch(ENVS_DOWNLOADER_TOS_VERSION, DOWNLOADER_TOS_VERSION)
 @mock.patch(ENVS_MODULE, env_group)
 @mock.patch(TOS_MODULE)
 def test_get_downloader_tos_path_empty_path(mock_tos):
