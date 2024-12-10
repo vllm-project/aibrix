@@ -5,6 +5,7 @@ on:
     branches: [ "main" ]
     paths:
       - '.github/workflows/**'
+      - 'build/container/**' 
       - 'config/**'
       - 'pkg/**'
       - 'cmd/**'
@@ -16,6 +17,7 @@ on:
     branches: [ "main" ]
     paths:
       - '.github/workflows/**'
+      - 'build/container/**' 
       - 'config/**'
       - 'pkg/**'
       - 'cmd/**'

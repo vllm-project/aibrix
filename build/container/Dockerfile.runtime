@@ -1,7 +1,8 @@
 ARG PYTHON_VERSION=3.11
 ARG BASE_IMAGE=python:${PYTHON_VERSION}-slim-bookworm
 
-FROM ${BASE_IMAGE} AS base
+# Builder stage
+FROM ${BASE_IMAGE} AS builder
 
 WORKDIR /app
 
@@ -23,6 +24,21 @@ COPY python/aibrix/poetry.lock python/aibrix/pyproject.toml python/aibrix/ /app/
 RUN poetry config virtualenvs.create false \
     && poetry install --no-interaction \
     && poetry cache clear pypi --all
+
+# Final stage
+FROM ${BASE_IMAGE}
+
+ARG PYTHON_VERSION
+
+WORKDIR /app
+
+# Copy only the Python packages from builder
+COPY --from=builder /usr/local/lib/python${PYTHON_VERSION}/site-packages/ /usr/local/lib/python${PYTHON_VERSION}/site-packages/
+# Copy the package source code and install it in the next step
+COPY python/aibrix/ ./
+
+# Install the package (but dependencies are already installed)
+RUN pip install -e .
 
 # Set entrypoint for Runtime
 ENTRYPOINT ["aibrix_runtime"]
