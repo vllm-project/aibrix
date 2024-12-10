@@ -18,6 +18,7 @@ package scaler
 
 import (
 	"fmt"
+	"time"
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 )
@@ -28,7 +29,7 @@ func NewAutoscalerFactory(strategy autoscalingv1alpha1.ScalingStrategyType) (Sca
 	// But NewAutoscalerFactory doesn't be used, so we temporarily pass into nil
 	switch strategy {
 	case autoscalingv1alpha1.KPA:
-		autoscaler, err := NewKpaAutoscaler(0, nil)
+		autoscaler, err := NewKpaAutoscaler(0, nil, time.Now())
 		if err != nil {
 			return nil, err
 		}

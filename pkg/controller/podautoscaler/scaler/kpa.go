@@ -65,6 +65,7 @@ const (
 	activationScaleLabel     = KPALabelPrefix + "activation-scale"
 	panicThresholdLabel      = KPALabelPrefix + "panic-threshold"
 	stableWindowLabel        = KPALabelPrefix + "stable-window"
+	panicWindowLabel         = KPALabelPrefix + "panic-window"
 	scaleDownDelayLabel      = KPALabelPrefix + "scale-down-delay"
 )
 
@@ -154,6 +155,12 @@ func (k *KpaScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscale
 				return err
 			}
 			k.StableWindow = v
+		case panicWindowLabel:
+			v, err := time.ParseDuration(value)
+			if err != nil {
+				return err
+			}
+			k.PanicWindow = v
 		case scaleDownDelayLabel:
 			v, err := time.ParseDuration(value)
 			if err != nil {
@@ -182,7 +189,7 @@ type KpaAutoscaler struct {
 var _ Scaler = (*KpaAutoscaler)(nil)
 
 // NewKpaAutoscaler Initialize KpaAutoscaler: Referenced from `knative/pkg/autoscaler/scaling/autoscaler.go newAutoscaler`
-func NewKpaAutoscaler(readyPodsCount int, pa *autoscalingv1alpha1.PodAutoscaler) (*KpaAutoscaler, error) {
+func NewKpaAutoscaler(readyPodsCount int, pa *autoscalingv1alpha1.PodAutoscaler, now time.Time) (*KpaAutoscaler, error) {
 	spec, err := NewKpaScalingContextByPa(pa)
 	if err != nil {
 		return nil, err
@@ -207,7 +214,7 @@ func NewKpaAutoscaler(readyPodsCount int, pa *autoscalingv1alpha1.PodAutoscaler)
 	//   accumulate enough data to make conscious decisions.
 	var panicTime time.Time
 	if readyPodsCount > 1 {
-		panicTime = time.Now()
+		panicTime = now
 	} else {
 		panicTime = time.Time{} // Zero value for time if not in panic mode
 	}
@@ -297,22 +304,26 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 		"PanicThreshold", spec.PanicThreshold, "isOverPanicThreshold", isOverPanicThreshold,
 	)
 
-	if k.panicTime.IsZero() && isOverPanicThreshold {
+	if !k.InPanicMode() && isOverPanicThreshold {
 		// Begin panicking when we cross the threshold in the panic window.
-		klog.InfoS("Begin panicking")
+		klog.InfoS("Begin panicking.", "panicTime", now)
 		k.panicTime = now
 	} else if isOverPanicThreshold {
 		// If we're still over panic threshold right now — extend the panic window.
+		klog.V(4).InfoS("update panic time.", "panicTime", now)
 		k.panicTime = now
-	} else if !k.panicTime.IsZero() && !isOverPanicThreshold && k.panicTime.Add(spec.StableWindow).Before(now) {
-		// Stop panicking after the surge has made its way into the stable metric.
+	} else if k.InPanicMode() && !isOverPanicThreshold && k.panicTime.Add(spec.StableWindow).Before(now) {
+		// Stop panicking only if there are:
+		// 1. now it's in panic mode (!k.panicTime.IsZero())
+		// 2. current metric value is no more over the threshold
+		// 3. the time has already surpassed the stable window length since the metric value last exceeded the panic threshold.
 		klog.InfoS("Exit panicking.")
 		k.panicTime = time.Time{}
 		k.maxPanicPods = 0
 	}
 
 	desiredPodCount := desiredStablePodCount
-	if !k.panicTime.IsZero() {
+	if k.InPanicMode() {
 		// In some edgecases stable window metric might be larger
 		// than panic one. And we should provision for stable as for panic,
 		// so pick the larger of the two.
@@ -437,4 +448,11 @@ func (k *KpaAutoscaler) GetScalingContext() scalingcontext.ScalingContext {
 	defer k.specMux.Unlock()
 
 	return k.scalingContext
+}
+
+func (k *KpaAutoscaler) InPanicMode() bool {
+	k.specMux.Lock()
+	defer k.specMux.Unlock()
+
+	return !k.panicTime.IsZero()
 }

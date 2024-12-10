@@ -328,12 +328,6 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 
 	setCondition(&pa, "AbleToScale", metav1.ConditionTrue, "SucceededGetScale", "the %s controller was able to get the target's current scale", paType)
 
-	// Update the scale required metrics periodically
-	err = r.updateMetricsForScale(ctx, pa, scale, metricKey, metricSource)
-	if err != nil {
-		r.EventRecorder.Event(&pa, corev1.EventTypeWarning, "FailedUpdateMetrics", err.Error())
-		return ctrl.Result{}, fmt.Errorf("failed to update metrics for scale target reference: %v", err)
-	}
 	// current scale's replica count
 	currentReplicasInt64, found, err := unstructured.NestedInt64(scale.Object, "spec", "replicas")
 	if !found {
@@ -345,6 +339,13 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 		return ctrl.Result{}, fmt.Errorf("failed to get 'replicas' from scale: %v", err)
 	}
 	currentReplicas := int32(currentReplicasInt64)
+
+	// Update the scale required metrics periodically
+	err = r.updateMetricsForScale(ctx, pa, scale, metricKey, metricSource, int(currentReplicas))
+	if err != nil {
+		r.EventRecorder.Event(&pa, corev1.EventTypeWarning, "FailedUpdateMetrics", err.Error())
+		return ctrl.Result{}, fmt.Errorf("failed to update metrics for scale target reference: %v", err)
+	}
 
 	// desired replica count
 	desiredReplicas := int32(0)
@@ -612,9 +613,11 @@ func (r *PodAutoscalerReconciler) updateScalerSpec(ctx context.Context, pa autos
 	return autoScaler.UpdateScalingContext(pa)
 }
 
-func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured, metricKey metrics.NamespaceNameMetric, metricSource autoscalingv1alpha1.MetricSource) (err error) {
+// updateMetricsForScale: we pass into the currentReplicas to construct autoScaler, as KNative implementation
+func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured, metricKey metrics.NamespaceNameMetric, metricSource autoscalingv1alpha1.MetricSource, currentReplicas int) (err error) {
 	currentTimestamp := time.Now()
 	var autoScaler scaler.Scaler
+	// it's similar to knative: pkg/autoscaler/scaling/multiscaler.go: func (m *MultiScaler) Create
 	autoScaler, exists := r.AutoscalerMap[metricKey]
 	if !exists {
 		klog.InfoS("Scaler not found, creating new scaler", "metricKey", metricKey, "type", pa.Spec.ScalingStrategy)
@@ -625,9 +628,9 @@ func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa 
 			// TODO Currently, we initialize kpa with default config and allocate window with default length.
 			//  We then reallocate window according to pa until UpdateScalingContext.
 			//  it's not wrong, but we allocate window twice, to be optimized.
-			autoScaler, err = scaler.NewKpaAutoscaler(0, &pa)
+			autoScaler, err = scaler.NewKpaAutoscaler(currentReplicas, &pa, time.Now())
 		case autoscalingv1alpha1.APA:
-			autoScaler, err = scaler.NewApaAutoscaler(0, &pa)
+			autoScaler, err = scaler.NewApaAutoscaler(currentReplicas, &pa)
 		default:
 			return fmt.Errorf("unsupported scaling strategy: %s", pa.Spec.ScalingStrategy)
 		}
