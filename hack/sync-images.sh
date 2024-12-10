@@ -4,11 +4,11 @@
 if [ -z "$1" ] || [ -z "$2" ]; then
     echo "Error: Missing required parameters."
     echo "Usage: $0 <version> <region>"
-    echo "Example: $0 v0.1.1 aibrix-container-registry-cn-beijing.cr.volces.com"
+    echo "Example: $0 v0.2.0-rc.1 aibrix-container-registry-cn-beijing.cr.volces.com"
     exit 1
 fi
 
-# aibrix tag，e.g. v0.1.1
+# aibrix tag，e.g. v0.2.0-rc.1
 # registry，e.g. aibrix-container-registry-cn-beijing.cr.volces.com
 VERSION=$1
 REGISTRY=$2

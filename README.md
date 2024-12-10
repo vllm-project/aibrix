@@ -24,20 +24,20 @@ To get started with AIBrix, clone this repository and follow the setup instructi
 git clone https://github.com/aibrix/aibrix.git
 cd aibrix
 
-# Install component dependencies
+# Install nightly aibrix dependencies
 kubectl create -k config/dependency
 
-# Install aibrix components
+# Install nightly aibrix components
 kubectl create -k config/default
 ```
 
 Install stable distribution
 ```shell
 # Install component dependencies
-kubectl create -k "github.com/aibrix/aibrix/config/dependency?ref=v0.1.1"
+kubectl create -k "github.com/aibrix/aibrix/config/dependency?ref=v0.2.0-rc.1"
 
 # Install aibrix components
-kubectl create -k "github.com/aibrix/aibrix/config/default?ref=v0.1.1"
+kubectl create -k "github.com/aibrix/aibrix/config/overlays/release?ref=v0.2.0-rc.1"
 ```
 
 ## Documentation

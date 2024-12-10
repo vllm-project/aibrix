@@ -114,8 +114,8 @@ we need to retag the images and push to VKE Container Registry.
 
 .. code-block:: bash
 
-    ./hack/sync-images.sh v0.1.1 aibrix-container-registry-cn-beijing.cr.volces.com
-    ./hack/sync-images.sh v0.1.1 aibrix-container-registry-cn-shanghai.cr.volces.com
+    ./hack/sync-images.sh v0.2.0-rc.1 aibrix-container-registry-cn-beijing.cr.volces.com
+    ./hack/sync-images.sh v0.2.0-rc.1 aibrix-container-registry-cn-shanghai.cr.volces.com
 
 
 Update released tags in main branch docs

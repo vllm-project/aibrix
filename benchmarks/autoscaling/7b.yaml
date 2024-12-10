@@ -78,7 +78,7 @@ spec:
             - name: dshm
               mountPath: /dev/shm
         - name: aibrix-runtime
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.1.1
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.2.0-rc.1
           command:
             - aibrix_runtime
             - --port
