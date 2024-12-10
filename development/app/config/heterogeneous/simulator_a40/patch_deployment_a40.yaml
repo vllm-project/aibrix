@@ -9,6 +9,7 @@ spec:
   selector:
     matchLabels:
       model.aibrix.ai/name: "llama2-7b"
+      app: "simulator-llama2-7b-a40"
   template:
     metadata:
       labels:
