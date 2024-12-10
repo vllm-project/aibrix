@@ -94,7 +94,7 @@ def start_serving_thread(watch_ver, deployment, watch_event: bool) -> bool:
             watch_ver, deployment_name, namespace, lambda: new_deployment(deployment)
         )
         logger.info(
-            f'Deployment "{deployment_name}" added to the model monitor for "{model_name}"'
+            f'Deployment "{deployment_name}" found in watch version {watch_ver}, added to the model monitor for "{model_name}"'
         )
         return False
 
@@ -335,7 +335,7 @@ if __name__ == "__main__":
         logging.ERROR
     )  # Suppress kubenetes logs
     logging.getLogger("pulp.apis.core").setLevel(logging.INFO)  # Suppress pulp logs
-    logger = logging.getLogger("aibrix.gpuoptimizer")
+    logger = logging.getLogger("aibrix.gpu_optimizer")
 
     timeout = 600
     try:
@@ -356,10 +356,14 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=8080,
+        log_level="info",
         log_config={
             "version": 1,
             "disable_existing_loggers": False,
-            "loggers": {"uvicorn.access": {"filters": ["dash_update_filter"]}},
+            "loggers": {
+                "uvicorn.access": {"filters": ["dash_update_filter"]},
+                "uvicorn.error": {"level": "INFO", "propagate": False},
+            },
             "filters": {
                 "dash_update_filter": {
                     "()": ExcludePathsFilter,

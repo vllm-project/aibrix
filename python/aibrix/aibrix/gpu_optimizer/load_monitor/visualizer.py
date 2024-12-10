@@ -83,7 +83,7 @@ figure.__dict__ = {
     "lock": threading.Lock(),
 }
 
-logger = logging.getLogger("aibrix.gpuoptimizer.loadmonitor.visualizer")
+logger = logging.getLogger("aibrix.gpu_optimizer.load_monitor.visualizer")
 
 
 def get_debug_model_montior(

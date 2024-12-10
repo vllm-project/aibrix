@@ -32,7 +32,7 @@ from .profile_reader import ProfileReader
 
 Empty_Array: Iterable = []
 
-logger = logging.getLogger("aibrix.gpuoptimizer.loadmonitor")
+logger = logging.getLogger("aibrix.gpu_optimizer.load_monitor")
 
 debug_gpu_profile = GPUProfile(
     gpu="default", cost=1.0, tputs=[[100]], indexes=[[10], [10]]
@@ -53,7 +53,9 @@ class DeploymentStates:
 
     @property
     def cost(self):
-        return 0.0 if self.profile is None else self.profile.cost * self.replicas
+        return (
+            float("inf") if self.profile is None else self.profile.cost * self.replicas
+        )
 
     def minimize(self):
         """Set replica to minimum mode."""
@@ -464,7 +466,7 @@ class ModelMonitor:
         self._cost = cost
         self._lock.release()
         logger.info(
-            f"{self.model_name} scaled to minimum, cost ${self._cost}: {list(self.deployments.values())}"
+            f"{self.model_name} scaled to minimum, total cost ${self._cost}. Detailed Configuration:{list(self.deployments.values())}"
         )
 
     @property

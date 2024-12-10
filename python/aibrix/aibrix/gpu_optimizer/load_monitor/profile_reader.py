@@ -17,7 +17,7 @@ from typing import List, Protocol
 
 from aibrix.gpu_optimizer.optimizer import GPUProfile
 
-logger = logging.getLogger("aibrix.gpuoptimizer.profile_reader")
+logger = logging.getLogger("aibrix.gpu_optimizer.profile_reader")
 
 
 class ProfileReader(Protocol):
