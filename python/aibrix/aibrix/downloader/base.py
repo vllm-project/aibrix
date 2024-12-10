@@ -80,7 +80,7 @@ class BaseDownloader(ABC):
         directory_list = self._directory_list(self.bucket_path)
         # filter the directory path
         files = [file for file in directory_list if not file.endswith("/")]
-        
+
         if self.allow_file_suffix is None:
             logger.info(f"All files from {self.bucket_path} will be downloaded.")
             filtered_files = files
