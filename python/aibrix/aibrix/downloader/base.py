@@ -165,9 +165,14 @@ def get_downloader(
 
         return S3Downloader(model_uri, model_name, enable_progress_bar)
     elif re.match(envs.DOWNLOADER_TOS_REGEX, model_uri):
-        from aibrix.downloader.s3 import TOSDownloader
+        if envs.DOWNLOADER_TOS_VERSION == "v1":
+            from aibrix.downloader.tos import TOSDownloaderV1
 
-        return TOSDownloader(model_uri, model_name, enable_progress_bar)
+            return TOSDownloaderV1(model_uri, model_name, enable_progress_bar)
+        else:
+            from aibrix.downloader.tos import TOSDownloaderV2
+
+            return TOSDownloaderV2(model_uri, model_name, enable_progress_bar)
     else:
         from aibrix.downloader.huggingface import HuggingFaceDownloader
 
