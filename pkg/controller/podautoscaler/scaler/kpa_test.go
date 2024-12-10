@@ -187,8 +187,8 @@ func checkInPanic(t *testing.T, expectIn bool, autoScaler *KpaAutoscaler) {
 // TestKpaScale2 simulate from creating KPA scaler same as what `PodAutoscalerReconciler.updateMetricsForScale` do.
 func TestKpaScale2(t *testing.T) {
 	klog.InitFlags(nil)
-	flag.Set("v", "4")
-	defer flag.Set("v", "2")
+	_ = flag.Set("v", "4")
+	_ = flag.Set("v", "2")
 
 	PANIC_WINDOW := 10 * time.Second
 	STABLE_WINDOW := 30 * time.Second
