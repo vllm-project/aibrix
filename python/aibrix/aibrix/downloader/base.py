@@ -78,13 +78,16 @@ class BaseDownloader(ABC):
         used to download the directory.
         """
         directory_list = self._directory_list(self.bucket_path)
+        # filter the directory path
+        files = [file for file in directory_list if not file.endswith("/")]
+        
         if self.allow_file_suffix is None:
             logger.info(f"All files from {self.bucket_path} will be downloaded.")
-            filtered_files = directory_list
+            filtered_files = files
         else:
             filtered_files = [
                 file
-                for file in directory_list
+                for file in files
                 if any(file.endswith(suffix) for suffix in self.allow_file_suffix)
             ]
 

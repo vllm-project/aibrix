@@ -121,9 +121,7 @@ class S3BaseDownloader(BaseDownloader):
             Bucket=self.bucket_name, Delimiter="/", Prefix=path
         )
         contents = objects_out.get("Contents", [])
-        files = [content.get("Key") for content in contents]
-        # filter the directory path
-        return [file for file in files if not file.endswith("/")]
+        return [content.get("Key") for content in contents]
 
     def _support_range_download(self) -> bool:
         return True
