@@ -24,6 +24,7 @@ ENVS_MODULE = "aibrix.downloader.tos.envs"
 ENVS_DOWNLOADER_TOS_VERSION = "aibrix.downloader.base.envs.DOWNLOADER_TOS_VERSION"
 DOWNLOADER_TOS_VERSION = "v1"
 
+
 def mock_not_exsit_tos(mock_tos):
     mock_client = mock.Mock()
     mock_tos.TosClientV2.return_value = mock_client
