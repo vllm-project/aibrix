@@ -124,6 +124,22 @@ type PodAutoscalerReconciler struct {
 	eventCh        chan event.GenericEvent
 }
 
+func (r *PodAutoscalerReconciler) deleteScaler(request types.NamespacedName) {
+	// When deleting, we only have access to the Namespace and Name, not other attributes in pa_types.
+	// We should scan `AutoscalerMap` and remove the matched objects.
+	// Note that due to the OwnerRef, the created HPA object will automatically be removed when AIBrix-HPA is deleted.
+	// Therefore, manual deletion of the HPA is not necessary.
+	for namespaceNameMetric := range r.AutoscalerMap {
+		if namespaceNameMetric.PaNamespace == request.Namespace && namespaceNameMetric.PaName == request.Name {
+			// remove matched entry from the map
+			klog.InfoS("Delete scaler", "PaName", namespaceNameMetric.PaName,
+				"PaNamespace", namespaceNameMetric.PaNamespace,
+				"TargetRefNamespace", request.Namespace, "TargetRefName", request.Name)
+			delete(r.AutoscalerMap, namespaceNameMetric)
+		}
+	}
+}
+
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers/finalizers,verbs=update
@@ -146,8 +162,9 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	var pa autoscalingv1alpha1.PodAutoscaler
 	if err := r.Get(ctx, req.NamespacedName, &pa); err != nil {
 		if errors.IsNotFound(err) {
-			// Object might have been deleted after reconcile request, ignore and return.
-			klog.Infof("PodAutoscaler resource not found. Ignoring since object %s must have been deleted", req.NamespacedName)
+			r.deleteScaler(req.NamespacedName)
+			// Object might have been deleted after reconcile request, clean it and return.
+			klog.Infof("PodAutoscaler resource not found. Clean scaler object in memory since object %s must have been deleted", req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
 		klog.ErrorS(err, "Failed to get PodAutoscaler")

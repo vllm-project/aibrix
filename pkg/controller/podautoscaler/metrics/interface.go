@@ -30,8 +30,10 @@ import (
 
 // NamespaceNameMetric contains the namespace, name and the metric name
 type NamespaceNameMetric struct {
-	types.NamespacedName
-	MetricName string
+	types.NamespacedName // target deployment namespace and name
+	MetricName           string
+	PaNamespace          string
+	PaName               string
 }
 
 // NewNamespaceNameMetric creates a NamespaceNameMetric based on the PodAutoscaler's metrics source.
@@ -47,7 +49,9 @@ func NewNamespaceNameMetric(pa *autoscalingv1alpha1.PodAutoscaler) (NamespaceNam
 			Namespace: pa.Namespace,
 			Name:      pa.Spec.ScaleTargetRef.Name,
 		},
-		MetricName: metricSource.TargetMetric,
+		MetricName:  metricSource.TargetMetric,
+		PaNamespace: pa.Namespace,
+		PaName:      pa.Name,
 	}, metricSource, nil
 }
 
