@@ -20,26 +20,27 @@ RUN python3 -m pip install poetry==${POETRY_VERSION}
 # Copy the runtime source
 COPY python/aibrix/poetry.lock python/aibrix/pyproject.toml python/aibrix/ /app/
 
-# Install dependencies
+# Install dependencies and build package
 RUN poetry config virtualenvs.create false \
-    && poetry install --no-interaction \
-    && poetry cache clear pypi --all
+    && poetry install --no-interaction --no-dev \
+    && poetry build -f wheel
 
 # Final stage
 FROM ${BASE_IMAGE}
 
-ARG PYTHON_VERSION
-
 WORKDIR /app
 
-# Copy only the Python packages from builder
-COPY --from=builder /usr/local/lib/python${PYTHON_VERSION}/site-packages/ /usr/local/lib/python${PYTHON_VERSION}/site-packages/
-# Copy the package source code and install it in the next step
-COPY python/aibrix/ ./
+COPY --from=builder /app/dist/*.whl ./
 
-# Install the package (but dependencies are already installed)
-RUN pip install -e .
+# Install build dependencies and clean up in one step (avoiding creating another new layer)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc python3-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir ./*.whl \
+    && rm -f ./*.whl \
+    && apt-get purge -y gcc python3-dev \
+    && apt-get autoremove -y
 
 # Set entrypoint for Runtime
 ENTRYPOINT ["aibrix_runtime"]
-
