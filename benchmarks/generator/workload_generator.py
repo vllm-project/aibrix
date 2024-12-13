@@ -272,7 +272,7 @@ if __name__ == '__main__':
         elif args.trace_type == "azure":
             generated_workload = generate_from_azure_csv(file_path=args.trace_file, prompt_file_path=args.prompt_file,
                                                          duration_ms=args.duration_ms, tokenizer=tokenizer,
-                                                         interval_ms=args.interval_ms)
+                                                         interval_ms=args.interval_ms, output_file=f"{args.output_dir}/{args.trace_type}")
 
         workload_dict[args.trace_type] = generated_workload
 
