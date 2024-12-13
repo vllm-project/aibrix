@@ -58,14 +58,14 @@ async def benchmark(endpoint, model, api_key, workload_path, output_file_path):
         base_time = time.time()
         num_requests = 0
         for requests_dict in load_struct:
-            ts = int(requests_dict["Timestamp"])
-            requests = requests_dict["Requests"]
+            ts = int(requests_dict["timestamp"])
+            requests = requests_dict["requests"]
             cur_time = time.time()
             target_time = base_time + ts / 1000.0
             logging.warning(f"Prepare to launch {len(requests)} tasks after {target_time - cur_time}")
             if target_time > cur_time:
                 await asyncio.sleep(target_time - cur_time)
-            formatted_prompts = [wrap_prompt_as_chat_message(request["Prompt"]) for request in requests]
+            formatted_prompts = [wrap_prompt_as_chat_message(request["rrompt"]) for request in requests]
             for formatted_prompt in formatted_prompts:
                 task = asyncio.create_task(
                     send_request(client, model, endpoint, formatted_prompt, output_file)

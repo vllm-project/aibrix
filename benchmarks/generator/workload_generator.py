@@ -5,7 +5,7 @@ import pandas as pd
 import argparse
 import csv
 
-from typing import Tuple, List, Any
+from typing import List, Tuple, Dict, Any
 from transformers import PreTrainedTokenizerBase
 from datetime import timedelta
 from sample_request import (load_sharegpt_requests, sample_sharegpt_requests, sample_sharegpt_requests_len_range)
@@ -121,25 +121,6 @@ def generate_synthetic(A=1, B=1,
     return workload
 
 
-def pair_requests_with_prompts_round_robin(workload: List[List[Any]],
-                                           prompts: List[Tuple[str, int, int, None]],
-                                           output_file: str = 'output/output',
-                                           to_jsonl: bool = False
-                                           ) -> List[List[Tuple[Any, str]]]:
-    paired_workload = []
-    prompt_count = len(prompts)
-    for ts, requests in workload:
-        requests_with_prompts = [
-            prompts[request % prompt_count] for request in requests
-        ]
-        paired_workload.append({"Timestamp": ts, "Requests": requests_with_prompts})
-
-    # Save to file
-    save_workload(paired_workload, output_file, use_jsonl=to_jsonl)
-
-    return paired_workload
-
-
 # generated_workload = generate_from_azure_csv(demo_requests, file_path=args.trace_file,
 # sampling_granularity_seconds=15, output_file=args.output_dir)
 def generate_from_azure_csv(file_path: str,
@@ -147,7 +128,7 @@ def generate_from_azure_csv(file_path: str,
                             duration_ms: int,
                             tokenizer: PreTrainedTokenizerBase,
                             interval_ms: int,
-                            output_file: str = 'output/output.json',
+                            output_file: str = 'output/output',
                             to_jsonl: bool = False,
                             ) -> List[List[Any]]:
     # Load the CSV file
@@ -166,7 +147,7 @@ def generate_from_azure_csv(file_path: str,
     df.set_index('TIMESTAMP', inplace=True)
     current_time = df.index.min()
     end_time = df.index.max()
-    logging.warn(f"Start generation from time {current_time} to {end_time}")
+    logging.warning(f"Start generation from time {current_time} to {end_time}")
 
     sharegpt_df = load_sharegpt_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
 
@@ -190,7 +171,7 @@ def generate_from_azure_csv(file_path: str,
         )
 
         if sampled_requests:  # Only add non-empty groups
-            grouped_requests.append({"Timestamp": ts, "Requests": sampled_requests})
+            grouped_requests.append({"timestamp": ts, "requests": sampled_requests})
         ts += interval_ms
         if ts > duration_ms:
             break
@@ -203,6 +184,26 @@ def generate_from_azure_csv(file_path: str,
     save_workload(grouped_requests, output_file, use_jsonl=to_jsonl)
 
     return grouped_requests
+
+
+def pair_requests_with_prompts_round_robin(workload: List[List[Any]],
+                                           prompts: List[Tuple[str, int, int, None]],
+                                           output_file: str = 'output/output',
+                                           to_jsonl: bool = False
+                                           ) -> List[List[Tuple[Any, str]]]:
+    paired_workload = []
+    prompt_count = len(prompts)
+    for ts, requests in workload:
+        requests_with_prompts = [
+            prompts[request % prompt_count] for request in requests
+        ]
+        paired_workload.append({"timestamp": ts, "requests": requests_with_prompts})
+
+    # Save to file
+    save_workload(paired_workload, output_file, use_jsonl = to_jsonl)
+
+    return paired_workload
+
 
 
 if __name__ == '__main__':
@@ -230,32 +231,43 @@ if __name__ == '__main__':
     workload_dict = {}
     tokenizer = get_tokenizer(pretrained_model_name_or_path=args.model, trust_remote_code=True)
     # Load prompts from a file
-    prompts = sample_sharegpt_requests(dataset_path=args.prompt_file, num_requests=args.num_prompts, tokenizer=tokenizer)
+    prompts = sample_sharegpt_requests(dataset_path=args.prompt_file, num_requests=args.num_prompts,
+                                       tokenizer=tokenizer)
 
     if args.trace_type == "synthetic":
         # Define scenarios specific to synthetic type
         scenarios = {
-            'quick_rising': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 5, 'period': 5, 'only_rise': True},
-            'slow_rising': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 5, 'period': 0.25, 'only_rise': True},
-            'slight_fluctuation': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 5, 'B': 5, 'period': 1, 'only_rise': False},
-            'severe_fluctuation': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 5, 'B': 10, 'period': 12, 'only_rise': False},
+            'quick_rising': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 5, 'period': 5,
+                             'only_rise': True},
+            'slow_rising': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 5, 'period': 0.25,
+                            'only_rise': True},
+            'slight_fluctuation': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 5, 'B': 5,
+                                   'period': 1, 'only_rise': False},
+            'severe_fluctuation': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 5, 'B': 10,
+                                   'period': 12, 'only_rise': False},
         }
         for scenario_name, params in scenarios.items():
             generated_workload = generate_synthetic(**params)
-            paired_workload = pair_requests_with_prompts_round_robin(workload=generated_workload, prompts=prompts, output_file=f"{args.output_dir}/{scenario_name}", to_jsonl=args.output_format == "jsonl")
+            paired_workload = pair_requests_with_prompts_round_robin(workload=generated_workload, prompts=prompts,
+                                                                     output_file=f"{args.output_dir}/{scenario_name}",
+                                                                     to_jsonl=args.output_format == "jsonl")
             workload_dict[scenario_name] = paired_workload
     else:
         # Process for 'internal' and 'azure'
         if args.trace_type == "internal":
-            generated_workload = generate_from_internal_csv(file_path=args.trace_file, duration_ms=args.duration_ms, summary_interval_ms=15000, interval_ms=args.interval_ms)
-        elif args.trace_type == "azure":
-            generated_workload = generate_from_azure_csv(file_path=args.trace_file, prompt_file_path=args.prompt_file, duration_ms=args.duration_ms, tokenizer=tokenizer, interval_ms=args.interval_ms)
+            generated_workload = generate_from_internal_csv(file_path=args.trace_file, duration_ms=args.duration_ms,
+                                                            summary_interval_ms=15000, interval_ms=args.interval_ms)
+            generated_workload = pair_requests_with_prompts_round_robin(workload=generated_workload, prompts=prompts,
+                                                                     output_file=f"{args.output_dir}/{args.trace_type}",
+                                                                     to_jsonl=args.output_format == "jsonl")
 
-        # Pair and process the workload
-        paired_workload = pair_requests_with_prompts_round_robin(workload=generated_workload, prompts=prompts, output_file=f"{args.output_dir}/{args.trace_type}", to_jsonl=args.output_format == "jsonl")
-        workload_dict[args.trace_type] = paired_workload
+        elif args.trace_type == "azure":
+            generated_workload = generate_from_azure_csv(file_path=args.trace_file, prompt_file_path=args.prompt_file,
+                                                         duration_ms=args.duration_ms, tokenizer=tokenizer,
+                                                         interval_ms=args.interval_ms)
+
+        workload_dict[args.trace_type] = generated_workload
 
     if workload_dict:
         # Plot the workloads
         plot_workload(workload_dict, interval_ms=args.interval_ms, output_file=f"plot/{args.trace_type}.pdf")
-
