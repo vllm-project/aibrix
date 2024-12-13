@@ -5,11 +5,15 @@ import pandas as pd
 import argparse
 import csv
 
+from pandas import Timedelta
 from typing import List, Tuple, Dict, Any
 from transformers import PreTrainedTokenizerBase
 from datetime import timedelta
 from sample_request import (load_sharegpt_requests, sample_sharegpt_requests, sample_sharegpt_requests_len_range)
 from utils import (get_tokenizer, plot_workload, make_serializable, save_workload)
+
+# Set up logging to print only warning and above level messages
+logging.basicConfig(level=logging.INFO)
 
 
 def generate_from_internal_csv(file_path: str,
@@ -146,9 +150,13 @@ def generate_from_azure_csv(file_path: str,
     # Group requests by the time range
     df.set_index('TIMESTAMP', inplace=True)
     current_time = df.index.min()
-    end_time = df.index.max()
-    logging.warning(f"Start generation from time {current_time} to {end_time}")
+    tracing_file_end_time = df.index.max()
+    end_time = current_time + Timedelta(milliseconds=duration_ms)
+    if tracing_file_end_time < end_time:
+        logging.warning(f"{tracing_file_end_time} can not cover duration {duration_ms}, cap to end time of tracing file")
+        end_time = tracing_file_end_time
 
+    logging.info(f"Start generation from time {current_time} to {end_time}")
     sharegpt_df = load_sharegpt_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
 
     ts = 0

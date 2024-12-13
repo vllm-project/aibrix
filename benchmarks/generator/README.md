@@ -23,7 +23,7 @@ The file would be stored under `output` folder based on the name of different pa
 
 ```shell
 export SUMMARY_FILE=${PATH_TO_SUMMARY_FILE}
-python workload_generator.py --prompt-file $SHAREGPT_FILE_PATH --num-prompts 100 --interval-ms 1000 --duration-ms 3600000 --trace-type internal --trace-file "$SUMMARY_FILE" --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "output" 
+python workload_generator.py --prompt-file $SHAREGPT_FILE_PATH --num-prompts 100 --interval-ms 1000 --duration-ms 3600000 --trace-type internal --trace-file "$SUMMARY_FILE" --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "output"
 ```
 
 This generator assumes trace file to be in the following format

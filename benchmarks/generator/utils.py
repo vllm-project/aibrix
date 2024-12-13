@@ -56,7 +56,7 @@ def plot_workload(workload_dict, interval_ms, output_file: str = None):
     else:
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         plt.savefig(output_file)
-        logging.warn(f'Saved workload plot to {output_file}')
+        logging.info(f'Saved workload plot to {output_file}')
 
 
 def save_workload(load_struct: List[Any],
