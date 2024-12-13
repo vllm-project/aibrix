@@ -6,10 +6,11 @@ import pandas as pd
 from typing import Tuple, Optional, List
 from transformers import PreTrainedTokenizerBase
 
+
 def load_sharegpt_requests(
-    dataset_path: str,
-    tokenizer: PreTrainedTokenizerBase,
-    ) -> pd.DataFrame:
+        dataset_path: str,
+        tokenizer: PreTrainedTokenizerBase,
+) -> pd.DataFrame:
     # Load the dataset into a DataFrame
     with open(dataset_path, encoding='utf-8') as f:
         dataset = json.load(f)
@@ -24,6 +25,7 @@ def load_sharegpt_requests(
     df["completion_len"] = df["completion"].apply(lambda x: len(tokenizer(x).input_ids))
     logging.warn(f"...Complete dataframe transformation")
     return df
+
 
 def sample_sharegpt_requests(
         dataset_path: str,
@@ -52,24 +54,24 @@ def sample_sharegpt_requests(
                 continue
             if prompt_len > 1024 or prompt_len + output_len > 2048:
                 continue
-            filtered_dataset.append({"Prompt": prompt, 
-                                     "Prompt Length": prompt_len, 
+            filtered_dataset.append({"Prompt": prompt,
+                                     "Prompt Length": prompt_len,
                                      "Output Length": output_len})
         else:
-            filtered_dataset.append({"Prompt": prompt, 
-                                     "Prompt Length": -1, 
+            filtered_dataset.append({"Prompt": prompt,
+                                     "Prompt Length": -1,
                                      "Output Length": -1})
 
     return filtered_dataset
-    
+
 
 def sample_sharegpt_requests_len_range(
-    df: pd.DataFrame,
-    num_requests: int,
-    input_lens: List[int],
-    output_lens: List[int],
-    initial_err_perc: Optional[float] = 0.5,
-    err_step: float = 0.05
+        df: pd.DataFrame,
+        num_requests: int,
+        input_lens: List[int],
+        output_lens: List[int],
+        initial_err_perc: Optional[float] = 0.5,
+        err_step: float = 0.05
 ) -> List[Tuple[str, int, int, None]]:
     filtered_results = []
 
@@ -84,17 +86,17 @@ def sample_sharegpt_requests_len_range(
             output_range = (int(output_len * err_perc), int(output_len * (1 + err_perc)))
 
             filtered = df[
-                (df["prompt_len"] >= input_range[0]) & 
+                (df["prompt_len"] >= input_range[0]) &
                 (df["prompt_len"] <= input_range[1]) &
-                (df["completion_len"] >= output_range[0]) & 
+                (df["completion_len"] >= output_range[0]) &
                 (df["completion_len"] <= output_range[1])
-            ]
+                ]
 
             if not filtered.empty:
                 # Select the first match or random sample
                 sample = filtered.iloc[0]  # Or filtered.sample(1) for random
-                filtered_results.append({"Prompt": sample["prompt"], 
-                                         "Prompt Length": sample["prompt_len"], 
+                filtered_results.append({"Prompt": sample["prompt"],
+                                         "Prompt Length": sample["prompt_len"],
                                          "Output Length": sample["completion_len"]})
                 break  # Stop relaxing for this request once a match is found
 
@@ -106,4 +108,3 @@ def sample_sharegpt_requests_len_range(
             raise Exception(f"No match found for request {i + 1} even after relaxing err_perc to 0")
 
     return filtered_results
-
