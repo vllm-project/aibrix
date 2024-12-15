@@ -4,12 +4,12 @@ metadata:
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
-  name: gateway-plugin-rolebinding
+  name: gateway-plugins-rolebinding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: gateway-plugin-role
+  name: gateway-plugins-role
 subjects:
 - kind: ServiceAccount
-  name: gateway-plugin
+  name: gateway-plugins
   namespace: system

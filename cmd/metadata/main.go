@@ -17,7 +17,7 @@ limitations under the License.
 package main
 
 import (
-	"github.com/aibrix/aibrix/pkg/users"
+	"github.com/aibrix/aibrix/pkg/metadata"
 	"github.com/aibrix/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
@@ -26,6 +26,6 @@ func main() {
 	redisClient := utils.GetRedisClient()
 
 	klog.Info("Starting listening on port 8090")
-	srv := users.NewHTTPServer(":8090", redisClient)
+	srv := metadata.NewHTTPServer(":8090", redisClient)
 	klog.Fatal(srv.ListenAndServe())
 }

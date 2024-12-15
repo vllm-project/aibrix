@@ -1,15 +1,6 @@
 resources:
 - gateway.yaml
-- redis.yaml
 - gateway-plugin.yaml
-- users.yaml
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-images:
-- name: plugins
-  newName: aibrix/plugins
-  newTag: nightly
-- name: users
-  newName: aibrix/users
-  newTag: nightly

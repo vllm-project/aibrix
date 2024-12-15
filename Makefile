@@ -4,7 +4,7 @@ GIT_COMMIT_HASH ?= $(shell git rev-parse HEAD)
 # Image URL to use all building/pushing image targets
 AIBRIX_CONTAINER_REGISTRY_NAMESPACE ?= aibrix
 DOCKERFILE_PATH ?= build/container
-IMAGES := controller-manager plugins runtime users
+IMAGES := controller-manager gateway-plugins runtime metadata-service
 
 # note: this is not being used, only for tracking some commands we have not updated yet.
 IMG ?= ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/controller-manager:${GIT_COMMIT_HASH}
@@ -137,42 +137,42 @@ define push_image
 endef
 
 .PHONY: docker-build-all
-docker-build-all: docker-build-controller-manager docker-build-plugins docker-build-runtime docker-build-users ## Build all docker images
+docker-build-all: docker-build-controller-manager docker-build-gateway-plugins docker-build-runtime docker-build-metadata-service ## Build all docker images
 
 .PHONY: docker-build-controller-manager
 docker-build-controller-manager: ## Build docker image with the manager.
 	$(call build_and_tag,controller-manager,Dockerfile)
 
-.PHONY: docker-build-plugins
-docker-build-plugins: ## Build docker image with the plugins.
-	$(call build_and_tag,plugins,Dockerfile.gateway)
+.PHONY: docker-build-gateway-plugins
+docker-build-gateway-plugins: ## Build docker image with the plugins.
+	$(call build_and_tag,gateway-plugins,Dockerfile.gateway)
 
 .PHONY: docker-build-runtime
 docker-build-runtime: ## Build docker image with the AI Runtime.
 	$(call build_and_tag,runtime,Dockerfile.runtime)
 
-.PHONY: docker-build-users
-docker-build-users: ## Build docker image with the users.
-	$(call build_and_tag,users,Dockerfile.users)
+.PHONY: docker-build-metadata-service
+docker-build-metadata-service: ## Build docker image with the metadata-service.
+	$(call build_and_tag,metadata-service,Dockerfile.metadata)
 
 .PHONY: docker-push-all
-docker-push-all: docker-push-controller-manager docker-push-plugins docker-push-runtime docker-push-users ## Push all docker images
+docker-push-all: docker-push-controller-manager docker-push-gateway-plugins docker-push-runtime docker-push-metadata-service ## Push all docker images
 
 .PHONY: docker-push-controller-manager
 docker-push-controller-manager: ## Push docker image with the manager.
 	$(call push_image,controller-manager)
 
-.PHONY: docker-push-plugins
-docker-push-plugins: ## Push docker image with the plugins.
-	$(call push_image,plugins)
+.PHONY: docker-push-gateway-plugins
+docker-push-gateway-plugins: ## Push docker image with the gateway plugins.
+	$(call push_image,gateway-plugins)
 
 .PHONY: docker-push-runtime
 docker-push-runtime: ## Push docker image with the AI Runtime.
 	$(call push_image,runtime)
 
-.PHONY: docker-push-users
-docker-push-users: ## Push docker image with the users.
-	$(call push_image,users)
+.PHONY: docker-push-metadata-service
+docker-push-metadata-service: ## Push docker image with the metadata-service.
+	$(call push_image,metadata-service)
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
