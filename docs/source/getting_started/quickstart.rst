@@ -159,7 +159,6 @@ Save yaml as `service.yaml` and run `kubectl apply -f service.yaml`.
    2. The `--served-model-name` argument value in the `Deployment` command is also consistent with the `Service` name and `model.aibrix.ai/name` label.
 
 
-
 Invoke the model endpoint using gateway api
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

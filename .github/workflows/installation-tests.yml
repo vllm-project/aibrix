@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        image: [controller-manager, plugins, runtime, users]
+        image: [controller-manager, gateway-plugins, runtime, metadata-service]
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -84,7 +84,7 @@ jobs:
 
       - name: Load image into Kind
         run: |
-          for image in controller-manager plugins runtime users; do
+          for image in controller-manager gateway-plugins runtime metadata-service; do
             docker load < ${image}-image/${image}.tar
           
             # Retag the image
@@ -99,9 +99,10 @@ jobs:
       - name: Deploy controller with the built image
         run: |
           kubectl create -k config/dependency
-          cd config/manager && kustomize edit set image controller=aibrix/controller-manager:${{ github.sha }}
-          cd ${{ github.workspace }}
-          cd config/gateway && kustomize edit set image plugins=aibrix/plugins:${{ github.sha }} && kustomize edit set image users=aibrix/users:${{ github.sha }}
+          cd config/default
+          kustomize edit set image controller=aibrix/controller-manager:${{ github.sha }}
+          kustomize edit set image gateway-plugins=aibrix/gateway-plugins:${{ github.sha }}
+          kustomize edit set image metadata-service=aibrix/metadata-service:${{ github.sha }}
           cd ${{ github.workspace }}
           kubectl create -k config/default
 

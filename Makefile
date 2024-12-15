@@ -144,7 +144,7 @@ docker-build-controller-manager: ## Build docker image with the manager.
 	$(call build_and_tag,controller-manager,Dockerfile)
 
 .PHONY: docker-build-gateway-plugins
-docker-build-gateway-plugins: ## Build docker image with the plugins.
+docker-build-gateway-plugins: ## Build docker image with the gateway plugins.
 	$(call build_and_tag,gateway-plugins,Dockerfile.gateway)
 
 .PHONY: docker-build-runtime
