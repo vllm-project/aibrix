@@ -98,7 +98,7 @@ func NewApaAutoscaler(readyPodsCount int, pa *autoscalingv1alpha1.PodAutoscaler)
 		return nil, err
 	}
 
-	metricsFetcher := &metrics.RestMetricsFetcher{}
+	metricsFetcher := metrics.NewRestMetricsFetcher()
 	metricsClient := metrics.NewAPAMetricsClient(metricsFetcher, spec.Window)
 	scalingAlgorithm := algorithm.ApaScalingAlgorithm{}
 

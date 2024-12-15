@@ -56,7 +56,7 @@ func TestKpaScale(t *testing.T) {
 		PanicWindow:         10 * time.Second,
 		ScaleDownDelay:      30 * time.Minute,
 	}
-	metricsFetcher := &metrics.RestMetricsFetcher{}
+	metricsFetcher := metrics.NewRestMetricsFetcher()
 	kpaMetricsClient := metrics.NewKPAMetricsClient(metricsFetcher, spec.StableWindow, spec.PanicWindow)
 	now := time.Now()
 	_ = kpaMetricsClient.UpdateMetricIntoWindow(now.Add(-60*time.Second), 10.0)

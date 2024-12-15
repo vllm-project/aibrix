@@ -37,7 +37,7 @@ func TestAPAScale(t *testing.T) {
 
 	readyPodCount := 5
 	spec := NewApaScalingContext()
-	metricsFetcher := &metrics.RestMetricsFetcher{}
+	metricsFetcher := metrics.NewRestMetricsFetcher()
 	apaMetricsClient := metrics.NewAPAMetricsClient(metricsFetcher, spec.Window)
 	now := time.Now()
 

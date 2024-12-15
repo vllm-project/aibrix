@@ -220,7 +220,7 @@ func NewKpaAutoscaler(readyPodsCount int, pa *autoscalingv1alpha1.PodAutoscaler,
 	}
 
 	// TODO missing MetricClient
-	metricsFetcher := &metrics.RestMetricsFetcher{}
+	metricsFetcher := metrics.NewRestMetricsFetcher()
 	metricsClient := metrics.NewKPAMetricsClient(metricsFetcher, spec.StableWindow, spec.PanicWindow)
 
 	scalingAlgorithm := algorithm.KpaScalingAlgorithm{}

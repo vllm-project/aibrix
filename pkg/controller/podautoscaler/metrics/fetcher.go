@@ -18,6 +18,7 @@ package metrics
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -62,9 +63,21 @@ func (f *abstractMetricsFetcher) FetchMetric(ctx context.Context, pod v1.Pod, me
 type RestMetricsFetcher struct {
 	// For unit test purpose only
 	test_url_setter func(string)
+	// Custom HTTP client
+	client *http.Client
 }
 
 var _ MetricFetcher = (*RestMetricsFetcher)(nil)
+
+func NewRestMetricsFetcher() *RestMetricsFetcher {
+	return &RestMetricsFetcher{
+		client: &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // Disable SSL verification
+			},
+		},
+	}
+}
 
 func (f *RestMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
 	// Use /metrics to fetch pod's endpoint
@@ -86,7 +99,7 @@ func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscali
 	}
 
 	// Send the request using the default client
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := f.client.Do(req)
 	if err != nil {
 		return 0.0, fmt.Errorf("failed to fetch metrics from source %s: %v", url, err)
 	}

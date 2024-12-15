@@ -268,7 +268,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 				fmt.Sprintf("error on getting pods for model %s", model)), targetPodIP, stream
 		}
 
+		klog.InfoS("debug", "pods", pods)
 		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods, model)
+		klog.InfoS("debug", "targetPodIP", targetPodIP)
 		if err != nil {
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
