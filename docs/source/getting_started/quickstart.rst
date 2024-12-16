@@ -174,7 +174,7 @@ Invoke the model endpoint using gateway api
 
     curl -v http://localhost:8888/v1/completions \
         -H "Content-Type: application/json" \
-        -H "model: meta-llama/Llama-2-7b-hf" \
+        -H "model: qwen25-7b-Instruct" \
         -d '{
             "model": "qwen25-7b-Instruct",
             "prompt": "San Francisco is a",
