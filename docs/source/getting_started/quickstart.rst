@@ -7,13 +7,27 @@ Quickstart
 Install AIBrix
 ^^^^^^^^^^^^^^
 
+Get your kubernetes cluster ready, run following commands to install aibrix components in your cluster.
+
 .. note::
-    If following way doesn't work for you, please check installation guidance for more installation options.
+    If you just want to install specific components or specific version, please check installation guidance for more installation options.
 
 .. code-block:: bash
 
     kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.1/aibrix-dependency-v0.2.0-rc.1.yaml
     kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.1/aibrix-core-v0.2.0-rc.1.yaml
+
+Wait for few minutes and run `kubectl get pods -n aibrix-system` to check pod status util they are ready.
+
+.. code-block:: bash
+
+    NAME                                         READY   STATUS    RESTARTS   AGE
+    aibrix-controller-manager-56576666d6-gsl8s   1/1     Running   0          5h24m
+    aibrix-gateway-plugins-c6cb7545-r4xwj        1/1     Running   0          5h24m
+    aibrix-gpu-optimizer-89b9d9895-t8wnq         1/1     Running   0          5h24m
+    aibrix-kuberay-operator-6dcf94b49f-l4522     1/1     Running   0          5h24m
+    aibrix-metadata-service-6b4d44d5bd-h5g2r     1/1     Running   0          5h24m
+    aibrix-redis-master-84769768cb-fsq45         1/1     Running   0          5h24m
 
 
 Deploy base model
@@ -28,16 +42,16 @@ Save yaml as `deployment.yaml` and run `kubectl apply -f deployment.yaml`.
     metadata:
       labels:
         # Note: The label value `model.aibrix.ai/name` here must match with the service name.
-        model.aibrix.ai/name: llama-2-7b-hf
+        model.aibrix.ai/name: qwen25-7b-Instruct
         model.aibrix.ai/port: "8000"
         adapter.model.aibrix.ai/enabled: true
-      name: llama-2-7b-hf
+      name: qwen25-7b-Instruct
       namespace: default
     spec:
       replicas: 1
       selector:
         matchLabels:
-          model.aibrix.ai/name: llama-2-7b-hf
+          model.aibrix.ai/name: qwen25-7b-Instruct
       strategy:
         rollingUpdate:
           maxSurge: 25%
@@ -46,7 +60,7 @@ Save yaml as `deployment.yaml` and run `kubectl apply -f deployment.yaml`.
       template:
         metadata:
           labels:
-            model.aibrix.ai/name: llama-2-7b-hf
+            model.aibrix.ai/name: qwen25-7b-Instruct
         spec:
           containers:
             - command:
@@ -58,10 +72,10 @@ Save yaml as `deployment.yaml` and run `kubectl apply -f deployment.yaml`.
                 - --port
                 - "8000"
                 - --model
-                - meta-llama/Llama-2-7b-hf
+                - Qwen/Qwen2.5-7B-Instruct
                 - --served-model-name
                 # Note: The `--served-model-name` argument value must also match the Service name and the Deployment label `model.aibrix.ai/name`
-                - llama-2-7b-hf
+                - qwen25-7b-Instruct
                 - --trust-remote-code
                 - --enable-lora
               env:
@@ -116,12 +130,12 @@ Save yaml as `service.yaml` and run `kubectl apply -f service.yaml`.
     metadata:
       labels:
         # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
-        model.aibrix.ai/name: llama-2-7b-hf
+        model.aibrix.ai/name: qwen25-7b-Instruct
         prometheus-discovery: "true"
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8080"
-      name: llama-2-7b-hf
+      name: qwen25-7b-Instruct
       namespace: default
     spec:
       ports:
@@ -134,7 +148,7 @@ Save yaml as `service.yaml` and run `kubectl apply -f service.yaml`.
           protocol: TCP
           targetPort: 8080
       selector:
-        model.aibrix.ai/name: llama-2-7b-hf
+        model.aibrix.ai/name: qwen25-7b-Instruct
       type: ClusterIP
 
 .. note::
@@ -143,20 +157,6 @@ Save yaml as `service.yaml` and run `kubectl apply -f service.yaml`.
 
    1. The `Service` name matches the `model.aibrix.ai/name` label value in the `Deployment`.
    2. The `--served-model-name` argument value in the `Deployment` command is also consistent with the `Service` name and `model.aibrix.ai/name` label.
-
-
-Register a user to authenticate the gateway
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-.. code-block:: bash
-
-    kubectl -n aibrix-system port-forward svc/aibrix-gateway-users 8090:8090
-
-.. code-block:: bash
-
-    curl http://localhost:8090/CreateUser \
-      -H "Content-Type: application/json" \
-      -d '{"name": "test-user","rpm": 100,"tpm": 10000}'
 
 
 
@@ -174,10 +174,9 @@ Invoke the model endpoint using gateway api
 
     curl -v http://localhost:8888/v1/completions \
         -H "Content-Type: application/json" \
-        -H "user: test-user" \
         -H "model: meta-llama/Llama-2-7b-hf" \
         -d '{
-            "model": "meta-llama/llama-2-7b-hf",
+            "model": "qwen25-7b-Instruct",
             "prompt": "San Francisco is a",
             "max_tokens": 128,
             "temperature": 0
