@@ -53,7 +53,7 @@ To set up rate limiting, add the user header in the request, like this:
 Routing Strategies
 ------------------
 
-Gateway supports two routing strategies right now.
+Gateway supports three routing strategies right now.
 
 * random: routes request to a random pod.
 * least-request: routes request to a pod with least ongoing request.
