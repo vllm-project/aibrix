@@ -154,7 +154,11 @@ func TestApaUpdateContext(t *testing.T) {
 func TestApaScale2(t *testing.T) {
 	klog.InitFlags(nil)
 	_ = flag.Set("v", "4")
-	defer flag.Set("v", "2")
+	defer func() {
+		if err := flag.Set("v", "2"); err != nil {
+			t.Errorf("Failed to reset flag: %v", err)
+		}
+	}()
 
 	pa := &autoscalingv1alpha1.PodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
