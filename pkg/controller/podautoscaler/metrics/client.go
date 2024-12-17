@@ -208,6 +208,8 @@ func (c *APAMetricsClient) GetMetricValue(
 	if err != nil {
 		return -1, err
 	}
+	klog.InfoS("Get APA Window", "metricKey", metricKey, "value", metricValue)
+	klog.V(4).InfoS("APA Window Details", "metricKey", metricKey, "value", metricValue, "window", c.window.String())
 
 	return metricValue, nil
 }

@@ -188,7 +188,7 @@ func checkInPanic(t *testing.T, expectIn bool, autoScaler *KpaAutoscaler) {
 func TestKpaScale2(t *testing.T) {
 	klog.InitFlags(nil)
 	_ = flag.Set("v", "4")
-	_ = flag.Set("v", "2")
+	defer flag.Set("v", "2")
 
 	PANIC_WINDOW := 10 * time.Second
 	STABLE_WINDOW := 30 * time.Second
