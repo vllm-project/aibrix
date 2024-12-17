@@ -2,35 +2,21 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-- ../../../default
-- gateway/envoyproxy.yaml
+- ../../vke/default
 
 patches:
-  - path: gateway/gateway_patch.yaml
+- path: ipv4_patch.yaml
+  target:
+    kind: EnvoyProxy
+    name: aibrix-custom-proxy-config
 
 images:
-- name: quay.io/kuberay/operator
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/kuberay-operator
-  newTag: v1.2.1-patch
-- name: envoyproxy/envoy
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy
-  newTag: distroless-v1.31.0
-- name: busybox
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/busybox
-  newTag: stable
-- name: redis
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/redis
-  newTag: latest
-- name: aibrix/plugins
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/plugins
+- name: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/plugins
   newTag: v0.2.0-test
-- name: aibrix/users
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/users
+- name: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/users
   newTag: v0.2.0-test
-- name: aibrix/controller-manager
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
+- name: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
   newTag: v0.2.0-test
-- name: aibrix/runtime
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
-  # not release yet.
+- name: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
   newTag: v0.2.0-test
+

@@ -245,6 +245,14 @@ deploy-vke: manifests kustomize ## Deploy controller to the K8s cluster specifie
 undeploy-vke: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/overlays/vke/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
+.PHONY: deploy-vke-ipv4
+deploy-vke-ipv4: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	$(KUSTOMIZE) build config/overlays/vke-ipv4/default | $(KUBECTL) create -f -
+
+.PHONY: undeploy-vke-ipv4
+undeploy-vke-ipv4: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
+	$(KUSTOMIZE) build config/overlays/vke-ipv4/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+
 ##@ Dependencies
 
 ## Location to install dependencies to

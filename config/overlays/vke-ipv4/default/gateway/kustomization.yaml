@@ -1,3 +1,0 @@
-resources:
-  - ../../../../gateway
-  - envoyproxy.yaml
