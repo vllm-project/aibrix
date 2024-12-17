@@ -17,12 +17,9 @@ limitations under the License.
 package scaler
 
 import (
-	"flag"
 	"fmt"
 	"testing"
 	"time"
-
-	"k8s.io/klog/v2"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/algorithm"
 
@@ -152,13 +149,6 @@ func TestApaUpdateContext(t *testing.T) {
 
 // TestApaScale2 simulate from creating APA scaler same as what `PodAutoscalerReconciler.updateMetricsForScale` do.
 func TestApaScale2(t *testing.T) {
-	klog.InitFlags(nil)
-	_ = flag.Set("v", "4")
-	defer func() {
-		if err := flag.Set("v", "2"); err != nil {
-			t.Errorf("Failed to reset flag: %v", err)
-		}
-	}()
 
 	pa := &autoscalingv1alpha1.PodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
