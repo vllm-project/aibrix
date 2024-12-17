@@ -23,14 +23,14 @@ images:
   newTag: latest
 - name: aibrix/plugins
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/plugins
-  newTag: v0.1.1
+  newTag: v0.2.0-test
 - name: aibrix/users
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/users
-  newTag: v0.1.1
+  newTag: v0.2.0-test
 - name: aibrix/controller-manager
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
-  newTag: v0.1.1
-- name: aibrix/gpu-optimizer
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gpu-optimizer
+  newTag: v0.2.0-test
+- name: aibrix/runtime
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
   # not release yet.
-  newTag: nightly
+  newTag: v0.2.0-test

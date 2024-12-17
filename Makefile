@@ -228,7 +228,7 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 
 .PHONY: install-vke
 install-vke: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-#	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply -f -
+	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply -f -
     ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization	
 	$(KUBECTL) create -k config/overlays/vke/dependency
 	

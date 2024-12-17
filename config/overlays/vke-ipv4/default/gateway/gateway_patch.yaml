@@ -1,0 +1,12 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg
+  namespace: aibrix-system
+spec:
+  gatewayClassName: aibrix-eg
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: aibrix-custom-proxy-config
