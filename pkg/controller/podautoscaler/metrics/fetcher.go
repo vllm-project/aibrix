@@ -81,8 +81,7 @@ func NewRestMetricsFetcher() *RestMetricsFetcher {
 
 func (f *RestMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
 	// Use /metrics to fetch pod's endpoint
-	return f.FetchMetric(ctx, source.ProtocolType, fmt.Sprintf("%s:%s", "127.0.0.1", source.Port), source.Path, source.TargetMetric)
-	//return f.FetchMetric(ctx, source.ProtocolType, fmt.Sprintf("%s:%s", pod.Status.PodIP, source.Port), source.Path, source.TargetMetric)
+	return f.FetchMetric(ctx, source.ProtocolType, fmt.Sprintf("%s:%s", pod.Status.PodIP, source.Port), source.Path, source.TargetMetric)
 }
 
 func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscalingv1alpha1.ProtocolType, endpoint, path, metricName string) (float64, error) {
