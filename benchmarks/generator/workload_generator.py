@@ -10,7 +10,7 @@ from typing import List, Tuple, Dict, Any
 from transformers import PreTrainedTokenizerBase
 from datetime import timedelta
 from sample_request import (load_sharegpt_requests,  sample_sharegpt_requests_len_range)
-from utils import (get_tokenizer, plot_workload, make_serializable, save_workload)
+from utils import (get_tokenizer, plot_workload, make_serializable, save_workload, get_sample_interval_ms)
 
 # Set up logging to print only warning and above level messages
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +19,6 @@ logging.basicConfig(level=logging.INFO)
 def generate_from_internal_csv(file_path: str,
                                prompt_file_path: str,
                                duration_ms: int,
-                               summary_interval_ms: int,
                                tokenizer: PreTrainedTokenizerBase,
                                interval_ms: int = 1000,
                                output_file: str = 'output/output',
@@ -30,6 +29,7 @@ def generate_from_internal_csv(file_path: str,
     traffic = []
     input_lengths = []
     output_lengths = []
+    sample_interval_ms = get_sample_interval_ms(file_path)
     with open(file_path, 'r') as file:
         reader = csv.DictReader(file)
         for row in reader:
@@ -55,51 +55,30 @@ def generate_from_internal_csv(file_path: str,
                         output_lengths.append(round(float(length)))
         
     workload = []
-    # base = 0
     ts = 0
-    
-    print(f"input_lengths size {len(input_lengths)} output_lengths size {len(output_lengths)}")
     sharegpt_df = load_sharegpt_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
     for i, interval_requests in enumerate(traffic):
-        mean_rate = round(interval_requests / (summary_interval_ms / interval_ms))
+        mean_rate = round(interval_requests * (interval_ms / 1000))
         input_length = input_lengths[i] if len(input_lengths)>0 else None
         output_length = output_lengths[i] if len(output_lengths)>0 else None
-        for ts_delta in list(range(0, summary_interval_ms, interval_ms)):
-            #concurrent_reqs = [(req_id, input_length, output_length) for req_id in range(base, base + mean_rate)]
+        for ts_delta in list(range(0, sample_interval_ms, interval_ms)):
             concurrent_sampled_reqs = sample_sharegpt_requests_len_range(
                 df=sharegpt_df,
                 num_requests=mean_rate,
-                input_lens=[input_length] * mean_rate, #[input_length for _ in range(base, base + mean_rate)],
-                output_lens=[output_length] * mean_rate, #[output_length for _ in range(base, base + mean_rate)],
+                input_lens=[input_length] * mean_rate, 
+                output_lens=[output_length] * mean_rate, 
                 initial_err_perc=0.5,
                 err_step=0.05
             )
             if concurrent_sampled_reqs:  # Only add non-empty groups
                 workload.append({"timestamp": ts + ts_delta, "requests": concurrent_sampled_reqs})  
             else:
-                print(f"sampled return {concurrent_sampled_reqs}")
-            #workload.append((ts + ts_delta, concurrent_reqs))
-            #base += mean_rate
-        ts += summary_interval_ms
+                logging.error(f"sampled return {concurrent_sampled_reqs}")
+        ts += sample_interval_ms
         if ts > duration_ms:
             break
     
-    # grouped_requests = []
     
-    # for ts, reqs in workload:
-    #     sampled_requests = sample_sharegpt_requests_len_range(
-    #         df=sharegpt_df,
-    #         num_requests=len(reqs),
-    #         input_lens=[req[1] for req in reqs],
-    #         output_lens=[req[2] for req in reqs],
-    #         initial_err_perc=0.5,
-    #         err_step=0.05
-    #     )
-    #     grouped_requests.append({"timestamp": ts, "requests": sampled_requests})    
-    
-    print(f"head {workload[0]}")
-    typename = type(workload[0]["requests"])
-    print(f"value type {typename}")
     workload = make_serializable(workload)
     save_workload(workload, output_file, use_jsonl=to_jsonl)
     return workload
@@ -345,7 +324,6 @@ if __name__ == '__main__':
             generated_workload = generate_from_internal_csv(file_path=args.traffic_file, 
                                                             prompt_file_path=args.prompt_file, 
                                                             duration_ms=args.duration_ms, 
-                                                            summary_interval_ms=15000, 
                                                             tokenizer=tokenizer,
                                                             interval_ms=args.interval_ms,
                                                             output_file=f"{args.output_dir}/{args.trace_type}",
@@ -368,4 +346,4 @@ if __name__ == '__main__':
 
     if workload_dict:
         # Plot the workloads
-        plot_workload(workload_dict, interval_ms=args.interval_ms, output_file=f"plot/{args.trace_type}.pdf")
+        plot_workload(workload_dict, interval_ms=args.interval_ms, output_file=f"{args.output_dir}/{args.trace_type}")

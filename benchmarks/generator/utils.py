@@ -1,6 +1,7 @@
 import logging
 import json
 import os
+import csv
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -8,6 +9,31 @@ import matplotlib.pyplot as plt
 from typing import List, Union, Any, Optional
 from transformers import (AutoTokenizer, PreTrainedTokenizer,
                           PreTrainedTokenizerFast)
+from datetime import datetime
+
+def get_sample_interval_ms(file_path):
+    # Initialize variables
+    timestamps = []
+
+    # Read the file and extract the first two timestamps
+    with open(file_path, 'r') as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            if 'Time' in row and row['Time']:
+                # Parse the timestamp
+                timestamps.append(datetime.strptime(row['Time'], "%Y-%m-%d %H:%M:%S"))
+            # Stop after reading the first two timestamps
+            if len(timestamps) == 2:
+                break
+
+    # Calculate the interval in milliseconds
+    interval = None
+    if len(timestamps) == 2:
+        interval = int((timestamps[1] - timestamps[0]).total_seconds() * 1000)
+        logging.info(f"Sampling interval: {interval} milliseconds")
+    else:
+        logging.error("Insufficient data to calculate the sampling interval.")
+    return interval
 
 
 def make_serializable(data):
@@ -43,7 +69,7 @@ def plot_workload(workload_dict, interval_ms, output_file: str = None):
     """
     fig, ax = plt.subplots()
     for workload_name, workload in workload_dict.items():
-        concurrency_values = [len(item) for (_, item) in workload]
+        concurrency_values = [len(item["requests"]) for item in workload]
         ax.plot(np.arange(len(concurrency_values)) * interval_ms, concurrency_values, label=workload_name)
 
     ax.set_ylim(0, )
@@ -55,8 +81,28 @@ def plot_workload(workload_dict, interval_ms, output_file: str = None):
         plt.show()
     else:
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        plt.savefig(output_file)
-        logging.info(f'Saved workload plot to {output_file}')
+        plt.savefig(f"{output_file}-traffic.pdf")
+        logging.info(f'Saved traffic plot to {output_file}-traffic.pdf')
+        
+        
+    fig, ax = plt.subplots()
+    for workload_name, workload in workload_dict.items():
+        input_lengths = [item["requests"][0]['prompt_length'] for item in workload]
+        output_lengths = [item["requests"][0]['output_length'] for item in workload]
+        ax.plot(np.arange(len(concurrency_values)) * interval_ms, input_lengths, label=f"{workload_name} prompt_length")
+        ax.plot(np.arange(len(concurrency_values)) * interval_ms, output_lengths, label=f"{workload_name} output_length")
+
+    ax.set_ylim(0, )
+    plt.xlabel('Time (ms)')
+    plt.ylabel('Lengths')
+    plt.title('Request Sizes')
+    plt.legend()
+    if output_file is None:
+        plt.show()
+    else:
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        plt.savefig(f"{output_file}-requests.pdf")
+        logging.info(f'Saved traffic plot to {output_file}-requests.pdf')
 
 
 def save_workload(load_struct: List[Any],

@@ -81,14 +81,14 @@ def sample_sharegpt_requests_len_range(
         input_len = input_lens[i]
         output_len = output_lens[i]
         err_perc = initial_err_perc
-        while err_perc >= 0:
+
+        while err_perc < 1:
             input_range = range(0, sys.maxsize)
             output_range = range(0, sys.maxsize)
             if input_len is not None:
-                input_range = (int(input_len * err_perc), int(input_len * (1 + err_perc)))
+                input_range = (int(input_len * (1 - err_perc)), int(input_len * (1 + err_perc)))
             if output_len is not None:
-                output_range = (int(output_len * err_perc), int(output_len * (1 + err_perc)))
-
+                output_range = (int(output_len * (1 - err_perc)), int(output_len * (1 + err_perc))) 
             filtered = df[
                 (df["prompt_len"] >= input_range[0]) &
                 (df["prompt_len"] <= input_range[1]) &
@@ -105,10 +105,10 @@ def sample_sharegpt_requests_len_range(
                 break  # Stop relaxing for this request once a match is found
 
             # Reduce err_perc for next iteration
-            logging.warn(f"Relax err_perc {err_perc} by {err_step}")
-            err_perc -= err_step
+            logging.debug(f"Relax err_perc {err_perc} by {err_step} new err_perc {err_perc + err_step} input_range {input_range} output_range {output_range}")
+            err_perc += err_step
 
-        if err_perc < 0:
+        if err_perc >= 1:
             raise Exception(f"No match found for request {i + 1} even after relaxing err_perc to 0")
 
     return filtered_results
