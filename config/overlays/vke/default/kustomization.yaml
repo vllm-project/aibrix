@@ -30,7 +30,7 @@ images:
 - name: aibrix/controller-manager
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
   newTag: v0.1.1
-- name: aibrix/gpu-optimizer
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gpu-optimizer
+- name: aibrix/runtime
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
   # not release yet.
   newTag: nightly
