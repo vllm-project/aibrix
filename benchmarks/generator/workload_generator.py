@@ -9,7 +9,7 @@ from pandas import Timedelta
 from typing import List, Tuple, Dict, Any
 from transformers import PreTrainedTokenizerBase
 from datetime import timedelta
-from sample_request import (load_sharegpt_requests, sample_sharegpt_requests, sample_sharegpt_requests_len_range)
+from sample_request import (load_sharegpt_requests,  sample_sharegpt_requests_len_range)
 from utils import (get_tokenizer, plot_workload, make_serializable, save_workload)
 
 # Set up logging to print only warning and above level messages
@@ -17,33 +17,96 @@ logging.basicConfig(level=logging.INFO)
 
 
 def generate_from_internal_csv(file_path: str,
+                               prompt_file_path: str,
                                duration_ms: int,
                                summary_interval_ms: int,
+                               tokenizer: PreTrainedTokenizerBase,
                                interval_ms: int = 1000,
+                               output_file: str = 'output/output',
+                               input_trace: str = None,
+                               output_trace: str = None,
+                               to_jsonl: bool = False,
                                ) -> List[List[Any]]:
-    total_requests_from_summary = []
+    traffic = []
+    input_lengths = []
+    output_lengths = []
     with open(file_path, 'r') as file:
         reader = csv.DictReader(file)
         for row in reader:
             if 'Total' in row:
                 total_value = row['Total']
                 if total_value:
-                    total_requests_from_summary.append(float(total_value))
-    workloads = []
-    base = 0
+                    traffic.append(float(total_value))
+    if input_trace is not None:
+        with open(input_trace, 'r') as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                if 'P50' in row:
+                    length = row['P50']
+                    if length:
+                        input_lengths.append(round(float(length)))
+    if output_trace is not None:
+        with open(output_trace, 'r') as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                if 'P50' in row:
+                    length = row['P50']
+                    if length:
+                        output_lengths.append(round(float(length)))
+        
+    workload = []
+    # base = 0
     ts = 0
-    for interval_requests in total_requests_from_summary:
+    
+    print(f"input_lengths size {len(input_lengths)} output_lengths size {len(output_lengths)}")
+    sharegpt_df = load_sharegpt_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
+    for i, interval_requests in enumerate(traffic):
         mean_rate = round(interval_requests / (summary_interval_ms / interval_ms))
+        input_length = input_lengths[i] if len(input_lengths)>0 else None
+        output_length = output_lengths[i] if len(output_lengths)>0 else None
         for ts_delta in list(range(0, summary_interval_ms, interval_ms)):
-            workloads.append((ts + ts_delta, range(base, base + mean_rate)))
-            base += mean_rate
+            #concurrent_reqs = [(req_id, input_length, output_length) for req_id in range(base, base + mean_rate)]
+            concurrent_sampled_reqs = sample_sharegpt_requests_len_range(
+                df=sharegpt_df,
+                num_requests=mean_rate,
+                input_lens=[input_length] * mean_rate, #[input_length for _ in range(base, base + mean_rate)],
+                output_lens=[output_length] * mean_rate, #[output_length for _ in range(base, base + mean_rate)],
+                initial_err_perc=0.5,
+                err_step=0.05
+            )
+            if concurrent_sampled_reqs:  # Only add non-empty groups
+                workload.append({"timestamp": ts + ts_delta, "requests": concurrent_sampled_reqs})  
+            else:
+                print(f"sampled return {concurrent_sampled_reqs}")
+            #workload.append((ts + ts_delta, concurrent_reqs))
+            #base += mean_rate
         ts += summary_interval_ms
         if ts > duration_ms:
             break
-    return workloads
+    
+    # grouped_requests = []
+    
+    # for ts, reqs in workload:
+    #     sampled_requests = sample_sharegpt_requests_len_range(
+    #         df=sharegpt_df,
+    #         num_requests=len(reqs),
+    #         input_lens=[req[1] for req in reqs],
+    #         output_lens=[req[2] for req in reqs],
+    #         initial_err_perc=0.5,
+    #         err_step=0.05
+    #     )
+    #     grouped_requests.append({"timestamp": ts, "requests": sampled_requests})    
+    
+    print(f"head {workload[0]}")
+    typename = type(workload[0]["requests"])
+    print(f"value type {typename}")
+    workload = make_serializable(workload)
+    save_workload(workload, output_file, use_jsonl=to_jsonl)
+    return workload
 
 
-def generate_synthetic(A=1, B=1,
+def generate_synthetic(prompt_file_path: str,
+                       A=1, B=1,
                        sigma=0.1,
                        only_rise: bool = False,
                        omega: float = None,
@@ -51,6 +114,8 @@ def generate_synthetic(A=1, B=1,
                        length: int = None,
                        duration_ms: int = None,
                        interval_ms: int = None,
+                       output_file: str = 'output/output',
+                       to_jsonl: bool = False,
                        ) -> List[List[Any]]:
     """
     Generates a workload based on a given list of input requests and a concurrency function.
@@ -104,11 +169,12 @@ def generate_synthetic(A=1, B=1,
         omega = 2 * math.pi / (length / period)
     workload = []
     t = 0
-
     previous_concurrency = -1
-    start_index, end_index = 0, 0
+    end_index = 0
     ts = 0
     base_req_id = 0
+    
+    sharegpt_df = load_sharegpt_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
     while t < length:
         current_concurrency = math_function(t)
         if only_rise:
@@ -116,17 +182,25 @@ def generate_synthetic(A=1, B=1,
             previous_concurrency = current_concurrency
 
         # start from last end index
-        start_index = end_index
         end_index += current_concurrency
-        workload.append((ts, [base_req_id + i for i in range(start_index, end_index)]))
+        concurrent_reqs = sample_sharegpt_requests_len_range(
+            df=sharegpt_df,
+            num_requests=current_concurrency,
+            input_lens=[None] * current_concurrency, 
+            output_lens=[None] * current_concurrency, 
+            initial_err_perc=0.5,
+            err_step=0.05
+        )
+        workload.append({"timestamp": ts, "requests": concurrent_reqs})  
         base_req_id += current_concurrency
         ts += interval_ms
         t += 1
+   
+    workload = make_serializable(workload)
+    save_workload(workload, output_file, use_jsonl=to_jsonl)
     return workload
 
 
-# generated_workload = generate_from_azure_csv(demo_requests, file_path=args.trace_file,
-# sampling_granularity_seconds=15, output_file=args.output_dir)
 def generate_from_azure_csv(file_path: str,
                             prompt_file_path: str,
                             duration_ms: int,
@@ -186,7 +260,6 @@ def generate_from_azure_csv(file_path: str,
         # Move to the next time range
         current_time += time_range
 
-    # Print or process grouped_requests as needed
     # Save to file
     grouped_requests = make_serializable(grouped_requests)
     save_workload(grouped_requests, output_file, use_jsonl=to_jsonl)
@@ -220,9 +293,15 @@ if __name__ == '__main__':
     parser.add_argument('--num-prompts', type=int, default=100, help='Number of prompts to sample.')
     parser.add_argument('--trace-type', type=str, required=True, choices=['synthetic', 'internal', 'azure'],
                         help='Type of trace consumed. Choose among: synthetic, internal, azure')
-    parser.add_argument('--trace-file', type=str, required=False, default=None,
-                        help='File containing original trace file csv, which workload generator depends upon to '
-                             'convert to workload format. This is only needed for for internal and azure trace type. ')
+    parser.add_argument('--traffic-file', type=str, required=False, default=None,
+                        help='Traffic file containing times of arrival, which workload generator depends upon to '
+                             'convert to traffic used in workload. This is only needed for for internal and azure trace type. ')
+    parser.add_argument('--prompt-len-file', type=str, required=False, default=None,
+                        help='File containing request input lengths varied by time, which workload generator depends upon to '
+                             'select input prompt. This is only needed for for internal trace type. ')
+    parser.add_argument('--completion-len-file', type=str, required=False, default=None,
+                        help='File containing request output lengths varied by time, which workload generator depends upon to '
+                             'select input prompt. This is only needed for for internal trace type. ')
     parser.add_argument('--model', type=str, required=False, default="Qwen/Qwen2.5-Coder-7B-Instruct",
                         help='Target model tokenizer.')
     parser.add_argument('--group-interval-seconds', type=int, default=1, help='Grouping interval seconds.')
@@ -239,8 +318,7 @@ if __name__ == '__main__':
     workload_dict = {}
     tokenizer = get_tokenizer(pretrained_model_name_or_path=args.model, trust_remote_code=True)
     # Load prompts from a file
-    prompts = sample_sharegpt_requests(dataset_path=args.prompt_file, num_requests=args.num_prompts,
-                                       tokenizer=tokenizer)
+    #prompts = sample_sharegpt_requests(dataset_path=args.prompt_file, num_requests=args.num_prompts,tokenizer=tokenizer)
 
     if args.trace_type == "synthetic":
         # Define scenarios specific to synthetic type
@@ -255,24 +333,36 @@ if __name__ == '__main__':
                                    'period': 12, 'only_rise': False},
         }
         for scenario_name, params in scenarios.items():
+            params['prompt_file_path'] = args.prompt_file
+            params['output_file'] = f"{args.output_dir}/{scenario_name}"
+            params['to_jsonl'] = (args.output_format == "jsonl")
+        for scenario_name, params in scenarios.items():
             generated_workload = generate_synthetic(**params)
-            paired_workload = pair_requests_with_prompts_round_robin(workload=generated_workload, prompts=prompts,
-                                                                     output_file=f"{args.output_dir}/{scenario_name}",
-                                                                     to_jsonl=args.output_format == "jsonl")
-            workload_dict[scenario_name] = paired_workload
+            workload_dict[scenario_name] = generated_workload
     else:
         # Process for 'internal' and 'azure'
         if args.trace_type == "internal":
-            generated_workload = generate_from_internal_csv(file_path=args.trace_file, duration_ms=args.duration_ms,
-                                                            summary_interval_ms=15000, interval_ms=args.interval_ms)
-            generated_workload = pair_requests_with_prompts_round_robin(workload=generated_workload, prompts=prompts,
-                                                                     output_file=f"{args.output_dir}/{args.trace_type}",
-                                                                     to_jsonl=args.output_format == "jsonl")
+            generated_workload = generate_from_internal_csv(file_path=args.traffic_file, 
+                                                            prompt_file_path=args.prompt_file, 
+                                                            duration_ms=args.duration_ms, 
+                                                            summary_interval_ms=15000, 
+                                                            tokenizer=tokenizer,
+                                                            interval_ms=args.interval_ms,
+                                                            output_file=f"{args.output_dir}/{args.trace_type}",
+                                                            input_trace=args.prompt_len_file, 
+                                                            output_trace=args.completion_len_file,
+                                                            to_jsonl=(args.output_format == "jsonl"),
+                                                            )
 
         elif args.trace_type == "azure":
-            generated_workload = generate_from_azure_csv(file_path=args.trace_file, prompt_file_path=args.prompt_file,
-                                                         duration_ms=args.duration_ms, tokenizer=tokenizer,
-                                                         interval_ms=args.interval_ms, output_file=f"{args.output_dir}/{args.trace_type}")
+            generated_workload = generate_from_azure_csv(file_path=args.traffic_file, 
+                                                         prompt_file_path=args.prompt_file,
+                                                         duration_ms=args.duration_ms, 
+                                                         tokenizer=tokenizer,
+                                                         interval_ms=args.interval_ms, 
+                                                         output_file=f"{args.output_dir}/{args.trace_type}",
+                                                         to_jsonl=(args.output_format == "jsonl"),
+                                                         )
 
         workload_dict[args.trace_type] = generated_workload
 
