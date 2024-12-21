@@ -17,7 +17,7 @@ import contextlib
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Generator, List
+from typing import Generator, List, Optional
 
 from filelock import BaseFileLock, FileLock, Timeout
 
@@ -36,7 +36,7 @@ class RemoteSource(Enum):
 class DownloadStatus(Enum):
     DOWNLOADING = "downloading"
     DOWNLOADED = "downloaded"
-    NO_OPETATION = "no_operation"  # Interrupted from downloading
+    NO_OPERATION = "no_operation"  # Interrupted from downloading
     UNKNOWN = "unknown"
 
 
@@ -58,15 +58,18 @@ class DownloadFile:
             lock.acquire(blocking=False)
         except Timeout:
             return DownloadStatus.DOWNLOADING
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                f"failed to acquire lock failed for unknown error, error: {e}"
+            )
             return DownloadStatus.UNKNOWN
         else:
-            return DownloadStatus.NO_OPETATION
+            return DownloadStatus.NO_OPERATION
 
     @contextlib.contextmanager
     def download_lock(self) -> Generator[BaseFileLock, None, None]:
-        """Download process should acquire the lock to prevent other process from downloading the same file.
-        Same implementation as WeakFileLock in huggingface_hub"""
+        """A filelock that download process should be acquired.
+        Same implementation as WeakFileLock in huggingface_hub."""
         lock = FileLock(self.lock_path, timeout=DOWNLOAD_FILE_LOCK_CHECK_TIMEOUT)
         while True:
             try:
@@ -92,7 +95,7 @@ class DownloadFile:
 @dataclass
 class DownloadModel:
     model_source: RemoteSource
-    local_dir: Path
+    local_path: Path
     model_name: str
     download_files: List[DownloadFile]
 
@@ -102,39 +105,86 @@ class DownloadModel:
 
     @property
     def status(self):
-        all_status = []
-        for file in self.download_files:
-            file_status = file.status
-            if file_status == DownloadStatus.DOWNLOADING:
-                return DownloadStatus.DOWNLOADING
-            elif file_status == DownloadStatus.NO_OPETATION:
-                return DownloadStatus.NO_OPETATION
-            elif file_status == DownloadStatus.UNKNOWN:
-                return DownloadStatus.UNKNOWN
-            else:
-                all_status.append(file.file_status)
+        all_status = [file.status for file in self.download_files]
         if all(status == DownloadStatus.DOWNLOADED for status in all_status):
             return DownloadStatus.DOWNLOADED
+
+        if any(status == DownloadStatus.DOWNLOADING for status in all_status):
+            return DownloadStatus.DOWNLOADING
+
+        if any(status == DownloadStatus.NO_OPERATION for status in all_status):
+            return DownloadStatus.NO_OPERATION
+
         return DownloadStatus.UNKNOWN
 
     @classmethod
     def infer_from_model_path(
-        cls, local_path: Path, model_name: str
-    ) -> "DownloadModel":
-        # TODO, infer downloadfiles from cached dir
-        pass
+        cls, local_path: Path, model_name: str, source: RemoteSource
+    ) -> Optional["DownloadModel"]:
+        assert source is not None
+
+        model_base_dir = Path(local_path).joinpath(model_name)
+        cache_sub_dir = (DOWNLOAD_CACHE_DIR % source.value).strip("/")
+        cache_dir = Path(model_base_dir).joinpath(cache_sub_dir)
+        lock_files = list(Path(cache_dir).glob("*.lock"))
+
+        download_files = []
+        for lock_file in lock_files:
+            lock_name = lock_file.name
+            lock_suffix = ".lock"
+            if lock_name.endswith(lock_suffix):
+                filename = lock_name[: -len(lock_suffix)]
+                download_file = get_local_download_paths(
+                    model_base_dir=model_base_dir, filename=filename, source=source
+                )
+                download_files.append(download_file)
+
+        return cls(
+            model_source=source,
+            local_path=local_path,
+            model_name=model_name,
+            download_files=download_files,
+        )
 
     @classmethod
-    def infer_from_local_path(cls, remote_path: Path) -> List["DownloadModel"]:
-        # TODO
-        pass
+    def infer_from_local_path(cls, local_path: Path) -> List["DownloadModel"]:
+        models: List["DownloadModel"] = []
+        for source in RemoteSource:
+            cache_sub_dir = (DOWNLOAD_CACHE_DIR % source.value).strip("/")
+            cache_dirs = list(Path(local_path).glob(f"**/{cache_sub_dir}"))
+            if not cache_dirs:
+                continue
+
+            for cache_dir in cache_dirs:
+                relative_path = cache_dir.relative_to(local_path)
+                relative_str = str(relative_path).strip("/")
+                model_name = relative_str.rstrip(cache_sub_dir).strip("/")
+                download_model = cls.infer_from_model_path(
+                    local_path, model_name, source
+                )
+                if download_model is None:
+                    continue
+                models.append(download_model)
+
+        return models
+
+    def __str__(self):
+        return (
+            "DownloadModel(\n"
+            + f"\tmodel_source={self.model_source.value},\n"
+            + f"\tmodel_name={self.model_name},\n"
+            + f"\tstatus={self.status.value},\n"
+            + f"\tlocal_path={self.local_path},\n"
+            + f"\tdownload_files_count={len(self.download_files)}\n)"
+        )
 
 
 def get_local_download_paths(
-    model_base_dir: Path, filename: str, source_type: RemoteSource
+    model_base_dir: Path, filename: str, source: RemoteSource
 ) -> DownloadFile:
     file_path = model_base_dir.joinpath(filename)
-    cache_dir = model_base_dir.joinpath(DOWNLOAD_CACHE_DIR % source_type.value)
+    sub_cache_dir = (DOWNLOAD_CACHE_DIR % source.value).strip("/")
+    cache_dir = model_base_dir.joinpath(sub_cache_dir)
     lock_path = cache_dir.joinpath(f"{filename}.lock")
     metadata_path = cache_dir.joinpath(f"{filename}.metadata")
     return DownloadFile(file_path, lock_path, metadata_path)
