@@ -43,7 +43,9 @@ def test_meta_file():
     with tempfile.TemporaryDirectory() as tmp_dir:
         source = "s3"
         meta_file_path = meta_file(tmp_dir, "test", source=source)
-        assert str(meta_file_path).endswith(f"{DOWNLOAD_CACHE_DIR % source}/test.metadata")
+        assert str(meta_file_path).endswith(
+            f"{DOWNLOAD_CACHE_DIR % source}/test.metadata"
+        )
 
 
 def test_save_load_meta_data():

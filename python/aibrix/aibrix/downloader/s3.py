@@ -45,6 +45,7 @@ def _parse_bucket_info_from_uri(uri: str, scheme: str = "s3") -> Tuple[str, str]
 
 class S3BaseDownloader(BaseDownloader):
     _source = "s3_base"
+
     def __init__(
         self,
         scheme: str,
@@ -145,7 +146,9 @@ class S3BaseDownloader(BaseDownloader):
         # check if file exist
         etag = meta_data.get("ETag", "")
         file_size = meta_data.get("ContentLength", 0)
-        meta_data_file = meta_file(local_path=local_path, file_name=_file_name, source=self._source)
+        meta_data_file = meta_file(
+            local_path=local_path, file_name=_file_name, source=self._source
+        )
 
         if not need_to_download(local_file, meta_data_file, file_size, etag):
             return
@@ -187,6 +190,7 @@ class S3BaseDownloader(BaseDownloader):
 
 class S3Downloader(S3BaseDownloader):
     _source = "s3"
+
     def __init__(
         self,
         model_uri,
