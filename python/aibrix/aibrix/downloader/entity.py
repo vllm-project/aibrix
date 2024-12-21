@@ -110,7 +110,10 @@ class DownloadModel:
         if any(status == DownloadStatus.DOWNLOADING for status in all_status):
             return DownloadStatus.DOWNLOADING
 
-        if any(status == DownloadStatus.NO_OPERATION for status in all_status):
+        if all(
+            status in [DownloadStatus.DOWNLOADED, DownloadStatus.NO_OPERATION]
+            for status in all_status
+        ):
             return DownloadStatus.NO_OPERATION
 
         return DownloadStatus.UNKNOWN
@@ -147,6 +150,12 @@ class DownloadModel:
     @classmethod
     def infer_from_local_path(cls, local_path: Path) -> List["DownloadModel"]:
         models: List["DownloadModel"] = []
+
+        def remove_suffix(input_string, suffix):
+            if not input_string.endswith(suffix):
+                return input_string
+            return input_string[: -len(suffix)]
+
         for source in RemoteSource:
             cache_sub_dir = (DOWNLOAD_CACHE_DIR % source.value).strip("/")
             cache_dirs = list(Path(local_path).glob(f"**/{cache_sub_dir}"))
@@ -156,7 +165,8 @@ class DownloadModel:
             for cache_dir in cache_dirs:
                 relative_path = cache_dir.relative_to(local_path)
                 relative_str = str(relative_path).strip("/")
-                model_name = relative_str.rstrip(cache_sub_dir).strip("/")
+                model_name = remove_suffix(relative_str, cache_sub_dir).strip("/")
+
                 download_model = cls.infer_from_model_path(
                     local_path, model_name, source
                 )
