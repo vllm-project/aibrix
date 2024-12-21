@@ -72,7 +72,9 @@ class DownloadFile:
             try:
                 lock.acquire()
             except Timeout:
-                logger.info(f"still waiting to acquire lock on {self.lock_path}, status is {self.status}")
+                logger.info(
+                    f"still waiting to acquire lock on {self.lock_path}, status is {self.status}"
+                )
             else:
                 break
 
@@ -93,7 +95,7 @@ class DownloadModel:
     local_dir: Path
     model_name: str
     download_files: List[DownloadFile]
-    
+
     def __post_init__(self):
         if len(self.download_files) == 0:
             logger.warning(f"No download files found for model {self.model_name}")
@@ -116,10 +118,12 @@ class DownloadModel:
         return DownloadStatus.UNKNOWN
 
     @classmethod
-    def infer_from_model_path(cls, local_path: Path, model_name: str) -> "DownloadModel":
+    def infer_from_model_path(
+        cls, local_path: Path, model_name: str
+    ) -> "DownloadModel":
         # TODO, infer downloadfiles from cached dir
         pass
-    
+
     @classmethod
     def infer_from_local_path(cls, remote_path: Path) -> List["DownloadModel"]:
         # TODO

@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from aibrix.downloader.entity import RemoteSource, get_local_download_paths
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import MAX_POOL_CONNECTIONS, Config
@@ -26,6 +25,7 @@ from tqdm import tqdm
 
 from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
+from aibrix.downloader.entity import RemoteSource, get_local_download_paths
 from aibrix.downloader.utils import (
     infer_model_name,
     meta_file,
@@ -176,8 +176,10 @@ class S3BaseDownloader(BaseDownloader):
 
             def download_progress(bytes_transferred):
                 pbar.update(bytes_transferred)
-            
-            download_file = get_local_download_paths(local_path, _file_name, self._source)
+
+            download_file = get_local_download_paths(
+                local_path, _file_name, self._source
+            )
             with download_file.download_lock():
                 self.client.download_file(
                     Bucket=bucket_name,

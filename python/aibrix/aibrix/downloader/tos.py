@@ -18,13 +18,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from aibrix.downloader.entity import RemoteSource, get_local_download_paths
 import tos
 from tos import DataTransferType
 from tqdm import tqdm
 
 from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
+from aibrix.downloader.entity import RemoteSource, get_local_download_paths
 from aibrix.downloader.s3 import S3BaseDownloader
 from aibrix.downloader.utils import (
     infer_model_name,
@@ -161,7 +161,9 @@ class TOSDownloaderV1(BaseDownloader):
             ):
                 pbar.update(rw_once_bytes)
 
-            download_file = get_local_download_paths(local_path, _file_name, self._source)
+            download_file = get_local_download_paths(
+                local_path, _file_name, self._source
+            )
             with download_file.download_lock():
                 self.client.download_file(
                     bucket=bucket_name,
