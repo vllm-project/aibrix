@@ -46,6 +46,7 @@ def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
 
 
 class TOSDownloaderV1(BaseDownloader):
+    _source = "tos"
     def __init__(
         self,
         model_uri,
@@ -133,7 +134,7 @@ class TOSDownloaderV1(BaseDownloader):
         # check if file exist
         etag = meta_data.etag
         file_size = meta_data.content_length
-        meta_data_file = meta_file(local_path=local_path, file_name=_file_name)
+        meta_data_file = meta_file(local_path=local_path, file_name=_file_name, source=self._source)
 
         if not need_to_download(local_file, meta_data_file, file_size, etag):
             return
@@ -173,6 +174,7 @@ class TOSDownloaderV1(BaseDownloader):
 
 
 class TOSDownloaderV2(S3BaseDownloader):
+    _source = "tos"
     def __init__(
         self,
         model_uri,
@@ -180,7 +182,7 @@ class TOSDownloaderV2(S3BaseDownloader):
         enable_progress_bar: bool = False,
     ):
         super().__init__(
-            scheme="s3",
+            scheme="tos",
             model_uri=model_uri,
             model_name=model_name,
             enable_progress_bar=enable_progress_bar,

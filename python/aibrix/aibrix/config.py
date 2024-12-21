@@ -14,7 +14,14 @@
 
 
 DEFAULT_METRIC_COLLECTOR_TIMEOUT = 1
-
-DOWNLOAD_CACHE_DIR = ".cache"
+"""
+DOWNLOAD CACHE DIR would be like:
+.
+└── .cache
+    └── huggingface | s3 | tos
+        ├── .gitignore
+        └── download
+"""
+DOWNLOAD_CACHE_DIR = ".cache/%s/download"
 
 EXCLUDE_METRICS_HTTP_ENDPOINTS = ["/metrics/"]
