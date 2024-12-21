@@ -59,9 +59,7 @@ class DownloadFile:
         except Timeout:
             return DownloadStatus.DOWNLOADING
         except Exception as e:
-            logger.warning(
-                f"failed to acquire lock failed for unknown error, error: {e}"
-            )
+            logger.warning(f"Failed to acquire lock failed for error: {e}")
             return DownloadStatus.UNKNOWN
         else:
             return DownloadStatus.NO_OPERATION
@@ -76,7 +74,7 @@ class DownloadFile:
                 lock.acquire()
             except Timeout:
                 logger.info(
-                    f"still waiting to acquire lock on {self.lock_path}, status is {self.status}"
+                    f"Still waiting to acquire download lock on {self.lock_path}"
                 )
             else:
                 break
