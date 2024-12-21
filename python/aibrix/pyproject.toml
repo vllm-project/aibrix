@@ -56,6 +56,7 @@ incdbscan = "^0.1.0"
 aiohttp = "^3.11.7"
 dash = "^2.18.2"
 matplotlib = "^3.9.2"
+filelock = "^3.16.1"
 
 
 [tool.poetry.group.dev.dependencies]

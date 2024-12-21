@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from aibrix.downloader.entity import RemoteSource, get_local_download_paths
 import tos
 from tos import DataTransferType
 from tqdm import tqdm
@@ -46,7 +47,7 @@ def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
 
 
 class TOSDownloaderV1(BaseDownloader):
-    _source = "tos"
+    _source: RemoteSource = RemoteSource.TOS
 
     def __init__(
         self,
@@ -136,7 +137,7 @@ class TOSDownloaderV1(BaseDownloader):
         etag = meta_data.etag
         file_size = meta_data.content_length
         meta_data_file = meta_file(
-            local_path=local_path, file_name=_file_name, source=self._source
+            local_path=local_path, file_name=_file_name, source=self._source.value
         )
 
         if not need_to_download(local_file, meta_data_file, file_size, etag):
@@ -151,7 +152,6 @@ class TOSDownloaderV1(BaseDownloader):
         # download file
         total_length = meta_data.content_length
 
-        nullcontext
         with tqdm(
             desc=_file_name, total=total_length, unit="b", unit_scale=True
         ) if self.enable_progress_bar else nullcontext() as pbar:
@@ -161,23 +161,25 @@ class TOSDownloaderV1(BaseDownloader):
             ):
                 pbar.update(rw_once_bytes)
 
-            self.client.download_file(
-                bucket=bucket_name,
-                key=bucket_path,
-                file_path=str(
-                    local_file
-                ),  # TOS client does not support Path, convert it to str
-                task_num=task_num,
-                data_transfer_listener=download_progress
-                if self.enable_progress_bar
-                else None,
-                **download_kwargs,
-            )
-            save_meta_data(meta_data_file, etag)
+            download_file = get_local_download_paths(local_path, _file_name, self._source)
+            with download_file.download_lock():
+                self.client.download_file(
+                    bucket=bucket_name,
+                    key=bucket_path,
+                    file_path=str(
+                        local_file
+                    ),  # TOS client does not support Path, convert it to str
+                    task_num=task_num,
+                    data_transfer_listener=download_progress
+                    if self.enable_progress_bar
+                    else None,
+                    **download_kwargs,
+                )
+                save_meta_data(meta_data_file, etag)
 
 
 class TOSDownloaderV2(S3BaseDownloader):
-    _source = "tos"
+    _source: RemoteSource = RemoteSource.TOS
 
     def __init__(
         self,

@@ -23,5 +23,6 @@ DOWNLOAD CACHE DIR would be like:
         └── download
 """
 DOWNLOAD_CACHE_DIR = ".cache/%s/download"
+DOWNLOAD_FILE_LOCK_CHECK_TIMEOUT = 10
 
 EXCLUDE_METRICS_HTTP_ENDPOINTS = ["/metrics/"]
