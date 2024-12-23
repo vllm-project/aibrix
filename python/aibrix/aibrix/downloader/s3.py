@@ -24,6 +24,7 @@ from botocore.config import MAX_POOL_CONNECTIONS, Config
 from tqdm import tqdm
 
 from aibrix import envs
+from aibrix.common.errors import ArgNotCongiuredError, ModelNotFoundError
 from aibrix.downloader.base import (
     DEFAULT_DOWNLOADER_EXTRA_CONFIG,
     BaseDownloader,
@@ -73,7 +74,9 @@ class S3BaseDownloader(BaseDownloader):
         )
 
         max_pool_connections = (
-            _num_threads if _num_threads > MAX_POOL_CONNECTIONS else MAX_POOL_CONNECTIONS
+            _num_threads
+            if _num_threads > MAX_POOL_CONNECTIONS
+            else MAX_POOL_CONNECTIONS
         )
         client_config = Config(
             s3={"addressing_style": "virtual"},
@@ -92,6 +95,24 @@ class S3BaseDownloader(BaseDownloader):
             extra_download_config=download_extra_config,
             enable_progress_bar=enable_progress_bar,
         )  # type: ignore
+
+    def _valid_config(self):
+        if self.model_name is None or self.model_name == "":
+            raise ArgNotCongiuredError(arg_name="model_name", arg_source="--model-name")
+
+        if self.bucket_name is None or self.bucket_name == "":
+            raise ArgNotCongiuredError(arg_name="bucket_name", arg_source="--model-uri")
+
+        if self.bucket_path is None or self.bucket_path == "":
+            raise ArgNotCongiuredError(arg_name="bucket_path", arg_source="--model-uri")
+
+        try:
+            self.client.head_bucket(Bucket=self.bucket_name)
+        except Exception as e:
+            logger.error(
+                f"Bucket {self.bucket_name} not exist in {self.model_uri}\nFor {e}"
+            )
+            raise ModelNotFoundError(model_uri=self.model_uri, detail_msg=str(e))
 
     @abstractmethod
     def _get_auth_config(self) -> Dict[str, Optional[str]]:
@@ -222,28 +243,19 @@ class S3Downloader(S3BaseDownloader):
             enable_progress_bar=enable_progress_bar,
         )  # type: ignore
 
-    def _valid_config(self):
-        assert (
-            self.model_name is not None and self.model_name != ""
-        ), "S3 model name is not set, please check `--model-name`."
-        assert (
-            self.bucket_name is not None and self.bucket_name != ""
-        ), "S3 bucket name is not set."
-        assert (
-            self.bucket_path is not None and self.bucket_path != ""
-        ), "S3 bucket path is not set."
-        try:
-            self.client.head_bucket(Bucket=self.bucket_name)
-        except Exception as e:
-            assert False, f"S3 bucket {self.bucket_name} not exist for {e}."
-
     def _get_auth_config(self) -> Dict[str, Optional[str]]:
         ak, sk = (
             self.download_extra_config.ak or envs.DOWNLOADER_AWS_ACCESS_KEY_ID,
             self.download_extra_config.sk or envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY,
         )
-        assert ak is not None and ak != "", "`AWS_ACCESS_KEY_ID` is not set."
-        assert sk is not None and sk != "", "`AWS_SECRET_ACCESS_KEY` is not set."
+        if ak is None or ak == "":
+            raise ArgNotCongiuredError(
+                arg_name="ak", arg_source="--download-extra-config"
+            )
+        if sk is None or sk == "":
+            raise ArgNotCongiuredError(
+                arg_name="sk", arg_source="--download-extra-config"
+            )
 
         return {
             "region_name": self.download_extra_config.region

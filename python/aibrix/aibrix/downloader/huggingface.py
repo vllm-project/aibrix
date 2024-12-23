@@ -18,6 +18,11 @@ from typing import List, Optional
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
 from aibrix import envs
+from aibrix.common.errors import (
+    ArgNotCongiuredError,
+    ArgNotFormatError,
+    ModelNotFoundError,
+)
 from aibrix.downloader.base import (
     DEFAULT_DOWNLOADER_EXTRA_CONFIG,
     BaseDownloader,
@@ -77,14 +82,14 @@ class HuggingFaceDownloader(BaseDownloader):
         )
 
     def _valid_config(self):
-        assert (
-            len(self.model_uri.split("/")) == 2
-        ), "Model uri must be in `repo/name` format."
-        assert self.bucket_name is None, "Bucket name is empty in HuggingFace."
-        assert self.model_name is not None, "Model name is not set."
-        assert self.hf_api.repo_exists(
-            repo_id=self.model_uri
-        ), f"Model {self.model_uri} not exist."
+        if len(self.model_uri.split("/")) != 2:
+            raise ArgNotFormatError(arg_name="model_uri", expected_format="repo/name")
+
+        if self.model_name is None:
+            raise ArgNotCongiuredError(arg_name="model_name", arg_source="--model-name")
+
+        if not self.hf_api.repo_exists(repo_id=self.model_uri):
+            raise ModelNotFoundError(model_uri=self.model_uri)
 
     def _is_directory(self) -> bool:
         """Check if model_uri is a directory.

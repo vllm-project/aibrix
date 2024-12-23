@@ -23,6 +23,7 @@ from tos import DataTransferType
 from tqdm import tqdm
 
 from aibrix import envs
+from aibrix.common.errors import ArgNotCongiuredError, ModelNotFoundError
 from aibrix.downloader.base import (
     DEFAULT_DOWNLOADER_EXTRA_CONFIG,
     BaseDownloader,
@@ -87,19 +88,20 @@ class TOSDownloaderV1(BaseDownloader):
         )  # type: ignore
 
     def _valid_config(self):
-        assert (
-            self.model_name is not None and self.model_name != ""
-        ), "TOS model name is not set, please check `--model-name`."
-        assert (
-            self.bucket_name is not None and self.bucket_name != ""
-        ), "TOS bucket name is not set."
-        assert (
-            self.bucket_path is not None and self.bucket_path != ""
-        ), "TOS bucket path is not set."
+        if self.model_name is None or self.model_name == "":
+            raise ArgNotCongiuredError(arg_name="model_name", arg_source="--model-name")
+
+        if self.bucket_name is None or self.bucket_name == "":
+            raise ArgNotCongiuredError(arg_name="bucket_name", arg_source="--model-uri")
+
+        if self.bucket_path is None or self.bucket_path == "":
+            raise ArgNotCongiuredError(arg_name="bucket_path", arg_source="--model-uri")
+
         try:
             self.client.head_bucket(self.bucket_name)
         except Exception as e:
-            assert False, f"TOS bucket {self.bucket_name} not exist for {e}."
+            logger.error(f"TOS bucket {self.bucket_name} not exist for {e}")
+            raise ModelNotFoundError(model_uri=self.model_uri, detail_msg=str(e))
 
     @lru_cache()
     def _is_directory(self) -> bool:
@@ -205,21 +207,6 @@ class TOSDownloaderV2(S3BaseDownloader):
             download_extra_config=download_extra_config,
             enable_progress_bar=enable_progress_bar,
         )  # type: ignore
-
-    def _valid_config(self):
-        assert (
-            self.model_name is not None and self.model_name != ""
-        ), "TOS model name is not set, please check `--model-name`."
-        assert (
-            self.bucket_name is not None and self.bucket_name != ""
-        ), "TOS bucket name is not set."
-        assert (
-            self.bucket_path is not None and self.bucket_path != ""
-        ), "TOS bucket path is not set."
-        try:
-            self.client.head_bucket(Bucket=self.bucket_name)
-        except Exception as e:
-            assert False, f"TOS bucket {self.bucket_name} not exist for {e}."
 
     def _get_auth_config(self) -> Dict[str, Optional[str]]:
         return {
