@@ -73,7 +73,7 @@ class HuggingFaceDownloader(BaseDownloader):
         # so place it after the super().__init__() call.
         self.allow_patterns = (
             None
-            if self.allow_file_suffix is None
+            if self.allow_file_suffix is None or len(self.allow_file_suffix) == 0
             else [f"*.{suffix}" for suffix in self.allow_file_suffix]
         )
         logger.debug(
