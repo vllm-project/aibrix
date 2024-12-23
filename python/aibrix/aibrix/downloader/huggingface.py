@@ -48,6 +48,8 @@ class HuggingFaceDownloader(BaseDownloader):
         if model_name is None:
             model_name = _parse_model_name_from_uri(model_uri)
             logger.info(f"model_name is not set, using `{model_name}` as model_name")
+        
+        self.download_extra_config = download_extra_config
 
         self.hf_token = self.download_extra_config.hf_token or envs.DOWNLOADER_HF_TOKEN
         self.hf_endpoint = (

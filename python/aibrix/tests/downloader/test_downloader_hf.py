@@ -14,6 +14,10 @@
 
 import pytest
 
+from aibrix.common.errors import (
+    ArgNotFormatError,
+    ModelNotFoundError,
+)
 from aibrix.downloader.base import get_downloader
 from aibrix.downloader.huggingface import HuggingFaceDownloader
 
@@ -24,16 +28,16 @@ def test_get_downloader_hf():
 
 
 def test_get_downloader_hf_not_exist():
-    with pytest.raises(AssertionError) as exception:
+    with pytest.raises(ModelNotFoundError) as exception:
         get_downloader("not_exsit_path/model")
-    assert "not exist" in str(exception.value)
+    assert "Model not found" in str(exception.value)
 
 
 def test_get_downloader_hf_invalid_uri():
-    with pytest.raises(AssertionError) as exception:
+    with pytest.raises(ArgNotFormatError) as exception:
         get_downloader("single_field")
-    assert "Model uri must be in `repo/name` format." in str(exception.value)
+    assert "not in the expected format: repo/name" in str(exception.value)
 
-    with pytest.raises(AssertionError) as exception:
+    with pytest.raises(ArgNotFormatError) as exception:
         get_downloader("multi/filed/repo")
-    assert "Model uri must be in `repo/name` format." in str(exception.value)
+    assert "not in the expected format: repo/name" in str(exception.value)
