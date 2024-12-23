@@ -15,7 +15,7 @@ import logging
 from contextlib import nullcontext
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import ClassVar, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import tos
@@ -52,7 +52,7 @@ def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
 
 
 class TOSDownloaderV1(BaseDownloader):
-    _source: RemoteSource = RemoteSource.TOS
+    _source: ClassVar[RemoteSource] = RemoteSource.TOS
 
     def __init__(
         self,
@@ -65,6 +65,7 @@ class TOSDownloaderV1(BaseDownloader):
             model_name = infer_model_name(model_uri)
             logger.info(f"model_name is not set, using `{model_name}` as model_name")
 
+        self.download_extra_config = download_extra_config
         ak = self.download_extra_config.ak or envs.DOWNLOADER_TOS_ACCESS_KEY or ""
         sk = self.download_extra_config.sk or envs.DOWNLOADER_TOS_SECRET_KEY or ""
         endpoint = (
@@ -191,7 +192,7 @@ class TOSDownloaderV1(BaseDownloader):
 
 
 class TOSDownloaderV2(S3BaseDownloader):
-    _source: RemoteSource = RemoteSource.TOS
+    _source: ClassVar[RemoteSource] = RemoteSource.TOS
 
     def __init__(
         self,

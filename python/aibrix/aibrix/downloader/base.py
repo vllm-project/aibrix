@@ -18,9 +18,10 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import ClassVar, Dict, List, Optional
 
 from aibrix import envs
+from aibrix.downloader.entity import RemoteSource
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -68,6 +69,7 @@ class BaseDownloader(ABC):
         default_factory=DownloadExtraConfig
     )
     enable_progress_bar: bool = False
+    _source: ClassVar[RemoteSource] = RemoteSource.UNKNOWN
 
     def __post_init__(self):
         # valid downloader config
@@ -80,6 +82,10 @@ class BaseDownloader(ABC):
         self.force_download = (
             self.download_extra_config.force_download or envs.DOWNLOADER_FORCE_DOWNLOAD
         )
+
+    @property
+    def source(self) -> RemoteSource:
+        return self._source
 
     @abstractmethod
     def _valid_config(self):

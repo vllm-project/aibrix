@@ -15,7 +15,7 @@ from abc import abstractmethod
 from contextlib import nullcontext
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import ClassVar, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import boto3
@@ -50,7 +50,7 @@ def _parse_bucket_info_from_uri(uri: str, scheme: str = "s3") -> Tuple[str, str]
 
 
 class S3BaseDownloader(BaseDownloader):
-    _source: RemoteSource = RemoteSource.S3
+    _source: ClassVar[RemoteSource] = RemoteSource.S3
 
     def __init__(
         self,
@@ -64,6 +64,7 @@ class S3BaseDownloader(BaseDownloader):
             model_name = infer_model_name(model_uri)
             logger.info(f"model_name is not set, using `{model_name}` as model_name")
 
+        self.download_extra_config = download_extra_config
         auth_config = self._get_auth_config()
         bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri, scheme=scheme)
 
@@ -92,7 +93,7 @@ class S3BaseDownloader(BaseDownloader):
             model_name=model_name,
             bucket_path=bucket_path,
             bucket_name=bucket_name,
-            extra_download_config=download_extra_config,
+            download_extra_config=download_extra_config,
             enable_progress_bar=enable_progress_bar,
         )  # type: ignore
 
@@ -226,7 +227,7 @@ class S3BaseDownloader(BaseDownloader):
 
 
 class S3Downloader(S3BaseDownloader):
-    _source: RemoteSource = RemoteSource.S3
+    _source: ClassVar[RemoteSource] = RemoteSource.S3
 
     def __init__(
         self,

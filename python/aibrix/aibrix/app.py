@@ -3,6 +3,7 @@ import os
 import shutil
 import time
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urljoin
 
 import uvicorn
@@ -24,8 +25,11 @@ from aibrix.metrics.metrics import (
     REGISTRY,
 )
 from aibrix.openapi.engine.base import InferenceEngine, get_inference_engine
+from aibrix.openapi.model import ModelManager
 from aibrix.openapi.protocol import (
+    DownloadModelRequest,
     ErrorResponse,
+    ListModelRequest,
     LoadLoraAdapterRequest,
     UnloadLoraAdapterRequest,
 )
@@ -118,6 +122,24 @@ async def unload_lora_adapter(request: UnloadLoraAdapterRequest, raw_request: Re
         return JSONResponse(content=response.model_dump(), status_code=response.code)
 
     return Response(status_code=200, content=response)
+
+
+@router.post("/v1/model/download")
+async def download_model(request: DownloadModelRequest):
+    response = await ModelManager.model_download(request)
+    if isinstance(response, ErrorResponse):
+        return JSONResponse(content=response.model_dump(), status_code=response.code)
+
+    return JSONResponse(status_code=200, content=response.model_dump())
+
+
+@router.get("/v1/model/list")
+async def list_model(request: Optional[ListModelRequest] = None):
+    response = await ModelManager.model_list(request)
+    if isinstance(response, ErrorResponse):
+        return JSONResponse(content=response.model_dump(), status_code=response.code)
+
+    return JSONResponse(status_code=200, content=response.model_dump())
 
 
 @router.get("/healthz")

@@ -31,6 +31,10 @@ class RemoteSource(Enum):
     S3 = "s3"
     TOS = "tos"
     HUGGINGFACE = "huggingface"
+    UNKNOWN = "unknown"
+
+    def __str__(self):
+        return self.value
 
 
 class FileDownloadStatus(Enum):
@@ -39,12 +43,19 @@ class FileDownloadStatus(Enum):
     NO_OPERATION = "no_operation"  # Interrupted from downloading
     UNKNOWN = "unknown"
 
+    def __str__(self):
+        return self.value
+
 
 class ModelDownloadStatus(Enum):
+    NOT_EXIST = "not_exist"
     DOWNLOADING = "downloading"
     DOWNLOADED = "downloaded"
     NO_OPERATION = "no_operation"  # Interrupted from downloading
     UNKNOWN = "unknown"
+
+    def __str__(self):
+        return self.value
 
 
 @dataclass
@@ -125,6 +136,10 @@ class DownloadModel:
 
         return ModelDownloadStatus.UNKNOWN
 
+    @property
+    def model_root_path(self) -> Path:
+        return Path(self.local_path).joinpath(self.model_name)
+
     @classmethod
     def infer_from_model_path(
         cls, local_path: Path, model_name: str, source: RemoteSource
@@ -132,6 +147,11 @@ class DownloadModel:
         assert source is not None
 
         model_base_dir = Path(local_path).joinpath(model_name)
+
+        # model not exists
+        if not model_base_dir.exists():
+            return None
+
         cache_sub_dir = (DOWNLOAD_CACHE_DIR % source.value).strip("/")
         cache_dir = Path(model_base_dir).joinpath(cache_sub_dir)
         lock_files = list(Path(cache_dir).glob("*.lock"))
