@@ -378,7 +378,6 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				err.Error())
 		}
 	} else {
-		// it doesn't make sense to  fail the unmarshall
 		if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
 			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
 			return generateErrorResponse(

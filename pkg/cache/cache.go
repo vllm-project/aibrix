@@ -403,12 +403,20 @@ func (c *Cache) addPodAndModelMapping(podName, modelName string) {
 func (c *Cache) deletePodAndModelMapping(podName, modelName string) {
 	if models, ok := c.PodToModelMapping[podName]; ok {
 		delete(models, modelName)
-		c.PodToModelMapping[podName] = models
+		if len(models) != 0 {
+			c.PodToModelMapping[podName] = models
+		} else {
+			delete(c.PodToModelMapping, podName)
+		}
 	}
 
 	if pods, ok := c.ModelToPodMapping[modelName]; ok {
 		delete(pods, podName)
-		c.ModelToPodMapping[modelName] = pods
+		if len(pods) != 0 {
+			c.ModelToPodMapping[modelName] = pods
+		} else {
+			delete(c.ModelToPodMapping, modelName)
+		}
 	}
 }
 
