@@ -93,7 +93,10 @@ class ModelManager:
             )
         else:
             # Start to download the model in background
-            Process(target=download_model, args=(model_uri, local_dir, model_name, download_extra_config)).start()
+            Process(
+                target=download_model,
+                args=(model_uri, local_dir, model_name, download_extra_config),
+            ).start()
             return ModelStatusCard(
                 model_name=model_name,
                 model_root_path=str(model_path),
@@ -111,11 +114,12 @@ class ModelManager:
         cards = []
         cards = [
             ModelStatusCard(
-                    model_name=model.model_name,
-                    model_root_path=str(model.model_root_path),
-                    model_status=str(model.status),
-                    source=str(model.model_source),
-                ) for model in models
+                model_name=model.model_name,
+                model_root_path=str(model.model_root_path),
+                model_status=str(model.status),
+                source=str(model.model_source),
+            )
+            for model in models
         ]
         response = ListModelResponse(data=cards)
         return response

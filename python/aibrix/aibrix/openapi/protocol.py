@@ -21,6 +21,7 @@ class NoExtraBaseModel(BaseModel):
     # The class does not allow extra fields
     model_config = ConfigDict(extra="forbid")
 
+
 class NoProtectdBaseModel(BaseModel):
     # The class does not allow extra fields
     model_config = ConfigDict(extra="forbid", protected_namespaces=())
