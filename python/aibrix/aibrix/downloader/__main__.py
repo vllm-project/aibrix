@@ -1,6 +1,17 @@
 import argparse
+import json
+from typing import Dict, Optional
 
 from aibrix.downloader import download_model
+
+
+def str_to_dict(s) -> Optional[Dict]:
+    if s is None:
+        return None
+    try:
+        return json.loads(s)
+    except Exception as e:
+        raise ValueError(f"Invalid json string {s}") from e
 
 
 def main():
@@ -30,9 +41,19 @@ def main():
         default=False,
         help="Enable download progress bar during downloading from TOS or S3",
     )
+    parser.add_argument(
+        "--download-extra-config",
+        type=str_to_dict,
+        default=None,
+        help="Extra config for download, like auth config, parallel config, etc.",
+    )
     args = parser.parse_args()
     download_model(
-        args.model_uri, args.local_dir, args.model_name, args.enable_progress_bar
+        args.model_uri,
+        args.local_dir,
+        args.model_name,
+        args.download_extra_config,
+        args.enable_progress_bar,
     )
 
 

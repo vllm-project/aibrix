@@ -23,7 +23,11 @@ from tos import DataTransferType
 from tqdm import tqdm
 
 from aibrix import envs
-from aibrix.downloader.base import BaseDownloader
+from aibrix.downloader.base import (
+    DEFAULT_DOWNLOADER_EXTRA_CONFIG,
+    BaseDownloader,
+    DownloadExtraConfig,
+)
 from aibrix.downloader.entity import RemoteSource, get_local_download_paths
 from aibrix.downloader.s3 import S3BaseDownloader
 from aibrix.downloader.utils import (
@@ -53,16 +57,19 @@ class TOSDownloaderV1(BaseDownloader):
         self,
         model_uri,
         model_name: Optional[str] = None,
+        download_extra_config: DownloadExtraConfig = DEFAULT_DOWNLOADER_EXTRA_CONFIG,
         enable_progress_bar: bool = False,
     ):
         if model_name is None:
             model_name = infer_model_name(model_uri)
             logger.info(f"model_name is not set, using `{model_name}` as model_name")
 
-        ak = envs.DOWNLOADER_TOS_ACCESS_KEY or ""
-        sk = envs.DOWNLOADER_TOS_SECRET_KEY or ""
-        endpoint = envs.DOWNLOADER_TOS_ENDPOINT or ""
-        region = envs.DOWNLOADER_TOS_REGION or ""
+        ak = self.download_extra_config.ak or envs.DOWNLOADER_TOS_ACCESS_KEY or ""
+        sk = self.download_extra_config.sk or envs.DOWNLOADER_TOS_SECRET_KEY or ""
+        endpoint = (
+            self.download_extra_config.endpoint or envs.DOWNLOADER_TOS_ENDPOINT or ""
+        )
+        region = self.download_extra_config.region or envs.DOWNLOADER_TOS_REGION or ""
         enable_crc = envs.DOWNLOADER_TOS_ENABLE_CRC
         bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri)
 
@@ -75,6 +82,7 @@ class TOSDownloaderV1(BaseDownloader):
             model_name=model_name,
             bucket_path=bucket_path,
             bucket_name=bucket_name,
+            download_extra_config=download_extra_config,
             enable_progress_bar=enable_progress_bar,
         )  # type: ignore
 
@@ -142,12 +150,12 @@ class TOSDownloaderV1(BaseDownloader):
 
         if not need_to_download(local_file, meta_data_file, file_size, etag):
             return
+        num_threads = (
+            self.download_extra_config.num_threads or envs.DOWNLOADER_NUM_THREADS
+        )
+        task_num = num_threads if enable_range else 1
 
-        task_num = envs.DOWNLOADER_NUM_THREADS if enable_range else 1
-
-        download_kwargs = {}
-        if envs.DOWNLOADER_PART_CHUNKSIZE is not None:
-            download_kwargs["part_size"] = envs.DOWNLOADER_PART_CHUNKSIZE
+        download_kwargs = {"part_size": self.download_extra_config.part_chunksize}
 
         # download file
         total_length = meta_data.content_length
@@ -187,12 +195,14 @@ class TOSDownloaderV2(S3BaseDownloader):
         self,
         model_uri,
         model_name: Optional[str] = None,
+        download_extra_config: DownloadExtraConfig = DEFAULT_DOWNLOADER_EXTRA_CONFIG,
         enable_progress_bar: bool = False,
     ):
         super().__init__(
             scheme="tos",
             model_uri=model_uri,
             model_name=model_name,
+            download_extra_config=download_extra_config,
             enable_progress_bar=enable_progress_bar,
         )  # type: ignore
 
@@ -213,8 +223,16 @@ class TOSDownloaderV2(S3BaseDownloader):
 
     def _get_auth_config(self) -> Dict[str, Optional[str]]:
         return {
-            "region_name": envs.DOWNLOADER_TOS_REGION or "",
-            "endpoint_url": envs.DOWNLOADER_TOS_ENDPOINT or "",
-            "aws_access_key_id": envs.DOWNLOADER_TOS_ACCESS_KEY or "",
-            "aws_secret_access_key": envs.DOWNLOADER_TOS_SECRET_KEY or "",
+            "region_name": self.download_extra_config.region
+            or envs.DOWNLOADER_TOS_REGION
+            or "",
+            "endpoint_url": self.download_extra_config.endpoint
+            or envs.DOWNLOADER_TOS_ENDPOINT
+            or "",
+            "aws_access_key_id": self.download_extra_config.ak
+            or envs.DOWNLOADER_TOS_ACCESS_KEY
+            or "",
+            "aws_secret_access_key": self.download_extra_config.sk
+            or envs.DOWNLOADER_TOS_SECRET_KEY
+            or "",
         }

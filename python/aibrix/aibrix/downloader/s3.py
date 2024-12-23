@@ -24,7 +24,11 @@ from botocore.config import MAX_POOL_CONNECTIONS, Config
 from tqdm import tqdm
 
 from aibrix import envs
-from aibrix.downloader.base import BaseDownloader
+from aibrix.downloader.base import (
+    DEFAULT_DOWNLOADER_EXTRA_CONFIG,
+    BaseDownloader,
+    DownloadExtraConfig,
+)
 from aibrix.downloader.entity import RemoteSource, get_local_download_paths
 from aibrix.downloader.utils import (
     infer_model_name,
@@ -52,6 +56,7 @@ class S3BaseDownloader(BaseDownloader):
         scheme: str,
         model_uri: str,
         model_name: Optional[str] = None,
+        download_extra_config: DownloadExtraConfig = DEFAULT_DOWNLOADER_EXTRA_CONFIG,
         enable_progress_bar: bool = False,
     ):
         if model_name is None:
@@ -63,10 +68,12 @@ class S3BaseDownloader(BaseDownloader):
 
         # Avoid warning log "Connection pool is full"
         # Refs: https://github.com/boto/botocore/issues/619#issuecomment-583511406
+        _num_threads = (
+            self.download_extra_config.num_threads or envs.DOWNLOADER_NUM_THREADS
+        )
+
         max_pool_connections = (
-            envs.DOWNLOADER_NUM_THREADS
-            if envs.DOWNLOADER_NUM_THREADS > MAX_POOL_CONNECTIONS
-            else MAX_POOL_CONNECTIONS
+            _num_threads if _num_threads > MAX_POOL_CONNECTIONS else MAX_POOL_CONNECTIONS
         )
         client_config = Config(
             s3={"addressing_style": "virtual"},
@@ -82,6 +89,7 @@ class S3BaseDownloader(BaseDownloader):
             model_name=model_name,
             bucket_path=bucket_path,
             bucket_name=bucket_name,
+            extra_download_config=download_extra_config,
             enable_progress_bar=enable_progress_bar,
         )  # type: ignore
 
@@ -156,15 +164,18 @@ class S3BaseDownloader(BaseDownloader):
 
         # construct TransferConfig
         config_kwargs = {
-            "max_concurrency": envs.DOWNLOADER_NUM_THREADS,
+            "max_concurrency": self.download_extra_config.num_threads
+            or envs.DOWNLOADER_NUM_THREADS,
             "use_threads": enable_range,
-            "max_io_queue": envs.DOWNLOADER_S3_MAX_IO_QUEUE,
-            "io_chunksize": envs.DOWNLOADER_S3_IO_CHUNKSIZE,
+            "max_io_queue": self.download_extra_config.max_io_queue
+            or envs.DOWNLOADER_S3_MAX_IO_QUEUE,
+            "io_chunksize": self.download_extra_config.io_chunksize
+            or envs.DOWNLOADER_S3_IO_CHUNKSIZE,
+            "multipart_threshold": self.download_extra_config.part_threshold
+            or envs.DOWNLOADER_PART_THRESHOLD,
+            "multipart_chunksize": self.download_extra_config.part_chunksize
+            or envs.DOWNLOADER_PART_CHUNKSIZE,
         }
-        if envs.DOWNLOADER_PART_THRESHOLD is not None:
-            config_kwargs["multipart_threshold"] = envs.DOWNLOADER_PART_THRESHOLD
-        if envs.DOWNLOADER_PART_CHUNKSIZE is not None:
-            config_kwargs["multipart_chunksize"] = envs.DOWNLOADER_PART_CHUNKSIZE
 
         config = TransferConfig(**config_kwargs)
 
@@ -200,12 +211,14 @@ class S3Downloader(S3BaseDownloader):
         self,
         model_uri,
         model_name: Optional[str] = None,
+        download_extra_config: DownloadExtraConfig = DEFAULT_DOWNLOADER_EXTRA_CONFIG,
         enable_progress_bar: bool = False,
     ):
         super().__init__(
             scheme="s3",
             model_uri=model_uri,
             model_name=model_name,
+            download_extra_config=download_extra_config,
             enable_progress_bar=enable_progress_bar,
         )  # type: ignore
 
@@ -226,15 +239,17 @@ class S3Downloader(S3BaseDownloader):
 
     def _get_auth_config(self) -> Dict[str, Optional[str]]:
         ak, sk = (
-            envs.DOWNLOADER_AWS_ACCESS_KEY_ID,
-            envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY,
+            self.download_extra_config.ak or envs.DOWNLOADER_AWS_ACCESS_KEY_ID,
+            self.download_extra_config.sk or envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY,
         )
         assert ak is not None and ak != "", "`AWS_ACCESS_KEY_ID` is not set."
         assert sk is not None and sk != "", "`AWS_SECRET_ACCESS_KEY` is not set."
 
         return {
-            "region_name": envs.DOWNLOADER_AWS_REGION,
-            "endpoint_url": envs.DOWNLOADER_AWS_ENDPOINT_URL,
+            "region_name": self.download_extra_config.region
+            or envs.DOWNLOADER_AWS_REGION,
+            "endpoint_url": self.download_extra_config.endpoint
+            or envs.DOWNLOADER_AWS_ENDPOINT_URL,
             "aws_access_key_id": ak,
             "aws_secret_access_key": sk,
         }
