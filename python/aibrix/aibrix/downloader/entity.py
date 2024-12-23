@@ -33,7 +33,14 @@ class RemoteSource(Enum):
     HUGGINGFACE = "huggingface"
 
 
-class DownloadStatus(Enum):
+class FileDownloadStatus(Enum):
+    DOWNLOADING = "downloading"
+    DOWNLOADED = "downloaded"
+    NO_OPERATION = "no_operation"  # Interrupted from downloading
+    UNKNOWN = "unknown"
+
+
+class ModelDownloadStatus(Enum):
     DOWNLOADING = "downloading"
     DOWNLOADED = "downloaded"
     NO_OPERATION = "no_operation"  # Interrupted from downloading
@@ -49,7 +56,7 @@ class DownloadFile:
     @property
     def status(self):
         if self.file_path.exists() and self.metadata_path.exists():
-            return DownloadStatus.DOWNLOADED
+            return FileDownloadStatus.DOWNLOADED
 
         try:
             # Downloading process will acquire the lock,
@@ -57,12 +64,12 @@ class DownloadFile:
             lock = FileLock(self.lock_path)
             lock.acquire(blocking=False)
         except Timeout:
-            return DownloadStatus.DOWNLOADING
+            return FileDownloadStatus.DOWNLOADING
         except Exception as e:
             logger.warning(f"Failed to acquire lock failed for error: {e}")
-            return DownloadStatus.UNKNOWN
+            return FileDownloadStatus.UNKNOWN
         else:
-            return DownloadStatus.NO_OPERATION
+            return FileDownloadStatus.NO_OPERATION
 
     @contextlib.contextmanager
     def download_lock(self) -> Generator[BaseFileLock, None, None]:
@@ -104,19 +111,19 @@ class DownloadModel:
     @property
     def status(self):
         all_status = [file.status for file in self.download_files]
-        if all(status == DownloadStatus.DOWNLOADED for status in all_status):
-            return DownloadStatus.DOWNLOADED
+        if all(status == FileDownloadStatus.DOWNLOADED for status in all_status):
+            return ModelDownloadStatus.DOWNLOADED
 
-        if any(status == DownloadStatus.DOWNLOADING for status in all_status):
-            return DownloadStatus.DOWNLOADING
+        if any(status == FileDownloadStatus.DOWNLOADING for status in all_status):
+            return ModelDownloadStatus.DOWNLOADING
 
         if all(
-            status in [DownloadStatus.DOWNLOADED, DownloadStatus.NO_OPERATION]
+            status in [FileDownloadStatus.DOWNLOADED, FileDownloadStatus.NO_OPERATION]
             for status in all_status
         ):
-            return DownloadStatus.NO_OPERATION
+            return ModelDownloadStatus.NO_OPERATION
 
-        return DownloadStatus.UNKNOWN
+        return ModelDownloadStatus.UNKNOWN
 
     @classmethod
     def infer_from_model_path(

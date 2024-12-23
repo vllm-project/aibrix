@@ -21,7 +21,8 @@ from filelock import FileLock
 from aibrix.config import DOWNLOAD_CACHE_DIR
 from aibrix.downloader.entity import (
     DownloadModel,
-    DownloadStatus,
+    FileDownloadStatus,
+    ModelDownloadStatus,
     RemoteSource,
     get_local_download_paths,
 )
@@ -32,7 +33,7 @@ def prepare_model_dir(
     local_path: Path,
     model_name: str,
     source: RemoteSource,
-    files_with_status: List[Tuple[str, DownloadStatus]],
+    files_with_status: List[Tuple[str, FileDownloadStatus]],
 ) -> Generator:
     model_base_dir = local_path.joinpath(model_name)
     cache_sub_dir = (DOWNLOAD_CACHE_DIR % source.value).strip("/")
@@ -42,26 +43,29 @@ def prepare_model_dir(
     model_cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _parepare_file(
-        model_base_dir: Path, cache_dir: Path, file_name: str, status: DownloadStatus
+        model_base_dir: Path,
+        cache_dir: Path,
+        file_name: str,
+        status: FileDownloadStatus,
     ):
         file_path = model_base_dir.joinpath(file_name)
         lock_path = cache_dir.joinpath(f"{file_name}.lock")
         meta_path = cache_dir.joinpath(f"{file_name}.metadata")
 
-        if status == DownloadStatus.DOWNLOADED:
+        if status == FileDownloadStatus.DOWNLOADED:
             file_path.touch()
             lock_path.touch()
             meta_path.touch()
-        elif status == DownloadStatus.DOWNLOADING:
+        elif status == FileDownloadStatus.DOWNLOADING:
             lock_path.touch()
-        elif status == DownloadStatus.NO_OPERATION:
+        elif status == FileDownloadStatus.NO_OPERATION:
             lock_path.touch()
 
     # acquire the donwloading lock
     all_locks = []
     for file_name, status in files_with_status:
         _parepare_file(model_base_dir, model_cache_dir, file_name, status)
-        if status == DownloadStatus.DOWNLOADING:
+        if status == FileDownloadStatus.DOWNLOADING:
             lock_path = model_cache_dir.joinpath(f"{file_name}.lock")
             lock = FileLock(lock_path)
             lock.acquire(blocking=False)
@@ -80,9 +84,9 @@ def test_prepare_model_dir():
         model_name = "model/name"
         source = RemoteSource.S3
         files_with_status = [
-            ("file1", DownloadStatus.DOWNLOADED),
-            ("file2", DownloadStatus.DOWNLOADING),
-            ("file3", DownloadStatus.NO_OPERATION),
+            ("file1", FileDownloadStatus.DOWNLOADED),
+            ("file2", FileDownloadStatus.DOWNLOADING),
+            ("file3", FileDownloadStatus.NO_OPERATION),
         ]
         with prepare_model_dir(local_path, model_name, source, files_with_status):
             model_base_dir = local_path.joinpath(model_name)
@@ -108,9 +112,9 @@ def test_get_local_download_paths():
         model_name = "model/name"
         source = RemoteSource.S3
         files_with_status = [
-            ("file1", DownloadStatus.DOWNLOADED),
-            ("file2", DownloadStatus.DOWNLOADING),
-            ("file3", DownloadStatus.NO_OPERATION),
+            ("file1", FileDownloadStatus.DOWNLOADED),
+            ("file2", FileDownloadStatus.DOWNLOADING),
+            ("file3", FileDownloadStatus.NO_OPERATION),
         ]
         model_base_dir = local_path.joinpath(model_name)
         with prepare_model_dir(local_path, model_name, source, files_with_status):
@@ -130,22 +134,22 @@ def test_infer_from_local_path():
         s3_model_name = "s3_model/name"
         s3_source = RemoteSource.S3
         s3_files_with_status = [
-            ("s3_file1", DownloadStatus.DOWNLOADED),
-            ("s3_file2", DownloadStatus.DOWNLOADING),
-            ("s3_file3", DownloadStatus.NO_OPERATION),
+            ("s3_file1", FileDownloadStatus.DOWNLOADED),
+            ("s3_file2", FileDownloadStatus.DOWNLOADING),
+            ("s3_file3", FileDownloadStatus.NO_OPERATION),
         ]
         # TOS model with 2 files
         tos_model_name = "tos_model_name"
         tos_source = RemoteSource.TOS
         tos_files_with_status = [
-            ("tos_file1", DownloadStatus.DOWNLOADED),
-            ("tos_file2", DownloadStatus.DOWNLOADED),
+            ("tos_file1", FileDownloadStatus.DOWNLOADED),
+            ("tos_file2", FileDownloadStatus.DOWNLOADED),
         ]
         # HuggingFace with 1 file
         hf_model_name = "hf/model_name"
         hf_source = RemoteSource.HUGGINGFACE
         hf_files_with_status = [
-            ("hf_file1", DownloadStatus.DOWNLOADED),
+            ("hf_file1", FileDownloadStatus.DOWNLOADED),
         ]
         with prepare_model_dir(
             local_path, s3_model_name, s3_source, s3_files_with_status
@@ -177,13 +181,13 @@ def test_download_model_status():
         model_name = "model/name"
         source = RemoteSource.S3
         files_with_status = [
-            ("file1", DownloadStatus.DOWNLOADED),
-            ("file2", DownloadStatus.DOWNLOADED),
-            ("file3", DownloadStatus.DOWNLOADED),
+            ("file1", FileDownloadStatus.DOWNLOADED),
+            ("file2", FileDownloadStatus.DOWNLOADED),
+            ("file3", FileDownloadStatus.DOWNLOADED),
         ]
         with prepare_model_dir(local_path, model_name, source, files_with_status):
             download_model = DownloadModel.infer_from_local_path(local_path)[0]
-            assert download_model.status == DownloadStatus.DOWNLOADED
+            assert download_model.status == ModelDownloadStatus.DOWNLOADED
 
     # The model will only be in the NO_OPERATION state
     # if the file status is only in the DOWNLOADED or NO_OPERATION state
@@ -192,10 +196,10 @@ def test_download_model_status():
         model_name = "model/name"
         source = RemoteSource.S3
         files_with_status = [
-            ("file1", DownloadStatus.DOWNLOADED),
-            ("file2", DownloadStatus.NO_OPERATION),
-            ("file3", DownloadStatus.DOWNLOADED),
+            ("file1", FileDownloadStatus.DOWNLOADED),
+            ("file2", FileDownloadStatus.NO_OPERATION),
+            ("file3", FileDownloadStatus.DOWNLOADED),
         ]
         with prepare_model_dir(local_path, model_name, source, files_with_status):
             download_model = DownloadModel.infer_from_local_path(local_path)[0]
-            assert download_model.status == DownloadStatus.NO_OPERATION
+            assert download_model.status == ModelDownloadStatus.NO_OPERATION
