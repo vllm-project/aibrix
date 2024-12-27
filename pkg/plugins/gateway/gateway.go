@@ -50,7 +50,7 @@ import (
 var (
 	defaultRPM           = 100
 	defaultTPMMultiplier = 1000
-	routingStrategies    = []string{"random", "least-request", "throughput", "least-kv-cache"}
+	routingStrategies    = []string{"random", "least-request", "throughput", "least-kv-cache", "least-busy-time", "least-latency"}
 )
 
 type Server struct {
@@ -69,10 +69,12 @@ func NewServer(redisClient *redis.Client, c kubernetes.Interface) *Server {
 	}
 	r := ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
 	routers := map[string]routing.Router{
-		"random":         routing.NewRandomRouter(),
-		"least-request":  routing.NewLeastRequestRouter(),
-		"throughput":     routing.NewThroughputRouter(),
-		"least-kv-cache": routing.NewLeastKvCacheRouter(r),
+		"random":          routing.NewRandomRouter(),
+		"least-request":   routing.NewLeastRequestRouter(),
+		"throughput":      routing.NewThroughputRouter(),
+		"least-kv-cache":  routing.NewLeastKvCacheRouter(),
+		"least-busy-time": routing.NewLeastBusyTimeRouter(),
+		"least-latency":   routing.NewLeastBusyTimeRouter(),
 	}
 
 	return &Server{
@@ -530,6 +532,10 @@ func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, po
 	case "throughput":
 		route = s.routers[routingStrategy]
 	case "least-kv-cache":
+		route = s.routers[routingStrategy]
+	case "least-busy-time":
+		route = s.routers[routingStrategy]
+	case "least-latency":
 		route = s.routers[routingStrategy]
 	default:
 		route = s.routers["random"]

@@ -18,54 +18,69 @@ package routingalgorithms
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"math/rand"
 
 	"github.com/aibrix/aibrix/pkg/cache"
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/ratelimiter"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
 type leastBusyTimeRouter struct {
-	ratelimiter ratelimiter.RateLimiter
-	cache       *cache.Cache
+	cache *cache.Cache
 }
 
-func NewLeastBusyTimeRouter(ratelimiter ratelimiter.RateLimiter) Router {
+func NewLeastBusyTimeRouter() Router {
 	cacheFetched, err := cache.GetCache()
 	if err != nil {
 		panic(err)
 	}
 
 	return leastBusyTimeRouter{
-		ratelimiter: ratelimiter,
-		cache:       cacheFetched,
+		cache: cacheFetched,
 	}
 }
 
 func (r leastBusyTimeRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model string) (string, error) {
 	var targetPodIP string
-	minBusyTime := math.MaxFloat64
+	minBusyTimeRatio := math.MaxFloat64 // <= 1 in general
+
+	if len(pods) == 0 {
+		return "", fmt.Errorf("no pods to forward request")
+	}
 
 	for _, pod := range pods {
 		if pod.Status.PodIP == "" {
 			continue
 		}
 
-		busyTimeRatioMetric, err := r.cache.GetPodMetric(pod.Name, "gpu_busy_time_ratio")
-		busyTimeRatio := busyTimeRatioMetric.GetSimpleValue()
+		busyTimeRatio, err := r.cache.GetPodMetric(pod.Name, "gpu_busy_time_ratio") // todo: replace mock
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		klog.V(4).Infof("pod: %v, podIP: %v, GPU busy time ratio: %v",
-			pod.Name, pod.Status.PodIP, busyTimeRatio)
+		klog.V(4).Infof("pod: %v, podIP: %v, GPU busy time ratio: %v", pod.Name, pod.Status.PodIP, busyTimeRatio.GetSimpleValue())
 
-		if busyTimeRatio < minBusyTime {
-			minBusyTime = busyTimeRatio
+		if busyTimeRatio.GetSimpleValue() < minBusyTimeRatio {
+			minBusyTimeRatio = busyTimeRatio.GetSimpleValue()
 			targetPodIP = pod.Status.PodIP
 		}
 	}
 
-	return targetPodIP, nil
+	// Use fallback if no valid metrics
+	if targetPodIP == "" {
+		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
+		var err error
+		targetPodIP, err = selectRandomPod(pods, rand.Intn)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if targetPodIP == "" {
+		return "", fmt.Errorf("no pods to forward request")
+	}
+
+	return targetPodIP + ":" + podMetricPort, nil
 }

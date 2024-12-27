@@ -18,28 +18,28 @@ package routingalgorithms
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"math/rand"
 
 	"github.com/aibrix/aibrix/pkg/cache"
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/ratelimiter"
+	"github.com/aibrix/aibrix/pkg/metrics"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
 type leastExpectedLatencyRouter struct {
-	ratelimiter ratelimiter.RateLimiter
-	cache       *cache.Cache
+	cache *cache.Cache
 }
 
-func NewLeastExpectedLatencyRouter(ratelimiter ratelimiter.RateLimiter) Router {
+func NewLeastExpectedLatencyRouter() Router {
 	cache, err := cache.GetCache()
 	if err != nil {
 		panic(err)
 	}
 
 	return leastExpectedLatencyRouter{
-		ratelimiter: ratelimiter,
-		cache:       cache,
+		cache: cache,
 	}
 }
 
@@ -47,38 +47,103 @@ func (r leastExpectedLatencyRouter) Route(ctx context.Context, pods map[string]*
 	var targetPodIP string
 	minExpectedLatency := math.MaxFloat64
 
+	if len(pods) == 0 {
+		return "", fmt.Errorf("no pods to forward request")
+	}
+
+	sumPromptTokens := 0.0
+	sumGenerationTokens := 0.0
+	cntPromt := 0
+	cntGeneration := 0
+	for _, pod := range pods {
+		avgPromptTokens, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.AvgPromptToksPerReq)
+		if err != nil {
+			klog.Error(err)
+			continue
+		}
+		avgGenerationTokens, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.AvgGenerationToksPerReq)
+		if err != nil {
+			klog.Error(err)
+			continue
+		}
+		if avgPromptTokens.GetSimpleValue() > 0 {
+			sumPromptTokens += avgPromptTokens.GetSimpleValue()
+			cntPromt += 1
+		}
+		if avgGenerationTokens.GetSimpleValue() > 0 {
+			sumGenerationTokens += avgGenerationTokens.GetSimpleValue()
+			cntGeneration += 1
+		}
+	}
+	guessPromptTokens := 10.0
+	if cntPromt > 0 {
+		guessPromptTokens = sumPromptTokens / float64(cntPromt)
+	}
+	guessGenerationTokens := 100.0
+	if cntGeneration > 0 {
+		guessGenerationTokens = sumGenerationTokens / float64(cntGeneration)
+	}
+
 	for _, pod := range pods {
 		if pod.Status.PodIP == "" {
 			continue
 		}
 
 		// expected queuing latency
-		queuingLatency := 0.0
+		queuingLatency, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.RequestQueueTimeSeconds)
+		if err != nil {
+			klog.Error(err)
+			continue
+		}
 
 		// expected prefill latency
-		avgLatencyPerInputToken, err := r.cache.GetPodMetric(pod.Name, "avg_latency_per_input_token") // todo: avg_latency_per_input_token
+		avgPromptTokens, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.AvgPromptToksPerReq)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		prefillLatency := avgLatencyPerInputToken.GetSimpleValue() * 1.0 // todo: ctx.req.encodeLength
+		PrefillTime, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.RequestPrefillTimeSeconds)
+		if err != nil {
+			klog.Error(err)
+			continue
+		}
+		prefillLatency := PrefillTime.GetHistogramValue().GetMean() / avgPromptTokens.GetSimpleValue() * guessPromptTokens
 
 		// expected decode latency
-		avgLatencyPerOutputToken, err := r.cache.GetPodMetric(pod.Name, "avg_latency_per_output_token") // todo: avg_latency_per_output_token
+		avgGenerationTokens, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.AvgGenerationToksPerReq)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		decodeLatency := avgLatencyPerOutputToken.GetSimpleValue() * 1.0 // todo: r.cache.avgDecodeLength
+		DecodeTime, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.RequestDecodeTimeSeconds)
+		if err != nil {
+			klog.Error(err)
+			continue
+		}
+		decodeLatency := DecodeTime.GetHistogramValue().GetMean() / avgGenerationTokens.GetSimpleValue() * guessGenerationTokens
 
-		totalExpectedLatency := queuingLatency + prefillLatency + decodeLatency
+		totalExpectedLatency := queuingLatency.GetSimpleValue() + prefillLatency + decodeLatency
 		klog.V(4).Infof("pod: %v, podIP: %v, queuingLatency: %v, prefillLatency: %v, decodeLatency: %v, totalExpectedLatency: %v",
-			pod.Name, pod.Status.PodIP, queuingLatency, prefillLatency, decodeLatency, totalExpectedLatency)
+			pod.Name, pod.Status.PodIP, queuingLatency.GetSimpleValue(), prefillLatency, decodeLatency, totalExpectedLatency)
 
 		if totalExpectedLatency <= minExpectedLatency {
 			minExpectedLatency = totalExpectedLatency
 			targetPodIP = pod.Status.PodIP
 		}
+	}
+
+	// Use fallback if no valid metrics
+	if targetPodIP == "" {
+		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
+		var err error
+		targetPodIP, err = selectRandomPod(pods, rand.Intn)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if targetPodIP == "" {
+		return "", fmt.Errorf("no pods to forward request")
 	}
 
 	return targetPodIP + ":" + podMetricPort, nil
