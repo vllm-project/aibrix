@@ -26,33 +26,33 @@ import (
 	"k8s.io/klog/v2"
 )
 
-type leastLatencyScheduler struct {
+type leastThroughputScheduler struct {
 	cache *cache.Cache
 }
 
-func NewLeastLatencyScheduler(c *cache.Cache) Scheduler {
-	return leastLatencyScheduler{
+func NewLeastThroughputScheduler(c *cache.Cache) Scheduler {
+	return leastThroughputScheduler{
 		cache: c,
 	}
 }
 
-func (r leastLatencyScheduler) SelectPod(ctx context.Context, pods []v1.Pod) (*v1.Pod, error) {
+func (r leastThroughputScheduler) SelectPod(ctx context.Context, pods []v1.Pod) (*v1.Pod, error) {
 	selectedPod := v1.Pod{}
-	podLatencyMin := math.MaxFloat64
+	podThroughputMin := math.MaxFloat64
 
 	for _, pod := range pods {
-		queueTime, err := r.cache.GetPodMetric(pod.Name, metrics.RequestQueueTimeSeconds)
+		promptThroughput, err := r.cache.GetPodMetric(pod.Name, metrics.AvgPromptThroughputToksPerMinPod)
 		if err != nil {
 			return nil, err
 		}
-		inferenceTime, err := r.cache.GetPodMetric(pod.Name, metrics.RequestInferenceTimeSeconds)
+		generationThroughput, err := r.cache.GetPodMetric(pod.Name, metrics.AvgGenerationThroughputToksPerMinPod)
 		if err != nil {
 			return nil, err
 		}
-		podLatency := queueTime.GetHistogramValue().GetMean() + inferenceTime.GetHistogramValue().GetMean()
-		if podLatency < podLatencyMin {
+		podThroughput := promptThroughput.GetSimpleValue()*2 + generationThroughput.GetSimpleValue()
+		if podThroughput < podThroughputMin {
 			selectedPod = pod
-			podLatencyMin = podLatency
+			podThroughputMin = podThroughput
 		}
 	}
 

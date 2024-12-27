@@ -18,8 +18,8 @@ package scheduling
 
 import (
 	"context"
-	"math"
-    "math/rand"
+	"errors"
+	"math/rand"
 
 	"github.com/aibrix/aibrix/pkg/cache"
 	v1 "k8s.io/api/core/v1"
@@ -27,10 +27,13 @@ import (
 )
 
 type randomScheduler struct {
+	cache *cache.Cache
 }
 
-func NewRandomScheduler() Scheduler {
-	return randomScheduler{}
+func NewRandomScheduler(c *cache.Cache) Scheduler {
+	return randomScheduler{
+		cache: c,
+	}
 }
 
 func (r randomScheduler) SelectPod(ctx context.Context, pods []v1.Pod) (*v1.Pod, error) {

@@ -33,8 +33,16 @@ type Scheduler interface {
 // NewScheduler leverages the factory method to choose the right scheduler
 func NewScheduler(policyName string, c *cache.Cache) (Scheduler, error) {
 	switch policyName {
+	case "random":
+		return NewRandomScheduler(c), nil
 	case "leastAdapters":
 		return NewLeastAdapters(c), nil
+	case "binPack":
+		return NewBinPackScheduler(c), nil
+	case "leastLatency":
+		return NewLeastLatencyScheduler(c), nil
+	case "leastThroughput":
+		return NewLeastThroughputScheduler(c), nil
 	default:
 		return nil, errors.New("unknown scheduler policy")
 	}

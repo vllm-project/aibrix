@@ -20,10 +20,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+
 	"github.com/aibrix/aibrix/pkg/cache"
+	"github.com/aibrix/aibrix/pkg/metrics"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
-	"math"
 )
 
 type leastUtilizationScheduler struct {
@@ -51,18 +53,18 @@ func (r leastUtilizationScheduler) SelectPod(ctx context.Context, pods []v1.Pod)
 		// - Anything else?
 
 		// Get utilization
-		utilizationVal := 0.0
 		var err error
+		var utilization metrics.MetricValue
 		switch utilizationTag {
 		case "RPM":
 			// todo: 从cache获取相关指标, 接口待定
-			utilizationVal, err = r.cache.GetPodMetric(pod.Name, "requests_per_minute")
+			utilization, err = r.cache.GetPodMetric(pod.Name, "requests_per_minute")
 		case "TPM":
-			utilizationVal, err = r.cache.GetPodMetric(pod.Name, "tokens_per_minute")
+			utilization, err = r.cache.GetPodMetric(pod.Name, "tokens_per_minute")
 		case "kv_cache":
-			utilizationVal, err = r.cache.GetPodMetric(pod.Name, "kv_cache")
+			utilization, err = r.cache.GetPodMetric(pod.Name, "kv_cache")
 		case "busy_time":
-			utilizationVal, err = r.cache.GetPodMetric(pod.Name, "gpu_busy_time_ratio")
+			utilization, err = r.cache.GetPodMetric(pod.Name, "gpu_busy_time_ratio")
 		default:
 			err = errors.New(fmt.Sprintf("Invalid case: %s.", utilizationTag))
 		}
@@ -71,6 +73,7 @@ func (r leastUtilizationScheduler) SelectPod(ctx context.Context, pods []v1.Pod)
 			continue
 		}
 
+		utilizationVal := utilization.GetSimpleValue()
 		// Select the pod with minimum utilization
 		if utilizationVal <= minUtilizationVal {
 			selectedPod = pod

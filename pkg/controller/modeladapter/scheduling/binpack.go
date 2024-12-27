@@ -18,39 +18,44 @@ package scheduling
 
 import (
 	"context"
+	"math"
+
 	"github.com/aibrix/aibrix/pkg/cache"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
-type firstFitScheduler struct {
+type binPackScheduler struct {
 	cache *cache.Cache
 }
 
-func NewFirstFitScheduler(c *cache.Cache) Scheduler {
-	return firstFitScheduler{
+func NewBinPackScheduler(c *cache.Cache) Scheduler {
+	return binPackScheduler{
 		cache: c,
 	}
 }
 
-func (r firstFitScheduler) SelectPod(ctx context.Context, pods []v1.Pod) (*v1.Pod, error) {
+func (r binPackScheduler) SelectPod(ctx context.Context, pods []v1.Pod) (*v1.Pod, error) {
+	// Binpack algorithm: choose the pod (1) can place the adapter, (2) with the least remaining space
+
 	selectedPod := v1.Pod{}
+	podRemainCapMin := math.MaxInt
 
 	for _, pod := range pods {
-		if pod.Status.PodIP == "" {
+		models, err := r.cache.GetModelsForPod(pod.Name)
+		if err != nil {
+			return nil, err
+		}
+		podCap := 10 // todo: replace mock data
+		if len(models) >= podCap {
 			continue
 		}
 
-		// todo: 判断这个LoRA是否可以部署在这个Pod上
-		// - \sum{LoRA_Rank} <= Pod_Rank
-		// - Anything else?
-
-		// First fit algorithm, once the constraints are satisfied, select the pod
-		selectedPod = pod
-		break
+		if podCap-len(models) < podRemainCapMin {
+			selectedPod = pod
+			podRemainCapMin = podCap - len(models)
+		}
 	}
-
-	// TODO: selectedPod为NULL怎么处理
 
 	klog.InfoS("pod selected with first fit", "pod", klog.KObj(&selectedPod))
 	return &selectedPod, nil
