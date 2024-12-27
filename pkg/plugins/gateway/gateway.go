@@ -69,9 +69,9 @@ func NewServer(redisClient *redis.Client, c kubernetes.Interface) *Server {
 	}
 	r := ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
 	routers := map[string]routing.Router{
-		"random":         routing.NewRandomRouter(),
-		"least-request":  routing.NewLeastRequestRouter(),
-		"throughput":     routing.NewThroughputRouter(),
+		"random":        routing.NewRandomRouter(),
+		"least-request": routing.NewLeastRequestRouter(),
+		"throughput":    routing.NewThroughputRouter(),
 	}
 
 	return &Server{
