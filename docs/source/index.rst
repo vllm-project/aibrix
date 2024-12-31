@@ -16,6 +16,7 @@ Key features:
 - **Distributed Inference**: Scalable architecture to handle large workloads across multiple nodes.
 - **LLM App-Tailored Autoscaler**: Dynamically scale inference resources based on real-time demand.
 - **Unified AI Runtime**: A versatile sidecar enabling metric standardization, model downloading, and management.
+- **Heterogeneous-GPU Inference**: Cost-effective SLO-driven LLM inference using heterogeneous GPUs.
 - **GPU Hardware Failure Detection (TBD)**: Proactive detection of GPU hardware issues.
 - **Benchmark Tool (TBD)**: A tool for measuring inference performance and resource efficiency.
 
@@ -39,6 +40,7 @@ Documentation
    features/lora-dynamic-loading.rst
    features/gateway-plugins.rst
    features/multi-node-inference.rst
+   features/heterogeneous-gpu.rst
    features/runtime.rst
 
 .. toctree::
