@@ -43,6 +43,9 @@ const (
 	AvgRequestsPerMinPod                 = "avg_requests_per_min_pod"
 	AvgPromptThroughputToksPerMinPod     = "avg_prompt_throughput_toks_per_min_pod"
 	AvgGenerationThroughputToksPerMinPod = "avg_generation_throughput_toks_per_min_pod"
+	MaxLora                              = "max_lora"
+	WaitingLoraAdapters                  = "waiting_lora_adapters"
+	RunningLoraAdapters                  = "running_lora_adapters"
 )
 
 var (
@@ -270,6 +273,33 @@ var (
 			},
 			PromQL:      `increase(vllm:generation_tokens_total{instance="${instance}", job="pods"}[5m]) / 5`,
 			Description: "Average generation throughput in tokens per minute in last 5 mins",
+		},
+		MaxLora: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Query: QueryLabel,
+			},
+			RawMetricName: "lora_requests_info",
+			Description:   "Max count of Lora Adapters",
+		},
+		RunningLoraAdapters: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Query: QueryLabel,
+			},
+			RawMetricName: "lora_requests_info",
+			Description:   "Count of running Lora Adapters",
+		},
+		WaitingLoraAdapters: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Query: QueryLabel,
+			},
+			RawMetricName: "lora_requests_info",
+			Description:   "Count of waiting Lora Adapters",
 		},
 	}
 )
