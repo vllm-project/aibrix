@@ -590,11 +590,12 @@ func (c *Cache) updatePodMetrics() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, pod := range c.Pods {
-		// Only scrape healthy Pod
-		if pod.Status.PodIP == "" || utils.IsPodTerminating(pod) || !utils.IsPodReady(pod) {
-			continue
-		}
+	readyPods := utils.FilterReadyPods(c.Pods)
+	if len(readyPods) == 0 {
+		return
+	}
+
+	for _, pod := range readyPods {
 		podName := pod.Name
 		if len(c.PodMetrics[podName]) == 0 {
 			c.PodMetrics[podName] = map[string]metrics.MetricValue{}

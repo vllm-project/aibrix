@@ -144,9 +144,12 @@ func CountReadyPods(podList *v1.PodList) (int64, error) {
 func FilterReadyPods(pods map[string]*v1.Pod) []*v1.Pod {
 	var readyPods []*v1.Pod
 	for _, pod := range pods {
-		if pod.Status.PodIP != "" && IsPodReady(pod) {
-			readyPods = append(readyPods, pod)
+		if pod.Status.PodIP == "" || IsPodTerminating(pod) || !IsPodReady(pod) {
+			continue
 		}
+
+		readyPods = append(readyPods, pod)
+
 	}
 	return readyPods
 }

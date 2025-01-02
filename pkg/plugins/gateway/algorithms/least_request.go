@@ -24,6 +24,7 @@ import (
 
 	"github.com/aibrix/aibrix/pkg/cache"
 	"github.com/aibrix/aibrix/pkg/metrics"
+	"github.com/aibrix/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -51,11 +52,12 @@ func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod, 
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	for _, pod := range pods {
-		if pod.Status.PodIP == "" {
-			continue
-		}
+	readyPods := utils.FilterReadyPods(pods)
+	if len(readyPods) == 0 {
+		return "", fmt.Errorf("no ready pods available for fallback")
+	}
 
+	for _, pod := range readyPods {
 		runningReq, err := r.cache.GetPodMetric(pod.Name, metrics.NumRequestsRunning)
 		if err != nil {
 			klog.Error(err)

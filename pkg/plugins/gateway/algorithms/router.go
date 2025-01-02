@@ -36,7 +36,6 @@ type Router interface {
 // selectRandomPodWithRand selects a random pod from the provided pod map.
 // It returns an error if no ready pods are available.
 func selectRandomPod(pods map[string]*v1.Pod, randomFn func(int) int) (string, error) {
-	// terminating pods can be chosen at this moment. FilterReadyPod didn't exclude the terminating pods yet.
 	readyPods := utils.FilterReadyPods(pods)
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods available for fallback")
