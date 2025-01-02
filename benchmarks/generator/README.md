@@ -23,13 +23,24 @@ The file would be stored under `output` folder based on the name of different pa
 
 ```shell
 export SUMMARY_FILE=${PATH_TO_SUMMARY_FILE}
-python workload_generator.py --prompt-file $SHAREGPT_FILE_PATH --num-prompts 100 --interval-ms 1000 --duration-ms 600000 --trace-type internal --trace-file "$SUMMARY_FILE" --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "output"
+python workload_generator.py --prompt-file $SHAREGPT_FILE_PATH --num-prompts 100 --interval-ms 1000 --duration-ms 600000 --trace-type internal --traffic-file "$SUMMARY_FILE" --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "output"
 ```
 
 This generator assumes trace file to be in the following format
 ```
 "Time","Total","Success","4xx Error"
 2024-10-1 00:00:00,100,99,1
+```
+### Indicate the length of prompt/completion
+In this case, you can also indicate the request's prompt length by the `--prompt-len-file` config, or the output length by the `--completion-len-file`,
+based on the parameters, the generator will select the proper length in the prompt_file to simulate the length of the real flow's load.
+
+The format of the file should follow the table head format and have the **exact same row length** as the traffic file
+```
+P50,P70,P99
+2000,4000,10000
+...
+2000,4000,10000(same row size with traffic file)
 ```
 
 This generator generate workload file (in .json format) under `output` folder. The file would look like the following:
