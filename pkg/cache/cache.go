@@ -44,6 +44,7 @@ import (
 	v1alpha1scheme "github.com/aibrix/aibrix/pkg/client/clientset/versioned/scheme"
 	"github.com/aibrix/aibrix/pkg/metrics"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	dto "github.com/prometheus/client_model/go"
 	"k8s.io/client-go/kubernetes/scheme"
 )
 
@@ -87,6 +88,10 @@ var (
 		metrics.NumRequestsSwapped,
 		metrics.AvgPromptThroughputToksPerS,
 		metrics.AvgGenerationThroughputToksPerS,
+		metrics.GPUCacheUsagePerc,
+		metrics.CPUCacheUsagePerc,
+		metrics.GPUCacheUsagePerc,
+		metrics.CPUCacheUsagePerc,
 	}
 	// histogram metric example - time_to_first_token_seconds, _sum, _bucket _count.
 	histogramMetricNames = []string{
@@ -102,6 +107,22 @@ var (
 
 	prometheusMetricNames = []string{
 		metrics.P95TTFT5m,
+		metrics.P95TTFT5mPod,
+		metrics.AvgTTFT5mPod,
+		metrics.P95TPOT5mPod,
+		metrics.AvgTPOT5mPod,
+		metrics.AvgPromptToksPerReq,
+		metrics.AvgGenerationToksPerReq,
+		metrics.AvgE2ELatencyPod,
+		metrics.AvgRequestsPerMinPod,
+		metrics.AvgPromptThroughputToksPerMinPod,
+		metrics.AvgGenerationThroughputToksPerMinPod,
+	}
+
+	labelQueryMetricNames = []string{
+		metrics.MaxLora,
+		metrics.WaitingLoraAdapters,
+		metrics.RunningLoraAdapters,
 	}
 
 	podMetricRefreshIntervalInMilliseconds = getPodMetricRefreshInterval()
@@ -586,6 +607,150 @@ func (c *Cache) queryUpdatePromQLMetrics(metric metrics.Metric, queryLabels map[
 	return nil
 }
 
+func (c *Cache) updateSimpleMetricFromRawMetrics(pod *v1.Pod, allMetrics map[string]*dto.MetricFamily) {
+	podName := pod.Name
+	for _, metricName := range counterGaugeMetricNames {
+		metric, exists := metrics.Metrics[metricName]
+		if !exists {
+			klog.Warningf("Cannot find %v in the metric list", metricName)
+			continue
+		}
+
+		// TODO: we should refact metricName to fit other engine
+		metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", metricName)]
+		if !exists {
+			klog.Warningf("Cannot find %v in the pod metrics", metricName)
+			continue
+		}
+		scope := metric.MetricScope
+		for _, familyMetric := range metricFamily.Metric {
+			modelName, _ := metrics.GetLabelValueForKey(familyMetric, "model_name")
+
+			metricValue, err := metrics.GetCounterGaugeValue(familyMetric, metricFamily.GetType())
+			if err != nil {
+				klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
+				continue
+			}
+
+			err = c.updatePodRecord(podName, modelName, metricName, scope, &metrics.SimpleMetricValue{Value: metricValue})
+			if err != nil {
+				klog.Errorf("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
+				continue
+			}
+
+			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
+		}
+	}
+}
+
+func (c *Cache) updateHistogramMetricFromRawMetrics(pod *v1.Pod, allMetrics map[string]*dto.MetricFamily) {
+	podName := pod.Name
+	for _, metricName := range histogramMetricNames {
+		metric, exists := metrics.Metrics[metricName]
+		if !exists {
+			klog.Warningf("Cannot find %v in the metric list", metricName)
+			continue
+		}
+
+		metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", metricName)]
+		if !exists {
+			klog.Warningf("Cannot find %v in the pod metrics", metricName)
+			continue
+		}
+		scope := metric.MetricScope
+		for _, familyMetric := range metricFamily.Metric {
+			modelName, _ := metrics.GetLabelValueForKey(familyMetric, "model_name")
+			metricValue, err := metrics.GetHistogramValue(familyMetric)
+			if err != nil {
+				klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
+				continue
+			}
+
+			histogramValue := &metrics.HistogramMetricValue{
+				Sum:     metricValue.Sum,
+				Count:   metricValue.Count,
+				Buckets: metricValue.Buckets,
+			}
+			err = c.updatePodRecord(podName, modelName, metricName, scope, histogramValue)
+			if err != nil {
+				klog.Errorf("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
+				continue
+			}
+
+			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
+
+		}
+	}
+}
+
+func (c *Cache) updateQueryLabelMetricFromRawMetrics(pod *v1.Pod, allMetrics map[string]*dto.MetricFamily) {
+	podName := pod.Name
+
+	for _, labelMetricName := range labelQueryMetricNames {
+		metric, exists := metrics.Metrics[labelMetricName]
+		if !exists {
+			klog.Warningf("Cannot find %v in the metric list", labelMetricName)
+			continue
+		}
+		rawMetricName := metric.RawMetricName
+		scope := metric.MetricScope
+		metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", rawMetricName)]
+		if !exists {
+			klog.Warningf("Cannot find %v in the pod metrics", rawMetricName)
+			continue
+		}
+		for _, familyMetric := range metricFamily.Metric {
+			modelName, _ := metrics.GetLabelValueForKey(familyMetric, "model_name")
+			labelValue, _ := metrics.GetLabelValueForKey(familyMetric, labelMetricName)
+			err := c.updatePodRecord(podName, modelName, labelMetricName, scope, &metrics.LabelValueMetricValue{Value: labelValue})
+			if err != nil {
+				klog.Errorf("Failed to update metrics %s from pod %s %s %d: %v", labelMetricName, podName, pod.Status.PodIP, podPort, err)
+				continue
+			}
+
+			klog.V(5).InfoS("Successfully parsed metrics", "metric", labelMetricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", labelValue)
+		}
+	}
+}
+
+func (c *Cache) updateMetricFromPromQL(pod *v1.Pod) {
+	podName := pod.Name
+
+	for _, metricName := range prometheusMetricNames {
+		queryLabels := map[string]string{
+			"instance": fmt.Sprintf("%s:%d", pod.Status.PodIP, podPort),
+		}
+		metric, ok := metrics.Metrics[metricName]
+		if !ok {
+			klog.Warningf("Cannot find %v in the metric list", metricName)
+			continue
+		}
+		scope := metric.MetricScope
+		if scope == metrics.PodMetricScope {
+			err := c.queryUpdatePromQLMetrics(metric, queryLabels, podName, "", metricName)
+			if err != nil {
+				klog.Errorf("Failed to query and update PromQL metrics: %v", err)
+				continue
+			}
+		} else if scope == metrics.PodModelMetricScope {
+			if modelNames, ok := c.PodToModelMapping[podName]; ok {
+				for modelName := range modelNames {
+					queryLabels["model_name"] = modelName
+					err := c.queryUpdatePromQLMetrics(metric, queryLabels, podName, modelName, metricName)
+					if err != nil {
+						klog.Errorf("Failed to query and update PromQL metrics: %v", err)
+						continue
+					}
+				}
+			} else {
+				klog.Warningf("Cannot find model names for pod %s", podName)
+			}
+		} else {
+			klog.Warningf("Scope %v is not supported", scope)
+		}
+	}
+}
+
 func (c *Cache) updatePodMetrics() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -610,116 +775,23 @@ func (c *Cache) updatePodMetrics() {
 		if err != nil {
 			klog.Warningf("Error parsing metric families: %v\n", err)
 		}
+
 		// parse counterGaugeMetricsNames
-		for _, metricName := range counterGaugeMetricNames {
-			metric, exists := metrics.Metrics[metricName]
-			if !exists {
-				klog.Warningf("Cannot find %v in the metric list", metricName)
-				continue
-			}
-
-			// TODO: we should refact metricName to fit other engine
-			metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", metricName)]
-			if !exists {
-				klog.Warningf("Cannot find %v in the pod metrics", metricName)
-				continue
-			}
-			scope := metric.MetricScope
-			for _, familyMetric := range metricFamily.Metric {
-				modelName, _ := metrics.GetLabelValueForKey(familyMetric, "model_name")
-
-				metricValue, err := metrics.GetCounterGaugeValue(familyMetric, metricFamily.GetType())
-				if err != nil {
-					klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
-					continue
-				}
-
-				err = c.updatePodRecord(podName, modelName, metricName, scope, &metrics.SimpleMetricValue{Value: metricValue})
-				if err != nil {
-					klog.Errorf("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
-					continue
-				}
-
-				klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
-			}
-		}
+		c.updateSimpleMetricFromRawMetrics(pod, allMetrics)
 
 		// parse histogramMetrics
-		for _, metricName := range histogramMetricNames {
-			metric, exists := metrics.Metrics[metricName]
-			if !exists {
-				klog.Warningf("Cannot find %v in the metric list", metricName)
-				continue
-			}
+		c.updateHistogramMetricFromRawMetrics(pod, allMetrics)
 
-			metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", metricName)]
-			if !exists {
-				klog.Warningf("Cannot find %v in the pod metrics", metricName)
-				continue
-			}
-			scope := metric.MetricScope
-			for _, familyMetric := range metricFamily.Metric {
-				modelName, _ := metrics.GetLabelValueForKey(familyMetric, "model_name")
-				metricValue, err := metrics.GetHistogramValue(familyMetric)
-				if err != nil {
-					klog.Errorf("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
-					continue
-				}
-
-				histogramValue := &metrics.HistogramMetricValue{
-					Sum:     metricValue.Sum,
-					Count:   metricValue.Count,
-					Buckets: metricValue.Buckets,
-				}
-				err = c.updatePodRecord(podName, modelName, metricName, scope, histogramValue)
-				if err != nil {
-					klog.Errorf("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
-					continue
-				}
-
-				klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
-
-			}
-		}
+		// parse QueryLabel metrics
+		c.updateQueryLabelMetricFromRawMetrics(pod, allMetrics)
 
 		if c.prometheusApi == nil {
 			klog.V(4).InfoS("Prometheus api is not initialized, PROMETHEUS_ENDPOINT is not configured, skip fetching prometheus metrics")
 			continue
 		}
+		// parse prometheus metrics
+		c.updateMetricFromPromQL(pod)
 
-		for _, metricName := range prometheusMetricNames {
-			queryLabels := map[string]string{
-				"instance": fmt.Sprintf("%s:%d", pod.Status.PodIP, podPort),
-			}
-			metric, ok := metrics.Metrics[metricName]
-			if !ok {
-				klog.Warningf("Cannot find %v in the metric list", metricName)
-				continue
-			}
-			scope := metric.MetricScope
-			if scope == metrics.PodMetricScope {
-				err := c.queryUpdatePromQLMetrics(metric, queryLabels, podName, "", metricName)
-				if err != nil {
-					klog.Errorf("Failed to query and update PromQL metrics: %v", err)
-					continue
-				}
-			} else if scope == metrics.PodModelMetricScope {
-				if modelNames, ok := c.PodToModelMapping[podName]; ok {
-					for modelName := range modelNames {
-						queryLabels["model_name"] = modelName
-						err := c.queryUpdatePromQLMetrics(metric, queryLabels, podName, modelName, metricName)
-						if err != nil {
-							klog.Errorf("Failed to query and update PromQL metrics: %v", err)
-							continue
-						}
-					}
-				} else {
-					klog.Warningf("Cannot find model names for pod %s", podName)
-				}
-			} else {
-				klog.Warningf("Scope %v is not supported", scope)
-			}
-		}
 	}
 }
 
@@ -732,43 +804,6 @@ func (c *Cache) updateModelMetrics() {
 		return
 	}
 
-	for _, metricName := range prometheusMetricNames {
-		for modelName := range c.ModelToPodMapping {
-			// Ensure ModelMetrics is initialized
-			if c.ModelMetrics == nil {
-				c.ModelMetrics = make(map[string]map[string]interface{})
-			}
-
-			// Ensure the map for the specific modelName is initialized
-			if c.ModelMetrics[modelName] == nil {
-				c.ModelMetrics[modelName] = make(map[string]interface{})
-			}
-
-			queryLabels := map[string]string{
-				"model_name": modelName,
-			}
-			metric, ok := metrics.Metrics[metricName]
-			if !ok {
-				klog.Warningf("Cannot find %v in the metric list", metricName)
-				continue
-			}
-			query := metrics.BuildQuery(metric.PromQL, queryLabels)
-			// Querying metrics
-			result, warnings, err := c.prometheusApi.Query(context.Background(), query, time.Now())
-			if err != nil {
-				// Skip this model fetching if an error is thrown
-				klog.Warningf("Error executing query: %v", err)
-				continue
-			}
-			if len(warnings) > 0 {
-				klog.Warningf("Warnings: %v\n", warnings)
-			}
-
-			klog.Infof("Query Result:%v\n", result)
-			// Update metrics
-			c.ModelMetrics[modelName][metricName] = result
-		}
-	}
 }
 
 func (c *Cache) AddRequestTrace(modelName string, inputTokens, outputTokens int64) {

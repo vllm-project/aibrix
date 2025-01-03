@@ -456,14 +456,30 @@ def metrics():
     success_total = overrides.get("success_total", total / replicas)
     avg_prompt_throughput = overrides.get("avg_prompt_throughput", total / replicas if replicas > 0 else 0)
     avg_generation_throughput = overrides.get("avg_generation_throughput", total / replicas if replicas > 0 else 0)
+    prompt_tokens_total = overrides.get("prompt_tokens_total", randint(100, 1024) * success_total)
+    generation_tokens_total = overrides.get("generation_tokens_total", randint(100, 1024) * success_total)
     running = overrides.get("running", randint(1, 100))
+    cpu_running = overrides.get("cpu_running", randint(1, 100))
     waiting = overrides.get("waiting", randint(1, 100))
     swapped = overrides.get("swapped", randint(1, 100))
     max_running_capacity = 100
     gpu_cache_usage_perc = overrides.get("gpu_cache_usage_perc", min(100.0, (running / max_running_capacity) * 100))
+    cpu_cache_usage_perc = overrides.get("cpu_cache_usage_perc", min(100.0, (cpu_running / max_running_capacity) * 100))
 
     # Define metrics and their attributes
     simple_metrics = [
+        {
+            "name": "prompt_tokens_total",
+            "type": "counter",
+            "description": "Count of prefill tokens processed.",
+            "value": overrides.get("prompt_tokens_total", prompt_tokens_total)
+        },
+        {
+            "name": "generation_tokens_total",
+            "type": "counter",
+            "description": "Count of generation tokens processed.",
+            "value": overrides.get("generation_tokens_total", generation_tokens_total)
+        },
         {
             "name": "request_success_total",
             "type": "counter",
@@ -508,6 +524,14 @@ def metrics():
                 "gpu_cache_usage_perc", gpu_cache_usage_perc
             )
         },
+        {
+            "name": "cpu_cache_usage_perc",
+            "type": "gauge",
+            "description": "CPU KV-cache usage. 1 means 100 percent usage.",
+            "value": overrides.get(
+                "cpu_cache_usage_perc", cpu_cache_usage_perc
+            )
+        },
     ]
 
     # Generate all metrics
@@ -539,6 +563,22 @@ def metrics():
             "description": "Histogram of time per output token in seconds.",
             "buckets": ["0.01", "0.025", "0.05", "0.075", "0.1", "0.15",
                         "0.2", "0.3", "0.4", "+Inf"]
+        },
+        {
+            "name": "request_prompt_tokens",
+            "type": "histogram",
+            "description": "Histogram of number of prefill tokens processed..",
+            "buckets": ["1.0", "2.0", "5.0", "10.0", "20.0", "50.0",
+                        "100.0", "200.0", "500.0", "1000.0", "2000.0",
+                        "5000.0", "10000.0", "+Inf"]
+        },
+        {
+            "name": "request_generation_tokens",
+            "type": "histogram",
+            "description": "Histogram of number of generation tokens processed..",
+            "buckets": ["1.0", "2.0", "5.0", "10.0", "20.0", "50.0",
+                        "100.0", "200.0", "500.0", "1000.0", "2000.0",
+                        "5000.0", "10000.0", "+Inf"]
         },
         {
             "name": "e2e_request_latency_seconds",

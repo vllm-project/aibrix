@@ -22,6 +22,7 @@ bin/
 go.work
 go.work.sum
 .idea
+.vscode
 
 .DS_Store
 __pycache__
