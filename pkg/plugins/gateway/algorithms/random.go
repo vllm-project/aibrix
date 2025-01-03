@@ -21,8 +21,6 @@ import (
 	"fmt"
 	"math/rand"
 
-	"k8s.io/klog/v2"
-
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -39,7 +37,6 @@ func (r randomRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model 
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 	var err error
 	targetPodIP, err = selectRandomPod(pods, rand.Intn)
 	if err != nil {

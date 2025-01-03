@@ -276,12 +276,10 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 				fmt.Sprintf("error on getting pods for model %s", model)), targetPodIP, stream
 		}
 
-		klog.InfoS("debug", "pods", pods)
 		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods, model)
-		klog.InfoS("debug", "targetPodIP", targetPodIP)
-		if err != nil {
+		if targetPodIP == "" || err != nil {
 			return generateErrorResponse(
-				envoyTypePb.StatusCode_InternalServerError,
+				envoyTypePb.StatusCode_ServiceUnavailable,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-error-routing", RawValue: []byte("true")}}},
 				"error on selecting target pod"), targetPodIP, stream
