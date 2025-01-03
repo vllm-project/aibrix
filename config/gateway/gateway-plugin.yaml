@@ -32,7 +32,7 @@ spec:
           command: ['sh', '-c', 'until echo "ping" | nc aibrix-redis-master 6379 -w 1  | grep -c PONG; do echo waiting for service aibrix-redis-master; sleep 2; done']
       containers:
         - name: gateway-plugin
-          image: plugins:latest
+          image: gateway-plugins:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 50052
@@ -51,7 +51,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-      serviceAccountName: aibrix-gateway-plugin
+      serviceAccountName: aibrix-gateway-plugins
 ---
 # this is a dummy route for incoming request and,
 # then request is routed to httproute using model name OR

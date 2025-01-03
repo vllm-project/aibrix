@@ -18,12 +18,43 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import ClassVar, Dict, List, Optional
 
 from aibrix import envs
+from aibrix.downloader.entity import RemoteSource
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
+
+
+@dataclass
+class DownloadExtraConfig:
+    """Downloader extra config."""
+
+    # Auth config for s3 or tos
+    ak: Optional[str] = None
+    sk: Optional[str] = None
+    endpoint: Optional[str] = None
+    region: Optional[str] = None
+
+    # Auth config for huggingface
+    hf_endpoint: Optional[str] = None
+    hf_token: Optional[str] = None
+    hf_revision: Optional[str] = None
+
+    # parrallel config
+    num_threads: Optional[int] = None
+    max_io_queue: Optional[int] = None
+    io_chunksize: Optional[int] = None
+    part_threshold: Optional[int] = None
+    part_chunksize: Optional[int] = None
+
+    # other config
+    allow_file_suffix: Optional[List[str]] = None
+    force_download: Optional[bool] = None
+
+
+DEFAULT_DOWNLOADER_EXTRA_CONFIG = DownloadExtraConfig()
 
 
 @dataclass
@@ -34,15 +65,27 @@ class BaseDownloader(ABC):
     model_name: str
     bucket_path: str
     bucket_name: Optional[str]
-    enable_progress_bar: bool = False
-    allow_file_suffix: Optional[List[str]] = field(
-        default_factory=lambda: envs.DOWNLOADER_ALLOW_FILE_SUFFIX
+    download_extra_config: DownloadExtraConfig = field(
+        default_factory=DownloadExtraConfig
     )
+    enable_progress_bar: bool = False
+    _source: ClassVar[RemoteSource] = RemoteSource.UNKNOWN
 
     def __post_init__(self):
         # valid downloader config
         self._valid_config()
         self.model_name_path = self.model_name
+        self.allow_file_suffix = (
+            self.download_extra_config.allow_file_suffix
+            or envs.DOWNLOADER_ALLOW_FILE_SUFFIX
+        )
+        self.force_download = (
+            self.download_extra_config.force_download or envs.DOWNLOADER_FORCE_DOWNLOAD
+        )
+
+    @property
+    def source(self) -> RemoteSource:
+        return self._source
 
     @abstractmethod
     def _valid_config(self):
@@ -81,7 +124,7 @@ class BaseDownloader(ABC):
         # filter the directory path
         files = [file for file in directory_list if not file.endswith("/")]
 
-        if self.allow_file_suffix is None:
+        if self.allow_file_suffix is None or len(self.allow_file_suffix) == 0:
             logger.info(f"All files from {self.bucket_path} will be downloaded.")
             filtered_files = files
         else:
@@ -93,7 +136,9 @@ class BaseDownloader(ABC):
 
         if not self._support_range_download():
             # download using multi threads
-            num_threads = envs.DOWNLOADER_NUM_THREADS
+            num_threads = (
+                self.download_extra_config.num_threads or envs.DOWNLOADER_NUM_THREADS
+            )
             logger.info(
                 f"Downloader {self.__class__.__name__} download "
                 f"{len(filtered_files)} files from {self.model_uri} "
@@ -157,23 +202,38 @@ class BaseDownloader(ABC):
 
 
 def get_downloader(
-    model_uri: str, model_name: Optional[str] = None, enable_progress_bar: bool = False
+    model_uri: str,
+    model_name: Optional[str] = None,
+    download_extra_config: Optional[Dict] = None,
+    enable_progress_bar: bool = False,
 ) -> BaseDownloader:
     """Get downloader for model_uri."""
+    download_config: DownloadExtraConfig = (
+        DEFAULT_DOWNLOADER_EXTRA_CONFIG
+        if download_extra_config is None
+        else DownloadExtraConfig(**download_extra_config)
+    )
+
     if re.match(envs.DOWNLOADER_S3_REGEX, model_uri):
         from aibrix.downloader.s3 import S3Downloader
 
-        return S3Downloader(model_uri, model_name, enable_progress_bar)
+        return S3Downloader(model_uri, model_name, download_config, enable_progress_bar)
     elif re.match(envs.DOWNLOADER_TOS_REGEX, model_uri):
         if envs.DOWNLOADER_TOS_VERSION == "v1":
             from aibrix.downloader.tos import TOSDownloaderV1
 
-            return TOSDownloaderV1(model_uri, model_name, enable_progress_bar)
+            return TOSDownloaderV1(
+                model_uri, model_name, download_config, enable_progress_bar
+            )
         else:
             from aibrix.downloader.tos import TOSDownloaderV2
 
-            return TOSDownloaderV2(model_uri, model_name, enable_progress_bar)
+            return TOSDownloaderV2(
+                model_uri, model_name, download_config, enable_progress_bar
+            )
     else:
         from aibrix.downloader.huggingface import HuggingFaceDownloader
 
-        return HuggingFaceDownloader(model_uri, model_name, enable_progress_bar)
+        return HuggingFaceDownloader(
+            model_uri, model_name, download_config, enable_progress_bar
+        )

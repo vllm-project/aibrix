@@ -22,10 +22,10 @@ from aibrix.logger import init_logger
 logger = init_logger(__name__)
 
 
-def meta_file(local_path: Union[Path, str], file_name: str) -> Path:
+def meta_file(local_path: Union[Path, str], file_name: str, source: str) -> Path:
     return (
         Path(local_path)
-        .joinpath(DOWNLOAD_CACHE_DIR)
+        .joinpath(DOWNLOAD_CACHE_DIR % source)
         .joinpath(f"{file_name}.metadata")
         .absolute()
     )

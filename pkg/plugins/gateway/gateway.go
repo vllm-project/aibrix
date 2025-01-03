@@ -226,12 +226,21 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			"error processing request body"), targetPodIP, stream
 	}
 
-	if model, ok = jsonMap["model"].(string); !ok || model == "" { // || !s.cache.CheckModelExists(model) # enable when dynamic lora is enabled
+	if model, ok = jsonMap["model"].(string); !ok || model == "" {
 		klog.ErrorS(nil, "model error in request", "requestID", requestID, "jsonMap", jsonMap)
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: "x-no-model", RawValue: []byte(model)}}},
 			fmt.Sprintf("no model in request body or model %s does not exist", model)), targetPodIP, stream
+	}
+
+	// early reject the request if model doesn't exist.
+	if !s.cache.CheckModelExists(model) {
+		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "jsonMap", jsonMap)
+		return generateErrorResponse(envoyTypePb.StatusCode_BadRequest,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: "x-no-model", RawValue: []byte(model)}}},
+			fmt.Sprintf("model %s does not exist", model)), targetPodIP, stream
 	}
 
 	stream, ok = jsonMap["stream"].(bool)
@@ -253,8 +262,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	}
 
 	headers := []*configPb.HeaderValueOption{}
-	switch {
-	case routingStrategy == "":
+	if routingStrategy == "" {
 		headers = append(headers, &configPb.HeaderValueOption{
 			Header: &configPb.HeaderValue{
 				Key:      "model",
@@ -262,7 +270,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			},
 		})
 		klog.InfoS("request start", "requestID", requestID, "model", model)
-	case routingStrategy != "":
+	} else {
 		pods, err := s.cache.GetPodsForModel(model)
 		if len(pods) == 0 || err != nil {
 			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
@@ -351,8 +359,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	var usage openai.CompletionUsage
 	headers := []*configPb.HeaderValueOption{}
 
-	switch stream {
-	case true:
+	if stream {
 		t := &http.Response{
 			Body: io.NopCloser(bytes.NewReader(b.ResponseBody.GetBody())),
 		}
@@ -373,7 +380,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				}}},
 				err.Error())
 		}
-	case false:
+	} else {
 		if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
 			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
 			return generateErrorResponse(

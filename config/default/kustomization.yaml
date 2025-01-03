@@ -23,6 +23,7 @@ resources:
 - ../rbac
 - ../manager
 - ../gateway
+- ../metadata
 - ../gpu-optimizer
 - ../dependency/kuberay-operator
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
@@ -53,3 +54,14 @@ patches:
       - kind: ServiceAccount
         name: aibrix-kuberay-operator-leader-election
         namespace: aibrix-system
+
+images:
+  - name: controller
+    newName: aibrix/controller-manager
+    newTag: nightly
+  - name: gateway-plugins
+    newName: aibrix/gateway-plugins
+    newTag: nightly
+  - name: metadata-service
+    newName: aibrix/metadata-service
+    newTag: nightly

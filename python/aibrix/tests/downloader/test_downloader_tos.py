@@ -16,6 +16,10 @@ from unittest import mock
 
 import pytest
 
+from aibrix.common.errors import (
+    ArgNotCongiuredError,
+    ModelNotFoundError,
+)
 from aibrix.downloader.base import get_downloader
 from aibrix.downloader.tos import TOSDownloaderV2
 
@@ -54,9 +58,9 @@ def test_get_downloader_tos(mock_boto3):
 def test_get_downloader_tos_path_not_exist(mock_boto3):
     mock_not_exsit_tos(mock_boto3)
 
-    with pytest.raises(AssertionError) as exception:
+    with pytest.raises(ModelNotFoundError) as exception:
         get_downloader("tos://bucket/not_exsit_path")
-    assert "not exist" in str(exception.value)
+    assert "Model not found" in str(exception.value)
 
 
 @mock.patch(ENVS_MODULE, env_group)
@@ -66,9 +70,9 @@ def test_get_downloader_tos_path_empty(mock_boto3):
 
     # Bucket name and path both are empty,
     # will first assert the name
-    with pytest.raises(AssertionError) as exception:
+    with pytest.raises(ArgNotCongiuredError) as exception:
         get_downloader("tos://")
-    assert "TOS bucket name is not set." in str(exception.value)
+    assert "`bucket_name` is not configured" in str(exception.value)
 
 
 @mock.patch(ENVS_MODULE, env_group)
@@ -77,6 +81,6 @@ def test_get_downloader_tos_path_empty_path(mock_boto3):
     mock_exsit_tos(mock_boto3)
 
     # bucket path is empty
-    with pytest.raises(AssertionError) as exception:
+    with pytest.raises(ArgNotCongiuredError) as exception:
         get_downloader("tos://bucket/")
-    assert "TOS bucket path is not set." in str(exception.value)
+    assert "`bucket_path` is not configured" in str(exception.value)

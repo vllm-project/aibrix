@@ -1,7 +1,7 @@
 
 ```shell
-kubectl apply -f docs/development/app/users.yaml
-kubectl -n aibrix-system port-forward svc/aibrix-gateway-users 8090:8090 &
+kubectl apply -f docs/development/app/metadata.yaml
+kubectl -n aibrix-system port-forward svc/aibrix-metadata-service 8090:8090 &
 ```
 
 # Create user

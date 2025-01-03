@@ -18,7 +18,16 @@ from typing import List, Optional
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
 from aibrix import envs
-from aibrix.downloader.base import BaseDownloader
+from aibrix.common.errors import (
+    ArgNotCongiuredError,
+    ArgNotFormatError,
+    ModelNotFoundError,
+)
+from aibrix.downloader.base import (
+    DEFAULT_DOWNLOADER_EXTRA_CONFIG,
+    BaseDownloader,
+    DownloadExtraConfig,
+)
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -33,15 +42,22 @@ class HuggingFaceDownloader(BaseDownloader):
         self,
         model_uri: str,
         model_name: Optional[str] = None,
+        download_extra_config: DownloadExtraConfig = DEFAULT_DOWNLOADER_EXTRA_CONFIG,
         enable_progress_bar: bool = False,
     ):
         if model_name is None:
             model_name = _parse_model_name_from_uri(model_uri)
             logger.info(f"model_name is not set, using `{model_name}` as model_name")
 
-        self.hf_token = envs.DOWNLOADER_HF_TOKEN
-        self.hf_endpoint = envs.DOWNLOADER_HF_ENDPOINT
-        self.hf_revision = envs.DOWNLOADER_HF_REVISION
+        self.download_extra_config = download_extra_config
+
+        self.hf_token = self.download_extra_config.hf_token or envs.DOWNLOADER_HF_TOKEN
+        self.hf_endpoint = (
+            self.download_extra_config.hf_endpoint or envs.DOWNLOADER_HF_ENDPOINT
+        )
+        self.hf_revision = (
+            self.download_extra_config.hf_revision or envs.DOWNLOADER_HF_REVISION
+        )
         self.hf_api = HfApi(endpoint=self.hf_endpoint, token=self.hf_token)
 
         super().__init__(
@@ -49,6 +65,7 @@ class HuggingFaceDownloader(BaseDownloader):
             model_name=model_name,
             bucket_path=model_uri,
             bucket_name=None,
+            download_extra_config=download_extra_config,
             enable_progress_bar=enable_progress_bar,
         )  # type: ignore
 
@@ -56,7 +73,7 @@ class HuggingFaceDownloader(BaseDownloader):
         # so place it after the super().__init__() call.
         self.allow_patterns = (
             None
-            if self.allow_file_suffix is None
+            if self.allow_file_suffix is None or len(self.allow_file_suffix) == 0
             else [f"*.{suffix}" for suffix in self.allow_file_suffix]
         )
         logger.debug(
@@ -67,14 +84,14 @@ class HuggingFaceDownloader(BaseDownloader):
         )
 
     def _valid_config(self):
-        assert (
-            len(self.model_uri.split("/")) == 2
-        ), "Model uri must be in `repo/name` format."
-        assert self.bucket_name is None, "Bucket name is empty in HuggingFace."
-        assert self.model_name is not None, "Model name is not set."
-        assert self.hf_api.repo_exists(
-            repo_id=self.model_uri
-        ), f"Model {self.model_uri} not exist."
+        if len(self.model_uri.split("/")) != 2:
+            raise ArgNotFormatError(arg_name="model_uri", expected_format="repo/name")
+
+        if self.model_name is None:
+            raise ArgNotCongiuredError(arg_name="model_name", arg_source="--model-name")
+
+        if not self.hf_api.repo_exists(repo_id=self.model_uri):
+            raise ModelNotFoundError(model_uri=self.model_uri)
 
     def _is_directory(self) -> bool:
         """Check if model_uri is a directory.
@@ -103,18 +120,21 @@ class HuggingFaceDownloader(BaseDownloader):
             token=self.hf_token,
             endpoint=self.hf_endpoint,
             local_dir_use_symlinks=False,
-            force_download=envs.DOWNLOADER_FORCE_DOWNLOAD,
+            force_download=self.force_download,
         )
 
     def download_directory(self, local_path: Path):
+        max_workers = (
+            self.download_extra_config.num_threads or envs.DOWNLOADER_NUM_THREADS
+        )
         snapshot_download(
             self.model_uri,
             local_dir=local_path,
             revision=self.hf_revision,
             token=self.hf_token,
             allow_patterns=self.allow_patterns,
-            max_workers=envs.DOWNLOADER_NUM_THREADS,
+            max_workers=max_workers,
             endpoint=self.hf_endpoint,
             local_dir_use_symlinks=False,
-            force_download=envs.DOWNLOADER_FORCE_DOWNLOAD,
+            force_download=self.force_download,
         )

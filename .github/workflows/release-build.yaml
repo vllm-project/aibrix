@@ -81,13 +81,12 @@ jobs:
         run: |
           cd python/aibrix
           poetry build
-          mkdir -p $GITHUB_WORKSPACE/artifacts
-          cp dist/* $GITHUB_WORKSPACE/artifacts/
+          ls -al dist/*
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: aibrix-python-packages
-          path: $GITHUB_WORKSPACE/artifacts/
+          path: python/aibrix/dist/*.whl
 
   artifact-release:
     runs-on: ubuntu-latest
@@ -110,13 +109,13 @@ jobs:
 
       # Upload the Kustomize YAML as a release artifact
       - name: Upload Kustomize YAML
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: aibrix-dependency-${{ github.ref_name }}.yaml
           path: aibrix-dependency-${{ github.ref_name }}.yaml
 
       - name: Upload Kustomize YAML
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: aibrix-core-${{ github.ref_name }}.yaml
           path: aibrix-core-${{ github.ref_name }}.yaml
@@ -132,17 +131,17 @@ jobs:
 
       # Download the Kustomize artifact from the previous job
       - name: Download Kustomize YAML
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: aibrix-dependency-${{ github.ref_name }}.yaml
 
       - name: Download Kustomize YAML
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: aibrix-core-${{ github.ref_name }}.yaml
 
       - name: Download PYTHON wheels
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: aibrix-python-packages
 
@@ -173,3 +172,5 @@ jobs:
           files: |
             aibrix-dependency-${{ github.ref_name }}.yaml
             aibrix-core-${{ github.ref_name }}.yaml
+            aibrix-*.whl
+            aibrix-python-packages/aibrix-*.whl

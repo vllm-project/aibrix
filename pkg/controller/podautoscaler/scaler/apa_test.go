@@ -129,7 +129,7 @@ func TestApaUpdateContext(t *testing.T) {
 	apaSpec := NewApaScalingContext()
 	err := apaSpec.UpdateByPaTypes(pa)
 	if err != nil {
-		t.Errorf("Failed to update KpaScalingContext: %v", err)
+		t.Errorf("Failed to update ApaScalingContext: %v", err)
 	}
 	if apaSpec.MaxScaleUpRate != 32.1 {
 		t.Errorf("expected MaxScaleDownRate = 32.1, got %f", apaSpec.MaxScaleDownRate)
@@ -143,6 +143,110 @@ func TestApaUpdateContext(t *testing.T) {
 	}
 	if apaSpec.DownFluctuationTolerance != 0.9 {
 		t.Errorf("expected DownFluctuationTolerance = 0.9, got %f", apaSpec.DownFluctuationTolerance)
+	}
+
+}
+
+// TestApaScale2 simulate from creating APA scaler same as what `PodAutoscalerReconciler.updateMetricsForScale` do.
+func TestApaScale2(t *testing.T) {
+
+	pa := &autoscalingv1alpha1.PodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "test_ns",
+			Name:      "test_llm_for_pa",
+			Labels: map[string]string{
+				"autoscaling.aibrix.ai/max-scale-up-rate":          "2",
+				"autoscaling.aibrix.ai/max-scale-down-rate":        "1.25",
+				"autoscaling.aibrix.ai/up-fluctuation-tolerance":   "0.1",
+				"autoscaling.aibrix.ai/down-fluctuation-tolerance": "0.2",
+				"apa.autoscaling.aibrix.ai/window":                 "30s",
+			},
+		},
+		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+			ScaleTargetRef: corev1.ObjectReference{
+				Kind: "Deployment",
+				Name: "example-deployment",
+			},
+			MinReplicas: nil, // expecting nil as default since it's a pointer and no totalValue is assigned
+			MaxReplicas: 5,
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					MetricSourceType: autoscalingv1alpha1.POD,
+					ProtocolType:     autoscalingv1alpha1.HTTP,
+					Path:             "metrics",
+					Port:             "8000",
+					TargetMetric:     "ttot",
+					TargetValue:      "50",
+				},
+			},
+			ScalingStrategy: "APA",
+		},
+	}
+
+	readyPodCount := 5
+	now := time.Unix(int64(10000), 0)
+	autoScaler, err := NewApaAutoscaler(readyPodCount, pa)
+	if err != nil {
+		t.Errorf("NewApaAutoscaler() failed: %v", err)
+	}
+
+	apaMetricsClient, ok := autoScaler.metricClient.(*metrics.APAMetricsClient)
+	if !ok {
+		t.Errorf("autoscaler.metricClient is not of type *metrics.APAMetricsClient")
+		return
+	}
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	metricKey, _, err := metrics.NewNamespaceNameMetric(pa)
+	if err != nil {
+		t.Errorf("NewNamespaceNameMetric() failed: %v", err)
+	}
+
+	type TestData struct {
+		ts              time.Time
+		totalValue      float64
+		desiredPodCount int32
+		checkScalerAttr func()
+	}
+
+	//// add a time delta to trigger
+	//time.Sleep(1 * time.Second)
+
+	// The APA scaling test scenario is as follows:
+	testDataList := []TestData{
+		{now.Add(0 * time.Second), 50.0 * 5, 5,
+			func() {},
+		},
+		// the window average is 55 / 50 = 1+0.1, within fluctuation tolerance, no scaling
+		{now.Add(10 * time.Second), 60.0 * 5, 5,
+			func() {},
+		},
+		// the window average is 40 / 50 = 1-0.2, within fluctuation tolerance, no scaling
+		{now.Add(20 * time.Second), 10.0 * 5, 5,
+			func() {},
+		},
+		// lower than 1-0.2, try to scale down to 3, but reset to 4 = 5 / max_down_scale_rate = 5 / 1.25 = 4
+		{now.Add(30 * time.Second), 20 * 5, 4,
+			func() {},
+		},
+	}
+	for _, testData := range testDataList {
+		t.Logf("--- test ts=%v: totalValue=%.2f expect=%d", testData.ts.Unix(), testData.totalValue, testData.desiredPodCount)
+		err := apaMetricsClient.UpdateMetricIntoWindow(testData.ts, testData.totalValue)
+		if err != nil {
+			t.Fatalf("failed to update metric: %v", err)
+		}
+
+		result := autoScaler.Scale(readyPodCount, metricKey, testData.ts)
+		testData.checkScalerAttr()
+
+		if result.DesiredPodCount != testData.desiredPodCount {
+			t.Fatalf("expected DesiredPodCount = %d, got %d", testData.desiredPodCount, result.DesiredPodCount)
+		}
+		// update the up-to-date pod count
+		readyPodCount = int(result.DesiredPodCount)
+		t.Logf("scale pod count to %d", readyPodCount)
 	}
 
 }

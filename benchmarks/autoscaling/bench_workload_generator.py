@@ -120,15 +120,15 @@ if __name__ == '__main__':
     interval = 30
     # Generate workloads with different parameters
     workload_dict = {
-        'Quick Rising':
+        'quick_rising':
             generate_workload(demo_requests, duration_sec=600, interval_sec=interval, A=5, period=5, only_rise=True),
-        'Slow Rising':
+        'slow_rising':
             generate_workload(demo_requests, duration_sec=600, interval_sec=interval, A=5, period=0.25,
                               only_rise=True),
-        'Slight Fluctuation':
+        'slight_fluctuation':
             generate_workload(demo_requests, duration_sec=600, interval_sec=interval, A=5, B=5, period=1,
                               only_rise=False),
-        'Severe Fluctuation':
+        'severe_fluctuation':
             generate_workload(demo_requests, duration_sec=600, interval_sec=interval, A=5, B=10, period=12,
                               only_rise=False),
     }

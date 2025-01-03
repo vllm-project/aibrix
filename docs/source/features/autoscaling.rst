@@ -16,7 +16,7 @@ In the following sections, we will demonstrate how users can create various type
 KPA Autoscaler
 --------------
 
-The KPA, inspired by Knative, maintains two time windows: a longer "stable window" and a shorter "panic window". It rapidly scales up resources in response to sudden spikes in traffic based on the panic window measurements.
+The KPA, inspired by Knative, maintains two time windows: a longer ``stable window`` and a shorter ``panic window``. It rapidly scales up resources in response to sudden spikes in traffic based on the panic window measurements.
 
 Unlike other solutions that might rely on Prometheus for gathering deployment metrics, AIBrix fetches and maintains metrics internally, enabling faster response times.
 

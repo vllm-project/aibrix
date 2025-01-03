@@ -41,8 +41,11 @@ def prepare_file_and_meta_data(file_path, meta_path, file_size, etag):
 
 def test_meta_file():
     with tempfile.TemporaryDirectory() as tmp_dir:
-        meta_file_path = meta_file(tmp_dir, "test")
-        assert str(meta_file_path).endswith(f"{DOWNLOAD_CACHE_DIR}/test.metadata")
+        source = "s3"
+        meta_file_path = meta_file(tmp_dir, "test", source=source)
+        assert str(meta_file_path).endswith(
+            f"{DOWNLOAD_CACHE_DIR % source}/test.metadata"
+        )
 
 
 def test_save_load_meta_data():
@@ -61,6 +64,7 @@ def test_save_load_meta_data():
 
 
 def test_check_file_exist():
+    source = "s3"
     with tempfile.TemporaryDirectory() as tmp_dir:
         # prepare file and meta data
         file_size = 10
@@ -68,7 +72,7 @@ def test_check_file_exist():
         etag = "here_is_etag_value_xyz"
         file_path = Path(tmp_dir).joinpath(file_name)
         # create meta data file
-        meta_path = meta_file(tmp_dir, file_name)
+        meta_path = meta_file(tmp_dir, file_name, source=source)
         prepare_file_and_meta_data(file_path, meta_path, file_size, etag)
 
         assert check_file_exist(file_path, meta_path, file_size, etag)
@@ -80,7 +84,7 @@ def test_check_file_exist():
 
         not_exist_file_name = "not_exist"
         not_exist_file_path = Path(tmp_dir).joinpath(not_exist_file_name)
-        not_exist_meta_path = meta_file(tmp_dir, not_exist_file_name)
+        not_exist_meta_path = meta_file(tmp_dir, not_exist_file_name, source=source)
         assert not check_file_exist(
             not_exist_file_path, not_exist_meta_path, file_size, etag
         )

@@ -1,0 +1,3 @@
+resources:
+- metadata.yaml
+- redis.yaml

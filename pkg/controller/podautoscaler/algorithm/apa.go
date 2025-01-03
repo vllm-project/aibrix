@@ -19,6 +19,8 @@ package algorithm
 import (
 	"math"
 
+	"k8s.io/klog/v2"
+
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
 )
 
@@ -34,6 +36,11 @@ func (a *ApaScalingAlgorithm) ComputeTargetReplicas(currentPodCount float64, con
 	upTolerance := context.GetUpFluctuationTolerance()
 	downTolerance := context.GetDownFluctuationTolerance()
 	currentUsePerPod := context.GetCurrentUsePerPod()
+
+	klog.V(4).InfoS("--- APA Details", "currentPodCount", currentPodCount,
+		"expectedUse", expectedUse, "upTolerance", upTolerance, "downTolerance", downTolerance,
+		"currentUsePerPod", currentUsePerPod, "current/expected", currentUsePerPod/expectedUse,
+	)
 
 	if currentUsePerPod/expectedUse > (1 + upTolerance) {
 		maxScaleUp := math.Ceil(context.GetMaxScaleUpRate() * currentPodCount)

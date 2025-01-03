@@ -1,11 +1,11 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: gateway-users
+  name: metadata-service
   namespace: aibrix-system
 spec:
   selector:
-    app: gateway-users
+    app: metadata-service
   ports:
     - protocol: TCP
       port: 8090
@@ -14,25 +14,25 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: gateway-users
+  name: metadata-service
   namespace: aibrix-system
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: gateway-users
+      app: metadata-service
   template:
     metadata:
       labels:
-        app: gateway-users
+        app: metadata-service
     spec:
       initContainers:
         - name: init-c
           image: busybox:stable
           command: ['sh', '-c', 'until echo "ping" | nc aibrix-redis-master 6379 -w 1  | grep -c PONG; do echo waiting for service aibrix-redis-master; sleep 2; done']
       containers:
-        - name: gateway-users
-          image: users:latest
+        - name: metadata-service
+          image: metadata-service:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8090
@@ -49,4 +49,5 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-      serviceAccountName: aibrix-gateway-plugin
+      # TODO: separate this part
+      serviceAccountName: aibrix-gateway-plugins

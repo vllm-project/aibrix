@@ -48,7 +48,8 @@ const (
 type QueryType string
 
 const (
-	PromQL QueryType = "PromQL" // PromQL represents a Prometheus query language expression.
+	PromQL     QueryType = "PromQL"     // PromQL represents a Prometheus query language expression.
+	QueryLabel QueryType = "QueryLabel" // Query Label value from raw metrics.
 )
 
 // MetricType defines the type of a metric, including raw metrics and queries.
@@ -76,11 +77,12 @@ const (
 
 // Metric defines a unique metric with metadata.
 type Metric struct {
-	MetricSource MetricSource
-	MetricType   MetricType
-	PromQL       string // Optional: Only applicable for PromQL-based metrics
-	Description  string
-	MetricScope  MetricScope
+	MetricSource  MetricSource
+	MetricType    MetricType
+	PromQL        string // Optional: Only applicable for PromQL-based metrics
+	RawMetricName string // Optional: Only applicable for QueryLabel-based metrics
+	Description   string
+	MetricScope   MetricScope
 }
 
 // MetricValue is the interface for all metric values.
@@ -88,11 +90,13 @@ type MetricValue interface {
 	GetSimpleValue() float64
 	GetHistogramValue() *HistogramMetricValue
 	GetPrometheusResult() *model.Value
+	GetLabelValue() string
 }
 
 var _ MetricValue = (*SimpleMetricValue)(nil)
 var _ MetricValue = (*HistogramMetricValue)(nil)
 var _ MetricValue = (*PrometheusMetricValue)(nil)
+var _ MetricValue = (*LabelValueMetricValue)(nil)
 
 // SimpleMetricValue represents simple metrics (e.g., gauge or counter).
 type SimpleMetricValue struct {
@@ -109,6 +113,10 @@ func (s *SimpleMetricValue) GetHistogramValue() *HistogramMetricValue {
 
 func (s *SimpleMetricValue) GetPrometheusResult() *model.Value {
 	return nil
+}
+
+func (s *SimpleMetricValue) GetLabelValue() string {
+	return ""
 }
 
 // HistogramMetricValue represents a detailed histogram metric.
@@ -209,6 +217,10 @@ func (h *HistogramMetricValue) GetPercentile(percentile float64) (float64, error
 	return 0, nil
 }
 
+func (s *HistogramMetricValue) GetLabelValue() string {
+	return ""
+}
+
 // PrometheusMetricValue represents Prometheus query results.
 type PrometheusMetricValue struct {
 	Result *model.Value
@@ -224,4 +236,29 @@ func (p *PrometheusMetricValue) GetHistogramValue() *HistogramMetricValue {
 
 func (p *PrometheusMetricValue) GetPrometheusResult() *model.Value {
 	return p.Result
+}
+
+func (s *PrometheusMetricValue) GetLabelValue() string {
+	return ""
+}
+
+// PrometheusMetricValue represents Prometheus query results.
+type LabelValueMetricValue struct {
+	Value string
+}
+
+func (l *LabelValueMetricValue) GetSimpleValue() float64 {
+	return 0.0
+}
+
+func (l *LabelValueMetricValue) GetHistogramValue() *HistogramMetricValue {
+	return nil
+}
+
+func (l *LabelValueMetricValue) GetPrometheusResult() *model.Value {
+	return nil
+}
+
+func (l *LabelValueMetricValue) GetLabelValue() string {
+	return l.Value
 }

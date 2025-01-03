@@ -15,7 +15,7 @@ from abc import abstractmethod
 from contextlib import nullcontext
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import ClassVar, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import boto3
@@ -24,7 +24,13 @@ from botocore.config import MAX_POOL_CONNECTIONS, Config
 from tqdm import tqdm
 
 from aibrix import envs
-from aibrix.downloader.base import BaseDownloader
+from aibrix.common.errors import ArgNotCongiuredError, ModelNotFoundError
+from aibrix.downloader.base import (
+    DEFAULT_DOWNLOADER_EXTRA_CONFIG,
+    BaseDownloader,
+    DownloadExtraConfig,
+)
+from aibrix.downloader.entity import RemoteSource, get_local_download_paths
 from aibrix.downloader.utils import (
     infer_model_name,
     meta_file,
@@ -44,25 +50,33 @@ def _parse_bucket_info_from_uri(uri: str, scheme: str = "s3") -> Tuple[str, str]
 
 
 class S3BaseDownloader(BaseDownloader):
+    _source: ClassVar[RemoteSource] = RemoteSource.S3
+
     def __init__(
         self,
         scheme: str,
         model_uri: str,
         model_name: Optional[str] = None,
+        download_extra_config: DownloadExtraConfig = DEFAULT_DOWNLOADER_EXTRA_CONFIG,
         enable_progress_bar: bool = False,
     ):
         if model_name is None:
             model_name = infer_model_name(model_uri)
             logger.info(f"model_name is not set, using `{model_name}` as model_name")
 
+        self.download_extra_config = download_extra_config
         auth_config = self._get_auth_config()
         bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri, scheme=scheme)
 
         # Avoid warning log "Connection pool is full"
         # Refs: https://github.com/boto/botocore/issues/619#issuecomment-583511406
+        _num_threads = (
+            self.download_extra_config.num_threads or envs.DOWNLOADER_NUM_THREADS
+        )
+
         max_pool_connections = (
-            envs.DOWNLOADER_NUM_THREADS
-            if envs.DOWNLOADER_NUM_THREADS > MAX_POOL_CONNECTIONS
+            _num_threads
+            if _num_threads > MAX_POOL_CONNECTIONS
             else MAX_POOL_CONNECTIONS
         )
         client_config = Config(
@@ -79,8 +93,27 @@ class S3BaseDownloader(BaseDownloader):
             model_name=model_name,
             bucket_path=bucket_path,
             bucket_name=bucket_name,
+            download_extra_config=download_extra_config,
             enable_progress_bar=enable_progress_bar,
         )  # type: ignore
+
+    def _valid_config(self):
+        if self.model_name is None or self.model_name == "":
+            raise ArgNotCongiuredError(arg_name="model_name", arg_source="--model-name")
+
+        if self.bucket_name is None or self.bucket_name == "":
+            raise ArgNotCongiuredError(arg_name="bucket_name", arg_source="--model-uri")
+
+        if self.bucket_path is None or self.bucket_path == "":
+            raise ArgNotCongiuredError(arg_name="bucket_path", arg_source="--model-uri")
+
+        try:
+            self.client.head_bucket(Bucket=self.bucket_name)
+        except Exception as e:
+            logger.error(
+                f"Bucket {self.bucket_name} not exist in {self.model_uri}\nFor {e}"
+            )
+            raise ModelNotFoundError(model_uri=self.model_uri, detail_msg=str(e))
 
     @abstractmethod
     def _get_auth_config(self) -> Dict[str, Optional[str]]:
@@ -144,22 +177,27 @@ class S3BaseDownloader(BaseDownloader):
         # check if file exist
         etag = meta_data.get("ETag", "")
         file_size = meta_data.get("ContentLength", 0)
-        meta_data_file = meta_file(local_path=local_path, file_name=_file_name)
+        meta_data_file = meta_file(
+            local_path=local_path, file_name=_file_name, source=self._source.value
+        )
 
         if not need_to_download(local_file, meta_data_file, file_size, etag):
             return
 
         # construct TransferConfig
         config_kwargs = {
-            "max_concurrency": envs.DOWNLOADER_NUM_THREADS,
+            "max_concurrency": self.download_extra_config.num_threads
+            or envs.DOWNLOADER_NUM_THREADS,
             "use_threads": enable_range,
-            "max_io_queue": envs.DOWNLOADER_S3_MAX_IO_QUEUE,
-            "io_chunksize": envs.DOWNLOADER_S3_IO_CHUNKSIZE,
+            "max_io_queue": self.download_extra_config.max_io_queue
+            or envs.DOWNLOADER_S3_MAX_IO_QUEUE,
+            "io_chunksize": self.download_extra_config.io_chunksize
+            or envs.DOWNLOADER_S3_IO_CHUNKSIZE,
+            "multipart_threshold": self.download_extra_config.part_threshold
+            or envs.DOWNLOADER_PART_THRESHOLD,
+            "multipart_chunksize": self.download_extra_config.part_chunksize
+            or envs.DOWNLOADER_PART_CHUNKSIZE,
         }
-        if envs.DOWNLOADER_PART_THRESHOLD is not None:
-            config_kwargs["multipart_threshold"] = envs.DOWNLOADER_PART_THRESHOLD
-        if envs.DOWNLOADER_PART_CHUNKSIZE is not None:
-            config_kwargs["multipart_chunksize"] = envs.DOWNLOADER_PART_CHUNKSIZE
 
         config = TransferConfig(**config_kwargs)
 
@@ -172,58 +210,59 @@ class S3BaseDownloader(BaseDownloader):
             def download_progress(bytes_transferred):
                 pbar.update(bytes_transferred)
 
-            self.client.download_file(
-                Bucket=bucket_name,
-                Key=bucket_path,
-                Filename=str(
-                    local_file
-                ),  # S3 client does not support Path, convert it to str
-                Config=config,
-                Callback=download_progress if self.enable_progress_bar else None,
+            download_file = get_local_download_paths(
+                local_path, _file_name, self._source
             )
-            save_meta_data(meta_data_file, etag)
+            with download_file.download_lock():
+                self.client.download_file(
+                    Bucket=bucket_name,
+                    Key=bucket_path,
+                    Filename=str(
+                        local_file
+                    ),  # S3 client does not support Path, convert it to str
+                    Config=config,
+                    Callback=download_progress if self.enable_progress_bar else None,
+                )
+                save_meta_data(meta_data_file, etag)
 
 
 class S3Downloader(S3BaseDownloader):
+    _source: ClassVar[RemoteSource] = RemoteSource.S3
+
     def __init__(
         self,
         model_uri,
         model_name: Optional[str] = None,
+        download_extra_config: DownloadExtraConfig = DEFAULT_DOWNLOADER_EXTRA_CONFIG,
         enable_progress_bar: bool = False,
     ):
         super().__init__(
             scheme="s3",
             model_uri=model_uri,
             model_name=model_name,
+            download_extra_config=download_extra_config,
             enable_progress_bar=enable_progress_bar,
         )  # type: ignore
 
-    def _valid_config(self):
-        assert (
-            self.model_name is not None and self.model_name != ""
-        ), "S3 model name is not set, please check `--model-name`."
-        assert (
-            self.bucket_name is not None and self.bucket_name != ""
-        ), "S3 bucket name is not set."
-        assert (
-            self.bucket_path is not None and self.bucket_path != ""
-        ), "S3 bucket path is not set."
-        try:
-            self.client.head_bucket(Bucket=self.bucket_name)
-        except Exception as e:
-            assert False, f"S3 bucket {self.bucket_name} not exist for {e}."
-
     def _get_auth_config(self) -> Dict[str, Optional[str]]:
         ak, sk = (
-            envs.DOWNLOADER_AWS_ACCESS_KEY_ID,
-            envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY,
+            self.download_extra_config.ak or envs.DOWNLOADER_AWS_ACCESS_KEY_ID,
+            self.download_extra_config.sk or envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY,
         )
-        assert ak is not None and ak != "", "`AWS_ACCESS_KEY_ID` is not set."
-        assert sk is not None and sk != "", "`AWS_SECRET_ACCESS_KEY` is not set."
+        if ak is None or ak == "":
+            raise ArgNotCongiuredError(
+                arg_name="ak", arg_source="--download-extra-config"
+            )
+        if sk is None or sk == "":
+            raise ArgNotCongiuredError(
+                arg_name="sk", arg_source="--download-extra-config"
+            )
 
         return {
-            "region_name": envs.DOWNLOADER_AWS_REGION,
-            "endpoint_url": envs.DOWNLOADER_AWS_ENDPOINT_URL,
+            "region_name": self.download_extra_config.region
+            or envs.DOWNLOADER_AWS_REGION,
+            "endpoint_url": self.download_extra_config.endpoint
+            or envs.DOWNLOADER_AWS_ENDPOINT_URL,
             "aws_access_key_id": ak,
             "aws_secret_access_key": sk,
         }

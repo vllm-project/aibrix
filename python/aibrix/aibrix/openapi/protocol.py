@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,6 +20,11 @@ from pydantic import BaseModel, ConfigDict, Field
 class NoExtraBaseModel(BaseModel):
     # The class does not allow extra fields
     model_config = ConfigDict(extra="forbid")
+
+
+class NoProtectdBaseModel(BaseModel):
+    # The class does not allow extra fields
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
 
 class ErrorResponse(NoExtraBaseModel):
@@ -38,3 +43,26 @@ class LoadLoraAdapterRequest(NoExtraBaseModel):
 class UnloadLoraAdapterRequest(NoExtraBaseModel):
     lora_name: str
     lora_int_id: Optional[int] = Field(default=None)
+
+
+class DownloadModelRequest(NoProtectdBaseModel):
+    model_uri: str
+    local_dir: Optional[str] = None
+    model_name: Optional[str] = None
+    download_extra_config: Optional[Dict] = None
+
+
+class ModelStatusCard(NoProtectdBaseModel):
+    model_name: str
+    model_root_path: str
+    source: str
+    model_status: str
+
+
+class ListModelRequest(NoExtraBaseModel):
+    local_dir: str
+
+
+class ListModelResponse(NoExtraBaseModel):
+    object: str = "list"
+    data: List[ModelStatusCard] = Field(default_factory=list)

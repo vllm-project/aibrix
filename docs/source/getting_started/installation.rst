@@ -22,8 +22,11 @@ Stable Version
 
 .. code:: bash
 
-    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.1.1/aibrix-dependency-v0.2.0-rc.1.yaml
-    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.1.1/aibrix-core-v0.2.0-rc.1.yaml
+    # Install component dependencies
+    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.1/aibrix-dependency-v0.2.0-rc.1.yaml
+
+    # Install aibrix components
+    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.1/aibrix-core-v0.2.0-rc.1.yaml
 
 
 Nightly Version
@@ -37,33 +40,35 @@ Nightly Version
 
     # Install component dependencies
     kubectl create -k config/dependency
-
-    # Install aibrix components
     kubectl create -k config/default
 
 
 Install Individual AIBrix Components
 ------------------------------------
 
+
+Autoscaler
+^^^^^^^^^^
+
 .. code:: bash
 
-    # autoscaler controller
     kubectl apply -k config/standalone/autoscaler-controller/
 
-    # distributed inference orchestrations controller
+
+Distributed Inference
+^^^^^^^^^^^^^^^^^^^^^
+
+.. code:: bash
+
     kubectl apply -k config/standalone/distributed-inference-controller/
 
-    # model adapter controller
+
+
+Model Adapter(Lora)
+^^^^^^^^^^^^^^^^^^^
+
+.. code:: bash
+
     kubectl apply -k config/standalone/model-adapter-controller
 
 
-
-Install AIBrix on Kind Cluster
-------------------------------
-
-.. attention::
-    Kind itself doesn't support GPU yet. In order to use the kind version with GPU support, feel free to checkout `nvkind <https://github.com/klueska/nvkind>`_.
-
-We use `Lambda Labs <https://lambdalabs.com/>`_ platform to install and test kind based deployment.
-
-TODO

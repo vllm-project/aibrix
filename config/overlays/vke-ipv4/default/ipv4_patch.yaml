@@ -1,0 +1,15 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: aibrix-custom-proxy-config
+  namespace: aibrix-system
+spec:
+  provider:
+    kubernetes:
+      envoyService:
+        patch:
+          value:
+            spec:
+              ipFamilies:
+              - IPv4    # Only IPv4
+              ipFamilyPolicy: SingleStack  # Changed from PreferDualStack to SingleStack

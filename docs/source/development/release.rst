@@ -10,10 +10,17 @@ Release
 This process outlines the steps required to create and publish a release for AIBrix Github project.
 Follow these steps to ensure a smooth and consistent release cycle.
 
-1. Prepare the code
------------------------------
+Prepare the code
+----------------
 
-Option 1 minor version release
+Option 1 RC version release
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For RC release like ``v0.2.0-rc.1``, there's no need to checkout a new branch, Let's cut the tag & release
+directly against ``main`` branch.
+
+
+Option 2 minor version release
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 For new minor version release like ``v0.1.0``, please checkout a new branch named ``release-0.1``.
@@ -25,23 +32,15 @@ For new minor version release like ``v0.1.0``, please checkout a new branch name
     git push origin release-0.1
 
 .. note::
-    If origin doesn't points to upstream, let's say you fork the remote, ``upstream`` or other remotes should be right remote to push to.
+    Here we assume ``origin`` points to upstream, if it doesn't, other remotes like ``upstream`` should be right remote to push to.
 
-Option 2: patch version release
+Option 3: patch version release
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Cut a PR to sync `main` branch changes to `release-0.1`, a example PR is like `Sync main branch changes to release-0.1 for rc4 release <https://github.com/aibrix/aibrix/pull/312>`_
+Bug fixes should be merged on ``main`` first. Then cherry-pick the bugfix to target release branch like ``release-0.1``.
+Due to ``main`` changes, the fix may not able to be cherry-picked to ``release-0.1``. If that's the case, cut PR to release branch directly.
 For patch version like ``v0.1.1``, please reuse the release branch ``release-0.1``, it should be created earlier from the minor version release.
 for patch release, we do not rebase ``main`` because it will introduce new features. All fixes have to be cherry-picked or cut PR against ``release-0.1`` directly.
-
-.. code-block:: bash
-
-    git checkout release-0.1
-    git fetch origin
-    git rebase origin/release-0.1
-
-    # not need to push, it should be update to date.
-
 
 Cut a PR
 --------

@@ -7,15 +7,16 @@ import json
 
 from utils import (load_workload, wrap_prompt_as_chat_message)
 
+
 # Asynchronous request handler
 async def send_request(client, model, endpoint, prompt, output_file):
     start_time = asyncio.get_event_loop().time()
     try:
         response = await client.chat.completions.create(
-            model = model,
-            messages = prompt,
-            temperature = 0,
-            max_tokens = 128
+            model=model,
+            messages=prompt,
+            temperature=0,
+            max_tokens=128
         )
 
         latency = asyncio.get_event_loop().time() - start_time
@@ -45,10 +46,11 @@ async def send_request(client, model, endpoint, prompt, output_file):
         logging.error(f"Error sending request to at {endpoint}: {str(e)}")
         return None
 
+
 async def benchmark(endpoint, model, api_key, workload_path, output_file_path):
     client = openai.AsyncOpenAI(
         api_key=api_key,
-        base_url=endpoint+"/v1",
+        base_url=endpoint + "/v1",
     )
     with open(output_file_path, 'a', encoding='utf-8') as output_file:
         load_struct = load_workload(workload_path)
@@ -56,23 +58,23 @@ async def benchmark(endpoint, model, api_key, workload_path, output_file_path):
         base_time = time.time()
         num_requests = 0
         for requests_dict in load_struct:
-            ts = int(requests_dict["Timestamp"])
-            requests = requests_dict["Requests"]
+            ts = int(requests_dict["timestamp"])
+            requests = requests_dict["requests"]
             cur_time = time.time()
-            target_time = base_time + ts/1000.0
+            target_time = base_time + ts / 1000.0
             logging.warning(f"Prepare to launch {len(requests)} tasks after {target_time - cur_time}")
             if target_time > cur_time:
                 await asyncio.sleep(target_time - cur_time)
-            formatted_prompts = [wrap_prompt_as_chat_message(request["Prompt"]) for request in requests]
+            formatted_prompts = [wrap_prompt_as_chat_message(request["prompt"]) for request in requests]
             for formatted_prompt in formatted_prompts:
                 task = asyncio.create_task(
-                        send_request(client, model, endpoint, formatted_prompt, output_file)
+                    send_request(client, model, endpoint, formatted_prompt, output_file)
                 )
                 batch_tasks.append(task)
             num_requests += len(requests)
         await asyncio.gather(*batch_tasks)
         logging.warning(f"All {num_requests} requests completed for deployment.")
-        
+
 
 def main(args):
     logging.info(f"Starting benchmark on endpoint {args.endpoint}")
@@ -80,8 +82,8 @@ def main(args):
     asyncio.run(benchmark(args.endpoint, args.model, args.api_key, args.workload_path, args.output_file_path))
     end_time = time.time()
     logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
-    
-    
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Workload Generator')
     parser.add_argument("--workload-path", type=str, default=None, help="File path to the workload file.")

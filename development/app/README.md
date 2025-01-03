@@ -102,7 +102,7 @@ curl http://localhost:8000/v1/chat/completions \
 ```shell
 # note: not mandatory to create user to access gateway API
 
-kubectl -n aibrix-system port-forward svc/aibrix-gateway-users 8090:8090 &
+kubectl -n aibrix-system port-forward svc/aibrix-metadata-service 8090:8090 &
 
 curl http://localhost:8090/CreateUser \
   -H "Content-Type: application/json" \

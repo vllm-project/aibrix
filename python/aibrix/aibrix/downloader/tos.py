@@ -15,7 +15,7 @@ import logging
 from contextlib import nullcontext
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import ClassVar, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import tos
@@ -23,7 +23,13 @@ from tos import DataTransferType
 from tqdm import tqdm
 
 from aibrix import envs
-from aibrix.downloader.base import BaseDownloader
+from aibrix.common.errors import ArgNotCongiuredError, ModelNotFoundError
+from aibrix.downloader.base import (
+    DEFAULT_DOWNLOADER_EXTRA_CONFIG,
+    BaseDownloader,
+    DownloadExtraConfig,
+)
+from aibrix.downloader.entity import RemoteSource, get_local_download_paths
 from aibrix.downloader.s3 import S3BaseDownloader
 from aibrix.downloader.utils import (
     infer_model_name,
@@ -46,20 +52,26 @@ def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
 
 
 class TOSDownloaderV1(BaseDownloader):
+    _source: ClassVar[RemoteSource] = RemoteSource.TOS
+
     def __init__(
         self,
         model_uri,
         model_name: Optional[str] = None,
+        download_extra_config: DownloadExtraConfig = DEFAULT_DOWNLOADER_EXTRA_CONFIG,
         enable_progress_bar: bool = False,
     ):
         if model_name is None:
             model_name = infer_model_name(model_uri)
             logger.info(f"model_name is not set, using `{model_name}` as model_name")
 
-        ak = envs.DOWNLOADER_TOS_ACCESS_KEY or ""
-        sk = envs.DOWNLOADER_TOS_SECRET_KEY or ""
-        endpoint = envs.DOWNLOADER_TOS_ENDPOINT or ""
-        region = envs.DOWNLOADER_TOS_REGION or ""
+        self.download_extra_config = download_extra_config
+        ak = self.download_extra_config.ak or envs.DOWNLOADER_TOS_ACCESS_KEY or ""
+        sk = self.download_extra_config.sk or envs.DOWNLOADER_TOS_SECRET_KEY or ""
+        endpoint = (
+            self.download_extra_config.endpoint or envs.DOWNLOADER_TOS_ENDPOINT or ""
+        )
+        region = self.download_extra_config.region or envs.DOWNLOADER_TOS_REGION or ""
         enable_crc = envs.DOWNLOADER_TOS_ENABLE_CRC
         bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri)
 
@@ -72,23 +84,25 @@ class TOSDownloaderV1(BaseDownloader):
             model_name=model_name,
             bucket_path=bucket_path,
             bucket_name=bucket_name,
+            download_extra_config=download_extra_config,
             enable_progress_bar=enable_progress_bar,
         )  # type: ignore
 
     def _valid_config(self):
-        assert (
-            self.model_name is not None and self.model_name != ""
-        ), "TOS model name is not set, please check `--model-name`."
-        assert (
-            self.bucket_name is not None and self.bucket_name != ""
-        ), "TOS bucket name is not set."
-        assert (
-            self.bucket_path is not None and self.bucket_path != ""
-        ), "TOS bucket path is not set."
+        if self.model_name is None or self.model_name == "":
+            raise ArgNotCongiuredError(arg_name="model_name", arg_source="--model-name")
+
+        if self.bucket_name is None or self.bucket_name == "":
+            raise ArgNotCongiuredError(arg_name="bucket_name", arg_source="--model-uri")
+
+        if self.bucket_path is None or self.bucket_path == "":
+            raise ArgNotCongiuredError(arg_name="bucket_path", arg_source="--model-uri")
+
         try:
             self.client.head_bucket(self.bucket_name)
         except Exception as e:
-            assert False, f"TOS bucket {self.bucket_name} not exist for {e}."
+            logger.error(f"TOS bucket {self.bucket_name} not exist for {e}")
+            raise ModelNotFoundError(model_uri=self.model_uri, detail_msg=str(e))
 
     @lru_cache()
     def _is_directory(self) -> bool:
@@ -133,21 +147,22 @@ class TOSDownloaderV1(BaseDownloader):
         # check if file exist
         etag = meta_data.etag
         file_size = meta_data.content_length
-        meta_data_file = meta_file(local_path=local_path, file_name=_file_name)
+        meta_data_file = meta_file(
+            local_path=local_path, file_name=_file_name, source=self._source.value
+        )
 
         if not need_to_download(local_file, meta_data_file, file_size, etag):
             return
+        num_threads = (
+            self.download_extra_config.num_threads or envs.DOWNLOADER_NUM_THREADS
+        )
+        task_num = num_threads if enable_range else 1
 
-        task_num = envs.DOWNLOADER_NUM_THREADS if enable_range else 1
-
-        download_kwargs = {}
-        if envs.DOWNLOADER_PART_CHUNKSIZE is not None:
-            download_kwargs["part_size"] = envs.DOWNLOADER_PART_CHUNKSIZE
+        download_kwargs = {"part_size": self.download_extra_config.part_chunksize}
 
         # download file
         total_length = meta_data.content_length
 
-        nullcontext
         with tqdm(
             desc=_file_name, total=total_length, unit="b", unit_scale=True
         ) if self.enable_progress_bar else nullcontext() as pbar:
@@ -157,54 +172,55 @@ class TOSDownloaderV1(BaseDownloader):
             ):
                 pbar.update(rw_once_bytes)
 
-            self.client.download_file(
-                bucket=bucket_name,
-                key=bucket_path,
-                file_path=str(
-                    local_file
-                ),  # TOS client does not support Path, convert it to str
-                task_num=task_num,
-                data_transfer_listener=download_progress
-                if self.enable_progress_bar
-                else None,
-                **download_kwargs,
+            download_file = get_local_download_paths(
+                local_path, _file_name, self._source
             )
-            save_meta_data(meta_data_file, etag)
+            with download_file.download_lock():
+                self.client.download_file(
+                    bucket=bucket_name,
+                    key=bucket_path,
+                    file_path=str(
+                        local_file
+                    ),  # TOS client does not support Path, convert it to str
+                    task_num=task_num,
+                    data_transfer_listener=download_progress
+                    if self.enable_progress_bar
+                    else None,
+                    **download_kwargs,
+                )
+                save_meta_data(meta_data_file, etag)
 
 
 class TOSDownloaderV2(S3BaseDownloader):
+    _source: ClassVar[RemoteSource] = RemoteSource.TOS
+
     def __init__(
         self,
         model_uri,
         model_name: Optional[str] = None,
+        download_extra_config: DownloadExtraConfig = DEFAULT_DOWNLOADER_EXTRA_CONFIG,
         enable_progress_bar: bool = False,
     ):
         super().__init__(
-            scheme="s3",
+            scheme="tos",
             model_uri=model_uri,
             model_name=model_name,
+            download_extra_config=download_extra_config,
             enable_progress_bar=enable_progress_bar,
         )  # type: ignore
 
-    def _valid_config(self):
-        assert (
-            self.model_name is not None and self.model_name != ""
-        ), "TOS model name is not set, please check `--model-name`."
-        assert (
-            self.bucket_name is not None and self.bucket_name != ""
-        ), "TOS bucket name is not set."
-        assert (
-            self.bucket_path is not None and self.bucket_path != ""
-        ), "TOS bucket path is not set."
-        try:
-            self.client.head_bucket(Bucket=self.bucket_name)
-        except Exception as e:
-            assert False, f"TOS bucket {self.bucket_name} not exist for {e}."
-
     def _get_auth_config(self) -> Dict[str, Optional[str]]:
         return {
-            "region_name": envs.DOWNLOADER_TOS_REGION or "",
-            "endpoint_url": envs.DOWNLOADER_TOS_ENDPOINT or "",
-            "aws_access_key_id": envs.DOWNLOADER_TOS_ACCESS_KEY or "",
-            "aws_secret_access_key": envs.DOWNLOADER_TOS_SECRET_KEY or "",
+            "region_name": self.download_extra_config.region
+            or envs.DOWNLOADER_TOS_REGION
+            or "",
+            "endpoint_url": self.download_extra_config.endpoint
+            or envs.DOWNLOADER_TOS_ENDPOINT
+            or "",
+            "aws_access_key_id": self.download_extra_config.ak
+            or envs.DOWNLOADER_TOS_ACCESS_KEY
+            or "",
+            "aws_secret_access_key": self.download_extra_config.sk
+            or envs.DOWNLOADER_TOS_SECRET_KEY
+            or "",
         }

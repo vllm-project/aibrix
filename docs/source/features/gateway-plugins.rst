@@ -53,14 +53,15 @@ To set up rate limiting, add the user header in the request, like this:
 Routing Strategies
 ------------------
 
-Gateway supports two routing strategies right now.
-1. least-request: routes request to a pod with least ongoing request.
-2. throughput: routes request to a pod which has processed lowest tokens.
+Gateway supports three routing strategies right now.
+
+* random: routes request to a random pod.
+* least-request: routes request to a pod with least ongoing request.
+* throughput: routes request to a pod which has processed lowest tokens.
 
 .. code-block:: bash
 
     curl -v http://localhost:8888/v1/chat/completions \
-    -H "user: your-user-name" \
     -H "routing-strategy: least-request" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer any_key" \

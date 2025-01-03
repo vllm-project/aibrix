@@ -16,6 +16,10 @@ from unittest import mock
 
 import pytest
 
+from aibrix.common.errors import (
+    ArgNotCongiuredError,
+    ModelNotFoundError,
+)
 from aibrix.downloader.base import get_downloader
 from aibrix.downloader.s3 import S3Downloader
 
@@ -65,9 +69,9 @@ def test_get_downloader_s3(mock_boto3):
 def test_get_downloader_s3_path_not_exist(mock_boto3):
     mock_not_exsit_boto3(mock_boto3)
 
-    with pytest.raises(AssertionError) as exception:
+    with pytest.raises(ModelNotFoundError) as exception:
         get_downloader("s3://bucket/not_exsit_path")
-    assert "not exist" in str(exception.value)
+    assert "Model not found" in str(exception.value)
 
 
 @mock.patch(ENVS_MODULE, env_group)
@@ -77,9 +81,9 @@ def test_get_downloader_s3_path_empty(mock_boto3):
 
     # Bucket name and path both are empty,
     # will first assert the name
-    with pytest.raises(AssertionError) as exception:
+    with pytest.raises(ArgNotCongiuredError) as exception:
         get_downloader("s3://")
-    assert "S3 bucket name is not set." in str(exception.value)
+    assert "`bucket_name` is not configured" in str(exception.value)
 
 
 @mock.patch(ENVS_MODULE, env_group)
@@ -88,9 +92,9 @@ def test_get_downloader_s3_path_empty_path(mock_boto3):
     mock_exsit_boto3(mock_boto3)
 
     # bucket path is empty
-    with pytest.raises(AssertionError) as exception:
+    with pytest.raises(ArgNotCongiuredError) as exception:
         get_downloader("s3://bucket/")
-    assert "S3 bucket path is not set." in str(exception.value)
+    assert "`bucket_path` is not configured" in str(exception.value)
 
 
 @mock.patch(ENVS_MODULE, env_no_ak)
@@ -98,9 +102,9 @@ def test_get_downloader_s3_path_empty_path(mock_boto3):
 def test_get_downloader_s3_no_ak(mock_boto3):
     mock_exsit_boto3(mock_boto3)
 
-    with pytest.raises(AssertionError) as exception:
+    with pytest.raises(ArgNotCongiuredError) as exception:
         get_downloader("s3://bucket/")
-    assert "`AWS_ACCESS_KEY_ID` is not set." in str(exception.value)
+    assert "`ak` is not configured" in str(exception.value)
 
 
 @mock.patch(ENVS_MODULE, env_no_sk)
@@ -108,6 +112,6 @@ def test_get_downloader_s3_no_ak(mock_boto3):
 def test_get_downloader_s3_no_sk(mock_boto3):
     mock_exsit_boto3(mock_boto3)
 
-    with pytest.raises(AssertionError) as exception:
+    with pytest.raises(ArgNotCongiuredError) as exception:
         get_downloader("s3://bucket/")
-    assert "`AWS_SECRET_ACCESS_KEY` is not set." in str(exception.value)
+    assert "`sk` is not configured" in str(exception.value)
