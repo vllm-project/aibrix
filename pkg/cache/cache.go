@@ -339,9 +339,9 @@ func (c *Cache) deletePod(obj interface{}) {
 			c.deletePodAndModelMapping(pod.Name, modelName)
 		}
 	}
-	delete(c.PodToModelMapping, pod.Name)
 	delete(c.Pods, pod.Name)
 	delete(c.PodMetrics, pod.Name)
+	delete(c.PodModelMetrics, pod.Name)
 
 	klog.V(4).Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
@@ -387,7 +387,6 @@ func (c *Cache) deleteModelAdapter(obj interface{}) {
 	for _, pod := range model.Status.Instances {
 		c.deletePodAndModelMapping(pod, model.Name)
 	}
-	delete(c.ModelToPodMapping, model.Name)
 
 	klog.V(4).Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
 	c.debugInfo()
@@ -448,11 +447,6 @@ func (c *Cache) debugInfo() {
 	for _, pod := range c.Pods {
 		klog.V(4).Infof("pod: %s, podIP: %v", pod.Name, pod.Status.PodIP)
 	}
-	for podName, metrics := range c.PodMetrics {
-		for metricName, metricVal := range metrics {
-			klog.V(4).Infof("%v_%v_%v", podName, metricName, metricVal)
-		}
-	}
 	for podName, models := range c.PodToModelMapping {
 		var modelList string
 		for modelName := range models {
@@ -467,9 +461,14 @@ func (c *Cache) debugInfo() {
 		}
 		klog.V(4).Infof("model: %s, pods: %s", modelName, podList)
 	}
+	for podName, metrics := range c.PodMetrics {
+		for metricName, metricVal := range metrics {
+			klog.V(5).Infof("%v_%v_%v", podName, metricName, metricVal)
+		}
+	}
 	for inputIndex, output := range c.requestTrace {
 		for outputIndex, requestCount := range output {
-			klog.V(4).Infof("inputIndex: %v, outputIndex: %v, requestCount: %v", inputIndex, outputIndex, requestCount)
+			klog.V(5).Infof("inputIndex: %v, outputIndex: %v, requestCount: %v", inputIndex, outputIndex, requestCount)
 		}
 	}
 }
@@ -805,7 +804,6 @@ func (c *Cache) updateModelMetrics() {
 		klog.V(4).InfoS("Prometheus api is not initialized, PROMETHEUS_ENDPOINT is not configured, skip fetching prometheus metrics")
 		return
 	}
-
 }
 
 func (c *Cache) AddRequestTrace(modelName string, inputTokens, outputTokens int64) {
