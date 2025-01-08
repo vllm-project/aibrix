@@ -243,7 +243,6 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 				case <-ticker.C:
 					instance.updatePodMetrics()
 					instance.updateModelMetrics()
-					instance.debugInfo()
 				case <-stopCh:
 					ticker.Stop()
 					return
@@ -441,9 +440,6 @@ func (c *Cache) deletePodAndModelMapping(podName, modelName string) {
 }
 
 func (c *Cache) debugInfo() {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	for _, pod := range c.Pods {
 		klog.V(4).Infof("pod: %s, podIP: %v", pod.Name, pod.Status.PodIP)
 	}
