@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
@@ -588,12 +589,16 @@ func (r *ModelAdapterReconciler) modelAdapterExists(host, modelName string) (boo
 
 // Separate method to load the LoRA adapter
 func (r *ModelAdapterReconciler) loadModelAdapter(host string, instance *modelv1alpha1.ModelAdapter) error {
-	artifactURL, err := extractHuggingFacePath(instance.Spec.ArtifactURL)
-	if err != nil {
-		// Handle error, e.g., log it and return
-		klog.ErrorS(err, "Invalid artifact URL", "artifactURL", artifactURL)
-		return err
+	artifactURL := instance.Spec.ArtifactURL
+	if strings.HasPrefix(instance.Spec.ArtifactURL, "huggingface://") {
+		artifactURL, err := extractHuggingFacePath(instance.Spec.ArtifactURL)
+		if err != nil {
+			// Handle error, e.g., log it and return
+			klog.ErrorS(err, "Invalid artifact URL", "artifactURL", artifactURL)
+			return err
+		}
 	}
+	// TODO: extend to other artifacts
 
 	payload := map[string]string{
 		"lora_name": instance.Name,
