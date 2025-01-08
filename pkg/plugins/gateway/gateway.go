@@ -305,6 +305,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.InfoS("request start", "requestID", requestID, "model", model, "routingStrategy", routingStrategy, "targetPodIP", targetPodIP)
 	}
 
+	s.cache.AddRequestCount(requestID, model)
+
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestBody{
 			RequestBody: &extProcPb.BodyResponse{
@@ -397,7 +399,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	if usage.TotalTokens != 0 {
 		defer func() {
 			go func() {
-				s.cache.AddRequestTrace(model, usage.PromptTokens, usage.CompletionTokens)
+				s.cache.AddRequestTrace(requestID, model, usage.PromptTokens, usage.CompletionTokens)
 			}()
 		}()
 
