@@ -51,9 +51,9 @@ func validateModelAdapter(instance *modelv1alpha1.ModelAdapter) error {
 	return nil
 }
 
-// validateArtifactURL checks if the ArtifactURL has a valid schema (s3://, gcs://, huggingface://, https://)
+// validateArtifactURL checks if the ArtifactURL has a valid schema (s3://, gcs://, huggingface://, https://, /)
 func validateArtifactURL(artifactURL string) error {
-	allowedSchemes := []string{"s3://", "gcs://", "huggingface://", "hf://"}
+	allowedSchemes := []string{"s3://", "gcs://", "huggingface://", "hf://", "/"}
 	for _, scheme := range allowedSchemes {
 		if strings.HasPrefix(artifactURL, scheme) {
 			return nil
