@@ -9,7 +9,7 @@ kind: Kustomization
 images:
 - name: plugins
   newName: aibrix/plugins
-  newTag: v0.1.1
+  newTag: v0.1.2
 - name: users
   newName: aibrix/users
-  newTag: v0.1.1
+  newTag: v0.1.2
