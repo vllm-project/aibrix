@@ -39,20 +39,19 @@ func (key RequestTraceMetaKey) ToString() string {
 }
 
 const (
-	RequestTraceVersion           = 3
-	RequestTraceWriteInterval     = 10 * time.Second
+	// The version of request trace, verison history:
+	// v1: No meta, default
+	// v2: Added meta data include version(meta_v), bucket precision(meta_precision), and interval(meta_interval_sec) to notify client the trace interval.
+	// v3: Added the number of total requests(meta_total_reqs) and pending requests(meta_pending_reqs) for out of window uncomplted requests.
+	RequestTraceVersion = 3
+	// Trace write interval
+	RequestTraceWriteInterval = 10 * time.Second
+	// Max tolerable write delay to write ticks.
+	// For example for RequestTraceWriteInterval = 10s and MaxRequestTraceIntervalOffset = 500ms, the trace should be written before X:00.5s, X:10.5s, .., X:50.5s.
 	MaxRequestTraceIntervalOffset = 500 * time.Millisecond
-	RequestTracePrecision         = 0.1
+	// The precision of buckets in trace. 0.1 means requests will be split into buckets of .1 according to log2(tokens)
+	RequestTracePrecision = 0.1
 )
-
-// keyWriteRequestTraceIntervalInSeconds = "meta_interval_sec"
-// writeRequestTraceInterval             = 10 * time.Second
-// keyPrecisionRequestTrace              = "meta_precision"
-// precisionRequestTrace                 = 0.1
-// keyVersionRequestTrace                = "meta_v"
-// versionRequestTrace                   = 3
-// keyTotalRequests                      = "meta_total_reqs"
-// keyPendingRequests                    = "meta_pending_reqs"
 
 type RequestTrace struct {
 	trace           *sync.Map // map[Log2(input_token):Log2(output_token)]request_count
@@ -61,7 +60,7 @@ type RequestTrace struct {
 	pendingRequests int32     // Total pending requests remain in the trace window
 
 	mu       sync.RWMutex
-	recycler func(any)
+	recycler func(any) // Function handler to put RequestTrace back to pool.
 }
 
 // Increase request counting and return the trace term, key is ignored for now.
@@ -143,6 +142,7 @@ func (t *RequestTrace) Recycle() {
 	t.RecycleLocked()
 }
 
+// Get a RequestTrace generator by hidding the tracePool in closure. Do not call this directly unless for testing purpose.
 func newRequestTraceGen(tracePool *sync.Pool) func() *RequestTrace {
 	if tracePool == nil {
 		tracePool = &sync.Pool{}
