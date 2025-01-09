@@ -305,9 +305,9 @@ func (c *Cache) addPod(obj interface{}) {
 	}
 
 	c.Pods[pod.Name] = pod
-	c.addPodAndModelMapping(pod.Name, modelName)
+	c.addPodAndModelMappingLocked(pod.Name, modelName)
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
-	c.debugInfo()
+	c.debugInfoLocked()
 }
 
 func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
@@ -333,11 +333,11 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 	// Add new mappings if present
 	if newOk {
 		c.Pods[newPod.Name] = newPod
-		c.addPodAndModelMapping(newPod.Name, newModelName)
+		c.addPodAndModelMappingLocked(newPod.Name, newModelName)
 	}
 
 	klog.V(4).Infof("POD UPDATED: %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
-	c.debugInfo()
+	c.debugInfoLocked()
 }
 
 func (c *Cache) deletePod(obj interface{}) {
@@ -361,7 +361,7 @@ func (c *Cache) deletePod(obj interface{}) {
 	delete(c.PodModelMetrics, pod.Name)
 
 	klog.V(4).Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
-	c.debugInfo()
+	c.debugInfoLocked()
 }
 
 func (c *Cache) addModelAdapter(obj interface{}) {
@@ -370,11 +370,11 @@ func (c *Cache) addModelAdapter(obj interface{}) {
 
 	model := obj.(*modelv1alpha1.ModelAdapter)
 	for _, pod := range model.Status.Instances {
-		c.addPodAndModelMapping(pod, model.Name)
+		c.addPodAndModelMappingLocked(pod, model.Name)
 	}
 
 	klog.V(4).Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
-	c.debugInfo()
+	c.debugInfoLocked()
 }
 
 func (c *Cache) updateModelAdapter(oldObj interface{}, newObj interface{}) {
@@ -389,11 +389,11 @@ func (c *Cache) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 	}
 
 	for _, pod := range newModel.Status.Instances {
-		c.addPodAndModelMapping(pod, newModel.Name)
+		c.addPodAndModelMappingLocked(pod, newModel.Name)
 	}
 
 	klog.V(4).Infof("MODELADAPTER UPDATED. %s/%s %s", oldModel.Namespace, oldModel.Name, newModel.Status.Phase)
-	c.debugInfo()
+	c.debugInfoLocked()
 }
 
 func (c *Cache) deleteModelAdapter(obj interface{}) {
@@ -406,10 +406,10 @@ func (c *Cache) deleteModelAdapter(obj interface{}) {
 	}
 
 	klog.V(4).Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
-	c.debugInfo()
+	c.debugInfoLocked()
 }
 
-func (c *Cache) addPodAndModelMapping(podName, modelName string) {
+func (c *Cache) addPodAndModelMappingLocked(podName, modelName string) {
 	pod, ok := c.Pods[podName]
 	if !ok {
 		klog.Errorf("pod %s does not exist in internal-cache", podName)
@@ -461,6 +461,10 @@ func (c *Cache) debugInfo() {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	c.debugInfoLocked()
+}
+
+func (c *Cache) debugInfoLocked() {
 	for _, pod := range c.Pods {
 		klog.V(4).Infof("pod: %s, podIP: %v", pod.Name, pod.Status.PodIP)
 	}

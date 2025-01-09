@@ -246,6 +246,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	// early reject if no pods are ready to accept request for a model
 	pods, err := s.cache.GetPodsForModel(model)
 	if len(pods) == 0 || len(utils.FilterReadyPods(pods)) == 0 || err != nil {
+		klog.ErrorS(err, "no ready pod available", "requestID", requestID, "jsonMap", jsonMap)
 		return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: "x-no-model-deployment", RawValue: []byte("true")}}},
@@ -256,6 +257,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	if stream && ok {
 		streamOptions, ok := jsonMap["stream_options"].(map[string]interface{})
 		if !ok {
+			klog.ErrorS(nil, "no stream option available", "requestID", requestID, "jsonMap", jsonMap)
 			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-stream-options", RawValue: []byte("stream options not set")}}},
@@ -263,6 +265,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		}
 		includeUsage, ok := streamOptions["include_usage"].(bool)
 		if !includeUsage || !ok {
+			klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID, "jsonMap", jsonMap)
 			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-stream-options-include-usage", RawValue: []byte("include usage for stream options not set")}}},
@@ -282,6 +285,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	} else {
 		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods, model)
 		if targetPodIP == "" || err != nil {
+			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "jsonMap", jsonMap)
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_ServiceUnavailable,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
