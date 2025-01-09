@@ -236,7 +236,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 	// early reject the request if model doesn't exist.
 	if !s.cache.CheckModelExists(model) {
-		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "jsonMap", jsonMap)
+		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
 		return generateErrorResponse(envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: "x-no-model", RawValue: []byte(model)}}},
@@ -246,7 +246,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	// early reject if no pods are ready to accept request for a model
 	pods, err := s.cache.GetPodsForModel(model)
 	if len(pods) == 0 || len(utils.FilterReadyPods(pods)) == 0 || err != nil {
-		klog.ErrorS(err, "no ready pod available", "requestID", requestID, "jsonMap", jsonMap)
+		klog.ErrorS(err, "no ready pod available", "requestID", requestID, "model", model)
 		return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: "x-no-model-deployment", RawValue: []byte("true")}}},
@@ -285,7 +285,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	} else {
 		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods, model)
 		if targetPodIP == "" || err != nil {
-			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "jsonMap", jsonMap)
+			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingStrategy, "model", model)
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_ServiceUnavailable,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
