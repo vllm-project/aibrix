@@ -83,7 +83,7 @@ curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer any_key" \
   -d '{
-     "model": "llama2-70b",
+     "model": "llama2-7b",
      "messages": [{"role": "user", "content": "Say this is a test!"}],
      "temperature": 0.7
    }'
@@ -115,7 +115,7 @@ curl -v http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer any_key" \
   -d '{
-     "model": "llama2-70b",
+     "model": "llama2-7b",
      "messages": [{"role": "user", "content": "Say this is a test!"}],
      "temperature": 0.7
    }'
@@ -131,7 +131,7 @@ curl -v http://localhost:8000/v1/chat/completions \
   -H "Authorization: Bearer any_key" \
   -H "routing-strategy: random" \
   -d '{
-     "model": "llama2-70b",
+     "model": "llama2-7b",
      "messages": [{"role": "user", "content": "Say this is a test!"}],
      "temperature": 0.7
    }'
@@ -146,20 +146,20 @@ We scale the deployment to 1 replica firstly.
 We can observe that the total value of Metrics is 100.
 
 ```shell
-kubectl scale deployment llama2-70b --replicas=1
+kubectl scale deployment llama2-7b --replicas=1
 curl http://localhost:8000/metrics
 ```
 
 ```log
 # HELP vllm:request_success_total Count of successfully processed requests.
 # TYPE vllm:request_success_total counter
-vllm:request_success_total{finished_reason="stop",model_name="llama2-70b"} 100.0
+vllm:request_success_total{finished_reason="stop",model_name="llama2-7b"} 100.0
 # HELP vllm:avg_prompt_throughput_toks_per_s Average prefill throughput in tokens/s.
 # TYPE vllm:avg_prompt_throughput_toks_per_s gauge
-vllm:avg_prompt_throughput_toks_per_s{model_name="llama2-70b"} 100.0
+vllm:avg_prompt_throughput_toks_per_s{model_name="llama2-7b"} 100.0
 # HELP vllm:avg_generation_throughput_toks_per_s Average generation throughput in tokens/s.
 # TYPE vllm:avg_generation_throughput_toks_per_s gauge
-vllm:avg_generation_throughput_toks_per_s{model_name="llama2-70b"} 100.0
+vllm:avg_generation_throughput_toks_per_s{model_name="llama2-7b"} 100.0
 ```
 
 Then we scale the deployment to 5 replicas.
@@ -167,20 +167,20 @@ We can now see that the total value of Metrics becomes 100 / 5 = 20.
 This is beneficial for testing AutoScaling.
 
 ```shell
-kubectl scale deployment llama2-70b --replicas=5
+kubectl scale deployment llama2-7b --replicas=5
 curl http://localhost:8000/metrics
 ```
 
 ```
 # HELP vllm:request_success_total Count of successfully processed requests.
 # TYPE vllm:request_success_total counter
-vllm:request_success_total{finished_reason="stop",model_name="llama2-70b"} 20.0
+vllm:request_success_total{finished_reason="stop",model_name="llama2-7b"} 20.0
 # HELP vllm:avg_prompt_throughput_toks_per_s Average prefill throughput in tokens/s.
 # TYPE vllm:avg_prompt_throughput_toks_per_s gauge
-vllm:avg_prompt_throughput_toks_per_s{model_name="llama2-70b"} 20.0
+vllm:avg_prompt_throughput_toks_per_s{model_name="llama2-7b"} 20.0
 # HELP vllm:avg_generation_throughput_toks_per_s Average generation throughput in tokens/s.
 # TYPE vllm:avg_generation_throughput_toks_per_s gauge
-vllm:avg_generation_throughput_toks_per_s{model_name="llama2-70b"} 20.0
+vllm:avg_generation_throughput_toks_per_s{model_name="llama2-7b"} 20.0
 ```
 
 #### Update Override Metrics

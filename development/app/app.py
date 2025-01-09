@@ -542,6 +542,12 @@ def metrics():
         metrics_output += generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"],
                                                         "lora-1", metric["value"], help_header=False)
 
+    metrics_output += """
+# HELP vllm:lora_requests_info Running stats on lora requests.
+# TYPE vllm:lora_requests_info gauge
+vllm:lora_requests_info{max_lora="1",running_lora_adapters="text2sql-lora-1",waiting_lora_adapters=""} 1
+"""
+
     histogram_metrics = [
         {
             "name": "iteration_tokens_total",
