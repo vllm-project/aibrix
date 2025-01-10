@@ -28,8 +28,8 @@ const (
 	MetaKeyIntervalInSeconds
 	MetaKeyTracePrecision
 	MetaKeyTotalRequests
-	MetaKeyPendingRequests // Pending requests that out of trace window
-	RequestTraceNumMetaKeys
+	MetaKeyPendingRequests
+	RequestTraceNumMetaKeys // Guardian for the number of RequestTraceMetaKey. This is not a actual meta key.
 )
 
 var requestTraceMetaKeys = [...]string{"meta_v", "meta_interval_sec", "meta_precision", "meta_total_reqs", "meta_pending_reqs", "meta_len"}
@@ -58,35 +58,50 @@ type RequestTrace struct {
 	numKeys         int32     // The number of keys in the trace.
 	numRequests     int32     // Total requests seen in the trace window
 	pendingRequests int32     // Total pending requests remain in the trace window
+	term            int64     // Term that identify the RequestTrace
 
 	mu       sync.RWMutex
 	recycler func(any) // Function handler to put RequestTrace back to pool.
 }
 
 // Increase request counting and return the trace term, key is ignored for now.
-func (t *RequestTrace) AddRequest(requestID string, key string) bool {
+func (t *RequestTrace) AddRequest(requestID string, key string) (int64, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	// Check if recycled
 	if t.recycler == nil {
-		return false
+		return t.term, false
 	}
 	atomic.AddInt32(&t.numRequests, 1)
 	atomic.AddInt32(&t.pendingRequests, 1)
-	return true
+	return t.term, true
+}
+
+// Decrease request counting with term verification, retrying is fultile.
+func (t *RequestTrace) DoneRequest(requestID string, term int64) {
+	// If term dismatch, it will not match a later trace.
+	if term != t.term {
+		return
+	}
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	// If recycled, the pending data will not be used anymore.
+	if t.recycler == nil || term != t.term {
+		return
+	}
+
+	atomic.AddInt32(&t.pendingRequests, -1)
 }
 
 // Decrease request counting with term verification
-func (t *RequestTrace) DoneRequest(requestID string, key string) bool {
+func (t *RequestTrace) DoneRequestTrace(requestID string, key string) bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	// Check if recycled
 	if t.recycler == nil {
 		return false
 	}
-
-	// TODO: Check request membership using requestID
-	atomic.AddInt32(&t.pendingRequests, -1)
 
 	counter := int32(1)
 	if pCounter, loaded := t.trace.LoadOrStore(key, &counter); loaded {
@@ -115,12 +130,12 @@ func (t *RequestTrace) ToMapLocked(total_pending int32) map[string]int {
 	ret[MetaKeyIntervalInSeconds.ToString()] = int(RequestTraceWriteInterval / time.Second)
 	ret[MetaKeyTracePrecision.ToString()] = int(1 / RequestTracePrecision)
 	ret[MetaKeyTotalRequests.ToString()] = int(atomic.LoadInt32(&t.numRequests))
-	// pendingRequests should not be negative even without membership checking.
+	// pendingRequests should not be negative.
 	pendingRequests := atomic.LoadInt32(&t.pendingRequests)
 	if pendingRequests < 0 {
 		pendingRequests = 0
 	}
-	ret[MetaKeyPendingRequests.ToString()] = int(total_pending - pendingRequests)
+	ret[MetaKeyPendingRequests.ToString()] = int(total_pending) // Disregard differences between pending in or out of window in this version.
 	return ret
 }
 
@@ -143,13 +158,13 @@ func (t *RequestTrace) Recycle() {
 }
 
 // Get a RequestTrace generator by hidding the tracePool in closure. Do not call this directly unless for testing purpose.
-func newRequestTraceGen(tracePool *sync.Pool) func() *RequestTrace {
+func newRequestTraceGen(tracePool *sync.Pool) func(term int64) *RequestTrace {
 	if tracePool == nil {
 		tracePool = &sync.Pool{}
 	}
 	recycler := tracePool.Put
 	tracePool.New = func() any { return &RequestTrace{trace: &sync.Map{}, recycler: recycler} }
-	return func() *RequestTrace {
+	return func(term int64) *RequestTrace {
 		reqTrace := tracePool.Get().(*RequestTrace)
 		if atomic.LoadInt32(&reqTrace.numKeys) > 0 {
 			reqTrace.trace = &sync.Map{}
@@ -157,6 +172,7 @@ func newRequestTraceGen(tracePool *sync.Pool) func() *RequestTrace {
 		}
 		atomic.StoreInt32(&reqTrace.numRequests, 0)
 		atomic.StoreInt32(&reqTrace.pendingRequests, 0)
+		reqTrace.term = term
 		reqTrace.recycler = recycler
 		return reqTrace
 	}

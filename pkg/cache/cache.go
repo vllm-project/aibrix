@@ -65,8 +65,9 @@ type Cache struct {
 	PodModelMetrics   map[string]map[string]map[string]metrics.MetricValue // pod_name: map[model_name]map[metric_name]metric_val
 	PodToModelMapping map[string]map[string]struct{}                       // pod_name: map[model_name]struct{}
 	ModelToPodMapping map[string]map[string]*v1.Pod                        // model_name: map[pod_name]*v1.Pod
-	requestTrace      map[string]*RequestTrace                             // model_name: RequestTrace
-	pendingRequests   sync.Map                                             // model_name: *int32
+	requestTrace      *sync.Map                                            // model_name: RequestTrace
+	numRequestsTraces int32                                                // counter for requestTrace
+	pendingRequests   *sync.Map                                            // model_name: *int32
 }
 
 const (
@@ -213,8 +214,8 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			PodModelMetrics:   map[string]map[string]map[string]metrics.MetricValue{},
 			PodToModelMapping: map[string]map[string]struct{}{},
 			ModelToPodMapping: map[string]map[string]*v1.Pod{},
-			requestTrace:      map[string]*RequestTrace{},
-			pendingRequests:   sync.Map{},
+			requestTrace:      &sync.Map{},
+			pendingRequests:   &sync.Map{},
 		}
 		if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc:    instance.addPod,
@@ -276,7 +277,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			for {
 				select {
 				case <-traceTicker.C:
-					if len(instance.requestTrace) == 0 {
+					if atomic.LoadInt32(&instance.numRequestsTraces) == 0 {
 						continue
 					}
 					t := time.Now().Unix()
@@ -823,11 +824,12 @@ func (c *Cache) updateModelMetrics() {
 	}
 }
 
-func (c *Cache) AddRequestCount(requestID string, modelName string) {
+func (c *Cache) AddRequestCount(requestID string, modelName string) (traceTerm int64) {
+	success := false
 	for {
 		trace := c.getRequestTrace(modelName)
 		// TODO: use non-empty key if we have output prediction to decide buckets early.
-		if trace.AddRequest(requestID, "") {
+		if traceTerm, success = trace.AddRequest(requestID, ""); success {
 			break
 		}
 		// In case AddRequest return false, it has been recycled and we want to retry.
@@ -836,25 +838,31 @@ func (c *Cache) AddRequestCount(requestID string, modelName string) {
 	newPendingCounter := int32(0)
 	pPendingCounter, _ := c.pendingRequests.LoadOrStore(modelName, &newPendingCounter)
 	atomic.AddInt32(pPendingCounter.(*int32), 1)
+	return
 }
 
-func (c *Cache) DoneRequestCount(modelName string) {
+func (c *Cache) DoneRequestCount(requestID string, modelName string, traceTerm int64) {
 	pPendingCounter, ok := c.pendingRequests.Load(modelName)
 	if ok {
 		atomic.AddInt32(pPendingCounter.(*int32), -1)
 	}
+
+	// DoneRequest only works for current term, no need to retry.
+	c.getRequestTrace(modelName).DoneRequest(requestID, traceTerm)
 }
 
 func (c *Cache) AddRequestTrace(requestID string, modelName string, inputTokens, outputTokens int64) {
-	c.DoneRequestCount(modelName)
-
-	inputIndex := int64(math.Round(math.Log2(float64(inputTokens)) / RequestTracePrecision)) // Round to the nearest precision and convert to int
-	outputIndex := int64(math.Round(math.Log2(float64(outputTokens)) / RequestTracePrecision))
-	traceKey := fmt.Sprintf("%v:%v", inputIndex, outputIndex)
+	traceKey := ""
+	var inputIndex, outputIndex int64
+	if inputTokens > 0 && outputTokens > 0 {
+		inputIndex = int64(math.Round(math.Log2(float64(inputTokens)) / RequestTracePrecision)) // Round to the nearest precision and convert to int
+		outputIndex = int64(math.Round(math.Log2(float64(outputTokens)) / RequestTracePrecision))
+		traceKey = fmt.Sprintf("%v:%v", inputIndex, outputIndex)
+	}
 
 	for {
 		trace := c.getRequestTrace(modelName)
-		if trace.DoneRequest(requestID, traceKey) {
+		if trace.DoneRequestTrace(requestID, traceKey) {
 			break
 		}
 		// In case DoneRequest return false, it has been recycled and we want to retry.
@@ -865,36 +873,32 @@ func (c *Cache) AddRequestTrace(requestID string, modelName string, inputTokens,
 }
 
 func (c *Cache) getRequestTrace(modelName string) *RequestTrace {
-	c.mu.RLock()
-	trace, exist := c.requestTrace[modelName]
-	c.mu.RUnlock()
-
-	if !exist {
-		trace = NewRequestTrace()
-
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		// double check
-		if newer, exist := c.requestTrace[modelName]; !exist {
-			c.requestTrace[modelName] = trace
-		} else {
-			trace.Recycle()
-			trace = newer
-		}
+	trace := NewRequestTrace(time.Now().UnixNano())
+	newer, loaded := c.requestTrace.LoadOrStore(modelName, trace)
+	if loaded {
+		trace.Recycle()
+	} else {
+		atomic.AddInt32(&c.numRequestsTraces, 1)
 	}
-	return trace
+	return newer.(*RequestTrace)
 }
 
 func (c *Cache) writeRequestTraceToStorage(roundT int64) {
-	c.mu.Lock()
-	// Save trace context
-	requestTrace := c.requestTrace
-	// Reset trace context
-	c.requestTrace = make(map[string]*RequestTrace, len(requestTrace))
-	c.mu.Unlock()
+	// Save and reset trace context, atomicity is guarenteed.
+	var requestTrace *sync.Map
+	numTraces := atomic.LoadInt32(&c.numRequestsTraces)
+	requestTrace, c.requestTrace = c.requestTrace, &sync.Map{}
+	numResetTo := int32(0)
+	for !atomic.CompareAndSwapInt32(&c.numRequestsTraces, numTraces, numResetTo) {
+		// If new traces added to reset map, assert updatedNumTraces >= numTraces regardless duplication.
+		updatedNumTraces := atomic.LoadInt32(&c.numRequestsTraces)
+		numTraces, numResetTo = updatedNumTraces, updatedNumTraces-numTraces
+	}
 
-	for modelName, trace := range requestTrace {
-		requestTrace[modelName] = nil // Simply assign nil instead of delete
+	requestTrace.Range(func(iModelName, iTrace any) bool {
+		modelName := iModelName.(string)
+		trace := iTrace.(*RequestTrace)
+		requestTrace.Store(modelName, nil) // Simply assign nil instead of delete
 
 		trace.Lock()
 		pending := int32(0)
@@ -908,14 +912,15 @@ func (c *Cache) writeRequestTraceToStorage(roundT int64) {
 		value, err := json.Marshal(traceMap)
 		if err != nil {
 			klog.ErrorS(err, "error to marshall request trace for redis set")
-			continue
+			return true
 		}
 
 		key := fmt.Sprintf("aibrix:%v_request_trace_%v", modelName, roundT)
 		if _, err = c.redisClient.Set(context.Background(), key, value, expireWriteRequestTraceIntervalInMins*time.Minute).Result(); err != nil {
 			klog.Error(err)
 		}
-	}
+		return true
+	})
 
 	klog.V(5).Infof("writeRequestTraceWithKey: %v", roundT)
 }

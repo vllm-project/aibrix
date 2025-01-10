@@ -29,17 +29,20 @@ var _ = Describe("reqeustTrace", func() {
 		// Ensure a independent pool
 		newRequestTrace := newRequestTraceGen(&sync.Pool{})
 
-		expectedEmptyTrace := newRequestTrace()
+		expectedEmptyTrace := newRequestTrace(0)
 
-		oldTrace := newRequestTrace()
+		ts := time.Now().UnixNano()
+		oldTrace := newRequestTrace(ts)
+		term, _ := oldTrace.AddRequest("no use now", "no use now")
+		Expect(term).To(Equal(ts))
 		oldTrace.AddRequest("no use now", "no use now")
-		oldTrace.AddRequest("no use now", "no use now")
-		oldTrace.DoneRequest("no use now", "1:1")
-		Expect(oldTrace.numKeys).ToNot(Equal(int32(0)))
+		oldTrace.DoneRequest("no use now", term)
+		oldTrace.DoneRequestTrace("no use now", "1:1")
+		Expect(oldTrace.numRequests).ToNot(Equal(int32(0)))
 		oldTraceMap := oldTrace.trace
 		oldTrace.Recycle()
 
-		newTrace := newRequestTrace()
+		newTrace := newRequestTrace(0)
 		Expect(newTrace).To(BeIdenticalTo(oldTrace))             // Address should equal
 		Expect(newTrace.trace).ToNot(BeIdenticalTo(oldTraceMap)) // trace should be reset
 		// function cannot be compared, so set them to nil
@@ -49,21 +52,23 @@ var _ = Describe("reqeustTrace", func() {
 	})
 
 	It("should ToMap return expected record.", func() {
-		trace := NewRequestTrace()
+		trace := NewRequestTrace(0)
 		trace.AddRequest("no use now", "no use now")
-		trace.DoneRequest("no use now", "1:1")
-		traceMap := trace.ToMap(0)
-		expected := []byte("{\"1:1\":1,\"meta_interval_sec\":10,\"meta_pending_reqs\":0,\"meta_precision\":10,\"meta_total_reqs\":1,\"meta_v\":3}")
+		trace.DoneRequest("no use now", 0)
+		trace.DoneRequestTrace("no use now", "1:1")
+		traceMap := trace.ToMap(2)
+		expected := []byte("{\"1:1\":1,\"meta_interval_sec\":10,\"meta_pending_reqs\":2,\"meta_precision\":10,\"meta_total_reqs\":1,\"meta_v\":3}")
 		marshaled, err := json.Marshal(traceMap)
 		Expect(err).To(BeNil())
 		Expect(marshaled).To(Equal(expected))
 	})
 
 	It("should pending requests should not negative.", func() {
-		trace := NewRequestTrace()
+		trace := NewRequestTrace(0)
 		trace.AddRequest("no use now", "no use now")
-		trace.DoneRequest("no use now", "1:1")
-		trace.DoneRequest("no use now", "2:1")
+		trace.DoneRequest("no use now", 0)
+		trace.DoneRequest("no use now", 0)
+		// TODO: Since in window pending requests are not used in this version, this test will never fail.
 		traceMap := trace.ToMap(0)
 		Expect(traceMap[MetaKeyPendingRequests.ToString()]).To(Equal(0))
 	})
@@ -71,7 +76,7 @@ var _ = Describe("reqeustTrace", func() {
 	It("during RequestTrace switch, no trace should lost.", func() {
 		for range 10 { // Repeat N times to increase problem rate
 			total := 1000000
-			trace := NewRequestTrace()
+			trace := NewRequestTrace(time.Now().UnixNano())
 			traces := make([]*RequestTrace, 0, 10)
 			traces = append(traces, trace)
 			done := make(chan struct{})
@@ -85,10 +90,13 @@ var _ = Describe("reqeustTrace", func() {
 						tracesSeen++
 					}
 					// Retry until success
-					for !trace.AddRequest("no use now", "no use now") {
+					term, success := trace.AddRequest("no use now", "no use now")
+					for !success {
+						term, success = trace.AddRequest("no use now", "no use now")
 					}
+					trace.DoneRequest("no use now", term)
 					// Retry until success
-					for !trace.DoneRequest("no use now", "1:1") {
+					for !trace.DoneRequestTrace("no use now", "1:1") {
 					}
 				}
 				close(done)
@@ -101,7 +109,7 @@ var _ = Describe("reqeustTrace", func() {
 						return
 					default:
 						oldTrace := trace
-						trace = NewRequestTrace()
+						trace = NewRequestTrace(time.Now().UnixNano())
 						oldTrace.Lock()
 						oldTrace.recycler = nil // simulate recycling.
 						oldTrace.Unlock()
@@ -116,10 +124,9 @@ var _ = Describe("reqeustTrace", func() {
 
 			requests := int32(0)
 			profiles := int32(0)
-			dones := int32(0)
 			for _, trace := range traces {
 				requests += trace.numRequests
-				dones += trace.pendingRequests
+				Expect(trace.pendingRequests >= 0).To(BeTrue())
 				trace.trace.Range(func(_, num any) bool {
 					profiles += *num.(*int32)
 					return true
@@ -127,7 +134,6 @@ var _ = Describe("reqeustTrace", func() {
 			}
 			Expect(requests).To(Equal(int32(total)))
 			Expect(profiles).To(Equal(int32(total)))
-			Expect(dones).To(Equal(int32(0)))
 		}
 	})
 })
