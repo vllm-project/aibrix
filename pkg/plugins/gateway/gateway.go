@@ -130,10 +130,10 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			resp, model, targetPodIP, stream, traceTerm = s.HandleRequestBody(ctx, requestID, req, user, routingStrategy)
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
-			resp = s.HandleResponseHeaders(ctx, requestID, req, model, targetPodIP, traceTerm)
+			resp = s.HandleResponseHeaders(ctx, requestID, req, targetPodIP)
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
-			resp = s.HandleResponseBody(ctx, requestID, req, user, rpm, targetPodIP, stream)
+			resp = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, targetPodIP, stream, traceTerm)
 
 		default:
 			klog.Infof("Unknown Request type %+v\n", v)
@@ -325,11 +325,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	}, model, targetPodIP, stream, term
 }
 
-func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, model string, targetPodIP string, traceTerm int64) *extProcPb.ProcessingResponse {
+func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
 	klog.InfoS("-- In ResponseHeaders processing ...", "requestID", requestID)
-
-	// Done request without wait for response body
-	s.cache.DoneRequestCount(requestID, model, traceTerm)
 
 	headers := []*configPb.HeaderValueOption{{
 		Header: &configPb.HeaderValue{
@@ -360,14 +357,19 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 	}
 }
 
-func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, targetPodIP string, stream bool) *extProcPb.ProcessingResponse {
+func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, targetPodIP string, stream bool, traceTerm int64) *extProcPb.ProcessingResponse {
 	klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID)
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 
 	var res openai.ChatCompletion
-	var model string
 	var usage openai.CompletionUsage
+	var promptTokens, completionTokens int64
 	headers := []*configPb.HeaderValueOption{}
+
+	defer func() {
+		// Wrapped in a function to delay the evaluation of parameters.
+		s.cache.DoneRequestTrace(requestID, model, promptTokens, completionTokens, traceTerm)
+	}()
 
 	if stream {
 		t := &http.Response{
@@ -405,8 +407,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	}
 	var requestEnd string
 	if usage.TotalTokens != 0 {
-		// Add trace, no cache level lock will be acquired.
-		s.cache.AddRequestTrace(requestID, model, usage.PromptTokens, usage.CompletionTokens)
+		// Update promptTokens and completeTokens
+		promptTokens = usage.PromptTokens
+		completionTokens = usage.CompletionTokens
 		// Count token per user.
 		if user.Name != "" {
 			tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user), res.Usage.TotalTokens)

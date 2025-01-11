@@ -37,7 +37,7 @@ var _ = Describe("reqeustTrace", func() {
 		Expect(term).To(Equal(ts))
 		oldTrace.AddRequest("no use now", "no use now")
 		oldTrace.DoneRequest("no use now", term)
-		oldTrace.DoneRequestTrace("no use now", "1:1")
+		oldTrace.AddRequestTrace("no use now", "1:1")
 		Expect(oldTrace.numRequests).ToNot(Equal(int32(0)))
 		oldTraceMap := oldTrace.trace
 		oldTrace.Recycle()
@@ -55,7 +55,7 @@ var _ = Describe("reqeustTrace", func() {
 		trace := NewRequestTrace(0)
 		trace.AddRequest("no use now", "no use now")
 		trace.DoneRequest("no use now", 0)
-		trace.DoneRequestTrace("no use now", "1:1")
+		trace.AddRequestTrace("no use now", "1:1")
 		traceMap := trace.ToMap(2)
 		expected := []byte("{\"1:1\":1,\"meta_interval_sec\":10,\"meta_pending_reqs\":2,\"meta_precision\":10,\"meta_total_reqs\":1,\"meta_v\":3}")
 		marshaled, err := json.Marshal(traceMap)
@@ -96,7 +96,7 @@ var _ = Describe("reqeustTrace", func() {
 					}
 					trace.DoneRequest("no use now", term)
 					// Retry until success
-					for !trace.DoneRequestTrace("no use now", "1:1") {
+					for !trace.AddRequestTrace("no use now", "1:1") {
 					}
 				}
 				close(done)
@@ -126,7 +126,7 @@ var _ = Describe("reqeustTrace", func() {
 			profiles := int32(0)
 			for _, trace := range traces {
 				requests += trace.numRequests
-				Expect(trace.pendingRequests >= 0).To(BeTrue())
+				Expect(trace.completedRequests <= trace.numRequests).To(BeTrue())
 				trace.trace.Range(func(_, num any) bool {
 					profiles += *num.(*int32)
 					return true

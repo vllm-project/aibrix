@@ -72,7 +72,7 @@ var _ = Describe("Cache", func() {
 		Expect(trace).ToNot(BeNil())
 		Expect(trace.numKeys).To(Equal(int32(0)))
 		Expect(trace.numRequests).To(Equal(int32(1)))
-		Expect(trace.pendingRequests).To(Equal(int32(1)))
+		Expect(trace.completedRequests).To(Equal(int32(0)))
 		pPendingCounter, exist := cache.pendingRequests.Load(modelName)
 		Expect(exist).To(BeTrue())
 		Expect(*pPendingCounter.(*int32)).To(Equal(int32(1)))
@@ -82,7 +82,7 @@ var _ = Describe("Cache", func() {
 		trace = cache.getRequestTrace(modelName)
 		Expect(trace).ToNot(BeNil())
 		Expect(trace.numRequests).To(Equal(int32(1)))
-		Expect(trace.pendingRequests).To(Equal(int32(0)))
+		Expect(trace.completedRequests).To(Equal(int32(1)))
 		pPendingCounter, exist = cache.pendingRequests.Load(modelName)
 		Expect(exist).To(BeTrue())
 		Expect(*pPendingCounter.(*int32)).To(Equal(int32(0)))
@@ -162,17 +162,16 @@ func BenchmarkAddRequestTrace(b *testing.B) {
 	wg.Wait()
 }
 
-func BenchmarkAddRequestAll(b *testing.B) {
+func BenchmarkDoneRequestTrace(b *testing.B) {
 	cache := newTraceCache()
 	thread := 10
 	var wg sync.WaitGroup
+	term := cache.AddRequestCount("no use now", "model")
 	for i := 0; i < thread; i++ {
 		wg.Add(1)
 		go func() {
 			for i := 0; i < b.N/thread; i++ {
-				term := cache.AddRequestCount("no use now", "model")
-				cache.DoneRequestCount("no use now", "model", term)
-				cache.AddRequestTrace("no use now", "model", rand.Int63n(8192), rand.Int63n(1024))
+				cache.DoneRequestTrace("no use now", "model", rand.Int63n(8192), rand.Int63n(1024), term)
 			}
 			wg.Done()
 		}()

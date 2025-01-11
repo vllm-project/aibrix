@@ -54,11 +54,11 @@ const (
 )
 
 type RequestTrace struct {
-	trace           *sync.Map // map[Log2(input_token):Log2(output_token)]request_count
-	numKeys         int32     // The number of keys in the trace.
-	numRequests     int32     // Total requests seen in the trace window
-	pendingRequests int32     // Total pending requests remain in the trace window
-	term            int64     // Term that identify the RequestTrace
+	trace             *sync.Map // map[Log2(input_token):Log2(output_token)]request_count
+	numKeys           int32     // The number of keys in the trace.
+	numRequests       int32     // Total requests seen in the trace window
+	completedRequests int32     // Total completed requests remain in the trace window
+	term              int64     // Term that identify the RequestTrace
 
 	mu       sync.RWMutex
 	recycler func(any) // Function handler to put RequestTrace back to pool.
@@ -73,29 +73,17 @@ func (t *RequestTrace) AddRequest(requestID string, key string) (int64, bool) {
 		return t.term, false
 	}
 	atomic.AddInt32(&t.numRequests, 1)
-	atomic.AddInt32(&t.pendingRequests, 1)
 	return t.term, true
 }
 
 // Decrease request counting with term verification, retrying is fultile.
 func (t *RequestTrace) DoneRequest(requestID string, term int64) {
-	// If term dismatch, it will not match a later trace.
-	if term != t.term {
-		return
-	}
-
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	// If recycled, the pending data will not be used anymore.
-	if t.recycler == nil || term != t.term {
-		return
-	}
-
-	atomic.AddInt32(&t.pendingRequests, -1)
+	// No lock required, for the request is guarded by the term
+	t.doneRequestLocked(term)
 }
 
-// Decrease request counting with term verification
-func (t *RequestTrace) DoneRequestTrace(requestID string, key string) bool {
+// Add request trace profile. key must be provided and will not be checked
+func (t *RequestTrace) AddRequestTrace(requestID string, key string) bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	// Check if recycled
@@ -103,11 +91,26 @@ func (t *RequestTrace) DoneRequestTrace(requestID string, key string) bool {
 		return false
 	}
 
-	counter := int32(1)
-	if pCounter, loaded := t.trace.LoadOrStore(key, &counter); loaded {
-		atomic.AddInt32(pCounter.(*int32), 1)
-	} else {
-		atomic.AddInt32(&t.numKeys, 1)
+	t.addRequestTraceLocked(key)
+	return true
+}
+
+// Decrease request counting and add request trace profile.
+func (t *RequestTrace) DoneRequestTrace(requestID string, key string, term int64) bool {
+	if term != t.term && key == "" {
+		return true
+	}
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	// Check if recycled
+	if t.recycler == nil {
+		return false
+	}
+
+	t.doneRequestLocked(term)
+	if key != "" {
+		t.addRequestTraceLocked(key)
 	}
 	return true
 }
@@ -130,11 +133,6 @@ func (t *RequestTrace) ToMapLocked(total_pending int32) map[string]int {
 	ret[MetaKeyIntervalInSeconds.ToString()] = int(RequestTraceWriteInterval / time.Second)
 	ret[MetaKeyTracePrecision.ToString()] = int(1 / RequestTracePrecision)
 	ret[MetaKeyTotalRequests.ToString()] = int(atomic.LoadInt32(&t.numRequests))
-	// pendingRequests should not be negative.
-	pendingRequests := atomic.LoadInt32(&t.pendingRequests)
-	if pendingRequests < 0 {
-		pendingRequests = 0
-	}
 	ret[MetaKeyPendingRequests.ToString()] = int(total_pending) // Disregard differences between pending in or out of window in this version.
 	return ret
 }
@@ -157,6 +155,24 @@ func (t *RequestTrace) Recycle() {
 	t.RecycleLocked()
 }
 
+func (t *RequestTrace) doneRequestLocked(term int64) {
+	if term == t.term {
+		atomic.AddInt32(&t.completedRequests, 1)
+	}
+}
+
+func (t *RequestTrace) addRequestTraceLocked(key string) {
+	// Init with 1 to avoid increasement on Store
+	counter := int32(1)
+	if pCounter, loaded := t.trace.LoadOrStore(key, &counter); loaded {
+		// Increase counter correspondant to the key
+		atomic.AddInt32(pCounter.(*int32), 1)
+	} else {
+		// Increase counter of total keys
+		atomic.AddInt32(&t.numKeys, 1)
+	}
+}
+
 // Get a RequestTrace generator by hidding the tracePool in closure. Do not call this directly unless for testing purpose.
 func newRequestTraceGen(tracePool *sync.Pool) func(term int64) *RequestTrace {
 	if tracePool == nil {
@@ -171,7 +187,7 @@ func newRequestTraceGen(tracePool *sync.Pool) func(term int64) *RequestTrace {
 			atomic.StoreInt32(&reqTrace.numKeys, 0)
 		}
 		atomic.StoreInt32(&reqTrace.numRequests, 0)
-		atomic.StoreInt32(&reqTrace.pendingRequests, 0)
+		atomic.StoreInt32(&reqTrace.completedRequests, 0)
 		reqTrace.term = term
 		reqTrace.recycler = recycler
 		return reqTrace

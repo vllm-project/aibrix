@@ -852,24 +852,30 @@ func (c *Cache) DoneRequestCount(requestID string, modelName string, traceTerm i
 }
 
 func (c *Cache) AddRequestTrace(requestID string, modelName string, inputTokens, outputTokens int64) {
-	traceKey := ""
-	var inputIndex, outputIndex int64
-	if inputTokens > 0 && outputTokens > 0 {
-		inputIndex = int64(math.Round(math.Log2(float64(inputTokens)) / RequestTracePrecision)) // Round to the nearest precision and convert to int
-		outputIndex = int64(math.Round(math.Log2(float64(outputTokens)) / RequestTracePrecision))
-		traceKey = fmt.Sprintf("%v:%v", inputIndex, outputIndex)
-	}
-
+	traceKey := c.getTraceKey(inputTokens, outputTokens)
 	for {
 		trace := c.getRequestTrace(modelName)
-		if trace.DoneRequestTrace(requestID, traceKey) {
+		if trace.AddRequestTrace(requestID, traceKey) {
 			break
 		}
 		// In case DoneRequest return false, it has been recycled and we want to retry.
 	}
+}
 
-	klog.V(5).Infof("inputTokens: %v, inputIndex: %v, outputTokens: %v, outputIndex: %v",
-		inputTokens, inputIndex, outputTokens, outputIndex)
+func (c *Cache) DoneRequestTrace(requestID string, modelName string, inputTokens, outputTokens, traceTerm int64) {
+	pPendingCounter, ok := c.pendingRequests.Load(modelName)
+	if ok {
+		atomic.AddInt32(pPendingCounter.(*int32), -1)
+	}
+
+	traceKey := c.getTraceKey(inputTokens, outputTokens)
+	for {
+		trace := c.getRequestTrace(modelName)
+		if trace.DoneRequestTrace(requestID, traceKey, traceTerm) {
+			break
+		}
+		// In case DoneRequest return false, it has been recycled and we want to retry.
+	}
 }
 
 func (c *Cache) getRequestTrace(modelName string) *RequestTrace {
@@ -881,6 +887,18 @@ func (c *Cache) getRequestTrace(modelName string) *RequestTrace {
 		atomic.AddInt32(&c.numRequestsTraces, 1)
 	}
 	return newer.(*RequestTrace)
+}
+
+func (c *Cache) getTraceKey(inputTokens, outputTokens int64) (traceKey string) {
+	if inputTokens > 0 && outputTokens > 0 {
+		inputIndex := int64(math.Round(math.Log2(float64(inputTokens)) / RequestTracePrecision)) // Round to the nearest precision and convert to int
+		outputIndex := int64(math.Round(math.Log2(float64(outputTokens)) / RequestTracePrecision))
+		traceKey = fmt.Sprintf("%v:%v", inputIndex, outputIndex)
+
+		klog.V(5).Infof("inputTokens: %v, inputIndex: %v, outputTokens: %v, outputIndex: %v",
+			inputTokens, inputIndex, outputTokens, outputIndex)
+	}
+	return
 }
 
 func (c *Cache) writeRequestTraceToStorage(roundT int64) {
