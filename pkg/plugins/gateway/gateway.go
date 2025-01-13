@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,6 +52,8 @@ var (
 	defaultRPM           = 100
 	defaultTPMMultiplier = 1000
 	routingStrategies    = []string{"random", "least-request", "throughput", "least-kv-cache", "least-busy-time", "least-latency"}
+
+	ErrorUnknownResponse = errors.New("unknonw response")
 )
 
 type Server struct {
@@ -104,6 +107,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var stream bool
 	ctx := srv.Context()
 	requestID := uuid.New().String()
+	completed := false
 
 	for {
 		select {
@@ -133,7 +137,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			resp = s.HandleResponseHeaders(ctx, requestID, req, targetPodIP)
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
-			resp = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, targetPodIP, stream, traceTerm)
+			resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, targetPodIP, stream, traceTerm, completed)
 
 		default:
 			klog.Infof("Unknown Request type %+v\n", v)
@@ -357,7 +361,7 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 	}
 }
 
-func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, targetPodIP string, stream bool, traceTerm int64) *extProcPb.ProcessingResponse {
+func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, targetPodIP string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID)
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 
@@ -365,10 +369,13 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	var usage openai.CompletionUsage
 	var promptTokens, completionTokens int64
 	headers := []*configPb.HeaderValueOption{}
+	complete := false
 
 	defer func() {
-		// Wrapped in a function to delay the evaluation of parameters.
-		s.cache.DoneRequestTrace(requestID, model, promptTokens, completionTokens, traceTerm)
+		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
+		if !hasCompleted && complete {
+			s.cache.DoneRequestTrace(requestID, model, promptTokens, completionTokens, traceTerm)
+		}
 	}()
 
 	if stream {
@@ -379,34 +386,48 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 		for streaming.Next() {
 			evt := streaming.Current()
 			if len(evt.Choices) == 0 {
-				model = evt.Model
+				// Do not overwrite model, res can be empty.
 				usage = evt.Usage
 			}
 		}
 		if err := streaming.Err(); err != nil {
 			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+			complete = true
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-streaming-error", RawValue: []byte("true"),
 				}}},
-				err.Error())
+				err.Error()), complete
 		}
 	} else {
 		if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
 			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+			complete = true
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-error-response-unmarshal", RawValue: []byte("true"),
 				}}},
-				err.Error())
+				err.Error()), complete
+		} else if !res.Object.IsKnown() || res.Model != model {
+			err = ErrorUnknownResponse
+			klog.ErrorS(err, "unexpected response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+			complete = true
+			return generateErrorResponse(
+				envoyTypePb.StatusCode_InternalServerError,
+				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+					Key: "x-error-response-unknown", RawValue: []byte("true"),
+				}}},
+				err.Error()), complete
 		}
-		model = res.Model
+		// Do not overwrite model, res can be empty.
 		usage = res.Usage
 	}
+
 	var requestEnd string
 	if usage.TotalTokens != 0 {
+		complete = true
 		// Update promptTokens and completeTokens
 		promptTokens = usage.PromptTokens
 		completionTokens = usage.CompletionTokens
@@ -419,7 +440,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 						Key: "x-error-update-tpm", RawValue: []byte("true"),
 					}}},
-					err.Error())
+					err.Error()), complete
 			}
 
 			headers = append(headers,
@@ -438,6 +459,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			)
 			requestEnd = fmt.Sprintf(requestEnd+"rpm: %s, tpm: %s", rpm, tpm)
 		}
+
 		if targetPodIP != "" {
 			headers = append(headers,
 				&configPb.HeaderValueOption{
@@ -449,8 +471,8 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			)
 			requestEnd = fmt.Sprintf(requestEnd+", targetPod: %s", targetPodIP)
 		}
-		klog.Infof("request end, requestID: %s - %s", requestID, requestEnd)
 	}
+	klog.Infof("request end, requestID: %s - %s", requestID, requestEnd)
 
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ResponseBody{
@@ -462,7 +484,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				},
 			},
 		},
-	}
+	}, complete
 }
 
 func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extProcPb.ProcessingResponse, error) {

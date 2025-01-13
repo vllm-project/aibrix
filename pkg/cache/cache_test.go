@@ -19,7 +19,9 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	. "github.com/onsi/ginkgo"
@@ -92,6 +94,30 @@ var _ = Describe("Cache", func() {
 		pProfileCounter, exist := trace.trace.Load("0:0") // log2(1)
 		Expect(exist).To(BeTrue())
 		Expect(*pProfileCounter.(*int32)).To(Equal(int32(1)))
+	})
+
+	It("should global pending counter return 0.", func() {
+		cache := newTraceCache()
+		total := 100000
+		var wg sync.WaitGroup
+		for range 10 { // Repeat N times to increase problem rate
+			wg.Add(1)
+			// start := time.Now()
+			go func() {
+				for range total {
+					// Retry until success
+					term := cache.AddRequestCount("no use now", "model")
+					runtime.Gosched()
+					cache.DoneRequestTrace("no use now", "model", 1, 1, term)
+				}
+				wg.Done()
+			}()
+		}
+		wg.Wait()
+		// duration := time.Since(start)
+		// print(duration)
+		pendingCounter, _ := cache.pendingRequests.Load("model")
+		Expect(atomic.LoadInt32(pendingCounter.(*int32))).To(Equal(int32(0)))
 	})
 })
 
