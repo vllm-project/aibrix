@@ -22,6 +22,7 @@ spec:
       labels:
         model.aibrix.ai/name: deepseek-coder-7b-instruct
     spec:
+      terminationGracePeriodSeconds: 300
       containers:
         - command:
             - python3
@@ -77,6 +78,24 @@ spec:
               name: model-hostpath
             - name: dshm
               mountPath: /dev/shm
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    while true; do
+                      RUNNING=$(curl -s http://localhost:8000/metrics | grep 'vllm:num_requests_running' | grep -v '#' | awk '{print $2}')
+                      WAITING=$(curl -s http://localhost:8000/metrics | grep 'vllm:num_requests_waiting' | grep -v '#' | awk '{print $2}')
+                      if [ "$RUNNING" = "0.0" ] && [ "$WAITING" = "0.0" ]; then
+                        echo "Terminating: No active or waiting requests, safe to terminate" >> /proc/1/fd/1
+                        exit 0
+                      else
+                        echo "Terminating: Running: $RUNNING, Waiting: $WAITING" >> /proc/1/fd/1
+                        sleep 5
+                      fi
+                    done
         - name: aibrix-runtime
           image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.2.0-rc.1
           command:
