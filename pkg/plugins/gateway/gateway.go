@@ -410,7 +410,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 					Key: "x-error-response-unmarshal", RawValue: []byte("true"),
 				}}},
 				err.Error()), complete
-		} else if !res.Object.IsKnown() || res.Model != model {
+		} else if res.Model != model {
 			err = ErrorUnknownResponse
 			klog.ErrorS(err, "unexpected response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
 			complete = true
