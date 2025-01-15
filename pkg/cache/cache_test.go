@@ -100,11 +100,11 @@ var _ = Describe("Cache", func() {
 		cache := newTraceCache()
 		total := 100000
 		var wg sync.WaitGroup
-		for range 10 { // Repeat N times to increase problem rate
+		for i := 0; i < 10; i++ { // Repeat N times to increase problem rate
 			wg.Add(1)
 			// start := time.Now()
 			go func() {
-				for range total {
+				for j := 0; j < total; j++ {
 					// Retry until success
 					term := cache.AddRequestCount("no use now", "model")
 					runtime.Gosched()

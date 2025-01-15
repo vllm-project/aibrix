@@ -137,7 +137,7 @@ func getPodMetricRefreshInterval() time.Duration {
 		}
 	}
 	klog.V(4).Infof("Using default refresh interval: %d ms", defaultPodMetricRefreshIntervalInMS)
-	return time.Duration(defaultPodMetricRefreshIntervalInMS * time.Millisecond)
+	return defaultPodMetricRefreshIntervalInMS * time.Millisecond
 }
 
 func GetCache() (*Cache, error) {
@@ -901,7 +901,7 @@ func (c *Cache) getTraceKey(inputTokens, outputTokens int64) (traceKey string) {
 }
 
 func (c *Cache) writeRequestTraceToStorage(roundT int64) {
-	// Save and reset trace context, atomicity is guarenteed.
+	// Save and reset trace context, atomicity is guaranteed.
 	var requestTrace *sync.Map
 	numTraces := atomic.LoadInt32(&c.numRequestsTraces)
 	requestTrace, c.requestTrace = c.requestTrace, &sync.Map{}

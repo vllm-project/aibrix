@@ -74,7 +74,7 @@ var _ = Describe("reqeustTrace", func() {
 	})
 
 	It("during RequestTrace switch, no trace should lost.", func() {
-		for range 10 { // Repeat N times to increase problem rate
+		for i := 0; i < 10; i++ { // Repeat N times to increase problem rate
 			total := 1000000
 			trace := NewRequestTrace(time.Now().UnixNano())
 			traces := make([]*RequestTrace, 0, 10)
@@ -84,7 +84,7 @@ var _ = Describe("reqeustTrace", func() {
 			tracesSeen := 0
 			// start := time.Now()
 			go func() {
-				for range total {
+				for j := 0; j < total; j++ {
 					if trace != lastTrace {
 						lastTrace = trace
 						tracesSeen++

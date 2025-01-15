@@ -39,7 +39,7 @@ func (key RequestTraceMetaKey) ToString() string {
 }
 
 const (
-	// The version of request trace, verison history:
+	// The version of request trace, version history:
 	// v1: No meta, default
 	// v2: Added meta data include version(meta_v), bucket precision(meta_precision), and interval(meta_interval_sec) to notify client the trace interval.
 	// v3: Added the number of total requests(meta_total_reqs) and pending requests(meta_pending_reqs) for uncompleted requests.
@@ -165,7 +165,7 @@ func (t *RequestTrace) addRequestTraceLocked(key string) {
 	// Init with 1 to avoid increasement on Store
 	counter := int32(1)
 	if pCounter, loaded := t.trace.LoadOrStore(key, &counter); loaded {
-		// Increase counter correspondant to the key
+		// Increase counter correspondent to the key
 		atomic.AddInt32(pCounter.(*int32), 1)
 	} else {
 		// Increase counter of total keys
