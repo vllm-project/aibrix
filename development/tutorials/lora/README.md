@@ -12,7 +12,7 @@ docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
 
 2. Deploy mocked model image
 ```shell
-kubectl apply -f docs/development/app/deployment.yaml
+kubectl create -k config/mock
 ```
 
 3. Load models
@@ -43,7 +43,7 @@ Verified! The model is loaded and unloaded successfully and pod annotations are 
 5. Deploy the controller and apply the `model_adapter.yaml`
 
 ```
-kubectl apply -f docs/tutorial/lora/model_adapter.yaml
+kubectl apply -f development/tutorials/lora/model_adapter.yaml
 ```
 
 
@@ -54,7 +54,7 @@ curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -d '{
-     "model": "gpt-4o-mini",
+     "model": "text2sql-lora-1",
      "messages": [{"role": "user", "content": "Say this is a test!"}],
      "temperature": 0.7
    }'
@@ -65,7 +65,7 @@ curl https://localhost:8000/v1/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -d '{
-    "model": "gpt-3.5-turbo-instruct",
+    "model": "text2sql-lora-1",
     "prompt": "Say this is a test",
     "max_tokens": 7,
     "temperature": 0
@@ -75,12 +75,10 @@ curl https://localhost:8000/v1/completions \
 # request via gateway without routing strategy
 ```shell
 curl -v http://localhost:8888/v1/chat/completions \
-  -H "user: your-user-name" \
-  -H "model: lora-1" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer any_key" \
   -d '{
-     "model": "lora-1",
+     "model": "text2sql-lora-1",
      "messages": [{"role": "user", "content": "Say this is a test!"}],
      "temperature": 0.7
    }'
@@ -90,12 +88,12 @@ curl -v http://localhost:8888/v1/chat/completions \
 ```shell
 curl -v http://localhost:8888/v1/chat/completions \
   -H "user: your-user-name" \
-  -H "model: lora-1" \
+  -H "model: text2sql-lora-1" \
   -H "routing-strategy: least-request" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer any_key" \
   -d '{
-     "model": "lora-1",
+     "model": "text2sql-lora-1",
      "messages": [{"role": "user", "content": "Say this is a test!"}],
      "temperature": 0.7
    }'

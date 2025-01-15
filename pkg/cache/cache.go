@@ -240,7 +240,6 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 				case <-ticker.C:
 					instance.updatePodMetrics()
 					instance.updateModelMetrics()
-					instance.debugInfo()
 				case <-stopCh:
 					ticker.Stop()
 					return
