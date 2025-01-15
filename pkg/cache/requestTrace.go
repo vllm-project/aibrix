@@ -42,7 +42,7 @@ const (
 	// The version of request trace, verison history:
 	// v1: No meta, default
 	// v2: Added meta data include version(meta_v), bucket precision(meta_precision), and interval(meta_interval_sec) to notify client the trace interval.
-	// v3: Added the number of total requests(meta_total_reqs) and pending requests(meta_pending_reqs) for out of window uncomplted requests.
+	// v3: Added the number of total requests(meta_total_reqs) and pending requests(meta_pending_reqs) for uncompleted requests.
 	RequestTraceVersion = 3
 	// Trace write interval
 	RequestTraceWriteInterval = 10 * time.Second
