@@ -284,7 +284,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 					roundT := t - t%int64(RequestTraceWriteInterval/time.Second)
 					instance.writeRequestTraceToStorage(roundT)
 				case <-stopCh:
-					ticker.Stop()
+					traceTicker.Stop()
 					return
 				}
 			}
