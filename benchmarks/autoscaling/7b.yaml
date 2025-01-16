@@ -22,7 +22,7 @@ spec:
       labels:
         model.aibrix.ai/name: deepseek-coder-7b-instruct
     spec:
-      terminationGracePeriodSeconds: 300
+      terminationGracePeriodSeconds: 60
       containers:
         - command:
             - python3
