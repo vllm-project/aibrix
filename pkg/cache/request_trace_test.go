@@ -18,6 +18,7 @@ package cache
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo"
@@ -124,10 +125,10 @@ var _ = Describe("reqeustTrace", func() {
 			requests := int32(0)
 			profiles := int32(0)
 			for _, trace := range traces {
-				requests += trace.numRequests
+				requests += atomic.LoadInt32(&trace.numRequests)
 				Expect(trace.completedRequests <= trace.numRequests).To(BeTrue())
 				trace.trace.Range(func(_, num any) bool {
-					profiles += *num.(*int32)
+					profiles += atomic.LoadInt32(num.(*int32))
 					return true
 				})
 			}
