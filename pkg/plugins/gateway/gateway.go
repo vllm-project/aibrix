@@ -471,8 +471,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			)
 			requestEnd = fmt.Sprintf(requestEnd+", targetPod: %s", targetPodIP)
 		}
+
+		klog.Infof("request end, requestID: %s - %s", requestID, requestEnd)
 	}
-	klog.Infof("request end, requestID: %s - %s", requestID, requestEnd)
 
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ResponseBody{

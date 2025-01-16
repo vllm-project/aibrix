@@ -906,6 +906,7 @@ func (c *Cache) writeRequestTraceToStorage(roundT int64) {
 	numTraces := atomic.LoadInt32(&c.numRequestsTraces)
 	requestTrace, c.requestTrace = c.requestTrace, &sync.Map{}
 	numResetTo := int32(0)
+	// TODO: Adding a unit test here.
 	for !atomic.CompareAndSwapInt32(&c.numRequestsTraces, numTraces, numResetTo) {
 		// If new traces added to reset map, assert updatedNumTraces >= numTraces regardless duplication.
 		updatedNumTraces := atomic.LoadInt32(&c.numRequestsTraces)
