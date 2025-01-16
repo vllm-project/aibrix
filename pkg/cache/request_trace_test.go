@@ -94,16 +94,15 @@ var _ = Describe("reqeustTrace", func() {
 					for !success {
 						term, success = trace.AddRequest("no use now", "no use now")
 					}
-					trace.DoneRequest("no use now", term)
 					// Retry until success
-					for !trace.AddRequestTrace("no use now", "1:1") {
+					for !trace.DoneRequestTrace("no use now", "1:1", term) {
 					}
 				}
 				close(done)
 			}()
 			go func() {
 				for {
-					time.Sleep(1 * time.Millisecond)
+					time.Sleep(2 * time.Millisecond)
 					select {
 					case <-done:
 						return
