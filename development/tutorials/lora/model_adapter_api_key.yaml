@@ -1,0 +1,17 @@
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelAdapter
+metadata:
+  name: text2sql-lora-2
+  namespace: default
+  labels:
+    model.aibrix.ai/name: "text2sql-lora-2"
+    model.aibrix.ai/port: "8000"
+spec:
+  baseModel: llama2-7b
+  podSelector:
+    matchLabels:
+      model.aibrix.ai/name: llama2-7b
+  artifactURL: huggingface://yard1/llama-2-7b-sql-lora-test
+  additionalConfig:
+    api-key: test-key-1234567890
+  schedulerName: default

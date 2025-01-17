@@ -1,3 +1,7 @@
 resources:
   - ../templates/deployment
   - components.yaml
+
+# enable following patch when we test lora + api-key
+patches:
+  - path: api-key-patch.yaml
