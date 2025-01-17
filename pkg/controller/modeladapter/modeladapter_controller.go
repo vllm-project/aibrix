@@ -551,6 +551,9 @@ func (r *ModelAdapterReconciler) modelAdapterExists(host string, instance *model
 	url := fmt.Sprintf("%s/v1/models", host)
 
 	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return false, err
+	}
 	// Check if "api-key" exists in the map and set the Authorization header accordingly
 	if token, ok := instance.Spec.AdditionalConfig["api-key"]; ok {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
