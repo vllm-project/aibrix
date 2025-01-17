@@ -53,7 +53,7 @@ var (
 	defaultTPMMultiplier = 1000
 	routingStrategies    = []string{"random", "least-request", "throughput", "least-kv-cache", "least-busy-time", "least-latency"}
 
-	ErrorUnknownResponse = errors.New("unknonw response")
+	ErrorUnknownResponse = errors.New("unknown response")
 )
 
 type Server struct {
@@ -236,7 +236,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: "x-no-model", RawValue: []byte(model)}}},
-			fmt.Sprintf("no model in request body or model %s does not exist", model)), model, targetPodIP, stream, term
+			"no model in request body"), model, targetPodIP, stream, term
 	}
 
 	// early reject the request if model doesn't exist.
@@ -266,7 +266,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-stream-options", RawValue: []byte("stream options not set")}}},
-				"error processing request body"), model, targetPodIP, stream, term
+				"no stream option available"), model, targetPodIP, stream, term
 		}
 		includeUsage, ok := streamOptions["include_usage"].(bool)
 		if !includeUsage || !ok {
@@ -274,7 +274,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-stream-options-include-usage", RawValue: []byte("include usage for stream options not set")}}},
-				"error processing request body"), model, targetPodIP, stream, term
+				"no stream with usage option available"), model, targetPodIP, stream, term
 		}
 	}
 
@@ -369,7 +369,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	var usage openai.CompletionUsage
 	var promptTokens, completionTokens int64
 	headers := []*configPb.HeaderValueOption{}
-	complete := false
+	complete := false || hasCompleted
 
 	defer func() {
 		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
