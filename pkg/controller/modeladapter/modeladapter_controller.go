@@ -527,7 +527,7 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 	}
 
 	// Check if the model is already loaded
-	exists, err = r.modelAdapterExists(host, instance.Name)
+	exists, err = r.modelAdapterExists(host, instance)
 	if err != nil {
 		return err
 	}
@@ -546,10 +546,18 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 }
 
 // Separate method to check if the model already exists
-func (r *ModelAdapterReconciler) modelAdapterExists(host, modelName string) (bool, error) {
+func (r *ModelAdapterReconciler) modelAdapterExists(host string, instance *modelv1alpha1.ModelAdapter) (bool, error) {
 	// TODO: /v1/models is the vllm entrypoints, let's support multiple engine in future
 	url := fmt.Sprintf("%s/v1/models", host)
-	resp, err := http.Get(url)
+
+	req, err := http.NewRequest("GET", url, nil)
+	// Check if "api-key" exists in the map and set the Authorization header accordingly
+	if token, ok := instance.Spec.AdditionalConfig["api-key"]; ok {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
+
+	c := &http.Client{}
+	resp, err := c.Do(req)
 	if err != nil {
 		return false, err
 	}
@@ -579,7 +587,7 @@ func (r *ModelAdapterReconciler) modelAdapterExists(host, modelName string) (boo
 		if !ok {
 			continue
 		}
-		if model["id"] == modelName {
+		if model["id"] == instance.Name {
 			return true, nil
 		}
 	}
@@ -615,6 +623,10 @@ func (r *ModelAdapterReconciler) loadModelAdapter(host string, instance *modelv1
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Check if "api-key" exists in the map and set the Authorization header accordingly
+	if token, ok := instance.Spec.AdditionalConfig["api-key"]; ok {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -680,6 +692,10 @@ func (r *ModelAdapterReconciler) unloadModelAdapter(instance *modelv1alpha1.Mode
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Check if "api-key" exists in the map and set the Authorization header accordingly
+	if token, ok := instance.Spec.AdditionalConfig["api-key"]; ok {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
 
 	httpClient := &http.Client{}
 	resp, err := httpClient.Do(req)
