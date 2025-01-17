@@ -1,4 +1,6 @@
 from flask import Flask, request, Response, jsonify
+from flask_httpauth import HTTPTokenAuth
+from functools import wraps
 from werkzeug import serving
 import random
 import re
@@ -44,6 +46,30 @@ if "--replica_config_model_name" not in sys.argv:
 
 tokenizer = None
 simulator: Optional[Simulator] = None
+
+# Extract the api_key argument and prepare for authentication
+api_key = None
+try:
+    index = sys.argv.index("--api_key")
+    if index + 1 < len(sys.argv):
+        api_key = sys.argv[index + 1]
+except ValueError:
+    pass
+
+auth = HTTPTokenAuth(scheme='Bearer')
+
+
+@auth.verify_token
+def verify_token(token):
+    if api_key is None:
+        return True
+    return token == api_key
+
+
+@auth.error_handler
+def auth_error(status):
+    return jsonify({"error": "Unauthorized"}), 401
+
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +177,7 @@ disable_endpoint_logs()
 
 
 @app.route('/v1/models', methods=['GET'])
+@auth.login_required
 def get_models():
     return jsonify({
         "object": "list",
@@ -159,6 +186,7 @@ def get_models():
 
 
 @app.route('/v1/load_lora_adapter', methods=['POST'])
+@auth.login_required
 def load_model():
     lora_name = request.json.get('lora_name')
     # Check if the model already exists
@@ -179,6 +207,7 @@ def load_model():
 
 
 @app.route('/v1/unload_lora_adapter', methods=['POST'])
+@auth.login_required
 def unload_model():
     model_id = request.json.get('lora_name')
     global models
@@ -187,6 +216,7 @@ def unload_model():
 
 
 @app.route('/v1/completions', methods=['POST'])
+@auth.login_required
 def completion():
     try:
         prompt = request.json.get('prompt')
@@ -249,6 +279,7 @@ def completion():
 
 
 @app.route('/v1/chat/completions', methods=['POST'])
+@auth.login_required
 def chat_completions():
     try:
         messages = request.json.get('messages')
