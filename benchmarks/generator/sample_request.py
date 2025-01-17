@@ -1,6 +1,7 @@
 import logging
 import json
 import sys
+import random 
 
 import pandas as pd
 
@@ -87,8 +88,12 @@ def sample_sharegpt_requests_len_range(
             output_range = range(0, sys.maxsize)
             if input_len is not None:
                 input_range = (int(input_len * (1 - err_perc)), int(input_len * (1 + err_perc)))
+            else:
+                input_range = (0, sys.maxsize)
             if output_len is not None:
                 output_range = (int(output_len * (1 - err_perc)), int(output_len * (1 + err_perc))) 
+            else:
+                output_range = (0, sys.maxsize)
             filtered = df[
                 (df["prompt_len"] >= input_range[0]) &
                 (df["prompt_len"] <= input_range[1]) &
@@ -98,7 +103,8 @@ def sample_sharegpt_requests_len_range(
 
             if not filtered.empty:
                 # Select the first match or random sample
-                sample = filtered.iloc[0]  # Or filtered.sample(1) for random
+                total_rows = len(filtered)
+                sample = filtered.iloc[random.randint(0, total_rows - 1)] 
                 filtered_results.append({"prompt": sample["prompt"],
                                          "prompt_length": sample["prompt_len"],
                                          "output_length": sample["completion_len"]})

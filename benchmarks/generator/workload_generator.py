@@ -84,6 +84,33 @@ def generate_from_internal_csv(file_path: str,
     return workload
 
 
+def generate_constant(prompt_file_path: str,
+                       qps: int, 
+                       duration_ms: int = None,
+                       interval_ms: int = None,
+                       output_file: str = 'output/output',
+                       to_jsonl: bool = False,
+                       ) -> List[List[Any]]:
+    workload = []
+    ts = 0
+    
+    sharegpt_df = load_sharegpt_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
+    while ts < duration_ms:
+        concurrent_reqs = sample_sharegpt_requests_len_range(
+            df=sharegpt_df,
+            num_requests=qps,
+            input_lens=[None] * qps, 
+            output_lens=[None] * qps, 
+            initial_err_perc=0.5,
+            err_step=0.05
+        )
+        workload.append({"timestamp": ts, "requests": concurrent_reqs})  
+        ts += interval_ms
+   
+    workload = make_serializable(workload)
+    save_workload(workload, output_file, use_jsonl=to_jsonl)
+    return workload
+
 def generate_synthetic(prompt_file_path: str,
                        A=1, B=1,
                        sigma=0.1,
@@ -270,7 +297,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Workload Generator')
     parser.add_argument('--prompt-file', type=str, required=True, help='File containing prompts.')
     parser.add_argument('--num-prompts', type=int, default=100, help='Number of prompts to sample.')
-    parser.add_argument('--trace-type', type=str, required=True, choices=['synthetic', 'internal', 'azure'],
+    parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'internal', 'azure'],
                         help='Type of trace consumed. Choose among: synthetic, internal, azure')
     parser.add_argument('--traffic-file', type=str, required=False, default=None,
                         help='Traffic file containing times of arrival, which workload generator depends upon to '
@@ -299,7 +326,15 @@ if __name__ == '__main__':
     # Load prompts from a file
     #prompts = sample_sharegpt_requests(dataset_path=args.prompt_file, num_requests=args.num_prompts,tokenizer=tokenizer)
 
-    if args.trace_type == "synthetic":
+    if args.trace_type == "constant":
+        generated_workload = generate_constant(prompt_file_path=args.prompt_file, 
+                                                qps=10,
+                                                duration_ms=args.duration_ms, 
+                                                interval_ms=args.interval_ms,
+                                                output_file=f"{args.output_dir}/{args.trace_type}",
+                                                to_jsonl=(args.output_format == "jsonl"),
+                                                )
+    elif args.trace_type == "synthetic":
         # Define scenarios specific to synthetic type
         scenarios = {
             'quick_rising': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 5, 'period': 5,
