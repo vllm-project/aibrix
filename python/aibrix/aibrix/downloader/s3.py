@@ -131,7 +131,7 @@ class S3BaseDownloader(BaseDownloader):
                 region_name: "region-name",
                 endpoint_url: "URL_ADDRESS3.region-name.com",
                 aws_access_key_id: "AK****",
-                aws_secret_access_key: "SK****",,
+                aws_secret_access_key: "SK****",
             }
         """
         pass
