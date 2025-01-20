@@ -21,13 +21,13 @@ import (
 	"fmt"
 	"time"
 
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/scaler"
 	podutil "github.com/aibrix/aibrix/pkg/utils"
-
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	podutils "github.com/aibrix/aibrix/pkg/utils"
+
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -80,6 +80,34 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	return reconciler, nil
 }
 
+// for hpa related changes, let's make sure we only enqueue related PodAutoscaler objects
+func filterHPAObject(ctx context.Context, object client.Object) []reconcile.Request {
+	hpa, ok := object.(*autoscalingv2.HorizontalPodAutoscaler)
+	if !ok {
+		klog.Warningf("unexpected object type: %T, %s:%s, HPA object is expected here.", object, object.GetNamespace(), object.GetName())
+		return nil
+	}
+
+	// Iterate through ownerReferences to find the PodAutoscaler.
+	// if found, enqueue the managing PodAutoscaler object
+	for _, ownerRef := range hpa.OwnerReferences {
+		if ownerRef.Kind == "PodAutoScaler" && ownerRef.Controller != nil && *ownerRef.Controller {
+			// Enqueue the managing PodAutoscaler object
+			return []reconcile.Request{
+				{
+					NamespacedName: types.NamespacedName{
+						Namespace: hpa.Namespace,
+						Name:      ownerRef.Name,
+					},
+				},
+			}
+		}
+	}
+
+	// no managed pod autoscaler found, no need to enqueue original object.
+	return []reconcile.Request{}
+}
+
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// Build raw source for periodical requeue events from event channel
@@ -92,7 +120,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// and HorizontalPodAutoscaler objects.
 	err := ctrl.NewControllerManagedBy(mgr).
 		For(&autoscalingv1alpha1.PodAutoscaler{}).
-		Watches(&autoscalingv2.HorizontalPodAutoscaler{}, &handler.EnqueueRequestForObject{}).
+		Watches(&autoscalingv2.HorizontalPodAutoscaler{}, handler.EnqueueRequestsFromMapFunc(filterHPAObject)).
 		WatchesRawSource(src, &handler.EnqueueRequestForObject{}).
 		Complete(r)
 
@@ -124,7 +152,7 @@ type PodAutoscalerReconciler struct {
 	eventCh        chan event.GenericEvent
 }
 
-func (r *PodAutoscalerReconciler) deleteScaler(request types.NamespacedName) {
+func (r *PodAutoscalerReconciler) deleteStaleScalerInCache(request types.NamespacedName) {
 	// When deleting, we only have access to the Namespace and Name, not other attributes in pa_types.
 	// We should scan `AutoscalerMap` and remove the matched objects.
 	// Note that due to the OwnerRef, the created HPA object will automatically be removed when AIBrix-HPA is deleted.
@@ -162,7 +190,7 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	var pa autoscalingv1alpha1.PodAutoscaler
 	if err := r.Get(ctx, req.NamespacedName, &pa); err != nil {
 		if errors.IsNotFound(err) {
-			r.deleteScaler(req.NamespacedName)
+			r.deleteStaleScalerInCache(req.NamespacedName)
 			// Object might have been deleted after reconcile request, clean it and return.
 			klog.Infof("PodAutoscaler resource not found. Clean scaler object in memory since object %s must have been deleted", req.NamespacedName)
 			return ctrl.Result{}, nil
@@ -270,7 +298,7 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 		return ctrl.Result{}, err
 	} else {
 		// Update the existing HPA if it already exists.
-		klog.InfoS("Updating existing HPA", "HPA", hpaName)
+		klog.V(4).InfoS("Updating existing HPA to desired state", "HPA", hpaName)
 
 		err = r.Update(ctx, hpa)
 		if err != nil {
