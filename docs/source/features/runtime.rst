@@ -13,6 +13,10 @@ The AI Runtime hides various implementation details on the inference engine side
 
     ``python3 -m pip install aibrix``
 
+    If you want to use nightly version, you can install from code.
+
+    ``python3 -m pip install -e .``
+
 
 Metric Standardization
 ----------------------
