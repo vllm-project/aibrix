@@ -16,8 +16,6 @@ limitations under the License.
 
 package config
 
-import "context"
-
 type RuntimeConfig struct {
 	EnableRuntimeSidecar bool
 	DebugMode            bool
@@ -29,9 +27,4 @@ func NewRuntimeConfig(enableRuntimeSidecar, debugMode bool) RuntimeConfig {
 		EnableRuntimeSidecar: enableRuntimeSidecar,
 		DebugMode:            debugMode,
 	}
-}
-
-// NewContextWithRuntimeConfig adds the runtime config to the context.
-func NewContextWithRuntimeConfig(ctx context.Context, config RuntimeConfig) context.Context {
-	return context.WithValue(ctx, "runtimeConfig", config)
 }

@@ -10,6 +10,7 @@ import uvicorn
 from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.datastructures import State
 from fastapi.responses import JSONResponse
+from httpx import Headers
 from prometheus_client import make_asgi_app, multiprocess
 from starlette.routing import Mount
 
@@ -56,10 +57,26 @@ def initial_prometheus_multiproc_dir():
     os.environ["PROMETHEUS_MULTIPROC_DIR"] = envs.PROMETHEUS_MULTIPROC_DIR
 
 
+# filter_and_set_headers only keeps necessary headers
+def filter_and_set_headers(request_headers):
+    # Create a new Headers object to ensure proper case-insensitive handling
+    filtered_headers = Headers()
+
+    # List of headers to retain
+    headers_to_keep = ['content-type', 'authorization']
+
+    # Filter and copy the desired headers
+    for header in headers_to_keep:
+        if header in request_headers:
+            filtered_headers[header] = request_headers[header]
+
+    return filtered_headers
+
+
 def inference_engine(request: Request) -> InferenceEngine:
     # header are dynamic for each request, allocate headers in runtime
     engine = request.app.state.inference_engine
-    engine.headers = request.headers
+    engine.headers = filter_and_set_headers(request.headers)
     return engine
 
 

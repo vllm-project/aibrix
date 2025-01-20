@@ -148,7 +148,7 @@ func BuildURLs(podIP string, config config.RuntimeConfig) URLConfig {
 	if config.DebugMode {
 		host = fmt.Sprintf("http://%s:%s", "localhost", DefaultDebugInferenceEnginePort)
 	} else if config.EnableRuntimeSidecar {
-		host = fmt.Sprintf("http://%s:%s", "localhost", DefaultRuntimeAPIPort)
+		host = fmt.Sprintf("http://%s:%s", podIP, DefaultRuntimeAPIPort)
 	} else {
 		host = fmt.Sprintf("http://%s:%s", podIP, DefaultInferenceEnginePort)
 	}

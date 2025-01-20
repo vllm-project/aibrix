@@ -30,6 +30,7 @@ spec:
           - --leader-elect
           - --health-probe-bind-address=:8081
           - --metrics-bind-address=0
+          - --enable-runtime-sidecar
         image: controller:latest
         name: manager
         securityContext:

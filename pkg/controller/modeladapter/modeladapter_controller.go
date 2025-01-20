@@ -88,7 +88,7 @@ const (
 	// Inference Service path and ports
 	DefaultInferenceEnginePort      = "8000"
 	DefaultDebugInferenceEnginePort = "30081"
-	DefaultRuntimeAPIPort           = "8081"
+	DefaultRuntimeAPIPort           = "8080"
 
 	ModelListPath            = "/v1/models"
 	ModelListRuntimeAPIPath  = "/v1/models"
@@ -614,7 +614,8 @@ func (r *ModelAdapterReconciler) modelAdapterExists(url string, instance *modelv
 func (r *ModelAdapterReconciler) loadModelAdapter(url string, instance *modelv1alpha1.ModelAdapter) error {
 	artifactURL := instance.Spec.ArtifactURL
 	if strings.HasPrefix(instance.Spec.ArtifactURL, "huggingface://") {
-		artifactURL, err := extractHuggingFacePath(instance.Spec.ArtifactURL)
+		var err error
+		artifactURL, err = extractHuggingFacePath(instance.Spec.ArtifactURL)
 		if err != nil {
 			// Handle error, e.g., log it and return
 			klog.ErrorS(err, "Invalid artifact URL", "artifactURL", artifactURL)
