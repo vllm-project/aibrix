@@ -47,7 +47,9 @@ class VLLMInferenceEngine(InferenceEngine):
         lora_name, lora_path = request.lora_name, request.lora_path
 
         try:
-            response = await self.client.post(load_url, json=request.model_dump())
+            response = await self.client.post(
+                load_url, json=request.model_dump(), headers=self.headers
+            )
         except Exception as e:
             logger.error(
                 f"Failed to load LoRA adapter '{lora_name}' from `{lora_path}` "
@@ -59,15 +61,15 @@ class VLLMInferenceEngine(InferenceEngine):
                 status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
 
-        if response.status_code != 200:
+        if response.status_code != HTTPStatus.OK:
             logger.error(
                 f"Failed to load LoRA adapter '{lora_name}' from `{lora_path}` "
-                f"with error: {response.text}"
+                f"with error: {response.text}, status_code: {response.status_code}"
             )
             return self._create_error_response(
-                f"Failed to load LoRA adapter '{lora_name}'",
+                f"Failed to load LoRA adapter '{lora_name}', message: {response.text}",
                 err_type="ServerError",
-                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                status_code=HTTPStatus(value=response.status_code),
             )
         return f"Success: LoRA adapter '{lora_name}' added successfully."
 
@@ -75,29 +77,65 @@ class VLLMInferenceEngine(InferenceEngine):
         self, request: UnloadLoraAdapterRequest
     ) -> Union[ErrorResponse, str]:
         unload_url = urljoin(self.endpoint, "/v1/unload_lora_adapter")
-        lora_name, lora_int_id = request.lora_name, request.lora_int_id
+        lora_name = request.lora_name
 
         try:
-            response = await self.client.post(unload_url, json=request.model_dump())
+            response = await self.client.post(
+                unload_url, json=request.model_dump(), headers=self.headers
+            )
         except Exception as e:
             logger.error(
-                f"Failed to remove LoRA adapter '{lora_name}' by id `{lora_int_id}`"
+                f"Failed to remove LoRA adapter '{lora_name}'"
                 f"for httpx request failed, {e}"
             )
             return self._create_error_response(
-                f"Failed to unload LoRA adapter '{lora_name}'",
-                err_type="ServerError",
-                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-            )
-        if response.status_code != 200:
-            logger.error(
-                f"Failed to remove LoRA adapter '{lora_name}' by id `{lora_int_id}`"
-                f"with error: {response.text}"
-            )
-            return self._create_error_response(
-                f"Failed to unload LoRA adapter '{lora_name}'",
+                f"Failed to unload LoRA adapter '{lora_name}', {e}",
                 err_type="ServerError",
                 status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
 
+        if response.status_code != HTTPStatus.OK:
+            logger.error(
+                f"Failed to remove LoRA adapter '{lora_name}'"
+                f"with error: {response.text}, status_code: {response.status_code}"
+            )
+            return self._create_error_response(
+                f"Failed to unload LoRA adapter '{lora_name}', message: {response.text}",
+                err_type="ServerError",
+                status_code=HTTPStatus(value=response.status_code),
+            )
+
         return f"Success: LoRA adapter '{lora_name}' removed successfully."
+
+    async def list_models(self) -> Union[ErrorResponse, str]:
+        model_list_url = urljoin(self.endpoint, "/v1/models")
+
+        try:
+            response = await self.client.get(model_list_url, headers=self.headers)
+        except Exception as e:
+            logger.error(f"Failed to list models due to HTTP request failure: {e}")
+            return self._create_error_response(
+                f"Failed to list models",
+                err_type="ServerError",
+                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+        if response.status_code != HTTPStatus.OK:
+            logger.error(
+                f"Failed to list models with error: {response.text}, "
+                f"status_code: {response.status_code}"
+            )
+            return self._create_error_response(
+                f"Failed to list models, message: {response.text}",
+                err_type="ServerError",
+                status_code=HTTPStatus(value=response.status_code),
+            )
+
+        try:
+            return response.json()  # This will parse the JSON response body
+        except Exception as e:
+            logger.error(f"Failed to parse the response as JSON: {e}")
+            return self._create_error_response(
+                "Failed to parse models",
+                err_type="ServerError",
+                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )

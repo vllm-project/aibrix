@@ -91,7 +91,7 @@ const (
 	DefaultRuntimeAPIPort           = "8081"
 
 	ModelListPath            = "/v1/models"
-	ModelListRuntimeAPIPath  = "/v1/models/list"
+	ModelListRuntimeAPIPath  = "/v1/models"
 	LoadLoraAdapterPath      = "/v1/load_lora_adapter"
 	LoadLoraRuntimeAPIPath   = "/v1/lora_adapter/load"
 	UnloadLoraAdapterPath    = "/v1/unload_lora_adapter"

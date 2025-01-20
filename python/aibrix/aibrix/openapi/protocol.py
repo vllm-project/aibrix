@@ -22,7 +22,7 @@ class NoExtraBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class NoProtectdBaseModel(BaseModel):
+class NoProtectedBaseModel(BaseModel):
     # The class does not allow extra fields
     model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
@@ -45,14 +45,14 @@ class UnloadLoraAdapterRequest(NoExtraBaseModel):
     lora_int_id: Optional[int] = Field(default=None)
 
 
-class DownloadModelRequest(NoProtectdBaseModel):
+class DownloadModelRequest(NoProtectedBaseModel):
     model_uri: str
     local_dir: Optional[str] = None
     model_name: Optional[str] = None
     download_extra_config: Optional[Dict] = None
 
 
-class ModelStatusCard(NoProtectdBaseModel):
+class ModelStatusCard(NoProtectedBaseModel):
     model_name: str
     model_root_path: str
     source: str

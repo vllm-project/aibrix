@@ -15,7 +15,7 @@
 from abc import ABC
 from dataclasses import dataclass
 from http import HTTPStatus
-from typing import Union
+from typing import Optional, Union
 
 from packaging.version import Version
 
@@ -33,6 +33,7 @@ class InferenceEngine(ABC):
     name: str
     version: str
     endpoint: str
+    headers: Optional[dict] = None
 
     def _create_error_response(
         self,
@@ -58,6 +59,14 @@ class InferenceEngine(ABC):
         return self._create_error_response(
             f"Inference engine {self.name} with version {self.version} "
             "not support unload lora adapter",
+            err_type="NotImplementedError",
+            status_code=HTTPStatus.NOT_IMPLEMENTED,
+        )
+
+    async def list_models(self) -> Union[ErrorResponse, str]:
+        return self._create_error_response(
+            f"Inference engine {self.name} with version {self.version} "
+            "not support list models",
             err_type="NotImplementedError",
             status_code=HTTPStatus.NOT_IMPLEMENTED,
         )
