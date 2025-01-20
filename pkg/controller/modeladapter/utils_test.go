@@ -17,6 +17,7 @@ limitations under the License.
 package modeladapter
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
@@ -25,6 +26,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	"github.com/aibrix/aibrix/pkg/config"
 )
 
 // Test for validateModelAdapter function
@@ -231,6 +233,76 @@ func TestExtractHuggingFacePath(t *testing.T) {
 				}
 				if result != tt.expected {
 					t.Errorf("expected %q but got %q", tt.expected, result)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildURLs(t *testing.T) {
+	tests := []struct {
+		name         string
+		podIP        string
+		config       config.RuntimeConfig
+		expectedURLs URLConfig
+		expectError  bool
+	}{
+		{
+			name:  "Debug mode enabled",
+			podIP: "192.168.1.1",
+			config: config.RuntimeConfig{
+				DebugMode:            true,
+				EnableRuntimeSidecar: false,
+			},
+			expectedURLs: URLConfig{
+				BaseURL:          fmt.Sprintf("http://%s:%s", "localhost", DefaultDebugInferenceEnginePort),
+				ListModelsURL:    fmt.Sprintf("http://%s:%s%s", "localhost", DefaultDebugInferenceEnginePort, ModelListPath),
+				LoadAdapterURL:   fmt.Sprintf("http://%s:%s%s", "localhost", DefaultDebugInferenceEnginePort, LoadLoraAdapterPath),
+				UnloadAdapterURL: fmt.Sprintf("http://%s:%s%s", "localhost", DefaultDebugInferenceEnginePort, UnloadLoraAdapterPath),
+			},
+			expectError: false,
+		},
+		{
+			name:  "Runtime sidecar enabled",
+			podIP: "192.168.1.2",
+			config: config.RuntimeConfig{
+				DebugMode:            false,
+				EnableRuntimeSidecar: true,
+			},
+			expectedURLs: URLConfig{
+				BaseURL:          fmt.Sprintf("http://%s:%s", "localhost", DefaultRuntimeAPIPort),
+				ListModelsURL:    fmt.Sprintf("http://%s:%s%s", "localhost", DefaultRuntimeAPIPort, ModelListRuntimeAPIPath),
+				LoadAdapterURL:   fmt.Sprintf("http://%s:%s%s", "localhost", DefaultRuntimeAPIPort, LoadLoraRuntimeAPIPath),
+				UnloadAdapterURL: fmt.Sprintf("http://%s:%s%s", "localhost", DefaultRuntimeAPIPort, UnloadLoraRuntimeAPIPath),
+			},
+			expectError: false,
+		},
+		{
+			name:  "Default mode",
+			podIP: "192.168.1.3",
+			config: config.RuntimeConfig{
+				DebugMode:            false,
+				EnableRuntimeSidecar: false,
+			},
+			expectedURLs: URLConfig{
+				BaseURL:          fmt.Sprintf("http://%s:%s", "192.168.1.3", DefaultInferenceEnginePort),
+				ListModelsURL:    fmt.Sprintf("http://%s:%s%s", "192.168.1.3", DefaultInferenceEnginePort, ModelListPath),
+				LoadAdapterURL:   fmt.Sprintf("http://%s:%s%s", "192.168.1.3", DefaultInferenceEnginePort, LoadLoraAdapterPath),
+				UnloadAdapterURL: fmt.Sprintf("http://%s:%s%s", "192.168.1.3", DefaultInferenceEnginePort, UnloadLoraAdapterPath),
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			urls := BuildURLs(tt.podIP, tt.config)
+
+			if tt.expectError {
+				t.Fatalf("Expected error but got none")
+			} else {
+				if urls != tt.expectedURLs {
+					t.Errorf("Expected URLs %+v but got %+v", tt.expectedURLs, urls)
 				}
 			}
 		})

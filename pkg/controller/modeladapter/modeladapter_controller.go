@@ -84,6 +84,18 @@ const (
 	ModelAdapterAvailable = "ModelAdapterAvailable"
 	// ModelAdapterUnavailable is added in a ModelAdapter when it doesn't have any pod hosting it.
 	ModelAdapterUnavailable = "ModelAdapterUnavailable"
+
+	// Inference Service path and ports
+	DefaultInferenceEnginePort      = "8000"
+	DefaultDebugInferenceEnginePort = "30081"
+	DefaultRuntimeAPIPort           = "8081"
+
+	ModelListPath            = "/v1/models"
+	ModelListRuntimeAPIPath  = "/v1/models/list"
+	LoadLoraAdapterPath      = "/v1/load_lora_adapter"
+	LoadLoraRuntimeAPIPath   = "/v1/lora_adapter/load"
+	UnloadLoraAdapterPath    = "/v1/unload_lora_adapter"
+	UnloadLoraRuntimeAPIPath = "/v1/lora_adapter/unload"
 )
 
 var (
@@ -92,6 +104,13 @@ var (
 	defaultModelAdapterSchedulerPolicy = "leastAdapters"
 	defaultRequeueDuration             = 3 * time.Second
 )
+
+type URLConfig struct {
+	BaseURL          string
+	ListModelsURL    string
+	LoadAdapterURL   string
+	UnloadAdapterURL string
+}
 
 // Add creates a new ModelAdapter Controller and adds it to the Manager with default RBAC.
 // The Manager will set fields on the Controller and Start it when the Manager is Started.
@@ -520,17 +539,10 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 		return nil
 	}
 
-	// Define the key you want to check
-	key := "DEBUG_MODE"
-	value, exists := getEnvKey(key)
-	host := fmt.Sprintf("http://%s:8000", targetPod.Status.PodIP)
-	if exists && value == "on" {
-		// 30080 is the nodePort of the base model service.
-		host = fmt.Sprintf("http://%s:30081", "localhost")
-	}
+	urls := BuildURLs(targetPod.Status.PodIP, r.RuntimeConfig)
 
 	// Check if the model is already loaded
-	exists, err = r.modelAdapterExists(host, instance)
+	exists, err := r.modelAdapterExists(urls.ListModelsURL, instance)
 	if err != nil {
 		return err
 	}
@@ -540,7 +552,7 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 	}
 
 	// Load the Model adapter
-	err = r.loadModelAdapter(host, instance)
+	err = r.loadModelAdapter(urls.LoadAdapterURL, instance)
 	if err != nil {
 		return err
 	}
@@ -549,10 +561,7 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 }
 
 // Separate method to check if the model already exists
-func (r *ModelAdapterReconciler) modelAdapterExists(host string, instance *modelv1alpha1.ModelAdapter) (bool, error) {
-	// TODO: /v1/models is the vllm entrypoints, let's support multiple engine in future
-	url := fmt.Sprintf("%s/v1/models", host)
-
+func (r *ModelAdapterReconciler) modelAdapterExists(url string, instance *modelv1alpha1.ModelAdapter) (bool, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return false, err
@@ -602,7 +611,7 @@ func (r *ModelAdapterReconciler) modelAdapterExists(host string, instance *model
 }
 
 // Separate method to load the LoRA adapter
-func (r *ModelAdapterReconciler) loadModelAdapter(host string, instance *modelv1alpha1.ModelAdapter) error {
+func (r *ModelAdapterReconciler) loadModelAdapter(url string, instance *modelv1alpha1.ModelAdapter) error {
 	artifactURL := instance.Spec.ArtifactURL
 	if strings.HasPrefix(instance.Spec.ArtifactURL, "huggingface://") {
 		artifactURL, err := extractHuggingFacePath(instance.Spec.ArtifactURL)
@@ -623,7 +632,6 @@ func (r *ModelAdapterReconciler) loadModelAdapter(host string, instance *modelv1
 		return err
 	}
 
-	url := fmt.Sprintf("%s/v1/load_lora_adapter", host)
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return err
@@ -685,15 +693,8 @@ func (r *ModelAdapterReconciler) unloadModelAdapter(instance *modelv1alpha1.Mode
 		return err
 	}
 
-	url := fmt.Sprintf("http://%s:%d/v1/unload_lora_adapter", targetPod.Status.PodIP, 8000)
-	key := "DEBUG_MODE"
-	value, exists := getEnvKey(key)
-	if exists && value == "on" {
-		// 30080 is the nodePort of the base model service.
-		url = "http://localhost:30081/v1/unload_lora_adapter"
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
+	urls := BuildURLs(targetPod.Status.PodIP, r.RuntimeConfig)
+	req, err := http.NewRequest("POST", urls.UnloadAdapterURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return err
 	}

@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	"github.com/aibrix/aibrix/pkg/config"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -139,5 +140,32 @@ func NewCondition(condType string, status metav1.ConditionStatus, reason, msg st
 		LastTransitionTime: metav1.Now(),
 		Reason:             reason,
 		Message:            msg,
+	}
+}
+
+func BuildURLs(podIP string, config config.RuntimeConfig) URLConfig {
+	var host string
+	if config.DebugMode {
+		host = fmt.Sprintf("http://%s:%s", "localhost", DefaultDebugInferenceEnginePort)
+	} else if config.EnableRuntimeSidecar {
+		host = fmt.Sprintf("http://%s:%s", "localhost", DefaultRuntimeAPIPort)
+	} else {
+		host = fmt.Sprintf("http://%s:%s", podIP, DefaultInferenceEnginePort)
+	}
+
+	apiPath := ModelListPath
+	loadPath := LoadLoraAdapterPath
+	unloadPath := UnloadLoraAdapterPath
+	if config.EnableRuntimeSidecar {
+		apiPath = ModelListRuntimeAPIPath
+		loadPath = LoadLoraRuntimeAPIPath
+		unloadPath = UnloadLoraRuntimeAPIPath
+	}
+
+	return URLConfig{
+		BaseURL:          host,
+		ListModelsURL:    fmt.Sprintf("%s%s", host, apiPath),
+		LoadAdapterURL:   fmt.Sprintf("%s%s", host, loadPath),
+		UnloadAdapterURL: fmt.Sprintf("%s%s", host, unloadPath),
 	}
 }
