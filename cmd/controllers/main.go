@@ -46,6 +46,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/aibrix/aibrix/pkg/cache"
+	"github.com/aibrix/aibrix/pkg/config"
 	"github.com/aibrix/aibrix/pkg/controller"
 	//+kubebuilder:scaffold:imports
 )
@@ -105,6 +106,8 @@ func main() {
 	var leaderElectionResourceLock string
 	var leaderElectionId string
 	var controllers string
+	var enableRuntimeSidecar bool
+	var debugMode bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -126,6 +129,10 @@ func main() {
 	flag.StringVar(&leaderElectionId, "leader-election-id", "aibrix-controller-manager",
 		"leader-election-id determines the name of the resource that leader election will use for holding the leader lock, Default is aibrix-controller-manager.")
 	flag.StringVar(&controllers, "controllers", "*", "Comma-separated list of controllers to enable or disable, default value is * which indicates all controllers should be started.")
+	flag.BoolVar(&enableRuntimeSidecar, "enable-runtime-sidecar", false,
+		"If set, Runtime management API will be enabled for the metrics, model adapter and model downloading interactions, control plane will not talk to engine directly anymore")
+	flag.BoolVar(&debugMode, "debug-mode", false,
+		"If set, control plane will talk to localhost nodePort for testing purpose")
 
 	// Initialize the klog
 	klog.InitFlags(flag.CommandLine)
@@ -163,6 +170,8 @@ func main() {
 	if !enableHTTP2 {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
+
+	runtimeConfig := config.NewRuntimeConfig(enableRuntimeSidecar, debugMode)
 
 	webhookServer := webhook.NewServer(webhook.Options{
 		TLSOpts: tlsOpts,
@@ -229,7 +238,7 @@ func main() {
 
 	// Kind controller registration is encapsulated inside the pkg/controller/controller.go
 	// So here we can use more clean registration flow and there's no need to change logics in future.
-	if err = controller.SetupWithManager(mgr); err != nil {
+	if err = controller.SetupWithManager(mgr, runtimeConfig); err != nil {
 		setupLog.Error(err, "unable to setup controller")
 		os.Exit(1)
 	}

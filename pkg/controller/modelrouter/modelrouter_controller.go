@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	"github.com/aibrix/aibrix/pkg/config"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 )
@@ -51,7 +52,7 @@ const (
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch;create;update;patch;delete
 
-func Add(mgr manager.Manager) error {
+func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 	klog.InfoS("Starting modelrouter controller")
 	cacher := mgr.GetCache()
 
@@ -69,7 +70,8 @@ func Add(mgr manager.Manager) error {
 	utilruntime.Must(gatewayv1beta1.AddToScheme(mgr.GetClient().Scheme()))
 
 	modelRouter := &ModelRouter{
-		Client: mgr.GetClient(),
+		Client:        mgr.GetClient(),
+		RuntimeConfig: runtimeConfig,
 	}
 
 	_, err = deploymentInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -90,7 +92,8 @@ func Add(mgr manager.Manager) error {
 
 type ModelRouter struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme        *runtime.Scheme
+	RuntimeConfig config.RuntimeConfig
 }
 
 func (m *ModelRouter) addModel(obj interface{}) {

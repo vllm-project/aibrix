@@ -22,6 +22,7 @@ import (
 	"time"
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	"github.com/aibrix/aibrix/pkg/config"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/scaler"
@@ -56,8 +57,8 @@ var (
 
 // Add creates a new PodAutoscaler Controller and adds it to the Manager with default RBAC.
 // The Manager will set fields on the Controller and Start it when the Manager is Started.
-func Add(mgr manager.Manager) error {
-	r, err := newReconciler(mgr)
+func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
+	r, err := newReconciler(mgr, runtimeConfig)
 	if err != nil {
 		return err
 	}
@@ -65,7 +66,7 @@ func Add(mgr manager.Manager) error {
 }
 
 // newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
+func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (reconcile.Reconciler, error) {
 	// Instantiate a new PodAutoscalerReconciler with the given manager's client and scheme
 	reconciler := &PodAutoscalerReconciler{
 		Client:         mgr.GetClient(),
@@ -75,6 +76,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 		resyncInterval: 10 * time.Second, // TODO: this should be override by an environment variable
 		eventCh:        make(chan event.GenericEvent),
 		AutoscalerMap:  make(map[metrics.NamespaceNameMetric]scaler.Scaler),
+		RuntimeConfig:  runtimeConfig,
 	}
 
 	return reconciler, nil
@@ -150,6 +152,7 @@ type PodAutoscalerReconciler struct {
 	AutoscalerMap  map[metrics.NamespaceNameMetric]scaler.Scaler // AutoscalerMap maps each NamespaceNameMetric to its corresponding scaler instance.
 	resyncInterval time.Duration
 	eventCh        chan event.GenericEvent
+	RuntimeConfig  config.RuntimeConfig
 }
 
 func (r *PodAutoscalerReconciler) deleteStaleScalerInCache(request types.NamespacedName) {

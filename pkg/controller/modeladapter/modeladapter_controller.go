@@ -29,6 +29,7 @@ import (
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/cache"
+	"github.com/aibrix/aibrix/pkg/config"
 	"github.com/aibrix/aibrix/pkg/controller/modeladapter/scheduling"
 	"github.com/aibrix/aibrix/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
@@ -94,8 +95,8 @@ var (
 
 // Add creates a new ModelAdapter Controller and adds it to the Manager with default RBAC.
 // The Manager will set fields on the Controller and Start it when the Manager is Started.
-func Add(mgr manager.Manager) error {
-	r, err := newReconciler(mgr)
+func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
+	r, err := newReconciler(mgr, runtimeConfig)
 	if err != nil {
 		return err
 	}
@@ -103,7 +104,7 @@ func Add(mgr manager.Manager) error {
 }
 
 // newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
+func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (reconcile.Reconciler, error) {
 	cacher := mgr.GetCache()
 
 	podInformer, err := cacher.GetInformer(context.TODO(), &corev1.Pod{})
@@ -146,6 +147,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 		EndpointSliceLister: endpointSliceLister,
 		Recorder:            mgr.GetEventRecorderFor(controllerName),
 		scheduler:           scheduler,
+		RuntimeConfig:       runtimeConfig,
 	}
 	return reconciler, nil
 }
@@ -227,6 +229,7 @@ type ModelAdapterReconciler struct {
 	ServiceLister corelisters.ServiceLister
 	// EndpointSliceLister is able to list/get services from a shared informer's cache store
 	EndpointSliceLister discoverylisters.EndpointSliceLister
+	RuntimeConfig       config.RuntimeConfig
 }
 
 //+kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch;create;update;patch;delete

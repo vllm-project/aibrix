@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/aibrix/aibrix/pkg/config"
 	"github.com/aibrix/aibrix/pkg/controller/util/expectation"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
@@ -49,10 +50,10 @@ var (
 
 // Add creates a new RayClusterFleet Controller and adds it to the Manager with default RBAC.
 // The Manager will set fields on the Controller and Start it when the Manager is Started.
-func Add(mgr manager.Manager) error {
+func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 	// TODO: check crd exists or not. If not, we should fail here directly without moving forward.
 
-	r, err := newReconciler(mgr)
+	r, err := newReconciler(mgr, runtimeConfig)
 	if err != nil {
 		return err
 	}
@@ -60,12 +61,13 @@ func Add(mgr manager.Manager) error {
 }
 
 // newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
+func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (reconcile.Reconciler, error) {
 	reconciler := &RayClusterFleetReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		Recorder:    mgr.GetEventRecorderFor(controllerName),
-		Expectation: expectation.NewControllerExpectations(),
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Recorder:      mgr.GetEventRecorderFor(controllerName),
+		Expectation:   expectation.NewControllerExpectations(),
+		RuntimeConfig: runtimeConfig,
 	}
 	return reconciler, nil
 }
@@ -88,9 +90,10 @@ var _ reconcile.Reconciler = &RayClusterFleetReconciler{}
 // RayClusterFleetReconciler reconciles a RayClusterFleet object
 type RayClusterFleetReconciler struct {
 	client.Client
-	Scheme      *runtime.Scheme
-	Recorder    record.EventRecorder
-	Expectation expectation.ControllerExpectationsInterface
+	Scheme        *runtime.Scheme
+	Recorder      record.EventRecorder
+	Expectation   expectation.ControllerExpectationsInterface
+	RuntimeConfig config.RuntimeConfig
 }
 
 // +kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rayclusterfleets,verbs=get;list;watch;create;update;patch;delete

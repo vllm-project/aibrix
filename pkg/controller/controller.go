@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"github.com/aibrix/aibrix/pkg/config"
 	"github.com/aibrix/aibrix/pkg/controller/modeladapter"
 	"github.com/aibrix/aibrix/pkg/controller/modelrouter"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler"
@@ -33,7 +34,7 @@ import (
 // Reason: We have single controller-manager as well and use the controller-runtime libraries.
 // 		   Instead of registering every controller in the main.go, kruise's registration flow is much cleaner.
 
-var controllerAddFuncs []func(manager.Manager) error
+var controllerAddFuncs []func(manager.Manager, config.RuntimeConfig) error
 
 func Initialize() {
 	if features.IsControllerEnabled(features.PodAutoscalerController) {
@@ -56,9 +57,9 @@ func Initialize() {
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func SetupWithManager(m manager.Manager) error {
+func SetupWithManager(m manager.Manager, runtimeConfig config.RuntimeConfig) error {
 	for _, f := range controllerAddFuncs {
-		if err := f(m); err != nil {
+		if err := f(m, runtimeConfig); err != nil {
 			if kindMatchErr, ok := err.(*meta.NoKindMatchError); ok {
 				klog.InfoS("CRD is not installed, its controller will perform noops!", "CRD", kindMatchErr.GroupKind)
 				continue

@@ -25,6 +25,7 @@ import (
 	"github.com/aibrix/aibrix/pkg/controller/util/expectation"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
+	"github.com/aibrix/aibrix/pkg/config"
 	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
@@ -46,11 +47,11 @@ var (
 
 // Add creates a new RayClusterReplicaSet Controller and adds it to the Manager with default RBAC.
 // The Manager will set fields on the Controller and Start it when the Manager is Started.
-func Add(mgr manager.Manager) error {
+func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 	// TODO: check crd exists or not. If not, we should fail here directly without moving forward.
 	// This is used to validate whether kuberay is installed now.
 
-	r, err := newReconciler(mgr)
+	r, err := newReconciler(mgr, runtimeConfig)
 	if err != nil {
 		return err
 	}
@@ -58,12 +59,13 @@ func Add(mgr manager.Manager) error {
 }
 
 // newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
+func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (reconcile.Reconciler, error) {
 	reconciler := &RayClusterReplicaSetReconciler{
-		Client:       mgr.GetClient(),
-		Scheme:       mgr.GetScheme(),
-		Recorder:     mgr.GetEventRecorderFor(controllerName),
-		Expectations: expectation.NewControllerExpectations(),
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Recorder:      mgr.GetEventRecorderFor(controllerName),
+		Expectations:  expectation.NewControllerExpectations(),
+		RuntimeConfig: runtimeConfig,
 	}
 	return reconciler, nil
 }
@@ -92,7 +94,8 @@ type RayClusterReplicaSetReconciler struct {
 	// For example, there is a RayClusterReplicaSet with namespace "aibrix", name "llama7b" and replica 3,
 	// We will create the expectation:
 	// - "aibrix/llama7b", expects 3 adds.
-	Expectations expectation.ControllerExpectationsInterface
+	Expectations  expectation.ControllerExpectationsInterface
+	RuntimeConfig config.RuntimeConfig
 }
 
 // +kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rayclusterreplicasets,verbs=get;list;watch;create;update;patch;delete
