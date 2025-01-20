@@ -35,7 +35,7 @@ aibrix_runtime = 'aibrix.app:main'
 aibrix_download = 'aibrix.downloader.__main__:main'
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.12"
+python = ">=3.10,<=3.12"
 huggingface-hub = "^0.24.6"
 tos = "2.8.0"
 boto3 = "^1.35.5"
