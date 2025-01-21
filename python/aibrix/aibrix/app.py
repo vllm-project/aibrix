@@ -65,10 +65,11 @@ def filter_and_set_headers(request_headers):
     # List of headers to retain
     headers_to_keep = ["content-type", "authorization"]
 
-    # Filter and copy the desired headers
-    for header in headers_to_keep:
-        if header in request_headers:
-            filtered_headers[header] = request_headers[header]
+    # the httpx library internally normalizes all header keys to lower case for consistent access and comparison.
+    # However, we lowercase the headers for comparison just in case we may switch libraries.
+    for header, value in request_headers.items():
+        if header.lower() in headers_to_keep:
+            filtered_headers[header] = value
 
     return filtered_headers
 
