@@ -46,6 +46,11 @@ const (
 	KVCacheLabelKeyRole          = "kvcache.orchestration.aibrix.ai/role"
 	KVCacheLabelKeyMetadataIndex = "kvcache.orchestration.aibrix.ai/etcd-index"
 
+	KVCacheAnnotationNodeAffinityKey        = "kvcache.orchestration.aibrix.ai/node-affinity-key"
+	KVCacheAnnotationNodeAffinityDefaultKey = "machine.cluster.vke.volcengine.com/gpu-name"
+	KVCacheAnnotationNodeAffinityGPUType    = "kvcache.orchestration.aibrix.ai/node-affinity-gpu-type"
+	KVCacheAnnotationPodAffinityKey         = "kvcache.orchestration.aibrix.ai/pod-affinity-workload"
+
 	KVCacheLabelValueRoleCache    = "cache"
 	KVCacheLabelValueRoleMetadata = "metadata"
 )
@@ -407,6 +412,52 @@ func (r *KVCacheReconciler) reconcileDeployment(ctx context.Context, kvCache *or
 		{Name: "USER", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
 	}
 
+	affinity := corev1.Affinity{}
+
+	if value, ok := kvCache.Annotations[KVCacheAnnotationNodeAffinityGPUType]; ok {
+		matchKey := KVCacheAnnotationNodeAffinityDefaultKey
+		if key, exist := kvCache.Annotations[KVCacheAnnotationNodeAffinityKey]; exist {
+			matchKey = key
+		}
+
+		nodeAffinity := &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{
+					{
+						MatchExpressions: []corev1.NodeSelectorRequirement{
+							{
+								Key:      matchKey,
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{value},
+							},
+						},
+					},
+				},
+			},
+		}
+		affinity.NodeAffinity = nodeAffinity
+	}
+
+	if value, ok := kvCache.Annotations[KVCacheAnnotationPodAffinityKey]; ok {
+		podAffinity := &corev1.PodAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+				{
+					LabelSelector: &metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{
+							{
+								Key:      "model.aibrix.ai/name",
+								Operator: metav1.LabelSelectorOpIn,
+								Values:   []string{value},
+							},
+						},
+					},
+					TopologyKey: "kubernetes.io/hostname",
+				},
+			},
+		}
+		affinity.PodAffinity = podAffinity
+	}
+
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      kvCache.Name,
@@ -485,6 +536,7 @@ func (r *KVCacheReconciler) reconcileDeployment(ctx context.Context, kvCache *or
 							},
 						},
 					},
+					Affinity: &affinity,
 					Volumes: []corev1.Volume{
 						{
 							Name: "vineyard-socket",
