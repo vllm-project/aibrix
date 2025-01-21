@@ -1,0 +1,23 @@
+# permissions for end users to view kvcaches.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: orchestration-kvcache-viewer-role
+rules:
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - kvcaches
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - kvcaches/status
+  verbs:
+  - get

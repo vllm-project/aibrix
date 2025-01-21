@@ -4,4 +4,5 @@ resources:
 - model_v1alpha1_modeladapter.yaml
 - orchestration_v1alpha1_rayclusterreplicaset.yaml
 - orchestration_v1alpha1_rayclusterfleet.yaml
+- orchestration_v1alpha1_kvcache.yaml
 #+kubebuilder:scaffold:manifestskustomizesamples
