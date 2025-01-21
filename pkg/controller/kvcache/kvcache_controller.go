@@ -120,7 +120,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}, builder.WithPredicates(podWithLabelFilter(KVCacheLabelKeyIdentifier))).
 		Complete(r)
 
-	klog.V(4).InfoS("Finished to add kv-cache-controller")
+	klog.InfoS("Finished to add kv-cache-controller")
 	return err
 }
 
