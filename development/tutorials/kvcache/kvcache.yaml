@@ -3,6 +3,9 @@ kind: KVCache
 metadata:
   name: aibrix-deepseek-33b-kvcache
   namespace: aibrix-system
+  annotations:
+    kvcache.orchestration.aibrix.ai/node-affinity-gpu-type: NVIDIA-L20
+    kvcache.orchestration.aibrix.ai/pod-affinity-workload: aibrix-deepseek-33b
 spec:
   replicas: 1
   service:
