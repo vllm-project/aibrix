@@ -16,7 +16,7 @@ async def send_request(client, model, endpoint, prompt, output_file):
             model=model,
             messages=prompt,
             temperature=0,
-            max_tokens=128
+            max_tokens=2048
         )
 
         latency = asyncio.get_event_loop().time() - start_time
@@ -27,6 +27,7 @@ async def send_request(client, model, endpoint, prompt, output_file):
         output_text = response.choices[0].message.content
 
         result = {
+            "input": prompt,
             "output": output_text,
             "prompt_tokens": prompt_tokens,
             "output_tokens": output_tokens,
@@ -40,7 +41,7 @@ async def send_request(client, model, endpoint, prompt, output_file):
         output_file.flush()  # Ensure data is written immediately to the file
 
         logging.warning(
-            f"Request completed in {latency:.2f} seconds with throughput {throughput:.2f} tokens/s, response {response}")
+            f"Request completed in {latency:.2f} seconds with throughput {throughput:.2f} tokens/s, request {prompt} response {response}")
         return result
     except Exception as e:
         logging.error(f"Error sending request to at {endpoint}: {str(e)}")

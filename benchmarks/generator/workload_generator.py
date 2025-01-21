@@ -9,7 +9,7 @@ from pandas import Timedelta
 from typing import List, Tuple, Dict, Any
 from transformers import PreTrainedTokenizerBase
 from datetime import timedelta
-from sample_request import (load_sharegpt_requests,  sample_sharegpt_requests_len_range)
+from sample_request import (load_requests,  sample_requests_len_range, sample_requests_all)
 from utils import (get_tokenizer, plot_workload, make_serializable, save_workload, get_sample_interval_ms)
 
 # Set up logging to print only warning and above level messages
@@ -56,13 +56,13 @@ def generate_from_internal_csv(file_path: str,
         
     workload = []
     ts = 0
-    sharegpt_df = load_sharegpt_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
+    sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
     for i, interval_requests in enumerate(traffic):
         mean_rate = round(interval_requests * (interval_ms / 1000))
         input_length = input_lengths[i] if len(input_lengths)>0 else None
         output_length = output_lengths[i] if len(output_lengths)>0 else None
         for ts_delta in list(range(0, sample_interval_ms, interval_ms)):
-            concurrent_sampled_reqs = sample_sharegpt_requests_len_range(
+            concurrent_sampled_reqs = sample_requests_len_range(
                 df=sharegpt_df,
                 num_requests=mean_rate,
                 input_lens=[input_length] * mean_rate, 
@@ -93,10 +93,9 @@ def generate_constant(prompt_file_path: str,
                        ) -> List[List[Any]]:
     workload = []
     ts = 0
-    
-    sharegpt_df = load_sharegpt_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
+    sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
     while ts < duration_ms:
-        concurrent_reqs = sample_sharegpt_requests_len_range(
+        concurrent_reqs = sample_requests_len_range(
             df=sharegpt_df,
             num_requests=qps,
             input_lens=[None] * qps, 
@@ -104,8 +103,18 @@ def generate_constant(prompt_file_path: str,
             initial_err_perc=0.5,
             err_step=0.05
         )
-        workload.append({"timestamp": ts, "requests": concurrent_reqs})  
+        if concurrent_reqs:  # Only add non-empty groups
+            workload.append({"timestamp": ts, "requests": concurrent_reqs})  
+        else:
+            logging.error(f"sampled return {concurrent_reqs}")
         ts += interval_ms
+    ### Generate constant load for all requests
+    # idx = 0
+    # while idx < len(sharegpt_df):
+    #     concurrent_reqs = sample_requests_all(df=sharegpt_df, start_idx=idx, qps=qps)
+    #     workload.append({"timestamp": ts, "requests": concurrent_reqs})  
+    #     idx += qps
+    #     ts += interval_ms
    
     workload = make_serializable(workload)
     save_workload(workload, output_file, use_jsonl=to_jsonl)
@@ -180,7 +189,7 @@ def generate_synthetic(prompt_file_path: str,
     ts = 0
     base_req_id = 0
     
-    sharegpt_df = load_sharegpt_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
+    sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
     while t < length:
         current_concurrency = math_function(t)
         if only_rise:
@@ -189,7 +198,7 @@ def generate_synthetic(prompt_file_path: str,
 
         # start from last end index
         end_index += current_concurrency
-        concurrent_reqs = sample_sharegpt_requests_len_range(
+        concurrent_reqs = sample_requests_len_range(
             df=sharegpt_df,
             num_requests=current_concurrency,
             input_lens=[None] * current_concurrency, 
@@ -237,7 +246,7 @@ def generate_from_azure_csv(file_path: str,
         end_time = tracing_file_end_time
 
     logging.info(f"Start generation from time {current_time} to {end_time}")
-    sharegpt_df = load_sharegpt_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
+    sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
 
     ts = 0
     while current_time <= end_time:
@@ -249,7 +258,7 @@ def generate_from_azure_csv(file_path: str,
         for _, row in group.iterrows():
             input_lens.append(int(row['ContextTokens']))
             output_lens.append(int(row['GeneratedTokens']))
-        sampled_requests = sample_sharegpt_requests_len_range(
+        sampled_requests = sample_requests_len_range(
             df=sharegpt_df,
             num_requests=len(input_lens),
             input_lens=input_lens,
@@ -296,7 +305,6 @@ def pair_requests_with_prompts_round_robin(workload: List[List[Any]],
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Workload Generator')
     parser.add_argument('--prompt-file', type=str, required=True, help='File containing prompts.')
-    parser.add_argument('--num-prompts', type=int, default=100, help='Number of prompts to sample.')
     parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'internal', 'azure'],
                         help='Type of trace consumed. Choose among: synthetic, internal, azure')
     parser.add_argument('--traffic-file', type=str, required=False, default=None,
@@ -323,12 +331,10 @@ if __name__ == '__main__':
     # Generate workloads and pair with prompts
     workload_dict = {}
     tokenizer = get_tokenizer(pretrained_model_name_or_path=args.model, trust_remote_code=True)
-    # Load prompts from a file
-    #prompts = sample_sharegpt_requests(dataset_path=args.prompt_file, num_requests=args.num_prompts,tokenizer=tokenizer)
 
     if args.trace_type == "constant":
         generated_workload = generate_constant(prompt_file_path=args.prompt_file, 
-                                                qps=10,
+                                                qps=1,
                                                 duration_ms=args.duration_ms, 
                                                 interval_ms=args.interval_ms,
                                                 output_file=f"{args.output_dir}/{args.trace_type}",

@@ -9,11 +9,21 @@ from typing import Tuple, Optional, List
 from transformers import PreTrainedTokenizerBase
 
 
+def load_requests(
+        dataset_path: str,
+        tokenizer: PreTrainedTokenizerBase,
+) -> pd.DataFrame:
+    if "ShareGPT" in dataset_path:
+        return load_sharegpt_requests(dataset_path, tokenizer)
+    else:
+        return load_generated_dataset(dataset_path, tokenizer)
+    
 def load_sharegpt_requests(
         dataset_path: str,
         tokenizer: PreTrainedTokenizerBase,
 ) -> pd.DataFrame:
     # Load the dataset into a DataFrame
+    logging.warn(f"...Start dataframe transformation")
     with open(dataset_path, encoding='utf-8') as f:
         dataset = json.load(f)
     dataset = [
@@ -21,13 +31,29 @@ def load_sharegpt_requests(
         for data in dataset if len(data["conversations"]) >= 2
     ]
     df = pd.DataFrame(dataset, columns=["prompt", "completion"])
-    logging.warn(f"...Start dataframe transformation")
     # Tokenize and calculate lengths
     df["prompt_len"] = df["prompt"].apply(lambda x: len(tokenizer(x).input_ids))
     df["completion_len"] = df["completion"].apply(lambda x: len(tokenizer(x).input_ids))
     logging.warn(f"...Complete dataframe transformation")
     return df
 
+def load_generated_dataset(
+        dataset_path: str,
+        tokenizer: PreTrainedTokenizerBase,
+) -> pd.DataFrame:
+    # Load the dataset into a DataFrame
+    with open(dataset_path, encoding='utf-8') as f:
+        dataset = [json.loads(line) for line in f]
+    # Create a DataFrame with the desired columns
+    logging.warn(f"...Start dataframe transformation")
+    df = pd.DataFrame({
+        'prompt': [entry['input'][0]['content'] for entry in dataset],
+        'completion': [entry['output'] for entry in dataset],
+        'prompt_len': [entry['prompt_tokens'] for entry in dataset],
+        'completion_len': [entry['output_tokens'] for entry in dataset]
+    })
+    logging.warn(f"...Complete dataframe transformation")
+    return df
 
 def sample_sharegpt_requests(
         dataset_path: str,
@@ -67,7 +93,7 @@ def sample_sharegpt_requests(
     return filtered_dataset
 
 
-def sample_sharegpt_requests_len_range(
+def sample_requests_len_range(
         df: pd.DataFrame,
         num_requests: int,
         input_lens: List[int],
@@ -118,3 +144,22 @@ def sample_sharegpt_requests_len_range(
             raise Exception(f"No match found for request {i + 1} even after relaxing err_perc to 0")
 
     return filtered_results
+
+
+def sample_requests_all(
+        df: pd.DataFrame,
+        start_idx: int,
+        qps: int
+) -> List[Tuple[str, int, int, None]]:
+    results = []
+
+    # Relaxation mechanism
+    end_idx = min(start_idx + qps, len(df))
+    for i in  range(start_idx, end_idx):
+        print(f"start_idx {start_idx} end_idx {end_idx} i {i} len {len(df)} ")
+        row = df.iloc[i]
+        results.append({"prompt": row["prompt"],
+                        "prompt_length": row["prompt_len"],
+                        "output_length": row["completion_len"]})
+
+    return results
