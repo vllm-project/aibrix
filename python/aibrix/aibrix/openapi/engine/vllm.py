@@ -115,7 +115,7 @@ class VLLMInferenceEngine(InferenceEngine):
         except Exception as e:
             logger.error(f"Failed to list models due to HTTP request failure: {e}")
             return self._create_error_response(
-                f"Failed to list models",
+                "Failed to list models",
                 err_type="ServerError",
                 status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             )

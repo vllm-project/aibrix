@@ -63,7 +63,7 @@ def filter_and_set_headers(request_headers):
     filtered_headers = Headers()
 
     # List of headers to retain
-    headers_to_keep = ['content-type', 'authorization']
+    headers_to_keep = ["content-type", "authorization"]
 
     # Filter and copy the desired headers
     for header in headers_to_keep:
