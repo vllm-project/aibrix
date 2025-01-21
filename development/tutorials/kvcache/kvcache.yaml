@@ -1,7 +1,7 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: KVCache
 metadata:
-  name: aibrix-deepseek-coder-33b-kvcache
+  name: aibrix-deepseek-33b-kvcache
   namespace: aibrix-system
 spec:
   replicas: 1

@@ -25,6 +25,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - apps
+  resources:
+  - deployments/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - autoscaling
   resources:
   - horizontalpodautoscalers
@@ -69,6 +77,7 @@ rules:
   verbs:
   - create
   - delete
+  - deletecollection
   - get
   - list
   - patch
@@ -79,9 +88,13 @@ rules:
   resources:
   - pods/status
   verbs:
+  - create
+  - delete
   - get
+  - list
   - patch
   - update
+  - watch
 - apiGroups:
   - ""
   resources:
@@ -168,6 +181,32 @@ rules:
   - model.aibrix.ai
   resources:
   - modeladapters/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - kvcaches
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - kvcaches/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - orchestration.aibrix.ai
+  resources:
+  - kvcaches/status
   verbs:
   - get
   - patch

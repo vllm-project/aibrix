@@ -9,8 +9,8 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the Project itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- orchestration_kvcache_editor_role.yaml
-- orchestration_kvcache_viewer_role.yaml
+- orchestration/orchestration_kvcache_editor_role.yaml
+- orchestration/orchestration_kvcache_viewer_role.yaml
 - orchestration/orchestration_rayclusterfleet_editor_role.yaml
 - orchestration/orchestration_rayclusterfleet_viewer_role.yaml
 - orchestration/orchestration_rayclusterreplicaset_editor_role.yaml

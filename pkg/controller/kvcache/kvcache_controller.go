@@ -138,7 +138,7 @@ type KVCacheReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get;update;patch
 
-// Reconcile move kv cache to desired state
+// Reconcile reconciles a KVCache to desired state.
 func (r *KVCacheReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Fetch the KVCache instance
 	kvCache := &orchestrationv1alpha1.KVCache{}
