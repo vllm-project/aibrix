@@ -9,6 +9,9 @@ on:
 jobs:
   image-release:
     runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
     steps:
       # Checkout the repository
       - name: Checkout code
