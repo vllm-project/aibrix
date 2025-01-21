@@ -26,6 +26,7 @@ const (
 	DistributedInferenceController = "distributed-inference-controller"
 	ModelAdapterController         = "model-adapter-controller"
 	ModelRouteController           = "model-route-controller"
+	KVCacheController              = "kv-cache-controller"
 )
 
 var (
@@ -37,7 +38,7 @@ var (
 	EnabledControllers = make(map[string]bool)
 
 	ValidControllers = []string{
-		PodAutoscalerController, DistributedInferenceController, ModelAdapterController, ModelRouteController,
+		PodAutoscalerController, DistributedInferenceController, ModelAdapterController, ModelRouteController, KVCacheController,
 	}
 )
 
@@ -110,4 +111,5 @@ func EnableAllControllers() {
 	EnabledControllers[ModelAdapterController] = true
 	EnabledControllers[DistributedInferenceController] = true
 	EnabledControllers[ModelRouteController] = true
+	EnabledControllers[KVCacheController] = true
 }

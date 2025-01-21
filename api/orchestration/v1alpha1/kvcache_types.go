@@ -54,7 +54,9 @@ type RedisConfig struct {
 
 // EtcdConfig provides the configuration fields for deploying etcd.
 type EtcdConfig struct {
-	Image     string                      `json:"image"`
+	Image string `json:"image"`
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default:=1
 	Replicas  int32                       `json:"replicas"`
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 	Storage   MetadataStorage             `json:"storage"`
@@ -93,12 +95,12 @@ type CacheSpec struct {
 
 	// the memory resources of kvcache container
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default:={}
+	// +kubebuilder:default:="2"
 	Memory string `json:"memory,omitempty"`
 
 	// the cpu resources of kvcache container
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default:={}
+	// +kubebuilder:default:="1"
 	CPU string `json:"cpu,omitempty"`
 }
 
@@ -107,12 +109,12 @@ type KVCacheSpec struct {
 	// Replicas is the number of kv cache pods to deploy
 	// +kubebuilder:validation:Required
 	// +kubebuilder:default:=1
-	Replicas int `json:"replicas,omitempty"`
+	Replicas int32 `json:"replicas,omitempty"`
 
 	// EtcdReplicas describe the etcd replicas
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default:=1
-	EtcdReplicas int `json:"etcdReplicas,omitempty"`
+	EtcdReplicas int32 `json:"etcdReplicas,omitempty"`
 
 	// Metadata configuration for kv cache service
 	// +kubebuilder:validation:Optional
@@ -122,7 +124,7 @@ type KVCacheSpec struct {
 	// kvcache dataplane container configuration
 	// +kubebuilder:validation:Optional
 	//nolint: lll
-	// +kubebuilder:default:={image: "aibrix/kvcache:20241120", imagePullPolicy: "IfNotPresent", socket: "/var/run/aibrix-system/{{.Namespace}}/{{.Name}}", size: ""}
+	// +kubebuilder:default:={image: "aibrix/kvcache:20241120", imagePullPolicy: "IfNotPresent"}
 	Cache CacheSpec `json:"cacheSpec,omitempty"`
 
 	// cache's service

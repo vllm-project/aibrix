@@ -18,6 +18,7 @@ package controller
 
 import (
 	"github.com/aibrix/aibrix/pkg/config"
+	"github.com/aibrix/aibrix/pkg/controller/kvcache"
 	"github.com/aibrix/aibrix/pkg/controller/modeladapter"
 	"github.com/aibrix/aibrix/pkg/controller/modelrouter"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler"
@@ -53,6 +54,10 @@ func Initialize() {
 		// TODO: only enable them if KubeRay is installed (check RayCluster CRD exist)
 		controllerAddFuncs = append(controllerAddFuncs, rayclusterreplicaset.Add)
 		controllerAddFuncs = append(controllerAddFuncs, rayclusterfleet.Add)
+	}
+
+	if features.IsControllerEnabled(features.KVCacheController) {
+		controllerAddFuncs = append(controllerAddFuncs, kvcache.Add)
 	}
 }
 
