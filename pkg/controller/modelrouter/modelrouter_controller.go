@@ -237,7 +237,7 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-router", modelName),
-			Namespace: namespace,
+			Namespace: aibrixEnvoyGatewayNamespace,
 		},
 	}
 
