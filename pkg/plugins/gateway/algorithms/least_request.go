@@ -58,17 +58,17 @@ func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod, 
 	}
 
 	for _, pod := range readyPods {
-		runningReq, err := r.cache.GetPodMetric(pod.Name, metrics.NumRequestsRunning)
+		runningReq, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.NumRequestsRunning)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		waitingReq, err := r.cache.GetPodMetric(pod.Name, metrics.NumRequestsWaiting)
+		waitingReq, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.NumRequestsWaiting)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		swappedReq, err := r.cache.GetPodMetric(pod.Name, metrics.NumRequestsSwapped)
+		swappedReq, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.NumRequestsSwapped)
 		if err != nil {
 			klog.Error(err)
 			continue

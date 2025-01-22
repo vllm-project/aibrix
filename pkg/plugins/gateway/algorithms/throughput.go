@@ -58,12 +58,12 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod, mo
 	}
 
 	for _, pod := range readyPods {
-		promptThroughput, err := r.cache.GetPodMetric(pod.Name, metrics.AvgPromptThroughputToksPerS)
+		promptThroughput, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.AvgPromptThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		generationThroughput, err := r.cache.GetPodMetric(pod.Name, metrics.AvgGenerationThroughputToksPerS)
+		generationThroughput, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.AvgGenerationThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue

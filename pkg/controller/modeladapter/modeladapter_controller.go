@@ -517,7 +517,7 @@ func (r *ModelAdapterReconciler) getActivePodsForModelAdapter(ctx context.Contex
 func (r *ModelAdapterReconciler) schedulePod(ctx context.Context, instance *modelv1alpha1.ModelAdapter, activePods []corev1.Pod) (*corev1.Pod, error) {
 	// Implement your scheduling logic here to select a Pod based on the instance.Spec.PodSelector
 	// For the sake of example, we will just list the Pods matching the selector and pick the first one
-	return r.scheduler.SelectPod(ctx, activePods)
+	return r.scheduler.SelectPod(ctx, instance.Name, activePods)
 }
 
 func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance *modelv1alpha1.ModelAdapter) error {

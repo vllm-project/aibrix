@@ -457,7 +457,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 					},
 				},
 			)
-			requestEnd = fmt.Sprintf(requestEnd+"rpm: %s, tpm: %s", rpm, tpm)
+			requestEnd = fmt.Sprintf(requestEnd+"rpm: %s, tpm: %s, ", rpm, tpm)
 		}
 
 		if targetPodIP != "" {
@@ -469,7 +469,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 					},
 				},
 			)
-			requestEnd = fmt.Sprintf(requestEnd+", targetPod: %s", targetPodIP)
+			requestEnd = fmt.Sprintf(requestEnd+"targetPod: %s", targetPodIP)
 		}
 
 		klog.Infof("request end, requestID: %s - %s", requestID, requestEnd)

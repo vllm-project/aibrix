@@ -25,8 +25,8 @@ from vidur.entities import Request
 # Global storage for overridden values
 overrides = {}
 
-MODEL_NAME = os.getenv('MODEL_NAME', 'llama2-70b')
-DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-70b')
+MODEL_NAME = os.getenv('MODEL_NAME', 'llama2-7b')
+DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-7b')
 NAMESPACE = os.getenv('POD_NAMESPACE', 'default')
 DEFAULT_REPLICAS = int(os.getenv('DEFAULT_REPLICAS', '1'))
 SIMULATION = os.getenv('SIMULATION', 'disabled')
@@ -566,16 +566,19 @@ def metrics():
     ]
 
     # Generate all metrics
-    metrics_output = """
-# HELP vllm:lora_requests_info Running stats on lora requests.
-# TYPE vllm:lora_requests_info gauge
-vllm:lora_requests_info{max_lora="1",running_lora_adapters="text2sql-lora-1",waiting_lora_adapters=""} 1
-"""
+    metrics_output = ""
     for metric in simple_metrics:
         metrics_output += generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"],
                                                         model_name, metric["value"])
         metrics_output += generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"],
-                                                        "lora-1", metric["value"], help_header=False)
+                                                        "text2sql-lora-1", metric["value"], help_header=False)
+        
+    
+    metrics_output += """
+# HELP vllm:lora_requests_info Running stats on lora requests.
+# TYPE vllm:lora_requests_info gauge
+vllm:lora_requests_info{max_lora="1",running_lora_adapters="text2sql-lora-1",waiting_lora_adapters=""} 1
+"""
 
     histogram_metrics = [
         {
@@ -663,7 +666,7 @@ vllm:lora_requests_info{max_lora="1",running_lora_adapters="text2sql-lora-1",wai
         histogram_metrics_output += generate_histogram_metric(
             metric_name=metric["name"],
             description=metric["description"],
-            model_name="lora-1",
+            model_name="text2sql-lora-1",
             buckets=metric["buckets"],
             new_requests=new_requests,
             help_header=False

@@ -36,7 +36,7 @@ func NewRandomScheduler(c *cache.Cache) Scheduler {
 	}
 }
 
-func (r randomScheduler) SelectPod(ctx context.Context, pods []v1.Pod) (*v1.Pod, error) {
+func (r randomScheduler) SelectPod(ctx context.Context, model string, pods []v1.Pod) (*v1.Pod, error) {
 	if len(pods) == 0 {
 		return nil, errors.New("no pods to schedule model adapter")
 	}
