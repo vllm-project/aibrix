@@ -571,13 +571,13 @@ def metrics():
         metrics_output += generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"],
                                                         model_name, metric["value"])
         metrics_output += generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"],
-                                                        "text2sql-lora-1", metric["value"], help_header=False)
+                                                        "text2sql-lora-2", metric["value"], help_header=False)
         
     
     metrics_output += """
 # HELP vllm:lora_requests_info Running stats on lora requests.
 # TYPE vllm:lora_requests_info gauge
-vllm:lora_requests_info{max_lora="1",running_lora_adapters="text2sql-lora-1",waiting_lora_adapters=""} 1
+vllm:lora_requests_info{max_lora="1",running_lora_adapters="text2sql-lora-2",waiting_lora_adapters=""} 1
 """
 
     histogram_metrics = [
@@ -666,7 +666,7 @@ vllm:lora_requests_info{max_lora="1",running_lora_adapters="text2sql-lora-1",wai
         histogram_metrics_output += generate_histogram_metric(
             metric_name=metric["name"],
             description=metric["description"],
-            model_name="text2sql-lora-1",
+            model_name="text2sql-lora-2",
             buckets=metric["buckets"],
             new_requests=new_requests,
             help_header=False
