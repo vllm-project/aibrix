@@ -14,7 +14,7 @@ VERSION=$1
 REGISTRY=$2
 
 # image list
-IMAGES=("runtime" "users" "plugins" "controller-manager")
+IMAGES=("runtime" "metadata-service" "gateway-plugins" "controller-manager")
 
 # pull、retag and push images
 for IMAGE in "${IMAGES[@]}"; do
