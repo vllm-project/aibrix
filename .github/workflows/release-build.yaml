@@ -9,6 +9,7 @@ on:
 jobs:
   image-release:
     runs-on: ubuntu-latest
+    needs: [cut-github-release]
     permissions:
       packages: write
       contents: read
@@ -125,7 +126,7 @@ jobs:
 
   cut-github-release:
     runs-on: ubuntu-latest
-    needs: [artifact-release]
+    needs: [python-wheel-release, artifact-release]
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
