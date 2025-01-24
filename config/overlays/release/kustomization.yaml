@@ -16,11 +16,11 @@ images:
   newTag: stable
 - name: redis
   newTag: latest
-- name: aibrix/plugins
-  newTag: v0.2.0-rc.1
-- name: aibrix/users
-  newTag: v0.2.0-rc.1
+- name: aibrix/gateway-plugins
+  newTag: v0.2.0-rc.2
+- name: aibrix/metadata-service
+  newTag: v0.2.0-rc.2
 - name: aibrix/controller-manager
-  newTag: v0.2.0-rc.1
+  newTag: v0.2.0-rc.2
 - name: aibrix/runtime
-  newTag: v0.2.0-rc.1
+  newTag: v0.2.0-rc.2
