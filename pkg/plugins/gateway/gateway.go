@@ -410,17 +410,18 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 					Key: "x-error-response-unmarshal", RawValue: []byte("true"),
 				}}},
 				err.Error()), complete
-		} else if res.Model != model {
-			err = ErrorUnknownResponse
-			klog.ErrorS(err, "unexpected response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
-			complete = true
-			return generateErrorResponse(
-				envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-error-response-unknown", RawValue: []byte("true"),
-				}}},
-				err.Error()), complete
 		}
+		// } else if res.Model != model {
+		// 	err = ErrorUnknownResponse
+		// 	klog.ErrorS(err, "unexpected response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+		// 	complete = true
+		// 	return generateErrorResponse(
+		// 		envoyTypePb.StatusCode_InternalServerError,
+		// 		[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+		// 			Key: "x-error-response-unknown", RawValue: []byte("true"),
+		// 		}}},
+		// 		err.Error()), complete
+		// }
 		// Do not overwrite model, res can be empty.
 		usage = res.Usage
 	}
