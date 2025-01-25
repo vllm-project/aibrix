@@ -468,9 +468,15 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-func (r *ModelAdapterReconciler) updateStatus(ctx context.Context, instance *modelv1alpha1.ModelAdapter, condition metav1.Condition) error {
-	klog.InfoS("model adapter reconcile", "Update CR status", instance.Name, "status", instance.Status)
-	meta.SetStatusCondition(&instance.Status.Conditions, condition)
+func (r *ModelAdapterReconciler) updateStatus(ctx context.Context, instance *modelv1alpha1.ModelAdapter, conditions ...metav1.Condition) error {
+	changed := false
+	for _, condition := range conditions {
+		if meta.SetStatusCondition(&instance.Status.Conditions, condition) {
+			changed = true
+		}
+	}
+	// TODO: sort the conditions based on LastTransitionTime if needed.
+	klog.InfoS("model adapter reconcile", "Update CR status", instance.Name, "changed", changed, "status", instance.Status, "conditions", conditions)
 	return r.Status().Update(ctx, instance)
 }
 
@@ -482,7 +488,19 @@ func (r *ModelAdapterReconciler) clearModelAdapterInstanceList(ctx context.Conte
 		StableInstanceFoundReason,
 		fmt.Sprintf("Pod (%s/%s) is stale or invalid for model adapter (%s/%s), clean up the list", instance.GetNamespace(), stalePodName, instance.GetNamespace(), instance.Name))
 
-	if err := r.updateStatus(ctx, instance, condition); err != nil {
+	// We also need to update the scheduling and ready status to false
+	// When the pod get migrated, we need to update the status with latest LastTransitionTime.
+	// However, meta.SetStatusCondition won't update the status unless there's other change like Status as well.
+	// Here it also help trigger time update in later updates.
+	scheduleCondition := meta.FindStatusCondition(instance.Status.Conditions, string(modelv1alpha1.ModelAdapterConditionTypeScheduled))
+	scheduleCondition.Status = metav1.ConditionFalse
+	scheduleCondition.LastTransitionTime = metav1.Now()
+
+	readyCondition := meta.FindStatusCondition(instance.Status.Conditions, string(modelv1alpha1.ModelAdapterConditionReady))
+	readyCondition.Status = metav1.ConditionFalse
+	readyCondition.LastTransitionTime = metav1.Now()
+
+	if err := r.updateStatus(ctx, instance, condition, *scheduleCondition, *readyCondition); err != nil {
 		return err
 	}
 
@@ -860,9 +878,18 @@ func (r *ModelAdapterReconciler) reconcileEndpointSlice(ctx context.Context, ins
 
 		// Append the Pod IP to the EndpointSlice if it doesn't exist
 		if !alreadyExists {
-			found.Endpoints = append(found.Endpoints, discoveryv1.Endpoint{
-				Addresses: []string{podIP},
-			})
+			// TODO: come back when we start to support multi-instance.
+			//found.Endpoints = append(found.Endpoints, discoveryv1.Endpoint{
+			//	Addresses: []string{podIP},
+			//})
+
+			// override the endpoint with only one pod id.
+			// TODO: We need to refactor the logic once we start to support multi instances later
+			found.Endpoints = []discoveryv1.Endpoint{
+				{
+					Addresses: []string{podIP},
+				},
+			}
 
 			if err := r.Update(ctx, found); err != nil {
 				klog.ErrorS(err, "Failed to update EndpointSlice", "EndpointSlice", found.Name)
