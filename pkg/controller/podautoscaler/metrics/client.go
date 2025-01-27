@@ -102,7 +102,7 @@ func (c *KPAMetricsClient) UpdateMetrics(now time.Time, metricKey NamespaceNameM
 	if err != nil {
 		return err
 	}
-	klog.InfoS("Update pod list metrics", "metricKey", metricKey, "valueNum", len(metricValues), "timestamp", now, "metricValue", sumMetricValue)
+	klog.V(4).InfoS("Update pod list metrics", "metricKey", metricKey, "valueNum", len(metricValues), "timestamp", now, "metricValue", sumMetricValue)
 	return nil
 }
 
@@ -116,14 +116,14 @@ func (c *KPAMetricsClient) StableAndPanicMetrics(
 		return -1, -1, err
 	}
 
-	klog.InfoS("Get panicWindow", "metricKey", metricKey, "panicValue", panicValue, "panicWindow", c.panicWindow)
+	klog.V(4).InfoS("Get panicWindow", "metricKey", metricKey, "panicValue", panicValue, "panicWindow", c.panicWindow)
 
 	stableValue, err := c.stableWindow.Avg()
 	if err != nil {
 		return -1, -1, err
 	}
 
-	klog.Infof("Get stableWindow: metricKey=%s, stableValue=%.2f, stableWindow=%v", metricKey, stableValue, c.stableWindow)
+	klog.V(4).Infof("Get stableWindow: metricKey=%s, stableValue=%.2f, stableWindow=%v", metricKey, stableValue, c.stableWindow)
 	return stableValue, panicValue, nil
 }
 
@@ -195,7 +195,7 @@ func (c *APAMetricsClient) UpdateMetrics(now time.Time, metricKey NamespaceNameM
 	if err != nil {
 		return err
 	}
-	klog.InfoS("Update pod list metrics", "metricKey", metricKey, "valueNum", len(metricValues), "timestamp", now, "metricValue", sumMetricValue)
+	klog.V(4).InfoS("Update pod list metrics", "metricKey", metricKey, "valueNum", len(metricValues), "timestamp", now, "metricValue", sumMetricValue)
 	return nil
 }
 

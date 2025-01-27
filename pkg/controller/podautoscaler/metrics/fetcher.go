@@ -106,7 +106,7 @@ func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscali
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			// Handle the error here. For example, log it or take appropriate corrective action.
-			klog.InfoS("Error closing response body:", err)
+			klog.ErrorS(err, "error closing response body")
 		}
 	}()
 	body, err := io.ReadAll(resp.Body)
@@ -119,7 +119,7 @@ func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscali
 		return 0.0, fmt.Errorf("failed to parse metrics from source %s: %v", url, err)
 	}
 
-	klog.InfoS("Successfully parsed metrics", "metric", metricName, "source", url, "metricValue", metricValue)
+	klog.V(4).InfoS("Successfully parsed metrics", "metric", metricName, "source", url, "metricValue", metricValue)
 
 	return metricValue, nil
 }

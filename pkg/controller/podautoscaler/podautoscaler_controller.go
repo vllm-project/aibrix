@@ -430,7 +430,7 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 			return ctrl.Result{}, fmt.Errorf("failed to compute desired number of replicas based on listed metrics for %s: %v", scaleReference, err)
 		}
 
-		klog.InfoS("Proposing desired replicas",
+		klog.V(4).InfoS("Proposing desired replicas",
 			"desiredReplicas", metricDesiredReplicas,
 			"metric", metricName,
 			"timestamp", metricTimestamp,
@@ -450,11 +450,11 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 
 		// adjust desired metrics within the <min, max> range
 		if desiredReplicas > pa.Spec.MaxReplicas {
-			klog.InfoS("Scaling adjustment: Algorithm recommended scaling to a target that exceeded the maximum limit.",
+			klog.V(2).InfoS("Scaling adjustment: Algorithm recommended scaling to a target that exceeded the maximum limit.",
 				"recommendedReplicas", desiredReplicas, "adjustedTo", pa.Spec.MaxReplicas)
 			desiredReplicas = pa.Spec.MaxReplicas
 		} else if desiredReplicas < minReplicas {
-			klog.InfoS("Scaling adjustment: Algorithm recommended scaling to a target that fell below the minimum limit.",
+			klog.V(2).InfoS("Scaling adjustment: Algorithm recommended scaling to a target that fell below the minimum limit.",
 				"recommendedReplicas", desiredReplicas, "adjustedTo", minReplicas)
 			desiredReplicas = minReplicas
 		}

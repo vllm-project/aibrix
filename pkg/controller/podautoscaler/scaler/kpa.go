@@ -340,7 +340,7 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 		}
 		desiredPodCount = k.maxPanicPods
 	} else {
-		klog.InfoS("Operating in stable mode.", "desiredPodCount", desiredPodCount)
+		klog.V(4).InfoS("Operating in stable mode.", "desiredPodCount", desiredPodCount)
 	}
 
 	// Delay scale down decisions, if a ScaleDownDelay was specified.
