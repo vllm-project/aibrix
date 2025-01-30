@@ -180,3 +180,30 @@ Invoke the model endpoint using gateway api
             "max_tokens": 128,
             "temperature": 0
         }'
+
+
+Or you can send request from your local machine via gateway's external ip.
+
+
+.. code-block:: bash
+
+    # get gateway external ip, which is 101.126.74.58 in this example.
+    kubectl get svc -n envoy-gateway-system
+    
+    NAME                                     TYPE           CLUSTER-IP       EXTERNAL-IP     PORT(S)                                   AGE
+    envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   192.168.70.133   101.126.74.58   80:32502/TCP                              22h
+    envoy-gateway                            ClusterIP      192.168.69.148   <none>          18000/TCP,18001/TCP,18002/TCP,19001/TCP   15d
+
+.. code-block:: bash
+
+    # use external ip to query gateway
+
+    curl -v http://101.126.74.58:80/v1/completions \
+        -H "Content-Type: application/json" \
+        -H "model: qwen25-7b-Instruct" \
+        -d '{
+            "model": "qwen25-7b-Instruct",
+            "prompt": "San Francisco is a",
+            "max_tokens": 128,
+            "temperature": 0
+        }'
