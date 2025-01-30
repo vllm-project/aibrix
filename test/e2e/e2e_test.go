@@ -35,27 +35,82 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// const namespace = "aibrix-system"
+const (
+	baseURL   = "http://localhost:8888"
+	apiKey    = "test-key-1234567890"
+	modelName = "llama2-7b"
+	namespace = "aibrix-system"
+)
 
 func TestBaseModelInference(t *testing.T) {
 	initializeClient(context.Background(), t)
 
 	client := openai.NewClient(
-		option.WithBaseURL("http://localhost:8888"),
-		option.WithAPIKey("test-key-1234567890"),
+		option.WithBaseURL(baseURL),
+		option.WithAPIKey(apiKey),
 	)
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("Say this is a test"),
 		}),
-		Model: openai.F("llama2-7b"),
+		Model: openai.F(modelName),
 	})
 	if err != nil {
-		t.Error("chat completions failed")
+		t.Error("chat completions failed", err)
 	}
-	println(chatCompletion.Choices[0].Message.Content)
-	assert.Equal(t, "llama2-7b", chatCompletion.Model)
+	assert.Equal(t, modelName, chatCompletion.Model)
+}
 
+func TestBaseModelInferenceFailures(t *testing.T) {
+	// error on invalid api key
+	client := openai.NewClient(
+		option.WithBaseURL(baseURL),
+		option.WithAPIKey("fake-api-key"),
+	)
+	_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("Say this is a test"),
+		}),
+		Model: openai.F(modelName),
+	})
+	assert.Contains(t, err.Error(), "500 Internal Server Error")
+	if err == nil {
+		t.Error("500 Internal Server Error expected for invalid api-key")
+	}
+
+	// error on invalid model name
+	client = openai.NewClient(
+		option.WithBaseURL(baseURL),
+		option.WithAPIKey(apiKey),
+	)
+	_, err = client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("Say this is a test"),
+		}),
+		Model: openai.F("fake-model-name"),
+	})
+	assert.Contains(t, err.Error(), "400 Bad Request")
+	if err == nil {
+		t.Error("400 Bad Request expected for invalid api-key")
+	}
+
+	// invalid routing strategy
+	client = openai.NewClient(
+		option.WithBaseURL(baseURL),
+		option.WithAPIKey(apiKey),
+		option.WithHeader("routing-strategy", "invalid-routing-strategy"),
+	)
+	client.Options = append(client.Options, option.WithHeader("routing-strategy", "invalid-routing-strategy"))
+	_, err = client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("Say this is a test"),
+		}),
+		Model: openai.F(modelName),
+	})
+	if err == nil {
+		t.Error("400 Bad Request expected for invalid routing-strategy")
+	}
+	assert.Contains(t, err.Error(), "400 Bad Request")
 }
 
 func initializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset, *v1alpha1.Clientset) {
