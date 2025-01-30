@@ -43,8 +43,6 @@ if [ -n "$KIND_E2E" ]; then
     # If we did not set SKIP_INSTALL
     if [ -z "$SKIP_INSTALL" ]; then
         ${KIND_SUDO} kind create cluster --image kindest/node:${K8S_VERSION} --config=./hack/kind_config.yaml
-        kind get kubeconfig > /tmp/admin.conf
-        export KUBECONFIG=/tmp/admin.conf
     fi
 fi
 

@@ -81,6 +81,8 @@ jobs:
           # Set up the cluster with kind or other Kubernetes environment needed
           kind create cluster --name installation-test
           kubectl cluster-info --context kind-installation-test
+          kind get kubeconfig --name installation-test > /tmp/admin.conf
+          export KUBECONFIG=/tmp/admin.conf
 
       - name: Load image into Kind
         run: |
