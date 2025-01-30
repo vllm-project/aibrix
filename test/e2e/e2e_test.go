@@ -43,7 +43,7 @@ const (
 )
 
 func TestBaseModelInference(t *testing.T) {
-	initializeClient(context.Background(), t)
+	// initializeClient(context.Background(), t)
 
 	client := openai.NewClient(
 		option.WithBaseURL(baseURL),
