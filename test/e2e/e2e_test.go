@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"testing"
 
@@ -45,10 +46,7 @@ const (
 func TestBaseModelInference(t *testing.T) {
 	initializeClient(context.Background(), t)
 
-	client := openai.NewClient(
-		option.WithBaseURL(baseURL),
-		option.WithAPIKey(apiKey),
-	)
+	client := createOpenAIClient(baseURL, apiKey)
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("Say this is a test"),
@@ -63,10 +61,7 @@ func TestBaseModelInference(t *testing.T) {
 
 func TestBaseModelInferenceFailures(t *testing.T) {
 	// error on invalid api key
-	client := openai.NewClient(
-		option.WithBaseURL(baseURL),
-		option.WithAPIKey("fake-api-key"),
-	)
+	client := createOpenAIClient(baseURL, "fake-api-key")
 	_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("Say this is a test"),
@@ -79,10 +74,7 @@ func TestBaseModelInferenceFailures(t *testing.T) {
 	}
 
 	// error on invalid model name
-	client = openai.NewClient(
-		option.WithBaseURL(baseURL),
-		option.WithAPIKey(apiKey),
-	)
+	client = createOpenAIClient(baseURL, apiKey)
 	_, err = client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("Say this is a test"),
@@ -151,4 +143,15 @@ func initializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset,
 	}
 
 	return k8sClientSet, crdClientSet
+}
+
+func createOpenAIClient(baseURL, apiKey string) *openai.Client {
+	return openai.NewClient(
+		option.WithBaseURL(baseURL),
+		option.WithAPIKey(apiKey),
+		option.WithMiddleware(func(r *http.Request, mn option.MiddlewareNext) (*http.Response, error) {
+			r.URL.Path = "/v1" + r.URL.Path
+			return mn(r)
+		}),
+	)
 }
