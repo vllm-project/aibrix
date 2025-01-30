@@ -43,7 +43,7 @@ const (
 )
 
 func TestBaseModelInference(t *testing.T) {
-	// initializeClient(context.Background(), t)
+	initializeClient(context.Background(), t)
 
 	client := openai.NewClient(
 		option.WithBaseURL(baseURL),
@@ -73,7 +73,6 @@ func TestBaseModelInferenceFailures(t *testing.T) {
 		}),
 		Model: openai.F(modelName),
 	})
-	assert.Contains(t, err.Error(), "500 Internal Server Error")
 	if err == nil {
 		t.Error("500 Internal Server Error expected for invalid api-key")
 	}

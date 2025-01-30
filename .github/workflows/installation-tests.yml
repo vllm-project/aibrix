@@ -125,7 +125,10 @@ jobs:
           kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc  8888:80 &
       
       - name: Run e2e tests
-        run: make test-e2e
+        run: |
+          kind get kubeconfig --name installation-test > /tmp/admin.conf
+          export KUBECONFIG=/tmp/admin.conf
+          make test-e2e
           
       - name: Clean up
         run: kind delete cluster --name installation-test
