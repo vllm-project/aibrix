@@ -19,6 +19,10 @@ Model Adapter Controller
 We develop a ModelAdapter `controller <https://kubernetes.io/docs/concepts/architecture/controller/>`_ to manage the lora model adapter lifecycle.
 User can submit a lora `Custom Resource <https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/>`_ and controller will register to the matching pods, configure the service discovery and expose the adapter status.
 
+.. figure:: ../assets/images/lora-controller-workflow.png
+  :alt: lora-controller-workflow
+  :width: 70%
+  :align: center
 
 Model Adapter Service Discovery
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
