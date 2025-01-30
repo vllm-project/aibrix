@@ -24,10 +24,7 @@ KIND_E2E=${KIND_E2E:-}
 SKIP_KUBECTL_INSTALL=${SKIP_KUBECTL_INSTALL:-true}
 SKIP_KIND_INSTALL=${SKIP_KIND_INSTALL:-true}
 SKIP_INSTALL=${SKIP_INSTALL:-}
-
 INSTALL_AIBRIX=${INSTALL_AIBRIX:-}
-
-CONTAINER_ENGINE=${CONTAINER_ENGINE:-docker}
 KIND_SUDO=${KIND_SUDO:-}
 
 # setup kind cluster
@@ -49,36 +46,42 @@ if [ -n "$KIND_E2E" ]; then
     fi
 fi
 
+kind get kubeconfig > /tmp/admin.conf
+export KUBECONFIG=/tmp/admin.conf
+
 # build images
 if [ -n "$INSTALL_AIBRIX" ]; then
-    make docker-build-all
-    kind load docker-image aibrix/controller-manager:nightly
-    kind load docker-image aibrix/gateway-plugins:nightly
-    kind load docker-image aibrix/metadata-service:nightly
-    kind load docker-image aibrix/runtime:nightly
+  make docker-build-all
+  kind load docker-image aibrix/controller-manager:nightly
+  kind load docker-image aibrix/gateway-plugins:nightly
+  kind load docker-image aibrix/metadata-service:nightly
+  kind load docker-image aibrix/runtime:nightly
 
-    # build and deploy mock-app
+  # build and deploy mock-app
+  cd development/app
+  docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
+  kind load docker-image aibrix/vllm-mock:nightly
+  kubectl create -k config/mock
+  cd ../..
+
+  # install crds and deploy aibrix components
+  kubectl create -k config/dependency
+  kubectl create -k config/default
+
+  kubectl port-forward svc/llama2-7b 8000:8000 &
+  kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc  8888:80 &
+
+  function cleanup {
+    echo "Cleaning up..."
+    # clean up env at end
+    kubectl delete --ignore-not-found=true -k config/default
+    kubectl delete --ignore-not-found=true -k config/dependency
     cd development/app
-    docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
-    kind load docker-image aibrix/vllm-mock:nightly
-    kubectl create -k config/mock
+    kubectl delete -k config/mock
     cd ../..
+  }
 
-    # install crds and deploy aibrix components
-    kubectl create -k config/dependency
-    kubectl create -k config/default
-
-    function cleanup {
-      echo "Cleaning up..."
-      # clean up env at end
-      kubectl delete --ignore-not-found=true -k config/default
-      kubectl delete --ignore-not-found=true -k config/dependency
-      cd development/app
-      kubectl delete -k config/mock
-      cd ../..
-    }
-
-    trap cleanup EXIT
+  trap cleanup EXIT
 fi
 
 collect_logs() {
@@ -87,7 +90,7 @@ collect_logs() {
 
   for pod in $(kubectl get pods -n aibrix-system -o name); do
     echo "Logs for ${pod}"
-    kubectl logs -n default ${pod}
+    kubectl logs -n aibrix-system ${pod}
   done
 }
 

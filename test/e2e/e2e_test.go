@@ -16,4 +16,84 @@ limitations under the License.
 
 package e2e
 
+import (
+	"context"
+	"os"
+	"testing"
+
+	v1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
+	crdinformers "github.com/aibrix/aibrix/pkg/client/informers/externalversions"
+	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
+	"github.com/stretchr/testify/assert"
+	"k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog/v2"
+)
+
 // const namespace = "aibrix-system"
+
+func TestBaseModelInference(t *testing.T) {
+	initializeClient(context.Background(), t)
+
+	client := openai.NewClient(
+		option.WithBaseURL("http://localhost:8888"),
+		option.WithAPIKey("test-key-1234567890"),
+	)
+	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("Say this is a test"),
+		}),
+		Model: openai.F("llama2-7b"),
+	})
+	if err != nil {
+		t.Error("chat completions failed")
+	}
+	println(chatCompletion.Choices[0].Message.Content)
+	assert.Equal(t, "llama2-7b", chatCompletion.Model)
+
+}
+
+func initializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset, *v1alpha1.Clientset) {
+	var err error
+	var config *rest.Config
+
+	kubeConfig := os.Getenv("KUBECONFIG")
+	if kubeConfig == "" {
+		t.Error("kubeConfig not set")
+	}
+	klog.Infof("using configuration from '%s'", kubeConfig)
+
+	config, err = clientcmd.BuildConfigFromFlags("", kubeConfig)
+	if err != nil {
+		t.Errorf("Error during client creation with %v", err)
+	}
+	k8sClientSet, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		t.Errorf("Error during client creation with %v", err)
+	}
+	crdClientSet, err := v1alpha1.NewForConfig(config)
+	if err != nil {
+		t.Errorf("Error during client creation with %v", err)
+	}
+
+	factory := informers.NewSharedInformerFactoryWithOptions(k8sClientSet, 0)
+	crdFactory := crdinformers.NewSharedInformerFactoryWithOptions(crdClientSet, 0)
+
+	podInformer := factory.Core().V1().Pods().Informer()
+	modelInformer := crdFactory.Model().V1alpha1().ModelAdapters().Informer()
+
+	defer runtime.HandleCrash()
+	factory.Start(ctx.Done())
+	crdFactory.Start(ctx.Done())
+
+	if !cache.WaitForCacheSync(ctx.Done(), podInformer.HasSynced, modelInformer.HasSynced) {
+		t.Error("timed out waiting for caches to sync")
+	}
+
+	return k8sClientSet, crdClientSet
+}
