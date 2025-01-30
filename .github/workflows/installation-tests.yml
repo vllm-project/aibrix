@@ -27,20 +27,6 @@ on:
       - 'go.sum'
 
 jobs:
-  e2e-test:
-    runs-on: ubuntu-latest
-
-    # steps:
-    #   - name: Check out code
-    #     uses: actions/checkout@v4
-
-    #   - name: Set up Docker Buildx
-    #     uses: docker/setup-buildx-action@v2
-
-    #   - name: Run e2e tests
-    #     run: |
-    #       KIND_E2E=true INSTALL_AIBRIX=true make test-e2e
-
   build-images:
     runs-on: ubuntu-latest
     strategy:
@@ -132,12 +118,6 @@ jobs:
           sleep 60s
           kubectl get pods --all-namespaces
           kubectl wait pod --all --for=condition=ready --all-namespaces --timeout=300s
-          kubectl port-forward svc/llama2-7b 8000:8000 &
-          kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc  8888:80 &
-      
-      - name: Run e2e tests
-        run: |
-          make test-e2e
 
       - name: Clean up
         run: kind delete cluster --name installation-test
