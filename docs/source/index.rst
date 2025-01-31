@@ -42,6 +42,7 @@ Documentation
    features/multi-node-inference.rst
    features/heterogeneous-gpu.rst
    features/runtime.rst
+   features/distributed-kv-cache.rst
 
 .. toctree::
    :maxdepth: 1
