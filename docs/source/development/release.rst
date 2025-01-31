@@ -16,7 +16,7 @@ Prepare the code
 Option 1 RC version release
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-For RC release like ``v0.2.0-rc.1``, there's no need to checkout a new branch, Let's cut the tag & release
+For RC release like ``v0.2.0-rc.2``, there's no need to checkout a new branch, Let's cut the tag & release
 directly against ``main`` branch.
 
 
@@ -113,8 +113,8 @@ we need to retag the images and push to VKE Container Registry.
 
 .. code-block:: bash
 
-    ./hack/sync-images.sh v0.2.0-rc.1 aibrix-container-registry-cn-beijing.cr.volces.com
-    ./hack/sync-images.sh v0.2.0-rc.1 aibrix-container-registry-cn-shanghai.cr.volces.com
+    ./hack/sync-images.sh v0.2.0-rc.2 aibrix-container-registry-cn-beijing.cr.volces.com
+    ./hack/sync-images.sh v0.2.0-rc.2 aibrix-container-registry-cn-shanghai.cr.volces.com
 
 
 Update released tags in main branch docs

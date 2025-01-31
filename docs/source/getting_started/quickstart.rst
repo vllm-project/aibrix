@@ -14,8 +14,8 @@ Get your kubernetes cluster ready, run following commands to install aibrix comp
 
 .. code-block:: bash
 
-    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.1/aibrix-dependency-v0.2.0-rc.1.yaml
-    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.1/aibrix-core-v0.2.0-rc.1.yaml
+    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.2/aibrix-dependency-v0.2.0-rc.2.yaml
+    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.2/aibrix-core-v0.2.0-rc.2.yaml
 
 Wait for few minutes and run `kubectl get pods -n aibrix-system` to check pod status util they are ready.
 
@@ -172,6 +172,33 @@ Invoke the model endpoint using gateway api
     # model name in the header is required for gateway which is used by httproute (described in previous section) to forward request to appropriate model service
 
     curl -v http://localhost:8888/v1/completions \
+        -H "Content-Type: application/json" \
+        -H "model: qwen25-7b-Instruct" \
+        -d '{
+            "model": "qwen25-7b-Instruct",
+            "prompt": "San Francisco is a",
+            "max_tokens": 128,
+            "temperature": 0
+        }'
+
+
+Or you can send request from your local machine via gateway's external ip.
+
+
+.. code-block:: bash
+
+    # get gateway external ip, which is 101.126.XXX.XXX in this example.
+    kubectl get svc -n envoy-gateway-system
+    
+    NAME                                     TYPE           CLUSTER-IP       EXTERNAL-IP     PORT(S)                                   AGE
+    envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   192.168.70.133   101.126.XXX.XXX   80:32502/TCP                              22h
+    envoy-gateway                            ClusterIP      192.168.69.148   <none>          18000/TCP,18001/TCP,18002/TCP,19001/TCP   15d
+
+.. code-block:: bash
+
+    # use external ip to query gateway
+
+    curl -v http://101.126.XXX.XXX:80/v1/completions \
         -H "Content-Type: application/json" \
         -H "model: qwen25-7b-Instruct" \
         -d '{

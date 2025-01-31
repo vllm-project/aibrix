@@ -45,11 +45,15 @@ It's similar like Kubernetes core concept ``ReplicaSet`` and ``Deployment``. Mos
 Workloads Examples
 ------------------
 
-vLLM Custom Build
-^^^^^^^^^^^^^^^^^
+vLLM Version
+^^^^^^^^^^^^
 
-In order to run this example, we did minor changes to official vLLM distribution. You can skip this setup by using our built image ``aibrix/vllm-openai:v0.6.1.post2-distributed``.
-If you like to build your own image, you can follow steps here.
+Starting from v0.6.6, we've added essential packages to run distributed inference with vLLM official container image distribution out of the box.
+
+If you are using vLLM earlier version, you have two options.
+
+1. Use our built image ``aibrix/vllm-openai:v0.6.1.post2-distributed``.
+2. Build your own image and follow steps here.
 
 .. code-block:: Dockerfile
 

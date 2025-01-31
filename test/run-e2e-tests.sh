@@ -24,29 +24,33 @@ KIND_E2E=${KIND_E2E:-}
 SKIP_KUBECTL_INSTALL=${SKIP_KUBECTL_INSTALL:-true}
 SKIP_KIND_INSTALL=${SKIP_KIND_INSTALL:-true}
 SKIP_INSTALL=${SKIP_INSTALL:-}
+SET_KUBECONFIG=${SET_KUBECONFIG:-true}
 INSTALL_AIBRIX=${INSTALL_AIBRIX:-}
 KIND_SUDO=${KIND_SUDO:-}
 
 # setup kind cluster
 if [ -n "$KIND_E2E" ]; then
-    K8S_VERSION=${KUBERNETES_VERSION:-v1.32.0}
-    if [ -z "${SKIP_KUBECTL_INSTALL}" ]; then
-        curl -Lo kubectl https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/amd64/kubectl && chmod +x kubectl && mv kubectl /usr/local/bin/
-    fi
-    if [ -z "${SKIP_KIND_INSTALL}" ]; then
-        wget https://github.com/kubernetes-sigs/kind/releases/download/v0.26.0/kind-linux-amd64
-        chmod +x kind-linux-amd64
-        mv kind-linux-amd64 kind
-        export PATH=$PATH:$PWD
-    fi
+  K8S_VERSION=${KUBERNETES_VERSION:-v1.32.0}
+  if [ -z "${SKIP_KUBECTL_INSTALL}" ]; then
+      curl -Lo kubectl https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/amd64/kubectl && chmod +x kubectl && mv kubectl /usr/local/bin/
+  fi
+  if [ -z "${SKIP_KIND_INSTALL}" ]; then
+      wget https://github.com/kubernetes-sigs/kind/releases/download/v0.26.0/kind-linux-amd64
+      chmod +x kind-linux-amd64
+      mv kind-linux-amd64 kind
+      export PATH=$PATH:$PWD
+  fi
 
-    # If we did not set SKIP_INSTALL
-    if [ -z "$SKIP_INSTALL" ]; then
-        ${KIND_SUDO} kind create cluster --image kindest/node:${K8S_VERSION} --config=./hack/kind_config.yaml
-    fi
+  # If we did not set SKIP_INSTALL
+  if [ -z "$SKIP_INSTALL" ]; then
+      ${KIND_SUDO} kind create cluster --image kindest/node:${K8S_VERSION} --config=./hack/kind_config.yaml
+  fi
 fi
 
-
+if [ -n "$SET_KUBECONFIG" ]; then
+  kind get kubeconfig > /tmp/admin.conf
+  export KUBECONFIG=/tmp/admin.conf
+fi
 
 # build images
 if [ -n "$INSTALL_AIBRIX" ]; then
