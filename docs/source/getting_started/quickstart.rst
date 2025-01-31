@@ -187,18 +187,18 @@ Or you can send request from your local machine via gateway's external ip.
 
 .. code-block:: bash
 
-    # get gateway external ip, which is 101.126.74.XXX in this example.
+    # get gateway external ip, which is 101.126.XXX.XXX in this example.
     kubectl get svc -n envoy-gateway-system
     
     NAME                                     TYPE           CLUSTER-IP       EXTERNAL-IP     PORT(S)                                   AGE
-    envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   192.168.70.133   101.126.74.XXX   80:32502/TCP                              22h
+    envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   192.168.70.133   101.126.XXX.XXX   80:32502/TCP                              22h
     envoy-gateway                            ClusterIP      192.168.69.148   <none>          18000/TCP,18001/TCP,18002/TCP,19001/TCP   15d
 
 .. code-block:: bash
 
     # use external ip to query gateway
 
-    curl -v http://101.126.74.58:80/v1/completions \
+    curl -v http://101.126.XXX.XXX:80/v1/completions \
         -H "Content-Type: application/json" \
         -H "model: qwen25-7b-Instruct" \
         -d '{
