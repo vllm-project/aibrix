@@ -1,7 +1,0 @@
-[
-    {
-        "op": "replace",
-        "path": "/metadata/name",
-        "value": "deepseek-coder-7b-l20"
-    }
-]

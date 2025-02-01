@@ -1,0 +1,24 @@
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: aibrix
+    kpa.autoscaling.aibrix.ai/scale-down-delay: 0s
+  name: podautoscaler-deepseek-coder-7b-l20
+  namespace: default
+spec:
+  maxReplicas: 10
+  metricsSources:
+  - endpoint: aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080
+    metricSourceType: domain
+    path: /metrics/default/deepseek-coder-7b-l20
+    protocolType: http
+    targetMetric: vllm:deployment_replicas
+    targetValue: "1"
+  minReplicas: 1
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: deepseek-coder-7b-l20
+  scalingStrategy: KPA

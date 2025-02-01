@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default-app-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: default-app-deployment-reader-role
+  namespace: default
+rules:
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: default-app-pod-reader-role
+  namespace: default
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: default-app-deployment-reader-role-binding
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: default-app-deployment-reader-role
+subjects:
+- kind: ServiceAccount
+  name: default-app-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: default-app-pod-reader-role-binding
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: default-app-pod-reader-role
+subjects:
+- kind: ServiceAccount
+  name: default-app-sa
+  namespace: default
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8000"
+    prometheus.io/scrape: "true"
+  labels:
+    prometheus-discovery: "true"
+  name: deepseek-coder-7b
+  namespace: default
+spec:
+  ports:
+  - name: metrics
+    nodePort: 30081
+    port: 8000
+    protocol: TCP
+    targetPort: 8000
+  selector:
+    model.aibrix.ai/name: deepseek-coder-7b
+  type: NodePort
