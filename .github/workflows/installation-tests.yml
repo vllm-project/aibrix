@@ -74,6 +74,11 @@ jobs:
 
       - name: Download all image artifacts
         uses: actions/download-artifact@v4
+      
+      - name: Check disk space
+        run: |
+          df . -h
+          which go
 
       - name: Install kind
         run: |
@@ -86,14 +91,15 @@ jobs:
         run: |
           curl -L https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v5.4.3/kustomize_v5.4.3_$(go env GOOS)_$(go env GOARCH).tar.gz | tar -xz -C /usr/local/bin/
           kustomize version
+      
+      - name: Check disk space
+        run: df . -h
 
       - name: Set up testing environment
         run: |
           # Set up the cluster with kind or other Kubernetes environment needed
           kind create cluster --name installation-test --config=./hack/kind_config.yaml
           kubectl cluster-info --context kind-installation-test
-          kind get kubeconfig --name installation-test > /tmp/admin.conf
-          export KUBECONFIG=/tmp/admin.conf
 
       - name: Load image into Kind
         run: |
@@ -108,7 +114,10 @@ jobs:
             kind load docker-image aibrix/${image}:${{ github.sha }} --name installation-test
             kind load docker-image aibrix/${image}:nightly --name installation-test
           done
-          
+      
+      - name: Check disk space
+        run: df . -h
+
       - name: Deploy controller with the built image
         run: |
           kubectl create -k config/dependency
@@ -119,13 +128,19 @@ jobs:
           cd ${{ github.workspace }}
           kubectl create -k config/default
 
+      - name: Check disk space
+        run: df . -h
+
       - name: Deploy Workload
         run: |
           cd development/app
           docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
           kind load docker-image aibrix/vllm-mock:nightly --name installation-test
           kubectl create -k config/mock
-
+          
+      - name: Check disk space
+        run: df . -h
+        
       - name: Check pod status
         run: |
           sleep 60s
