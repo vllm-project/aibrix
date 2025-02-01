@@ -158,7 +158,7 @@ jobs:
         run: |
           kind get kubeconfig --name installation-test > /tmp/admin.conf
           export KUBECONFIG=/tmp/admin.conf
-          make test-e2e
+          SET_KUBECONFIG="" make test-e2e
           
       - name: Clean up
         run: kind delete cluster --name installation-test
