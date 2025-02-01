@@ -129,7 +129,9 @@ jobs:
           kubectl create -k config/default
 
       - name: Check disk space
-        run: df . -h
+        run: |
+          df . -h
+          docker images
 
       - name: Deploy Workload
         run: |
@@ -137,9 +139,11 @@ jobs:
           docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
           kind load docker-image aibrix/vllm-mock:nightly --name installation-test
           kubectl create -k config/mock
-          
+
       - name: Check disk space
-        run: df . -h
+        run: |
+          df . -h
+          docker images
         
       - name: Check pod status
         run: |
