@@ -61,13 +61,13 @@ jobs:
       - name: Check disk space
         run: df . -h
         
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+      # - name: Free disk space
+      #   run: |
+      #     sudo rm -rf /usr/share/dotnet
+      #     sudo rm -rf "$AGENT_TOOLSDIRECTORY"
 
-      - name: Check disk space
-        run: df . -h
+      # - name: Check disk space
+      #   run: df . -h
         
       - name: Check out code
         uses: actions/checkout@v4
