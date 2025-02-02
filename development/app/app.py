@@ -278,7 +278,6 @@ def completion():
         return jsonify(err), 500
 
 
-@app.route('/chat/completions', methods=['POST'])
 @app.route('/v1/chat/completions', methods=['POST'])
 @auth.login_required
 def chat_completions():
