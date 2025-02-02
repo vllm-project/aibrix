@@ -59,27 +59,11 @@ jobs:
     needs: build-images
     runs-on: ubuntu-latest
     steps:
-      - name: Check disk space
-        run: df . -h
-        
-      # - name: Free disk space
-      #   run: |
-      #     sudo rm -rf /usr/share/dotnet
-      #     sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-
-      # - name: Check disk space
-      #   run: df . -h
-        
       - name: Check out code
         uses: actions/checkout@v4
 
       - name: Download all image artifacts
         uses: actions/download-artifact@v4
-      
-      - name: Check disk space
-        run: |
-          df . -h
-          which go
 
       - name: Install kind
         run: |
@@ -92,9 +76,6 @@ jobs:
         run: |
           curl -L https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v5.4.3/kustomize_v5.4.3_$(go env GOOS)_$(go env GOARCH).tar.gz | tar -xz -C /usr/local/bin/
           kustomize version
-      
-      - name: Check disk space
-        run: df . -h
 
       - name: Set up testing environment
         run: |
@@ -115,9 +96,6 @@ jobs:
             kind load docker-image aibrix/${image}:${{ github.sha }} --name installation-test
             kind load docker-image aibrix/${image}:nightly --name installation-test
           done
-      
-      - name: Check disk space
-        run: df . -h
 
       - name: Deploy controller with the built image
         run: |
@@ -129,22 +107,12 @@ jobs:
           cd ${{ github.workspace }}
           kubectl create -k config/default
 
-      - name: Check disk space
-        run: |
-          df . -h
-          docker images
-
       - name: Deploy Workload
         run: |
           cd development/app
           docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
           kind load docker-image aibrix/vllm-mock:nightly --name installation-test
           kubectl create -k config/mock
-
-      - name: Check disk space
-        run: |
-          df . -h
-          docker images
         
       - name: Check pod status
         run: |
