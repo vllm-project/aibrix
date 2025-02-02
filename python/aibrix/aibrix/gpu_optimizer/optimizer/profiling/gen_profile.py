@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("aibrix.gpu_optimizer.profiling")
 
 
-def main(args):
+def gen(args):
     # Init dataframe and load benchmark results
     benchmark = os.path.dirname(__file__) + f"/result/{args.deployment}.jsonl"
     if args.benchmark is not None:
@@ -222,7 +222,7 @@ def _try_store_redis(args, result) -> bool:
     return True
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(
         description="Benchmark the online serving throughput."
     )
@@ -275,4 +275,8 @@ if __name__ == "__main__":
     if args.verbose:
         logger.setLevel(level=logging.DEBUG)
 
-    main(args)
+    gen(args)
+
+
+if __name__ == "__main__":
+    main()

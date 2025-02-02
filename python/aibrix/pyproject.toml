@@ -32,6 +32,8 @@ exclude = ["test"]
 [tool.poetry.scripts]
 aibrix_runtime = 'aibrix.app:main'
 aibrix_download = 'aibrix.downloader.__main__:main'
+aibrix_benchmark = "aibrix.gpu_optimizer.optimizer.profiling.benchmark:main"
+aibrix_gen_profile = 'aibrix.gpu_optimizer.optimizer.profiling.gen_profile:main'
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
