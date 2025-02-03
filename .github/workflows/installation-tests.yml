@@ -65,9 +65,17 @@ jobs:
       - name: Download all image artifacts
         uses: actions/download-artifact@v4
       
+      - name: Before, Check disk space
+        run: |
+          df . -h
+      
       # free up disk space before running anything caching related. Caching has proven to fail in the past, due to lacking disk space.
       - name: Free up disk space
         run: ./hack/free_disk_space.sh
+
+      - name: After, Check disk space
+        run: |
+          df . -h
 
       - name: Install kind
         run: |
