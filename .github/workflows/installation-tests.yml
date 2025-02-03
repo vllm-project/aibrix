@@ -59,6 +59,10 @@ jobs:
     needs: build-images
     runs-on: ubuntu-latest
     steps:
+      # free up disk space before running anything caching related. Caching has proven to fail in the past, due to lacking disk space.
+      - name: Free up disk space
+        run: ./hack/free_disk_space.sh
+
       - name: Check out code
         uses: actions/checkout@v4
 
