@@ -1,0 +1,160 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    model.aibrix.ai/name: deepseek-llm-7b-chat
+    model.aibrix.ai/port: "8000"
+  name: aibrix-model-deepseek-llm-7b-chat
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: deepseek-llm-7b-chat
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+      labels:
+        model.aibrix.ai/name: deepseek-llm-7b-chat
+    spec:
+      containers:
+        - command:
+            - python3
+            - -m
+            - vllm.entrypoints.openai.api_server
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --model
+            - /models/deepseek-llm-7b-chat
+            - --served-model-name
+            - deepseek-llm-7b-chat
+            - --trust-remote-code
+            - --api-key
+            - <api_key>
+            - --dtype
+            - half
+          image: vllm/vllm-openai:v0.7.1
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            initialDelaySeconds: 90
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          name: vllm-openai
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            initialDelaySeconds: 90
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+          # We need to use dataset cache
+          volumeMounts:
+            - mountPath: /models
+              name: model-hostpath
+            - name: dshm
+              mountPath: /dev/shm
+        - name: aibrix-runtime
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.2.0-rc.2
+          command:
+            - aibrix_runtime
+            - --port
+            - "8080"
+          env:
+            - name: INFERENCE_ENGINE
+              value: vllm
+            - name: INFERENCE_ENGINE_ENDPOINT
+              value: http://localhost:8000
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /models
+              name: model-hostpath
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      initContainers:
+        - name: init-model
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.1.1
+          command:
+            - aibrix_download
+            - --model-uri
+            - tos://aibrix-artifact-testing/models/deepseek-llm-7b-chat/
+            - --local-dir
+            - /models/
+          env:
+            - name: DOWNLOADER_MODEL_NAME
+              value: deepseek-llm-7b-chat
+            - name: DOWNLOADER_NUM_THREADS
+              value: "16"
+            - name: DOWNLOADER_ALLOW_FILE_SUFFIX
+              value: json, safetensors, bin
+            - name: TOS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tos-credential
+                  key: TOS_ACCESS_KEY
+            - name: TOS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tos-credential
+                  key: TOS_SECRET_KEY
+            - name: TOS_ENDPOINT
+              value: tos-cn-beijing.ivolces.com
+            - name: TOS_REGION
+              value: cn-beijing
+          volumeMounts:
+            - mountPath: /models
+              name: model-hostpath
+      volumes:
+        - name: model-hostpath
+          hostPath:
+            path: /root/models
+            type: DirectoryOrCreate
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "4Gi"
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: machine.cluster.vke.volcengine.com/gpu-name
+                    operator: In
+                    values:
+                      # - NVIDIA-L20
+                      - Tesla-V100

@@ -1,0 +1,24 @@
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+name: podautoscaler-aibrix-model-deepseek-llm-7b-chat-kpa
+namespace: default
+labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+    kpa.autoscaling.aibrix.ai/scale-down-delay: "3m"
+spec:
+scalingStrategy: KPA
+minReplicas: 1
+maxReplicas: 10
+metricsSources:
+- metricSourceType: pod
+    protocolType: http
+    port: "8000"
+    path: metrics
+    targetMetric: gpu_cache_usage_perc
+    targetValue: "0.5"
+scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: aibrix-model-deepseek-llm-7b-chat
