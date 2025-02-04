@@ -28,28 +28,6 @@ on:
       - 'go.sum'
 
 jobs:
-  build-workload-image:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out code
-        uses: actions/checkout@v4
-      
-      - name: Build Workload
-        run: |
-          cd development/app
-          docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
-      
-      - name: Save image
-        run: |
-          docker save aibrix/vllm-mock:nightly > vllm-mock.tar
-      
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: vllm-mock-image
-          path: vllm-mock.tar
-          retention-days: 1
-
   build-images:
     runs-on: ubuntu-latest
     strategy:
@@ -78,7 +56,7 @@ jobs:
           retention-days: 1
         
   installation-test:
-    needs: [build-images, build-workload-image]
+    needs: [build-images]
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -135,9 +113,8 @@ jobs:
               docker tag aibrix/${image}:${{ github.sha }} aibrix/${image}:nightly
           done
 
-          docker load < vllm-mock-image/vllm-mock.tar
           kind load docker-image aibrix/controller-manager:${{ github.sha }} aibrix/gateway-plugins:${{ github.sha }} aibrix/metadata-service:${{ github.sha }} aibrix/runtime:${{ github.sha }} --name installation-test
-          kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly aibrix/vllm-mock:nightly --name installation-test
+          kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly --name installation-test
 
       - name: Deploy controller with the built image
         run: |
@@ -152,6 +129,8 @@ jobs:
       - name: Deploy Workload
         run: |
           cd development/app
+          docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
+          kind load docker-image aibrix/vllm-mock:nightly --name installation-test
           kubectl create -k config/mock
         
       - name: Check pod status
