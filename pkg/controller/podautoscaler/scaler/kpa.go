@@ -31,6 +31,7 @@ import (
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
 	scalingcontext "github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
+	"github.com/aibrix/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
@@ -394,7 +395,8 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 }
 
 func (k *KpaAutoscaler) UpdateScaleTargetMetrics(ctx context.Context, metricKey metrics.NamespaceNameMetric, source autoscalingv1alpha1.MetricSource, pods []v1.Pod, now time.Time) error {
-	metricValues, err := k.metricClient.GetMetricsFromPods(ctx, pods, source)
+	activePods := utils.FilterActivePods(pods)
+	metricValues, err := k.metricClient.GetMetricsFromPods(ctx, activePods, source)
 	if err != nil {
 		return err
 	}
