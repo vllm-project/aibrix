@@ -199,4 +199,3 @@ In AiBrix, user can easily deploy different autoscaler by simply applying k8s ya
    :alt: result
    :width: 600px
    :align: center
-
