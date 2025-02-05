@@ -120,4 +120,4 @@ we need to retag the images and push to VKE Container Registry.
 Update released tags in main branch docs
 ----------------------------------------
 
-A sample PR is `Cut v0.1.0-rc.5 release <https://github.com/aibrix/aibrix/pull/378>`_.
+A sample PR is `here <https://github.com/aibrix/aibrix/pull/378>`_.

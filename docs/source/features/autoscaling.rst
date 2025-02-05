@@ -14,23 +14,27 @@ AIBrix Autoscaler includes various autoscaling components, allowing users to con
 In the following sections, we will demonstrate how users can create various types of autoscalers within AIBrix.
 
 
-1. Supported autoscaler mechanism
-    - HPA: it is same as vanilla K8s HPA.
-        - HPA, the native Kubernetes autoscaler, is utilized when users deploy a specification with AIBrix that calls for an HPA. This setup scales the replicas of a demo deployment based on CPU utilization.
-    - KPA: it is from KNative. KPA has panic mode which scales up more quickly based on short term history. More rapid scaling is possible
-        - The KPA, inspired by Knative, maintains two time windows: a longer ``stable window`` and a shorter ``panic window``. It rapidly scales up resources in response to sudden spikes in traffic based on the panic window measurements. Unlike other solutions that might rely on Prometheus for gathering deployment metrics, AIBrix fetches and maintains metrics internally, enabling faster response times. Example of a KPA scaling operation using a mocked vllm-based Llama2-7b deployment
-    - APA: same as HPA but it has fluctuation parameter which acts as minimum buffer before triggering scaling up and down to prevent oscillation.
-        - While HPA and KPA are widely used, they are not specifically designed and optimized for LLM serving, which has distinct optimization points. AIBrix's custom APA (AIBrix Pod Autoscaler) solution will gradually introduce features such as:
-        1. Selecting appropriate metrics for scaling based on AI Runtime metrics standardization, allowing autoscaling across various LLM-serving engines (e.g., vllm, hgi, triton) based on LLM-specific metrics.
-        2. For users with heterogeneous GPU resources, combining LLM and GPU features.
-        3. Implementing a proactive scaling algorithm rather than a reactive one.
+Supported autoscaling mechanism
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- HPA: it is same as vanilla K8s HPA. HPA, the native Kubernetes autoscaler, is utilized when users deploy a specification with AIBrix that calls for an HPA. This setup scales the replicas of a demo deployment based on CPU utilization.
+- KPA: it is from KNative. KPA has panic mode which scales up more quickly based on short term history. More rapid scaling is possible. The KPA, inspired by Knative, maintains two time windows: a longer ``stable window`` and a shorter ``panic window``. It rapidly scales up resources in response to sudden spikes in traffic based on the panic window measurements. Unlike other solutions that might rely on Prometheus for gathering deployment metrics, AIBrix fetches and maintains metrics internally, enabling faster response times. Example of a KPA scaling operation using a mocked vllm-based Llama2-7b deployment
+- APA: similar as HPA but it has fluctuation parameter which acts as minimum buffer before triggering scaling up and down to prevent oscillation.
+
+While HPA and KPA are widely used, they are not specifically designed and optimized for LLM serving, which has distinct optimization points. AIBrix's custom APA (AIBrix Pod Autoscaler) solution will gradually introduce features such as:
+
+- Selecting appropriate LLM-specific metrics for scaling based on AI Runtime metrics standardization.
+- Proactive scaling algorithm rather than a reactive one. (WIP)
+- Profiling & SLO driven autoscaling solution. (Testing Phase)
 
 
-2. Metrics
-    - AiBrix suports all the vllm metrics. Please refer to https://docs.vllm.ai/en/stable/serving/metrics.html
+Metrics
+^^^^^^^
 
-How to deploy an autoscaler
---------------
+AiBrix suports all the vllm metrics. Please refer to https://docs.vllm.ai/en/stable/serving/metrics.html
+
+How to deploy autoscaling object
+--------------------------------
 It is simply applying podautoscaler yaml file.
 One important thing you should note is that the deployment name and the name in scaleTargetRef in PodAutoscaler must be same. 
 That's how AiBrix PodAutoscaler refers to the right deployment.
@@ -39,9 +43,10 @@ All the sample files can be found in the following directory.
 
 .. code-block:: bash
     
-    root/samples/autoscaling
+    https://github.com/aibrix/aibrix/tree/main/samples/autoscaling
 
 Example HPA yaml config
+^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: yaml
 
@@ -70,6 +75,7 @@ Example HPA yaml config
         name: aibrix-model-deepseek-llm-7b-chat
 
 Example KPA yaml config
+^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: yaml
 
@@ -99,6 +105,7 @@ Example KPA yaml config
         name: aibrix-model-deepseek-llm-7b-chat
 
 Example APA yaml config
+^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: yaml
 
@@ -130,13 +137,14 @@ Example APA yaml config
         name: aibrix-model-deepseek-llm-7b-chat
 
 
-Related log check
-----------------
+Check autoscaling logs
+----------------------
 
-AiBrix controller manager collects the metrics from each pod. 
-.. code-block:: bash
-    
-    kubectl logs <aibrix-controller-manager-podname>  -n aibrix-system -f
+Pod Autoscaler Logs
+^^^^^^^^^^^^^^^^^^^
+
+Pod autoscaler is part of aibrix controller manager which plays the role of collecting the metrics from each pod. You can
+check its logs in this way. ``kubectl logs <aibrix-controller-manager-podname> -n aibrix-system -f``
 
 Expected log output. You can see the current metric is gpu_cache_usage_perc. You can check each pod's current metric value.
 
@@ -146,18 +154,17 @@ Expected log output. You can see the current metric is gpu_cache_usage_perc. You
    :align: center
 
 
-To describe the podautoscaler 
-.. code-block:: bash
+Custom Resource Logs
+^^^^^^^^^^^^^^^^^^^^
 
-    kubectl describe podautoscaler <podautoscaler-name> -n <namespace>
+To describe the podautoscaler custom resource, you can run ``kubectl describe podautoscaler <podautoscaler-name> -n <namespace>``
 
-Example output
+Example output is here, you can explore the scaling conditions and events for more details.
 
 .. image:: ../assets/images/autoscaler/podautoscaler-describe.png
    :alt: PodAutoscaler describe
    :width: 600px
    :align: center
-
 
 
 Preliminary experiments with different autoscalers
@@ -192,3 +199,4 @@ In AiBrix, user can easily deploy different autoscaler by simply applying k8s ya
    :alt: result
    :width: 600px
    :align: center
+

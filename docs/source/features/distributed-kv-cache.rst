@@ -177,12 +177,14 @@ Now let's use ``kubectl get pods`` command to ensure the inference service is ru
 Once the inference service is running, let's set up port fowarding so that we can test the service from local:
 
 * Run ``kubectl get svc -n envoy-gateway-system`` to get the name of the Envoy Gateway service
+
 .. code-block:: RST
 
     NAME                                     TYPE           CLUSTER-IP       EXTERNAL-IP                                       PORT(S)                                   AGE
     envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   172.19.190.6     10.0.1.4,2406:d440:105:cf01:6f1b:7f4d:12da:c5a5   80:30904/TCP                              3d
 
 * Run ``kubectl -n envoy-gateway-system port-forward svc/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 &`` to set up port forwarding
+
 .. code-block:: RST
 
     Forwarding from 127.0.0.1:8888 -> 10080
