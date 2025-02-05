@@ -55,12 +55,10 @@ Step 2: Install aibrix python module:
 
     pip3 install aibrix
 
-.. note::
+The GPU Optimizer runs continuously in the background, dynamically adjusting GPU allocation for each model based on workload patterns. Note that GPU optimizer requires offline inference performance benchmark data for each type of GPU on each specific LLM model.
 
-  The GPU Optimizer runs continuously in the background, dynamically adjusting GPU allocation for each model based on workload patterns.
-  Note that GPU optimizer requires offline inference performance benchmark data for each type of GPU on each specific LLM model.
-
-.. If local heterogeneous deployments is used, you can find the prepared benchmark data under `python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/ <https://github.com/aibrix/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/>`_ and skip Step 3. See :ref:`Development` for details on deploying a local heterogeneous deployments.
+  
+If local heterogeneous deployments is used, you can find the prepared benchmark data under `python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/ <https://github.com/aibrix/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/>`_ and skip Step 3. See :ref:`Development` for details on deploying a local heterogeneous deployments.
 
 Step 3: Benchmark model. For each type of GPU, run ``aibrix_benchmark``. See `benchmark.sh <https://github.com/aibrix/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_ for more options.
 
@@ -80,10 +78,6 @@ Step 4: Decide SLO and generate profile, run `aibrix_gen_profile -h` for help.
     aibrix_gen_profile deepseek-coder-7b-l20 --cost [cost2] [SLO-metric] [SLO-value] -o "redis://localhost:6379/?model=deepseek-coder-7b"
 
 Now that the GPU Optimizer is ready to work. You should observe that the number of workload pods changes in response to the requests sent to the gateway.
-
-.. note::
-
-  Requests must be routed through gateway for the GPU optimizer to work as expected.
 
 Miscellaneous
 -------------
