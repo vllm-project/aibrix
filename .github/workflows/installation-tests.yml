@@ -54,7 +54,7 @@ jobs:
           name: ${{ matrix.image }}-image
           path: ${{ matrix.image }}.tar
           retention-days: 1
-        
+
   installation-test:
     needs: [build-images]
     runs-on: ubuntu-latest
