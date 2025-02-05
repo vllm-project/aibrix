@@ -11,7 +11,6 @@ Design Overview
 
 There are three main components in Heterogeneous GPU Inference Feature: (1) LLM Request Monitoring, (2) Heterogeneous GPU Optimizer, (3) Request Routing. The following figure shows the overall architecture. First, LLM Request Monitoring component is responsible for monitoring the past inference requests and their request patterns. Second, Heterogeneous GPU Optimizer component is responsible for selecting the optimal GPU type and the corresponding GPU count. Third, Request Routing component is responsible for routing the request to the optimal GPU.
 
-
 .. figure:: ../assets/images/heterogeneous-gpu-diagram.png
   :alt: heterogeneous-gpu-diagram
   :width: 100%
@@ -19,9 +18,11 @@ There are three main components in Heterogeneous GPU Inference Feature: (1) LLM 
 
 
 Example
--------------
+-------
 
-Step 1: Deploy the heterogeneous deployments. One deployment and corresponding PodAutoscaler should be deployed for each GPU type.
+Step 1: Deploy the heterogeneous deployments.
+
+One deployment and corresponding PodAutoscaler should be deployed for each GPU type.
 See `sample heterogeneous configuration <https://github.com/aibrix/aibrix/tree/main/samples/heterogeneous>`_ for an example of heterogeneous configuration composed of two GPU types. The following codes 
 deploy heterogeneous deployments using L20 and A10 GPU.
 
@@ -53,14 +54,6 @@ Step 2: Install aibrix python module:
 
     pip3 install aibrix
 
-or use venv virtual environment:
-
-.. code-block:: bash
-
-    python3 -m venv .venv
-    source .venv/bin/activate
-    pip install aibrix
-
 .. note::
 
   The GPU Optimizer runs continuously in the background, dynamically adjusting GPU allocation for each model based on workload patterns.
@@ -68,7 +61,7 @@ or use venv virtual environment:
 
 .. If local heterogeneous deployments is used, you can find the prepared benchmark data under `python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/ <https://github.com/aibrix/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/>`_ and skip Step 3. See :ref:`Development` for details on deploying a local heterogeneous deployments.
 
-Step 3: Benchmark model. For each type of GPU, run aibrix_benchmark. See `benchmark.sh <https://github.com/aibrix/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_ for more options.
+Step 3: Benchmark model. For each type of GPU, run ``aibrix_benchmark``. See `benchmark.sh <https://github.com/aibrix/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_ for more options.
 
 .. code-block:: bash
 
