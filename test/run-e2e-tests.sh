@@ -54,10 +54,7 @@ fi
 # build images
 if [ -n "$INSTALL_AIBRIX" ]; then
   make docker-build-all
-  kind load docker-image aibrix/controller-manager:nightly
-  kind load docker-image aibrix/gateway-plugins:nightly
-  kind load docker-image aibrix/metadata-service:nightly
-  kind load docker-image aibrix/runtime:nightly
+  kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly
 
   kubectl create -k config/dependency
   kubectl create -k config/default

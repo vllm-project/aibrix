@@ -137,7 +137,8 @@ define push_image
 endef
 
 .PHONY: docker-build-all
-docker-build-all: docker-build-controller-manager docker-build-gateway-plugins docker-build-runtime docker-build-metadata-service ## Build all docker images
+docker-build-all: 
+	make -j 4 docker-build-controller-manager docker-build-gateway-plugins docker-build-runtime docker-build-metadata-service ## Build all docker images
 
 .PHONY: docker-build-controller-manager
 docker-build-controller-manager: ## Build docker image with the manager.
