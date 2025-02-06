@@ -8,7 +8,7 @@ FAQ - Installation
 ------------------
 
 Failed to delete the AIBrix
-------------------
+---------------------------
 
 .. figure:: ../assets/images/delete-namespace-stuck-1.png
   :alt: aibrix-architecture-v1
@@ -24,7 +24,7 @@ In this case, you just need to find the model adapter, edit the object, and remo
 
 
 Gateway error messages
-------------------
+----------------------
 
 * model does not exist
 

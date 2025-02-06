@@ -153,3 +153,24 @@ func FilterReadyPods(pods map[string]*v1.Pod) []*v1.Pod {
 	}
 	return readyPods
 }
+
+// FilterActivePods returns active pods.
+func FilterActivePods(pods []v1.Pod) []v1.Pod {
+	activeFilter := func(p v1.Pod) bool {
+		return p.Status.PodIP != "" && !IsPodTerminating(&p) && IsPodReady(&p)
+	}
+	return FilterPods(pods, activeFilter)
+}
+
+type filterPod func(p v1.Pod) bool
+
+// FilterPods returns replica sets that are filtered by filterFn (all returned ones should match filterFn).
+func FilterPods(pods []v1.Pod, filterFn filterPod) []v1.Pod {
+	var filtered []v1.Pod
+	for i := range pods {
+		if filterFn(pods[i]) {
+			filtered = append(filtered, pods[i])
+		}
+	}
+	return filtered
+}

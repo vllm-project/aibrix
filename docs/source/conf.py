@@ -41,7 +41,7 @@ copybutton_prompt_is_regexp = True
 
 html_title = project
 html_theme = 'sphinx_book_theme'
-html_logo = 'assets/logos/aibrix-logo-light.png'
+html_logo = 'assets/logos/aibrix-logo.png'
 html_static_path = ['_static']
 html_theme_options = {
     # repository level setting
@@ -51,8 +51,8 @@ html_theme_options = {
     'path_to_docs': 'docs/source',
 
     # theme
-    'pygment_light_style': 'tango',
-    'pygment_dark_style': 'monokai',
+    'pygments_light_style': 'tango',
+    'pygments_dark_style': 'monokai',
 
 
     # navigation and sidebar
@@ -73,11 +73,8 @@ html_theme_options = {
 }
 
 intersphinx_mapping = {
-    "python": ("https://docs.python.org/3", None),
     "typing_extensions":
         ("https://typing-extensions.readthedocs.io/en/latest", None),
     "pillow": ("https://pillow.readthedocs.io/en/stable", None),
-    "numpy": ("https://numpy.org/doc/stable", None),
-    "torch": ("https://pytorch.org/docs/stable", None),
     "psutil": ("https://psutil.readthedocs.io/en/stable", None),
 }

@@ -29,6 +29,7 @@ import (
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
 	scalingcontext "github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
+	"github.com/aibrix/aibrix/pkg/utils"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -179,7 +180,8 @@ func (a *ApaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 }
 
 func (a *ApaAutoscaler) UpdateScaleTargetMetrics(ctx context.Context, metricKey metrics.NamespaceNameMetric, source autoscalingv1alpha1.MetricSource, pods []v1.Pod, now time.Time) error {
-	metricValues, err := a.metricClient.GetMetricsFromPods(ctx, pods, source)
+	activePods := utils.FilterActivePods(pods)
+	metricValues, err := a.metricClient.GetMetricsFromPods(ctx, activePods, source)
 	if err != nil {
 		return err
 	}
