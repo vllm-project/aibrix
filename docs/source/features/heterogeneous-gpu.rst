@@ -77,12 +77,9 @@ Step 4: Decide SLO and generate profile, run `aibrix_gen_profile -h` for help.
     aibrix_gen_profile deepseek-coder-7b-a10 --cost [cost1] [SLO-metric] [SLO-value] -o "redis://localhost:6379/?model=deepseek-coder-7b"
     aibrix_gen_profile deepseek-coder-7b-l20 --cost [cost2] [SLO-metric] [SLO-value] -o "redis://localhost:6379/?model=deepseek-coder-7b"
 
-Now that the GPU Optimizer is ready to work. You should observe that the number of workload pods changes in response to the requests sent to the gateway.
+Now the GPU Optimizer is ready to work. You should observe that the number of workload pods changes in response to the requests sent to the gateway. Once the GPU optimizer finishes the scaling optimization, the output of the GPU optimizer is passed to PodAutoscaler as a metricSource via a designated HTTP endpoint for the final scaling decision.  The following is an example of PodAutoscaler spec.
 
-Miscellaneous
--------------
-
-Once the GPU optimizer finishes the scaling optimization, the output of the GPU optimizer is passed to PodAutoscaler as a metricSource via a designated HTTP endpoint for the final scaling decision.  The following is an example of PodAutoscaler spec.
+A simple example of PodAutoscaler spec for a10 GPU is as follows:
 
 .. code-block:: yaml
 
@@ -100,7 +97,7 @@ Once the GPU optimizer finishes the scaling optimization, the output of the GPU 
         apiVersion: apps/v1
         kind: Deployment
         name: deepseek-coder-7b-a10 # replace with corresponding deployment name
-      minReplicas: 1 # configure min replica or gpu optimizer will scale down to 0 when no workloads.
+      minReplicas: 0 # Note that minReplicas must be set to be 0, otherwise it will prevent the gpu optimizer to scale down to 0.
       maxReplicas: 10 # replace with max number of nodes in the cluster
       metricsSources: 
         - metricSourceType: domain
@@ -110,4 +107,23 @@ Once the GPU optimizer finishes the scaling optimization, the output of the GPU 
           targetMetric: "vllm:deployment_replicas"
           targetValue: "1"
       scalingStrategy: "KPA"
+
+
+Miscellaneous
+-------------
+
+A new label label ``model.aibrix.ai/min_replicas`` is added to specifies the minimum number of replicas to maintain when there is no workload. We recommend setting this to 1 for at least one Deployment spec to ensure there is always one READY pod available. For example, while the GPU optimizer might recommend 0 replicas for an a10 GPU during periods of no activity, setting ``model.aibrix.ai/min_replicas: "1"`` will maintain one a10 replica. This label only affects the system when there is no workload - it is ignored when there are active requests.
+
+.. code-block:: yaml
+
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: deepseek-coder-7b-a10
+      labels:
+        model.aibrix.ai/name: "deepseek-coder-7b"
+        model.aibrix.ai/min_replicas: "1" # min replica for gpu optimizer when no workloads.
+    ... rest yaml deployments
+
+Important: The ``minReplicas`` field in the PodAutoscaler spec must be set to 0 to allow proper scaling behavior. Setting it to any value greater than 0 will interfere with the GPU optimizer's scaling decisions. For instance, if the GPU optimizer determines an optimal configuration of ``{a10: 0, l20: 4}`` but the a10 PodAutoscaler has ``minReplicas: 1``, the system won't be able to scale the a10 down to 0 as recommended.
 
