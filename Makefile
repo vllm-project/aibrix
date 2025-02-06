@@ -138,7 +138,7 @@ endef
 
 .PHONY: docker-build-all
 docker-build-all: 
-	make -j 4 docker-build-controller-manager docker-build-gateway-plugins docker-build-runtime docker-build-metadata-service ## Build all docker images
+	make -j $(nproc) docker-build-controller-manager docker-build-gateway-plugins docker-build-runtime docker-build-metadata-service ## Build all docker images
 
 .PHONY: docker-build-controller-manager
 docker-build-controller-manager: ## Build docker image with the manager.
@@ -157,7 +157,8 @@ docker-build-metadata-service: ## Build docker image with the metadata-service.
 	$(call build_and_tag,metadata-service,Dockerfile.metadata)
 
 .PHONY: docker-push-all
-docker-push-all: docker-push-controller-manager docker-push-gateway-plugins docker-push-runtime docker-push-metadata-service ## Push all docker images
+docker-push-all: 
+	make -j $(nproc) docker-push-controller-manager docker-push-gateway-plugins docker-push-runtime docker-push-metadata-service ## Push all docker images
 
 .PHONY: docker-push-controller-manager
 docker-push-controller-manager: ## Push docker image with the manager.
