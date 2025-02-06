@@ -147,9 +147,7 @@ func FilterReadyPods(pods map[string]*v1.Pod) []*v1.Pod {
 		if pod.Status.PodIP == "" || IsPodTerminating(pod) || !IsPodReady(pod) {
 			continue
 		}
-
 		readyPods = append(readyPods, pod)
-
 	}
 	return readyPods
 }

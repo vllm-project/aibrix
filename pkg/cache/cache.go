@@ -17,7 +17,9 @@ limitations under the License.
 package cache
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,9 +30,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/aibrix/aibrix/pkg/utils"
-
 	crdinformers "github.com/aibrix/aibrix/pkg/client/informers/externalversions"
+	"github.com/cespare/xxhash"
 	"github.com/redis/go-redis/v9"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
@@ -44,6 +45,7 @@ import (
 	v1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
 	v1alpha1scheme "github.com/aibrix/aibrix/pkg/client/clientset/versioned/scheme"
 	"github.com/aibrix/aibrix/pkg/metrics"
+	"github.com/aibrix/aibrix/pkg/utils"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	dto "github.com/prometheus/client_model/go"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -68,6 +70,13 @@ type Cache struct {
 	requestTrace      *sync.Map                                            // model_name: RequestTrace
 	numRequestsTraces int32                                                // counter for requestTrace
 	pendingRequests   *sync.Map                                            // model_name: *int32
+
+	prefixBlocks map[uint64]Block //prefix_hash:Block
+}
+
+type Block struct {
+	modelToPods    map[string]map[string]time.Time // model_name: map[pod_name]pod_last_access_time
+	lastAccessTime time.Time                       //block_last_access_time
 }
 
 const (
@@ -75,6 +84,8 @@ const (
 	podPort                               = 8000
 	defaultPodMetricRefreshIntervalInMS   = 50
 	expireWriteRequestTraceIntervalInMins = 10
+
+	prefixCacheBlockSize = 16
 )
 
 var (
@@ -964,4 +975,91 @@ func (c *Cache) aggregateMetrics() {
 			}
 		}
 	}
+}
+
+// returns matchedTokens, unMatchedTokens, matchedPods
+func (c *Cache) MatchPrefix(tokens []int, model string, pods []*v1.Pod) ([]int, []int, []*v1.Pod) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var block, lastMatchedBlock Block
+	var ok bool
+	var lastTokenMatchIndex int
+
+	for i := 0; i < len(tokens); i += prefixCacheBlockSize {
+		end := i + prefixCacheBlockSize
+		if end > len(tokens) {
+			end = len(tokens)
+		}
+		chunk := tokens[i:end]
+		prefixHash := xxhash.Sum64(IntArrayToByteArray(chunk))
+		block, ok = c.prefixBlocks[prefixHash]
+
+		if !ok || len(block.modelToPods[model]) == 0 {
+			lastTokenMatchIndex = i
+			break
+		}
+
+		lastTokenMatchIndex = end
+		lastMatchedBlock = block
+		block.lastAccessTime = time.Now()
+		c.prefixBlocks[prefixHash] = block
+	}
+
+	matchedTokens := tokens[0:lastTokenMatchIndex]
+	unMatchedTokens := tokens[lastTokenMatchIndex:]
+
+	var matchedPods []*v1.Pod
+	blockPods := lastMatchedBlock.modelToPods[model]
+	for _, pod := range pods {
+		if _, ok := blockPods[pod.Name]; ok {
+			matchedPods = append(matchedPods, pod)
+		}
+	}
+
+	return matchedTokens, unMatchedTokens, matchedPods
+}
+
+func (c *Cache) AddPrefixBlock(unMatchedTokens []int, model, pod string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := 0; i < len(unMatchedTokens); i += prefixCacheBlockSize {
+		end := i + prefixCacheBlockSize
+		if end > len(unMatchedTokens) {
+			end = len(unMatchedTokens)
+		}
+		chunk := unMatchedTokens[i:end]
+		prefixHash := xxhash.Sum64(IntArrayToByteArray(chunk))
+		block, ok := c.prefixBlocks[prefixHash]
+		if !ok {
+			block = Block{
+				modelToPods: map[string]map[string]time.Time{},
+			}
+			c.prefixBlocks[prefixHash] = block
+		}
+
+		blockPods, ok := block.modelToPods[model]
+		if !ok {
+			blockPods = map[string]time.Time{}
+			block.modelToPods[model] = blockPods
+		}
+
+		blockPods[pod] = time.Now()
+	}
+}
+
+// To be implemented
+func (c *Cache) evictBlockLRU() {
+
+}
+
+func IntArrayToByteArray(intArray []int) []byte {
+	buf := new(bytes.Buffer)
+	for _, val := range intArray {
+		err := binary.Write(buf, binary.LittleEndian, int32(val))
+		if err != nil {
+			panic(err)
+		}
+	}
+	return buf.Bytes()
 }

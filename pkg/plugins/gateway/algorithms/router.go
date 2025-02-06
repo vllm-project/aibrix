@@ -25,8 +25,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-const podMetricPort = "8000"
-
 // Router defines the interface for routing logic to select target pods.
 type Router interface {
 	// Route returns the target pod
