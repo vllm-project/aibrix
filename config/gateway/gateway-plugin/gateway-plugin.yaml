@@ -42,7 +42,7 @@ spec:
             - name: REDIS_PORT
               value: "6379" 
             - name: AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS
-              value: "10000" # 10 seconds, only local testing
+              value: "50"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
