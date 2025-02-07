@@ -24,6 +24,7 @@ import (
 	"github.com/aibrix/aibrix/pkg/cache"
 	"github.com/aibrix/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -70,8 +71,25 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, m
 	} else {
 		targetPod = readyPods[rand.Intn(len(readyPods))]
 	}
+	if len(unMatchedTokens) > 0 {
+		p.cache.AddPrefixBlock(unMatchedTokens, model, targetPod.Name)
+	}
 
-	p.cache.AddPrefixBlock(unMatchedTokens, model, targetPod.Name)
+	var matchedPodNames, readyPodNames []string
+	for _, p := range matchedPods {
+		matchedPodNames = append(matchedPodNames, p.Status.PodIP)
+	}
+	for _, p := range readyPods {
+		readyPodNames = append(readyPodNames, p.Status.PodIP)
+	}
+	klog.V(5).InfoS("prefix cache route",
+		"message", message,
+		"tokens", tokens,
+		"matched_tokens", matchedTokens,
+		"unmatched_tokens", unMatchedTokens,
+		"matched_pods", matchedPodNames,
+		"ready_pods", readyPodNames,
+		"target_pod", targetPod.Status.PodIP)
 
 	return getPodAddress(targetPod.Status.PodIP)
 }
