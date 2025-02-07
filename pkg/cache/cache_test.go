@@ -156,7 +156,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 }
 
 func Test_MatchPrefix(t *testing.T) {
-	tests := []struct {
+	tests := []*struct {
 		name          string
 		inputText     string
 		cache         Cache
@@ -186,9 +186,9 @@ func Test_MatchPrefix(t *testing.T) {
 			inputText: "Hello World! What a Good Day! 你好世界！多么美好的一天啊！",
 			cache: Cache{
 				prefixBlocks: map[uint64]Block{
-					8954089069687757318: Block{
+					8954089069687757318: {
 						modelToPods: map[string]map[string]time.Time{
-							"m1": map[string]time.Time{
+							"m1": {
 								"p1": time.Now(),
 							},
 						},
