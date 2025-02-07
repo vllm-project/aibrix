@@ -51,7 +51,7 @@ import (
 var (
 	defaultRPM           = 100
 	defaultTPMMultiplier = 1000
-	routingStrategies    = []string{"random", "least-request", "throughput", "least-kv-cache", "least-busy-time", "least-latency"}
+	routingStrategies    = []string{"random", "least-request", "throughput", "prefix-cache", "least-kv-cache", "least-busy-time", "least-latency"}
 
 	ErrorUnknownResponse = errors.New("unknown response")
 )
@@ -75,6 +75,7 @@ func NewServer(redisClient *redis.Client, c kubernetes.Interface) *Server {
 		"random":          routing.NewRandomRouter(),
 		"least-request":   routing.NewLeastRequestRouter(),
 		"throughput":      routing.NewThroughputRouter(),
+		"prefix-cache":    routing.NewPrefixCacheRouter(),
 		"least-kv-cache":  routing.NewLeastKvCacheRouter(),
 		"least-busy-time": routing.NewLeastBusyTimeRouter(),
 		"least-latency":   routing.NewLeastBusyTimeRouter(),
@@ -167,11 +168,12 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 
 	routingStrategy, routingStrategyEnabled := GetRoutingStrategy(h.RequestHeaders.Headers.Headers)
 	if routingStrategyEnabled && !validateRoutingStrategy(routingStrategy) {
+		klog.ErrorS(nil, "incorrect routing strategy", "routing-strategy", routingStrategy)
 		return generateErrorResponse(
 			envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: "x-incorrect-routing-strategy", RawValue: []byte(routingStrategy),
-			}}}, ""), utils.User{}, rpm, routingStrategy
+			}}}, "incorrect routing strategy"), utils.User{}, rpm, routingStrategy
 	}
 
 	if username != "" {
@@ -288,7 +290,12 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		})
 		klog.InfoS("request start", "requestID", requestID, "model", model)
 	} else {
-		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods, model)
+		message, extErr := getRequestMessage(jsonMap)
+		if err != nil {
+			return extErr, model, targetPodIP, stream, term
+		}
+
+		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods, model, message)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingStrategy, "model", model)
 			return generateErrorResponse(
@@ -564,12 +571,14 @@ func (s *Server) checkTPM(ctx context.Context, username string, tpmLimit int64) 
 	return envoyTypePb.StatusCode_OK, nil
 }
 
-func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, pods map[string]*v1.Pod, model string) (string, error) {
+func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, pods map[string]*v1.Pod, model, message string) (string, error) {
 	var route routing.Router
 	switch routingStrategy {
 	case "least-request":
 		route = s.routers[routingStrategy]
 	case "throughput":
+		route = s.routers[routingStrategy]
+	case "prefix-cache":
 		route = s.routers[routingStrategy]
 	case "least-kv-cache":
 		route = s.routers[routingStrategy]
@@ -581,7 +590,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, po
 		route = s.routers["random"]
 	}
 
-	return route.Route(ctx, pods, model)
+	return route.Route(ctx, pods, model, message)
 }
 
 func validateRoutingStrategy(routingStrategy string) bool {
@@ -603,6 +612,22 @@ func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configP
 			},
 		},
 	}
+}
+
+func getRequestMessage(jsonMap map[string]interface{}) (string, *extProcPb.ProcessingResponse) {
+	messages, ok := jsonMap["messages"]
+	if !ok {
+		return "", generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: "x-request-body-processing-error", RawValue: []byte("true")}}},
+			"no messages in the request body")
+	}
+	messagesJSON, err := json.Marshal(messages)
+	if err != nil {
+		return "", generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: "x-request-body-processing-error", RawValue: []byte("true")}}},
+			"unable to marshal messages from request body")
+	}
+	return string(messagesJSON), nil
 }
 
 // GetRoutingStrategy retrieves the routing strategy from the headers or environment variable

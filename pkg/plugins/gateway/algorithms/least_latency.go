@@ -43,7 +43,7 @@ func NewLeastExpectedLatencyRouter() Router {
 	}
 }
 
-func (r leastExpectedLatencyRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model string) (string, error) {
+func (r leastExpectedLatencyRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
 	var targetPodIP string
 	minExpectedLatency := math.MaxFloat64
 

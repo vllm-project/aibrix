@@ -17,9 +17,7 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"math/rand"
 
@@ -35,16 +33,21 @@ const (
 )
 
 type prefixCacheRouter struct {
+	cache *cache.Cache
 }
 
-func PrefixCacheRouter() Router {
-	return prefixCacheRouter{}
+func NewPrefixCacheRouter() Router {
+	cache, err := cache.GetCache()
+	if err != nil {
+		panic(err)
+	}
+
+	return prefixCacheRouter{
+		cache: cache,
+	}
 }
 
-// WIP
-func (r prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model string) (string, error) {
-	cache, _ := cache.GetCache()
-
+func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
 	readyPods := utils.FilterReadyPods(pods)
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
@@ -55,37 +58,20 @@ func (r prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, m
 		}
 	}
 
-	inputReqText := "hello world, how are you, I am fine"
-	tokens, err := utils.TokenizeInputText(inputReqText)
+	tokens, err := utils.TokenizeInputText(message)
 	if err != nil {
 		return "", err
 	}
 
-	fmt.Println(cache.Pods)
-	fmt.Println(tokens)
-
-	// matchedTokens, unMatchedTokens, matchedPods :=  MatchPrefix(tokens, model, readyPods)
-
-	// more than threshold -> get target pod
-	// less than threshold -> get target pod
-
-	// add unmatched tokens to prefix block with that target pod
-
-	targetPodIP, err := selectRandomPod(pods, rand.Intn)
-	if err != nil {
-		return "", err
+	var targetPod *v1.Pod
+	matchedTokens, unMatchedTokens, matchedPods := p.cache.MatchPrefix(tokens, model, readyPods)
+	if float64(len(matchedTokens)/len(tokens)) > 0.5 {
+		targetPod = matchedPods[rand.Intn(len(matchedPods))]
+	} else {
+		targetPod = readyPods[rand.Intn(len(readyPods))]
 	}
 
-	return getPodAddress(targetPodIP)
-}
+	p.cache.AddPrefixBlock(unMatchedTokens, model, targetPod.Name)
 
-func IntArrayToByteArray(intArray []int) []byte {
-	buf := new(bytes.Buffer)
-	for _, val := range intArray {
-		err := binary.Write(buf, binary.LittleEndian, int32(val))
-		if err != nil {
-			panic(err)
-		}
-	}
-	return buf.Bytes()
+	return getPodAddress(targetPod.Status.PodIP)
 }

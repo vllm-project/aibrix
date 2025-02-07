@@ -43,7 +43,7 @@ func NewLeastKvCacheRouter() Router {
 	}
 }
 
-func (r leastKvCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model string) (string, error) {
+func (r leastKvCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
 	var targetPodIP string
 	minKvCache := math.MaxFloat64
 

@@ -28,7 +28,7 @@ import (
 // Router defines the interface for routing logic to select target pods.
 type Router interface {
 	// Route returns the target pod
-	Route(ctx context.Context, pods map[string]*v1.Pod, model string) (string, error)
+	Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error)
 }
 
 // selectRandomPodWithRand selects a random pod from the provided pod map.

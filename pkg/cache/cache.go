@@ -227,6 +227,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			ModelToPodMapping: map[string]map[string]*v1.Pod{},
 			requestTrace:      &sync.Map{},
 			pendingRequests:   &sync.Map{},
+			prefixBlocks:      map[uint64]Block{},
 		}
 		if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc:    instance.addPod,

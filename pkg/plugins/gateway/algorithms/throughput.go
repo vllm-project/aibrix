@@ -44,7 +44,7 @@ func NewThroughputRouter() Router {
 	}
 }
 
-func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model string) (string, error) {
+func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
 	var targetPodIP string
 	minCount := math.MaxFloat64
 
