@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strconv"
 
 	"github.com/aibrix/aibrix/pkg/cache"
 	"github.com/aibrix/aibrix/pkg/utils"
@@ -28,10 +29,27 @@ import (
 )
 
 const (
-	AIBRIX_PREFIX_CACHE_BLOCK_SIZE               = 16 // loadEnv("AIBRIX_PREFIX_CACHE_BLOCK_SIZE", 16)
-	AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS     = 50
-	AIBRIX_PROMPT_PREFIX_MATCH_THRESHOLD_PERCENT = 50
+	defaultPrefixCacheMatchThresholdPercent = 50
 )
+
+var (
+	prefixCacheMatchThresholdPercent = getPrefixCacheMatchThresholdPercent()
+)
+
+func getPrefixCacheMatchThresholdPercent() int {
+	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_MATCH_THRESHOLD_PERCENT", "")
+	if value != "" {
+		intValue, err := strconv.Atoi(value)
+		if err != nil || intValue <= 0 || intValue > 100 {
+			klog.Infof("invalid AIBRIX_PREFIX_CACHE_MATCH_THRESHOLD_PERCENT: %s, valid value between 0 and 100, failing back to default", value)
+		} else {
+			klog.Infof("using AIBRIX_PREFIX_CACHE_MATCH_THRESHOLD_PERCENT env value for prefix cache match threshold percent: %d", intValue)
+			return intValue
+		}
+	}
+	klog.Infof("using default prefix cache match threshold percent: %d", defaultPrefixCacheMatchThresholdPercent)
+	return defaultPrefixCacheMatchThresholdPercent
+}
 
 type prefixCacheRouter struct {
 	cache *cache.Cache
@@ -66,7 +84,7 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, m
 
 	var targetPod *v1.Pod
 	matchedTokens, unMatchedTokens, matchedPods := p.cache.MatchPrefix(tokens, model, readyPods)
-	if float64(len(matchedTokens)/len(tokens)) > 0.5 {
+	if len(matchedTokens)*100/len(tokens) > prefixCacheMatchThresholdPercent {
 		targetPod = matchedPods[rand.Intn(len(matchedPods))]
 	} else {
 		targetPod = readyPods[rand.Intn(len(readyPods))]
@@ -82,7 +100,7 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, m
 	for _, p := range readyPods {
 		readyPodNames = append(readyPodNames, p.Status.PodIP)
 	}
-	klog.V(5).InfoS("prefix cache route",
+	klog.InfoS("prefix cache route",
 		"message", message,
 		"tokens", tokens,
 		"matched_tokens", matchedTokens,

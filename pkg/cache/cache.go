@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -80,12 +79,12 @@ type Block struct {
 }
 
 const (
-	modelIdentifier                       = "model.aibrix.ai/name"
-	podPort                               = 8000
-	defaultPodMetricRefreshIntervalInMS   = 50
-	expireWriteRequestTraceIntervalInMins = 10
-
-	prefixCacheBlockSize = 16
+	modelIdentifier                        = "model.aibrix.ai/name"
+	podPort                                = 8000
+	defaultPodMetricRefreshIntervalInMS    = 50
+	expireWriteRequestTraceIntervalInMins  = 10
+	defaultPrefixCacheBlockSize            = 16
+	defaultPrefixCacheEvictionInternalInMS = 50
 )
 
 var (
@@ -131,14 +130,16 @@ var (
 		metrics.RunningLoraAdapters,
 	}
 
-	podMetricRefreshInterval = getPodMetricRefreshInterval()
+	podMetricRefreshInterval    = getPodMetricRefreshInterval()
+	prefixCacheBlockSize        = getPrefixCacheBlockSize()
+	prefixCacheEvictionInterval = getPrefixCacheEvictionInterval()
 )
 
 func getPodMetricRefreshInterval() time.Duration {
-	value := LoadEnv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", "")
+	value := utils.LoadEnv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", "")
 	if value != "" {
 		intValue, err := strconv.Atoi(value)
-		if err != nil {
+		if err != nil || intValue <= 0 {
 			klog.Infof("invalid AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: %s, falling back to default", value)
 		} else {
 			klog.Infof("using AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS env value for pod metrics refresh interval: %d ms", intValue)
@@ -149,21 +150,41 @@ func getPodMetricRefreshInterval() time.Duration {
 	return defaultPodMetricRefreshIntervalInMS * time.Millisecond
 }
 
+func getPrefixCacheBlockSize() int {
+	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_BLOCK_SIZE", "")
+	if value != "" {
+		intValue, err := strconv.Atoi(value)
+		if err != nil || intValue <= 0 {
+			klog.Infof("invalid AIBRIX_PREFIX_CACHE_BLOCK_SIZE: %s, falling back to default", value)
+		} else {
+			klog.Infof("using AIBRIX_PREFIX_CACHE_BLOCK_SIZE env value for prefix cache block size: %d", intValue)
+			return intValue
+		}
+	}
+	klog.Infof("using default prefix cache block size: %d", defaultPrefixCacheBlockSize)
+	return defaultPrefixCacheBlockSize
+}
+
+func getPrefixCacheEvictionInterval() time.Duration {
+	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS", "")
+	if value != "" {
+		intValue, err := strconv.Atoi(value)
+		if err != nil || intValue <= 0 {
+			klog.Infof("invalid AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS: %s, falling back to default", value)
+		} else {
+			klog.Infof("using AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS env value for prefix cache eviction interval: %d ms", intValue)
+			return time.Duration(intValue) * time.Millisecond
+		}
+	}
+	klog.Infof("using default prefix cache eviction interval: %d ms", defaultPrefixCacheEvictionInternalInMS)
+	return defaultPrefixCacheEvictionInternalInMS * time.Millisecond
+}
+
 func GetCache() (*Cache, error) {
 	if !instance.initialized {
 		return nil, errors.New("cache is not initialized")
 	}
 	return &instance, nil
-}
-
-// LoadEnv loads an environment variable or returns a default value if not set.
-func LoadEnv(key, defaultValue string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		klog.Warningf("environment variable %s is not set, using default value: %s", key, defaultValue)
-		return defaultValue
-	}
-	return value
 }
 
 func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Cache {
@@ -198,9 +219,9 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 		}
 
 		// Load environment variables
-		prometheusEndpoint := LoadEnv("PROMETHEUS_ENDPOINT", "")
-		prometheusBasicAuthUsername := LoadEnv("PROMETHEUS_BASIC_AUTH_USERNAME", "")
-		prometheusBasicAuthPassword := LoadEnv("PROMETHEUS_BASIC_AUTH_PASSWORD", "")
+		prometheusEndpoint := utils.LoadEnv("PROMETHEUS_ENDPOINT", "")
+		prometheusBasicAuthUsername := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_USERNAME", "")
+		prometheusBasicAuthPassword := utils.LoadEnv("PROMETHEUS_BASIC_AUTH_PASSWORD", "")
 
 		// Initialize Prometheus API
 		var prometheusApi prometheusv1.API
@@ -251,6 +272,19 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 					instance.updatePodMetrics()
 					instance.updateModelMetrics()
 					instance.debugInfo()
+				case <-stopCh:
+					ticker.Stop()
+					return
+				}
+			}
+		}()
+
+		ticker = time.NewTicker(prefixCacheEvictionInterval)
+		go func() {
+			for {
+				select {
+				case <-ticker.C:
+					instance.prefixCacheEviction()
 				case <-stopCh:
 					ticker.Stop()
 					return
@@ -1048,7 +1082,7 @@ func (c *Cache) AddPrefixBlock(unMatchedTokens []int, model, pod string) {
 }
 
 // To be implemented
-func (c *Cache) evictBlockLRU() {
+func (c *Cache) prefixCacheEviction() {
 
 }
 

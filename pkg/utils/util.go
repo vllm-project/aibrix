@@ -17,8 +17,11 @@ limitations under the License.
 package utils
 
 import (
+	"os"
+
 	"github.com/pkoukk/tiktoken-go"
 	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader"
+	"k8s.io/klog/v2"
 )
 
 const encoding = "cl100k_base"
@@ -34,4 +37,14 @@ func TokenizeInputText(text string) ([]int, error) {
 	// encode
 	token := tke.Encode(text, nil, nil)
 	return token, nil
+}
+
+// LoadEnv loads an environment variable or returns a default value if not set.
+func LoadEnv(key, defaultValue string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		klog.Warningf("environment variable %s is not set, using default value: %s", key, defaultValue)
+		return defaultValue
+	}
+	return value
 }
