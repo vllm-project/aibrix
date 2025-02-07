@@ -56,7 +56,7 @@ jobs:
           retention-days: 1
 
   installation-test:
-    needs: build-images
+    needs: [build-images]
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -64,6 +64,25 @@ jobs:
 
       - name: Download all image artifacts
         uses: actions/download-artifact@v4
+      
+      - name: Free disk space
+        run: |-
+          # https://github.com/actions/runner-images/issues/2840#issuecomment-2272410832
+          # Remove software and language runtimes we're not using
+          sudo rm -rf \
+            /opt/google/chrome \
+            /opt/microsoft/msedge \
+            /opt/microsoft/powershell \
+            /opt/pipx \
+            /usr/lib/mono \
+            /usr/local/julia* \
+            /usr/local/lib/android \
+            /usr/local/lib/node_modules \
+            /usr/local/share/chromium \
+            /usr/local/share/powershell \
+            /usr/share/dotnet \
+            /usr/share/swift
+          df -h /
 
       - name: Install kind
         run: |
@@ -86,16 +105,16 @@ jobs:
       - name: Load image into Kind
         run: |
           for image in controller-manager gateway-plugins runtime metadata-service; do
-            docker load < ${image}-image/${image}.tar
+              docker load < ${image}-image/${image}.tar
           
-            # Retag the image
-            # This is for application integration, since it is not that easy to override all commits in manifest
-            # It is better to use nightly to represent the latest image
-            docker tag aibrix/${image}:${{ github.sha }} aibrix/${image}:nightly
-          
-            kind load docker-image aibrix/${image}:${{ github.sha }} --name installation-test
-            kind load docker-image aibrix/${image}:nightly --name installation-test
+              # Retag the image
+              # This is for application integration, since it is not that easy to override all commits in manifest
+              # It is better to use nightly to represent the latest image
+              docker tag aibrix/${image}:${{ github.sha }} aibrix/${image}:nightly
           done
+
+          kind load docker-image aibrix/controller-manager:${{ github.sha }} aibrix/gateway-plugins:${{ github.sha }} aibrix/metadata-service:${{ github.sha }} aibrix/runtime:${{ github.sha }} --name installation-test
+          kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly --name installation-test
 
       - name: Deploy controller with the built image
         run: |
@@ -116,7 +135,7 @@ jobs:
         
       - name: Check pod status
         run: |
-          sleep 60s
+          sleep 30s
           kubectl get pods --all-namespaces
           kubectl wait pod --all --for=condition=ready --all-namespaces --timeout=300s
       

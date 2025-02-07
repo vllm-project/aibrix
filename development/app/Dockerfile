@@ -13,7 +13,7 @@ WORKDIR /app
 COPY requirements.txt /app/
 
 # Install dependencies
-RUN apt update && apt install -y curl jq git git-lfs
+RUN apt update && apt install -y curl jq git git-lfs && apt-get clean
 
 RUN pip install --no-cache-dir -r requirements.txt
 
