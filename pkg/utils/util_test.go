@@ -33,5 +33,4 @@ func TestTokenizeInputText(t *testing.T) {
 	tke, _ := tiktoken.GetEncoding(encoding)
 	outputStr := tke.Decode(tokens)
 	assert.Equal(t, inputStr, outputStr)
-	assert.Equal(t, 1, 0)
 }
