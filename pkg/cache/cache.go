@@ -53,6 +53,7 @@ import (
 var once sync.Once
 
 // type global
+// TODO: split pod/model events, request trace and prefix cache into separate modules.
 type Cache struct {
 	mu                sync.RWMutex
 	redisClient       *redis.Client
@@ -79,12 +80,13 @@ type Block struct {
 }
 
 const (
-	modelIdentifier                        = "model.aibrix.ai/name"
-	podPort                                = 8000
-	defaultPodMetricRefreshIntervalInMS    = 50
-	expireWriteRequestTraceIntervalInMins  = 10
-	defaultPrefixCacheBlockSize            = 16
-	defaultPrefixCacheEvictionInternalInMS = 50
+	modelIdentifier                          = "model.aibrix.ai/name"
+	podPort                                  = 8000
+	defaultPodMetricRefreshIntervalInMS      = 50
+	expireWriteRequestTraceIntervalInMins    = 10
+	defaultPrefixCacheBlockSize              = 16
+	defaultPrefixCacheEvictionInternalInMS   = 50
+	defaultPrefixCacheEvictionDurationInMins = 60
 )
 
 var (
@@ -130,9 +132,11 @@ var (
 		metrics.RunningLoraAdapters,
 	}
 
+	// TODO: add a helper function for get methods.
 	podMetricRefreshInterval    = getPodMetricRefreshInterval()
 	prefixCacheBlockSize        = getPrefixCacheBlockSize()
 	prefixCacheEvictionInterval = getPrefixCacheEvictionInterval()
+	prefixCacheEvictionDuration = getPrefixCacheEvictionDuration()
 )
 
 func getPodMetricRefreshInterval() time.Duration {
@@ -166,6 +170,21 @@ func getPrefixCacheBlockSize() int {
 }
 
 func getPrefixCacheEvictionInterval() time.Duration {
+	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS", "")
+	if value != "" {
+		intValue, err := strconv.Atoi(value)
+		if err != nil || intValue <= 0 {
+			klog.Infof("invalid AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS: %s, falling back to default", value)
+		} else {
+			klog.Infof("using AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS env value for prefix cache eviction interval: %d ms", intValue)
+			return time.Duration(intValue) * time.Millisecond
+		}
+	}
+	klog.Infof("using default prefix cache eviction interval: %d ms", defaultPrefixCacheEvictionInternalInMS)
+	return defaultPrefixCacheEvictionInternalInMS * time.Millisecond
+}
+
+func getPrefixCacheEvictionDuration() time.Duration {
 	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS", "")
 	if value != "" {
 		intValue, err := strconv.Atoi(value)
@@ -1011,6 +1030,7 @@ func (c *Cache) aggregateMetrics() {
 }
 
 // returns matchedTokens, unMatchedTokens, matchedPods
+// TODO: add an interface with multiple implementations such as hash or radix tree
 func (c *Cache) MatchPrefix(tokens []int, model string, pods []*v1.Pod) ([]int, []int, []*v1.Pod) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -1066,7 +1086,8 @@ func (c *Cache) AddPrefixBlock(unMatchedTokens []int, model, pod string) {
 		block, ok := c.prefixBlocks[prefixHash]
 		if !ok {
 			block = Block{
-				modelToPods: map[string]map[string]time.Time{},
+				modelToPods:    map[string]map[string]time.Time{},
+				lastAccessTime: time.Now(),
 			}
 			c.prefixBlocks[prefixHash] = block
 		}
@@ -1083,6 +1104,8 @@ func (c *Cache) AddPrefixBlock(unMatchedTokens []int, model, pod string) {
 
 // To be implemented
 func (c *Cache) prefixCacheEviction() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 }
 

@@ -86,7 +86,8 @@ func createOpenAIClient(baseURL, apiKey string) *openai.Client {
 	)
 }
 
-func createOpenAIClientWithRoutingStrategy(baseURL, apiKey, routingStrategy string, respOpt option.RequestOption) *openai.Client {
+func createOpenAIClientWithRoutingStrategy(baseURL, apiKey, routingStrategy string,
+	respOpt option.RequestOption) *openai.Client {
 	return openai.NewClient(
 		option.WithBaseURL(baseURL),
 		option.WithAPIKey(apiKey),

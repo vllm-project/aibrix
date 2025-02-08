@@ -87,6 +87,7 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, m
 	if len(matchedTokens)*100/len(tokens) > prefixCacheMatchThresholdPercent {
 		targetPod = matchedPods[rand.Intn(len(matchedPods))]
 	} else {
+		// TODO: add better load balanced algorithms as fallback
 		targetPod = readyPods[rand.Intn(len(readyPods))]
 	}
 	if len(unMatchedTokens) > 0 {

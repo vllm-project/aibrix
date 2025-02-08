@@ -24,6 +24,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// https://cookbook.openai.com/examples/how_to_count_tokens_with_tiktoken
 const encoding = "cl100k_base"
 
 func TokenizeInputText(text string) ([]int, error) {
