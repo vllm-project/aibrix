@@ -303,7 +303,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			for {
 				select {
 				case <-ticker.C:
-					instance.prefixCacheEviction()
+					instance.prefixCacheEviction(time.Now())
 				case <-stopCh:
 					ticker.Stop()
 					return
@@ -1043,10 +1043,10 @@ func (c *Cache) MatchPrefix(tokens []int, model string, pods []*v1.Pod) ([]int, 
 		if end > len(tokens) {
 			end = len(tokens)
 		}
+
 		chunk := tokens[i:end]
 		prefixHash := xxhash.Sum64(IntArrayToByteArray(chunk))
 		block, ok = c.prefixBlocks[prefixHash]
-
 		if !ok || len(block.modelToPods[model]) == 0 {
 			lastTokenMatchIndex = i
 			break
@@ -1081,6 +1081,7 @@ func (c *Cache) AddPrefixBlock(unMatchedTokens []int, model, pod string) {
 		if end > len(unMatchedTokens) {
 			end = len(unMatchedTokens)
 		}
+
 		chunk := unMatchedTokens[i:end]
 		prefixHash := xxhash.Sum64(IntArrayToByteArray(chunk))
 		block, ok := c.prefixBlocks[prefixHash]
@@ -1102,12 +1103,12 @@ func (c *Cache) AddPrefixBlock(unMatchedTokens []int, model, pod string) {
 	}
 }
 
-func (c *Cache) prefixCacheEviction() {
+func (c *Cache) prefixCacheEviction(now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	for hash, block := range c.prefixBlocks {
-		if time.Since(block.lastAccessTime) > prefixCacheEvictionDuration {
+		if now.Sub(block.lastAccessTime) > prefixCacheEvictionDuration {
 			delete(c.prefixBlocks, hash)
 			klog.InfoS("prefix cache block evicted", "hash", hash)
 		}
