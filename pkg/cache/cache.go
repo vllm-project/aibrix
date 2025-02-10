@@ -185,18 +185,18 @@ func getPrefixCacheEvictionInterval() time.Duration {
 }
 
 func getPrefixCacheEvictionDuration() time.Duration {
-	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS", "")
+	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS", "")
 	if value != "" {
 		intValue, err := strconv.Atoi(value)
 		if err != nil || intValue <= 0 {
-			klog.Infof("invalid AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS: %s, falling back to default", value)
+			klog.Infof("invalid AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS: %s, falling back to default", value)
 		} else {
-			klog.Infof("using AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS env value for prefix cache eviction interval: %d ms", intValue)
-			return time.Duration(intValue) * time.Millisecond
+			klog.Infof("using AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS env value for prefix cache eviction duration: %d ms", intValue)
+			return time.Duration(intValue) * time.Minute
 		}
 	}
-	klog.Infof("using default prefix cache eviction interval: %d ms", defaultPrefixCacheEvictionInternalInMS)
-	return defaultPrefixCacheEvictionInternalInMS * time.Millisecond
+	klog.Infof("using default prefix cache eviction duration: %d mins", defaultPrefixCacheEvictionDurationInMins)
+	return defaultPrefixCacheEvictionDurationInMins * time.Minute
 }
 
 func GetCache() (*Cache, error) {
@@ -1102,11 +1102,16 @@ func (c *Cache) AddPrefixBlock(unMatchedTokens []int, model, pod string) {
 	}
 }
 
-// To be implemented
 func (c *Cache) prefixCacheEviction() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	for hash, block := range c.prefixBlocks {
+		if time.Since(block.lastAccessTime) > prefixCacheEvictionDuration {
+			delete(c.prefixBlocks, hash)
+			klog.InfoS("prefix cache block evicted", "hash", hash)
+		}
+	}
 }
 
 func IntArrayToByteArray(intArray []int) []byte {
