@@ -31,15 +31,15 @@ type leastBusyTimeRouter struct {
 	cache *cache.Cache
 }
 
-func NewLeastBusyTimeRouter() Router {
-	cacheFetched, err := cache.GetCache()
+func NewLeastBusyTimeRouter() (Router, error) {
+	c, err := cache.GetCache()
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	return leastBusyTimeRouter{
-		cache: cacheFetched,
-	}
+		cache: c,
+	}, nil
 }
 
 func (r leastBusyTimeRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
@@ -47,7 +47,7 @@ func (r leastBusyTimeRouter) Route(ctx context.Context, pods map[string]*v1.Pod,
 	minBusyTimeRatio := math.MaxFloat64 // <= 1 in general
 
 	if len(pods) == 0 {
-		return "", fmt.Errorf("no pods to forward request")
+		return "", fmt.Errorf("no available pods for request routing")
 	}
 
 	for _, pod := range pods {
@@ -60,10 +60,11 @@ func (r leastBusyTimeRouter) Route(ctx context.Context, pods map[string]*v1.Pod,
 			klog.Error(err)
 			continue
 		}
-		klog.V(4).Infof("pod: %v, podIP: %v, GPU busy time ratio: %v", pod.Name, pod.Status.PodIP, busyTimeRatio.GetSimpleValue())
+		busyTimeRatioValue := busyTimeRatio.GetSimpleValue()
+		klog.V(4).Infof("pod: %v, podIP: %v, GPU busy time ratio: %v", pod.Name, pod.Status.PodIP, busyTimeRatioValue)
 
-		if busyTimeRatio.GetSimpleValue() < minBusyTimeRatio {
-			minBusyTimeRatio = busyTimeRatio.GetSimpleValue()
+		if busyTimeRatioValue < minBusyTimeRatio {
+			minBusyTimeRatio = busyTimeRatioValue
 			targetPodIP = pod.Status.PodIP
 		}
 	}
@@ -79,7 +80,7 @@ func (r leastBusyTimeRouter) Route(ctx context.Context, pods map[string]*v1.Pod,
 	}
 
 	if targetPodIP == "" {
-		return "", fmt.Errorf("no pods to forward request")
+		return "", fmt.Errorf("no available pods for request routing")
 	}
 
 	return targetPodIP + ":" + podMetricPort, nil

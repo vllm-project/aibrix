@@ -20,12 +20,18 @@ import (
 	"context"
 )
 
+// RateLimiter defines an interface for rate limiting operations.
+// It allows querying, retrieving limits, and incrementing usage for a given key.
 type RateLimiter interface {
-	// Get the rate limit for the given key and return the current value.
+	// Get retrieves the current rate limit usage for the given key.
+	// Returns the current value of the rate limit counter and an error if retrieval fails.
 	Get(ctx context.Context, key string) (int64, error)
 
+	// GetLimit retrieves the configured maximum rate limit for the given key.
+	// Returns the maximum allowed value for the rate limit and an error if retrieval fails.
 	GetLimit(ctx context.Context, key string) (int64, error)
 
-	// Incr increments the rate limit for the given key and return the increased value.
+	// Incr increments the rate limit counter for the given key by the specified value.
+	// Returns the updated rate limit counter after the increment and an error if the operation fails.
 	Incr(ctx context.Context, key string, val int64) (int64, error)
 }

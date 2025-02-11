@@ -27,8 +27,8 @@ import (
 type randomRouter struct {
 }
 
-func NewRandomRouter() Router {
-	return randomRouter{}
+func NewRandomRouter() (Router, error) {
+	return randomRouter{}, nil
 }
 
 func (r randomRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {

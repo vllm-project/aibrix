@@ -33,15 +33,15 @@ type leastRequestRouter struct {
 	cache *cache.Cache
 }
 
-func NewLeastRequestRouter() Router {
-	cache, err := cache.GetCache()
+func NewLeastRequestRouter() (Router, error) {
+	c, err := cache.GetCache()
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	return leastRequestRouter{
-		cache: cache,
-	}
+		cache: c,
+	}, nil
 }
 
 func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {

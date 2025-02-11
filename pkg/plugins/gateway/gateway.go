@@ -86,6 +86,15 @@ const (
 
 	// Envs
 	EnvRoutingAlgorithm = "ROUTING_ALGORITHM"
+
+	// Router names
+	RouterRandom        = "random"
+	RouterLeastRequest  = "least-request"
+	RouterThroughput    = "throughput"
+	RouterPrefixCache   = "prefix-cache"
+	RouterLeastKvCache  = "least-kv-cache"
+	RouterLeastBusyTime = "least-busy-time"
+	RouterLeastLatency  = "least-latency"
 )
 
 var (
@@ -93,6 +102,17 @@ var (
 
 	ErrorUnknownResponse = errors.New("unknown response")
 )
+
+// routerConstructors maps router names to their initialization functions.
+var routerConstructors = map[string]func() (routing.Router, error){
+	RouterRandom:        func() (routing.Router, error) { return routing.NewRandomRouter() },
+	RouterLeastRequest:  func() (routing.Router, error) { return routing.NewLeastRequestRouter() },
+	RouterThroughput:    func() (routing.Router, error) { return routing.NewThroughputRouter() },
+	RouterPrefixCache:   func() (routing.Router, error) { return routing.NewPrefixCacheRouter() },
+	RouterLeastKvCache:  func() (routing.Router, error) { return routing.NewLeastKvCacheRouter() },
+	RouterLeastBusyTime: func() (routing.Router, error) { return routing.NewLeastBusyTimeRouter() },
+	RouterLeastLatency:  func() (routing.Router, error) { return routing.NewLeastExpectedLatencyRouter() },
+}
 
 type Server struct {
 	routers             map[string]routing.Router
@@ -109,16 +129,7 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface) *Server {
 		panic(err)
 	}
 	r := ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
-	// TODO: consider to initialize the router in lazy way
-	routers := map[string]routing.Router{
-		"random":          routing.NewRandomRouter(),
-		"least-request":   routing.NewLeastRequestRouter(),
-		"throughput":      routing.NewThroughputRouter(),
-		"prefix-cache":    routing.NewPrefixCacheRouter(),
-		"least-kv-cache":  routing.NewLeastKvCacheRouter(),
-		"least-busy-time": routing.NewLeastBusyTimeRouter(),
-		"least-latency":   routing.NewLeastBusyTimeRouter(),
-	}
+	routers := initializeRouters()
 
 	return &Server{
 		routers:             routers,
@@ -128,6 +139,20 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface) *Server {
 		requestCountTracker: map[string]int{},
 		cache:               c,
 	}
+}
+
+// initializeRouters initialize different routing algorithms, consider to initialize the router in lazy way
+func initializeRouters() map[string]routing.Router {
+	routers := make(map[string]routing.Router)
+	for name, constructor := range routerConstructors {
+		router, err := constructor()
+		if err != nil {
+			klog.Warningf("failed to initialize router %s: %v", name, err)
+			continue
+		}
+		routers[name] = router
+	}
+	return routers
 }
 
 type HealthServer struct{}

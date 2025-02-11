@@ -33,15 +33,15 @@ type throughputRouter struct {
 	cache *cache.Cache
 }
 
-func NewThroughputRouter() Router {
-	cache, err := cache.GetCache()
+func NewThroughputRouter() (Router, error) {
+	c, err := cache.GetCache()
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	return throughputRouter{
-		cache: cache,
-	}
+		cache: c,
+	}, nil
 }
 
 func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {

@@ -55,15 +55,15 @@ type prefixCacheRouter struct {
 	cache *cache.Cache
 }
 
-func NewPrefixCacheRouter() Router {
+func NewPrefixCacheRouter() (Router, error) {
 	cache, err := cache.GetCache()
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	return prefixCacheRouter{
 		cache: cache,
-	}
+	}, nil
 }
 
 func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {

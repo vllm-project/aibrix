@@ -32,15 +32,15 @@ type leastKvCacheRouter struct {
 	cache *cache.Cache
 }
 
-func NewLeastKvCacheRouter() Router {
-	cache, err := cache.GetCache()
+func NewLeastKvCacheRouter() (Router, error) {
+	c, err := cache.GetCache()
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	return leastKvCacheRouter{
-		cache: cache,
-	}
+		cache: c,
+	}, nil
 }
 
 func (r leastKvCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
