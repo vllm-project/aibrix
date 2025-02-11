@@ -49,23 +49,23 @@ import (
 )
 
 const (
-	HeaderIncorrectRouting = "x-incorrect-routing-strategy"
+	HeaderErrorInvalidRouting = "x-error-invalid-routing-strategy"
 
 	// General Error Headers
-	HeaderUserError                  = "x-user-error"
-	HeaderRequestBodyProcessingError = "x-request-body-processing-error"
+	HeaderErrorUser                  = "x-error-user"
 	HeaderErrorRouting               = "x-error-routing"
-	HeaderStreamingError             = "x-streaming-error"
+	HeaderErrorRequestBodyProcessing = "x-error-request-body-processing"
 	HeaderErrorResponseUnmarshal     = "x-error-response-unmarshal"
 	HeaderErrorResponseUnknown       = "x-error-response-unknown"
 
 	// Model & Deployment Headers
-	HeaderNoModel           = "x-no-model-in-request"
-	HeaderNoModelDeployment = "x-no-model-deployment"
+	HeaderErrorNoModelInRequest = "x-error-no-model-in-request"
+	HeaderErrorNoModelBackends  = "x-error-no-model-backends"
 
 	// Streaming Headers
-	HeaderStreamOptions             = "x-stream-options"
-	HeaderStreamOptionsIncludeUsage = "x-stream-options-include-usage"
+	HeaderErrorStreaming                 = "x-error-streaming"
+	HeaderErrorNoStreamOptions           = "x-error-no-stream-options"
+	HeaderErrorStreamOptionsIncludeUsage = "x-error-no-stream-options-include-usage"
 
 	// Request & Target Headers
 	HeaderWentIntoReqHeaders = "x-went-into-req-headers"
@@ -73,12 +73,12 @@ const (
 	HeaderRoutingStrategy    = "routing-strategy"
 
 	// RPM & TPM Update Errors
-	HeaderErrorUpdateTPM = "x-error-update-tpm"
-	HeaderUpdateRPM      = "x-update-rpm"
-	HeaderUpdateTPM      = "x-update-tpm"
-	HeaderRPMError       = "x-rpm-error"
-	HeaderErrorIncrRPM   = "x-error-incr-rpm"
-	HeaderTPMExceeded    = "x-tpm-exceeded"
+	HeaderUpdateTPM        = "x-update-tpm"
+	HeaderUpdateRPM        = "x-update-rpm"
+	HeaderErrorRPMExceeded = "x-error-rpm-exceeded"
+	HeaderErrorTPMExceeded = "x-error-tpm-exceeded"
+	HeaderErrorIncrRPM     = "x-error-incr-rpm"
+	HeaderErrorIncrTPM     = "x-error-incr-tpm"
 
 	// Rate Limiting defaults
 	DefaultRPM           = 100
@@ -236,7 +236,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		return generateErrorResponse(
 			envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderIncorrectRouting, RawValue: []byte(routingStrategy),
+				Key: HeaderErrorInvalidRouting, RawValue: []byte(routingStrategy),
 			}}}, "incorrect routing strategy"), utils.User{}, rpm, routingStrategy
 	}
 
@@ -247,7 +247,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderUserError, RawValue: []byte("true"),
+					Key: HeaderErrorUser, RawValue: []byte("true"),
 				}}},
 				err.Error()), utils.User{}, rpm, routingStrategy
 		}
@@ -293,7 +293,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "requestBody", string(body.RequestBody.GetBody()))
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderRequestBodyProcessingError, RawValue: []byte("true")}}},
+				Key: HeaderErrorRequestBodyProcessing, RawValue: []byte("true")}}},
 			"error processing request body"), model, targetPodIP, stream, term
 	}
 
@@ -301,7 +301,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.ErrorS(nil, "model error in request", "requestID", requestID, "jsonMap", jsonMap)
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderNoModel, RawValue: []byte(model)}}},
+				Key: HeaderErrorNoModelInRequest, RawValue: []byte(model)}}},
 			"no model in request body"), model, targetPodIP, stream, term
 	}
 
@@ -310,7 +310,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
 		return generateErrorResponse(envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderNoModelDeployment, RawValue: []byte(model)}}},
+				Key: HeaderErrorNoModelBackends, RawValue: []byte(model)}}},
 			fmt.Sprintf("model %s does not exist", model)), model, targetPodIP, stream, term
 	}
 
@@ -320,7 +320,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.ErrorS(err, "no ready pod available", "requestID", requestID, "model", model)
 		return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderNoModelDeployment, RawValue: []byte("true")}}},
+				Key: HeaderErrorNoModelBackends, RawValue: []byte("true")}}},
 			fmt.Sprintf("error on getting pods for model %s", model)), model, targetPodIP, stream, term
 	}
 
@@ -331,7 +331,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			klog.ErrorS(nil, "no stream option available", "requestID", requestID, "jsonMap", jsonMap)
 			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderStreamOptions, RawValue: []byte("stream options not set")}}},
+					Key: HeaderErrorNoStreamOptions, RawValue: []byte("stream options not set")}}},
 				"no stream option available"), model, targetPodIP, stream, term
 		}
 		includeUsage, ok := streamOptions["include_usage"].(bool)
@@ -339,7 +339,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID, "jsonMap", jsonMap)
 			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderStreamOptionsIncludeUsage, RawValue: []byte("include usage for stream options not set")}}},
+					Key: HeaderErrorStreamOptionsIncludeUsage, RawValue: []byte("include usage for stream options not set")}}},
 				"no stream with usage option available"), model, targetPodIP, stream, term
 		}
 	}
@@ -467,7 +467,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderStreamingError, RawValue: []byte("true"),
+					Key: HeaderErrorStreaming, RawValue: []byte("true"),
 				}}},
 				err.Error()), complete
 		}
@@ -509,7 +509,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				return generateErrorResponse(
 					envoyTypePb.StatusCode_InternalServerError,
 					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-						Key: HeaderErrorUpdateTPM, RawValue: []byte("true"),
+						Key: HeaderErrorIncrTPM, RawValue: []byte("true"),
 					}}},
 					err.Error()), complete
 			}
@@ -572,7 +572,7 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 		return 0, generateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderRPMError, RawValue: []byte("true"),
+				Key: HeaderErrorRPMExceeded, RawValue: []byte("true"),
 			}}},
 			err.Error()), err
 	}
@@ -592,7 +592,7 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 		return 0, generateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderTPMExceeded, RawValue: []byte("true"),
+				Key: HeaderErrorTPMExceeded, RawValue: []byte("true"),
 			}}},
 			err.Error()), err
 	}
@@ -682,13 +682,13 @@ func getRequestMessage(jsonMap map[string]interface{}) (string, *extProcPb.Proce
 	messages, ok := jsonMap["messages"]
 	if !ok {
 		return "", generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: HeaderRequestBodyProcessingError, RawValue: []byte("true")}}},
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: HeaderErrorRequestBodyProcessing, RawValue: []byte("true")}}},
 			"no messages in the request body")
 	}
 	messagesJSON, err := json.Marshal(messages)
 	if err != nil {
 		return "", generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: HeaderRequestBodyProcessingError, RawValue: []byte("true")}}},
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: HeaderErrorRequestBodyProcessing, RawValue: []byte("true")}}},
 			"unable to marshal messages from request body")
 	}
 	return string(messagesJSON), nil
