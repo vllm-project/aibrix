@@ -1,35 +1,149 @@
 import logging
 import math
 import random
-import pandas as pd
 import argparse
 import csv
+import time
+import pandas as pd
+import numpy as np
 
 from pandas import Timedelta
 from typing import List, Tuple, Dict, Any
 from transformers import PreTrainedTokenizerBase
 from datetime import timedelta
-from sample_request import (load_requests,  sample_requests_len_range, sample_requests_all)
-from utils import (get_tokenizer, plot_workload, make_serializable, save_workload, get_sample_interval_ms)
+from sample_request import (load_requests,  
+                            sample_requests_len_range, 
+                            sample_requests_all,
+                            )
+from utils import (convert_to_stat_df,
+                   read_distribution_stats,
+                   generate_token_len_from_percentiles,
+                   get_tokenizer, 
+                   plot_workload, 
+                   make_serializable, 
+                   save_workload, 
+                   get_sample_interval_ms, 
+                   )
 
 # Set up logging to print only warning and above level messages
 logging.basicConfig(level=logging.INFO)
 
 
-def generate_from_internal_csv(file_path: str,
-                               prompt_file_path: str,
-                               duration_ms: int,
-                               tokenizer: PreTrainedTokenizerBase,
-                               interval_ms: int = 1000,
-                               output_file: str = 'output/output',
-                               input_trace: str = None,
-                               output_trace: str = None,
-                               to_jsonl: bool = False,
-                               ) -> List[List[Any]]:
+def generate_from_internal_csv(prompt_file_path: str, 
+                            duration_ms: int,
+                            tokenizer: PreTrainedTokenizerBase,
+                            output_file: str = 'output/output',
+                            qps_stat: str = None,
+                            input_stat: str = None,
+                            output_stat: str = None,
+                            to_jsonl: bool = False,
+                            qps_scale: float = 1.0,
+                            input_scale: float = 1.0,
+                            output_scale: float = 1.0,
+                            internal_trace_type: str = 'maas',
+                            ) -> Dict[str, Any]:
+    merged_df = convert_to_stat_df(qps_stat, input_stat, output_stat, internal_trace_type)
+    input_len_configs, output_len_configs, rps_configs = read_distribution_stats(merged_df)
+    input_len_dist = []
+    output_len_dist = []
+    rps_dist = []
+    if internal_trace_type == "maas":
+        for config in input_len_configs:
+            config['scale'] = input_scale
+            input_segment = generate_token_len_from_percentiles(**config)
+            input_len_dist.extend(input_segment)
+        for config in output_len_configs:
+            config['scale'] = output_scale
+            output_segment = generate_token_len_from_percentiles(**config)
+            output_len_dist.extend(output_segment)
+    elif internal_trace_type == "cloudide":
+        for config in input_len_configs:
+            config['scale'] = input_scale
+            input_segment = generate_token_len_from_percentiles(**config)
+            input_len_dist.extend(input_segment)
+            output_segment = generate_token_len_from_percentiles(**config)
+            output_len_dist.extend(output_segment)
+    
+    workload = generate_synthetic_rps(
+        prompt_file_path = prompt_file_path,
+        tokenizer = tokenizer,
+        duration_ms =  duration_ms,
+        rps_dist = rps_dist,
+        input_token_len_dist = input_len_dist,
+        output_token_len_dist = output_len_dist,
+        qps_scale = qps_scale,
+        input_scale = input_scale,
+        output_scale = output_scale,
+    )
+    
+    workload = make_serializable(workload)
+    save_workload(workload, output_file, use_jsonl=to_jsonl)
+    return workload
+    
+def generate_synthetic_rps(
+        prompt_file_path: str,
+        tokenizer: PreTrainedTokenizerBase,
+        duration_ms: int,
+        rps_dist: List[int],
+        input_token_len_dist: List[int],
+        output_token_len_dist: List[int],
+        qps_scale: float,
+        input_scale: float,
+        output_scale: float,
+    ) -> List[Dict[str, Any]]:
+    
+    if not (len(rps_dist) == len(input_token_len_dist) == len(output_token_len_dist)):
+        raise ValueError(f"All distributions must have the same length, len(rps_dist): {len(rps_dist)}, len(input_token_len_dist): {len(input_token_len_dist)}, len(output_token_len_dist): {len(output_token_len_dist)}")
+    workload = []
+    current_time = 0
+    total_seconds = len(rps_dist)
+    ts = time.time()
+    prompt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
+    print(f"Load requests took {int(time.time() - ts)}s")
+    while current_time < total_seconds * 1000:
+        time_idx = int(current_time / 1000)
+        if time_idx >= total_seconds:
+            time_idx = total_seconds - 1
+        current_rate = rps_dist[time_idx] / qps_scale
+        current_input_len = input_token_len_dist[time_idx] / input_scale
+        current_output_len = output_token_len_dist[time_idx] / output_scale
+        inter_arrival_time = 1000 if current_rate == 0 else np.random.exponential(scale=1000/current_rate) 
+        current_time += inter_arrival_time
+        if current_time < total_seconds * 1000:
+            request = sample_requests_len_range(
+                df=prompt_df,
+                num_requests=1,
+                input_lens=[current_input_len],
+                output_lens=[current_output_len],
+                initial_err_perc=0.5,
+                err_step=0.05
+            )
+            workload.append({"timestamp": int(current_time), "requests": request})  
+            if current_time > duration_ms:
+                break
+        
+    return workload
+    
+# def generate_from_internal_csv(file_path: str,
+                            prompt_file_path: str, 
+                            duration_ms: int,
+                            tokenizer: PreTrainedTokenizerBase,
+                            interval_ms: int = 1000,
+                            output_file: str = 'output/output',
+                            input_trace: str = None,
+                            output_trace: str = None,
+                            to_jsonl: bool = False,
+                            qps_scale: float = 1.0,
+                            input_scale: float = 1.0,
+                            output_scale: float = 1.0,
+                            ) -> Dict[str, Any]:
+    
     traffic = []
     input_lengths = []
     output_lengths = []
-    sample_interval_ms = get_sample_interval_ms(file_path)
+    summary_interval_ms = get_sample_interval_ms(file_path)
+    
+    # Read traffic file
     with open(file_path, 'r') as file:
         reader = csv.DictReader(file)
         for row in reader:
@@ -37,7 +151,9 @@ def generate_from_internal_csv(file_path: str,
                 total_value = row['Total']
                 if total_value:
                     traffic.append(float(total_value))
-    if input_trace is not None:
+    
+    # Read input lengths if provided                
+    if input_trace:
         with open(input_trace, 'r') as file:
             reader = csv.DictReader(file)
             for row in reader:
@@ -45,7 +161,9 @@ def generate_from_internal_csv(file_path: str,
                     length = row['P50']
                     if length:
                         input_lengths.append(round(float(length)))
-    if output_trace is not None:
+    
+    # Read output lengths if provided     
+    if output_trace:
         with open(output_trace, 'r') as file:
             reader = csv.DictReader(file)
             for row in reader:
@@ -54,30 +172,32 @@ def generate_from_internal_csv(file_path: str,
                     if length:
                         output_lengths.append(round(float(length)))
         
+    prompt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
     workload = []
-    ts = 0
-    sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
+    total_ms = 0
     for i, interval_requests in enumerate(traffic):
-        mean_rate = round(interval_requests * (interval_ms / 1000))
-        input_length = input_lengths[i] if len(input_lengths)>0 else None
-        output_length = output_lengths[i] if len(output_lengths)>0 else None
-        for ts_delta in list(range(0, sample_interval_ms, interval_ms)):
-            concurrent_sampled_reqs = sample_requests_len_range(
-                df=sharegpt_df,
-                num_requests=mean_rate,
-                input_lens=[input_length] * mean_rate, 
-                output_lens=[output_length] * mean_rate, 
-                initial_err_perc=0.5,
-                err_step=0.05
-            )
+        interval_requests = interval_requests / qps_scale
+        mean_rate = round(interval_requests)
+        input_length = input_lengths[i] / input_scale if len(input_lengths)>0 else None
+        output_length = output_lengths[i] / output_scale if len(output_lengths)>0 else None
+        
+        concurrent_sampled_reqs = sample_requests_len_range(
+            df=prompt_df,
+            num_requests=mean_rate,
+            input_lens=[input_length] * mean_rate, 
+            output_lens=[output_length] * mean_rate, 
+            initial_err_perc=0.5,
+            err_step=0.05
+        )
+        
+        for _ in range(0, int(summary_interval_ms/interval_ms)):
             if concurrent_sampled_reqs:  # Only add non-empty groups
-                workload.append({"timestamp": ts + ts_delta, "requests": concurrent_sampled_reqs})  
-            else:
-                logging.error(f"sampled return {concurrent_sampled_reqs}")
-        ts += sample_interval_ms
-        if ts > duration_ms:
+                workload.append({"timestamp": total_ms, "requests": concurrent_sampled_reqs})  
+                total_ms += interval_ms
+                if total_ms >= duration_ms:
+                    break
+        if total_ms >= duration_ms:
             break
-    
     
     workload = make_serializable(workload)
     save_workload(workload, output_file, use_jsonl=to_jsonl)
@@ -306,9 +426,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Workload Generator')
     parser.add_argument('--prompt-file', type=str, required=True, help='File containing prompts.')
     parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'internal', 'azure'],
-                        help='Type of trace consumed. Choose among: synthetic, internal, azure')
+                        help='Type of trace consumed. Choose among: synthetic, internal, azure.')
     parser.add_argument('--traffic-file', type=str, required=False, default=None,
-                        help='Traffic file containing times of arrival, which workload generator depends upon to '
+                        help='Traffic file containing times of arrival, which workload generator depends upon to'
                              'convert to traffic used in workload. This is only needed for for internal and azure trace type. ')
     parser.add_argument('--prompt-len-file', type=str, required=False, default=None,
                         help='File containing request input lengths varied by time, which workload generator depends upon to '
@@ -322,7 +442,11 @@ if __name__ == '__main__':
     parser.add_argument('--interval-ms', type=int, required=False, default=1000,
                         help='Granularity of request injection interval in milliseconds.')
     parser.add_argument('--duration-ms', type=int, default=60000, help='Duration of the trace generated.')
-    parser.add_argument('--output-dir', type=str, required=False, default="output", help='Output directory to save '
+    parser.add_argument('--qps-scale', type=float, required=False, default=1.0, help='QPS scaling factor.')
+    parser.add_argument('--input-scale', type=float, required=False, default=1.0, help='Input length scaling factor.')
+    parser.add_argument('--output-scale', type=float, required=False, default=1.0, help='Output length scaling factor.')
+    parser.add_argument('--internal-trace-type', type=str, choices=['maas', 'cloudide'], default="maas", help='Type of internal traces.')
+    parser.add_argument('--output-dir', type=str, required=False, default="output", help='Output directory to save.'
                                                                                          'the workload.')
     parser.add_argument('--output-format', type=str, choices=['json', 'jsonl'], default='json',
                         help='Set output data format to either .json or .jsonl (default is .json).')
@@ -332,15 +456,7 @@ if __name__ == '__main__':
     workload_dict = {}
     tokenizer = get_tokenizer(pretrained_model_name_or_path=args.model, trust_remote_code=True)
 
-    if args.trace_type == "constant":
-        generated_workload = generate_constant(prompt_file_path=args.prompt_file, 
-                                                qps=1,
-                                                duration_ms=args.duration_ms, 
-                                                interval_ms=args.interval_ms,
-                                                output_file=f"{args.output_dir}/{args.trace_type}",
-                                                to_jsonl=(args.output_format == "jsonl"),
-                                                )
-    elif args.trace_type == "synthetic":
+    if args.trace_type == "synthetic":
         # Define scenarios specific to synthetic type
         scenarios = {
             'quick_rising': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 5, 'period': 5,
@@ -361,16 +477,27 @@ if __name__ == '__main__':
             workload_dict[scenario_name] = generated_workload
     else:
         # Process for 'internal' and 'azure'
-        if args.trace_type == "internal":
-            generated_workload = generate_from_internal_csv(file_path=args.traffic_file, 
-                                                            prompt_file_path=args.prompt_file, 
+        if args.trace_type == "constant":
+            generated_workload = generate_constant(prompt_file_path=args.prompt_file, 
+                                                    qps=1,
+                                                    duration_ms=args.duration_ms, 
+                                                    interval_ms=args.interval_ms,
+                                                    output_file=f"{args.output_dir}/{args.trace_type}",
+                                                    to_jsonl=(args.output_format == "jsonl"),
+                                                    )
+        elif args.trace_type == "internal":
+            generated_workload = generate_from_internal_csv(prompt_file_path=args.prompt_file, 
                                                             duration_ms=args.duration_ms, 
                                                             tokenizer=tokenizer,
-                                                            interval_ms=args.interval_ms,
                                                             output_file=f"{args.output_dir}/{args.trace_type}",
-                                                            input_trace=args.prompt_len_file, 
-                                                            output_trace=args.completion_len_file,
+                                                            qps_stat=args.traffic_file, 
+                                                            input_stat=args.prompt_len_file, 
+                                                            output_stat=args.completion_len_file,
                                                             to_jsonl=(args.output_format == "jsonl"),
+                                                            qps_scale=args.qps_scale,
+                                                            input_scale=args.input_scale,
+                                                            output_scale=args.output_scale,
+                                                            internal_trace_typee=args.output_scale,
                                                             )
 
         elif args.trace_type == "azure":
