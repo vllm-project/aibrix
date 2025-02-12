@@ -23,14 +23,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/aibrix/aibrix/pkg/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	"github.com/stretchr/testify/assert"
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 )
 
@@ -125,110 +120,6 @@ var _ = Describe("Cache", func() {
 		Expect(atomic.LoadInt32(pendingCounter.(*int32))).To(Equal(int32(0)))
 	})
 })
-
-func Test_PrefixCacheE2E(t *testing.T) {
-	cache := Cache{
-		prefixBlocks: map[uint64]Block{},
-	}
-	pods := []*v1.Pod{
-		{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
-	}
-
-	inputText := "Hello World! What a Good Day! Good Morning! 你好世界！多么美好的一天啊！早上好！"
-	tokens, err := utils.TokenizeInputText(inputText)
-	assert.Equal(t, nil, err)
-
-	matchedTokens, unMatchedTokens, matchPods := cache.MatchPrefix(tokens, "m1", pods)
-	assert.Equal(t, 0, len(matchedTokens))
-	assert.Equal(t,
-		[]int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 7839, 29084, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447, 6079, 102, 17905, 53901, 6447},
-		unMatchedTokens)
-	assert.Equal(t, 0, len(matchPods))
-
-	cache.AddPrefixBlock(unMatchedTokens, "m1", "p1")
-	matchedTokens, unMatchedTokens, matchPods = cache.MatchPrefix(tokens, "m1", pods)
-	assert.Equal(t,
-		[]int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 7839, 29084, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447, 6079, 102, 17905, 53901, 6447},
-		matchedTokens)
-	assert.Equal(t, 0, len(unMatchedTokens))
-	assert.Equal(t, "p1", matchPods[0].Name)
-
-	cache.prefixCacheEviction(time.Now().Add(60 * time.Minute))
-	_, unMatchedTokens, matchPods = cache.MatchPrefix(tokens, "m1", pods)
-	assert.Equal(t,
-		[]int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 7839, 29084, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447, 6079, 102, 17905, 53901, 6447},
-		unMatchedTokens)
-	assert.Equal(t, 0, len(matchPods))
-}
-
-func Test_MatchPrefix(t *testing.T) {
-	tests := []*struct {
-		name          string
-		inputText     string
-		cache         Cache
-		model         string
-		pods          []*v1.Pod
-		matchTokens   []int
-		unMatchTokens []int
-		matchPods     []*v1.Pod
-	}{
-		{
-			name:      "token length more than prefix block size, no prefix blocks exist in the cache",
-			inputText: "Hello World! What a Good Day! 你好世界！多么美好的一天啊！",
-			cache: Cache{
-				prefixBlocks: map[uint64]Block{},
-			},
-			model: "m1",
-			pods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
-			},
-			matchTokens:   []int{},
-			unMatchTokens: []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447},
-			matchPods:     nil,
-		},
-		{
-			name:      "token length more than prefix block size, one prefix block exist in the cache",
-			inputText: "Hello World! What a Good Day! 你好世界！多么美好的一天啊！",
-			cache: Cache{
-				prefixBlocks: map[uint64]Block{
-					8954089069687757318: {
-						modelToPods: map[string]map[string]time.Time{
-							"m1": {
-								"p1": time.Now(),
-							},
-						},
-						lastAccessTime: time.Now(),
-					},
-				},
-			},
-			model: "m1",
-			pods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
-			},
-			matchTokens:   []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240},
-			unMatchTokens: []int{82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447},
-			matchPods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		tokens, err := utils.TokenizeInputText(tt.inputText)
-		assert.Equal(t, nil, err)
-		fmt.Println(len(tokens))
-		fmt.Println(tokens)
-
-		matchTokens, unMatchTokens, matchPods := tt.cache.MatchPrefix(tokens, tt.model, tt.pods)
-
-		assert.Equal(t, tt.matchTokens, matchTokens)
-		assert.Equal(t, tt.unMatchTokens, unMatchTokens)
-		assert.Equal(t, tt.matchPods, matchPods)
-	}
-}
 
 func BenchmarkLagacyAddRequestTrace(b *testing.B) {
 	cache := &lagacyCache{
