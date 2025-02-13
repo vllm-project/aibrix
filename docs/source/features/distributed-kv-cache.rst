@@ -58,73 +58,9 @@ After deployment, we can see all the components by using ``kubectl get pods -n a
 
 After all components are running, we can use the following yaml to deploy the inference service:
 
-.. code-block:: yaml
-    :emphasize-lines: 39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64
+.. literalinclude:: ../../../samples/kvcache/deployment.yaml
+   :language: yaml
 
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      name: aibrix-model-deepseek-coder-33b-instruct
-      labels:
-        model.aibrix.ai/name: deepseek-coder-33b-instruct
-        model.aibrix.ai/port: "8000"
-    spec:
-      strategy:
-        rollingUpdate:
-          maxSurge: 1
-          maxUnavailable: 1
-        type: RollingUpdate
-      template:
-        spec:
-          containers:
-            - name: vllm-openai
-              image: aibrix/vllm-openai:v0.6.1-edb07092-20250118
-              imagePullPolicy: Always
-              command:
-              - python3
-              - -m
-              - vllm.entrypoints.openai.api_server
-              - --port
-              - "8000"
-              - --model
-              - deepseek-ai/deepseek-coder-33b-instruct
-              - --served-model-name
-              - deepseek-coder-33b-instruct
-              - --distributed-executor-backend
-              - ray
-              - --trust-remote-code
-              - --tensor-parallel-size
-              - "4"
-              - --max-model-len
-              - "17000"
-              - --enable-prefix-caching
-              - --disable-fastapi-docs
-              env:
-              - name: VLLM_USE_VINEYARD_CACHE
-                value: "1"
-              - name: VINEYARD_CACHE_CPU_MEM_LIMIT_GB
-                value: "70"
-              - name: AIBRIX_LLM_KV_CACHE
-                value: "1"
-              - name: AIBRIX_LLM_KV_CACHE_KV_CACHE_NS
-                value: "aibrix"
-              - name: AIBRIX_LLM_KV_CACHE_CHUNK_SIZE
-                value: "16"
-              - name: AIBRIX_LLM_KV_CACHE_SOCKET
-                value: /var/run/vineyard.sock
-              - name: AIBRIX_LLM_KV_CACHE_RPC_ENDPOINT
-                value: "aibrix-model-deepseek-coder-33b-kvcache-rpc:9600"
-              - name: VINEYARD_CACHE_ENABLE_ASYNC_UPDATE
-                value: "1"
-              - name: "VINEYARD_CACHE_METRICS_ENABLED"
-                value: "1"
-              volumeMounts:
-                - mountPath: /var/run
-                  name: kvcache-socket
-          volumes:
-            - name: kvcache-socket
-              hostPath:
-                path: /var/run/vineyard-kubernetes/default/aibrix-model-deepseek-coder-33b-kvcache
 
 .. note::
     * ``metadata.name`` MUST match with ``kvcache.orchestration.aibrix.ai/pod-affinity-workload`` in the kv cache deployment

@@ -29,7 +29,7 @@ Documentation
 
    designs/architecture.rst
    getting_started/quickstart.rst
-   getting_started/installation.rst
+   getting_started/installation/installation.rst
    getting_started/faq.rst
 
 .. toctree::

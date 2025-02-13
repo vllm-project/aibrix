@@ -56,84 +56,16 @@ Prerequisites
 Create base model
 ^^^^^^^^^^^^^^^^^
 
-.. code-block:: yaml
+.. literalinclude:: ../../../samples/adapter/base.yaml
+   :language: yaml
 
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      name: llama2-7b
-      namespace: default
-      labels:
-        model.aibrix.ai/name: "llama2-7b"
-        model.aibrix.ai/port: "8000"
-        adapter.model.aibrix.ai/enabled: "true"
-    spec:
-      replicas: 3
-      selector:
-        matchLabels:
-          adapter.model.aibrix.ai/enabled: "true"
-          model.aibrix.ai/name: "llama2-7b"
-      template:
-        metadata:
-          labels:
-            adapter.model.aibrix.ai/enabled: "true"
-            model.aibrix.ai/name: "llama2-7b"
-        spec:
-          serviceAccountName: mocked-app-sa
-          containers:
-            - name: llm-engine
-              # TODO: update
-              image: aibrix/vllm-mock:nightly
-              ports:
-                - containerPort: 8000
-            - name: aibrix-runtime
-              image: aibrix/runtime:nightly
-              command:
-                - aibrix_runtime
-                - --port
-                - "8080"
-              env:
-                - name: INFERENCE_ENGINE
-                  value: vllm
-                - name: INFERENCE_ENGINE_ENDPOINT
-                  value: http://localhost:8000
-              ports:
-                - containerPort: 8080
-                  protocol: TCP
-              livenessProbe:
-                httpGet:
-                  path: /healthz
-                  port: 8080
-                initialDelaySeconds: 3
-                periodSeconds: 2
-              readinessProbe:
-                httpGet:
-                  path: /ready
-                  port: 8080
-                initialDelaySeconds: 5
-                periodSeconds: 10
 
 
 Create lora model adapter
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. code-block:: yaml
-
-    apiVersion: model.aibrix.ai/v1alpha1
-    kind: ModelAdapter
-    metadata:
-      name: llama-2-7b-sql-lora
-      namespace: default
-      labels:
-        model.aibrix.ai/name: "llama-2-7b-sql-lora"
-        model.aibrix.ai/port: "8000"
-    spec:
-      baseModel: llama2-7b
-      podSelector:
-        matchLabels:
-          model.aibrix.ai/name: llama2-7b
-      artifactURL:  huggingface://yard1/llama-2-7b-sql-lora-test
-      schedulerName: default
+.. literalinclude:: ../../../samples/adapter/adapter.yaml
+   :language: yaml
 
 If you run ```kubectl describe modeladapter llama-2-7b-sql-lora``, you will see the status of the lora adapter.
 
@@ -187,22 +119,5 @@ User may pass in the argument ``--api-key`` or environment variable ``VLLM_API_K
 
 In that case, lora model adapter can not query the vLLM server correctly, showing ``{"error":"Unauthorized"}`` error. You need to update ``additionalConfig`` field to pass in the API key.
 
-.. code-block:: yaml
-
-    apiVersion: model.aibrix.ai/v1alpha1
-    kind: ModelAdapter
-    metadata:
-      name: text2sql-lora
-      namespace: default
-      labels:
-        model.aibrix.ai/name: "text2sql-lora"
-        model.aibrix.ai/port: "8000"
-    spec:
-      baseModel: llama2-7b
-      podSelector:
-        matchLabels:
-          model.aibrix.ai/name: llama2-7b
-      artifactURL: huggingface://yard1/llama-2-7b-sql-lora-test
-      additionalConfig:
-        api-key: test-key-1234567890
-      schedulerName: default
+.. literalinclude:: ../../../samples/adapter/adapter-api-key.yaml
+   :language: yaml

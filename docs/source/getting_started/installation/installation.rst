@@ -43,6 +43,17 @@ Nightly Version
     kubectl create -k config/default
 
 
+Install AIBrix in testing Environments
+--------------------------------------
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Getting Started
+
+   lambda.rst
+   mac-for-desktop.rst
+
+
 Install Individual AIBrix Components
 ------------------------------------
 

@@ -1,8 +1,8 @@
-.. _lambda_cloud_installation:
+.. _lambda_cloud:
 
-=================================================
-AIBrix Single-Node Deployment on Lambda Instances
-=================================================
+============
+Lambda Cloud
+============
 
 This guide provides a step-by-step tutorial to deploy AIBrix on a single-node Lambda instance for testing purposes. The setup includes installing dependencies, verifying the installation, setting up the cluster, and deploying AIBrix components.
 
@@ -15,14 +15,14 @@ Before you begin, ensure you have the following:
 
 You can follow `lambda cloud docs <https://docs.lambdalabs.com/>`_ to launch an instance.
 
-.. figure:: ../assets/images/cloud/lambda-cloud-instance.png
+.. figure:: ../../assets/images/cloud/lambda-cloud-instance.png
     :alt: lambda-cloud-instance
     :width: 70%
     :align: center
 
 After launching the instance, you can get the instance's IP address and ssh into the instance.
 
-.. figure::../assets/images/cloud/lambda-cloud-ssh.png
+.. figure::../../assets/images/cloud/lambda-cloud-ssh.png
     :alt: lambda-cloud-ssh
     :width: 70%
     :align: center
@@ -46,7 +46,7 @@ Run the following script to install the necessary dependencies including `nvkind
 - Configures the NVIDIA Container Toolkit
 - Updates Docker settings for GPU compatibility
 
-.. figure::../assets/images/cloud/lambda-cloud-installation.png
+.. figure::../../assets/images/cloud/lambda-cloud-installation.png
     :alt: lambda-cloud-installation
     :width: 70%
     :align: center
@@ -72,7 +72,7 @@ Run the following script to ensure that the NVIDIA drivers and Docker integratio
 
 If all checks pass successfully like below, proceed to the next step.
 
-.. figure::../assets/images/cloud/lambda-cloud-verify-installation.png
+.. figure::../../assets/images/cloud/lambda-cloud-verify-installation.png
     :alt: lambda-cloud-verify-installation
     :width: 70%
     :align: center

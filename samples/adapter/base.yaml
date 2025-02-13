@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    model.aibrix.ai/name: qwen-coder-15b-instruct # Note: The label value `model.aibrix.ai/name` here must match with the service name.
+    model.aibrix.ai/port: "8000"
+    adapter.model.aibrix.ai/enabled: "true"
+  name: qwen-coder-1.5b-instruct
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: qwen-coder-1.5b-instruct
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: qwen-coder-1.5b-instruct
+    spec:
+      containers:
+        - command:
+            - python3
+            - -m
+            - vllm.entrypoints.openai.api_server
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --model
+            - Qwen/Qwen2.5-Coder-1.5B-Instruct
+            - --served-model-name
+            # Note: The `--served-model-name` argument value must also match the Service name and the Deployment label `model.aibrix.ai/name`
+            - qwen-coder-1.5b-instruct
+            - --enable-lora
+          image: vllm/vllm-openai:v0.7.1
+          imagePullPolicy: Always
+          name: vllm-openai
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+        - name: aibrix-runtime
+          image: aibrix/runtime:v0.2.0-rc.2
+          command:
+            - aibrix_runtime
+            - --port
+            - "8080"
+          env:
+            - name: INFERENCE_ENGINE
+              value: vllm
+            - name: INFERENCE_ENGINE_ENDPOINT
+              value: http://localhost:8000
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---

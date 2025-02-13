@@ -1,15 +1,17 @@
 apiVersion: model.aibrix.ai/v1alpha1
 kind: ModelAdapter
 metadata:
-  name: text2sql-lora-1
+  name: qwen-code-lora
   namespace: default
   labels:
-    model.aibrix.ai/name: "text2sql-lora-1"
+    model.aibrix.ai/name: "qwen-code-lora"
     model.aibrix.ai/port: "8000"
 spec:
   baseModel: llama2-7b
   podSelector:
     matchLabels:
       model.aibrix.ai/name: llama2-7b
-  artifactURL: huggingface://yard1/llama-2-7b-sql-lora-test
+  artifactURL: huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora
+  additionalConfig:
+    api-key: test-key-1234567890
   schedulerName: default
