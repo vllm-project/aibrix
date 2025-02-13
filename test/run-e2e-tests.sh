@@ -42,7 +42,7 @@ if [ -n "$KIND_E2E" ]; then
 
   # If we did not set SKIP_INSTALL
   if [ -z "$SKIP_INSTALL" ]; then
-    kind create cluster --image kindest/node:${K8S_VERSION} --config=./hack/kind_config.yaml
+    kind create cluster --image kindest/node:${K8S_VERSION} --config=./hack/ci/kind_config.yaml
   fi
 fi
 
