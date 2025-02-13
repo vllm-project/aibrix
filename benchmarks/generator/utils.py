@@ -121,6 +121,16 @@ def read_distribution_stats(df: pd.DataFrame) -> Tuple[List[Dict], List[Dict], L
         })
     return input_len_configs, output_len_configs, rps_configs
 
+def generate_poisson_rps_dist(mean_rps: int, total_seconds: int, window_size: int = 10) -> List[int]:
+    rps_list = np.random.poisson(lam=mean_rps, size=total_seconds).tolist()
+    # Apply moving average smoothing
+    smoothed = []
+    for i in range(len(rps_list)):
+        start = max(0, i - window_size + 1)
+        window = rps_list[start:i + 1]
+        smoothed.append(max(1, round(sum(window) / len(window))))
+    return smoothed
+
 def generate_token_len_from_percentiles(
     p50: int,
     p70: int,
@@ -158,6 +168,69 @@ def generate_token_len_from_percentiles(
     token_len_list = base_samples * scale_factor + sinusoidal_variation
     token_len_list = [int(max(1, x)) for x in token_len_list]
     return token_len_list
+
+def to_fluctuate_pattern_config(config_type: str,
+                                mean: float,
+                            ) -> Dict[str, Any]:
+    if config_type == 'quick_rising':
+        return {'A': 0.5 * mean, 
+                'B': mean, 
+                'sigma': 0.1,
+                'period': 5,
+                'omega': None,
+                'only_rise': True}
+    elif config_type == 'slow_rising':
+        return {'A': 0.5 * mean, 
+                'B': mean, 
+                'sigma': 0.1,
+                'period': 0.25,
+                'omega': None,
+                'only_rise': True}
+    elif config_type == 'slight_fluctuation':
+        return {'A': 0.1 * mean, 
+                'B': mean, 
+                'sigma': 0.1,
+                'period': 1, 
+                'omega': None,
+                'only_rise': False}
+    elif config_type == 'severe_fluctuation':
+        return {'A': 0.5 * mean, 
+                'B': mean,
+                'sigma': 0.1,
+                'period': 12, 
+                'omega': None,
+                'only_rise': False}
+    else:
+        raise ValueError(f"Unknown config type: {config_type}")
+    # 'quick_rising': { 
+    #                  'A': 5, 
+    #                  'B': 1, 
+    #                  'sigma': 0.1,
+    #                  'period': 5,
+    #                  'omega': None,
+    #                  'only_rise': True},
+    # 'slow_rising': {
+    #                 'A': 5, 
+    #                 'B': 1,
+    #                 'sigma': 0.1,
+    #                 'period': 0.25,
+    #                 'omega': None,
+    #                 'only_rise': True},
+    # 'slight_fluctuation': {
+    #                        'A': 5, 
+    #                        'B': 5,
+    #                        'sigma': 0.1,
+    #                        'period': 1, 
+    #                        'omega': None,
+    #                        'only_rise': False},
+    # 'severe_fluctuation': {
+    #                        'A': 5, 
+    #                        'B': 10,
+    #                        'sigma': 0.1,
+    #                        'period': 12, 
+    #                        'omega': None,
+    #                        'only_rise': False},
+
 
 def get_sample_interval_ms(file_path):
     # Initialize variables
@@ -207,50 +280,69 @@ def get_tokenizer(
                                          trust_remote_code=trust_remote_code)
 
 
-def plot_workload(workload_dict, interval_ms, output_file: str = None):
+def plot_workload(workload_name: str, 
+                  workload: str,
+                  bin_size_sec: int = 1,
+                  output_dir: str = None):
     """
-    Plots the concurrency (item length) of the generated workload.
+    Plots workload statistics: total requests, prompt token count, and output token count binned by time.
 
     Args:
-        workload_dict (dict): A dictionary where the keys are workload names (labels) and the values are lists of lists representing the workload.
-        interval_ms (int): Interval in milliseconds. 
+        workload_name (str): Name of the workload.
+        workload (list of dict): Workload entries with timestamps and request details.
+        bin_size_sec (int): Size of each bin in seconds for aggregation.
+        output_file (str, optional): File path to save the plot.
     """
-    fig, ax = plt.subplots()
-    for workload_name, workload in workload_dict.items():
-        concurrency_values = [len(item["requests"]) for item in workload]
-        ax.plot(np.arange(len(concurrency_values)) * interval_ms, concurrency_values, label=workload_name)
+    print(f"plot_workload in directory {output_dir}")
+    # Convert workload data to a DataFrame
+    data = []
+    for entry in workload:
+        timestamp_sec = entry["timestamp"] / 1000  # Convert ms to sec
+        num_requests = len(entry["requests"])
+        total_prompt_tokens = np.mean([req["prompt_length"] for req in entry["requests"]]) if entry["requests"] else 0
+        total_output_tokens = np.mean([req["output_length"] for req in entry["requests"]]) if entry["requests"] else 0
+        data.append((timestamp_sec, num_requests, total_prompt_tokens, total_output_tokens))
 
-    ax.set_ylim(0, )
-    plt.xlabel('Time (ms)')
-    plt.ylabel('Concurrency')
-    plt.title('Workload Concurrency')
-    plt.legend()
-    if output_file is None:
-        plt.show()
-    else:
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        plt.savefig(f"{output_file}-traffic.pdf")
-        logging.info(f'Saved traffic plot to {output_file}-traffic.pdf')
-        
-        
-    fig, ax = plt.subplots()
-    for workload_name, workload in workload_dict.items():
-        input_lengths = [item["requests"][0]['prompt_length'] for item in workload]
-        output_lengths = [item["requests"][0]['output_length'] for item in workload]
-        ax.plot(np.arange(len(concurrency_values)) * interval_ms, input_lengths, label=f"{workload_name} prompt_length")
-        ax.plot(np.arange(len(concurrency_values)) * interval_ms, output_lengths, label=f"{workload_name} output_length")
+    df = pd.DataFrame(data, columns=["timestamp", "num_requests", "total_prompt_tokens", "total_output_tokens"])
 
-    ax.set_ylim(0, )
-    plt.xlabel('Time (ms)')
-    plt.ylabel('Lengths')
-    plt.title('Request Sizes')
-    plt.legend()
-    if output_file is None:
-        plt.show()
+    # Define bins based on min/max timestamp
+    min_time, max_time = df["timestamp"].min(), df["timestamp"].max()
+    bins = np.arange(min_time, max_time + bin_size_sec, bin_size_sec)
+    
+    # Bin the data
+    df["time_bin"] = pd.cut(df["timestamp"], bins, labels=bins[:-1])
+
+    # Aggregate within each bin
+    binned_df = df.groupby("time_bin").sum()
+
+    # Convert index back to numeric
+    binned_df.index = binned_df.index.astype(float)
+
+    # Plotting
+    fig, (ax_qps, ax_input, ax_output) = plt.subplots(3, 1, figsize=(15, 12))
+
+    ax_qps.plot(binned_df.index, binned_df["num_requests"], label="Total Requests")
+    ax_input.plot(binned_df.index, binned_df["total_prompt_tokens"], label="Total Prompt Tokens")
+    ax_output.plot(binned_df.index, binned_df["total_output_tokens"], label="Total Output Tokens")
+
+    # Formatting plots
+    for ax, ylabel, title in zip([ax_qps, ax_input, ax_output],
+                                  ["Requests per Second", "Prompt Token Count", "Output Token Count"],
+                                  ["Total Requests Sent per Second", "Total Prompt Tokens per Second", "Total Output Tokens per Second"]):
+        ax.set_xlabel("Time (seconds)")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.legend()
+    
+    plt.tight_layout()
+
+    # Save or show the plot
+    if output_dir:
+        os.makedirs(os.path.dirname(output_dir), exist_ok=True)
+        plt.savefig(f"{output_dir}/{workload_name}.pdf")
+        logging.info(f'Saved workload plot to {output_dir}/{workload_name}.pdf')
     else:
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        plt.savefig(f"{output_file}-requests.pdf")
-        logging.info(f'Saved traffic plot to {output_file}-requests.pdf')
+        plt.show()
 
 
 def save_workload(load_struct: List[Any],

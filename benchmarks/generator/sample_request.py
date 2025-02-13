@@ -109,7 +109,7 @@ def sample_requests_len_range(
         output_len = output_lens[i]
         err_perc = initial_err_perc
 
-        while err_perc < 1:
+        while err_perc <= 1:
             input_range = range(0, sys.maxsize)
             output_range = range(0, sys.maxsize)
             if input_len is not None:
@@ -126,7 +126,6 @@ def sample_requests_len_range(
                 (df["completion_len"] >= output_range[0]) &
                 (df["completion_len"] <= output_range[1])
                 ]
-
             if not filtered.empty:
                 # Select the first match or random sample
                 total_rows = len(filtered)
@@ -141,7 +140,12 @@ def sample_requests_len_range(
             err_perc += err_step
 
         if err_perc >= 1:
-            raise Exception(f"No match found for request {i + 1} even after relaxing err_perc to 0")
+            logging.warn(f"No match found for request {i + 1} even after relaxing err_perc to {err_perc} fallback to random")
+            total_rows = len(df)
+            sample = df.iloc[random.randint(0, total_rows - 1)] 
+            filtered_results.append({"prompt": sample["prompt"],
+                                     "prompt_length": sample["prompt_len"],
+                                     "output_length": sample["completion_len"]})
 
     return filtered_results
 
