@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: mock-facebook-opt-125m
 spec:
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
       adapter.model.aibrix.ai/enabled: "true"
@@ -16,11 +16,17 @@ spec:
         - name: llm-engine
           image: aibrix/vllm-cpu-env:macos
           command: ["/bin/sh", "-c"]
-          args: ["vllm serve facebook/opt-125m --trust-remote-code --enable-chunked-prefill --enable-prefix-caching --max_num_batched_tokens 1024"]
+          args: ["vllm serve facebook/opt-125m --served-model-name facebook-opt-125m --chat-template /etc/chat-template-config/chat-template.j2 --trust-remote-code --device cpu --disable_async_output_proc --enforce-eager --dtype float16"]
           volumeMounts:
           - name: model
             mountPath: /root/.cache/huggingface
+          - name: chat-template-volume
+            mountPath: /etc/chat-template-config
       volumes:
       - name: model
         hostPath:
           path: /root/.cache/huggingface
+      - name: chat-template-volume
+        configMap:
+          name: chat-template-config
+          
