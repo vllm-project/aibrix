@@ -11,20 +11,22 @@ def get_all_pods(namespace):
     pod_list = pod_list_output.decode('utf-8').split()
     return pod_list
 
-def write_logs(keyword, fname, process):
+def write_logs(keywords, fname, process):
     with open(fname, 'w') as log_file:
         while True:
             line = process.stdout.readline()
             if not line:
                 break
-            if keyword is None:
-                # If there is no keyword, write all logs
+            if len(keywords) == 0: # If there is no keyword, write all logs
                 log_file.write(line)
                 log_file.flush()
-            if keyword and keyword in line:
-                # If there is keyword, write only the lines containing the keyword
-                log_file.write(line)
-                log_file.flush()
+            else:
+                for keyword in keywords:
+                    if keyword in line:
+                        # If there is keyword, write only the lines containing the keyword
+                        log_file.write(line)
+                        log_file.flush()
+                        break
 
 def save_proxy_logs_streaming(pod_log_dir, pod_name, namespace):
     if not os.path.exists(pod_log_dir):
@@ -38,12 +40,11 @@ def save_proxy_logs_streaming(pod_log_dir, pod_name, namespace):
         stderr=subprocess.PIPE,
         universal_newlines=True
     )
-    # if namespace == "default":
-    #     keyword = "Avg prompt throughput:"
-    # else:
-    #     keyword = None
-    keyword = None # you can specify keyword here to filter logs
-    log_thread = threading.Thread(target=write_logs, args=(keyword, fname, process))
+    if namespace == "default":
+        keywords = ["Avg prompt throughput:", "logger.py", "engine.py"]
+    else:
+        keywords = []
+    log_thread = threading.Thread(target=write_logs, args=(keywords, fname, process))
     log_thread.start()
     return process, log_thread
 

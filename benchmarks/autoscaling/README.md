@@ -7,7 +7,7 @@ You can run autoscaling benchmark experiment by simply running the command below
 
 
 What you have to check before running it
-- run deployment for your application (refer to `deepseek-llm-7b-chat-v100/deploy.yaml`)
+- run deployment for your application (refer to `deepseek-llm-7b-chat/deploy.yaml`)
 - change the name field under scaleTargetRed in all autoscaling yaml files.
 - check the deployment name in run-test.py
 
@@ -17,7 +17,7 @@ For example,
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: deepseek-llm-7b-chat-v100 (*this one)
+    name: deepseek-llm-7b-chat (*this one)
 ...
 ```
 

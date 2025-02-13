@@ -4,8 +4,8 @@ input_workload_path=$1
 autoscaler=$2
 aibrix_repo="/Users/bytedance/projects/aibrix-2" # root dir of aibrix repo
 api_key="sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi" # set your api key
-k8s_yaml_dir="deepseek-llm-7b-chat-v100"
-target_deployment="deepseek-llm-7b-chat-v100" # "aibrix-model-deepseek-llm-7b-chat"
+k8s_yaml_dir="deepseek-llm-7b-chat"
+target_deployment="deepseek-llm-7b-chat" # "aibrix-model-deepseek-llm-7b-chat"
 target_ai_model=deepseek-llm-7b-chat
 
 echo "Make sure ${target_deployment} is the right deployment."
@@ -60,8 +60,10 @@ echo "started port-forwarding with PID: $PORT_FORWARD_PID"
 # Clean up any existing autoscalers
 kubectl delete podautoscaler --all --all-namespaces
 kubectl delete hpa --all --all-namespaces
+kubectl delete -f ${k8s_yaml_dir}/deploy.yaml
 
 # Apply new autoscaler
+kubectl apply -f ${k8s_yaml_dir}/deploy.yaml
 kubectl apply -f ${k8s_yaml_dir}/${autoscaler}.yaml
 echo "kubectl apply -f ${k8s_yaml_dir}/${autoscaler}.yaml"
 python set_num_replicas.py --deployment ${target_deployment} --replicas 1
@@ -122,6 +124,7 @@ sleep 1
 # Cleanup
 kubectl delete podautoscaler --all --all-namespaces
 python set_num_replicas.py --deployment ${target_deployment} --replicas 1
+kubectl delete -f ${k8s_yaml_dir}/deploy.yaml
 
 # Stop monitoring processes
 echo "Stopping monitoring processes..."

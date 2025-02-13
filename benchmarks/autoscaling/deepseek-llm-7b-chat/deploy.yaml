@@ -4,7 +4,7 @@ metadata:
   labels:
     model.aibrix.ai/name: deepseek-llm-7b-chat
     model.aibrix.ai/port: "8000"
-  name: deepseek-llm-7b-chat-v100
+  name: deepseek-llm-7b-chat
   namespace: default
 spec:
   replicas: 1
@@ -54,23 +54,23 @@ spec:
             successThreshold: 1
             timeoutSeconds: 1
           lifecycle:
-          preStop:
-            exec:
-              command:
-              - /bin/sh
-              - -c
-              - |
-                while true; do
-                  RUNNING=$(curl -s http://localhost:8000/metrics | grep 'vllm:num_requests_running' | grep -v '#' | awk '{print $2}')
-                  WAITING=$(curl -s http://localhost:8000/metrics | grep 'vllm:num_requests_waiting' | grep -v '#' | awk '{print $2}')
-                  if [ "$RUNNING" = "0.0" ] && [ "$WAITING" = "0.0" ]; then
-                    echo "Terminating: No active or waiting requests, safe to terminate" >> /proc/1/fd/1
-                    exit 0
-                  else
-                    echo "Terminating: Running: $RUNNING, Waiting: $WAITING" >> /proc/1/fd/1
-                    sleep 5
-                  fi
-                done
+            preStop:
+              exec:
+                command:
+                - /bin/sh
+                - -c
+                - |
+                  while true; do
+                    RUNNING=$(curl -s http://localhost:8000/metrics | grep 'vllm:num_requests_running' | grep -v '#' | awk '{print $2}')
+                    WAITING=$(curl -s http://localhost:8000/metrics | grep 'vllm:num_requests_waiting' | grep -v '#' | awk '{print $2}')
+                    if [ "$RUNNING" = "0.0" ] && [ "$WAITING" = "0.0" ]; then
+                      echo "Terminating: No active or waiting requests, safe to terminate" >> /proc/1/fd/1
+                      exit 0
+                    else
+                      echo "Terminating: Running: $RUNNING, Waiting: $WAITING" >> /proc/1/fd/1
+                      sleep 5
+                    fi
+                  done
           name: vllm-openai
           ports:
             - containerPort: 8000
@@ -127,7 +127,7 @@ spec:
             periodSeconds: 10
       initContainers:
         - name: init-model
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.2.0-rc2
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.2.0-rc.2
           command:
             - aibrix_download
             - --model-uri
@@ -158,7 +158,7 @@ spec:
           volumeMounts:
             - mountPath: /models
               name: model-hostpath
-      terminationGracePeriodSeconds: 300
+      terminationGracePeriodSeconds: 60
       volumes:
         - name: model-hostpath
           hostPath:

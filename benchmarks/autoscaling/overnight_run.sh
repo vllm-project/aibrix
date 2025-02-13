@@ -7,8 +7,7 @@ if [ -z "${workload_path}" ]; then
     exit 1
 fi
 
-# autoscalers="hpa kpa apa optimizer-kpa"
-autoscalers="apa optimizer-kpa"
+autoscalers="hpa kpa apa optimizer-kpa"
 for autoscaler in ${autoscalers}; do
     start_time=$(date +%s)
     echo "--------------------------------"
