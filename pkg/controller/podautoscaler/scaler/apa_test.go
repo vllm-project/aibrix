@@ -154,7 +154,7 @@ func TestApaScale2(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "test_ns",
 			Name:      "test_llm_for_pa",
-			Labels: map[string]string{
+			Annotations: map[string]string{
 				"autoscaling.aibrix.ai/max-scale-up-rate":          "2",
 				"autoscaling.aibrix.ai/max-scale-down-rate":        "1.25",
 				"autoscaling.aibrix.ai/up-fluctuation-tolerance":   "0.1",

@@ -85,7 +85,7 @@ func (b *BaseScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscal
 	}
 	b.TargetValue = targetValue
 
-	for key, value := range pa.Labels {
+	for key, value := range pa.Annotations {
 		switch key {
 		case maxScaleUpRateLabel:
 			v, err := strconv.ParseFloat(value, 64)

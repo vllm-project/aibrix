@@ -201,7 +201,7 @@ func TestKpaScale2(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "test_ns",
 			Name:      "test_llm_for_pa",
-			Labels: map[string]string{
+			Annotations: map[string]string{
 				"kpa.autoscaling.aibrix.ai/stable-window":    STABLE_WINDOW.String(),
 				"kpa.autoscaling.aibrix.ai/panic-window":     PANIC_WINDOW.String(),
 				"kpa.autoscaling.aibrix.ai/scale-down-delay": SCALE_DOWN_DELAY.String(),
