@@ -11,9 +11,9 @@ export SHAREGPT_FILE_PATH=/tmp/ShareGPT_V3_unfiltered_cleaned_split.json
 
 ### Generate a workload file based on workload patterns (synthetic patterns)
 
-If no trace file path is specified, the generator will generate workload file based on 4 synthetic pattern described [here](https://github.com/aibrix/aibrix/blob/main/benchmarks/autoscaling/bench_workload_generator.py):
+If no trace file path is specified, the generator will generate workload file based on synthetic traffic (qps), input lengths (prompt lengths) and output lengths (completion lengths) patterns. Currently we support 4 patterns (`'quick_rising`, `'slow_rising'`, `'slight_fluctuation'`, `'severe_fluctuation'`), described [here](https://github.com/aibrix/aibrix/blob/main/benchmarks/autoscaling/bench_workload_generator.py).:
 ```shell
-python workload_generator.py --prompt-file $SHARE_GPT_PATH --interval-ms 1000 --duration-ms 300000 --trace-type synthetic --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl 
+python workload_generator.py --prompt-file $SHARE_GPT_PATH --interval-ms 1000 --duration-ms 300000 --trace-type synthetic --traffic-pattern "slight_fluctuation" --prompt-len-pattern "slight_fluctuation" --completion-len-pattern "slight_fluctuation" --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl 
 ```
 Here `--interval-ms` specifies the granularity of concurrent dispatched requests (in milliseconds). `--duration-ms` specifies the total length of the trace in milliseconds.
 
