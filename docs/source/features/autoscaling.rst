@@ -36,7 +36,7 @@ AiBrix supports all the vllm metrics. Please refer to https://docs.vllm.ai/en/st
 How to deploy autoscaling policy
 --------------------------------
 
-It is simply applying podautoscaler yaml file.
+It is simply applying PodAutoscaler yaml file.
 One important thing you should note is that the deployment name and the name in `scaleTargetRef` in PodAutoscaler must be same.
 That's how AiBrix PodAutoscaler refers to the right deployment.
 
@@ -90,7 +90,7 @@ Expected log output. You can see the current metric is gpu_cache_usage_perc. You
 Custom Resource Status
 ^^^^^^^^^^^^^^^^^^^^^^
 
-To describe the podautoscaler custom resource, you can run
+To describe the PodAutoscaler custom resource, you can run
 
 .. code-block:: bash
 
