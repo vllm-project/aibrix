@@ -121,12 +121,12 @@ def read_distribution_stats(df: pd.DataFrame) -> Tuple[List[Dict], List[Dict], L
         })
     return input_len_configs, output_len_configs, rps_configs
 
-def generate_poisson_rps_dist(mean_rps: int, total_seconds: int, window_size: int = 10) -> List[int]:
-    rps_list = np.random.poisson(lam=mean_rps, size=total_seconds).tolist()
+def generate_poisson_dist(target: int, sample_size: int, smooth_window_size: int = 1) -> List[int]:
+    rps_list = np.random.poisson(lam=target, size=sample_size).tolist()
     # Apply moving average smoothing
     smoothed = []
     for i in range(len(rps_list)):
-        start = max(0, i - window_size + 1)
+        start = max(0, i - smooth_window_size + 1)
         window = rps_list[start:i + 1]
         smoothed.append(max(1, round(sum(window) / len(window))))
     return smoothed
@@ -373,6 +373,10 @@ def load_workload(input_path: str) -> List[Any]:
             load_struct = json.load(file)
     return load_struct
 
+def load_config(config_path: str) -> Dict[str, Any]:
+    with open(config_path, "r") as file:
+        config = json.load(file)
+    return config
 
 # Function to wrap the prompt into OpenAI's chat completion message format.
 def wrap_prompt_as_chat_message(prompt: str):

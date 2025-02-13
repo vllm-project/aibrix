@@ -16,12 +16,13 @@ from sample_request import (load_requests,
                             )
 from utils import (convert_to_stat_df,
                    read_distribution_stats,
-                   generate_poisson_rps_dist,
+                   generate_poisson_dist,
                    generate_token_len_from_percentiles,
                    to_fluctuate_pattern_config,
                    get_tokenizer, 
                    plot_workload, 
                    make_serializable, 
+                   load_config,
                    save_workload, 
                    )
 
@@ -48,7 +49,7 @@ def generate_from_internal_csv(prompt_file_path: str,
     output_len_dist = []
     rps_dist = []
     for rps_config in rps_configs:
-        rps_segment = generate_poisson_rps_dist(rps_config['mean_rps'], rps_config['total_seconds'])
+        rps_segment = generate_poisson_dist(target = rps_config['mean_rps'], sample_size = rps_config['total_seconds'], generate_poisson_dist = 10)
         rps_dist.extend(rps_segment)
     if internal_trace_type == "maas":
         for config in input_len_configs:
@@ -239,9 +240,11 @@ def generate_synthetic(prompt_file_path: str,
         current_concurrency, previous_concurrency = math_function(t, qps_pattern_config, length, previous_concurrency)
         current_input_len, previous_input_len = math_function(t, input_pattern_config, length, previous_input_len)
         current_output_len, previous_output_len = math_function(t, output_pattern_config, length, previous_output_len)
-    
+        current_concurrency_pois = generate_poisson_dist(target = current_concurrency, sample_size = 1)
+        current_input_len_pois = generate_poisson_dist(target = current_input_len, sample_size = 1)
+        current_output_len_pois = generate_poisson_dist(target = current_output_len, sample_size = 1)
         # start from last end index
-        logging.debug(f"search requests for current_concurrency {current_concurrency} input_lens {current_input_len} output_lens {current_output_len}")
+        logging.debug(f"search requests for current_concurrency {current_concurrency} : {current_concurrency_pois} input_lens {current_input_len} : {current_input_len_pois} output_lens {current_output_len} : {current_output_len_pois}")
         concurrent_reqs = sample_requests_len_range(
             df=sharegpt_df,
             num_requests=current_concurrency,
@@ -351,36 +354,47 @@ if __name__ == '__main__':
     parser.add_argument('--prompt-file', type=str, required=True, help='File containing sampling prompts.')
     parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'internal', 'azure'],
                         help='Type of trace consumed. Choose among: synthetic, internal, azure.')
-    parser.add_argument('--target-qps', type=int, required=False, default=1, help='Target QPS for the workload.')
-    parser.add_argument('--traffic-file', type=str, required=False, default=None,
-                        help='Traffic file containing times of arrival, which workload generator depends upon to'
-                             'convert to traffic used in workload. This is only needed for for internal and azure trace type.')
-    parser.add_argument('--traffic-pattern', type=str, required=False, choices=['quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'], default='slight_fluctuation',
-                        help='Traffic patterns used for synthetic workload type.')
-    parser.add_argument('--prompt-len-file', type=str, required=False, default=None,
-                        help='File containing request input lengths varied by time, which workload generator depends upon to '
-                             'select input prompt. This is only needed for for internal trace type. ')
-    parser.add_argument('--prompt-len-pattern', type=str, required=False, choices=['quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'], default='slight_fluctuation',
-                        help='Prompt lengths patterns used for synthetic workload type.')
-    parser.add_argument('--completion-len-file', type=str, required=False, default=None,
-                        help='File containing request output lengths varied by time, which workload generator depends upon to '
-                             'select input prompt. This is only needed for for internal trace type. ')
-    parser.add_argument('--completion-len-pattern', type=str, required=False, choices=['quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'], default='slight_fluctuation',
-                        help='Prompt lengths patterns used for synthetic workload type.')
     parser.add_argument('--model', type=str, required=False, default="Qwen/Qwen2.5-Coder-7B-Instruct",
                         help='Target model tokenizer.')
-    parser.add_argument('--group-interval-seconds', type=int, default=1, help='Grouping interval seconds.')
     parser.add_argument('--interval-ms', type=int, required=False, default=1000,
                         help='Granularity of request injection interval in milliseconds.')
     parser.add_argument('--duration-ms', type=int, default=60000, help='Duration of the trace generated.')
-    parser.add_argument('--qps-scale', type=float, required=False, default=1.0, help='QPS scaling factor.')
-    parser.add_argument('--input-scale', type=float, required=False, default=1.0, help='Input length scaling factor.')
-    parser.add_argument('--output-scale', type=float, required=False, default=1.0, help='Output length scaling factor.')
+    parser.add_argument('--group-interval-seconds', type=int, default=1, help='Grouping interval seconds.')
     parser.add_argument('--internal-trace-type', type=str, choices=['maas', 'cloudide'], default="maas", help='Type of internal traces.')
     parser.add_argument('--output-dir', type=str, required=False, default="output", help='Output directory to save.'
                                                                                          'the workload.')
     parser.add_argument('--output-format', type=str, choices=['json', 'jsonl'], default='json',
                         help='Set output data format to either .json or .jsonl (default is .json).')
+    
+    ###### Synthetic and constant workload
+    parser.add_argument('--target-qps', type=int, required=False, default=1, help='Target QPS for the workload.')
+    parser.add_argument('--traffic-pattern', type=str, required=False, choices=['quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'], default=None,
+                        help='Traffic patterns used for synthetic workload type.')
+    parser.add_argument('--prompt-len-pattern', type=str, required=False, choices=['quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'], default=None,
+                        help='Prompt lengths patterns used for synthetic workload type.')
+    parser.add_argument('--completion-len-pattern', type=str, required=False, choices=['quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'], default=None,
+                        help='Prompt lengths patterns used for synthetic workload type.')
+    parser.add_argument('--traffic-pattern-config', type=str, required=False, default=None,
+                        help='Traffic configuration file used for synthetic workload type.')
+    parser.add_argument('--prompt-len-pattern-config', type=str, required=False, default=None,
+                        help='Prompt lengths configuration file used for synthetic workload type.')
+    parser.add_argument('--completion-len-pattern-config', type=str, required=False, default=None,
+                        help='Completion lengths configuration file used for synthetic workload type.')
+    
+    ##### Trace and stats-driven workload
+    parser.add_argument('--traffic-file', type=str, required=False, default=None,
+                        help='Traffic file containing times of arrival, which workload generator depends upon to'
+                             'convert to traffic used in workload. This is only needed for for internal and azure trace type.')
+    parser.add_argument('--prompt-len-file', type=str, required=False, default=None,
+                        help='File containing request input lengths varied by time, which workload generator depends upon to '
+                             'select input prompt. This is only needed for for internal trace type. ')
+    parser.add_argument('--completion-len-file', type=str, required=False, default=None,
+                        help='File containing request output lengths varied by time, which workload generator depends upon to '
+                             'select input prompt. This is only needed for for internal trace type. ')
+    parser.add_argument('--qps-scale', type=float, required=False, default=1.0, help='QPS scaling factor.')
+    parser.add_argument('--input-scale', type=float, required=False, default=1.0, help='Input length scaling factor.')
+    parser.add_argument('--output-scale', type=float, required=False, default=1.0, help='Output length scaling factor.')
+    
     args = parser.parse_args()
 
     # Generate workloads and pair with prompts
@@ -388,23 +402,44 @@ if __name__ == '__main__':
     tokenizer = get_tokenizer(pretrained_model_name_or_path=args.model, trust_remote_code=True)
 
     if args.trace_type == "synthetic":
-        comp_pattern_type = f"synthetic_QPS_{args.traffic_pattern}_INPUT_{args.prompt_len_pattern}_OUTPUT_{args.completion_len_pattern}"
-        qps_pattern_config = to_fluctuate_pattern_config(config_type = args.traffic_pattern, mean = 6)
-        input_pattern_config = to_fluctuate_pattern_config(config_type = args.prompt_len_pattern, mean = 1024)
-        output_pattern_config = to_fluctuate_pattern_config(config_type = args.completion_len_pattern, mean = 1024)
-        logging.debug(f"qps_pattern_config {qps_pattern_config}")
-        logging.debug(f"input_pattern_config {input_pattern_config}")
-        logging.debug(f"output_pattern_config {output_pattern_config}")
-        generated_workload = generate_synthetic(prompt_file_path = args.prompt_file,
-                                                qps_pattern_config = qps_pattern_config,
-                                                input_pattern_config = input_pattern_config,
-                                                output_pattern_config = output_pattern_config,
-                                                duration_ms=args.duration_ms,
-                                                interval_ms=args.interval_ms,
-                                                output_file=f"{args.output_dir}/{comp_pattern_type}",
-                                                to_jsonl=(args.output_format == "jsonl"),
-                                            )
-        workload_dict[comp_pattern_type] = generated_workload
+        if args.traffic_pattern and args.prompt_len_pattern and args.completion_len_pattern:
+            logging.info(f"Generating synthetic workload with traffic pattern: {args.traffic_pattern}, prompt length pattern: {args.prompt_len_pattern}, completion length pattern: {args.completion_len_pattern}")
+            comp_pattern_type = f"synthetic_QPS_{args.traffic_pattern}_INPUT_{args.prompt_len_pattern}_OUTPUT_{args.completion_len_pattern}"
+            qps_pattern_config = to_fluctuate_pattern_config(config_type = args.traffic_pattern, mean = 6)
+            input_pattern_config = to_fluctuate_pattern_config(config_type = args.prompt_len_pattern, mean = 1024)
+            output_pattern_config = to_fluctuate_pattern_config(config_type = args.completion_len_pattern, mean = 1024)
+            logging.debug(f"qps_pattern_config {qps_pattern_config}")
+            logging.debug(f"input_pattern_config {input_pattern_config}")
+            logging.debug(f"output_pattern_config {output_pattern_config}")
+            generated_workload = generate_synthetic(prompt_file_path = args.prompt_file,
+                                                    qps_pattern_config = qps_pattern_config,
+                                                    input_pattern_config = input_pattern_config,
+                                                    output_pattern_config = output_pattern_config,
+                                                    duration_ms=args.duration_ms,
+                                                    interval_ms=args.interval_ms,
+                                                    output_file=f"{args.output_dir}/{comp_pattern_type}",
+                                                    to_jsonl=(args.output_format == "jsonl"),
+                                                )
+            workload_dict[comp_pattern_type] = generated_workload
+        elif args.traffic_pattern_config and args.prompt_len_pattern_config and args.completion_len_pattern_config:
+            logging.info(f"Generating synthetic workload with traffic pattern config: {args.traffic_pattern_config}, prompt length pattern config: {args.prompt_len_pattern_config}, completion length pattern config: {args.completion_len_pattern_config}")
+            comp_pattern_type = f"synthetic_manual_config"
+            qps_pattern_config = load_config(args.traffic_pattern_config)
+            input_pattern_config = load_config(args.prompt_len_pattern_config)
+            output_pattern_config = load_config(args.completion_len_pattern_config)
+            logging.debug(f"qps_pattern_config {qps_pattern_config}")
+            logging.debug(f"input_pattern_config {input_pattern_config}")
+            logging.debug(f"output_pattern_config {output_pattern_config}")
+            generated_workload = generate_synthetic(prompt_file_path = args.prompt_file,
+                                                    qps_pattern_config = qps_pattern_config,
+                                                    input_pattern_config = input_pattern_config,
+                                                    output_pattern_config = output_pattern_config,
+                                                    duration_ms=args.duration_ms,
+                                                    interval_ms=args.interval_ms,
+                                                    output_file=f"{args.output_dir}/{comp_pattern_type}",
+                                                    to_jsonl=(args.output_format == "jsonl"),
+                                                )
+            workload_dict[comp_pattern_type] = generated_workload
     else:
         # Process for 'internal' and 'azure'
         if args.trace_type == "constant":

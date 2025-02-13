@@ -1,0 +1,8 @@
+{
+    "A":  8, 
+    "B": 169, 
+    "sigma": 0.1,
+    "period": 1,
+    "omega": null,
+    "only_rise": false
+}
