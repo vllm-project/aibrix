@@ -14,11 +14,13 @@ from sample_request import (load_requests,
                             sample_requests_len_range, 
                             sample_requests_all,
                             )
+from distribution import (generate_poisson_dist,
+                          generate_token_len_from_percentiles,
+                          to_fluctuate_pattern_config,
+                          )
+                          
 from utils import (convert_to_stat_df,
                    read_distribution_stats,
-                   generate_poisson_dist,
-                   generate_token_len_from_percentiles,
-                   to_fluctuate_pattern_config,
                    get_tokenizer, 
                    plot_workload, 
                    make_serializable, 
@@ -68,7 +70,7 @@ def generate_from_internal_csv(prompt_file_path: str,
             output_segment = generate_token_len_from_percentiles(**config)
             output_len_dist.extend(output_segment)
     
-    workload = generate_synthetic_rps(
+    workload = generate_synthetic_from_dist(
         prompt_file_path = prompt_file_path,
         tokenizer = tokenizer,
         duration_ms =  duration_ms,
@@ -84,7 +86,7 @@ def generate_from_internal_csv(prompt_file_path: str,
     save_workload(workload, output_file, use_jsonl=to_jsonl)
     return workload
     
-def generate_synthetic_rps(
+def generate_synthetic_from_dist(
         prompt_file_path: str,
         tokenizer: PreTrainedTokenizerBase,
         duration_ms: int,
