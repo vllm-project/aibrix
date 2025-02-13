@@ -25,10 +25,10 @@ import (
 type PrefixCacheIndexer interface {
 	// MatchPrefix matches the longest prefix sequence for input request (passed as input tokens)
 	// and returns matched prefix (as tokens), remaining unmatched input request (as tokens) and pods matching the prefix
-	MatchPrefix(inputTokens []int, model string, pods []*v1.Pod) (matchedTokes []int, unMatchedTokens []int, matchedPods []*v1.Pod)
+	MatchPrefix(inputTokens []int, model string, pods []*v1.Pod) (matchedTokens []int, unMatchedTokens []int, matchedPods []*v1.Pod)
 
-	// AddPrefix adds the unmatched tokens returned from MatchPrefix which will be used future requests
-	AddPrefix(unMatchedTokens []int, model, pod string)
+	// AddPrefix adds tokens in internal prefix cache indexer to be used by future requests
+	AddPrefix(tokens []int, model, pod string)
 
 	// Evict is invoked at fixed internal to clean up expired tokens using LRU policy from prefix cache.
 	Evict(now time.Time)
