@@ -36,7 +36,7 @@ LOG_FILE="/tmp/cloud-provider-kind.log"
 nohup cloud-provider-kind > ${LOG_FILE} 2>&1 &
 
 # Save the process ID
-echo $! > /var/run/cloud-provider-kind.pid
+echo $! > /tmp/cloud-provider-kind.pid
 echo "Cloud Provider Kind is running in the background. Logs are being written to ${LOG_FILE}."
 
 echo "Setup complete. All components have been installed successfully."
