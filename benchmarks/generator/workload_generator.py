@@ -446,9 +446,8 @@ if __name__ == '__main__':
     if workload_dict:
         # Plot the workloads
         for workload_name, workload in workload_dict.items():
-            print(f"output_dir {args.output_dir}")
             plot_workload(
                 workload_name = workload_name, 
                 workload = workload, 
                 bin_size_sec = int(args.interval_ms/1000), 
-                output_dir = f"{args.output_dir}")
+                output_dir = f"./plot")
