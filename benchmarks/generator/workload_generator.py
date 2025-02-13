@@ -351,6 +351,7 @@ if __name__ == '__main__':
     parser.add_argument('--prompt-file', type=str, required=True, help='File containing sampling prompts.')
     parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'internal', 'azure'],
                         help='Type of trace consumed. Choose among: synthetic, internal, azure.')
+    parser.add_argument('--target-qps', type=int, required=False, default=1, help='Target QPS for the workload.')
     parser.add_argument('--traffic-file', type=str, required=False, default=None,
                         help='Traffic file containing times of arrival, which workload generator depends upon to'
                              'convert to traffic used in workload. This is only needed for for internal and azure trace type.')
