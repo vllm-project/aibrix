@@ -30,6 +30,7 @@ type PrefixCacheIndexer interface {
 	// AddPrefix adds tokens in internal prefix cache indexer to be used by future requests
 	AddPrefix(tokens []int, model, pod string)
 
-	// Evict is invoked at fixed internal to clean up expired tokens using LRU policy from prefix cache.
+	// Evict is invoked at fixed internal to clean up expired tokens from prefix cache.
+	// TODO: Add max blocks to cache, add LRU policy along with TTL and add performance benchmark tests.
 	Evict(now time.Time)
 }
