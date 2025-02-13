@@ -202,34 +202,6 @@ def to_fluctuate_pattern_config(config_type: str,
                 'only_rise': False}
     else:
         raise ValueError(f"Unknown config type: {config_type}")
-    # 'quick_rising': { 
-    #                  'A': 5, 
-    #                  'B': 1, 
-    #                  'sigma': 0.1,
-    #                  'period': 5,
-    #                  'omega': None,
-    #                  'only_rise': True},
-    # 'slow_rising': {
-    #                 'A': 5, 
-    #                 'B': 1,
-    #                 'sigma': 0.1,
-    #                 'period': 0.25,
-    #                 'omega': None,
-    #                 'only_rise': True},
-    # 'slight_fluctuation': {
-    #                        'A': 5, 
-    #                        'B': 5,
-    #                        'sigma': 0.1,
-    #                        'period': 1, 
-    #                        'omega': None,
-    #                        'only_rise': False},
-    # 'severe_fluctuation': {
-    #                        'A': 5, 
-    #                        'B': 10,
-    #                        'sigma': 0.1,
-    #                        'period': 12, 
-    #                        'omega': None,
-    #                        'only_rise': False},
 
 
 def get_sample_interval_ms(file_path):
