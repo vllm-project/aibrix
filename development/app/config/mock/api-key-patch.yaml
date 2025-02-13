@@ -1,22 +1,26 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: mock-llama2-7b
+  name: mock-facebook-opt-125m
 spec:
   replicas: 3
   selector:
     matchLabels:
       adapter.model.aibrix.ai/enabled: "true"
-      model.aibrix.ai/name: "llama2-7b"
-      app: "mock-llama2-7b"
+      model.aibrix.ai/name: "facebook-opt-125m"
+      app: "mock-facebook-opt-125m"
   template:
     spec:
       serviceAccountName: mocked-app-sa
       containers:
         - name: llm-engine
-          image: aibrix/vllm-mock:nightly
-          command:
-            - python3
-            - app.py
-            - --api_key
-            - test-key-1234567890
+          image: aibrix/vllm-cpu-env:macos
+          command: ["/bin/sh", "-c"]
+          args: ["vllm serve facebook/opt-125m --trust-remote-code --enable-chunked-prefill --enable-prefix-caching --max_num_batched_tokens 1024"]
+          volumeMounts:
+          - name: model
+            mountPath: /root/.cache/huggingface
+      volumes:
+      - name: model
+        hostPath:
+          path: /root/.cache/huggingface

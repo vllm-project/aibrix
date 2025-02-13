@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: llama2-7b
+  name: facebook-opt-125m
   namespace: default
   labels:
     prometheus-discovery: "true"
@@ -12,7 +12,7 @@ metadata:
     prometheus.io/port: "8000"
 spec:
   selector:
-    model.aibrix.ai/name: "llama2-7b"
+    model.aibrix.ai/name: "facebook-opt-125m"
   ports:
     - protocol: TCP
       name: metrics
