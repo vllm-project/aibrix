@@ -37,6 +37,7 @@ Installation Steps
 Run the following script to install the necessary dependencies including `nvkind`, `kubectl`, `Helm`, `Go`, and the `NVIDIA Container Toolkit`.
 
 .. code-block:: bash
+
     bash hack/lambda-cloud/install.sh
 
 **install.sh Summary:**
@@ -89,6 +90,7 @@ Create a Kubernetes cluster using nvkind:
 This will set up a single-node cluster with GPU support. Make sure you see `Ready` status for the node:
 
 .. code-block:: bash
+
     kubectl get nodes
 
 

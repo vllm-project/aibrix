@@ -24,12 +24,13 @@ AIBrix Control Plane
 --------------------
 
 AIBrix currently provides several control plane components.
+
 - :strong:`Model Adapter (Lora) controller`: enables multi-LoRA-per-pod deployments, significantly improving scalability and resource efficiency.
 - :strong:`RayClusterFleet`: orchestrates multi-node inference, ensuring optimal performance across distributed environments.
 - :strong:`LLM-Specific Autoscale`: enables real-time, second-level scaling, leveraging KV cache utilization and inference-aware metrics to dynamically optimize resource allocation
 - :strong:`GPU Optimizer`: a profiler based optimizer which optimizes heterogeneous serving, dynamically adjusting allocations to maximize cost-efficiency while maintaining service guarantee
 - :strong:`AI Engine Runtime`: a lightweight sidecar that offloads management tasks, enforces policies, and abstracts engine interactions.
-- :string:`Accelerator Diagnose Tools`: provides automated failure detection and mock-up testing to improve fault resilience.
+- :strong:`Accelerator Diagnose Tools`: provides automated failure detection and mock-up testing to improve fault resilience.
 
 
 AIBrix Data Plane
