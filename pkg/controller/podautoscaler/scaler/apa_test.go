@@ -118,7 +118,7 @@ func TestApaUpdateContext(t *testing.T) {
 			ScalingStrategy: "APA",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Labels: map[string]string{
+			Annotations: map[string]string{
 				"autoscaling.aibrix.ai/max-scale-up-rate":              "32.1",
 				"autoscaling.aibrix.ai/max-scale-down-rate":            "12.3",
 				"apa.autoscaling.aibrix.ai/up-fluctuation-tolerance":   "1.2",

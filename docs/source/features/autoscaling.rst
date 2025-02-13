@@ -14,8 +14,8 @@ AIBrix Autoscaler includes various autoscaling components, allowing users to con
 In the following sections, we will demonstrate how users can create various types of autoscalers within AIBrix.
 
 
-Supported autoscaling mechanism
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Supported Autoscaling Mechanism
+-----------------------------
 
 - HPA: it is same as vanilla K8s HPA. HPA, the native Kubernetes autoscaler, is utilized when users deploy a specification with AIBrix that calls for an HPA. This setup scales the replicas of a demo deployment based on CPU utilization.
 - KPA: it is from Knative. KPA has panic mode which scales up more quickly based on short term history. More rapid scaling is possible. The KPA, inspired by Knative, maintains two time windows: a longer ``stable window`` and a shorter ``panic window``. It rapidly scales up resources in response to sudden spikes in traffic based on the panic window measurements. Unlike other solutions that might rely on Prometheus for gathering deployment metrics, AIBrix fetches and maintains metrics internally, enabling faster response times. Example of a KPA scaling operation using a mocked vllm-based Llama2-7b deployment
@@ -29,14 +29,15 @@ While HPA and KPA are widely used, they are not specifically designed and optimi
 
 
 Metrics
-^^^^^^^
+-------
 
 AiBrix supports all the vllm metrics. Please refer to https://docs.vllm.ai/en/stable/serving/metrics.html
 
-How to deploy autoscaling object
+How to deploy autoscaling policy
 --------------------------------
+
 It is simply applying podautoscaler yaml file.
-One important thing you should note is that the deployment name and the name in scaleTargetRef in PodAutoscaler must be same. 
+One important thing you should note is that the deployment name and the name in `scaleTargetRef` in PodAutoscaler must be same.
 That's how AiBrix PodAutoscaler refers to the right deployment.
 
 All the sample files can be found in the following directory. 
@@ -48,93 +49,21 @@ All the sample files can be found in the following directory.
 Example HPA yaml config
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-.. code-block:: yaml
-
-    apiVersion: autoscaling.aibrix.ai/v1alpha1
-    kind: PodAutoscaler
-    metadata:
-        name: podautoscaler-aibrix-model-deepseek-llm-7b-chat-hpa
-        namespace: default
-        labels:
-            app.kubernetes.io/name: aibrix
-            app.kubernetes.io/managed-by: kustomize
-    spec:
-        scalingStrategy: "HPA"
-        minReplicas: 1
-        maxReplicas: 10
-        metricsSources:
-        - metricSourceType: "pod"
-          protocolType: "http"
-          port: "8000"
-          path: "/metrics"
-          targetMetric: "gpu_cache_usage_perc"
-          targetValue: "50"
-        scaleTargetRef:
-            apiVersion: apps/v1
-            kind: Deployment
-            name: aibrix-model-deepseek-llm-7b-chat
+.. literalinclude:: ../../../samples/autoscaling/hpa.yaml
+   :language: yaml
 
 Example KPA yaml config
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-.. code-block:: yaml
+.. literalinclude:: ../../../samples/autoscaling/kpa.yaml
+   :language: yaml
 
-    apiVersion: autoscaling.aibrix.ai/v1alpha1
-    kind: PodAutoscaler
-    metadata:
-        name: podautoscaler-aibrix-model-deepseek-llm-7b-chat-kpa
-        namespace: default
-        labels:
-            app.kubernetes.io/name: aibrix
-            app.kubernetes.io/managed-by: kustomize
-            kpa.autoscaling.aibrix.ai/scale-down-delay: "3m"
-    spec:
-        scalingStrategy: "KPA"
-        minReplicas: 1
-        maxReplicas: 10
-        metricsSources:
-        - metricSourceType: "pod"
-          protocolType: "http"
-          port: "8000"
-          path: "metrics"
-          targetMetric: "gpu_cache_usage_perc"
-          targetValue: "0.5"
-        scaleTargetRef:
-            apiVersion: apps/v1
-            kind: Deployment
-            name: aibrix-model-deepseek-llm-7b-chat
 
 Example APA yaml config
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-.. code-block:: yaml
-
-    apiVersion: autoscaling.aibrix.ai/v1alpha1
-    kind: PodAutoscaler
-    metadata:
-        name: podautoscaler-aibrix-model-deepseek-llm-7b-chat-apa
-        namespace: default
-        labels:
-            app.kubernetes.io/name: aibrix
-            app.kubernetes.io/managed-by: kustomize
-            autoscaling.aibrix.ai/up-fluctuation-tolerance: "0.1"
-            autoscaling.aibrix.ai/down-fluctuation-tolerance: "0.2"
-            apa.autoscaling.aibrix.ai/window: "30s"
-    spec:
-        scalingStrategy: "APA"
-        minReplicas: 1
-        maxReplicas: 10
-        metricsSources:
-        - metricSourceType: "pod"
-          protocolType: "http"
-          port: "8000"
-          path: "metrics"
-          targetMetric: "gpu_cache_usage_perc"
-          targetValue: "0.5"
-        scaleTargetRef:
-            apiVersion: apps/v1
-            kind: Deployment
-            name: aibrix-model-deepseek-llm-7b-chat
+.. literalinclude:: ../../../samples/autoscaling/apa.yaml
+   :language: yaml
 
 
 Check autoscaling logs
@@ -144,26 +73,34 @@ Pod Autoscaler Logs
 ^^^^^^^^^^^^^^^^^^^
 
 Pod autoscaler is part of aibrix controller manager which plays the role of collecting the metrics from each pod. You can
-check its logs in this way. ``kubectl logs <aibrix-controller-manager-podname> -n aibrix-system -f``
+check its logs in this way.
+
+.. code-block:: bash
+
+    kubectl logs <aibrix-controller-manager-podname> -n aibrix-system -f
 
 Expected log output. You can see the current metric is gpu_cache_usage_perc. You can check each pod's current metric value.
 
 .. image:: ../assets/images/autoscaler/aibrix-controller-manager-output.png
    :alt: AiBrix controller manager output
-   :width: 600px
+   :width: 100%
    :align: center
 
 
-Custom Resource Logs
-^^^^^^^^^^^^^^^^^^^^
+Custom Resource Status
+^^^^^^^^^^^^^^^^^^^^^^
 
-To describe the podautoscaler custom resource, you can run ``kubectl describe podautoscaler <podautoscaler-name> -n <namespace>``
+To describe the podautoscaler custom resource, you can run
+
+.. code-block:: bash
+
+    kubectl describe podautoscaler <podautoscaler-name>
 
 Example output is here, you can explore the scaling conditions and events for more details.
 
 .. image:: ../assets/images/autoscaler/podautoscaler-describe.png
    :alt: PodAutoscaler describe
-   :width: 600px
+   :width: 100%
    :align: center
 
 
@@ -197,5 +134,5 @@ In AiBrix, user can easily deploy different autoscaler by simply applying K8s ya
 
 .. image:: ../assets/images/autoscaler/autoscaling_result.png
    :alt: result
-   :width: 600px
+   :width: 70%
    :align: center

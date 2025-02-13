@@ -125,12 +125,11 @@ func NewKpaScalingContextByPa(pa *autoscalingv1alpha1.PodAutoscaler) (*KpaScalin
 }
 
 func (k *KpaScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error {
-
 	err := k.BaseScalingContext.UpdateByPaTypes(pa)
 	if err != nil {
 		return err
 	}
-	for key, value := range pa.Labels {
+	for key, value := range pa.Annotations {
 		switch key {
 		case targetBurstCapacityLabel:
 			v, err := strconv.ParseFloat(value, 64)

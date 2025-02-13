@@ -122,7 +122,7 @@ func (a *ApaScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscale
 	if err != nil {
 		return err
 	}
-	for key, value := range pa.Labels {
+	for key, value := range pa.Annotations {
 		switch key {
 		case upFluctuationToleranceLabel:
 			v, err := strconv.ParseFloat(value, 64)
