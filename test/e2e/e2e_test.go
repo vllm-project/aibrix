@@ -88,7 +88,8 @@ func TestBaseModelInferenceFailures(t *testing.T) {
 			var client *openai.Client
 			if tc.routingStrategy != "" {
 				var dst *http.Response
-				client = createOpenAIClientWithRoutingStrategy(baseURL, tc.apiKey, tc.routingStrategy, option.WithResponseInto(&dst))
+				client = createOpenAIClientWithRoutingStrategy(baseURL, tc.apiKey,
+					tc.routingStrategy, option.WithResponseInto(&dst))
 			} else {
 				client = createOpenAIClient(baseURL, tc.apiKey)
 			}
