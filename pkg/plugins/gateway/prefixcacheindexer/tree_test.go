@@ -1,0 +1,111 @@
+package prefixcacheindexer
+
+import (
+	"testing"
+	"time"
+
+	"github.com/aibrix/aibrix/pkg/utils"
+	"github.com/stretchr/testify/assert"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+func Test_LPRadixCacheE2E(t *testing.T) {
+	cache := NewLPRadixCache(2) // assuming 2 GPUs
+	pods := []*v1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
+	}
+
+	inputText := "Hello World! What a Good Day! Good Morning! 你好世界！多么美好的一天啊！早上好！"
+	tokens, err := utils.TokenizeInputText(inputText)
+	assert.Equal(t, nil, err)
+
+	// Initial match should return empty as cache is empty
+	matchedTokens, unMatchedTokens, matchPods := cache.MatchPrefix(tokens, "m1", pods)
+	assert.Equal(t, 0, len(matchedTokens))
+	assert.Equal(t,
+		[]int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 7839, 29084, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447, 6079, 102, 17905, 53901, 6447},
+		unMatchedTokens)
+	assert.Equal(t, 0, len(matchPods))
+
+	// Add prefix and verify it can be matched
+	cache.AddPrefix(unMatchedTokens, "m1", "p1")
+	matchedTokens, unMatchedTokens, matchPods = cache.MatchPrefix(tokens, "m1", pods)
+	assert.Equal(t,
+		[]int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 7839, 29084, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447, 6079, 102, 17905, 53901, 6447},
+		matchedTokens)
+	assert.Equal(t, 0, len(unMatchedTokens))
+	assert.Equal(t, "p1", matchPods[0].Name)
+
+	// Test eviction
+	cache.Evict(time.Now().Add(60 * time.Minute))
+	_, unMatchedTokens, matchPods = cache.MatchPrefix(tokens, "m1", pods)
+	assert.Equal(t,
+		[]int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 7839, 29084, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447, 6079, 102, 17905, 53901, 6447},
+		unMatchedTokens)
+	assert.Equal(t, 0, len(matchPods))
+}
+
+func Test_RadixMatchPrefix(t *testing.T) {
+	tests := []*struct {
+		name          string
+		inputText     string
+		setupCache    func() *LPRadixCache
+		model         string
+		pods          []*v1.Pod
+		matchTokens   []int
+		unMatchTokens []int
+		matchPods     []*v1.Pod
+	}{
+		{
+			name:      "empty cache - no match",
+			inputText: "Hello World! What a Good Day! 你好世界！多么美好的一天啊！",
+			setupCache: func() *LPRadixCache {
+				return NewLPRadixCache(2)
+			},
+			model: "m1",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
+			},
+			matchTokens:   []int{},
+			unMatchTokens: []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447},
+			matchPods:     nil,
+		},
+		{
+			name:      "partial match - one node exists",
+			inputText: "Hello World! What a Good Day! 你好世界！多么美好的一天啊！",
+			setupCache: func() *LPRadixCache {
+				cache := NewLPRadixCache(2)
+				tokens := []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220}
+				cache.AddPrefix(tokens, "m1", "p1")
+				return cache
+			},
+			model: "m1",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
+			},
+			matchTokens:   []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220},
+			unMatchTokens: []int{57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447},
+			matchPods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tokens, err := utils.TokenizeInputText(tt.inputText)
+			assert.Equal(t, nil, err)
+
+			cache := tt.setupCache()
+			matchTokens, unMatchTokens, matchPods := cache.MatchPrefix(tokens, tt.model, tt.pods)
+
+			assert.Equal(t, tt.matchTokens, matchTokens)
+			assert.Equal(t, tt.unMatchTokens, unMatchTokens)
+			assert.Equal(t, tt.matchPods, matchPods)
+		})
+	}
+}
