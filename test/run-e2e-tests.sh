@@ -66,7 +66,7 @@ if [ -n "$INSTALL_AIBRIX" ]; then
   cd ../..
 
   kubectl port-forward svc/llama2-7b 8000:8000 &
-  kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc  8888:80 &
+  kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 &
 
   function cleanup {
     echo "Cleaning up..."

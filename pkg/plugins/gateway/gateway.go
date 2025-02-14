@@ -215,7 +215,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 }
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, string) {
-	klog.Info("\n\n")
+	klog.Info("\n")
 	klog.InfoS("-- In RequestHeaders processing ...", "requestID", requestID)
 	var username string
 	var user utils.User
@@ -482,15 +482,19 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				}}},
 				err.Error()), complete
 		} else if len(res.Model) == 0 {
-			err = ErrorUnknownResponse
-			klog.ErrorS(err, "unexpected response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+			msg := ErrorUnknownResponse.Error()
+			responseBodyContent := string(b.ResponseBody.GetBody())
+			if len(responseBodyContent) != 0 {
+				msg = responseBodyContent
+			}
+			klog.ErrorS(err, "unexpected response", "requestID", requestID, "responseBody", responseBodyContent)
 			complete = true
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: HeaderErrorResponseUnknown, RawValue: []byte("true"),
 				}}},
-				err.Error()), complete
+				msg), complete
 		}
 		// Do not overwrite model, res can be empty.
 		usage = res.Usage
@@ -663,6 +667,14 @@ func validateRoutingStrategy(routingStrategy string) bool {
 }
 
 func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, body string) *extProcPb.ProcessingResponse {
+	// Set the Content-Type header to application/json
+	headers = append(headers, &configPb.HeaderValueOption{
+		Header: &configPb.HeaderValue{
+			Key:   "Content-Type",
+			Value: "application/json",
+		},
+	})
+
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
 			ImmediateResponse: &extProcPb.ImmediateResponse{
@@ -672,7 +684,7 @@ func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configP
 				Headers: &extProcPb.HeaderMutation{
 					SetHeaders: headers,
 				},
-				Body: body,
+				Body: generateErrorMessage(body, int(statusCode)),
 			},
 		},
 	}
@@ -718,4 +730,16 @@ func GetRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
 	}
 
 	return routingStrategy, routingStrategyEnabled
+}
+
+// generateErrorMessage constructs a JSON error message using fmt.Sprintf
+func generateErrorMessage(message string, code int) string {
+	errorStruct := map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": message,
+			"code":    code,
+		},
+	}
+	jsonData, _ := json.Marshal(errorStruct)
+	return string(jsonData)
 }
