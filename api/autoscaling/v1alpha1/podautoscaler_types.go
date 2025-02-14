@@ -23,7 +23,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 // INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 // Important: Run "make" to regenerate code after modifying this file
@@ -57,6 +56,7 @@ type PodAutoscalerSpec struct {
 	//PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 
 	// MinReplicas is the minimum number of replicas to which the target can be scaled down.
+	// +optional
 	MinReplicas *int32 `json:"minReplicas,omitempty"`
 
 	// MaxReplicas is the maximum number of replicas to which the target can be scaled up.
@@ -64,9 +64,11 @@ type PodAutoscalerSpec struct {
 	MaxReplicas int32 `json:"maxReplicas"`
 
 	// MetricsSources defines a list of sources from which metrics are collected to make scaling decisions.
+	// +optional
 	MetricsSources []MetricSource `json:"metricsSources,omitempty"`
 
 	// ScalingStrategy defines the strategy to use for scaling.
+	// +kubebuilder:validation:Enum={HPA,KPA,APA}
 	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`
 }
 
@@ -103,8 +105,10 @@ const (
 // MetricSource defines an endpoint and path from which metrics are collected.
 type MetricSource struct {
 	// access an endpoint or scan a list of k8s pod
+	// +kubebuilder:validation:Enum={pod,domain}
 	MetricSourceType MetricSourceType `json:"metricSourceType"`
 	// http or https
+	// +kubebuilder:validation:Enum={http,https}
 	ProtocolType ProtocolType `json:"protocolType"`
 	// e.g. service1.example.com. meaningless for MetricSourceType.POD
 	Endpoint string `json:"endpoint,omitempty"`

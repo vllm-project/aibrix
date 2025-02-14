@@ -21,15 +21,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
 // ModelAdapterSpec defines the desired state of ModelAdapter
 type ModelAdapterSpec struct {
 
 	// BaseModel is the identifier for the base model to which the ModelAdapter will be attached.
-	// +optional
-	BaseModel string `json:"baseModel,omitempty"`
+	BaseModel string `json:"baseModel"`
 
 	// PodSelector is a label query over pods that should match the ModelAdapter configuration.
 	// +kubebuilder:validation:Required
