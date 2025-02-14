@@ -26,6 +26,7 @@ import (
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPrefixCacheModelInference(t *testing.T) {
@@ -63,7 +64,7 @@ func getTargetPodFromChatCompletion(t *testing.T, message string) string {
 		}),
 		Model: openai.F(modelName),
 	})
-	assert.NoError(t, err, "chat completitions failed")
+	require.NoError(t, err, "chat completitions failed %v", err)
 	assert.Equal(t, modelName, chatCompletion.Model)
 
 	return dst.Header.Get("target-pod")

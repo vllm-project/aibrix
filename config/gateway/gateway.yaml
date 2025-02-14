@@ -29,7 +29,7 @@ spec:
       kind: Gateway
       name: aibrix-eg
   connection:
-    bufferLimit: 262144
+    bufferLimit: 1048576
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
