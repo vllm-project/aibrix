@@ -83,6 +83,7 @@ func createOpenAIClient(baseURL, apiKey string) *openai.Client {
 			r.URL.Path = "/v1" + r.URL.Path
 			return mn(r)
 		}),
+		option.WithMaxRetries(0),
 	)
 }
 
@@ -96,6 +97,7 @@ func createOpenAIClientWithRoutingStrategy(baseURL, apiKey, routingStrategy stri
 			return mn(r)
 		}),
 		option.WithHeader("routing-strategy", routingStrategy),
+		option.WithMaxRetries(0),
 		respOpt,
 	)
 }
