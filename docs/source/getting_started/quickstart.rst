@@ -14,8 +14,8 @@ Get your kubernetes cluster ready, run following commands to install aibrix comp
 
 .. code-block:: bash
 
-    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.2/aibrix-dependency-v0.2.0-rc.2.yaml
-    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.2/aibrix-core-v0.2.0-rc.2.yaml
+    kubectl create -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.2/aibrix-dependency-v0.2.0-rc.2.yaml
+    kubectl create -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.2/aibrix-core-v0.2.0-rc.2.yaml
 
 Wait for few minutes and run `kubectl get pods -n aibrix-system` to check pod status util they are ready.
 
@@ -47,48 +47,46 @@ Ensure that:
 Invoke the model endpoint using gateway api
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. code-block:: bash
-
-    # Setup port forwarding to query gateway from local environment
-    kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc  8888:80 &
+Depending on where you deployed the AIBrix, you can use either of the following options to query the gateway.
 
 .. code-block:: bash
 
-    # model name in the header is required for gateway which is used by httproute (described in previous section) to forward request to appropriate model service
+    # Option 1: Kubernetes cluster with LoadBalancer support
+    LB_IP=$(kubectl get svc/envoy-aibrix-system-aibrix-eg-903790dc -n envoy-gateway-system -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    ENDPOINT="${LB_IP}:80"
 
-    curl -v http://localhost:8888/v1/completions \
+    # Option 2: Dev environment without LoadBalancer support. Use port forwarding way instead
+    kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 &
+    ENDPOINT="localhost:8888"
+
+.. code-block:: bash
+
+    # completion api
+    curl -v http://${ENDPOINT}/v1/completions \
         -H "Content-Type: application/json" \
-        -H "model: qwen25-7b-Instruct" \
         -d '{
-            "model": "qwen25-7b-Instruct",
+            "model": "deepseek-r1-distill-llama-8b",
             "prompt": "San Francisco is a",
             "max_tokens": 128,
             "temperature": 0
         }'
 
+    # chat completion api
+    curl http://${ENDPOINT}/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "deepseek-r1-distill-llama-8b",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "help me write a random generator in python"}
+        ]
+    }'
 
-Or you can send request from your local machine via gateway's external ip.
-
+If you meet problems exposing external IPs, feel free to debug with following commands. `101.18.0.4` is the ip of the gateway service.
 
 .. code-block:: bash
 
-    # get gateway external ip, which is 101.126.XXX.XXX in this example.
     kubectl get svc -n envoy-gateway-system
-    
-    NAME                                     TYPE           CLUSTER-IP       EXTERNAL-IP     PORT(S)                                   AGE
-    envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   192.168.70.133   101.126.XXX.XXX   80:32502/TCP                              22h
-    envoy-gateway                            ClusterIP      192.168.69.148   <none>          18000/TCP,18001/TCP,18002/TCP,19001/TCP   15d
-
-.. code-block:: bash
-
-    # use external ip to query gateway
-
-    curl -v http://101.126.XXX.XXX:80/v1/completions \
-        -H "Content-Type: application/json" \
-        -H "model: qwen25-7b-Instruct" \
-        -d '{
-            "model": "qwen25-7b-Instruct",
-            "prompt": "San Francisco is a",
-            "max_tokens": 128,
-            "temperature": 0
-        }'
+    NAME                                     TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)                                   AGE
+    envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   10.96.239.246   101.18.0.4    80:32079/TCP                              10d
+    envoy-gateway                            ClusterIP      10.96.166.226   <none>        18000/TCP,18001/TCP,18002/TCP,19001/TCP   10d
