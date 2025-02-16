@@ -59,7 +59,21 @@ Create base model
 .. literalinclude:: ../../../samples/adapter/base.yaml
    :language: yaml
 
+.. code-block:: bash
 
+    # Expose endpoint
+    LB_IP=$(kubectl get svc/envoy-aibrix-system-aibrix-eg-903790dc -n envoy-gateway-system -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    ENDPOINT="${LB_IP}:80"
+
+    # send request to base model
+    curl -v http://${ENDPOINT}/v1/completions \
+        -H "Content-Type: application/json" \
+        -d '{
+            "model": "qwen-coder-1-5b-instruct",
+            "prompt": "San Francisco is a",
+            "max_tokens": 128,
+            "temperature": 0
+        }'
 
 Create lora model adapter
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -67,12 +81,52 @@ Create lora model adapter
 .. literalinclude:: ../../../samples/adapter/adapter.yaml
    :language: yaml
 
-If you run ```kubectl describe modeladapter llama-2-7b-sql-lora``, you will see the status of the lora adapter.
+If you run ```kubectl describe modeladapter qwen-code-lora``, you will see the status of the lora adapter.
 
-.. figure:: ../assets/images/lora-describe-status.png
-  :alt: lora-describe-status
-  :width: 70%
-  :align: center
+.. code-block:: bash
+
+    $ kubectl describe modeladapter qwen-code-lora
+    .....
+    Status:
+      Conditions:
+        Last Transition Time:  2025-02-16T19:14:50Z
+        Message:               Starting reconciliation
+        Reason:                ModelAdapterPending
+        Status:                Unknown
+        Type:                  Initialized
+        Last Transition Time:  2025-02-16T19:14:50Z
+        Message:               ModelAdapter default/qwen-code-lora has been allocated to pod default/qwen-coder-1-5b-instruct-5587f4c57d-kml6s
+        Reason:                Scheduled
+        Status:                True
+        Type:                  Scheduled
+        Last Transition Time:  2025-02-16T19:14:55Z
+        Message:               ModelAdapter default/qwen-code-lora is ready
+        Reason:                ModelAdapterAvailable
+        Status:                True
+        Type:                  Ready
+      Instances:
+        qwen-coder-1-5b-instruct-5587f4c57d-kml6s
+      Phase:  Running
+    Events:   <none>
+
+Send request using lora model name to the gateway.
+
+.. code-block:: bash
+
+    # Expose endpoint
+    LB_IP=$(kubectl get svc/envoy-aibrix-system-aibrix-eg-903790dc -n envoy-gateway-system -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    ENDPOINT="${LB_IP}:80"
+
+    # send request to base model
+    curl -v http://${ENDPOINT}/v1/completions \
+        -H "Content-Type: application/json" \
+        -d '{
+            "model": "qwen-code-lora",
+            "prompt": "San Francisco is a",
+            "max_tokens": 128,
+            "temperature": 0
+        }'
+
 
 Here's the resources created associated with the lora custom resource.
 
@@ -84,7 +138,7 @@ Here's the resources created associated with the lora custom resource.
 
 1. A new Kubernetes service will be created with the exact same name as ModelAdapter name.
 
-2. The ``podSelector`` is used to filter the matching pods. In this case, it will match pods with label ``model.aibrix.ai/name=llama2-7b``. Make sure your base model have this label.
+2. The ``podSelector`` is used to filter the matching pods. In this case, it will match pods with label ``model.aibrix.ai/name=qwen-coder-1-5b-instruct``. Make sure your base model have this label.
 This ensures that the LoRA adapter is correctly associated with the right pods.
 
 .. attention::
@@ -121,3 +175,21 @@ In that case, lora model adapter can not query the vLLM server correctly, showin
 
 .. literalinclude:: ../../../samples/adapter/adapter-api-key.yaml
    :language: yaml
+
+Runtime Support Sidecar
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Starting from v0.2.0, controller manager by default will talk to runtime sidecar to register the lora first and then the runtime sidecar will sync with inference engine to finish the eventual registration.
+This is used to build the abstraction between controller manager and inference engine. If you like to directly sync with vLLM to load the loras, you can update the controller-manager ``kubectl edit deployment aibrix-controller-manager -n aibrix-system``
+and remove the ``
+
+.. code-block:: yaml
+  :emphasis-lines: 7
+
+    spec:
+      containers:
+      - args:
+        - --leader-elect
+        - --health-probe-bind-address=:8081
+        - --metrics-bind-address=0
+        - --enable-runtime-sidecar # this line should be removed
