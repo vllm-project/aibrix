@@ -40,11 +40,12 @@ Run the following script to install the necessary dependencies including `nvkind
 
     bash hack/lambda-cloud/install.sh
 
-**install.sh Summary:**
-- Installs required system packages (`jq`, `Go`, `kubectl`, `kind`, `Helm`)
-- Installs `nvkind` (custom Kubernetes-in-Docker with GPU support)
-- Configures the NVIDIA Container Toolkit
-- Updates Docker settings for GPU compatibility
+**Summary:**
+
+* Installs required system packages (`jq`, `Go`, `kubectl`, `kind`, `Helm`)
+* Installs `nvkind` (custom Kubernetes-in-Docker with GPU support)
+* Configures the NVIDIA Container Toolkit
+* Updates Docker settings for GPU compatibility
 
 .. figure::../../assets/images/cloud/lambda-cloud-installation.png
     :alt: lambda-cloud-installation
@@ -65,10 +66,11 @@ Run the following script to ensure that the NVIDIA drivers and Docker integratio
 
     bash verify.sh
 
-**verify.sh Summary:**
-- Runs `nvidia-smi` to check GPU availability
-- Runs a Docker container with NVIDIA runtime to verify GPU detection
-- Ensures that GPU devices are accessible within containers
+**Summary:**
+
+* Runs `nvidia-smi` to check GPU availability
+* Runs a Docker container with NVIDIA runtime to verify GPU detection
+* Ensures that GPU devices are accessible within containers
 
 If all checks pass successfully like below, proceed to the next step.
 
@@ -103,10 +105,11 @@ Run the following script to install the NVIDIA GPU Operator and configure the cl
 
     bash setup.sh
 
-**setup.sh Summary:**
-- Installs the NVIDIA GPU Operator using Helm
-- Installs the Cloud Provider Kind (`cloud-provider-kind`)
-- Runs `cloud-provider-kind` in the background for cloud integration
+**Summary:**
+
+* Installs the NVIDIA GPU Operator using Helm
+* Installs the Cloud Provider Kind (`cloud-provider-kind`)
+* Runs `cloud-provider-kind` in the background for cloud integration
 
 5. Install AIBrix
 ~~~~~~~~~~~~~~~~~
@@ -134,8 +137,9 @@ Conclusion
 You have successfully deployed AIBrix on a single-node Lambda instance. This setup allows for efficient testing and debugging of AIBrix components in a local environment.
 
 If you encounter issues, ensure that:
-- The NVIDIA GPU Operator is correctly installed
-- The cluster has GPU resources available (`kubectl describe nodes`)
-- Docker and Kubernetes configurations match GPU compatibility requirements
+
+* The NVIDIA GPU Operator is correctly installed
+* The cluster has GPU resources available (`kubectl describe nodes`)
+* Docker and Kubernetes configurations match GPU compatibility requirements
 
 Happy Testing!
