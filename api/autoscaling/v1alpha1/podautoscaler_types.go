@@ -64,7 +64,7 @@ type PodAutoscalerSpec struct {
 	MaxReplicas int32 `json:"maxReplicas"`
 
 	// MetricsSources defines a list of sources from which metrics are collected to make scaling decisions.
-	// +optional
+	// +kubebuilder:validation:MinItems=1
 	MetricsSources []MetricSource `json:"metricsSources,omitempty"`
 
 	// ScalingStrategy defines the strategy to use for scaling.

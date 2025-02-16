@@ -27,7 +27,8 @@ import (
 type ModelAdapterSpec struct {
 
 	// BaseModel is the identifier for the base model to which the ModelAdapter will be attached.
-	BaseModel string `json:"baseModel"`
+	// +optional
+	BaseModel *string `json:"baseModel,omitempty"`
 
 	// PodSelector is a label query over pods that should match the ModelAdapter configuration.
 	// +kubebuilder:validation:Required
