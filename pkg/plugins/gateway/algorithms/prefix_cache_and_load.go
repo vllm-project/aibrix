@@ -126,12 +126,23 @@ func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Try to match existing prefix
-	matchedTokens, unMatchedTokens, matchedPods := p.cache.MatchPrefix(tokens, model, readyPods)
+	// Single traversal to find/create node
+	node := p.cache.AddPrefix(tokens, model, "", false)
+
+	// Get matched pods
+	var matchedPods []*v1.Pod
+	if blockPods, ok := node.ModelToPods[model]; ok {
+		for podName := range blockPods {
+			for _, pod := range readyPods {
+				if pod.Name == podName {
+					matchedPods = append(matchedPods, pod)
+				}
+			}
+		}
+	}
 
 	var targetPod *v1.Pod
-	// If we have a good prefix match (>50%), prefer those pods
-	if len(matchedTokens) > len(tokens)/2 && len(matchedPods) > 0 {
+	if len(node.GetValue()) > len(tokens)/2 && len(matchedPods) > 0 {
 		minLoad := -1
 		for _, pod := range matchedPods {
 			load := p.histogram.getPodLoad(pod)
@@ -142,7 +153,6 @@ func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v
 		}
 	}
 
-	// If we couldn't find a pod with good cache hit, pick least loaded pod
 	if targetPod == nil {
 		minLoad := -1
 		for _, pod := range readyPods {
@@ -158,20 +168,22 @@ func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v
 		return "", fmt.Errorf("no suitable pod found")
 	}
 
-	// Add unmatched tokens for future lookups
-	if len(unMatchedTokens) > 0 {
-		p.cache.AddPrefix(unMatchedTokens, model, targetPod.Name)
+	// Update pod mapping in the same node
+	if blockPods, ok := node.ModelToPods[model]; !ok {
+		node.ModelToPods[model] = map[string]time.Time{
+			targetPod.Name: time.Now(),
+		}
+	} else {
+		blockPods[targetPod.Name] = time.Now()
 	}
 
-	// Update histogram with node state
-	if node := p.cache.GetNode(tokens); node != nil {
-		p.histogram.update(time.Now(), node, node, targetPod.Name, defaultDecodingLength)
-	}
+	// Update histogram
+	p.histogram.update(time.Now(), node, node, targetPod.Name, defaultDecodingLength)
 
 	klog.InfoS("prefix cache and load route",
 		"message", message,
 		"tokens", len(tokens),
-		"matched_tokens", len(matchedTokens),
+		"matched_tokens", len(node.GetValue()),
 		"matched_pods", len(matchedPods),
 		"target_pod", targetPod.Status.PodIP)
 

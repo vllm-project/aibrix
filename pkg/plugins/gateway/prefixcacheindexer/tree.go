@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 type TreeNode struct {
@@ -33,38 +34,50 @@ type TreeNode struct {
 	refCounter    []int
 	load          int
 	lastAccess    time.Time
-	evictedGPUs   map[int]bool
-	cachedGPUs    map[int]bool
+	evictedPods   map[int]bool
+	cachedPods    map[int]bool
 	isLeaf        bool
 	contextLength int
 	depth         int
-	modelToPods   map[string]map[string]time.Time // model -> {pod -> lastAccessTime}
+	ModelToPods   map[string]map[string]time.Time // model -> {podName -> lastAccessTime}
 }
 
-func NewTreeNode(numGPUs int) *TreeNode {
+func (n *TreeNode) GetValue() []int {
+	return n.value
+}
+
+func (n *TreeNode) NumTokens() int {
+	return len(n.value)
+}
+
+func (n *TreeNode) ContextLength() int {
+	return n.contextLength
+}
+
+func NewTreeNode(numPods int) *TreeNode {
 	return &TreeNode{
 		id:          uuid.New(),
 		children:    make(map[int]*TreeNode),
-		refCounter:  make([]int, numGPUs),
-		evictedGPUs: make(map[int]bool),
-		cachedGPUs:  make(map[int]bool),
+		refCounter:  make([]int, numPods),
+		evictedPods: make(map[int]bool),
+		cachedPods:  make(map[int]bool),
 		lastAccess:  time.Now(),
-		modelToPods: make(map[string]map[string]time.Time),
+		ModelToPods: make(map[string]map[string]time.Time),
 	}
 }
 
 type LPRadixCache struct {
 	mu            sync.RWMutex
 	rootNode      *TreeNode
-	numGPUs       int
+	numPods       int
 	allocatedSize []int
 	allNodes      map[uuid.UUID]*TreeNode
 }
 
-func NewLPRadixCache(numGPUs int) *LPRadixCache {
+func NewLPRadixCache(numPods int) *LPRadixCache {
 	cache := &LPRadixCache{
-		numGPUs:       numGPUs,
-		allocatedSize: make([]int, numGPUs),
+		numPods:       numPods,
+		allocatedSize: make([]int, numPods),
 		allNodes:      make(map[uuid.UUID]*TreeNode),
 	}
 	cache.reset()
@@ -72,7 +85,7 @@ func NewLPRadixCache(numGPUs int) *LPRadixCache {
 }
 
 func (c *LPRadixCache) reset() {
-	root := NewTreeNode(c.numGPUs)
+	root := NewTreeNode(c.numPods)
 	root.value = []int{}
 	root.key = []int{}
 	for i := range root.refCounter {
@@ -110,10 +123,11 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 
 	// Filter pods based on model mapping like in hash-based impl
 	var matchedPods []*v1.Pod
-	if blockPods, ok := node.modelToPods[model]; ok {
+	if blockPods, ok := node.ModelToPods[model]; ok {
 		for _, pod := range pods {
 			if _, ok := blockPods[pod.Name]; ok {
 				matchedPods = append(matchedPods, pod)
+				klog.Info("Matched pod: ", pod.Name)
 			}
 		}
 	}
@@ -121,12 +135,19 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 	return matchedTokens, unmatchedTokens, matchedPods
 }
 
+// Add internal method to get node
+func (c *LPRadixCache) GetNode(tokens []int) *TreeNode {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.matchPrefixHelper(c.rootNode, tokens)
+}
+
 func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, key []int) *TreeNode {
 	node.lastAccess = time.Now()
 	if len(key) == 0 {
 		return node
 	}
-
+	klog.Info("Matching prefix: ", key)
 	if child, ok := node.children[key[0]]; ok {
 		prefixLen := matchLen(child.key, key)
 		if prefixLen < len(child.key) {
@@ -137,20 +158,24 @@ func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, key []int) *TreeNode {
 	return node
 }
 
-func (c *LPRadixCache) AddPrefix(unMatchedTokens []int, model, pod string) {
+func (c *LPRadixCache) AddPrefix(tokens []int, model, podName string, updateMapping bool) *TreeNode {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	node := c.insertHelper(c.rootNode, unMatchedTokens, unMatchedTokens)
+	node := c.insertHelper(c.rootNode, tokens, tokens)
 
-	// Update model-to-pod mapping
-	if blockPods, ok := node.modelToPods[model]; !ok {
-		node.modelToPods[model] = map[string]time.Time{
-			pod: time.Now(),
+	// Only update mapping if requested
+	if updateMapping && podName != "" {
+		if blockPods, ok := node.ModelToPods[model]; !ok {
+			node.ModelToPods[model] = map[string]time.Time{
+				podName: time.Now(),
+			}
+		} else {
+			blockPods[podName] = time.Now()
 		}
-	} else {
-		blockPods[pod] = time.Now()
 	}
+
+	return node
 }
 
 func (c *LPRadixCache) insertHelper(node *TreeNode, key []int, value []int) *TreeNode {
@@ -175,7 +200,7 @@ func (c *LPRadixCache) insertHelper(node *TreeNode, key []int, value []int) *Tre
 		return c.insertHelper(newNode, key[prefixLen:], value[prefixLen:])
 	}
 
-	newNode := NewTreeNode(c.numGPUs)
+	newNode := NewTreeNode(c.numPods)
 	newNode.parent = node
 	newNode.value = value
 	newNode.key = make([]int, len(key))
@@ -198,7 +223,7 @@ func (c *LPRadixCache) Evict(now time.Time) {
 	const evictionDuration = 60 * time.Minute
 	for id, node := range c.allNodes {
 		if now.Sub(node.lastAccess) > evictionDuration {
-			// Here we can't implement proper GPU-specific eviction
+			// Here we can't implement proper Pod-specific eviction
 			// due to interface limitations
 			delete(c.allNodes, id)
 			if node.parent != nil {
@@ -209,7 +234,7 @@ func (c *LPRadixCache) Evict(now time.Time) {
 }
 
 func (c *LPRadixCache) splitNode(key []int, child *TreeNode, splitLen int) *TreeNode {
-	newNode := NewTreeNode(c.numGPUs)
+	newNode := NewTreeNode(c.numPods)
 	newNode.children = map[int]*TreeNode{child.key[splitLen]: child}
 	newNode.key = child.key[:splitLen]
 	newNode.parent = child.parent
@@ -219,11 +244,11 @@ func (c *LPRadixCache) splitNode(key []int, child *TreeNode, splitLen int) *Tree
 	newNode.value = child.value[:splitLen]
 
 	copy(newNode.refCounter, child.refCounter)
-	for k, v := range child.cachedGPUs {
-		newNode.cachedGPUs[k] = v
+	for k, v := range child.cachedPods {
+		newNode.cachedPods[k] = v
 	}
-	for k, v := range child.evictedGPUs {
-		newNode.evictedGPUs[k] = v
+	for k, v := range child.evictedPods {
+		newNode.evictedPods[k] = v
 	}
 
 	child.parent = newNode
