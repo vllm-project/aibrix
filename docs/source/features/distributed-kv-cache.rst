@@ -29,9 +29,9 @@ After deployment, we can see all the components by using ``kubectl get pods -n a
 
 .. code-block:: RST
 
-    NAME                                                     READY   STATUS    RESTARTS   AGE
-    aibrix-model-deepseek-coder-7b-kvcache-596965997-p86cx   1/1     Running   0          2m
-    aibrix-model-deepseek-coder-7b-kvcache-etcd-0            1/1     Running   0          2m
+    NAME                                        READY   STATUS    RESTARTS   AGE
+    deepseek-coder-7b-kvcache-596965997-p86cx   1/1     Running   0          2m
+    deepseek-coder-7b-kvcache-etcd-0            1/1     Running   0          2m
 
 After all components are running, we can use the following yaml to deploy the inference service:
 
@@ -49,9 +49,8 @@ Now let's use ``kubectl get pods`` command to ensure the inference service is ru
 
 .. code-block:: RST
 
-    NAME                                                       READY   STATUS    RESTARTS   AGE
-    download-model                                             1/1     Running   0          12m
-    aibrix-model-deepseek-coder-7b-instruct-6b885ffd8b-2kfjv   2/2     Running   0          4m
+    NAME                                          READY   STATUS    RESTARTS   AGE
+    deepseek-coder-7b-instruct-6b885ffd8b-2kfjv   2/2     Running   0          4m
 
 
 After launching AIBrix's deployment, we can use the following yaml to deploy a distributed KV cache cluster:
@@ -63,6 +62,16 @@ After launching AIBrix's deployment, we can use the following yaml to deploy a d
 
     1. ``kvcache.orchestration.aibrix.ai/pod-affinity-workload`` MUST match with ``metadata.name`` of the inference service deployment below
     2. ``kvcache.orchestration.aibrix.ai/node-affinity-gpu-type`` is unnecessary unless you deploy the model across different GPUs.
+
+
+Run ``kubectl get pods`` to verify all pods are running.
+
+.. note::
+    kubectl get pods -o wide
+    NAME                                            READY   STATUS              RESTARTS   AGE     IP               NODE                                           NOMINATED NODE   READINESS GATES
+    deepseek-coder-7b-instruct-85664648c7-xgp9h     1/1     Running             0          2m41s   192.168.59.224   ip-192-168-41-184.us-west-2.compute.internal   <none>           <none>
+    deepseek-coder-7b-kvcache-7d5896cd89-dcfzt      1/1     Running             0          2m31s   192.168.37.154   ip-192-168-41-184.us-west-2.compute.internal   <none>           <none>
+    deepseek-coder-7b-kvcache-etcd-0                1/1     Running             0          2m31s   192.168.19.197   ip-192-168-3-183.us-west-2.compute.internal    <none>           <none>
 
 
 Once the inference service is running, let's set up port forwarding so that we can test the service from local:

@@ -1,15 +1,15 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: KVCache
 metadata:
-  name: aibrix-model-deepseek-coder-7b-kvcache
+  name: deepseek-coder-7b-kvcache
   namespace: default
   annotations:
-    kvcache.orchestration.aibrix.ai/pod-affinity-workload: aibrix-model-deepseek-coder-7b-instruct
+    kvcache.orchestration.aibrix.ai/pod-affinity-workload: deepseek-coder-7b-instruct
 spec:
   replicas: 1
   service:
     type: ClusterIP
     port: 9600
-  cache:
+  cacheSpec:
     image: aibrix/vineyardd:20241120
     imagePullPolicy: IfNotPresent

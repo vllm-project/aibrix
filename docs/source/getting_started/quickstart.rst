@@ -59,6 +59,11 @@ Depending on where you deployed the AIBrix, you can use either of the following 
     kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 &
     ENDPOINT="localhost:8888"
 
+.. attention::
+
+    Some cloud provider like AWS EKS expose the endpoint at hostname field, if that case, you should use ``.status.loadBalancer.ingress[0].hostname`` instead.
+
+
 .. code-block:: bash
 
     # completion api
