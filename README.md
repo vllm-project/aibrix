@@ -34,10 +34,10 @@ kubectl create -k config/default
 Install stable distribution
 ```shell
 # Install component dependencies
-kubectl create -k "github.com/aibrix/aibrix/config/dependency?ref=v0.2.0-rc.2"
+kubectl create -k "github.com/aibrix/aibrix/config/dependency?ref=v0.2.0"
 
 # Install aibrix components
-kubectl create -k "github.com/aibrix/aibrix/config/overlays/release?ref=v0.2.0-rc.2"
+kubectl create -k "github.com/aibrix/aibrix/config/overlays/release?ref=v0.2.0"
 ```
 
 ## Documentation

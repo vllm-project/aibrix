@@ -14,8 +14,8 @@ Get your kubernetes cluster ready, run following commands to install aibrix comp
 
 .. code-block:: bash
 
-    kubectl create -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.2/aibrix-dependency-v0.2.0-rc.2.yaml
-    kubectl create -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.2/aibrix-core-v0.2.0-rc.2.yaml
+    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.2.0/aibrix-dependency-v0.2.0.yaml
+    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.2.0/aibrix-core-v0.2.0.yaml
 
 Wait for few minutes and run `kubectl get pods -n aibrix-system` to check pod status util they are ready.
 
