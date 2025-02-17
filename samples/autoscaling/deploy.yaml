@@ -32,7 +32,7 @@ spec:
             - --port
             - "8000"
             - --model
-            - /models/deepseek-llm-7b-chat
+            - deepseek-ai/deepseek-coder-6.7b-instruct
             - --served-model-name
             - deepseek-llm-7b-chat
             - --trust-remote-code

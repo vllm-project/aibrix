@@ -24,43 +24,19 @@ Example
 .. note::
     We use a customized version of `vineyard <https://v6d.io/>`_ as the backend for distributed KV cache and an internal version of vLLM integrated with distributed KV cache support to showcase the usage. We are working with the vLLM community to upstream the distributed KV cache API and plugin.
 
-After launching AIBrix's AI Runtime, we can use the following yaml to deploy a distributed KV cache cluster:
-
-.. code-block:: yaml
-
-    apiVersion: orchestration.aibrix.ai/v1alpha1
-    kind: KVCache
-    metadata:
-      name: aibrix-model-deepseek-coder-33b-kvcache
-      namespace: default
-      annotations:
-        kvcache.orchestration.aibrix.ai/node-affinity-gpu-type: NVIDIA-L20
-        kvcache.orchestration.aibrix.ai/pod-affinity-workload: aibrix-model-deepseek-coder-33b-instruct
-    spec:
-      replicas: 1
-      service:
-        type: ClusterIP
-        port: 9600
-      cacheSpec:
-        image: aibrix/vineyardd:20241120
-        imagePullPolicy: IfNotPresent
-
-.. note::
-    ``kvcache.orchestration.aibrix.ai/pod-affinity-workload`` MUST match with ``metadata.name`` of the inference service deployment below
 
 After deployment, we can see all the components by using ``kubectl get pods -n aibrix-system`` command:
 
 .. code-block:: RST
 
-    NAME                                                      READY   STATUS    RESTARTS   AGE
-    aibrix-model-deepseek-coder-33b-kvcache-596965997-p86cx   1/1     Running   0          2m
-    aibrix-model-deepseek-coder-33b-kvcache-etcd-0            1/1     Running   0          2m
+    NAME                                                     READY   STATUS    RESTARTS   AGE
+    aibrix-model-deepseek-coder-7b-kvcache-596965997-p86cx   1/1     Running   0          2m
+    aibrix-model-deepseek-coder-7b-kvcache-etcd-0            1/1     Running   0          2m
 
 After all components are running, we can use the following yaml to deploy the inference service:
 
 .. literalinclude:: ../../../samples/kvcache/deployment.yaml
    :language: yaml
-
 
 .. note::
     * ``metadata.name`` MUST match with ``kvcache.orchestration.aibrix.ai/pod-affinity-workload`` in the kv cache deployment
@@ -73,13 +49,25 @@ Now let's use ``kubectl get pods`` command to ensure the inference service is ru
 
 .. code-block:: RST
 
-    NAME                                                        READY   STATUS    RESTARTS   AGE
-    download-model                                              1/1     Running   0          12m
-    aibrix-model-deepseek-coder-33b-instruct-6b885ffd8b-2kfjv   2/2     Running   0          4m
+    NAME                                                       READY   STATUS    RESTARTS   AGE
+    download-model                                             1/1     Running   0          12m
+    aibrix-model-deepseek-coder-7b-instruct-6b885ffd8b-2kfjv   2/2     Running   0          4m
 
-Once the inference service is running, let's set up port fowarding so that we can test the service from local:
 
-* Run ``kubectl get svc -n envoy-gateway-system`` to get the name of the Envoy Gateway service
+After launching AIBrix's deployment, we can use the following yaml to deploy a distributed KV cache cluster:
+
+.. literalinclude:: ../../../samples/kvcache/kvcache.yaml
+   :language: yaml
+
+.. note::
+
+    1. ``kvcache.orchestration.aibrix.ai/pod-affinity-workload`` MUST match with ``metadata.name`` of the inference service deployment below
+    2. ``kvcache.orchestration.aibrix.ai/node-affinity-gpu-type`` is unnecessary unless you deploy the model across different GPUs.
+
+
+Once the inference service is running, let's set up port forwarding so that we can test the service from local:
+
+* Run ``kubectl get svc -n envoy-gateway-system`` to get the name of the Envoy Gateway service.
 
 .. code-block:: RST
 
@@ -101,7 +89,7 @@ Now, let's test the service:
       -H "Content-Type: application/json" \
       -H "Authorization: XXXXXXXXXXXXXXXXXXXXXXXX" \
       -d '{
-         "model": "deepseek-coder-33b-instruct",
+         "model": "deepseek-coder-7b-instruct",
          "messages": [{"role": "user", "content": "Created container vllm-openai"}],
          "temperature": 0.7
        }'
@@ -133,7 +121,7 @@ and its output would be:
       "id": "chat-60f0247aa9294f8abb61e8f24c1503c2",
       "object": "chat.completion",
       "created": 1738281009,
-      "model": "deepseek-coder-33b-instruct",
+      "model": "deepseek-coder-7b-instruct",
       "choices": [
         {
           "index": 0,
