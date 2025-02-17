@@ -62,8 +62,10 @@ func buildModelAdapterEndpointSlice(instance *modelv1alpha1.ModelAdapter, pod *c
 
 func buildModelAdapterService(instance *modelv1alpha1.ModelAdapter) *corev1.Service {
 	labels := map[string]string{
-		"model.aibrix.ai/name":         instance.Spec.BaseModel,
 		"adapter.model.aibrix.ai/name": instance.Name,
+	}
+	if instance.Spec.BaseModel != nil {
+		labels["model.aibrix.ai/name"] = *instance.Spec.BaseModel
 	}
 
 	ports := []corev1.ServicePort{

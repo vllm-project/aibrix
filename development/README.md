@@ -4,7 +4,7 @@
 
 Here are some essential resources for anyone interested in AIBrix:
 
-- **Documentation and Tutorials**: [View Tutorials](https://github.com/aibrix/aibrix/tree/main/docs/tutorial)
+- **Documentation and Tutorials**: [View Tutorials](https://github.com/aibrix/aibrix/tree/main/development/tutorial)
 - **Issue Tracker**: [View Issues](https://github.com/aibrix/aibrix/issues)
 - **Project Roadmap**: TODO
 
@@ -43,7 +43,7 @@ Alternatively, you can use [Kind](https://kind.sigs.k8s.io/) or [Minikube](https
 
 Navigate to the cloned directory and run:
 
-```  
+```
 make build
 ```
 
@@ -53,8 +53,8 @@ Build and push your image to the location specified by `IMG`:
 make docker-build docker-push IMG=<some-registry>/aibrix:tag
 ```
 
-> **NOTE:** This image ought to be published in the personal registry you specified.  
-And it is required to have access to pull the image from the working environment.  
+> **NOTE:** This image ought to be published in the personal registry you specified.
+And it is required to have access to pull the image from the working environment.
 Make sure you have the proper permission to the registry if the above commands don’t work.
 
 Install the CRDs into the cluster:
