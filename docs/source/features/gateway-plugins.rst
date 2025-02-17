@@ -102,7 +102,7 @@ In most Kubernetes setups, ``LoadBalancer`` is supported by default. You can ret
     LB_IP=$(kubectl get svc/envoy-aibrix-system-aibrix-eg-903790dc -n envoy-gateway-system -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')
     ENDPOINT="${LB_IP}:80"
 
- The model name, such as ``deepseek-r1-distill-llama-8b``, must match the label ``model.aibrix.ai/name`` in your deployment.
+The model name, such as ``deepseek-r1-distill-llama-8b``, must match the label ``model.aibrix.ai/name`` in your deployment.
 
 .. code-block:: bash
 
@@ -120,7 +120,7 @@ In most Kubernetes setups, ``LoadBalancer`` is supported by default. You can ret
     If vLLM, you can pass in the argument ``--api-key`` or environment variable ``VLLM_API_KEY`` to enable the server to check for API key in the header.
     Check `vLLM OpenAI-Compatible Server <https://docs.vllm.ai/en/latest/getting_started/quickstart.html#openai-compatible-server>`_ for more details.
 
-After you enable the authentication, you can query model with `-H Authorization: bearer your_key` in this way
+After you enable the authentication, you can query model with ``-H Authorization: bearer your_key`` in this way
 
 .. code-block:: bash
   :emphasize-lines: 3
@@ -155,10 +155,6 @@ Below are routing strategies gateway supports
         "messages": [{"role": "user", "content": "Say this is a test!"}],
         "temperature": 0.7
     }'
-
-if you use openai sdk client, you can query the
-
-
 
 
 Rate Limiting

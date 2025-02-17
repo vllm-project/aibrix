@@ -45,15 +45,25 @@ It's similar like Kubernetes core concept ``ReplicaSet`` and ``Deployment``. Mos
 Workloads Examples
 ------------------
 
+.. attention::
+
+    Starting from v0.6.6, we've added essential packages to run distributed inference with vLLM official container image distribution out of the box.
+    If you use earlier versions, you can follow guidance below to build your own image compatible with multi-node inference.
+
+
+This is the ``RayClusterFleet`` example, you can apply this yaml in your cluster.
+
+.. literalinclude:: ../../../samples/distributed/fleet.yaml
+   :language: yaml
+
+
 vLLM Version
 ^^^^^^^^^^^^
 
-Starting from v0.6.6, we've added essential packages to run distributed inference with vLLM official container image distribution out of the box.
-
 If you are using vLLM earlier version, you have two options.
 
-1. Use our built image ``aibrix/vllm-openai:v0.6.1.post2-distributed``.
-2. Build your own image and follow steps here.
+* Use our built image ``aibrix/vllm-openai:v0.6.1.post2-distributed``.
+* Build your own image and follow steps here.
 
 .. code-block:: Dockerfile
 
@@ -62,13 +72,7 @@ If you are using vLLM earlier version, you have two options.
     RUN pip3 install ray[default] # important for future healthcheck
     ENTRYPOINT [""]
 
+
 .. code-block:: bash
 
     docker build -t aibrix/vllm-openai:v0.6.1.post2-distributed .
-
-
-RayClusterReplicaSet
-^^^^^^^^^^^^^^^^^^^^
-
-.. literalinclude:: ../../../samples/distributed/multi-host.yaml
-   :language: yaml

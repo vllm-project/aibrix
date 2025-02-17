@@ -30,7 +30,7 @@ spec:
           spec:
             containers:
               - name: ray-head
-                image: aibrix/vllm-openai:v0.6.1.post2-distributed
+                image: vllm/vllm-openai:v0.7.1
                 ports:
                   - containerPort: 6379
                     name: gcs-server
