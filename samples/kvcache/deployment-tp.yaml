@@ -1,9 +1,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: aibrix-model-deepseek-coder-7b-instruct
+  name: aibrix-model-deepseek-coder-33b-instruct
   labels:
-    model.aibrix.ai/name: deepseek-coder-7b-instruct
+    model.aibrix.ai/name: deepseek-coder-33b-instruct
     model.aibrix.ai/port: "8000"
 spec:
   strategy:
@@ -24,9 +24,14 @@ spec:
             - --port
             - "8000"
             - --model
-            - deepseek-ai/deepseek-coder-6.7b-instruct
+            - deepseek-ai/deepseek-coder-33b-instruct
             - --served-model-name
-            - deepseek-coder-6.7b-instruct
+            - deepseek-coder-33b-instruct
+            - --distributed-executor-backend
+            - ray
+            - --trust-remote-code
+            - --tensor-parallel-size
+            - "4"
             - --max-model-len
             - "17000"
             - --enable-prefix-caching
@@ -35,7 +40,7 @@ spec:
             - name: VLLM_USE_VINEYARD_CACHE
               value: "1"
             - name: VINEYARD_CACHE_CPU_MEM_LIMIT_GB
-              value: "10"
+              value: "30"
             - name: AIBRIX_LLM_KV_CACHE
               value: "1"
             - name: AIBRIX_LLM_KV_CACHE_KV_CACHE_NS
@@ -45,7 +50,7 @@ spec:
             - name: AIBRIX_LLM_KV_CACHE_SOCKET
               value: /var/run/vineyard.sock
             - name: AIBRIX_LLM_KV_CACHE_RPC_ENDPOINT
-              value: "aibrix-model-deepseek-coder-7b-kvcache-rpc:9600"
+              value: "aibrix-model-deepseek-coder-33b-kvcache-rpc:9600"
             - name: VINEYARD_CACHE_ENABLE_ASYNC_UPDATE
               value: "1"
             - name: "VINEYARD_CACHE_METRICS_ENABLED"
@@ -56,4 +61,4 @@ spec:
       volumes:
         - name: kvcache-socket
           hostPath:
-            path: /var/run/vineyard-kubernetes/default/aibrix-model-deepseek-coder-7b-kvcache-rpc
+            path: /var/run/vineyard-kubernetes/default/aibrix-model-deepseek-coder-33b-kvcache-rpc

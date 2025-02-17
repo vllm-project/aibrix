@@ -18,31 +18,122 @@ First, get the external ip and port for the envoy proxy to access gateway.
 
 .. code-block:: bash
 
-    kubectl -n envoy-gateway-system get service   
-    NAME                                     TYPE           CLUSTER-IP       EXTERNAL-IP                                           PORT(S)                                   
-    envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   172.19.190.6     10.10.10.10,1000:1000:1000:1000:1000:1000:1000:1000   80:30904/TCP
+    NAME                                     TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)                                   AGE
+    envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   10.96.239.246   101.18.0.4    80:32079/TCP                              10d
+    envoy-gateway                            ClusterIP      10.96.166.226   <none>        18000/TCP,18001/TCP,18002/TCP,19001/TCP   10d
 
 
 On a model or lora adapter deployment, their respective controllers create a HTTPRoute object which gateway dynamically discovers to forward input user request. Make sure to verify that httproute status as Accepted. 
 
-.. figure:: ../assets/images/httproute.png
-  :alt: httproute
-  :width: 70%
-  :align: center 
+.. code-block:: bash
 
-
-Sample request, get external ip:port from first step and model-name from deployments label "model.aibrix.ai/name".
+    $ kubectl get httproute -A
+    NAMESPACE       NAME                                  HOSTNAMES   AGE
+    aibrix-system   aibrix-reserved-router                            17m # reserved router
+    aibrix-system   deepseek-r1-distill-llama-8b-router               14m # created for each model deployment
+    ....
 
 .. code-block:: bash
 
-    curl -v http://<ip>:<port>/v1/chat/completions \
+    $ kubectl describe httproute deepseek-r1-distill-llama-8b-router -n aibrix-system
+    Name:         deepseek-r1-distill-llama-8b-router
+    Namespace:    aibrix-system
+    Labels:       <none>
+    Annotations:  <none>
+    API Version:  gateway.networking.k8s.io/v1
+    Kind:         HTTPRoute
+    Metadata:
+      Creation Timestamp:  2025-02-16T17:56:03Z
+      Generation:          1
+      Resource Version:    2641
+      UID:                 2f3f9620-bf7c-487a-967e-2436c3809178
+    Spec:
+      Parent Refs:
+        Group:      gateway.networking.k8s.io
+        Kind:       Gateway
+        Name:       aibrix-eg
+        Namespace:  aibrix-system
+      Rules:
+        Backend Refs:
+          Group:
+          Kind:       Service
+          Name:       deepseek-r1-distill-llama-8b
+          Namespace:  default
+          Port:       8000
+          Weight:     1
+        Matches:
+          Headers:
+            Name:   model
+            Type:   Exact
+            Value:  deepseek-r1-distill-llama-8b
+          Path:
+            Type:   PathPrefix
+            Value:  /
+        Timeouts:
+          Request:  120s
+    Status:
+      Parents:
+        Conditions:
+          Last Transition Time:  2025-02-16T17:56:03Z
+          Message:               Route is accepted
+          Observed Generation:   1
+          Reason:                Accepted
+          Status:                True
+          Type:                  Accepted
+          Last Transition Time:  2025-02-16T17:56:03Z
+          Message:               Resolved all the Object references for the Route
+          Observed Generation:   1
+          Reason:                ResolvedRefs
+          Status:                True
+          Type:                  ResolvedRefs
+        Controller Name:         gateway.envoyproxy.io/gatewayclass-controller
+        Parent Ref:
+          Group:      gateway.networking.k8s.io
+          Kind:       Gateway
+          Name:       aibrix-eg
+          Namespace:  aibrix-system
+    Events:           <none>
+
+
+In most Kubernetes setups, ``LoadBalancer`` is supported by default. You can retrieve the external IP using the following command:
+
+.. code-block:: bash
+
+    LB_IP=$(kubectl get svc/envoy-aibrix-system-aibrix-eg-903790dc -n envoy-gateway-system -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    ENDPOINT="${LB_IP}:80"
+
+The model name, such as ``deepseek-r1-distill-llama-8b``, must match the label ``model.aibrix.ai/name`` in your deployment.
+
+.. code-block:: bash
+
+    curl -v http://${ENDPOINT}/v1/chat/completions \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer any_key" \
     -d '{
-        "model": "your-model-name",
+        "model": "deepseek-r1-distill-llama-8b",
         "messages": [{"role": "user", "content": "Say this is a test!"}],
         "temperature": 0.7
     }'
+
+.. attention::
+
+    AIBrix expose the public endpoint to the internet. Please enable authentication to secure your endpoint.
+    If vLLM, you can pass in the argument ``--api-key`` or environment variable ``VLLM_API_KEY`` to enable the server to check for API key in the header.
+    Check `vLLM OpenAI-Compatible Server <https://docs.vllm.ai/en/latest/getting_started/quickstart.html#openai-compatible-server>`_ for more details.
+
+After you enable the authentication, you can query model with ``-H Authorization: bearer your_key`` in this way
+
+.. code-block:: bash
+  :emphasize-lines: 3
+
+    curl -v http://${ENDPOINT}/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer any_key" \
+    -d '{
+        "model": "deepseek-r1-distill-llama-8b",
+        "messages": [{"role": "user", "content": "Say this is a test!"}],
+        "temperature": 0.7
+    }'
+
 
 Routing Strategies
 ------------------
@@ -56,15 +147,15 @@ Below are routing strategies gateway supports
 
 .. code-block:: bash
 
-    curl -v http://<ip>:<port>/v1/chat/completions \
+    curl -v http://${ENDPOINT}/v1/chat/completions \
     -H "routing-strategy: least-request" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer any_key" \
     -d '{
         "model": "your-model-name",
         "messages": [{"role": "user", "content": "Say this is a test!"}],
         "temperature": 0.7
     }'
+
 
 Rate Limiting
 -------------
@@ -76,7 +167,7 @@ To set up rate limiting, add the user header in the request, like this:
 
 .. code-block:: bash
 
-    curl -v http://<ip>:<port>/v1/chat/completions \
+    curl -v http://${ENDPOINT}/v1/chat/completions \
     -H "user: your-user-id" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer any_key" \

@@ -26,8 +26,7 @@ spec:
             - --port
             - "8000"
             - --model
-#            - deepseek-ai/DeepSeek-R1-Distill-Llama-8B
-            - Qwen/Qwen2.5-Coder-1.5B-Instruct
+            - deepseek-ai/DeepSeek-R1-Distill-Llama-8B
             - --served-model-name
             # Note: The `--served-model-name` argument value must also match the Service name and the Deployment label `model.aibrix.ai/name`
             - deepseek-r1-distill-llama-8b
@@ -67,4 +66,4 @@ spec:
       targetPort: 8080
   selector:
     model.aibrix.ai/name: deepseek-r1-distill-llama-8b
-  type: LoadBalancer
+  type: ClusterIP

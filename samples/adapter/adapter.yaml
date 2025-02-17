@@ -7,11 +7,9 @@ metadata:
     model.aibrix.ai/name: "qwen-code-lora"
     model.aibrix.ai/port: "8000"
 spec:
-  baseModel: llama2-7b
+  baseModel: qwen-coder-1-5b-instruct
   podSelector:
     matchLabels:
-      model.aibrix.ai/name: llama2-7b
+      model.aibrix.ai/name: qwen-coder-1-5b-instruct
   artifactURL: huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora
-  additionalConfig:
-    api-key: test-key-1234567890
   schedulerName: default
