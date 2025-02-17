@@ -113,10 +113,6 @@ Send request using lora model name to the gateway.
 
 .. code-block:: bash
 
-    # Expose endpoint
-    LB_IP=$(kubectl get svc/envoy-aibrix-system-aibrix-eg-903790dc -n envoy-gateway-system -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')
-    ENDPOINT="${LB_IP}:80"
-
     # send request to base model
     curl -v http://${ENDPOINT}/v1/completions \
         -H "Content-Type: application/json" \
@@ -168,13 +164,32 @@ User may pass in the argument ``--api-key`` or environment variable ``VLLM_API_K
 
 .. code-block:: bash
 
-    python3 -m vllm.entrypoints.openai.api_server --api-key test-key-1234567890
+    python3 -m vllm.entrypoints.openai.api_server --api-key sk-kFJ12nKsFakefVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BFake
+
+We already have an example and you can ``kubectl apply -f samples/adapter/adapter-with-key.yaml``.
 
 
 In that case, lora model adapter can not query the vLLM server correctly, showing ``{"error":"Unauthorized"}`` error. You need to update ``additionalConfig`` field to pass in the API key.
 
 .. literalinclude:: ../../../samples/adapter/adapter-api-key.yaml
    :language: yaml
+
+
+You need to send the request with ``--header 'Authorization: Bearer your-api-key'``
+
+.. code-block:: bash
+
+    # send request to base model
+    curl -v http://${ENDPOINT}/v1/completions \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer sk-kFJ12nKsFakefVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BFake" \
+        -d '{
+            "model": "qwen-code-lora-with-key",
+            "prompt": "San Francisco is a",
+            "max_tokens": 128,
+            "temperature": 0
+        }'
+
 
 Runtime Support Sidecar
 ^^^^^^^^^^^^^^^^^^^^^^^

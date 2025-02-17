@@ -1,7 +1,7 @@
 apiVersion: autoscaling.aibrix.ai/v1alpha1
 kind: PodAutoscaler
 metadata:
-  name: aibrix-model-deepseek-llm-7b-chat-hpa
+  name: deepseek-r1-distill-llama-8b-hpa
   namespace: default
   labels:
     app.kubernetes.io/name: aibrix
@@ -20,4 +20,4 @@ spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: aibrix-model-deepseek-llm-7b-chat
+    name: deepseek-r1-distill-llama-8b
