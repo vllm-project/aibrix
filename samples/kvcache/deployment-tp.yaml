@@ -1,17 +1,24 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: aibrix-model-deepseek-coder-33b-instruct
+  name: deepseek-coder-33b-instruct
   labels:
     model.aibrix.ai/name: deepseek-coder-33b-instruct
     model.aibrix.ai/port: "8000"
 spec:
+  replicas: 1
   strategy:
     rollingUpdate:
       maxSurge: 1
       maxUnavailable: 1
     type: RollingUpdate
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: deepseek-coder-33b-instruct
   template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: deepseek-coder-33b-instruct
     spec:
       containers:
         - name: vllm-openai
@@ -58,7 +65,12 @@ spec:
           volumeMounts:
             - mountPath: /var/run
               name: kvcache-socket
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
       volumes:
         - name: kvcache-socket
           hostPath:
-            path: /var/run/vineyard-kubernetes/default/aibrix-model-deepseek-coder-33b-kvcache-rpc
+            path: /var/run/vineyard-kubernetes/default/deepseek-coder-33b-kvcache

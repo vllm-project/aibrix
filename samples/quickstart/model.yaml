@@ -30,6 +30,8 @@ spec:
             - --served-model-name
             # Note: The `--served-model-name` argument value must also match the Service name and the Deployment label `model.aibrix.ai/name`
             - deepseek-r1-distill-llama-8b
+            - --max-model-len
+            - "12288" # 24k length, this is to avoid "The model's max seq len (131072) is larger than the maximum number of tokens that can be stored in KV cache" issue.
           image: vllm/vllm-openai:v0.7.1
           imagePullPolicy: Always
           name: vllm-openai

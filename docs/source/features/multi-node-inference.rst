@@ -53,7 +53,7 @@ Workloads Examples
 
 This is the ``RayClusterFleet`` example, you can apply this yaml in your cluster.
 
-.. literalinclude:: ../../../samples/distributed/fleet.yaml
+.. literalinclude:: ../../../samples/distributed/fleet-two-node.yaml
    :language: yaml
 
 

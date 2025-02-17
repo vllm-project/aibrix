@@ -1,7 +1,7 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: KVCache
 metadata:
-  name: aibrix-model-deepseek-coder-33b-kvcache
+  name: deepseek-coder-33b-kvcache
   namespace: default
   annotations:
 #    kvcache.orchestration.aibrix.ai/node-affinity-gpu-type: NVIDIA-L20
@@ -11,6 +11,6 @@ spec:
   service:
     type: ClusterIP
     port: 9600
-  cache:
+  cacheSpec:
     image: aibrix/vineyardd:20241120
     imagePullPolicy: IfNotPresent
