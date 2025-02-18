@@ -14,7 +14,7 @@ export SHAREGPT_FILE_PATH=/tmp/ShareGPT_V3_unfiltered_cleaned_split.json
 ```shell
 export TARGET_QPS=1
 
-python workload_generator.py --prompt-file $SHAREGPT_FILE_PATH --interval-ms 1000 --duration-ms 300000 --target-qps $ta --trace-type constant --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "output" --output-format jsonl 
+python workload_generator.py --prompt-file $SHAREGPT_FILE_PATH --interval-ms 1000 --duration-ms 300000 --target-qps $TARGET_QPS --trace-type constant --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "output" --output-format jsonl 
 ```
 
 ### Generate a workload file based on workload patterns (synthetic patterns)
@@ -115,29 +115,5 @@ python workload_generator.py --prompt-file $SHAREGPT_FILE_PATH --num-prompts 100
 
 Note that the trace file contains both input and output lengths. And therefore dataset in `$SHAREGPT_FILE_PATH` needs to be tokenized to be able to sampled based on their input/output token lengths. Therefore it is required to specify tokenizer to generate based on this trace. Use `--group-interval-seconds` to specify grouping interval from the original trace. The file would be stored under `output` folder and the plot illustrates the workload pattern will be under the `plot` directory.
 
-## Run Workload Generator
 
-Starting vllm server:
-
-```shell
-python3 -m vllm.entrypoints.openai.api_server --host 0.0.0.0 \
---port "8000" \
---model /root/models/deepseek-coder-6.7b-instruct \
---trust-remote-code \
---max-model-len "14304" \
---api-key sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi \
---enable-chunked-prefill
-```
-
-Using a sample workload in a client:
-
-```shell
-python3 client.py \
---workload-path "output/quick_rising.jsonl" \
---endpoint "http://localhost:8000" \
---model /root/models/deepseek-coder-6.7b-instruct \
---api-key sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi \
---output-file-path output.jsonl
-```
-
-The output will be stored as a `.jsonl` file in `output.jsonl`
+Use [client](../client/README.md) to test generated trace locally. 
