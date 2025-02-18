@@ -25,6 +25,8 @@ spec:
             - "0.0.0.0"
             - --port
             - "8000"
+            - --uvicorn-log-level
+            - warning
             - --model
             - deepseek-ai/DeepSeek-R1-Distill-Llama-8B
             - --served-model-name
