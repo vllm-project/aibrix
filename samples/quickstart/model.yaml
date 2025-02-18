@@ -33,7 +33,7 @@ spec:
             - --max-model-len
             - "12288" # 24k length, this is to avoid "The model's max seq len (131072) is larger than the maximum number of tokens that can be stored in KV cache" issue.
           image: vllm/vllm-openai:v0.7.1
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           name: vllm-openai
           ports:
             - containerPort: 8000
@@ -43,6 +43,27 @@ spec:
               nvidia.com/gpu: "1"
             requests:
               nvidia.com/gpu: "1"
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            initialDelaySeconds: 120
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          readinessProbe:
+            failureThreshold: 5
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            initialDelaySeconds: 120
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+
 ---
 
 apiVersion: v1

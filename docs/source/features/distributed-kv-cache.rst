@@ -30,10 +30,13 @@ After deployment, we can see all the components by using ``kubectl get pods -n a
 .. code-block:: RST
 
     NAME                                        READY   STATUS    RESTARTS   AGE
-    deepseek-coder-7b-kvcache-596965997-p86cx   1/1     Running   0          2m
+    deepseek-coder-7b-kvcache-596965997-p86cx   0/1     Pending   0          2m
     deepseek-coder-7b-kvcache-etcd-0            1/1     Running   0          2m
 
-After all components are running, we can use the following yaml to deploy the inference service:
+.. note::
+    ``deepseek-coder-7b-kvcache-596965997-p86cx`` is pending and waiting for inference engine to be deployed, this is normal.
+
+After all components are created, we can use the following yaml to deploy the inference service:
 
 .. literalinclude:: ../../../samples/kvcache/deployment.yaml
    :language: yaml

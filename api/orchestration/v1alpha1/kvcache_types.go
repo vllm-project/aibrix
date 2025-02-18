@@ -95,7 +95,7 @@ type CacheSpec struct {
 
 	// the memory resources of kvcache container
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default:="2"
+	// +kubebuilder:default:="2Gi"
 	Memory string `json:"memory,omitempty"`
 
 	// the cpu resources of kvcache container

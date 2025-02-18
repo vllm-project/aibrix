@@ -2,15 +2,15 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    model.aibrix.ai/name: deepseek-llm-7b-chat
+    model.aibrix.ai/name: deepseek-r1-distill-llama-8b
     model.aibrix.ai/port: "8000"
-  name: aibrix-model-deepseek-llm-7b-chat
+  name: deepseek-r1-distill-llama-8b
   namespace: default
 spec:
   replicas: 1
   selector:
     matchLabels:
-      model.aibrix.ai/name: deepseek-llm-7b-chat
+      model.aibrix.ai/name: deepseek-r1-distill-llama-8b
   strategy:
     type: Recreate
   template:
@@ -20,7 +20,7 @@ spec:
         prometheus.io/port: "8000"
         prometheus.io/path: "/metrics"
       labels:
-        model.aibrix.ai/name: deepseek-llm-7b-chat
+        model.aibrix.ai/name: deepseek-r1-distill-llama-8b
     spec:
       containers:
         - command:
@@ -32,12 +32,13 @@ spec:
             - --port
             - "8000"
             - --model
-            - deepseek-ai/deepseek-coder-6.7b-instruct
+            - deepseek-ai/DeepSeek-R1-Distill-Llama-8B
             - --served-model-name
-            - deepseek-llm-7b-chat
-            - --trust-remote-code
+            - deepseek-r1-distill-llama-8b
             - --dtype
             - half
+            - --max-model-len
+            - "12288" # 24k length, this is to avoid "The model's max seq len (131072) is larger than the maximum number of tokens that can be stored in KV cache" issue.
           image: vllm/vllm-openai:v0.7.1
           imagePullPolicy: IfNotPresent
           livenessProbe:
@@ -46,7 +47,7 @@ spec:
               path: /health
               port: 8000
               scheme: HTTP
-            initialDelaySeconds: 90
+            initialDelaySeconds: 120
             periodSeconds: 5
             successThreshold: 1
             timeoutSeconds: 1
@@ -55,12 +56,12 @@ spec:
             - containerPort: 8000
               protocol: TCP
           readinessProbe:
-            failureThreshold: 3
+            failureThreshold: 5
             httpGet:
               path: /health
               port: 8000
               scheme: HTTP
-            initialDelaySeconds: 90
+            initialDelaySeconds: 120
             periodSeconds: 5
             successThreshold: 1
             timeoutSeconds: 1
@@ -69,3 +70,30 @@ spec:
               nvidia.com/gpu: "1"
             requests:
               nvidia.com/gpu: "1"
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+    prometheus-discovery: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+  name: deepseek-r1-distill-llama-8b # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
+  namespace: default
+spec:
+  ports:
+    - name: serve
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+  type: ClusterIP
