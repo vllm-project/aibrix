@@ -18,7 +18,7 @@ spec:
       path: /metrics/default/deepseek-llm-7b-chat
       protocolType: http
       targetMetric: vllm:deployment_replicas
-      targetValue: "1" 
+      targetValue: "100" 
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment

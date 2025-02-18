@@ -1,29 +1,26 @@
 .. _optimizer-based-autoscaling:
 
-===============================
+==========================
 Optimizer-based Autoscaler
-===============================
+==========================
 
 Overview 
-------------------------------------------
+--------
 
-Autoscaling is crucial for deploying Large Language Model (LLM) services on Kubernetes (K8s), as timely scaling up handles peaks in request traffic, and scaling down conserves resources when demand wanes.
-
-AIBrix Optimizer-based Autoscaler is a proactive autoscaling solution which uses offline profiles of GPU to calculate the number of GPUs needed for the deployment rather than using GPU usage metrics. It includes (1) LLM Request Monitoring and (2) GPU Optimizer. The following figure shows the overall architecture. First, the LLM Request Monitoring component is responsible for monitoring past inference requests and their request patterns. Second, the GPU Optimizer component is responsible for calculating the optimal GPU number recommendation based on the request patterns and sending the recommendation to the K8s KPA.
+Optimizer-based Autoscaler is a proactive autoscaling solution which uses offline profiles of GPU to calculate the number of GPUs needed for the deployment rather than using GPU usage metrics. It includes (1) LLM Request Monitoring and (2) GPU Optimizer. The following figure shows the overall architecture. First, the LLM Request Monitoring component is responsible for monitoring past inference requests and their request patterns. Second, the GPU Optimizer component is responsible for calculating the optimal GPU number recommendation based on the request patterns and sending the recommendation to the K8s KPA.
 
 
-.. figure:: ../assets/images/autoscaler/optimizer-based-podautoscaler.png
+.. figure:: ../../assets/images/autoscaler/optimizer-based-podautoscaler.png
   :alt: optimizer-based-podautoscaler
   :width: 100%
   :align: center
-
 
 
 How It Works
 ------------------------------------------
 
 Step 1: Offline GPU-Model Benchmark per Input-Output Pattern
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Benchmark model. For each type of GPU, run ``aibrix_benchmark``. See `benchmark.sh <https://github.com/aibrix/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_ for more options.
 
@@ -70,34 +67,11 @@ All the sample files can be found in the following directory.
     https://github.com/aibrix/aibrix/tree/main/samples/autoscaling
 
 Example Optimizer-based KPA yaml config
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. code-block:: yaml
+.. literalinclude:: ../../../../samples/autoscaling/optimizer-kpa.yaml
+   :language: yaml
 
-    apiVersion: autoscaling.aibrix.ai/v1alpha1
-    kind: PodAutoscaler
-    metadata:
-        name: podautoscaler-deepseek-llm-7b-chat-v100-gpu-optimizer
-        namespace: default
-        labels:
-            app.kubernetes.io/name: aibrix
-            app.kubernetes.io/managed-by: kustomize
-            kpa.autoscaling.aibrix.ai/scale-down-delay: 0s
-    spec:
-        scalingStrategy: KPA 
-        minReplicas: 1
-        maxReplicas: 8
-        metricsSources:
-        - endpoint: aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080
-            metricSourceType: domain
-            path: /metrics/default/deepseek-llm-7b-chat-v100
-            protocolType: http
-            targetMetric: vllm:deployment_replicas
-            targetValue: "1" 
-        scaleTargetRef:
-            apiVersion: apps/v1
-            kind: Deployment
-            name: deepseek-llm-7b-chat-v100
 
 
 
@@ -125,7 +99,7 @@ Here we show the preliminary experiment results to show how different autoscalin
     - Model: Deepseek 7B chatbot model
     - GPU type: V100
     - Max number of GPU: 8
-    - HPA, KPA, and APA use metrics as the scaling metrics: 50, 70, and 80.
+    - HPA, KPA, and APA use metrics as the scaling metrics: 70.
     - Optimizer-based KPA SLO: E2E P99 100s
 - Workload
     - The overall RPS trend starts with low RPS and goes up relatively fast until T=500 to evaluate how different autoscaler and config reacts to the rapid load increase. After that, it goes down to low RPS quickly to evaluate scaling down behavior and goes up again slowly.
@@ -133,35 +107,11 @@ Here we show the preliminary experiment results to show how different autoscalin
 
 
 Experiments Results
-^^^^^^^^^^^^^^^^^^^^^^^^^^
-- gpu_cache_usage_perc: 50
-
-.. image:: ../assets/images/autoscaler/optimizer-based-autoscaling-50-results.png
-   :alt: result
-   :width: 720px
-   :align: center
+^^^^^^^^^^^^^^^^^^^
 
 - gpu_cache_usage_perc: 70
 
-.. image:: ../assets/images/autoscaler/optimizer-based-autoscaling-70-results.png
+.. image:: ../../assets/images/autoscaler/optimizer-based-autoscaling-70-results.png
    :alt: result
    :width: 720px
    :align: center
-
-- gpu_cache_usage_perc: 80
-
-.. image:: ../assets/images/autoscaler/optimizer-based-autoscaling-80-results.png
-   :alt: result
-   :width: 720px
-   :align: center
-
-
-Takeaway
-^^^^^^^^^^^^^^^^^^^^^^^^^^
-1. KPA achieves the lowest latency due to its rapid scaling capabilities; however, this comes at a high cost.
-2. APA scales in quickly, resulting in lower overall costs. However, KPA and HPA can also adjust their decision windows to optimize their costs.
-3. HPA responds more slowly to changes in request load, leading to higher latency and increased costs. Overall, its performance is suboptimal in experiments.
-4. The GPU-optimizer-based pod autoscaler can significantly reduce costs while maintaining low latency, especially when the thresholds for HPA, APA, and KPA are not optimized. However, its advantage diminishes when those thresholds are highly optimized.
-5. Fine-tuning the scaling threshold is a crucial optimization for achieving optimal performance. HPA, APA, and KPA each present trade-offs between latency and cost at different threshold settings. In contrast, the GPU-optimizer-based pod autoscaler leverages GPU profiling data to bypass the need for threshold tuning.
-
-In summary, there is no single podautoscaler policy that works for all scenarios. The optimizer-based podautoscaler works best in scenarios where cost is the most important consideration.
