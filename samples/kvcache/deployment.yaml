@@ -69,3 +69,30 @@ spec:
         - name: kvcache-socket
           hostPath:
             path: /var/run/vineyard-kubernetes/default/deepseek-coder-7b-kvcache
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    model.aibrix.ai/name: deepseek-coder-7b-instruct
+    prometheus-discovery: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+  name: deepseek-coder-7b-instruct # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
+  namespace: default
+spec:
+  ports:
+    - name: serve
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    model.aibrix.ai/name: deepseek-coder-7b-instruct
+  type: ClusterIP
