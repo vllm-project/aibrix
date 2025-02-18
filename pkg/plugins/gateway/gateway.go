@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -405,6 +406,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
 	klog.InfoS("-- In ResponseHeaders processing ...", "requestID", requestID)
+	b := req.Request.(*extProcPb.ProcessingRequest_ResponseHeaders)
 
 	headers := []*configPb.HeaderValueOption{{
 		Header: &configPb.HeaderValue{
@@ -419,6 +421,39 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 				RawValue: []byte(targetPodIP),
 			},
 		})
+	}
+
+	var isProcessingError bool
+	var processingErrorCode int
+	for _, headerValue := range b.ResponseHeaders.Headers.Headers {
+		if headerValue.Key == ":status" {
+			code, _ := strconv.Atoi(string(headerValue.RawValue))
+			if code != 200 {
+				isProcessingError = true
+				processingErrorCode = code
+			}
+		}
+		headers = append(headers, &configPb.HeaderValueOption{
+			Header: &configPb.HeaderValue{
+				Key:      headerValue.Key,
+				RawValue: []byte(headerValue.RawValue),
+			},
+		})
+	}
+
+	if isProcessingError {
+		return &extProcPb.ProcessingResponse{
+			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+				ImmediateResponse: &extProcPb.ImmediateResponse{
+					Status: &envoyTypePb.HttpStatus{
+						Code: envoyTypePb.StatusCode(processingErrorCode),
+					},
+					Headers: &extProcPb.HeaderMutation{
+						SetHeaders: headers,
+					},
+				},
+			},
+		}
 	}
 
 	return &extProcPb.ProcessingResponse{
