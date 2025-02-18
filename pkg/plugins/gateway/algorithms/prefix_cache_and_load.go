@@ -30,6 +30,8 @@ import (
 
 const (
 	defaultDecodingLength = 45
+	slidingWindowPeriod   = 3 * time.Minute
+	evictionLoopInterval  = 1000 * time.Millisecond
 )
 
 var (
@@ -76,7 +78,7 @@ type prefixCacheAndLoadRouter struct {
 func NewPrefixCacheAndLoadRouter() (Router, error) {
 	numPods := 2 // FIXME: Hardcoded for now. not just this but the entire tree cache implementation...
 	histogram := &SlidingWindowHistogram{
-		windowDuration: 3 * time.Minute,
+		windowDuration: slidingWindowPeriod,
 		histogram:      make(map[*prefixcacheindexer.TreeNode]int),
 		nodeToCount:    make(map[*prefixcacheindexer.TreeNode]int),
 		hitTokens:      make(map[*prefixcacheindexer.TreeNode]int),
@@ -99,128 +101,34 @@ func NewPrefixCacheAndLoadRouter() (Router, error) {
 	return router, nil
 }
 
-func (p *prefixCacheAndLoadRouter) evictionLoop() {
-	ticker := time.NewTicker(50 * time.Millisecond) // NOTE: eviction event interval is hardcoded
-	for range ticker.C {
-		p.cache.Evict(time.Now())
-		p.histogram.removeOldEntries(time.Now())
-	}
-}
-
-func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
-	readyPods := utils.FilterReadyPods(pods)
-	if len(readyPods) == 0 {
-		return "", fmt.Errorf("no pods to forward request")
-	}
-	if len(readyPods) == 1 {
-		for _, pod := range readyPods {
-			return getPodAddress(pod.Status.PodIP)
-		}
-	}
-
-	tokens, err := utils.TokenizeInputText(message)
-	if err != nil {
-		return "", err
-	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Single traversal to find/create node
-	node := p.cache.AddPrefix(tokens, model, "", false)
-
-	// Get matched pods
-	var matchedPods []*v1.Pod
-	if blockPods, ok := node.ModelToPods[model]; ok {
-		for podName := range blockPods {
-			for _, pod := range readyPods {
-				if pod.Name == podName {
-					matchedPods = append(matchedPods, pod)
-				}
-			}
-		}
-	}
-
-	var targetPod *v1.Pod
-	if len(node.GetValue()) > len(tokens)/2 && len(matchedPods) > 0 {
-		minLoad := -1
-		for _, pod := range matchedPods {
-			load := p.histogram.getPodLoad(pod)
-			if minLoad == -1 || load < minLoad {
-				minLoad = load
-				targetPod = pod
-			}
-		}
-	}
-
-	if targetPod == nil {
-		minLoad := -1
-		for _, pod := range readyPods {
-			load := p.histogram.getPodLoad(pod)
-			if minLoad == -1 || load < minLoad {
-				minLoad = load
-				targetPod = pod
-			}
-		}
-	}
-
-	if targetPod == nil {
-		return "", fmt.Errorf("no suitable pod found")
-	}
-
-	// Update pod mapping in the same node
-	if blockPods, ok := node.ModelToPods[model]; !ok {
-		node.ModelToPods[model] = map[string]time.Time{
-			targetPod.Name: time.Now(),
-		}
-	} else {
-		blockPods[targetPod.Name] = time.Now()
-	}
-
-	// Update histogram
-	p.histogram.update(time.Now(), node, node, targetPod.Name, defaultDecodingLength)
-
-	klog.InfoS("prefix cache and load route",
-		"message", message,
-		"tokens", len(tokens),
-		"matched_tokens", len(node.GetValue()),
-		"matched_pods", len(matchedPods),
-		"target_pod", targetPod.Status.PodIP)
-
-	return getPodAddress(targetPod.Status.PodIP)
-}
-
-// Helper function to calculate pod load from histogram
-func (h *SlidingWindowHistogram) getPodLoad(pod *v1.Pod) int {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
-	load := 0
-	for node, count := range h.nodeToCount {
-		if blockPods, ok := node.ModelToPods[pod.Name]; ok && len(blockPods) > 0 {
-			load += count
-		}
-	}
-	return load
-}
-
-// Update histogram to use pod name instead of pod ID
-func (h *SlidingWindowHistogram) update(timestamp time.Time, node, leafNode *prefixcacheindexer.TreeNode, podName string, decodingLength int) {
+func (h *SlidingWindowHistogram) removeEvictedNodes(nodes []*prefixcacheindexer.TreeNode) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	h.timestamps = append(h.timestamps, histogramEntry{
-		timestamp: timestamp,
-		node:      node,
-		leafNode:  leafNode,
-	})
+	// Create a map for faster lookup
+	nodeMap := make(map[*prefixcacheindexer.TreeNode]bool)
+	for _, node := range nodes {
+		nodeMap[node] = true
+	}
 
-	h.histogram[node] += leafNode.ContextLength()
-	h.nodeToCount[node]++
-	h.decodingSize[node] = decodingLength
+	// Filter timestamps
+	newTimestamps := make([]histogramEntry, 0)
+	for _, entry := range h.timestamps {
+		if !nodeMap[entry.node] {
+			newTimestamps = append(newTimestamps, entry)
+		}
+	}
+	h.timestamps = newTimestamps
 
-	h.hitTokens[node] += leafNode.ContextLength() - leafNode.NumTokens()
-	h.promptTokens[node] += leafNode.ContextLength()
+	// Remove from all maps
+	for node := range nodeMap {
+		delete(h.histogram, node)
+		delete(h.nodeToCount, node)
+		delete(h.hitTokens, node)
+		delete(h.promptTokens, node)
+		delete(h.decodingSize, node)
+		delete(h.podAllocations, node)
+	}
 }
 
 func (h *SlidingWindowHistogram) removeOldEntries(currentTime time.Time) {
@@ -253,6 +161,147 @@ func (h *SlidingWindowHistogram) removeOldEntries(currentTime time.Time) {
 		}
 	}
 	h.timestamps = newTimestamps
+}
+
+func (p *prefixCacheAndLoadRouter) evictionLoop() {
+	ticker := time.NewTicker(evictionLoopInterval)
+	for range ticker.C {
+		p.mu.Lock()
+		evictedNodes := p.cache.Evict(time.Now())
+		if len(evictedNodes) > 0 {
+			p.histogram.removeEvictedNodes(evictedNodes)
+		}
+		p.histogram.removeOldEntries(time.Now())
+		p.mu.Unlock()
+	}
+}
+
+func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
+	readyPods := utils.FilterReadyPods(pods)
+	if len(readyPods) == 0 {
+		return "", fmt.Errorf("no pods to forward request")
+	}
+	if len(readyPods) == 1 {
+		for _, pod := range readyPods {
+			return getPodAddress(pod.Status.PodIP)
+		}
+	}
+
+	// input: {"content":"I like apple","role":"user"}
+	// output: "I like apple"
+	trimmedMessage := utils.TrimMessage(message)
+	klog.Infof("Trimmed message: %s", trimmedMessage)
+	tokens, err := utils.TokenizeInputText(trimmedMessage)
+	if err != nil {
+		return "", err
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Single traversal to find/create node
+	klog.Info("AddPrefix to the tree: ", tokens)
+	node, matchedTokens, _ := p.cache.AddPrefix(tokens, model, "", false)
+
+	var matchedPods []*v1.Pod // matchedpods will have all the pods that have the target model
+	if modelPods, ok := node.ModelToPods[model]; ok {
+		for podName := range modelPods {
+			for _, pod := range readyPods {
+				if pod.Name == podName { // Filter ready pods among all pods having the target model
+					matchedPods = append(matchedPods, pod)
+				}
+			}
+		}
+	}
+
+	var targetPod *v1.Pod
+	matchRatio := float64(len(matchedTokens)) / float64(len(tokens))
+	prefix_routing_threshold := 0.5
+	klog.Infof("Total tokens: %d, Matched tokens: %d, Matching ratio: %f%%, # Matched pods: %d",
+		len(tokens), len(matchedTokens), matchRatio, len(matchedPods))
+	if matchRatio > prefix_routing_threshold && len(matchedPods) > 0 {
+		klog.Infof("Do prefix-aware routing! (matching ratio: %f > %f)", matchRatio, prefix_routing_threshold)
+		minLoad := -1
+		for _, pod := range matchedPods {
+			load := p.histogram.getPodLoad(pod)
+			if minLoad == -1 || load < minLoad {
+				minLoad = load
+				targetPod = pod
+			}
+		}
+		klog.Infof("Lowest load among all matched pods: %s", targetPod.Name)
+	}
+
+	if targetPod == nil {
+		klog.Infof("Do cost model based routing! (matching ratio: %f <= %f)", matchRatio, prefix_routing_threshold)
+		minLoad := -1
+		for _, pod := range readyPods {
+			load := p.histogram.getPodLoad(pod)
+			klog.Infof("Pod: %s, Load: %d", pod.Name, load)
+			if minLoad == -1 || load < minLoad {
+				minLoad = load
+				targetPod = pod
+			}
+		}
+		klog.Infof("Lowest load pod: %s", targetPod.Name)
+	}
+
+	if targetPod == nil {
+		return "", fmt.Errorf("no suitable pod found")
+	}
+
+	// Update pod mapping in the same node
+	if modelPods, ok := node.ModelToPods[model]; !ok {
+		node.ModelToPods[model] = map[string]time.Time{
+			targetPod.Name: time.Now(),
+		}
+	} else {
+		modelPods[targetPod.Name] = time.Now()
+	}
+
+	// Update histogram
+	p.histogram.update(time.Now(), node, node, targetPod.Name, defaultDecodingLength)
+
+	klog.InfoS(
+		"target_pod_name", targetPod.Name,
+	)
+
+	return getPodAddress(targetPod.Status.PodIP)
+}
+
+// Compute the load in a pod fo a specific model based on the sliding window histogram
+func (h *SlidingWindowHistogram) getPodLoad(pod *v1.Pod) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	load := 0
+	for node, count := range h.nodeToCount {
+		for _, podMap := range node.ModelToPods {
+			if _, exists := podMap[pod.Name]; exists {
+				load += count
+				break // Found this pod in this node, no need to check other models
+			}
+		}
+	}
+	return load
+}
+
+// Update histogram to use pod name instead of pod ID
+func (h *SlidingWindowHistogram) update(timestamp time.Time, node, leafNode *prefixcacheindexer.TreeNode, podName string, decodingLength int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.timestamps = append(h.timestamps, histogramEntry{
+		timestamp: timestamp,
+		node:      node,
+		leafNode:  leafNode,
+	})
+
+	h.histogram[node] += leafNode.ContextLength()
+	h.nodeToCount[node]++
+	h.decodingSize[node] = decodingLength
+
+	h.hitTokens[node] += leafNode.ContextLength() - leafNode.NumTokens()
+	h.promptTokens[node] += leafNode.ContextLength()
 }
 
 func (p *prefixCacheAndLoadRouter) updatePodAllocation(node *prefixcacheindexer.TreeNode, podID int) {
