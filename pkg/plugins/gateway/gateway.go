@@ -436,7 +436,7 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 		headers = append(headers, &configPb.HeaderValueOption{
 			Header: &configPb.HeaderValue{
 				Key:      headerValue.Key,
-				RawValue: []byte(headerValue.RawValue),
+				RawValue: headerValue.RawValue,
 			},
 		})
 	}
