@@ -199,7 +199,7 @@ This is used to build the abstraction between controller manager and inference e
 and remove the ``
 
 .. code-block:: yaml
-  :emphasis-lines: 7
+  :emphasize-lines: 7
 
     spec:
       containers:

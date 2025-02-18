@@ -40,7 +40,7 @@ Documentation
    features/gateway-plugins.rst
    features/multi-node-inference.rst
    features/heterogeneous-gpu.rst
-   features/autoscaling.rst
+   features/autoscaling/autoscaling.rst
    features/runtime.rst
    features/distributed-kv-cache.rst
 
