@@ -22,12 +22,12 @@ spec:
         ports:
         - containerPort: 8080
         resources:
-          requests:
-            cpu: 1
-            memory: 1Gi
           limits:
-            cpu: 1
-            memory: 1Gi
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
         env:
           - name: REDIS_HOST
             value: aibrix-redis-master.aibrix-system.svc.cluster.local
