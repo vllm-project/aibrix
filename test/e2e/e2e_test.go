@@ -62,10 +62,9 @@ func TestBaseModelInferenceFailures(t *testing.T) {
 		expectErrCode   int
 	}{
 		{
-			name:      "Invalid API Key",
-			apiKey:    "fake-api-key",
-			modelName: modelName,
-			// TODO: it is supposed to be 401. Let's handle such case and fix this.
+			name:          "Invalid API Key",
+			apiKey:        "fake-api-key",
+			modelName:     modelName,
 			expectErrCode: 401,
 		},
 		{
