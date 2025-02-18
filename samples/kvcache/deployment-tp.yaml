@@ -57,7 +57,7 @@ spec:
             - name: AIBRIX_LLM_KV_CACHE_SOCKET
               value: /var/run/vineyard.sock
             - name: AIBRIX_LLM_KV_CACHE_RPC_ENDPOINT
-              value: "aibrix-model-deepseek-coder-33b-kvcache-rpc:9600"
+              value: "deepseek-coder-33b-kvcache-rpc:9600"
             - name: VINEYARD_CACHE_ENABLE_ASYNC_UPDATE
               value: "1"
             - name: "VINEYARD_CACHE_METRICS_ENABLED"

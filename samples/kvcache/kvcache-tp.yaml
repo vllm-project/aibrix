@@ -14,3 +14,5 @@ spec:
   cacheSpec:
     image: aibrix/vineyardd:20241120
     imagePullPolicy: IfNotPresent
+    cpu: 2000m
+    memory: 4Gi
