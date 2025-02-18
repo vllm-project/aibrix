@@ -38,11 +38,11 @@ spec:
             - containerPort: 50052
           resources:
             limits:
-              cpu: 500m
-              memory: 256Mi
+              cpu: 1
+              memory: 1Gi
             requests:
-              cpu: 10m
-              memory: 64Mi
+              cpu: 1
+              memory: 1Gi
           env:
             - name: REDIS_HOST
               value: aibrix-redis-master
