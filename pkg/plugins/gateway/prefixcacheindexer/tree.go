@@ -48,6 +48,10 @@ type TreeNode struct {
 	ModelToPods   map[string]map[string]time.Time // model -> {podName -> lastAccessTime}
 }
 
+func (n *TreeNode) GetKey() []int {
+	return n.key
+}
+
 func (n *TreeNode) GetValue() []int {
 	return n.value
 }
@@ -190,61 +194,85 @@ func matchLen(key, seq []int) int {
 	return i
 }
 
+// Add internal method to get node
+func (c *LPRadixCache) GetNode(tokens []int) *TreeNode {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	node, _ := c.matchPrefixHelper(c.rootNode, tokens)
+	return node
+}
+
 // Implementation of PrefixCacheIndexer interface
 // Not being used. Everything is being done in AddPrefix
 func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.Pod) ([]int, []int, []*v1.Pod) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	node := c.matchPrefixHelper(c.rootNode, inputTokens)
+	// Get the longest matching node
+	node, matchedTokens := c.matchPrefixHelper(c.rootNode, inputTokens)
 	if node == nil {
 		return nil, inputTokens, pods
 	}
 
-	matchedTokens := inputTokens[:len(node.value)]
-	unmatchedTokens := inputTokens[len(node.value):]
+	var unmatchedTokens []int
+	if len(matchedTokens) < len(inputTokens) {
+		unmatchedTokens = inputTokens[len(matchedTokens):]
+	}
 
-	// Filter pods based on model mapping like in hash-based impl
+	// Filter pods based on model mapping
 	var matchedPods []*v1.Pod
 	if modelPods, ok := node.ModelToPods[model]; ok {
 		for _, pod := range pods {
 			if _, ok := modelPods[pod.Name]; ok {
 				matchedPods = append(matchedPods, pod)
-				klog.Info("Matched pod: ", pod.Name)
+				klog.Infof("Matched pod for node(%d): %s", node.id, pod.Name)
 			}
 		}
 	}
 
+	klog.Infof("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v",
+		node.id, node.key, matchedTokens, node.ModelToPods)
+
 	return matchedTokens, unmatchedTokens, matchedPods
 }
 
-// Add internal method to get node
-func (c *LPRadixCache) GetNode(tokens []int) *TreeNode {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.matchPrefixHelper(c.rootNode, tokens)
-}
+// This is being used still unlike MatchPrefix
+func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, tokens []int) (*TreeNode, []int) {
+	if len(tokens) == 0 {
+		return node, nil
+	}
 
-func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, key []int) *TreeNode {
 	node.lastAccess = time.Now()
-	if len(key) == 0 {
-		return node
-	}
-	klog.Info("Matching prefix: ", key)
-	if child, ok := node.children[key[0]]; ok {
-		prefixLen := matchLen(child.key, key)
-		if prefixLen < len(child.key) {
-			return nil
+	if child, ok := node.children[tokens[0]]; ok {
+		prefixLen := matchLen(child.key, tokens)
+		if prefixLen > 0 {
+			if prefixLen == len(child.key) {
+				// Complete match with this node's key
+				if prefixLen == len(tokens) {
+					return child, child.key
+				}
+				// Continue matching with remaining tokens
+				deeperNode, deeperMatched := c.matchPrefixHelper(child, tokens[prefixLen:])
+				if deeperNode != nil && len(deeperMatched) > 0 {
+					return deeperNode, append(child.key, deeperMatched...)
+				}
+				return child, child.key
+			}
+			// Partial match with this node's key
+			return child, child.key[:prefixLen]
 		}
-		return c.matchPrefixHelper(child, key[prefixLen:])
 	}
-	return node
+	return node, nil
 }
 
 func (c *LPRadixCache) AddPrefix(tokens []int, model, podName string, updateMapping bool) (*TreeNode, []int, []int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Do insertion first
 	node, matchedTokens, unmatchedTokens := c.insertHelper(c.rootNode, tokens, tokens)
+
+	// Update mapping in the correct node (not parent)
 	if updateMapping && podName != "" {
 		if node.ModelToPods == nil {
 			node.ModelToPods = make(map[string]map[string]time.Time)
@@ -253,8 +281,10 @@ func (c *LPRadixCache) AddPrefix(tokens []int, model, podName string, updateMapp
 			node.ModelToPods[model] = make(map[string]time.Time)
 		}
 		node.ModelToPods[model][podName] = time.Now()
-		klog.Infof("Updated mapping for model %s, pod %s in node(%d) with key %v", model, podName, node.id, node.key)
+		klog.Infof("Updated mapping for model %s, pod %s in node(%d) with key %v",
+			model, podName, node.id, node.key)
 	}
+
 	c.PrettyPrint()
 	return node, matchedTokens, unmatchedTokens
 }
@@ -279,29 +309,28 @@ func (c *LPRadixCache) insertHelper(node *TreeNode, key []int, value []int) (*Tr
 			if prefixLen == len(key) {
 				klog.Infof("Entire input tokens match the child node(%d): %v", child.id, key)
 				child.lastAccess = time.Now()
-				klog.Infof("Updated node(%d) last access: %.2f seconds", child.id, timePassed)
 				child.load++
-				return child, child.key, nil
+				return child, key, nil // Return the original key for exact match
 			}
 			// Partial match, continue deeper
 			klog.Infof("Partial tokens match child node(%d): %v. Continue deeper", child.id, key)
 			childNode, childMatched, childUnmatched := c.insertHelper(child, key[prefixLen:], value[prefixLen:])
-			if childMatched != nil {
-				return childNode, append(child.key, childMatched...), childUnmatched
+			if len(childMatched) > 0 {
+				return childNode, key[:prefixLen+len(childMatched)], childUnmatched
 			}
-			return childNode, child.key, key[prefixLen:]
+			return childNode, key[:prefixLen], key[prefixLen:]
 		}
 
 		// Case 2: Partial match, need to split
 		newNode := c.splitNode(key, child, prefixLen)
 		if prefixLen == len(key) {
-			return newNode, newNode.key, nil
+			return newNode, key, nil
 		}
 		deeperNode, deeperMatched, deeperUnmatched := c.insertHelper(newNode, key[prefixLen:], value[prefixLen:])
-		if deeperMatched != nil {
-			return deeperNode, append(newNode.key, deeperMatched...), deeperUnmatched
+		if len(deeperMatched) > 0 {
+			return deeperNode, key[:prefixLen+len(deeperMatched)], deeperUnmatched
 		}
-		return deeperNode, newNode.key, key[prefixLen:]
+		return deeperNode, key[:prefixLen], key[prefixLen:]
 	}
 
 	// No matching child, create new node
@@ -391,20 +420,56 @@ func (c *LPRadixCache) evictNode(node *TreeNode) {
 
 func (c *LPRadixCache) splitNode(key []int, child *TreeNode, splitLen int) *TreeNode {
 	klog.Infof("Splitting node(%d): %v, into %v and %v", child.id, child.key, child.key[:splitLen], child.key[splitLen:])
+
+	// Create new node with split portions
 	newNode := c.NewTreeNode(c.numPods, child.parent, child.key[:splitLen], child.value[:splitLen])
+
+	// Update parent's reference to point to new node
 	child.parent.children[key[0]] = newNode
-	child.key = child.key[splitLen:]
-	child.value = child.value[splitLen:]
+
+	// Update child node
+	remainingKey := make([]int, len(child.key)-splitLen)
+	copy(remainingKey, child.key[splitLen:])
+	child.key = remainingKey
+
+	remainingValue := make([]int, len(child.value)-splitLen)
+	copy(remainingValue, child.value[splitLen:])
+	child.value = remainingValue
+
+	// Update relationships
 	child.parent = newNode
-	newNode.children = map[int]*TreeNode{child.key[0]: child}
+	newNode.children = make(map[int]*TreeNode)
+	if len(child.key) > 0 {
+		newNode.children[child.key[0]] = child
+	}
+
+	// Copy metadata
 	newNode.load = child.load
 	copy(newNode.refCounter, child.refCounter)
+
+	// Copy pod mappings
 	for k, v := range child.cachedPods {
 		newNode.cachedPods[k] = v
 	}
 	for k, v := range child.evictedPods {
 		newNode.evictedPods[k] = v
 	}
+
+	// Copy ModelToPods mapping to both nodes
+	newNode.ModelToPods = make(map[string]map[string]time.Time)
+	for model, pods := range child.ModelToPods {
+		// Copy to new node (prefix node)
+		newNode.ModelToPods[model] = make(map[string]time.Time)
+		for podName, lastAccess := range pods {
+			newNode.ModelToPods[model][podName] = lastAccess
+		}
+	}
+
+	klog.Infof("Split complete - New node(%d) key: %v, ModelToPods: %v",
+		newNode.id, newNode.key, newNode.ModelToPods)
+	klog.Infof("Split complete - Child node(%d) key: %v, ModelToPods: %v",
+		child.id, child.key, child.ModelToPods)
+
 	c.allNodes[newNode.id] = newNode
 	return newNode
 }

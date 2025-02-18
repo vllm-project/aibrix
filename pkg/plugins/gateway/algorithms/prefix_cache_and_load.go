@@ -186,7 +186,6 @@ func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v
 			return getPodAddress(pod.Status.PodIP)
 		}
 	}
-
 	// input: {"content":"I like apple","role":"user"}
 	// output: "I like apple"
 	trimmedMessage := utils.TrimMessage(message)
@@ -195,14 +194,10 @@ func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v
 	if err != nil {
 		return "", err
 	}
-
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	// Single traversal to find/create node
 	klog.Info("AddPrefix to the tree: ", tokens)
 	node, matchedTokens, _ := p.cache.AddPrefix(tokens, model, "", false)
-
 	var matchedPods []*v1.Pod // matchedpods will have all the pods that have the target model
 	if modelPods, ok := node.ModelToPods[model]; ok {
 		for podName := range modelPods {
@@ -213,27 +208,46 @@ func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v
 			}
 		}
 	}
-
 	var targetPod *v1.Pod
 	matchRatio := float64(len(matchedTokens)) / float64(len(tokens))
 	prefix_routing_threshold := 0.5
-	klog.Infof("Total tokens: %d, Matched tokens: %d, Matching ratio: %f%%, # Matched pods: %d",
+	klog.Infof("Total tokens: %d, Matched tokens: %d, Matching ratio: %.2f, # Matched pods: %d",
 		len(tokens), len(matchedTokens), matchRatio, len(matchedPods))
-	if matchRatio > prefix_routing_threshold && len(matchedPods) > 0 {
-		klog.Infof("Do prefix-aware routing! (matching ratio: %f > %f)", matchRatio, prefix_routing_threshold)
-		minLoad := -1
-		for _, pod := range matchedPods {
-			load := p.histogram.getPodLoad(pod)
-			if minLoad == -1 || load < minLoad {
-				minLoad = load
-				targetPod = pod
+
+	if matchRatio > prefix_routing_threshold {
+		klog.Infof("Do prefix-aware routing! (matching ratio: %.2f > %.2f)", matchRatio, prefix_routing_threshold)
+		// Get pods that match this prefix from the matched node
+		matchedPods = nil // Reset matchedPods since we already tried collecting once
+		if modelPods, ok := node.ModelToPods[model]; ok {
+			for podName := range modelPods {
+				for _, pod := range readyPods {
+					if pod.Name == podName {
+						matchedPods = append(matchedPods, pod)
+						klog.Infof("Found matching pod %s in node with key %v", pod.Name, node.GetKey())
+					}
+				}
 			}
 		}
-		klog.Infof("Lowest load among all matched pods: %s", targetPod.Name)
+
+		if len(matchedPods) > 0 {
+			minLoad := -1
+			for _, pod := range matchedPods {
+				load := p.histogram.getPodLoad(pod)
+				if minLoad == -1 || load < minLoad {
+					minLoad = load
+					targetPod = pod
+				}
+			}
+			klog.Infof("Lowest load among all matched pods: %s", targetPod.Name)
+		} else {
+			klog.Infof("No matched pods found for tokens: %v, matchedTokens: %v, model: %s",
+				tokens, matchedTokens, model)
+			klog.Infof("Go to cost model based routing!")
+		}
 	}
 
 	if targetPod == nil {
-		klog.Infof("Do cost model based routing! (matching ratio: %f <= %f)", matchRatio, prefix_routing_threshold)
+		klog.Infof("Do cost model based routing! (matching ratio: %.2f, len(matchedPods): %d)", matchRatio, len(matchedPods))
 		minLoad := -1
 		for _, pod := range readyPods {
 			load := p.histogram.getPodLoad(pod)
@@ -262,9 +276,7 @@ func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v
 	// Update histogram
 	p.histogram.update(time.Now(), node, node, targetPod.Name, defaultDecodingLength)
 
-	klog.InfoS(
-		"target_pod_name", targetPod.Name,
-	)
+	klog.InfoS("target_pod_name", targetPod.Name, "target_pod_ip", targetPod.Status.PodIP)
 
 	return getPodAddress(targetPod.Status.PodIP)
 }
