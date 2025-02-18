@@ -33,6 +33,13 @@ spec:
           - --enable-runtime-sidecar
         image: controller:latest
         name: manager
+        resources:
+          requests:
+            cpu: 1
+            memory: 1Gi
+          limits:
+            cpu: 1
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

@@ -36,6 +36,13 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8090
+          resources:
+            requests:
+              cpu: 1
+              memory: 1Gi
+            limits:
+              cpu: 1
+              memory: 1Gi
           env:
             - name: REDIS_HOST
               value: aibrix-redis-master
