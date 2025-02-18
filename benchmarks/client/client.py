@@ -38,9 +38,6 @@ async def send_request_streaming(client, model, endpoint, prompt, output_file):
                     prompt_tokens = chunk.usage.prompt_tokens
                     output_tokens = chunk.usage.completion_tokens
                     total_tokens = chunk.usage.total_tokens
-                    #print(f"Request completed in {latency:.2f} seconds with throughput {throughput:.2f} tokens/s, output_text {len(output_text)} prompt_tokens {prompt_tokens} output_tokens {output_tokens} total_tokens {total_tokens} ")
-                    # print(f"chunk {chunk}")
-                    #print(chunk.choices[0].delta.content, end="")
         response = "".join(chunks)
         response_time = asyncio.get_event_loop().time()
         latency = response_time - start_time
@@ -88,7 +85,7 @@ async def benchmark_streaming(endpoint: str,
         requests = requests_dict["requests"]
         cur_time = time.time()
         target_time = base_time + ts / 1000.0
-        logging.warning(f"Prepare to launch {len(requests)} tasks after {target_time - cur_time}")
+        logging.warning(f"Prepare to launch {len(requests)} streaming tasks after {target_time - cur_time}")
         if target_time > cur_time:
             await asyncio.sleep(target_time - cur_time)
         formatted_prompts = [wrap_prompt_as_chat_message(request["prompt"]) for request in requests]
@@ -159,7 +156,7 @@ async def benchmark_batch(endpoint: str,
         requests = requests_dict["requests"]
         cur_time = time.time()
         target_time = base_time + ts / 1000.0
-        logging.warning(f"Prepare to launch {len(requests)} tasks after {target_time - cur_time}")
+        logging.warning(f"Prepare to launch {len(requests)} batched tasks after {target_time - cur_time}")
         if target_time > cur_time:
             await asyncio.sleep(target_time - cur_time)
         formatted_prompts = [wrap_prompt_as_chat_message(request["prompt"]) for request in requests]
@@ -175,7 +172,7 @@ async def benchmark_batch(endpoint: str,
 
 def main(args):
     logging.info(f"Starting benchmark on endpoint {args.endpoint} client type {args.client_type}")
-    with open(args.output_file_path, 'a', encoding='utf-8') as output_file:
+    with open(args.output_file_path, 'w', encoding='utf-8') as output_file:
         load_struct = load_workload(args.workload_path)
         if args.client_type == 'batch':
             logging.info("Using batch client")
@@ -184,7 +181,7 @@ def main(args):
             end_time = time.time()
             logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
         else:
-            logging.info("Using batch client")
+            logging.info("Using streaming client")
             start_time = time.time()
             asyncio.run(benchmark_streaming(endpoint=args.endpoint, model=args.model, api_key=args.api_key, load_struct=load_struct, output_file=output_file))
             end_time = time.time()
