@@ -31,9 +31,10 @@ import (
 )
 
 const (
-	defaultDecodingLength = 45
+	defaultDecodingLength = 45 // NOTE: decode length is hardcoded. Preble as well.
 	slidingWindowPeriod   = 3 * time.Minute
 	evictionLoopInterval  = 1000 * time.Millisecond
+	targetGPU             = "V100" // A6000
 )
 
 var (
@@ -84,6 +85,100 @@ type prefixMatch struct {
 	pods        []*v1.Pod
 	matchLength int
 	depth       int
+}
+
+type PrefillTimeParams struct {
+	NumRequests      int
+	NumBatchedTokens int
+	TotalContext     int
+	InputIDLens      []int
+	NumUniqueKV      int
+	SeqLens          []int
+}
+
+func mistral7BA6000LinearTime(numBatchedTokens int) float64 {
+	if numBatchedTokens >= 384 {
+		return (0.10842571*float64(numBatchedTokens) + 4.209777054806409) / 1000.0
+	} else if numBatchedTokens >= 192 {
+		return (-118 + 1.25*float64(numBatchedTokens) - 2.56e-3*math.Pow(float64(numBatchedTokens), 2)) / 1000.0
+	}
+	return 22.0 / 1000.0
+}
+
+func mistral7BA6000AttentionTime(numReqs, totalContext, numUniqueKV int) float64 {
+	if numUniqueKV == 0 {
+		numUniqueKV = totalContext
+	}
+
+	var forwardTime float64
+	if totalContext <= 1024 {
+		forwardTime = 0.32
+	} else {
+		forwardTime = 1.86e-4*float64(totalContext) + 0.159
+		if float64(numUniqueKV)/float64(numReqs) <= 1024 && numReqs*numUniqueKV <= 32*256*2048 {
+			forwardTime /= 2
+		}
+	}
+	return forwardTime / 1000.0
+}
+
+// Adjusted for V100 characteristics
+func mistral7BV100LinearTime(numBatchedTokens int) float64 {
+	if numBatchedTokens >= 384 {
+		// Increased coefficient due to lower compute power
+		// ~2.5x increase for linear component due to slower tensor cores
+		return (0.27106428*float64(numBatchedTokens) + 10.52444263) / 1000.0
+	} else if numBatchedTokens >= 192 {
+		// Adjusted quadratic coefficient to reflect V100's architecture
+		return (-295 + 3.125*float64(numBatchedTokens) - 6.4e-3*math.Pow(float64(numBatchedTokens), 2)) / 1000.0
+	}
+	// Base latency increased
+	return 55.0 / 1000.0
+}
+
+func mistral7BV100AttentionTime(numReqs, totalContext, numUniqueKV int) float64 {
+	if numUniqueKV == 0 {
+		numUniqueKV = totalContext
+	}
+
+	var forwardTime float64
+	if totalContext <= 1024 {
+		// Increased base attention time for shorter sequences
+		forwardTime = 0.80
+	} else {
+		// Increased linear coefficient and base time for attention
+		// Memory bandwidth is better but compute is slower
+		forwardTime = 4.65e-4*float64(totalContext) + 0.398
+		if float64(numUniqueKV)/float64(numReqs) <= 1024 && numReqs*numUniqueKV <= 32*256*2048 {
+			forwardTime /= 2
+		}
+	}
+	return forwardTime / 1000.0
+}
+
+func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNode) float64 {
+	missRate := 1.0
+	if h.promptTokens[node] > 0 {
+		missRate = 1.0 - (float64(h.hitTokens[node]) / float64(h.promptTokens[node]))
+	}
+	numTokens := node.NumTokens()
+	contextLength := node.ContextLength()
+	baseTime := 0.0
+	if targetGPU == "A6000" {
+		baseTime = mistral7BA6000LinearTime(numTokens) + mistral7BA6000AttentionTime(1, contextLength, numTokens)
+	} else if targetGPU == "V100" {
+		baseTime = mistral7BV100LinearTime(numTokens) + mistral7BV100AttentionTime(1, contextLength, numTokens)
+	} else {
+		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", targetGPU)
+		baseTime = mistral7BV100LinearTime(numTokens) + mistral7BV100AttentionTime(1, contextLength, numTokens)
+	}
+	var attnQuad float64
+	if numTokens >= 4096 {
+		attnQuad = (-7.37 + 3.86e-3*float64(numTokens) + 2.16e-6*math.Pow(float64(numTokens), 2)) / 1000.0
+	}
+	prefillTime := (baseTime + attnQuad) / 0.9
+	numGPUs := len(node.ModelToPods) // You might need to adjust this based on your actual GPU allocation tracking
+	return missRate * float64(h.nodeToCount[node]) * prefillTime / float64(numGPUs)
 }
 
 // TODO: It needs to read the running pods accordingly.
@@ -196,7 +291,7 @@ func (p *prefixCacheAndLoadRouter) evictionLoop() {
 	}
 }
 
-func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNode) float64 {
+func (h *SlidingWindowHistogram) getSimplePrefillCost(node *prefixcacheindexer.TreeNode) float64 {
 	missRate := 1.0
 	if h.promptTokens[node] > 0 {
 		missRate = 1.0 - (float64(h.hitTokens[node]) / float64(h.promptTokens[node]))
@@ -207,6 +302,7 @@ func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNod
 }
 
 func (h *SlidingWindowHistogram) getNodeCost(node *prefixcacheindexer.TreeNode, podName string) float64 {
+	// prefillCost := h.getSimplePrefillCost(node)
 	prefillCost := h.getPrefillCost(node)
 	// Get median time per token for the pod
 	timePerToken := 0.15 // default value
@@ -416,6 +512,7 @@ func (h *SlidingWindowHistogram) update(timestamp time.Time, node, leafNode *pre
 
 	// Update costs
 	oldCost := h.perNodePrefillCost[node]
+	// newCost := h.getSimplePrefillCost(node)
 	newCost := h.getPrefillCost(node)
 	h.currentPrefillCostPerPod[podName] -= oldCost
 	h.currentPrefillCostPerPod[podName] += newCost
