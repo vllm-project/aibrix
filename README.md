@@ -11,6 +11,7 @@ The initial release includes the following key features:
 - **Distributed Inference**: Scalable architecture to handle large workloads across multiple nodes.
 - **LLM App-Tailored Autoscaler**: Dynamically scale inference resources based on real-time demand.
 - **Unified AI Runtime**: A versatile sidecar enabling metric standardization, model downloading, and management.
+- **Distributed KV Cache**: Enables high-capacity, cross-engine KV reuse.
 - **GPU Hardware Failure Detection (TBD)**: Proactive detection of GPU hardware issues.
 - **Benchmark Tool (TBD)**: A tool for measuring inference performance and resource efficiency.
 
