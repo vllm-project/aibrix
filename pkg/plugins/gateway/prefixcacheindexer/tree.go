@@ -43,9 +43,13 @@ type TreeNode struct {
 	evictedPods   map[int]bool
 	cachedPods    map[int]bool
 	isLeaf        bool
-	contextLength int
+	contextLength int // total length from root to this node
 	depth         int
 	ModelToPods   map[string]map[string]time.Time // model -> {podName -> lastAccessTime}
+}
+
+func (n *TreeNode) GetParent() *TreeNode {
+	return n.parent
 }
 
 func (n *TreeNode) GetKey() []int {
@@ -64,20 +68,25 @@ func (n *TreeNode) ContextLength() int {
 	return n.contextLength
 }
 
+func (n *TreeNode) GetDepth() int {
+	return n.depth
+}
+
 func (c *LPRadixCache) NewTreeNode(numPods int, parent *TreeNode, key []int, value []int) *TreeNode {
 	// Create the node with initialized maps and slices
 	node := &TreeNode{
-		id:            c.nextNodeID,
-		children:      make(map[int]*TreeNode),
-		parent:        parent,
-		key:           make([]int, len(key)),   // Allocate space for key
-		value:         make([]int, len(value)), // Allocate space for value (using len(value), not len(key))
-		refCounter:    make([]int, numPods),
-		load:          1,
-		lastAccess:    time.Now(),
-		evictedPods:   make(map[int]bool),
-		cachedPods:    make(map[int]bool),
-		ModelToPods:   make(map[string]map[string]time.Time),
+		id:          c.nextNodeID,
+		children:    make(map[int]*TreeNode),
+		parent:      parent,
+		key:         make([]int, len(key)),   // Allocate space for key
+		value:       make([]int, len(value)), // Allocate space for value (using len(value), not len(key))
+		refCounter:  make([]int, numPods),
+		load:        1,
+		lastAccess:  time.Now(),
+		evictedPods: make(map[int]bool),
+		cachedPods:  make(map[int]bool),
+		ModelToPods: make(map[string]map[string]time.Time),
+		// Pods:          make(map[string]time.Time),
 		depth:         0,
 		contextLength: 0,
 	}
@@ -109,6 +118,16 @@ func (c *LPRadixCache) PrettyPrint() {
 	c.prettyPrintHelper(c.rootNode, "", true)
 }
 
+func (c *LPRadixCache) GetAllPodsInNode(node *TreeNode) []string {
+	all_pods_in_node := make([]string, 0, len(node.ModelToPods))
+	for _, pods := range node.ModelToPods {
+		for podName := range pods {
+			all_pods_in_node = append(all_pods_in_node, podName)
+		}
+	}
+	return all_pods_in_node
+}
+
 func (c *LPRadixCache) prettyPrintHelper(node *TreeNode, prefix string, isLast bool) {
 	if node == nil {
 		return
@@ -122,22 +141,23 @@ func (c *LPRadixCache) prettyPrintHelper(node *TreeNode, prefix string, isLast b
 		childPrefix = prefix + "│   "
 	}
 	// klog.Infof("%s%s[Key: %v, Value: %v, Load: %d, Depth: %d]", prefix, marker, node.key, node.value, node.load, node.depth)
-	keyStr, err := utils.DetokenizeText(node.key)
+	tokens_in_string, err := utils.DetokenizeText(node.key)
 	if err != nil {
 		klog.Errorf("Failed to detokenize key for node %d: %v", node.id, err)
-		keyStr = "ERROR"
+		tokens_in_string = "ERROR"
 	}
-	klog.Infof("%s%s[Node: %d, Key: '%s', Load: %d, Depth: %d]", prefix, marker, node.id, keyStr, node.load, node.depth)
-	if len(node.ModelToPods) > 0 {
-		klog.Infof("%s    Models:", prefix)
-		for model, pods := range node.ModelToPods {
-			podNames := make([]string, 0, len(pods))
-			for podName := range pods {
-				podNames = append(podNames, podName)
-			}
-			klog.Infof("%s    └── %s: %v", prefix, model, podNames)
-		}
-	}
+	all_pods_in_node := c.GetAllPodsInNode(node)
+	klog.Infof("%s%s[Node: %d, Tokens: '%s', Load: %d, Pods: %v, Depth: %d]", prefix, marker, node.id, tokens_in_string, node.load, all_pods_in_node, node.depth)
+	// if len(node.ModelToPods) > 0 {
+	// 	klog.Infof("%s    Models:", prefix)
+	// 	for model, pods := range node.ModelToPods {
+	// 		podNames := make([]string, 0, len(pods))
+	// 		for podName := range pods {
+	// 			podNames = append(podNames, podName)
+	// 		}
+	// 		klog.Infof("%s    └── %s: %v", prefix, model, podNames)
+	// 	}
+	// }
 	childKeys := make([]int, 0, len(node.children))
 	for k := range node.children {
 		childKeys = append(childKeys, k)
@@ -284,8 +304,7 @@ func (c *LPRadixCache) AddPrefix(tokens []int, model, podName string, updateMapp
 		klog.Infof("Updated mapping for model %s, pod %s in node(%d) with key %v",
 			model, podName, node.id, node.key)
 	}
-
-	c.PrettyPrint()
+	// c.PrettyPrint()
 	return node, matchedTokens, unmatchedTokens
 }
 
