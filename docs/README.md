@@ -13,4 +13,4 @@ pip install -r requirements-docs.txt
 make html
 ```
 
-Now the html paged should be generated at "website/docs/build/html/index.html". You can open this html page with your web browser as our project front page. 
+Now the html paged should be generated at "docs/build/html/index.html". You can open this html page with your web browser as our project front page.
