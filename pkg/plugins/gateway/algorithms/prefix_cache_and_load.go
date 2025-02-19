@@ -58,11 +58,11 @@ type SlidingWindowHistogram struct {
 	timestamps                 []histogramEntry
 	numPods                    int
 	podAllocations             map[*prefixcacheindexer.TreeNode]map[int]bool
-	currentPrefillCostPerPod   map[string]float64 // pod name -> prefill cost
-	currentDecodeLengthsPerPod map[string]int     // pod name -> total decode length
-	perNodePrefillCost         map[*prefixcacheindexer.TreeNode]float64
-	perNodeTotalDecodeLengths  map[*prefixcacheindexer.TreeNode]int
+	currentDecodeLengthsPerPod map[string]int       // pod name -> total decode length
 	avgTimePerTokenPerPod      map[string][]float64 // pod name -> list of time/token measurements
+	perNodeTotalDecodeLengths  map[*prefixcacheindexer.TreeNode]int
+	// currentPrefillCostPerPod   map[string]float64 // pod name -> prefill cost
+	// perNodePrefillCost         map[*prefixcacheindexer.TreeNode]float64
 }
 
 type histogramEntry struct {
@@ -156,6 +156,45 @@ func mistral7BV100AttentionTime(numReqs, totalContext, numUniqueKV int) float64 
 	return forwardTime / 1000.0
 }
 
+func calculateAttnQuadA6000(numTokens int, seqLen *int) float64 {
+	var attnQuad float64
+	if seqLen == nil {
+		// Case 1: No sequence length provided
+		if numTokens >= 4096 {
+			attnQuad += -7.37 + 3.86e-3*float64(numTokens) + 2.16e-6*math.Pow(float64(numTokens), 2)
+		}
+	} else {
+		// Case 2: Sequence length provided
+		if numTokens*(*seqLen) > 1024*1024 {
+			attnQuad += 1.13e-3*float64(numTokens) +
+				1.75e-3*float64(*seqLen) +
+				2.19e-6*float64(numTokens)*float64(*seqLen)
+		}
+	}
+	return attnQuad / 1000.0
+}
+
+func calculateAttnQuadV100(numTokens int, seqLen *int) float64 {
+	var attnQuad float64
+	if seqLen == nil {
+		// Case 1: No sequence length provided
+		if numTokens >= 4096 {
+			// ~2.5x slower for quadratic costs due to older tensor cores and memory architecture
+			attnQuad += -18.425 + // from -7.37
+				9.65e-3*float64(numTokens) + // from 3.86e-3
+				5.4e-6*math.Pow(float64(numTokens), 2) // from 2.16e-6
+		}
+	} else {
+		// Case 2: Sequence length provided
+		if numTokens*(*seqLen) > 1024*1024 {
+			attnQuad += 2.825e-3*float64(numTokens) + // from 1.13e-3
+				4.375e-3*float64(*seqLen) + // from 1.75e-3
+				5.475e-6*float64(numTokens)*float64(*seqLen) // from 2.19e-6
+		}
+	}
+	return attnQuad / 1000.0
+}
+
 func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNode) float64 {
 	missRate := 1.0
 	if h.promptTokens[node] > 0 {
@@ -172,13 +211,23 @@ func (h *SlidingWindowHistogram) getPrefillCost(node *prefixcacheindexer.TreeNod
 		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", targetGPU)
 		baseTime = mistral7BV100LinearTime(numTokens) + mistral7BV100AttentionTime(1, contextLength, numTokens)
 	}
-	var attnQuad float64
-	if numTokens >= 4096 {
-		attnQuad = (-7.37 + 3.86e-3*float64(numTokens) + 2.16e-6*math.Pow(float64(numTokens), 2)) / 1000.0
+
+	attnQuad := 0.0
+	if targetGPU == "A6000" {
+		attnQuad = calculateAttnQuadA6000(numTokens, nil)
+	} else if targetGPU == "V100" {
+		attnQuad = calculateAttnQuadV100(numTokens, nil)
+	} else {
+		klog.Warningf("Unknown target GPU: %s. Assume V100 as default", targetGPU)
+		attnQuad = calculateAttnQuadV100(numTokens, nil)
 	}
 	prefillTime := (baseTime + attnQuad) / 0.9
-	numGPUs := len(node.ModelToPods) // You might need to adjust this based on your actual GPU allocation tracking
-	return missRate * float64(h.nodeToCount[node]) * prefillTime / float64(numGPUs)
+	numPods := len(node.ModelToPods) // You might need to adjust this based on your actual GPU allocation tracking
+	klog.Infof("numTokens: %d, contextLength: %d, targetGPU: %s", numTokens, contextLength, targetGPU)
+	klog.Infof("prefillTime: %.2f = (Base time(%.2f) + attnQuad(%.2f)) / 0.9", prefillTime, baseTime, attnQuad)
+	totalPrefillCost := missRate * float64(h.nodeToCount[node]) * prefillTime / float64(numPods)
+	klog.Infof("totalPrefillCost: %.2f = miss rate(%.2f) * nodeToCount(%d) * prefillTime(%.2f) / numPods(%d)", totalPrefillCost, missRate, h.nodeToCount[node], prefillTime, numPods)
+	return totalPrefillCost
 }
 
 // TODO: It needs to read the running pods accordingly.
@@ -196,11 +245,11 @@ func NewPrefixCacheAndLoadRouter() (Router, error) {
 		decodingSize:               make(map[*prefixcacheindexer.TreeNode]int),
 		numPods:                    numPods,
 		podAllocations:             make(map[*prefixcacheindexer.TreeNode]map[int]bool),
-		currentPrefillCostPerPod:   make(map[string]float64),
 		currentDecodeLengthsPerPod: make(map[string]int),
-		perNodePrefillCost:         make(map[*prefixcacheindexer.TreeNode]float64),
 		perNodeTotalDecodeLengths:  make(map[*prefixcacheindexer.TreeNode]int),
 		avgTimePerTokenPerPod:      make(map[string][]float64),
+		// currentPrefillCostPerPod:   make(map[string]float64),
+		// perNodePrefillCost:         make(map[*prefixcacheindexer.TreeNode]float64),
 	}
 
 	router := &prefixCacheAndLoadRouter{
@@ -506,17 +555,15 @@ func (h *SlidingWindowHistogram) update(timestamp time.Time, node, leafNode *pre
 	h.histogram[node] += leafNode.ContextLength()
 	h.nodeToCount[node]++
 	h.decodingSize[node] = decodingLength
-
 	h.hitTokens[node] += leafNode.ContextLength() - leafNode.NumTokens()
 	h.promptTokens[node] += leafNode.ContextLength()
 
-	// Update costs
-	oldCost := h.perNodePrefillCost[node]
-	// newCost := h.getSimplePrefillCost(node)
-	newCost := h.getPrefillCost(node)
-	h.currentPrefillCostPerPod[podName] -= oldCost
-	h.currentPrefillCostPerPod[podName] += newCost
-	h.perNodePrefillCost[node] = newCost
+	// // Update costs
+	// oldCost := h.perNodePrefillCost[node]
+	// newCost := h.getPrefillCost(node)
+	// h.currentPrefillCostPerPod[podName] -= oldCost
+	// h.currentPrefillCostPerPod[podName] += newCost
+	// h.perNodePrefillCost[node] = newCost
 
 	h.currentDecodeLengthsPerPod[podName] += decodingLength
 	h.perNodeTotalDecodeLengths[node] += decodingLength
