@@ -22,17 +22,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aibrix/aibrix/pkg/controller/util/expectation"
+	"github.com/vllm-project/aibrix/pkg/controller/util/expectation"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
-	"github.com/aibrix/aibrix/pkg/config"
 	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
+	"github.com/vllm-project/aibrix/pkg/config"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"

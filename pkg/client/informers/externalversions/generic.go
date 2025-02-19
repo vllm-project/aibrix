@@ -20,9 +20,9 @@ package externalversions
 import (
 	"fmt"
 
-	v1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
-	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
+	v1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	cache "k8s.io/client-go/tools/cache"
 )

@@ -23,8 +23,8 @@ import (
 	"os"
 	"strings"
 
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
-	"github.com/aibrix/aibrix/pkg/config"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/config"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 

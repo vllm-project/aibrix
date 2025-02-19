@@ -120,10 +120,10 @@ Once the cluster is up and running, install AIBrix components:
 .. code-block:: bash
 
     # install dependencies
-    kubectl create -k "github.com/aibrix/aibrix/config/dependency?ref=v0.2.0"
+    kubectl create -k "github.com/vllm-project/aibrix/config/dependency?ref=v0.2.0"
 
     # install core components
-    kubectl create -k "github.com/aibrix/aibrix/config/overlays/release?ref=v0.2.0"
+    kubectl create -k "github.com/vllm-project/aibrix/config/overlays/release?ref=v0.2.0"
 
 Verify that the AIBrix components are installed successfully:
 

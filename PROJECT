@@ -7,7 +7,7 @@ layout:
 - go.kubebuilder.io/v4
 multigroup: true
 projectName: aibrix
-repo: github.com/aibrix/aibrix
+repo: github.com/vllm-project/aibrix
 resources:
 - api:
     crdVersion: v1
@@ -16,7 +16,7 @@ resources:
   domain: aibrix.ai
   group: autoscaling
   kind: PodAutoscaler
-  path: github.com/aibrix/aibrix/api/autoscaling/v1alpha1
+  path: github.com/vllm-project/aibrix/api/autoscaling/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -25,7 +25,7 @@ resources:
   domain: aibrix.ai
   group: model
   kind: ModelAdapter
-  path: github.com/aibrix/aibrix/api/model/v1alpha1
+  path: github.com/vllm-project/aibrix/api/model/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -34,7 +34,7 @@ resources:
   domain: aibrix.ai
   group: orchestration
   kind: RayClusterReplicaSet
-  path: github.com/aibrix/aibrix/api/orchestration/v1alpha1
+  path: github.com/vllm-project/aibrix/api/orchestration/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -43,7 +43,7 @@ resources:
   domain: aibrix.ai
   group: orchestration
   kind: RayClusterFleet
-  path: github.com/aibrix/aibrix/api/orchestration/v1alpha1
+  path: github.com/vllm-project/aibrix/api/orchestration/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -52,6 +52,6 @@ resources:
   domain: aibrix.ai
   group: orchestration
   kind: KVCache
-  path: github.com/aibrix/aibrix/api/orchestration/v1alpha1
+  path: github.com/vllm-project/aibrix/api/orchestration/v1alpha1
   version: v1alpha1
 version: "3"

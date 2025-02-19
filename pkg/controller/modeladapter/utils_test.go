@@ -25,8 +25,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
-	"github.com/aibrix/aibrix/pkg/config"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/config"
 )
 
 // Test for validateModelAdapter function

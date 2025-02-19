@@ -7,7 +7,7 @@ authors = [
 ]
 readme = "README.md"
 license = "Apache-2.0"
-repository = "https://github.com/aibrix/aibrix/tree/main/python/aibrix"
+repository = "https://github.com/vllm-project/aibrix/tree/main/python/aibrix"
 classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Education",

@@ -21,13 +21,13 @@ import (
 	"fmt"
 	"time"
 
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-	"github.com/aibrix/aibrix/pkg/config"
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/scaler"
-	podutil "github.com/aibrix/aibrix/pkg/utils"
-	podutils "github.com/aibrix/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/scaler"
+	podutil "github.com/vllm-project/aibrix/pkg/utils"
+	podutils "github.com/vllm-project/aibrix/pkg/utils"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"

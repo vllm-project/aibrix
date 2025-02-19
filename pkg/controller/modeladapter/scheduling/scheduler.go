@@ -22,7 +22,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 
-	"github.com/aibrix/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/cache"
 )
 
 type Scheduler interface {

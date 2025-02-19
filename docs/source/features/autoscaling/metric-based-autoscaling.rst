@@ -40,7 +40,7 @@ All the sample files can be found in the following directory.
 
 .. code-block:: bash
     
-    https://github.com/aibrix/aibrix/tree/main/samples/autoscaling
+    https://github.com/vllm-project/aibrix/tree/main/samples/autoscaling
 
 Example HPA yaml config
 ^^^^^^^^^^^^^^^^^^^^^^^

@@ -4,8 +4,8 @@
 
 Here are some essential resources for anyone interested in AIBrix:
 
-- **Documentation and Tutorials**: [View Tutorials](https://github.com/aibrix/aibrix/tree/main/development/tutorial)
-- **Issue Tracker**: [View Issues](https://github.com/aibrix/aibrix/issues)
+- **Documentation and Tutorials**: [View Tutorials](https://github.com/vllm-project/aibrix/tree/main/development/tutorial)
+- **Issue Tracker**: [View Issues](https://github.com/vllm-project/aibrix/issues)
 - **Project Roadmap**: TODO
 
 Additional resources for contributors:
@@ -35,7 +35,7 @@ Alternatively, you can use [Kind](https://kind.sigs.k8s.io/) or [Minikube](https
 - Clone your fork locally:
 
   ```sh
-  git clone https://github.com/aibrix/aibrix.git
+  git clone https://github.com/vllm-project/aibrix.git
   cd aibrix
   ```
 

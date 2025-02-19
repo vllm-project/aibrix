@@ -21,7 +21,7 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/common"
 )
 
 type ApaScalingAlgorithm struct{}

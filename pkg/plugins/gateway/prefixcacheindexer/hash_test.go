@@ -21,8 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aibrix/aibrix/pkg/utils"
 	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )

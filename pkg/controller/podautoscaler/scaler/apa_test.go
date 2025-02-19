@@ -21,13 +21,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/algorithm"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/algorithm"
 
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 )
 
 // TestHcpaScale tests the APA behavior. For now, APA implements HCPA algorithm.

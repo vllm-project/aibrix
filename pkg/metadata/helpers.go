@@ -24,8 +24,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/aibrix/aibrix/pkg/utils"
 	"github.com/go-playground/validator/v10"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 type malformedRequest struct {
