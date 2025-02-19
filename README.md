@@ -26,7 +26,7 @@ To get started with AIBrix, clone this repository and follow the setup instructi
 
 ```shell
 # Local Testing
-git clone https://github.com/aibrix/aibrix.git
+git clone https://github.com/vllm-project/aibrix.git
 cd aibrix
 
 # Install nightly aibrix dependencies
@@ -39,10 +39,10 @@ kubectl create -k config/default
 Install stable distribution
 ```shell
 # Install component dependencies
-kubectl create -k "github.com/aibrix/aibrix/config/dependency?ref=v0.2.0"
+kubectl create -k "github.com/vllm-project/aibrix/config/dependency?ref=v0.2.0"
 
 # Install aibrix components
-kubectl create -k "github.com/aibrix/aibrix/config/overlays/release?ref=v0.2.0"
+kubectl create -k "github.com/vllm-project/aibrix/config/overlays/release?ref=v0.2.0"
 ```
 
 ## Documentation
@@ -51,16 +51,16 @@ For detailed documentation on installation, configuration, and usage, please vis
 
 ## Contributing
 
-We welcome contributions from the community! Check out our [contributing guidelines](https://github.com/aibrix/aibrix/CONTRIBUTING.md) to see how you can make a difference.
+We welcome contributions from the community! Check out our [contributing guidelines](https://github.com/vllm-project/aibrix/CONTRIBUTING.md) to see how you can make a difference.
 
 Slack Channel: https://vllm-dev.slack.com/archives/C07QP347J4D
 
 ## License
 
-AIBrix is licensed under the [APACHE License](https://github.com/aibrix/aibrix/LICENSE.md).
+AIBrix is licensed under the [APACHE License](https://github.com/vllm-project/aibrix/LICENSE.md).
 
 ## Support
 
-If you have any questions or encounter any issues, please submit an issue on our [GitHub issues page](https://github.com/aibrix/aibrix/issues).
+If you have any questions or encounter any issues, please submit an issue on our [GitHub issues page](https://github.com/vllm-project/aibrix/issues).
 
 Thank you for choosing AIBrix for your GenAI infrastructure needs!

@@ -12,25 +12,25 @@ please see the [Development Guide](development/README.md) in the `docs/developme
 
 ### 1. Understanding the Repository Structure
 
-You can refer to the [Design Doc](https://github.com/aibrix/aibrix/tree/main/docs/tutorial) to quickly understand the layout of the AIBrix directory structure.
+You can refer to the [Design Doc](https://github.com/vllm-project/aibrix/tree/main/docs/tutorial) to quickly understand the layout of the AIBrix directory structure.
 
 ### 2. Picking an Issue
 
-Start by picking an [issue](https://github.com/aibrix/aibrix/issues) tagged with "good first issue" to get familiar with the project. Claim the issue by commenting to avoid duplicate efforts.
+Start by picking an [issue](https://github.com/vllm-project/aibrix/issues) tagged with "good first issue" to get familiar with the project. Claim the issue by commenting to avoid duplicate efforts.
 
 ### 3. Submitting Codes
 
 - **Creating Branches**: Use the following naming convention: `/<YOUR_NAME>/[feat|patch|bug_fix] description`
 - **Making Commits**: Write detailed commit messages that explain your changes.
 - **Pull Requests**:
-  - Create a pull request on [PR Page](https://github.com/aibrix/aibrix/pulls) against the master branch.
+  - Create a pull request on [PR Page](https://github.com/vllm-project/aibrix/pulls) against the master branch.
   - Use the provided PR template to describe your changes.
 - **Code Review Process**: Your PR will be reviewed by related contributors. Address feedback to improve and finalize your contribution.
 
 ## Advanced Contributions
 
 - **Feature Proposals and Bug Reporting**: Report bugs or propose new features by creating an issue on our GitHub page. Provide as much detail as possible to facilitate discussions.
-- **Contributing to Documentation**: Help improve our documentation by proposing changes to issue list. Our documentation is at [AIBrix Doc](https://github.com/aibrix/aibrix/tree/main/docs/tutorial)
+- **Contributing to Documentation**: Help improve our documentation by proposing changes to issue list. Our documentation is at [AIBrix Doc](https://github.com/vllm-project/aibrix/tree/main/docs/tutorial)
 - **Organizing Community Events**: If you are interested in organizing meetups or webinars, contact our community manager (TODO: contact information).
 
 ## Community and Communication
