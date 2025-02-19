@@ -42,7 +42,7 @@ var (
 
 func getDummyVar() int {
 	dummay_var := 0
-	klog.Info("getDummyVar, dummay_var: ", dummay_var)
+	klog.Info("Test getDummyVar, dummay_var: ", dummay_var)
 	return dummay_var
 }
 
@@ -230,159 +230,6 @@ func (h *SlidingWindowHistogram) getCurrentAllocationCostPerPod() map[string]flo
 		}
 	}
 	return costs
-}
-
-// func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
-// 	readyPods := utils.FilterReadyPods(pods)
-// 	if len(readyPods) == 0 {
-// 		return "", fmt.Errorf("no pods to forward request")
-// 	}
-// 	if len(readyPods) == 1 {
-// 		for _, pod := range readyPods {
-// 			return getPodAddress(pod.Status.PodIP)
-// 		}
-// 	}
-
-// 	trimmedMessage := utils.TrimMessage(message)
-// 	klog.Infof("Trimmed message: '%s'", trimmedMessage)
-// 	tokens, err := utils.TokenizeInputText(trimmedMessage)
-// 	if err != nil {
-// 		return "", err
-// 	}
-
-// 	p.mu.Lock()
-// 	defer p.mu.Unlock()
-// 	klog.Info("AddPrefix to the tree: ", tokens)
-// 	node, matchedTokens, _ := p.cache.AddPrefix(tokens, model, "", false)
-// 	var matchedPods []*v1.Pod // matchedpods will have all the pods that have the target model
-// 	var matchedPodsNames []string
-// 	if modelPods, ok := node.ModelToPods[model]; ok {
-// 		klog.Infof("node.ModelToPods[model]: %v", modelPods)
-// 		for podName := range modelPods {
-// 			for _, pod := range readyPods {
-// 				if pod.Name == podName { // Filter ready pods among all pods having the target model
-// 					matchedPods = append(matchedPods, pod)
-// 					matchedPodsNames = append(matchedPodsNames, pod.Name)
-// 				} else {
-// 					klog.Warning("There is a matching pod but not in ready state: ", pod.Name)
-// 					klog.Warning("Still force to add the pod to matchedPods")
-// 					matchedPods = append(matchedPods, pod)
-// 					matchedPodsNames = append(matchedPodsNames, pod.Name)
-// 				}
-// 			}
-// 		}
-// 	}
-
-// 	var targetPod *v1.Pod
-// 	matchRatio := float64(len(matchedTokens)) / float64(len(tokens))
-// 	prefix_routing_threshold := 0.5
-// 	klog.Infof("Total tokens: %d, Matched tokens: %d, Matching ratio: %.2f, # Matched pods: %d, Matched pods: %v",
-// 		len(tokens), len(matchedTokens), matchRatio, len(matchedPods), matchedPodsNames)
-// 	if matchRatio > prefix_routing_threshold {
-// 		// Prefix aware routing
-// 		klog.Infof("Do prefix-aware routing! (matching ratio: %.2f > %.2f)", matchRatio, prefix_routing_threshold)
-// 		var prefixMatches []prefixMatch
-// 		currentNode := node
-// 		for currentNode != nil {
-// 			if modelPods, ok := currentNode.ModelToPods[model]; ok {
-// 				var nodePods []*v1.Pod
-// 				for podName := range modelPods {
-// 					for _, pod := range readyPods {
-// 						if pod.Name == podName {
-// 							nodePods = append(nodePods, pod)
-// 							klog.Infof("Found matching pod %s in node with key %v", pod.Name, currentNode.GetKey())
-// 						}
-// 					}
-// 				}
-// 				if len(nodePods) > 0 {
-// 					prefixMatches = append(prefixMatches, prefixMatch{
-// 						node:  currentNode,
-// 						pods:  nodePods,
-// 						depth: currentNode.GetDepth(),
-// 					})
-// 				}
-// 			}
-// 			currentNode = currentNode.GetParent()
-// 		}
-
-// 		// Sort prefixMatches by depth in descending order
-// 		sort.Slice(prefixMatches, func(i, j int) bool {
-// 			return prefixMatches[i].depth > prefixMatches[j].depth
-// 		})
-
-// 		// Choose pod from the deepest match first
-// 		if len(prefixMatches) > 0 {
-// 			deepestMatch := prefixMatches[0]
-// 			minLoad := -1
-// 			for _, pod := range deepestMatch.pods {
-// 				load := p.histogram.getPodLoad(pod)
-// 				if minLoad == -1 || load < minLoad {
-// 					minLoad = load
-// 					targetPod = pod
-// 				}
-// 			}
-// 			klog.Infof("Selected pod %s from deepest matching node with depth %d", targetPod.Name, deepestMatch.depth)
-// 		} else {
-// 			token_in_string, err := utils.DetokenizeText(tokens)
-// 			matched_tokens_in_string, _ := utils.DetokenizeText(matchedTokens)
-// 			if err != nil {
-// 				klog.Errorf("DetokenizeTexts failed: %s, tokens: '%v', matchedTokens: '%v', model: %s", err, token_in_string, matched_tokens_in_string, model)
-// 			} else {
-// 				klog.Infof("No matched pods found for tokens: '%v', matchedTokens: '%v', model: %s", token_in_string, matched_tokens_in_string, model)
-// 				klog.Infof("Go to cost model based routing!")
-// 			}
-// 		}
-// 	}
-
-// 	// If prefix aware routing failed or not applicable, do cost model based routing
-// 	if targetPod == nil {
-// 		klog.Infof("Do cost model based routing! (matching ratio: %.2f, len(matchedPods): %d)", matchRatio, len(matchedPods))
-// 		podCosts := p.histogram.getCurrentAllocationCostPerPod() // Get current costs per pod
-// 		minCost := math.MaxFloat64
-// 		for _, pod := range readyPods {
-// 			cost := podCosts[pod.Name]
-// 			klog.Infof("Pod: %s, Cost: %f", pod.Name, cost)
-// 			if cost < minCost {
-// 				minCost = cost
-// 				targetPod = pod
-// 			}
-// 		}
-// 		klog.Infof("Lowest cost pod: %s", targetPod.Name)
-// 	}
-
-// 	if targetPod == nil {
-// 		return "", fmt.Errorf("no suitable pod found")
-// 	}
-
-// 	// Update pod mapping in ALL nodes from matched node to root
-// 	currentNode := node
-// 	for currentNode != nil {
-// 		if modelPods, ok := currentNode.ModelToPods[model]; !ok {
-// 			currentNode.ModelToPods[model] = map[string]time.Time{
-// 				targetPod.Name: time.Now(),
-// 			}
-// 		} else {
-// 			modelPods[targetPod.Name] = time.Now()
-// 		}
-// 		currentNode = currentNode.GetParent()
-// 	}
-
-// 	// Update histogram
-// 	p.histogram.update(time.Now(), node, node, targetPod.Name, defaultDecodingLength)
-
-// 	klog.InfoS("target_pod_name", targetPod.Name, "target_pod_ip", targetPod.Status.PodIP)
-// 	p.cache.PrettyPrint()
-// 	return getPodAddress(targetPod.Status.PodIP)
-// }
-
-func (p *prefixCacheAndLoadRouter) getTotalMatchLength(node *prefixcacheindexer.TreeNode) int {
-	totalLength := 0
-	currentNode := node
-	for currentNode != nil {
-		totalLength += len(currentNode.GetValue())
-		currentNode = currentNode.GetParent()
-	}
-	return totalLength
 }
 
 func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
@@ -576,11 +423,4 @@ func (h *SlidingWindowHistogram) update(timestamp time.Time, node, leafNode *pre
 
 	h.currentDecodeLengthsPerPod[podName] += decodingLength
 	h.perNodeTotalDecodeLengths[node] += decodingLength
-}
-
-func (p *prefixCacheAndLoadRouter) updatePodAllocation(node *prefixcacheindexer.TreeNode, podID int) {
-	if p.podAllocations[node] == nil {
-		p.podAllocations[node] = make(map[int]bool)
-	}
-	p.podAllocations[node][podID] = true
 }
