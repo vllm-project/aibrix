@@ -11,7 +11,12 @@ import traceback
 from typing import List
 from utils import (load_workload, wrap_prompt_as_chat_message)
 
-async def send_request_streaming(client, model, endpoint, prompt, output_file):
+async def send_request_streaming(client: openai.AsyncOpenAI, 
+                                 model: str, 
+                                 endpoint: str, 
+                                 prompt: str, 
+                                 output_file: str,
+                                 ):
     start_time = asyncio.get_event_loop().time()
     first_response_time = None
     try:
@@ -42,6 +47,8 @@ async def send_request_streaming(client, model, endpoint, prompt, output_file):
         response_time = asyncio.get_event_loop().time()
         latency = response_time - start_time
         throughput = output_tokens / latency
+        ttft = first_response_time - start_time
+        tpot = (response_time - first_response_time) / output_tokens
         result = {
             "input": prompt,
             "output": response,
@@ -51,8 +58,9 @@ async def send_request_streaming(client, model, endpoint, prompt, output_file):
             "latency": latency,
             "throughput": throughput,
             "start_time": start_time,
-            "ttft": first_response_time - start_time,
-            "tpot": (response_time - first_response_time) / output_tokens, 
+            "current_time": asyncio.get_event_loop().time(),
+            "ttft": ttft,
+            "tpot": tpot, 
         }
         print(result)
         # Write result to JSONL file
@@ -91,7 +99,11 @@ async def benchmark_streaming(endpoint: str,
         formatted_prompts = [wrap_prompt_as_chat_message(request["prompt"]) for request in requests]
         for formatted_prompt in formatted_prompts:
             task = asyncio.create_task(
-                send_request_streaming(client, model, endpoint, formatted_prompt, output_file)
+                send_request_streaming(client = client, 
+                                       model = model, 
+                                       endpoint = endpoint, 
+                                       prompt = formatted_prompt, 
+                                       output_file = output_file)
             )
             batch_tasks.append(task)
         num_requests += len(requests)
@@ -122,6 +134,8 @@ async def send_request_batch(client, model, endpoint, prompt, output_file):
             "prompt_tokens": prompt_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
+            "start_time": start_time,
+            "current_time": asyncio.get_event_loop().time(),
             "latency": latency,
             "throughput": throughput
         }
@@ -177,13 +191,25 @@ def main(args):
         if args.client_type == 'batch':
             logging.info("Using batch client")
             start_time = time.time()
-            asyncio.run(benchmark_batch(endpoint=args.endpoint, model=args.model, api_key=args.api_key, load_struct=load_struct, output_file=output_file))
+            asyncio.run(benchmark_batch(
+                endpoint=args.endpoint, 
+                model=args.model, 
+                api_key=args.api_key, 
+                load_struct=load_struct, 
+                output_file=output_file, 
+            ))
             end_time = time.time()
             logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
         else:
             logging.info("Using streaming client")
             start_time = time.time()
-            asyncio.run(benchmark_streaming(endpoint=args.endpoint, model=args.model, api_key=args.api_key, load_struct=load_struct, output_file=output_file))
+            asyncio.run(benchmark_streaming(
+                endpoint=args.endpoint, 
+                model=args.model, 
+                api_key=args.api_key, 
+                load_struct=load_struct, 
+                output_file=output_file,
+            ))
             end_time = time.time()
             logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
 

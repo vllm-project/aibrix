@@ -1,11 +1,25 @@
 import json
 import argparse
-import numpy as np
 import os
+import re
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 
-def analyze(input_file: str, outpu_path: str):
+def parse_goodput_target(goodput_target):
+    pattern = r'^(e2e|tpot|ttft):(-?\d+(\.\d+)?)$'
+    match = re.match(pattern, goodput_target)
+    
+    if match:
+        metric = match.group(1)
+        threshold = float(match.group(2))  # Convert to float
+    else:
+        raise ValueError(f"Invalid goodput spec: {goodput_target}")
+    return metric, threshold
+    
+def main(args):
+    input_file = args.trace
+    output_path = args.output
     data = []
     with open(input_file, "r") as f:
         for line in f:
@@ -18,8 +32,20 @@ def analyze(input_file: str, outpu_path: str):
     latencies = [item["latency"] for item in data]
     throughputs = [item["throughput"] for item in data]
     tokens_per_second = [item["total_tokens"] / item["latency"] for item in data]
-    ttft = [item["ttft"] for item in data]  # Time to First Token
-    tpot = [item["tpot"] for item in data]  # Time per Output Token
+    ttft = [item["ttft"] if "ttft" in item else 0.0 for item in data]  # Time to First Token
+    tpot = [item["tpot"] if "tpot" in item else 0.0 for item in data]  # Time per Output Token
+    
+    goodput = None
+    if args.goodput_target is not None:
+        metric, threshold = parse_goodput_target(args.goodput_target)
+        if metric == "e2e":
+            goodput = len([item for item in latencies if item <= threshold]) / float(len(latencies))
+        elif metric == "ttft":
+            goodput = len([item for item in ttft if item <= threshold]) / float(len(ttft))
+        elif metric == "tpot":
+            goodput = len([item for item in tpot if item <= threshold]) / float(len(tpot))
+        else:
+            raise ValueError(f"Invalid goodput target: {args.goodput_target}")
 
     # Sort data by start_time
     sorted_indices = np.argsort(timestamps)
@@ -49,7 +75,7 @@ def analyze(input_file: str, outpu_path: str):
 
     # Calculate statistics for each metric
     stats = {
-        "Latency (s)": calculate_statistics(latencies),
+        "End-to-End Latency (s)": calculate_statistics(latencies),
         "Throughput": calculate_statistics(throughputs),
         "Tokens per Second": calculate_statistics(tokens_per_second),
         "Prompt Tokens": calculate_statistics(prompt_tokens),
@@ -62,6 +88,8 @@ def analyze(input_file: str, outpu_path: str):
     # Print statistics
     for metric, (avg, median, p99) in stats.items():
         print(f"{metric} Statistics: Average = {avg:.4f}, Median = {median:.4f}, 99th Percentile = {p99:.4f}")
+    if goodput != None:
+        print(f"Goodput (reqs/s) {goodput:.4f}")
 
     # Create a DataFrame for plotting
     df = pd.DataFrame({
@@ -69,7 +97,7 @@ def analyze(input_file: str, outpu_path: str):
         "Prompt Tokens": prompt_tokens,
         "Output Tokens": output_tokens,
         "Total Tokens": total_tokens,
-        "Latency": latencies,
+        "End-to-End Latency (s)": latencies,
         "Throughput": throughputs,
         "Tokens per Second": tokens_per_second,
         "Time to First Token (TTFT)": ttft,
@@ -90,15 +118,16 @@ def analyze(input_file: str, outpu_path: str):
     plt.suptitle("Time Series Analysis of LLM Performance Metrics")
     plt.xticks(rotation=45)
     plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to fit the title
-    os.makedirs(outpu_path, exist_ok=True)
-    plt.savefig(f"{outpu_path}/performance_metrics_time_series.pdf")
+    os.makedirs(output_path, exist_ok=True)
+    plt.savefig(f"{output_path}/performance_metrics_time_series.pdf")
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='extract and plot performance metrics from a JSONL file')
     parser.add_argument('--trace', type=str, required=True, help='Input trace containing collected metrics.')
     parser.add_argument('--output', type=str, required=True, default="output", help='Output path.')
+    parser.add_argument('--goodput-target', type=str, required=False, default=None, help='Goodput target should be in the format of latency_metrics:threshold_in_seconds, choose latency metrics from one of the e2e, ttft, tpot.')
     
     args = parser.parse_args()
-    analyze(args.trace, args.output)
+    main(args)
     
