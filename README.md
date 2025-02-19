@@ -13,7 +13,10 @@ The initial release includes the following key features:
 - **Unified AI Runtime**: A versatile sidecar enabling metric standardization, model downloading, and management.
 - **Distributed KV Cache**: Enables high-capacity, cross-engine KV reuse.
 - **GPU Hardware Failure Detection (TBD)**: Proactive detection of GPU hardware issues.
-- **Benchmark Tool (TBD)**: A tool for measuring inference performance and resource efficiency.
+
+## Architecture
+
+![aibrix-architecture-v1](docs/source/assets/images/aibrix-architecture-v1.jpeg)
 
 
 ## Quick Start
@@ -43,11 +46,13 @@ kubectl create -k "github.com/aibrix/aibrix/config/overlays/release?ref=v0.2.0"
 
 ## Documentation
 
-For detailed documentation on installation, configuration, and usage, please visit our [documentation page](https://github.com/aibrix/aibrix).
+For detailed documentation on installation, configuration, and usage, please visit our [documentation page](https://aibrix-aibrix.readthedocs-hosted.com/en/latest/).
 
 ## Contributing
 
 We welcome contributions from the community! Check out our [contributing guidelines](https://github.com/aibrix/aibrix/CONTRIBUTING.md) to see how you can make a difference.
+
+Slack Channel: https://vllm-dev.slack.com/archives/C07QP347J4D
 
 ## License
 
