@@ -17,8 +17,8 @@ limitations under the License.
 package main
 
 import (
-	"github.com/aibrix/aibrix/pkg/metadata"
-	"github.com/aibrix/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/metadata"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
 

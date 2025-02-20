@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"time"
 
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 )
 
 // NewAutoscalerFactory creates an Autoscaler based on the given ScalingStrategy

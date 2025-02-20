@@ -30,6 +30,8 @@ spec:
             - vllm.entrypoints.openai.api_server
             - --port
             - "8000"
+            - --uvicorn-log-level
+            - warning
             - --model
             - deepseek-ai/deepseek-coder-6.7b-instruct
             - --served-model-name

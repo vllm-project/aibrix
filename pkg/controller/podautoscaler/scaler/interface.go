@@ -20,9 +20,9 @@ import (
 	"context"
 	"time"
 
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/common"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 	corev1 "k8s.io/api/core/v1"
 )
 

@@ -22,8 +22,8 @@ import (
 	json "encoding/json"
 	"fmt"
 
-	v1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/pkg/client/applyconfiguration/autoscaling/v1alpha1"
+	v1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/autoscaling/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	labels "k8s.io/apimachinery/pkg/labels"
 	types "k8s.io/apimachinery/pkg/types"

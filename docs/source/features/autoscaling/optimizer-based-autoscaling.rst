@@ -22,7 +22,7 @@ How It Works
 Step 1: Offline GPU-Model Benchmark per Input-Output Pattern
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Benchmark model. For each type of GPU, run ``aibrix_benchmark``. See `benchmark.sh <https://github.com/aibrix/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_ for more options.
+Benchmark model. For each type of GPU, run ``aibrix_benchmark``. See `benchmark.sh <https://github.com/vllm-project/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_ for more options.
 
 .. code-block:: bash
 
@@ -64,7 +64,7 @@ All the sample files can be found in the following directory.
 
 .. code-block:: bash
     
-    https://github.com/aibrix/aibrix/tree/main/samples/autoscaling
+    https://github.com/vllm-project/aibrix/tree/main/samples/autoscaling
 
 Example Optimizer-based KPA yaml config
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

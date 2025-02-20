@@ -20,7 +20,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/aibrix/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/utils"
 
 	v1 "k8s.io/api/core/v1"
 )

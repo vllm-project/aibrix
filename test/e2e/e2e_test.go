@@ -106,7 +106,7 @@ func TestBaseModelInferenceFailures(t *testing.T) {
 				t.Fatalf("Error is not an APIError: %+v", err)
 			}
 			if assert.ErrorAs(t, err, &apiErr) {
-				assert.Equal(t, tc.expectErrCode, apiErr.StatusCode)
+				assert.Equal(t, tc.expectErrCode, apiErr.StatusCode, t.Name())
 			}
 		})
 	}

@@ -18,8 +18,8 @@ limitations under the License.
 package autoscaling
 
 import (
-	v1alpha1 "github.com/aibrix/aibrix/pkg/client/informers/externalversions/autoscaling/v1alpha1"
-	internalinterfaces "github.com/aibrix/aibrix/pkg/client/informers/externalversions/internalinterfaces"
+	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/informers/externalversions/autoscaling/v1alpha1"
+	internalinterfaces "github.com/vllm-project/aibrix/pkg/client/informers/externalversions/internalinterfaces"
 )
 
 // Interface provides access to each of this group's versions.

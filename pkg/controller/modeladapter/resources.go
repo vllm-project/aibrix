@@ -17,7 +17,7 @@ limitations under the License.
 package modeladapter
 
 import (
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

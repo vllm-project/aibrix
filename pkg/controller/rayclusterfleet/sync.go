@@ -23,9 +23,9 @@ import (
 	"sort"
 	"strconv"
 
-	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
-	"github.com/aibrix/aibrix/pkg/controller/rayclusterfleet/util"
-	labelsutil "github.com/aibrix/aibrix/pkg/utils"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/controller/rayclusterfleet/util"
+	labelsutil "github.com/vllm-project/aibrix/pkg/utils"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"

@@ -18,13 +18,13 @@ limitations under the License.
 package fake
 
 import (
-	clientset "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/autoscaling/v1alpha1"
-	fakeautoscalingv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/autoscaling/v1alpha1/fake"
-	modelv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/model/v1alpha1"
-	fakemodelv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/model/v1alpha1/fake"
-	orchestrationv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/orchestration/v1alpha1"
-	fakeorchestrationv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/orchestration/v1alpha1/fake"
+	clientset "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/autoscaling/v1alpha1"
+	fakeautoscalingv1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/autoscaling/v1alpha1/fake"
+	modelv1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/model/v1alpha1"
+	fakemodelv1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/model/v1alpha1/fake"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/orchestration/v1alpha1"
+	fakeorchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/orchestration/v1alpha1/fake"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"

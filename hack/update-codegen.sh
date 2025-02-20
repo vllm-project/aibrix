@@ -8,7 +8,7 @@ set -o nounset
 set -o pipefail
 
 SCRIPT_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
-ROOT_PKG=github.com/aibrix/aibrix
+ROOT_PKG=github.com/vllm-project/aibrix
 
 # Grab code-generator version from go.sum
 CODEGEN_VERSION=$(grep 'k8s.io/code-generator' go.sum | awk '{print $2}' | sed 's/\/go.mod//g' | head -1)
@@ -45,7 +45,7 @@ chmod +x ${CODEGEN_PKG}/generate-internal-groups.sh
 #
 cd ${SCRIPT_ROOT}
 ${CODEGEN_PKG}/generate-groups.sh applyconfiguration,client,informer,lister \
- github.com/aibrix/aibrix/pkg/client github.com/aibrix/aibrix/api \
+ github.com/vllm-project/aibrix/pkg/client github.com/vllm-project/aibrix/api \
  "model:v1alpha1 autoscaling:v1alpha1 orchestration:v1alpha1" \
  --output-base "${TEMP_DIR}" \
  --go-header-file hack/boilerplate.go.txt

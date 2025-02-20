@@ -27,8 +27,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	crdinformers "github.com/aibrix/aibrix/pkg/client/informers/externalversions"
 	"github.com/redis/go-redis/v9"
+	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
@@ -37,13 +37,13 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
-	v1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
-	v1alpha1scheme "github.com/aibrix/aibrix/pkg/client/clientset/versioned/scheme"
-	"github.com/aibrix/aibrix/pkg/metrics"
-	"github.com/aibrix/aibrix/pkg/utils"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	dto "github.com/prometheus/client_model/go"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
+	v1alpha1scheme "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/scheme"
+	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/client-go/kubernetes/scheme"
 )
 

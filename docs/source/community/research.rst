@@ -13,7 +13,7 @@ Opportunities for Research
 
 - **Unresolved Production Challenges**: The AI production environment presents numerous unresolved problems, from efficient resource allocation to scalable inference architectures. We can provide case studies and real-world scenarios for researchers interested in exploring and solving these challenges.
 
-- **Research Paper Implementation**: Some research ideas have been integrated into AIBrix, making it a practical landing ground for cutting-edge innovations. We regularly publish `Help Wanted <https://github.com/aibrix/aibrix/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22help%20wanted%22>`_ issues on our GitHub, highlighting open research opportunities—feel free to take a look and contribute!
+- **Research Paper Implementation**: Some research ideas have been integrated into AIBrix, making it a practical landing ground for cutting-edge innovations. We regularly publish `Help Wanted <https://github.com/vllm-project/aibrix/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22help%20wanted%22>`_ issues on our GitHub, highlighting open research opportunities—feel free to take a look and contribute!
 
 - **AIBrix as a Research Testbed**: Our system is designed to serve as a research testbed for system-level problems in AI infrastructure. Whether it's testing new scheduling algorithms, optimizing inference latency, or improving resource efficiency, we provide hands-on support to help set up experiments and validate hypotheses.
 

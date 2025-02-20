@@ -13,7 +13,7 @@ AIBrix Architecture
 
 The following diagram gives an overview of the AIBrix Ecosystem and how it relates to the wider Kubernetes and LLM landscapes.
 
-.. figure:: ../assets/images/aibrix-architecture-v1.png
+.. figure:: ../assets/images/aibrix-architecture-v1.jpeg
   :alt: aibrix-architecture-v1
   :width: 100%
   :align: center

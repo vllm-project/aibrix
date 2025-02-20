@@ -67,10 +67,10 @@ After launching AIBrix's deployment, we can use the following yaml to deploy a d
     2. ``kvcache.orchestration.aibrix.ai/node-affinity-gpu-type`` is unnecessary unless you deploy the model across different GPUs.
 
 
-Run ``kubectl get pods`` to verify all pods are running.
+Run ``kubectl get pods -o wide`` to verify all pods are running.
 
-.. note::
-    kubectl get pods -o wide
+.. code-block:: RST
+
     NAME                                            READY   STATUS              RESTARTS   AGE     IP               NODE                                           NOMINATED NODE   READINESS GATES
     deepseek-coder-7b-instruct-85664648c7-xgp9h     1/1     Running             0          2m41s   192.168.59.224   ip-192-168-41-184.us-west-2.compute.internal   <none>           <none>
     deepseek-coder-7b-kvcache-7d5896cd89-dcfzt      1/1     Running             0          2m31s   192.168.37.154   ip-192-168-41-184.us-west-2.compute.internal   <none>           <none>

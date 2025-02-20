@@ -23,8 +23,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aibrix/aibrix/pkg/utils"
 	"github.com/cespare/xxhash"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
