@@ -28,7 +28,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
             stream=True,
             stream_options={"include_usage": True},
         )
-        chunks = []
+        text_chunks = []
         prompt_tokens = 0
         output_tokens = 0
         total_tokens = 0   
@@ -39,11 +39,12 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
                     if not first_response_time:
                         first_response_time = asyncio.get_event_loop().time()
                     output_text = chunk.choices[0].delta.content
-                    chunks.append(output_text)
+                    text_chunks.append(output_text)
                     prompt_tokens = chunk.usage.prompt_tokens
                     output_tokens = chunk.usage.completion_tokens
                     total_tokens = chunk.usage.total_tokens
-        response = "".join(chunks)
+        response = "".join(text_chunks)
+        print(response)
         response_time = asyncio.get_event_loop().time()
         latency = response_time - start_time
         throughput = output_tokens / latency
@@ -74,16 +75,11 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
         traceback.print_exc() 
         return None
 
-async def benchmark_streaming(endpoint: str, 
-                          model: str, 
-                          api_key: str, 
-                          load_struct: List, 
-                          output_file: io.TextIOWrapper):
-    
-    client = openai.AsyncOpenAI(
-        api_key=api_key,
-        base_url=endpoint + "/v1",
-    )
+async def benchmark_streaming(client: openai.AsyncOpenAI,
+                              endpoint: str,  
+                              model: str, 
+                              load_struct: List,
+                              output_file: io.TextIOWrapper):
 
     batch_tasks = []
     base_time = time.time()
@@ -152,16 +148,11 @@ async def send_request_batch(client, model, endpoint, prompt, output_file):
         return None
 
 
-async def benchmark_batch(endpoint: str, 
+async def benchmark_batch(client: openai.AsyncOpenAI,
+                          endpoint: str, 
                           model: str, 
-                          api_key: str, 
                           load_struct: List, 
                           output_file: io.TextIOWrapper):
-    client = openai.AsyncOpenAI(
-        api_key=api_key,
-        base_url=endpoint + "/v1",
-    )
-
     batch_tasks = []
     base_time = time.time()
     num_requests = 0
@@ -188,13 +179,19 @@ def main(args):
     logging.info(f"Starting benchmark on endpoint {args.endpoint} client type {args.client_type}")
     with open(args.output_file_path, 'w', encoding='utf-8') as output_file:
         load_struct = load_workload(args.workload_path)
+        client = openai.AsyncOpenAI(
+            api_key=args.api_key,
+            base_url=args.endpoint + "/v1",
+        )
+        if args.routing_strategy is not None:
+            client.default_headers["routing-strategy"] = args.routing_strategy
         if args.client_type == 'batch':
             logging.info("Using batch client")
             start_time = time.time()
             asyncio.run(benchmark_batch(
+                client = client,
                 endpoint=args.endpoint, 
                 model=args.model, 
-                api_key=args.api_key, 
                 load_struct=load_struct, 
                 output_file=output_file, 
             ))
@@ -204,9 +201,9 @@ def main(args):
             logging.info("Using streaming client")
             start_time = time.time()
             asyncio.run(benchmark_streaming(
+                client = client,
                 endpoint=args.endpoint, 
                 model=args.model, 
-                api_key=args.api_key, 
                 load_struct=load_struct, 
                 output_file=output_file,
             ))
@@ -223,6 +220,7 @@ if __name__ == "__main__":
     parser.add_argument('--output-file-path', type=str, default="output.jsonl")
     parser.add_argument('--client-type', type=str, choices=['batch', 'streaming'], default='batch',
                         help='Type of client to use (batch or streaming).')
+    parser.add_argument("--routing-strategy", type=str, required=False, default=None, help="Routing strategy to use.")
 
     args = parser.parse_args()
     main(args)
