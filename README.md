@@ -47,7 +47,7 @@ kubectl create -k "github.com/vllm-project/aibrix/config/overlays/release?ref=v0
 
 ## Documentation
 
-For detailed documentation on installation, configuration, and usage, please visit our [documentation page](https://aibrix-aibrix.readthedocs-hosted.com/en/latest/).
+For detailed documentation on installation, configuration, and usage, please visit our [documentation page](https://aibrix.readthedocs.io/latest/).
 
 ## Contributing
 
