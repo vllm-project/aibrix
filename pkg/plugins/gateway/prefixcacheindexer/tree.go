@@ -62,6 +62,16 @@ func (n *TreeNode) ContextLength() int {
 	return n.contextLength
 }
 
+type LPRadixCache struct {
+	mu            sync.RWMutex
+	rootNode      *TreeNode
+	numPods       int
+	allocatedSize []int
+	allNodes      map[int]*TreeNode
+	nextNodeID    int
+	startTime     time.Time
+}
+
 func (c *LPRadixCache) NewTreeNode(numPods int, parent *TreeNode, key []int, value []int) *TreeNode {
 	// Create the node with initialized maps and slices
 	node := &TreeNode{
@@ -140,16 +150,6 @@ func (c *LPRadixCache) prettyPrintHelper(node *TreeNode, prefix string, isLast b
 		isLastChild := i == len(childKeys)-1
 		c.prettyPrintHelper(node.children[key], childPrefix, isLastChild)
 	}
-}
-
-type LPRadixCache struct {
-	mu            sync.RWMutex
-	rootNode      *TreeNode
-	numPods       int
-	allocatedSize []int
-	allNodes      map[int]*TreeNode
-	nextNodeID    int
-	startTime     time.Time
 }
 
 func NewLPRadixCache(numPods int) *LPRadixCache {
