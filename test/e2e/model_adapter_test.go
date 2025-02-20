@@ -2,12 +2,14 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
-	"github.com/openai/openai-go"
+	v1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
 	"github.com/stretchr/testify/assert"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
@@ -17,43 +19,39 @@ const (
 )
 
 func TestModelAdapter(t *testing.T) {
-	var adapter *modelv1alpha1.ModelAdapter
-	var err error
-	adapter = createModelAdapterConfig("text2sql-lora-2", "llama2-7b")
-	_, v1alpha1Client := initializeClient(context.Background(), t)
+	adapter := createModelAdapterConfig("text2sql-lora-2", "llama2-7b")
+	k8sClient, v1alpha1Client := initializeClient(context.Background(), t)
 
 	t.Cleanup(func() {
 		assert.NoError(t, v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(), adapter.Name, v1.DeleteOptions{}))
-	})
-
-	adapter, err = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Create(context.Background(), adapter, v1.CreateOptions{})
-	assert.NoError(t, err)
-
-	wait.PollImmediate(1*time.Second, 30*time.Second,
-		func() (done bool, err error) {
-			adapter, err = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Get(context.Background(), adapter.Name, v1.GetOptions{})
-			if err != nil || adapter.Status.Phase != modelv1alpha1.ModelAdapterRunning {
+		wait.PollImmediate(1*time.Second, 30*time.Second,
+			func() (done bool, err error) {
+				adapter, err = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Get(context.Background(), adapter.Name, v1.GetOptions{})
+				if apierrors.IsNotFound(err) {
+					return true, nil
+				}
 				return false, nil
-			}
-			return true, nil
-		})
-
-	assert.True(t, len(adapter.Status.Instances) > 0, "model adapter scheduled on atleast one pod")
-
-	client := createOpenAIClient(baseURL, apiKey)
-	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
-		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage("Say this is a test"),
-		}),
-		Model: openai.F(openai.ChatModel(loraName)),
+			})
 	})
-	if err != nil {
-		t.Fatalf("chat completions failed: %v", err)
-	}
 
-	assert.Equal(t, loraName, chatCompletion.Model)
-	assert.NotEmpty(t, chatCompletion.Choices, "chat completion has no choices returned")
-	assert.NotNil(t, chatCompletion.Choices[0].Message.Content, "chat completion has no message returned")
+	// create model adapter
+	fmt.Println("creating model adapter")
+	adapter, err := v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Create(context.Background(), adapter, v1.CreateOptions{})
+	assert.NoError(t, err)
+	adapter = validateModelAdapter(t, v1alpha1Client, adapter.Name)
+	oldPod := adapter.Status.Instances[0]
+
+	// delete pod and ensure model adapter is rescheduled
+	fmt.Println("deleting pod instance to force model adapter rescheduling")
+	assert.NoError(t, k8sClient.CoreV1().Pods("default").Delete(context.Background(), oldPod, v1.DeleteOptions{}))
+	time.Sleep(3 * time.Second)
+	adapter = validateModelAdapter(t, v1alpha1Client, adapter.Name)
+	newPod := adapter.Status.Instances[0]
+
+	assert.NotEqual(t, newPod, oldPod, "ensure old and new pods are different")
+
+	// run inference for model adapter
+	validateInference(t, loraName)
 }
 
 func createModelAdapterConfig(name, model string) *modelv1alpha1.ModelAdapter {
@@ -78,4 +76,18 @@ func createModelAdapterConfig(name, model string) *modelv1alpha1.ModelAdapter {
 			},
 		},
 	}
+}
+
+func validateModelAdapter(t *testing.T, client *v1alpha1.Clientset, name string) *modelv1alpha1.ModelAdapter {
+	var adapter *modelv1alpha1.ModelAdapter
+	wait.PollImmediate(1*time.Second, 30*time.Second,
+		func() (done bool, err error) {
+			adapter, err = client.ModelV1alpha1().ModelAdapters("default").Get(context.Background(), name, v1.GetOptions{})
+			if err != nil || adapter.Status.Phase != modelv1alpha1.ModelAdapterRunning {
+				return false, nil
+			}
+			return true, nil
+		})
+	assert.True(t, len(adapter.Status.Instances) > 0, "model adapter scheduled on atleast one pod")
+	return adapter
 }

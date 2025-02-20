@@ -26,6 +26,7 @@ import (
 	crdinformers "github.com/aibrix/aibrix/pkg/client/informers/externalversions"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -33,6 +34,14 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
+)
+
+const (
+	gatewayURL = "http://localhost:8888"
+	engineURL  = "http://localhost:8000"
+	apiKey     = "test-key-1234567890"
+	modelName  = "llama2-7b"
+	namespace  = "aibrix-system"
 )
 
 func initializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset, *v1alpha1.Clientset) {
@@ -100,4 +109,39 @@ func createOpenAIClientWithRoutingStrategy(baseURL, apiKey, routingStrategy stri
 		option.WithMaxRetries(0),
 		respOpt,
 	)
+}
+
+func validateInference(t *testing.T, modelName string) {
+	client := createOpenAIClient(gatewayURL, apiKey)
+	validateInferenceWithClient(t, client, modelName)
+}
+
+func validateInferenceWithClient(t *testing.T, client *openai.Client, modelName string) {
+	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("Say this is a test"),
+		}),
+		Model: openai.F(openai.ChatModel(modelName)),
+	})
+	if err != nil {
+		t.Fatalf("chat completions failed : %v", err)
+	}
+	assert.Equal(t, modelName, chatCompletion.Model)
+	assert.NotEmpty(t, chatCompletion.Choices, "chat completion has no choices returned")
+	assert.NotNil(t, chatCompletion.Choices[0].Message.Content, "chat completion has no message returned")
+}
+
+func isModelDeploymentAvailable(t *testing.T, modelName string) bool {
+	client := createOpenAIClient(engineURL, apiKey)
+	models, err := client.Models.List(context.Background())
+	assert.NoError(t, err)
+
+	var isModelFound bool
+	for _, m := range models.Data {
+		if m.ID == modelName {
+			isModelFound = true
+			break
+		}
+	}
+	return isModelFound
 }

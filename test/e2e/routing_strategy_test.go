@@ -56,7 +56,7 @@ func TestPrefixCacheModelInference(t *testing.T) {
 
 func getTargetPodFromChatCompletion(t *testing.T, message string) string {
 	var dst *http.Response
-	client := createOpenAIClientWithRoutingStrategy(baseURL, apiKey, "prefix-cache", option.WithResponseInto(&dst))
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "prefix-cache", option.WithResponseInto(&dst))
 
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
