@@ -199,18 +199,15 @@ func (c *LPRadixCache) GetNode(tokens []int) *TreeNode {
 func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.Pod) ([]int, []int, []*v1.Pod) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-
 	// Get the longest matching node
 	node, matchedTokens := c.matchPrefixHelper(c.rootNode, inputTokens)
 	if node == nil {
-		return nil, inputTokens, pods
+		return []int{}, inputTokens, nil
 	}
-
 	var unmatchedTokens []int
 	if len(matchedTokens) < len(inputTokens) {
 		unmatchedTokens = inputTokens[len(matchedTokens):]
 	}
-
 	// Filter pods based on model mapping
 	var matchedPods []*v1.Pod
 	if modelPods, ok := node.ModelToPods[model]; ok {
@@ -221,10 +218,7 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 			}
 		}
 	}
-
-	klog.Infof("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v",
-		node.id, node.key, matchedTokens, node.ModelToPods)
-
+	klog.Infof("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v", node.id, node.key, matchedTokens, node.ModelToPods)
 	return matchedTokens, unmatchedTokens, matchedPods
 }
 
@@ -397,11 +391,22 @@ func (c *LPRadixCache) evictNode(node *TreeNode) {
 	if node == c.rootNode {
 		return
 	}
+	// Clean up parent's ModelToPods entries
 	if node.parent != nil {
+		for model, pods := range node.ModelToPods {
+			if parentPods, exists := node.parent.ModelToPods[model]; exists {
+				for podName := range pods {
+					delete(parentPods, podName)
+				}
+				if len(parentPods) == 0 {
+					delete(node.parent.ModelToPods, model)
+				}
+			}
+		}
 		delete(node.parent.children, node.key[0])
 	}
 	delete(c.allNodes, node.id)
-	klog.Infof("Evict node(%d)!,  Key: %v", node.id, node.key)
+	klog.Infof("Evict node(%d)!, Key: %v", node.id, node.key)
 
 	// Clean up the node
 	node.parent = nil
