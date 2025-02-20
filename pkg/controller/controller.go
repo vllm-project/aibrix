@@ -17,14 +17,14 @@ limitations under the License.
 package controller
 
 import (
-	"github.com/aibrix/aibrix/pkg/config"
-	"github.com/aibrix/aibrix/pkg/controller/kvcache"
-	"github.com/aibrix/aibrix/pkg/controller/modeladapter"
-	"github.com/aibrix/aibrix/pkg/controller/modelrouter"
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler"
-	"github.com/aibrix/aibrix/pkg/controller/rayclusterfleet"
-	"github.com/aibrix/aibrix/pkg/controller/rayclusterreplicaset"
-	"github.com/aibrix/aibrix/pkg/features"
+	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/controller/kvcache"
+	"github.com/vllm-project/aibrix/pkg/controller/modeladapter"
+	"github.com/vllm-project/aibrix/pkg/controller/modelrouter"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler"
+	"github.com/vllm-project/aibrix/pkg/controller/rayclusterfleet"
+	"github.com/vllm-project/aibrix/pkg/controller/rayclusterreplicaset"
+	"github.com/vllm-project/aibrix/pkg/features"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/manager"

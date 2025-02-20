@@ -45,7 +45,7 @@ html_logo = 'assets/logos/aibrix-logo.png'
 html_static_path = ['_static']
 html_theme_options = {
     # repository level setting
-    'repository_url': 'https://github.com/aibrix/aibrix',
+    'repository_url': 'https://github.com/vllm-project/aibrix',
     "use_repository_button": True,
     "repository_branch": "main",
     'path_to_docs': 'docs/source',

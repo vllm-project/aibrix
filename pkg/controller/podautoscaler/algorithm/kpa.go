@@ -19,7 +19,7 @@ package algorithm
 import (
 	"math"
 
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/common"
 )
 
 type KpaScalingAlgorithm struct{}

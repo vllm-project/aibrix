@@ -22,11 +22,11 @@ import (
 	"os"
 	"testing"
 
-	v1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
-	crdinformers "github.com/aibrix/aibrix/pkg/client/informers/externalversions"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/stretchr/testify/assert"
+	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
+	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"

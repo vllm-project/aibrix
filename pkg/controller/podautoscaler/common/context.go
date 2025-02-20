@@ -19,7 +19,7 @@ package common
 import (
 	"strconv"
 
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"k8s.io/klog/v2"
 )
 

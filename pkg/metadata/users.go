@@ -21,9 +21,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/aibrix/aibrix/pkg/utils"
 	"github.com/gorilla/mux"
 	"github.com/redis/go-redis/v9"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
 

@@ -4,12 +4,12 @@ metadata:
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
-  name: facebook-opt-13b
+  name: qwen-coder-7b-instruct
 spec:
   replicas: 1
   selector:
     matchLabels:
-      model.aibrix.ai/name: facebook-opt-13b
+      model.aibrix.ai/name: qwen-coder-7b-instruct
   strategy:
     rollingUpdate:
       maxSurge: 25%
@@ -18,7 +18,7 @@ spec:
   template:
     metadata:
       labels:
-        model.aibrix.ai/name: facebook-opt-13b
+        model.aibrix.ai/name: qwen-coder-7b-instruct
       annotations:
         ray.io/overwrite-container-cmd: "true"
     spec:
@@ -41,7 +41,7 @@ spec:
                   - containerPort: 8000
                     name: service
                 command: ["/bin/bash", "-lc", "--"]
-                args: ["ulimit -n 65536; echo head; $KUBERAY_GEN_RAY_START_CMD; vllm serve facebook/opt-125m --tensor-parallel-size 2 --distributed-executor-backend ray"]
+                args: ["ulimit -n 65536; echo head; $KUBERAY_GEN_RAY_START_CMD; vllm serve Qwen/Qwen2.5-Coder-7B-Instruct --tensor-parallel-size 2 --distributed-executor-backend ray"]
                 resources:
                   limits:
                     cpu: "4"

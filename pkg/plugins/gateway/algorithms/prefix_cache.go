@@ -22,8 +22,8 @@ import (
 	"math/rand"
 	"strconv"
 
-	"github.com/aibrix/aibrix/pkg/plugins/gateway/prefixcacheindexer"
-	"github.com/aibrix/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/prefixcacheindexer"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )

@@ -24,15 +24,15 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/algorithm"
-	scalingcontext "github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/aggregation"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/algorithm"
+	scalingcontext "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/common"
 
-	v1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	v1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 )
 
 // TestKpaScale tests the KPA behavior under high traffic rising condition.

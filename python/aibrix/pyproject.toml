@@ -1,13 +1,13 @@
 [tool.poetry]
 name = "aibrix"
-version = "0.2.0"
+version = "0.2.0.post1"
 description = "AIBrix, the foundational building blocks for constructing your own GenAI inference infrastructure."
 authors = [
     "AIBrix Authors <brosoul@126.com>"
 ]
 readme = "README.md"
 license = "Apache-2.0"
-repository = "https://github.com/aibrix/aibrix/tree/main/python/aibrix"
+repository = "https://github.com/vllm-project/aibrix/tree/main/python/aibrix"
 classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Education",

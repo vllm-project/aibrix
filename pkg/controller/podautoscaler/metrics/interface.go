@@ -25,7 +25,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 )
 
 // NamespaceNameMetric contains the namespace, name and the metric name

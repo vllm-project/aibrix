@@ -12,7 +12,7 @@ To ensure a smooth process, please follow a few simple guidelines.
 Getting Started
 ---------------
 
-Please make sure to read and observe our `Code of Conduct <https://github.com/aibrix/aibrix/blob/main/CODE_OF_CONDUCT.md>`_.
+Please make sure to read and observe our `Code of Conduct <https://github.com/vllm-project/aibrix/blob/main/CODE_OF_CONDUCT.md>`_.
 
 
 Make your first contribution
@@ -31,8 +31,8 @@ Good Start issues
 
 To find AIBrix issues that make good entry points:
 
-- Start with issues labeled `good first issue <https://github.com/aibrix/aibrix/labels/good%20first%20issue>`_.
-- For issues that require deeper knowledge of one or more technical aspects, look at issues labeled `help wanted <https://github.com/aibrix/aibrix/labels/help%20wanted>`_.
+- Start with issues labeled `good first issue <https://github.com/vllm-project/aibrix/labels/good%20first%20issue>`_.
+- For issues that require deeper knowledge of one or more technical aspects, look at issues labeled `help wanted <https://github.com/vllm-project/aibrix/labels/help%20wanted>`_.
 
 Joining the community
 ---------------------

@@ -11,8 +11,13 @@ The initial release includes the following key features:
 - **Distributed Inference**: Scalable architecture to handle large workloads across multiple nodes.
 - **LLM App-Tailored Autoscaler**: Dynamically scale inference resources based on real-time demand.
 - **Unified AI Runtime**: A versatile sidecar enabling metric standardization, model downloading, and management.
+- **Distributed KV Cache**: Enables high-capacity, cross-engine KV reuse.
+- **Cost-efficient Heterogeneous Serving**: Enables mixed GPU inference to reduce costs with SLO guarantees.
 - **GPU Hardware Failure Detection (TBD)**: Proactive detection of GPU hardware issues.
-- **Benchmark Tool (TBD)**: A tool for measuring inference performance and resource efficiency.
+
+## Architecture
+
+![aibrix-architecture-v1](docs/source/assets/images/aibrix-architecture-v1.jpeg)
 
 
 ## Quick Start
@@ -21,7 +26,7 @@ To get started with AIBrix, clone this repository and follow the setup instructi
 
 ```shell
 # Local Testing
-git clone https://github.com/aibrix/aibrix.git
+git clone https://github.com/vllm-project/aibrix.git
 cd aibrix
 
 # Install nightly aibrix dependencies
@@ -34,26 +39,28 @@ kubectl create -k config/default
 Install stable distribution
 ```shell
 # Install component dependencies
-kubectl create -k "github.com/aibrix/aibrix/config/dependency?ref=v0.2.0"
+kubectl create -k "github.com/vllm-project/aibrix/config/dependency?ref=v0.2.0"
 
 # Install aibrix components
-kubectl create -k "github.com/aibrix/aibrix/config/overlays/release?ref=v0.2.0"
+kubectl create -k "github.com/vllm-project/aibrix/config/overlays/release?ref=v0.2.0"
 ```
 
 ## Documentation
 
-For detailed documentation on installation, configuration, and usage, please visit our [documentation page](https://github.com/aibrix/aibrix).
+For detailed documentation on installation, configuration, and usage, please visit our [documentation page](https://aibrix.readthedocs.io/latest/).
 
 ## Contributing
 
-We welcome contributions from the community! Check out our [contributing guidelines](https://github.com/aibrix/aibrix/CONTRIBUTING.md) to see how you can make a difference.
+We welcome contributions from the community! Check out our [contributing guidelines](https://github.com/vllm-project/aibrix/CONTRIBUTING.md) to see how you can make a difference.
+
+Slack Channel: https://vllm-dev.slack.com/archives/C07QP347J4D
 
 ## License
 
-AIBrix is licensed under the [APACHE License](https://github.com/aibrix/aibrix/LICENSE.md).
+AIBrix is licensed under the [APACHE License](https://github.com/vllm-project/aibrix/LICENSE.md).
 
 ## Support
 
-If you have any questions or encounter any issues, please submit an issue on our [GitHub issues page](https://github.com/aibrix/aibrix/issues).
+If you have any questions or encounter any issues, please submit an issue on our [GitHub issues page](https://github.com/vllm-project/aibrix/issues).
 
 Thank you for choosing AIBrix for your GenAI infrastructure needs!

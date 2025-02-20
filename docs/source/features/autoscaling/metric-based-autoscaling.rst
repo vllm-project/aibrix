@@ -1,15 +1,11 @@
-.. _autoscaling:
+.. _metric-based-autoscaling:
 
-===========
-Autoscaling
-===========
+===========================
+Metric-based Autoscaling
+===========================
 
-Overview of AIBrix Autoscaler
------------------------------
 
-Autoscaling is crucial for deploying Large Language Model (LLM) services on Kubernetes (K8s), as timely scaling up handles peaks in request traffic, and scaling down conserves resources when demand wanes.
-
-AIBrix Autoscaler includes various autoscaling components, allowing users to conveniently select the appropriate scaler. These options include the Knative-based Kubernetes Pod Autoscaler (KPA), the native Kubernetes Horizontal Pod Autoscaler (HPA), and AIBrix’s custom Advanced Pod Autoscaler (APA) tailored for LLM-serving.
+AIBrix Autoscaler includes various metric-based autoscaling components, allowing users to conveniently select the appropriate scaler. These options include the Knative-based Kubernetes Pod Autoscaler (KPA), the native Kubernetes Horizontal Pod Autoscaler (HPA), and AIBrix’s custom Advanced Pod Autoscaler (APA) tailored for LLM-serving.
 
 In the following sections, we will demonstrate how users can create various types of autoscalers within AIBrix.
 
@@ -44,25 +40,25 @@ All the sample files can be found in the following directory.
 
 .. code-block:: bash
     
-    https://github.com/aibrix/aibrix/tree/main/samples/autoscaling
+    https://github.com/vllm-project/aibrix/tree/main/samples/autoscaling
 
 Example HPA yaml config
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-.. literalinclude:: ../../../samples/autoscaling/hpa.yaml
+.. literalinclude:: ../../../../samples/autoscaling/hpa.yaml
    :language: yaml
 
 Example KPA yaml config
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-.. literalinclude:: ../../../samples/autoscaling/kpa.yaml
+.. literalinclude:: ../../../../samples/autoscaling/kpa.yaml
    :language: yaml
 
 
 Example APA yaml config
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-.. literalinclude:: ../../../samples/autoscaling/apa.yaml
+.. literalinclude:: ../../../../samples/autoscaling/apa.yaml
    :language: yaml
 
 
@@ -81,7 +77,7 @@ check its logs in this way.
 
 Expected log output. You can see the current metric is gpu_cache_usage_perc. You can check each pod's current metric value.
 
-.. image:: ../assets/images/autoscaler/aibrix-controller-manager-output.png
+.. image:: ../../assets/images/autoscaler/aibrix-controller-manager-output.png
    :alt: AiBrix controller manager output
    :width: 100%
    :align: center
@@ -98,7 +94,7 @@ To describe the PodAutoscaler custom resource, you can run
 
 Example output is here, you can explore the scaling conditions and events for more details.
 
-.. image:: ../assets/images/autoscaler/podautoscaler-describe.png
+.. image:: ../../assets/images/autoscaler/podautoscaler-describe.png
    :alt: PodAutoscaler describe
    :width: 100%
    :align: center
@@ -132,7 +128,7 @@ In AiBrix, user can easily deploy different autoscaler by simply applying K8s ya
     - There is no one autoscaler that outperforms others for all metrics (latency, cost). In addition, the results might depend on the workloads. Infrastructure should provide easy way to configure whichever autoscaling mechanism they want and should be easily configurable since different users have different preference. For example, one might prefer cost over performance or vice versa. 
 
 
-.. image:: ../assets/images/autoscaler/autoscaling_result.png
+.. image:: ../../assets/images/autoscaler/autoscaling_result.png
    :alt: result
    :width: 70%
    :align: center
