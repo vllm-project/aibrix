@@ -260,10 +260,28 @@ func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, tokens []int) (*TreeNod
 func (c *LPRadixCache) AddPrefix(tokens []int, model, podName string) (*TreeNode, []int, []int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	// Do insertion first
 	node, matchedTokens, unmatchedTokens := c.insertHelper(c.rootNode, tokens, tokens)
-	c.PrettyPrint()
+	if node != nil {
+		if node.ModelToPods == nil {
+			node.ModelToPods = make(map[string]map[string]time.Time)
+		}
+		if node.ModelToPods[model] == nil {
+			node.ModelToPods[model] = make(map[string]time.Time)
+		}
+		node.ModelToPods[model][podName] = time.Now()
+		current := node
+		for current.parent != nil {
+			if current.parent.ModelToPods == nil {
+				current.parent.ModelToPods = make(map[string]map[string]time.Time)
+			}
+			if current.parent.ModelToPods[model] == nil {
+				current.parent.ModelToPods[model] = make(map[string]time.Time)
+			}
+			current.parent.ModelToPods[model][podName] = time.Now()
+			current = current.parent
+		}
+	}
+	// c.PrettyPrint()
 	return node, matchedTokens, unmatchedTokens
 }
 
@@ -352,7 +370,7 @@ func (c *LPRadixCache) Evict(now time.Time) []*TreeNode {
 	}
 	if len(nodesToEvict) > 0 {
 		klog.Infof("Evicted %d nodes", len(nodesToEvict))
-		c.PrettyPrint()
+		// c.PrettyPrint()
 	}
 	return nodesToEvict
 }
