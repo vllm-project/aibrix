@@ -17,6 +17,8 @@ limitations under the License.
 package utils
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 
 	"github.com/pkoukk/tiktoken-go"
@@ -38,6 +40,37 @@ func TokenizeInputText(text string) ([]int, error) {
 	// encode
 	token := tke.Encode(text, nil, nil)
 	return token, nil
+}
+
+func DetokenizeText(tokenIds []int) (string, error) {
+	tiktoken.SetBpeLoader(tiktoken_loader.NewOfflineLoader())
+	tke, err := tiktoken.GetEncoding(encoding)
+	if err != nil {
+		return "", fmt.Errorf("failed to get encoding: %v", err)
+	}
+	decoded := tke.Decode(tokenIds)
+	return decoded, nil
+}
+
+type Message struct {
+	Content string `json:"content"`
+	Role    string `json:"role"`
+}
+
+func TrimMessage(message string) string {
+	var messages []Message
+	if err := json.Unmarshal([]byte(message), &messages); err != nil {
+		// If array parsing fails, try single message
+		var msg Message
+		if err := json.Unmarshal([]byte(message), &msg); err != nil {
+			return message
+		}
+		return msg.Content
+	}
+	if len(messages) > 0 {
+		return messages[0].Content
+	}
+	return message
 }
 
 // LoadEnv loads an environment variable or returns a default value if not set.

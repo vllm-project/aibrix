@@ -90,17 +90,18 @@ const (
 	EnvRoutingAlgorithm = "ROUTING_ALGORITHM"
 
 	// Router names
-	RouterRandom        = "random"
-	RouterLeastRequest  = "least-request"
-	RouterThroughput    = "throughput"
-	RouterPrefixCache   = "prefix-cache"
-	RouterLeastKvCache  = "least-kv-cache"
-	RouterLeastBusyTime = "least-busy-time"
-	RouterLeastLatency  = "least-latency"
+	RouterRandom             = "random"
+	RouterLeastRequest       = "least-request"
+	RouterThroughput         = "throughput"
+	RouterPrefixCache        = "prefix-cache"
+	RouterPrefixCacheAndLoad = "prefix-cache-and-load"
+	RouterLeastKvCache       = "least-kv-cache"
+	RouterLeastBusyTime      = "least-busy-time"
+	RouterLeastLatency       = "least-latency"
 )
 
 var (
-	routingStrategies = []string{"random", "least-request", "throughput", "prefix-cache", "least-kv-cache", "least-busy-time", "least-latency"}
+	routingStrategies = []string{"random", "least-request", "throughput", "prefix-cache", "prefix-cache-and-load", "least-kv-cache", "least-busy-time", "least-latency"}
 
 	ErrorUnknownResponse = errors.New("unknown response")
 
@@ -109,13 +110,14 @@ var (
 
 // routerConstructors maps router names to their initialization functions.
 var routerConstructors = map[string]func() (routing.Router, error){
-	RouterRandom:        func() (routing.Router, error) { return routing.NewRandomRouter() },
-	RouterLeastRequest:  func() (routing.Router, error) { return routing.NewLeastRequestRouter() },
-	RouterThroughput:    func() (routing.Router, error) { return routing.NewThroughputRouter() },
-	RouterPrefixCache:   func() (routing.Router, error) { return routing.NewPrefixCacheRouter() },
-	RouterLeastKvCache:  func() (routing.Router, error) { return routing.NewLeastKvCacheRouter() },
-	RouterLeastBusyTime: func() (routing.Router, error) { return routing.NewLeastBusyTimeRouter() },
-	RouterLeastLatency:  func() (routing.Router, error) { return routing.NewLeastExpectedLatencyRouter() },
+	RouterRandom:             func() (routing.Router, error) { return routing.NewRandomRouter() },
+	RouterLeastRequest:       func() (routing.Router, error) { return routing.NewLeastRequestRouter() },
+	RouterThroughput:         func() (routing.Router, error) { return routing.NewThroughputRouter() },
+	RouterPrefixCache:        func() (routing.Router, error) { return routing.NewPrefixCacheRouter() },
+	RouterPrefixCacheAndLoad: func() (routing.Router, error) { return routing.NewPrefixCacheAndLoadRouter() },
+	RouterLeastKvCache:       func() (routing.Router, error) { return routing.NewLeastKvCacheRouter() },
+	RouterLeastBusyTime:      func() (routing.Router, error) { return routing.NewLeastBusyTimeRouter() },
+	RouterLeastLatency:       func() (routing.Router, error) { return routing.NewLeastExpectedLatencyRouter() },
 }
 
 type Server struct {
@@ -178,6 +180,8 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	ctx := srv.Context()
 	requestID := uuid.New().String()
 	completed := false
+
+	klog.InfoS("Processing request", "requestID", requestID)
 
 	for {
 		select {
@@ -698,6 +702,8 @@ func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, po
 	case "throughput":
 		route = s.routers[routingStrategy]
 	case "prefix-cache":
+		route = s.routers[routingStrategy]
+	case "prefix-cache-and-load":
 		route = s.routers[routingStrategy]
 	case "least-kv-cache":
 		route = s.routers[routingStrategy]
