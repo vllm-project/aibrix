@@ -225,7 +225,7 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 // This is being used still unlike MatchPrefix
 func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, tokens []int) (*TreeNode, []int) {
 	if len(tokens) == 0 {
-		return node, nil
+		return node, []int{} // Return empty slice instead of nil
 	}
 
 	node.lastAccess = time.Now()
@@ -248,7 +248,7 @@ func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, tokens []int) (*TreeNod
 			return child, child.key[:prefixLen]
 		}
 	}
-	return node, nil
+	return node, []int{}
 }
 
 func (c *LPRadixCache) AddPrefix(tokens []int, model, podName string) (*TreeNode, []int, []int) {
