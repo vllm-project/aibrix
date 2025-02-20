@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aibrix/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/utils"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -265,26 +265,12 @@ func (c *LPRadixCache) matchPrefixHelper(node *TreeNode, tokens []int) (*TreeNod
 	return node, nil
 }
 
-func (c *LPRadixCache) AddPrefix(tokens []int, model, podName string, updateMapping bool) (*TreeNode, []int, []int) {
+func (c *LPRadixCache) AddPrefix(tokens []int, model, podName string) (*TreeNode, []int, []int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// Do insertion first
 	node, matchedTokens, unmatchedTokens := c.insertHelper(c.rootNode, tokens, tokens)
-
-	// Update mapping in the correct node (not parent)
-	if updateMapping && podName != "" {
-		if node.ModelToPods == nil {
-			node.ModelToPods = make(map[string]map[string]time.Time)
-		}
-		if _, ok := node.ModelToPods[model]; !ok {
-			node.ModelToPods[model] = make(map[string]time.Time)
-		}
-		node.ModelToPods[model][podName] = time.Now()
-		klog.Infof("Updated mapping for model %s, pod %s in node(%d) with key %v",
-			model, podName, node.id, node.key)
-	}
-
 	c.PrettyPrint()
 	return node, matchedTokens, unmatchedTokens
 }
