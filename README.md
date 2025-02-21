@@ -18,6 +18,7 @@ The initial release includes the following key features:
 - **Distributed Inference**: Scalable architecture to handle large workloads across multiple nodes.
 - **Distributed KV Cache**: Enables high-capacity, cross-engine KV reuse.
 - **Cost-efficient Heterogeneous Serving**: Enables mixed GPU inference to reduce costs with SLO guarantees.
+- **GPU Hardware Failure Detection**: Proactive detection of GPU hardware issues.
 
 ## Architecture
 
