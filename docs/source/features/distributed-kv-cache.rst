@@ -24,107 +24,22 @@ Example
 .. note::
     We use a customized version of `vineyard <https://v6d.io/>`_ as the backend for distributed KV cache and an internal version of vLLM integrated with distributed KV cache support to showcase the usage. We are working with the vLLM community to upstream the distributed KV cache API and plugin.
 
-After launching AIBrix's AI Runtime, we can use the following yaml to deploy a distributed KV cache cluster:
-
-.. code-block:: yaml
-
-    apiVersion: orchestration.aibrix.ai/v1alpha1
-    kind: KVCache
-    metadata:
-      name: aibrix-model-deepseek-coder-33b-kvcache
-      namespace: default
-      annotations:
-        kvcache.orchestration.aibrix.ai/node-affinity-gpu-type: NVIDIA-L20
-        kvcache.orchestration.aibrix.ai/pod-affinity-workload: aibrix-model-deepseek-coder-33b-instruct
-    spec:
-      replicas: 1
-      service:
-        type: ClusterIP
-        port: 9600
-      cacheSpec:
-        image: aibrix/vineyardd:20241120
-        imagePullPolicy: IfNotPresent
-
-.. note::
-    ``kvcache.orchestration.aibrix.ai/pod-affinity-workload`` MUST match with ``metadata.name`` of the inference service deployment below
 
 After deployment, we can see all the components by using ``kubectl get pods -n aibrix-system`` command:
 
 .. code-block:: RST
 
-    NAME                                                      READY   STATUS    RESTARTS   AGE
-    aibrix-model-deepseek-coder-33b-kvcache-596965997-p86cx   1/1     Running   0          2m
-    aibrix-model-deepseek-coder-33b-kvcache-etcd-0            1/1     Running   0          2m
+    NAME                                        READY   STATUS    RESTARTS   AGE
+    deepseek-coder-7b-kvcache-596965997-p86cx   0/1     Pending   0          2m
+    deepseek-coder-7b-kvcache-etcd-0            1/1     Running   0          2m
 
-After all components are running, we can use the following yaml to deploy the inference service:
+.. note::
+    ``deepseek-coder-7b-kvcache-596965997-p86cx`` is pending and waiting for inference engine to be deployed, this is normal.
 
-.. code-block:: yaml
-    :emphasize-lines: 39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64
+After all components are created, we can use the following yaml to deploy the inference service:
 
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      name: aibrix-model-deepseek-coder-33b-instruct
-      labels:
-        model.aibrix.ai/name: deepseek-coder-33b-instruct
-        model.aibrix.ai/port: "8000"
-    spec:
-      strategy:
-        rollingUpdate:
-          maxSurge: 1
-          maxUnavailable: 1
-        type: RollingUpdate
-      template:
-        spec:
-          containers:
-            - name: vllm-openai
-              image: aibrix/vllm-openai:v0.6.1-edb07092-20250118
-              imagePullPolicy: Always
-              command:
-              - python3
-              - -m
-              - vllm.entrypoints.openai.api_server
-              - --port
-              - "8000"
-              - --model
-              - deepseek-ai/deepseek-coder-33b-instruct
-              - --served-model-name
-              - deepseek-coder-33b-instruct
-              - --distributed-executor-backend
-              - ray
-              - --trust-remote-code
-              - --tensor-parallel-size
-              - "4"
-              - --max-model-len
-              - "17000"
-              - --enable-prefix-caching
-              - --disable-fastapi-docs
-              env:
-              - name: VLLM_USE_VINEYARD_CACHE
-                value: "1"
-              - name: VINEYARD_CACHE_CPU_MEM_LIMIT_GB
-                value: "70"
-              - name: AIBRIX_LLM_KV_CACHE
-                value: "1"
-              - name: AIBRIX_LLM_KV_CACHE_KV_CACHE_NS
-                value: "aibrix"
-              - name: AIBRIX_LLM_KV_CACHE_CHUNK_SIZE
-                value: "16"
-              - name: AIBRIX_LLM_KV_CACHE_SOCKET
-                value: /var/run/vineyard.sock
-              - name: AIBRIX_LLM_KV_CACHE_RPC_ENDPOINT
-                value: "aibrix-model-deepseek-coder-33b-kvcache-rpc:9600"
-              - name: VINEYARD_CACHE_ENABLE_ASYNC_UPDATE
-                value: "1"
-              - name: "VINEYARD_CACHE_METRICS_ENABLED"
-                value: "1"
-              volumeMounts:
-                - mountPath: /var/run
-                  name: kvcache-socket
-          volumes:
-            - name: kvcache-socket
-              hostPath:
-                path: /var/run/vineyard-kubernetes/default/aibrix-model-deepseek-coder-33b-kvcache
+.. literalinclude:: ../../../samples/kvcache/deployment.yaml
+   :language: yaml
 
 .. note::
     * ``metadata.name`` MUST match with ``kvcache.orchestration.aibrix.ai/pod-affinity-workload`` in the kv cache deployment
@@ -137,13 +52,34 @@ Now let's use ``kubectl get pods`` command to ensure the inference service is ru
 
 .. code-block:: RST
 
-    NAME                                                        READY   STATUS    RESTARTS   AGE
-    download-model                                              1/1     Running   0          12m
-    aibrix-model-deepseek-coder-33b-instruct-6b885ffd8b-2kfjv   2/2     Running   0          4m
+    NAME                                          READY   STATUS    RESTARTS   AGE
+    deepseek-coder-7b-instruct-6b885ffd8b-2kfjv   2/2     Running   0          4m
 
-Once the inference service is running, let's set up port fowarding so that we can test the service from local:
 
-* Run ``kubectl get svc -n envoy-gateway-system`` to get the name of the Envoy Gateway service
+After launching AIBrix's deployment, we can use the following yaml to deploy a distributed KV cache cluster:
+
+.. literalinclude:: ../../../samples/kvcache/kvcache.yaml
+   :language: yaml
+
+.. note::
+
+    1. ``kvcache.orchestration.aibrix.ai/pod-affinity-workload`` MUST match with ``metadata.name`` of the inference service deployment below
+    2. ``kvcache.orchestration.aibrix.ai/node-affinity-gpu-type`` is unnecessary unless you deploy the model across different GPUs.
+
+
+Run ``kubectl get pods -o wide`` to verify all pods are running.
+
+.. code-block:: RST
+
+    NAME                                            READY   STATUS              RESTARTS   AGE     IP               NODE                                           NOMINATED NODE   READINESS GATES
+    deepseek-coder-7b-instruct-85664648c7-xgp9h     1/1     Running             0          2m41s   192.168.59.224   ip-192-168-41-184.us-west-2.compute.internal   <none>           <none>
+    deepseek-coder-7b-kvcache-7d5896cd89-dcfzt      1/1     Running             0          2m31s   192.168.37.154   ip-192-168-41-184.us-west-2.compute.internal   <none>           <none>
+    deepseek-coder-7b-kvcache-etcd-0                1/1     Running             0          2m31s   192.168.19.197   ip-192-168-3-183.us-west-2.compute.internal    <none>           <none>
+
+
+Once the inference service is running, let's set up port forwarding so that we can test the service from local:
+
+* Run ``kubectl get svc -n envoy-gateway-system`` to get the name of the Envoy Gateway service.
 
 .. code-block:: RST
 
@@ -165,7 +101,7 @@ Now, let's test the service:
       -H "Content-Type: application/json" \
       -H "Authorization: XXXXXXXXXXXXXXXXXXXXXXXX" \
       -d '{
-         "model": "deepseek-coder-33b-instruct",
+         "model": "deepseek-coder-7b-instruct",
          "messages": [{"role": "user", "content": "Created container vllm-openai"}],
          "temperature": 0.7
        }'
@@ -197,7 +133,7 @@ and its output would be:
       "id": "chat-60f0247aa9294f8abb61e8f24c1503c2",
       "object": "chat.completion",
       "created": 1738281009,
-      "model": "deepseek-coder-33b-instruct",
+      "model": "deepseek-coder-7b-instruct",
       "choices": [
         {
           "index": 0,

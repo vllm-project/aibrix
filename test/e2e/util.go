@@ -22,10 +22,10 @@ import (
 	"os"
 	"testing"
 
-	v1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
-	crdinformers "github.com/aibrix/aibrix/pkg/client/informers/externalversions"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
+	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -83,6 +83,7 @@ func createOpenAIClient(baseURL, apiKey string) *openai.Client {
 			r.URL.Path = "/v1" + r.URL.Path
 			return mn(r)
 		}),
+		option.WithMaxRetries(0),
 	)
 }
 
@@ -96,6 +97,7 @@ func createOpenAIClientWithRoutingStrategy(baseURL, apiKey, routingStrategy stri
 			return mn(r)
 		}),
 		option.WithHeader("routing-strategy", routingStrategy),
+		option.WithMaxRetries(0),
 		respOpt,
 	)
 }

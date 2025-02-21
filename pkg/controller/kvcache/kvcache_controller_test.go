@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
 
 var _ = Describe("KVCache Controller", func() {

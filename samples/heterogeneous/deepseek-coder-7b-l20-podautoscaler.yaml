@@ -15,8 +15,8 @@ spec:
     path: /metrics/default/deepseek-coder-7b-l20
     protocolType: http
     targetMetric: vllm:deployment_replicas
-    targetValue: "1"
-  minReplicas: 1
+    targetValue: "100"  # For stable workloads. Set to a fraction to tolerate bursts.
+  minReplicas: 0
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment

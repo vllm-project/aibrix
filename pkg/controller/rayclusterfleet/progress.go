@@ -22,8 +22,8 @@ import (
 	"reflect"
 	"time"
 
-	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
-	"github.com/aibrix/aibrix/pkg/controller/rayclusterfleet/util"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/controller/rayclusterfleet/util"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )

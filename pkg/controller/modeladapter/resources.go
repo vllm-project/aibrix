@@ -17,7 +17,7 @@ limitations under the License.
 package modeladapter
 
 import (
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -62,8 +62,10 @@ func buildModelAdapterEndpointSlice(instance *modelv1alpha1.ModelAdapter, pod *c
 
 func buildModelAdapterService(instance *modelv1alpha1.ModelAdapter) *corev1.Service {
 	labels := map[string]string{
-		"model.aibrix.ai/name":         instance.Spec.BaseModel,
 		"adapter.model.aibrix.ai/name": instance.Name,
+	}
+	if instance.Spec.BaseModel != nil {
+		labels["model.aibrix.ai/name"] = *instance.Spec.BaseModel
 	}
 
 	ports := []corev1.ServicePort{

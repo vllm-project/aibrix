@@ -24,12 +24,12 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/algorithm"
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
-	scalingcontext "github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
-	"github.com/aibrix/aibrix/pkg/utils"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/algorithm"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/common"
+	scalingcontext "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/common"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
+	"github.com/vllm-project/aibrix/pkg/utils"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -122,7 +122,7 @@ func (a *ApaScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscale
 	if err != nil {
 		return err
 	}
-	for key, value := range pa.Labels {
+	for key, value := range pa.Annotations {
 		switch key {
 		case upFluctuationToleranceLabel:
 			v, err := strconv.ParseFloat(value, 64)

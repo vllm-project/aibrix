@@ -27,11 +27,14 @@ logger = logging.getLogger("aibrix.gpuoptimizer.optimizer")
 
 
 class Optimizer:
-    def __init__(self, profiles: Optional[Iterable[GPUProfile]] = None):
+    def __init__(
+        self, gpu_fraction: float, profiles: Optional[Iterable[GPUProfile]] = None
+    ):
         self._config = MelangConfig()
         self._workload_distribution_template: Optional[np.ndarray] = None
         self._indexes: Optional[list] = None  # Values ticks of tputs columns and rows
         self._log_indexes: Optional[list] = None  # Cache the log2 value of index
+        self._gpu_fraction = gpu_fraction
         if profiles is not None:
             for profile in profiles:
                 self.set_profile(profile)
@@ -73,7 +76,7 @@ class Optimizer:
         self._workload_distribution_template.fill(0)
 
         # Maintain the overall request scale disregard some request are not covered.
-        self._config.total_request_rate = total_request_rate
+        self._config.total_request_rate = total_request_rate * self._gpu_fraction
         # covered_request_rate is used to calculate the workload distribution.
         covered_request_rate = reduce(
             lambda cnt, center: cnt + center.rate, profiles, 0.0
@@ -82,7 +85,8 @@ class Optimizer:
         for profile in profiles:
             try:
                 signature = self._validate_workload_signature(profile)
-                self._workload_distribution_template[signature] = (
+                # Merge possible multiple patterns (out of range patterns coinincident with border patterns)
+                self._workload_distribution_template[signature] += (
                     profile.rate / covered_request_rate
                 )  # type: ignore
                 logger.debug(

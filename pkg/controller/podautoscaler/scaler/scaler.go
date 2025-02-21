@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
-	podutil "github.com/aibrix/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
+	podutil "github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"

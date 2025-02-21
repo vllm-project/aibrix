@@ -1,0 +1,25 @@
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: deepseek-llm-7b-chat-gpu-optimizer
+  namespace: default
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    kpa.autoscaling.aibrix.ai/scale-down-delay: 0s
+spec:
+  scalingStrategy: KPA 
+  minReplicas: 1
+  maxReplicas: 8
+  metricsSources:
+    - endpoint: aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080
+      metricSourceType: domain
+      path: /metrics/default/deepseek-llm-7b-chat
+      protocolType: http
+      targetMetric: vllm:deployment_replicas
+      targetValue: "100" 
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: deepseek-llm-7b-chat

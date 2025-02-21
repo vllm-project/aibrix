@@ -19,11 +19,12 @@ package modeladapter
 import (
 	"testing"
 
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	"github.com/stretchr/testify/assert"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 )
 
 func TestBuildModelAdapterEndpointSlice(t *testing.T) {
@@ -75,7 +76,7 @@ func TestBuildModelAdapterService(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: modelv1alpha1.ModelAdapterSpec{
-			BaseModel: "test-model",
+			BaseModel: ptr.To[string]("test-model"),
 		},
 	}
 

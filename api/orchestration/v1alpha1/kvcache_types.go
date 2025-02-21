@@ -35,7 +35,7 @@ type ServiceConfig struct {
 
 	// NodePort specifies the port on each node on which this service is exposed when using NodePort type.
 	// +kubebuilder:validation:Optional
-	NodePort int32 `json:"nodePort,omitempty"`
+	NodePort *int32 `json:"nodePort,omitempty"`
 }
 
 // MetadataConfig holds the configuration about the kv cache metadata service
@@ -95,7 +95,7 @@ type CacheSpec struct {
 
 	// the memory resources of kvcache container
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default:="2"
+	// +kubebuilder:default:="2Gi"
 	Memory string `json:"memory,omitempty"`
 
 	// the cpu resources of kvcache container

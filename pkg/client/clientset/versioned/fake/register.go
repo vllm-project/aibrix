@@ -18,9 +18,9 @@ limitations under the License.
 package fake
 
 import (
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
-	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"

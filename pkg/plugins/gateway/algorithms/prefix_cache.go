@@ -22,8 +22,8 @@ import (
 	"math/rand"
 	"strconv"
 
-	"github.com/aibrix/aibrix/pkg/cache"
-	"github.com/aibrix/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/prefixcacheindexer"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -52,17 +52,12 @@ func getPrefixCacheMatchThresholdPercent() int {
 }
 
 type prefixCacheRouter struct {
-	cache *cache.Cache
+	prefixCacheIndexer prefixcacheindexer.PrefixCacheIndexer
 }
 
 func NewPrefixCacheRouter() (Router, error) {
-	cache, err := cache.GetCache()
-	if err != nil {
-		return nil, err
-	}
-
 	return prefixCacheRouter{
-		cache: cache,
+		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 	}, nil
 }
 
@@ -83,7 +78,7 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, m
 	}
 
 	var targetPod *v1.Pod
-	matchedTokens, unMatchedTokens, matchedPods := p.cache.MatchPrefix(tokens, model, readyPods)
+	matchedTokens, unMatchedTokens, matchedPods := p.prefixCacheIndexer.MatchPrefix(tokens, model, readyPods)
 	if len(matchedTokens)*100/len(tokens) > prefixCacheMatchThresholdPercent {
 		targetPod = matchedPods[rand.Intn(len(matchedPods))]
 	} else {
@@ -91,7 +86,7 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, m
 		targetPod = readyPods[rand.Intn(len(readyPods))]
 	}
 	if len(unMatchedTokens) > 0 {
-		p.cache.AddPrefixBlock(unMatchedTokens, model, targetPod.Name)
+		p.prefixCacheIndexer.AddPrefix(unMatchedTokens, model, targetPod.Name)
 	}
 
 	var matchedPodNames, readyPodNames []string

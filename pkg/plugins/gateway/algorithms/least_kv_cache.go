@@ -22,8 +22,8 @@ import (
 	"math"
 	"math/rand"
 
-	"github.com/aibrix/aibrix/pkg/cache"
-	metrics "github.com/aibrix/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/cache"
+	metrics "github.com/vllm-project/aibrix/pkg/metrics"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )

@@ -3,7 +3,6 @@ kind: Deployment
 metadata:
   labels:
     adapter.model.aibrix.ai/enabled: "true"
-    model.aibrix.ai/min_replicas: "4"
     model.aibrix.ai/name: deepseek-coder-7b
     model.aibrix.ai/port: "8000"
     model.aibrix.ai/min_replicas: "1" # min replica when there is no workloads.
@@ -45,6 +44,8 @@ spec:
         - 0.0.0.0
         - --port
         - "8000"
+        - --uvicorn-log-level
+        - warning
         - --model
         - /models/deepseek-coder-6.7b-instruct
         - --served-model-name

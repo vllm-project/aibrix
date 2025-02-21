@@ -12,7 +12,7 @@ COPY utils.py /usr/local/lib/python3.12/dist-packages/vllm/executor/ray_utils.py
 ENTRYPOINT [""]
 ```
 
-> Note: copy uitls.py from upstream version and remove the placement group validation logic. See [#228](https://github.com/aibrix/aibrix/issues/228) for more details.
+> Note: copy uitls.py from upstream version and remove the placement group validation logic. See [#228](https://github.com/vllm-project/aibrix/issues/228) for more details.
 > Note: No need to downgrade ray to v2.10.0. Seem only ray-project/ray image has issues.
 
 Container Image Combination which supports the distributed multi-host inference.

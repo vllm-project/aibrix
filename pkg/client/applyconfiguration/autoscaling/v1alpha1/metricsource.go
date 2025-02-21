@@ -18,7 +18,7 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	v1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 )
 
 // MetricSourceApplyConfiguration represents an declarative configuration of the MetricSource type for use

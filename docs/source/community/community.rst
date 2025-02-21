@@ -14,4 +14,4 @@ Join the channels to start conversations and get support from the community.
 AiBrix Mailing List
 -------------------
 
-The official AIBrix mailing list is hosted on Google Groups at `support@aibrix.ai <support@aibrix.ai>`_.
+The official AIBrix mailing list is hosted on Google Groups at `maintainers@aibrix.ai <maintainers@aibrix.ai>`_.

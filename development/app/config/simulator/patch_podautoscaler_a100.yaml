@@ -16,4 +16,4 @@ spec:
       endpoint: aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080
       path: /metrics/default/simulator-llama2-7b-a100
       targetMetric: "vllm:deployment_replicas"
-      targetValue: "1"
+      targetValue: "100"  # For stable workloads. Set to a fraction to tolerate bursts.

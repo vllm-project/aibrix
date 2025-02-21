@@ -18,7 +18,7 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
+	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )

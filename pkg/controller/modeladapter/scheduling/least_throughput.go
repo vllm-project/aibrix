@@ -20,8 +20,8 @@ import (
 	"context"
 	"math"
 
-	"github.com/aibrix/aibrix/pkg/cache"
-	"github.com/aibrix/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )

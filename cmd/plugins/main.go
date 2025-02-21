@@ -31,10 +31,10 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 
-	"github.com/aibrix/aibrix/pkg/cache"
-	"github.com/aibrix/aibrix/pkg/plugins/gateway"
-	"github.com/aibrix/aibrix/pkg/utils"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 )
 

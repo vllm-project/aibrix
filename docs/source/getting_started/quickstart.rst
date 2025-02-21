@@ -14,8 +14,8 @@ Get your kubernetes cluster ready, run following commands to install aibrix comp
 
 .. code-block:: bash
 
-    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.2/aibrix-dependency-v0.2.0-rc.2.yaml
-    kubectl apply -f https://github.com/aibrix/aibrix/releases/download/v0.2.0-rc.2/aibrix-core-v0.2.0-rc.2.yaml
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.2.0/aibrix-dependency-v0.2.0.yaml
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.2.0/aibrix-core-v0.2.0.yaml
 
 Wait for few minutes and run `kubectl get pods -n aibrix-system` to check pod status util they are ready.
 
@@ -33,177 +33,65 @@ Wait for few minutes and run `kubectl get pods -n aibrix-system` to check pod st
 Deploy base model
 ^^^^^^^^^^^^^^^^^
 
-Save yaml as `deployment.yaml` and run `kubectl apply -f deployment.yaml`.
+Save yaml as `model.yaml` and run `kubectl apply -f model.yaml`.
 
-.. code-block:: yaml
+.. literalinclude:: ../../../samples/quickstart/model.yaml
+   :language: yaml
 
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      labels:
-        # Note: The label value `model.aibrix.ai/name` here must match with the service name.
-        model.aibrix.ai/name: qwen25-7b-Instruct
-        model.aibrix.ai/port: "8000"
-        adapter.model.aibrix.ai/enabled: true
-      name: qwen25-7b-Instruct
-      namespace: default
-    spec:
-      replicas: 1
-      selector:
-        matchLabels:
-          model.aibrix.ai/name: qwen25-7b-Instruct
-      strategy:
-        rollingUpdate:
-          maxSurge: 25%
-          maxUnavailable: 25%
-        type: RollingUpdate
-      template:
-        metadata:
-          labels:
-            model.aibrix.ai/name: qwen25-7b-Instruct
-        spec:
-          containers:
-            - command:
-                - python3
-                - -m
-                - vllm.entrypoints.openai.api_server
-                - --host
-                - "0.0.0.0"
-                - --port
-                - "8000"
-                - --model
-                - Qwen/Qwen2.5-7B-Instruct
-                - --served-model-name
-                # Note: The `--served-model-name` argument value must also match the Service name and the Deployment label `model.aibrix.ai/name`
-                - qwen25-7b-Instruct
-                - --trust-remote-code
-                - --enable-lora
-              env:
-                - name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
-                  value: "true"
-              image: aibrix/vllm-openai:v0.6.1.post2
-              imagePullPolicy: Always
-              livenessProbe:
-                failureThreshold: 3
-                httpGet:
-                  path: /health
-                  port: 8000
-                  scheme: HTTP
-                initialDelaySeconds: 90
-                periodSeconds: 5
-                successThreshold: 1
-                timeoutSeconds: 1
-              name: vllm-openai
-              ports:
-                - containerPort: 8000
-                  protocol: TCP
-              readinessProbe:
-                failureThreshold: 3
-                httpGet:
-                  path: /health
-                  port: 8000
-                  scheme: HTTP
-                initialDelaySeconds: 90
-                periodSeconds: 5
-                successThreshold: 1
-                timeoutSeconds: 1
-              resources:
-                limits:
-                  nvidia.com/gpu: "1"
-                requests:
-                  nvidia.com/gpu: "1"
-              volumeMounts:
-                - name: dshm
-                  mountPath: /dev/shm
-          volumes:
-            - name: dshm
-              emptyDir:
-                medium: Memory
-                sizeLimit: "4Gi"
+Ensure that:
 
-Save yaml as `service.yaml` and run `kubectl apply -f service.yaml`.
-
-.. code-block:: yaml
-
-    apiVersion: v1
-    kind: Service
-    metadata:
-      labels:
-        # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
-        model.aibrix.ai/name: qwen25-7b-Instruct
-        prometheus-discovery: "true"
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
-      name: qwen25-7b-Instruct
-      namespace: default
-    spec:
-      ports:
-        - name: serve
-          port: 8000
-          protocol: TCP
-          targetPort: 8000
-        - name: http
-          port: 8080
-          protocol: TCP
-          targetPort: 8080
-      selector:
-        model.aibrix.ai/name: qwen25-7b-Instruct
-      type: ClusterIP
-
-.. note::
-
-   Ensure that:
-
-   1. The `Service` name matches the `model.aibrix.ai/name` label value in the `Deployment`.
-   2. The `--served-model-name` argument value in the `Deployment` command is also consistent with the `Service` name and `model.aibrix.ai/name` label.
+1. The `Service` name matches the `model.aibrix.ai/name` label value in the `Deployment`.
+2. The `--served-model-name` argument value in the `Deployment` command is also consistent with the `Service` name and `model.aibrix.ai/name` label.
 
 
 Invoke the model endpoint using gateway api
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. code-block:: bash
-
-    # Setup port forwarding to query gateway from local environment
-    kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc  8888:80 &
+Depending on where you deployed the AIBrix, you can use either of the following options to query the gateway.
 
 .. code-block:: bash
 
-    # model name in the header is required for gateway which is used by httproute (described in previous section) to forward request to appropriate model service
+    # Option 1: Kubernetes cluster with LoadBalancer support
+    LB_IP=$(kubectl get svc/envoy-aibrix-system-aibrix-eg-903790dc -n envoy-gateway-system -o=jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    ENDPOINT="${LB_IP}:80"
 
-    curl -v http://localhost:8888/v1/completions \
+    # Option 2: Dev environment without LoadBalancer support. Use port forwarding way instead
+    kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 &
+    ENDPOINT="localhost:8888"
+
+.. attention::
+
+    Some cloud provider like AWS EKS expose the endpoint at hostname field, if that case, you should use ``.status.loadBalancer.ingress[0].hostname`` instead.
+
+
+.. code-block:: bash
+
+    # completion api
+    curl -v http://${ENDPOINT}/v1/completions \
         -H "Content-Type: application/json" \
-        -H "model: qwen25-7b-Instruct" \
         -d '{
-            "model": "qwen25-7b-Instruct",
+            "model": "deepseek-r1-distill-llama-8b",
             "prompt": "San Francisco is a",
             "max_tokens": 128,
             "temperature": 0
         }'
 
+    # chat completion api
+    curl http://${ENDPOINT}/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "deepseek-r1-distill-llama-8b",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "help me write a random generator in python"}
+        ]
+    }'
 
-Or you can send request from your local machine via gateway's external ip.
-
+If you meet problems exposing external IPs, feel free to debug with following commands. `101.18.0.4` is the ip of the gateway service.
 
 .. code-block:: bash
 
-    # get gateway external ip, which is 101.126.XXX.XXX in this example.
     kubectl get svc -n envoy-gateway-system
-    
-    NAME                                     TYPE           CLUSTER-IP       EXTERNAL-IP     PORT(S)                                   AGE
-    envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   192.168.70.133   101.126.XXX.XXX   80:32502/TCP                              22h
-    envoy-gateway                            ClusterIP      192.168.69.148   <none>          18000/TCP,18001/TCP,18002/TCP,19001/TCP   15d
-
-.. code-block:: bash
-
-    # use external ip to query gateway
-
-    curl -v http://101.126.XXX.XXX:80/v1/completions \
-        -H "Content-Type: application/json" \
-        -H "model: qwen25-7b-Instruct" \
-        -d '{
-            "model": "qwen25-7b-Instruct",
-            "prompt": "San Francisco is a",
-            "max_tokens": 128,
-            "temperature": 0
-        }'
+    NAME                                     TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)                                   AGE
+    envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   10.96.239.246   101.18.0.4    80:32079/TCP                              10d
+    envoy-gateway                            ClusterIP      10.96.166.226   <none>        18000/TCP,18001/TCP,18002/TCP,19001/TCP   10d

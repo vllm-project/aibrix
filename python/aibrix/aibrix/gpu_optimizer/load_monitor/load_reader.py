@@ -14,6 +14,7 @@
 
 import json
 import logging
+import math
 import re
 from datetime import datetime
 from typing import Any, List, Optional, Protocol, Tuple, Union
@@ -147,7 +148,12 @@ class WorkloadReader:
 
     def __init__(self, filepath, scale: float = 1.0, interval: int = 10) -> None:
         if filepath != unittest_filepath:
-            self.df = pd.read_json(filepath)
+            try:
+                self.df = pd.read_json(filepath)
+            except Exception:
+                self.df = pd.read_json(filepath, lines=True)
+                self.df["Timestamp"] = self.df["timestamp"]
+                self.df["Requests"] = self.df["requests"]
 
         self.scale = scale
         self.interval = interval
@@ -180,6 +186,10 @@ class WorkloadReader:
                 self.log2_aggregate(self.tick_df["Prompt Length"] * self.scale, 1),
                 self.log2_aggregate(self.tick_df["Output Length"] * self.scale, 1),
             ):
+                # Unlikely, just in case.
+                if math.isinf(output_tokens) or math.isinf(input_tokens):
+                    continue
+
                 records.append(
                     LoadRecord(
                         (self.tick - self.start),

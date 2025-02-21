@@ -106,6 +106,7 @@ class ModelMonitor:
         deployment: Optional[DeploymentStates] = None,
         namespace: Optional[str] = None,
         profile_reader: Optional[ProfileReader] = None,
+        gpu_fraction: float = 100.0,
         debug: bool = False,
     ):
         """Initialize the model monitor.
@@ -119,6 +120,7 @@ class ModelMonitor:
             replicas: (optional) The initial number of replicas for the model deployment.
             interval: (optional) The interval (in seconds) at which to monitor the model. Defaults to 10 seconds.
             window: (optional) The window (in seconds) to consider for clustering. Defaults to 240 seconds.
+            gpu_fraction: (optional) The number of fractions that a GPU is counted. Defaults to 100.
             debug: (optional) Whether to enable debugging behavior. Defaults to False.
         """
         self.model_name = model_name
@@ -129,6 +131,7 @@ class ModelMonitor:
         self.debug = debug
         self.done = False
         self.window = float(window)
+        self.gpu_fraction = gpu_fraction
         self._lock = threading.Lock()
 
         # Load reader
@@ -139,7 +142,7 @@ class ModelMonitor:
 
         # Optimizer
         self._profiles: Dict[str, GPUProfile] = {}
-        self._optimizer = Optimizer()
+        self._optimizer = Optimizer(self.gpu_fraction)
 
         # Monitor states
         self._centers: Iterable[Centeroid] = Empty_Array
@@ -276,6 +279,7 @@ class ModelMonitor:
 
             profiles = profile_reader.read()
             for profile in profiles:
+                profile.cost /= self.gpu_fraction
                 if self._update_profile(profile):
                     logger.debug(f"Profile of {profile.gpu} updated.")
 

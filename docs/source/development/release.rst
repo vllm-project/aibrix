@@ -45,7 +45,7 @@ for patch release, we do not rebase ``main`` because it will introduce new featu
 Cut a PR
 --------
 
-Make sure the manifest images tags and updated and python version is updated. A sample PR is `Cut v0.1.0-rc.5 release <https://github.com/aibrix/aibrix/pull/376>`_.
+Make sure the manifest images tags and updated and python version is updated. A sample PR is `Cut v0.1.0-rc.5 release <https://github.com/vllm-project/aibrix/pull/376>`_.
 Merge the PR.
 
 .. note::
@@ -91,7 +91,7 @@ Monitor the pipeline's progress to ensure it completes successfully
 Publish the release on Github
 -----------------------------
 
-Release pipeline will cut a draft pre-release in `Github Releases <https://github.com/aibrix/aibrix/releases>`_.
+Release pipeline will cut a draft pre-release in `Github Releases <https://github.com/vllm-project/aibrix/releases>`_.
 Go to the "Releases" section in the repository, select the draft release corresponding to the tag you created.
 Include release notes summarizing the changes (new features, bug fixes, breaking changes, etc.).
 Optionally attach binaries, documentation, or other assets. In the end, let's publish the release.
@@ -113,11 +113,11 @@ we need to retag the images and push to VKE Container Registry.
 
 .. code-block:: bash
 
-    ./hack/sync-images.sh v0.2.0-rc.2 aibrix-container-registry-cn-beijing.cr.volces.com
-    ./hack/sync-images.sh v0.2.0-rc.2 aibrix-container-registry-cn-shanghai.cr.volces.com
+    ./hack/release/sync-images.sh v0.2.0 aibrix-container-registry-cn-beijing.cr.volces.com
+    ./hack/release/sync-images.sh v0.2.0 aibrix-container-registry-cn-shanghai.cr.volces.com
 
 
 Update released tags in main branch docs
 ----------------------------------------
 
-A sample PR is `here <https://github.com/aibrix/aibrix/pull/378>`_.
+A sample PR is `here <https://github.com/vllm-project/aibrix/pull/378>`_.

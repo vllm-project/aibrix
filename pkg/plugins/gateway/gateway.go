@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,13 +39,13 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
-	"github.com/aibrix/aibrix/pkg/cache"
-	routing "github.com/aibrix/aibrix/pkg/plugins/gateway/algorithms"
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/ratelimiter"
-	"github.com/aibrix/aibrix/pkg/utils"
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/vllm-project/aibrix/pkg/cache"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	ratelimiter "github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
@@ -101,6 +102,8 @@ var (
 	routingStrategies = []string{"random", "least-request", "throughput", "prefix-cache", "least-kv-cache", "least-busy-time", "least-latency"}
 
 	ErrorUnknownResponse = errors.New("unknown response")
+
+	requestBuffers sync.Map // Thread-safe map to track buffers per request
 )
 
 // routerConstructors maps router names to their initialization functions.
@@ -215,7 +218,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 }
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, string) {
-	klog.Info("\n\n")
+	klog.Info("\n")
 	klog.InfoS("-- In RequestHeaders processing ...", "requestID", requestID)
 	var username string
 	var user utils.User
@@ -433,8 +436,8 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 }
 
 func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, targetPodIP string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
-	klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID)
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
+	klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID, "endOfSteam", b.ResponseBody.EndOfStream)
 
 	var res openai.ChatCompletion
 	var usage openai.CompletionUsage
@@ -444,7 +447,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 
 	defer func() {
 		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
-		if !hasCompleted && complete {
+		if !hasCompleted && complete && b.ResponseBody.EndOfStream {
 			s.cache.DoneRequestTrace(requestID, model, promptTokens, completionTokens, traceTerm)
 		}
 	}()
@@ -472,7 +475,30 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				err.Error()), complete
 		}
 	} else {
-		if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
+		// Use request ID as a key to store per-request buffer
+		// Retrieve or create buffer
+		buf, _ := requestBuffers.LoadOrStore(requestID, &bytes.Buffer{})
+		buffer := buf.(*bytes.Buffer)
+		// Append data to per-request buffer
+		buffer.Write(b.ResponseBody.Body)
+
+		if !b.ResponseBody.EndOfStream {
+			// Partial data received, wait for more chunks, we just return a common response here.
+			return &extProcPb.ProcessingResponse{
+				Response: &extProcPb.ProcessingResponse_ResponseBody{
+					ResponseBody: &extProcPb.BodyResponse{
+						Response: &extProcPb.CommonResponse{},
+					},
+				},
+			}, complete
+		}
+
+		// Last part received, process the full response
+		finalBody := buffer.Bytes()
+		// Clean up the buffer after final processing
+		requestBuffers.Delete(requestID)
+
+		if err := json.Unmarshal(finalBody, &res); err != nil {
 			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
 			complete = true
 			return generateErrorResponse(
@@ -482,15 +508,19 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				}}},
 				err.Error()), complete
 		} else if len(res.Model) == 0 {
-			err = ErrorUnknownResponse
-			klog.ErrorS(err, "unexpected response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+			msg := ErrorUnknownResponse.Error()
+			responseBodyContent := string(b.ResponseBody.GetBody())
+			if len(responseBodyContent) != 0 {
+				msg = responseBodyContent
+			}
+			klog.ErrorS(err, "unexpected response", "requestID", requestID, "responseBody", responseBodyContent)
 			complete = true
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: HeaderErrorResponseUnknown, RawValue: []byte("true"),
 				}}},
-				err.Error()), complete
+				msg), complete
 		}
 		// Do not overwrite model, res can be empty.
 		usage = res.Usage
@@ -663,6 +693,14 @@ func validateRoutingStrategy(routingStrategy string) bool {
 }
 
 func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, body string) *extProcPb.ProcessingResponse {
+	// Set the Content-Type header to application/json
+	headers = append(headers, &configPb.HeaderValueOption{
+		Header: &configPb.HeaderValue{
+			Key:   "Content-Type",
+			Value: "application/json",
+		},
+	})
+
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
 			ImmediateResponse: &extProcPb.ImmediateResponse{
@@ -672,7 +710,7 @@ func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configP
 				Headers: &extProcPb.HeaderMutation{
 					SetHeaders: headers,
 				},
-				Body: body,
+				Body: generateErrorMessage(body, int(statusCode)),
 			},
 		},
 	}
@@ -718,4 +756,16 @@ func GetRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
 	}
 
 	return routingStrategy, routingStrategyEnabled
+}
+
+// generateErrorMessage constructs a JSON error message using fmt.Sprintf
+func generateErrorMessage(message string, code int) string {
+	errorStruct := map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": message,
+			"code":    code,
+		},
+	}
+	jsonData, _ := json.Marshal(errorStruct)
+	return string(jsonData)
 }

@@ -16,7 +16,7 @@ limitations under the License.
 
 package algorithm
 
-import "github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
+import "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/common"
 
 // HpaScalingAlgorithm can be used by any scaler without customized algorithms
 type HpaScalingAlgorithm struct{}

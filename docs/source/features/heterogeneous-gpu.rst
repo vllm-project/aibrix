@@ -23,8 +23,8 @@ Example
 Step 1: Deploy the heterogeneous deployments.
 
 One deployment and corresponding PodAutoscaler should be deployed for each GPU type.
-See `sample heterogeneous configuration <https://github.com/aibrix/aibrix/tree/main/samples/heterogeneous>`_ for an example of heterogeneous configuration composed of two GPU types. The following codes 
-deploy heterogeneous deployments using L20 and A10 GPU.
+See `sample heterogeneous configuration <https://github.com/vllm-project/aibrix/tree/main/samples/heterogeneous>`_ for an example of heterogeneous configuration composed of two GPU types. The following codes
+deploy heterogeneous deployments using L20 and V100 GPU.
 
 .. code-block:: bash
 
@@ -45,9 +45,10 @@ Incoming requests are routed through the gateway and directed to the optimal pod
 
     kubectl get pods
     NAME                                       READY   STATUS    RESTARTS   AGE
-    deepseek-coder-7b-a10-96667667c-6gjql      2/2     Running   0          33s
+    deepseek-coder-7b-v100-96667667c-6gjql     2/2     Running   0          33s
     deepseek-coder-7b-l20-96667667c-7zj7k      2/2     Running   0          33s
 
+Step 2: Install aibrix python module:
 
 Step 2: Install aibrix python module:
 
@@ -58,9 +59,9 @@ Step 2: Install aibrix python module:
 The GPU Optimizer runs continuously in the background, dynamically adjusting GPU allocation for each model based on workload patterns. Note that GPU optimizer requires offline inference performance benchmark data for each type of GPU on each specific LLM model.
 
   
-If local heterogeneous deployments is used, you can find the prepared benchmark data under `python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/ <https://github.com/aibrix/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/>`_ and skip Step 3. See :ref:`Development` for details on deploying a local heterogeneous deployments.
+If local heterogeneous deployments is used, you can find the prepared benchmark data under `python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/ <https://github.com/vllm-project/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/>`_ and skip Step 3. See :ref:`Development` for details on deploying a local heterogeneous deployments.
 
-Step 3: Benchmark model. For each type of GPU, run ``aibrix_benchmark``. See `benchmark.sh <https://github.com/aibrix/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_ for more options.
+Step 3: Benchmark model. For each type of GPU, run ``aibrix_benchmark``. See `benchmark.sh <https://github.com/vllm-project/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_ for more options.
 
 .. code-block:: bash
 
@@ -74,56 +75,31 @@ Step 4: Decide SLO and generate profile, run `aibrix_gen_profile -h` for help.
 
     kubectl -n aibrix-system port-forward svc/aibrix-redis-master 6379:6379 1>/dev/null 2>&1 &
     # Wait for port-forward taking effect.
-    aibrix_gen_profile deepseek-coder-7b-a10 --cost [cost1] [SLO-metric] [SLO-value] -o "redis://localhost:6379/?model=deepseek-coder-7b"
+    aibrix_gen_profile deepseek-coder-7b-v100 --cost [cost1] [SLO-metric] [SLO-value] -o "redis://localhost:6379/?model=deepseek-coder-7b"
     aibrix_gen_profile deepseek-coder-7b-l20 --cost [cost2] [SLO-metric] [SLO-value] -o "redis://localhost:6379/?model=deepseek-coder-7b"
 
 Now the GPU Optimizer is ready to work. You should observe that the number of workload pods changes in response to the requests sent to the gateway. Once the GPU optimizer finishes the scaling optimization, the output of the GPU optimizer is passed to PodAutoscaler as a metricSource via a designated HTTP endpoint for the final scaling decision.  The following is an example of PodAutoscaler spec.
 
-A simple example of PodAutoscaler spec for a10 GPU is as follows:
+A simple example of PodAutoscaler spec for v100 GPU is as follows:
 
-.. code-block:: yaml
-
-    apiVersion: autoscaling.aibrix.ai/v1alpha1
-    kind: PodAutoscaler
-    metadata:
-      name: podautoscaler-deepseek-coder-7b-a10
-      labels:
-        app.kubernetes.io/name: aibrix
-        app.kubernetes.io/managed-by: kustomize
-        kpa.autoscaling.aibrix.ai/scale-down-delay: 0s
-      namespace: default
-    spec:
-      scaleTargetRef:
-        apiVersion: apps/v1
-        kind: Deployment
-        name: deepseek-coder-7b-a10 # replace with corresponding deployment name
-      minReplicas: 0 # Note that minReplicas must be set to be 0, otherwise it will prevent the gpu optimizer to scale down to 0.
-      maxReplicas: 10 # replace with max number of nodes in the cluster
-      metricsSources: 
-        - metricSourceType: domain
-          protocolType: http
-          endpoint: aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080
-          path: /metrics/default/deepseek-coder-7b-a10 # replace with /metrics/default/[deployment name]
-          targetMetric: "vllm:deployment_replicas"
-          targetValue: "1"
-      scalingStrategy: "KPA"
-
+.. literalinclude:: ../../../samples/heterogeneous/deepseek-coder-7b-v100-podautoscaler.yaml
+   :language: yaml
 
 Miscellaneous
 -------------
 
-A new label label ``model.aibrix.ai/min_replicas`` is added to specifies the minimum number of replicas to maintain when there is no workload. We recommend setting this to 1 for at least one Deployment spec to ensure there is always one READY pod available. For example, while the GPU optimizer might recommend 0 replicas for an a10 GPU during periods of no activity, setting ``model.aibrix.ai/min_replicas: "1"`` will maintain one a10 replica. This label only affects the system when there is no workload - it is ignored when there are active requests.
+A new label label ``model.aibrix.ai/min_replicas`` is added to specifies the minimum number of replicas to maintain when there is no workload. We recommend setting this to 1 for at least one Deployment spec to ensure there is always one READY pod available. For example, while the GPU optimizer might recommend 0 replicas for an v100 GPU during periods of no activity, setting ``model.aibrix.ai/min_replicas: "1"`` will maintain one v100 replica. This label only affects the system when there is no workload - it is ignored when there are active requests.
 
 .. code-block:: yaml
 
     apiVersion: apps/v1
     kind: Deployment
     metadata:
-      name: deepseek-coder-7b-a10
+      name: deepseek-coder-7b-v100
       labels:
         model.aibrix.ai/name: "deepseek-coder-7b"
         model.aibrix.ai/min_replicas: "1" # min replica for gpu optimizer when no workloads.
     ... rest yaml deployments
 
-Important: The ``minReplicas`` field in the PodAutoscaler spec must be set to 0 to allow proper scaling behavior. Setting it to any value greater than 0 will interfere with the GPU optimizer's scaling decisions. For instance, if the GPU optimizer determines an optimal configuration of ``{a10: 0, l20: 4}`` but the a10 PodAutoscaler has ``minReplicas: 1``, the system won't be able to scale the a10 down to 0 as recommended.
+Important: The ``minReplicas`` field in the PodAutoscaler spec must be set to 0 to allow proper scaling behavior. Setting it to any value greater than 0 will interfere with the GPU optimizer's scaling decisions. For instance, if the GPU optimizer determines an optimal configuration of ``{v100: 0, l20: 4}`` but the v100 PodAutoscaler has ``minReplicas: 1``, the system won't be able to scale the v100 down to 0 as recommended.
 

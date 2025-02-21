@@ -19,11 +19,11 @@ package rayclusterfleet
 import (
 	"context"
 
-	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
-	rayclusterutil "github.com/aibrix/aibrix/pkg/utils"
 	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	rayclusterutil "github.com/vllm-project/aibrix/pkg/utils"
 
-	"github.com/aibrix/aibrix/pkg/controller/rayclusterfleet/util"
+	"github.com/vllm-project/aibrix/pkg/controller/rayclusterfleet/util"
 	"k8s.io/apimachinery/pkg/types"
 )
 

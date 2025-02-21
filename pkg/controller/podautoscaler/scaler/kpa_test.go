@@ -24,15 +24,15 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/aggregation"
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/algorithm"
-	scalingcontext "github.com/aibrix/aibrix/pkg/controller/podautoscaler/common"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/aggregation"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/algorithm"
+	scalingcontext "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/common"
 
-	v1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	v1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 )
 
 // TestKpaScale tests the KPA behavior under high traffic rising condition.
@@ -131,7 +131,7 @@ func TestKpaUpdateContext(t *testing.T) {
 			ScalingStrategy: "KPA",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Labels: map[string]string{
+			Annotations: map[string]string{
 				"autoscaling.aibrix.ai/max-scale-up-rate":         "32.1",
 				"autoscaling.aibrix.ai/max-scale-down-rate":       "12.3",
 				"kpa.autoscaling.aibrix.ai/target-burst-capacity": "45.6",
@@ -201,7 +201,7 @@ func TestKpaScale2(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "test_ns",
 			Name:      "test_llm_for_pa",
-			Labels: map[string]string{
+			Annotations: map[string]string{
 				"kpa.autoscaling.aibrix.ai/stable-window":    STABLE_WINDOW.String(),
 				"kpa.autoscaling.aibrix.ai/panic-window":     PANIC_WINDOW.String(),
 				"kpa.autoscaling.aibrix.ai/scale-down-delay": SCALE_DOWN_DELAY.String(),

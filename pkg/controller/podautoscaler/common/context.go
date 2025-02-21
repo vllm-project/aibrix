@@ -19,7 +19,7 @@ package common
 import (
 	"strconv"
 
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"k8s.io/klog/v2"
 )
 
@@ -85,7 +85,7 @@ func (b *BaseScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscal
 	}
 	b.TargetValue = targetValue
 
-	for key, value := range pa.Labels {
+	for key, value := range pa.Annotations {
 		switch key {
 		case maxScaleUpRateLabel:
 			v, err := strconv.ParseFloat(value, 64)

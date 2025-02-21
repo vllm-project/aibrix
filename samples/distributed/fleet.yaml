@@ -1,0 +1,54 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: RayClusterFleet
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: qwen-coder-7b-instruct
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: qwen-coder-7b-instruct
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: qwen-coder-7b-instruct
+      annotations:
+        ray.io/overwrite-container-cmd: "true"
+    spec:
+      rayVersion: '2.10.0' # should match the Ray version in the image of the containers
+      headGroupSpec:
+        rayStartParams:
+          dashboard-host: '0.0.0.0'
+        template:
+          spec:
+            containers:
+              - name: ray-head
+                image: vllm/vllm-openai:v0.7.1
+                ports:
+                  - containerPort: 6379
+                    name: gcs-server
+                  - containerPort: 8265
+                    name: dashboard
+                  - containerPort: 10001
+                    name: client
+                  - containerPort: 8000
+                    name: service
+                command: ["/bin/bash", "-lc", "--"]
+                # Starting from v1.1.0, KubeRay injects the environment variable `KUBERAY_GEN_RAY_START_CMD`
+                # into the Ray container. This variable can be used to retrieve the generated Ray start command.
+                # Note that this environment variable does not include the `ulimit` command.
+                args: ["ulimit -n 65536; echo head; ray start --head --num-cpus=8 --num-gpus=2 --dashboard-host=0.0.0.0 --metrics-export-port=8080 --dashboard-agent-listen-port=52365; vllm serve Qwen/Qwen2.5-Coder-7B-Instruct --served-model-name qwen-coder-7b-instruct --tensor-parallel-size 2 --distributed-executor-backend ray"]
+                resources:
+                  limits:
+                    cpu: "8000m"
+                    nvidia.com/gpu: 2
+                  requests:
+                    cpu: "8000m"
+                    nvidia.com/gpu: 2

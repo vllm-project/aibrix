@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deepseek-coder-7b-instruct
+  labels:
+    model.aibrix.ai/name: deepseek-coder-7b-instruct
+    model.aibrix.ai/port: "8000"
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: deepseek-coder-7b-instruct
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: deepseek-coder-7b-instruct
+    spec:
+      containers:
+        - name: vllm-openai
+          image: aibrix/vllm-openai:v0.6.1-edb07092-20250118
+          imagePullPolicy: Always
+          command:
+            - python3
+            - -m
+            - vllm.entrypoints.openai.api_server
+            - --port
+            - "8000"
+            - --uvicorn-log-level
+            - warning
+            - --model
+            - deepseek-ai/deepseek-coder-6.7b-instruct
+            - --served-model-name
+            - deepseek-coder-7b-instruct
+            - --max-model-len
+            - "8192" # please modify this field if your gpu has more room
+            - --enable-prefix-caching
+            - --disable-fastapi-docs
+          env:
+            - name: VLLM_USE_VINEYARD_CACHE
+              value: "1"
+            - name: VINEYARD_CACHE_CPU_MEM_LIMIT_GB
+              value: "10"
+            - name: AIBRIX_LLM_KV_CACHE
+              value: "1"
+            - name: AIBRIX_LLM_KV_CACHE_KV_CACHE_NS
+              value: "aibrix"
+            - name: AIBRIX_LLM_KV_CACHE_CHUNK_SIZE
+              value: "16"
+            - name: AIBRIX_LLM_KV_CACHE_SOCKET
+              value: /var/run/vineyard.sock
+            - name: AIBRIX_LLM_KV_CACHE_RPC_ENDPOINT
+              value: "deepseek-coder-7b-kvcache-rpc:9600"
+            - name: VINEYARD_CACHE_ENABLE_ASYNC_UPDATE
+              value: "1"
+            - name: "VINEYARD_CACHE_METRICS_ENABLED"
+              value: "1"
+          volumeMounts:
+            - mountPath: /var/run
+              name: kvcache-socket
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+      volumes:
+        - name: kvcache-socket
+          hostPath:
+            path: /var/run/vineyard-kubernetes/default/deepseek-coder-7b-kvcache
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    model.aibrix.ai/name: deepseek-coder-7b-instruct
+    prometheus-discovery: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+  name: deepseek-coder-7b-instruct # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
+  namespace: default
+spec:
+  ports:
+    - name: serve
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    model.aibrix.ai/name: deepseek-coder-7b-instruct
+  type: ClusterIP

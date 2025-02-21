@@ -1,0 +1,17 @@
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelAdapter
+metadata:
+  name: qwen-code-lora-with-key
+  namespace: default
+  labels:
+    model.aibrix.ai/name: "qwen-code-lora-with-key"
+    model.aibrix.ai/port: "8000"
+spec:
+  baseModel: qwen-coder-1-5b-instruct
+  podSelector:
+    matchLabels:
+      model.aibrix.ai/name: qwen-coder-1-5b-instruct
+  artifactURL: huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora
+  additionalConfig:
+    api-key: sk-kFJ12nKsFakefVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BFake
+  schedulerName: default

@@ -17,7 +17,7 @@ Key features:
 - **LLM App-Tailored Autoscaler**: Dynamically scale inference resources based on real-time demand.
 - **Unified AI Runtime**: A versatile sidecar enabling metric standardization, model downloading, and management.
 - **Heterogeneous-GPU Inference**: Cost-effective SLO-driven LLM inference using heterogeneous GPUs.
-- **GPU Hardware Failure Detection (TBD)**: Proactive detection of GPU hardware issues.
+- **GPU Hardware Failure Detection**: Proactive detection of GPU hardware issues.
 - **Benchmark Tool (TBD)**: A tool for measuring inference performance and resource efficiency.
 
 Documentation
@@ -29,7 +29,7 @@ Documentation
 
    designs/architecture.rst
    getting_started/quickstart.rst
-   getting_started/installation.rst
+   getting_started/installation/installation.rst
    getting_started/faq.rst
 
 .. toctree::
@@ -40,7 +40,7 @@ Documentation
    features/gateway-plugins.rst
    features/multi-node-inference.rst
    features/heterogeneous-gpu.rst
-   features/autoscaling.rst
+   features/autoscaling/autoscaling.rst
    features/runtime.rst
    features/distributed-kv-cache.rst
 
@@ -57,3 +57,4 @@ Documentation
 
    community/community.rst
    community/contribution.rst
+   community/research.rst

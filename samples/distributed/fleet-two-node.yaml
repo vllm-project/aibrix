@@ -1,0 +1,74 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: RayClusterFleet
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/managed-by: kustomize
+  name: qwen-coder-7b-instruct
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: qwen-coder-7b-instruct
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: qwen-coder-7b-instruct
+      annotations:
+        ray.io/overwrite-container-cmd: "true"
+    spec:
+      rayVersion: '2.10.0' # should match the Ray version in the image of the containers
+      headGroupSpec:
+        rayStartParams:
+          dashboard-host: '0.0.0.0'
+        template:
+          spec:
+            containers:
+              - name: ray-head
+                image: vllm/vllm-openai:v0.7.1
+                ports:
+                  - containerPort: 6379
+                    name: gcs-server
+                  - containerPort: 8265
+                    name: dashboard
+                  - containerPort: 10001
+                    name: client
+                  - containerPort: 8000
+                    name: service
+                command: ["/bin/bash", "-lc", "--"]
+                args: ["ulimit -n 65536; echo head; $KUBERAY_GEN_RAY_START_CMD; vllm serve Qwen/Qwen2.5-Coder-7B-Instruct --tensor-parallel-size 2 --distributed-executor-backend ray"]
+                resources:
+                  limits:
+                    cpu: "4"
+                    nvidia.com/gpu: 1
+                  requests:
+                    cpu: "4"
+                    nvidia.com/gpu: 1
+      workerGroupSpecs:
+        # the pod replicas in this group typed worker
+        - replicas: 1
+          minReplicas: 1
+          maxReplicas: 5
+          groupName: small-group
+          rayStartParams: {}
+          template:
+            spec:
+              containers:
+                - name: ray-worker # must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character (e.g. 'my-name',  or '123-abc'
+                  image: vllm/vllm-openai:v0.7.1
+                  lifecycle:
+                    preStop:
+                      exec:
+                        command: [ "/bin/sh","-c","ray stop" ]
+                  resources:
+                    limits:
+                      cpu: "4"
+                      nvidia.com/gpu: 1
+                    requests:
+                      cpu: "4"
+                      nvidia.com/gpu: 1

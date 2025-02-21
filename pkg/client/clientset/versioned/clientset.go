@@ -21,9 +21,9 @@ import (
 	"fmt"
 	"net/http"
 
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/autoscaling/v1alpha1"
-	modelv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/model/v1alpha1"
-	orchestrationv1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned/typed/orchestration/v1alpha1"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/autoscaling/v1alpha1"
+	modelv1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/model/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/orchestration/v1alpha1"
 	discovery "k8s.io/client-go/discovery"
 	rest "k8s.io/client-go/rest"
 	flowcontrol "k8s.io/client-go/util/flowcontrol"

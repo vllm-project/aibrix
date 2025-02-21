@@ -59,7 +59,8 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
-	
+	./hack/update-codegen.sh go $(PROJECT_DIR)/bin
+
 .PHONY: update-codegen
 update-codegen:
 	sh ./hack/update-codegen.sh
@@ -137,7 +138,7 @@ define push_image
 endef
 
 .PHONY: docker-build-all
-docker-build-all: 
+docker-build-all:
 	make -j $(nproc) docker-build-controller-manager docker-build-gateway-plugins docker-build-runtime docker-build-metadata-service ## Build all docker images
 
 .PHONY: docker-build-controller-manager
@@ -157,7 +158,7 @@ docker-build-metadata-service: ## Build docker image with the metadata-service.
 	$(call build_and_tag,metadata-service,Dockerfile.metadata)
 
 .PHONY: docker-push-all
-docker-push-all: 
+docker-push-all:
 	make -j $(nproc) docker-push-controller-manager docker-push-gateway-plugins docker-push-runtime docker-push-metadata-service ## Push all docker images
 
 .PHONY: docker-push-controller-manager
@@ -212,9 +213,9 @@ endif
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
 	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply -f -
-    ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization	
+    ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization
 	$(KUBECTL) create -k config/dependency
-	
+
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -k config/dependency
@@ -231,9 +232,9 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 .PHONY: install-vke
 install-vke: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
 	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply -f -
-    ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization	
+    ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization
 	$(KUBECTL) create -k config/overlays/vke/dependency
-	
+
 .PHONY: uninstall-vke
 uninstall-vke: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -k config/overlays/vke/dependency
