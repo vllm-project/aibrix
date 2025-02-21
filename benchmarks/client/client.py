@@ -11,6 +11,8 @@ import traceback
 from typing import List
 from utils import (load_workload, wrap_prompt_as_chat_message)
 
+logging.basicConfig(level=logging.INFO)
+
 async def send_request_streaming(client: openai.AsyncOpenAI, 
                                  model: str, 
                                  endpoint: str, 
@@ -44,7 +46,6 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
                     output_tokens = chunk.usage.completion_tokens
                     total_tokens = chunk.usage.total_tokens
         response = "".join(text_chunks)
-        print(response)
         response_time = asyncio.get_event_loop().time()
         latency = response_time - start_time
         throughput = output_tokens / latency
@@ -63,12 +64,10 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
             "ttft": ttft,
             "tpot": tpot, 
         }
-        print(result)
+        logging.info(result)
         # Write result to JSONL file
         output_file.write(json.dumps(result) + "\n")
         output_file.flush()  # Ensure data is written immediately to the file
-        logging.warning(
-            f"Request completed in {latency:.2f} seconds with throughput {throughput:.2f} tokens/s, request {prompt} response {response}")
         return result
     except Exception as e:
         logging.error(f"Error sending request to at {endpoint}: {str(e)}")
@@ -135,13 +134,11 @@ async def send_request_batch(client, model, endpoint, prompt, output_file):
             "latency": latency,
             "throughput": throughput
         }
-
+        logging.info(result)
         # Write result to JSONL file
         output_file.write(json.dumps(result) + "\n")
         output_file.flush()  # Ensure data is written immediately to the file
 
-        logging.warning(
-            f"Request completed in {latency:.2f} seconds with throughput {throughput:.2f} tokens/s, request {prompt} response {response}")
         return result
     except Exception as e:
         logging.error(f"Error sending request to at {endpoint}: {str(e)}")
@@ -176,7 +173,7 @@ async def benchmark_batch(client: openai.AsyncOpenAI,
 
 
 def main(args):
-    logging.info(f"Starting benchmark on endpoint {args.endpoint} client type {args.client_type}")
+    logging.info(f"Starting benchmark on endpoint {args.endpoint}")
     with open(args.output_file_path, 'w', encoding='utf-8') as output_file:
         load_struct = load_workload(args.workload_path)
         client = openai.AsyncOpenAI(
@@ -185,7 +182,7 @@ def main(args):
         )
         if args.routing_strategy is not None:
             client.default_headers["routing-strategy"] = args.routing_strategy
-        if args.client_type == 'batch':
+        if not args.streaming:
             logging.info("Using batch client")
             start_time = time.time()
             asyncio.run(benchmark_batch(
@@ -218,8 +215,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, required=True, help="Name of the model.")
     parser.add_argument("--api-key", type=str, required=True, help="API key to the service. ")
     parser.add_argument('--output-file-path', type=str, default="output.jsonl")
-    parser.add_argument('--client-type', type=str, choices=['batch', 'streaming'], default='batch',
-                        help='Type of client to use (batch or streaming).')
+    parser.add_argument("--streaming", action="store_true", help="Use streaming client.")
     parser.add_argument("--routing-strategy", type=str, required=False, default=None, help="Routing strategy to use.")
 
     args = parser.parse_args()
