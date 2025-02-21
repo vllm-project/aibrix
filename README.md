@@ -2,18 +2,22 @@
 
 Welcome to AIBrix, an open-source initiative designed to provide essential building blocks to construct scalable GenAI inference infrastructure. AIBrix delivers a cloud-native solution optimized for deploying, managing, and scaling large language model (LLM) inference, tailored specifically to enterprise needs.
 
+
+<p align="center">
+| <a href="https://aibrix.readthedocs.io/latest/"><b>Documentation</b></a> | <a href="https://aibrix.github.io/"><b>Blog</b></a> | <a href="https://github.com/vllm-project/aibrix/blob/main/docs/paper/AIBrix_White_Paper_0219_2025.pdf"><b>Paper</b></a> | <a href="https://x.com/vllm_project"><b>Twitter/X</b></a> | <a href="https://slack.vllm.ai"><b>Developer Slack</b></a> |
+</p>
+
 ## Key Features
 
 The initial release includes the following key features:
 
-- **LLM Gateway and Routing**: Efficiently manage and direct traffic across multiple models and replicas.
 - **High-Density LoRA Management**: Streamlined support for lightweight, low-rank adaptations of models.
-- **Distributed Inference**: Scalable architecture to handle large workloads across multiple nodes.
+- **LLM Gateway and Routing**: Efficiently manage and direct traffic across multiple models and replicas.
 - **LLM App-Tailored Autoscaler**: Dynamically scale inference resources based on real-time demand.
 - **Unified AI Runtime**: A versatile sidecar enabling metric standardization, model downloading, and management.
+- **Distributed Inference**: Scalable architecture to handle large workloads across multiple nodes.
 - **Distributed KV Cache**: Enables high-capacity, cross-engine KV reuse.
 - **Cost-efficient Heterogeneous Serving**: Enables mixed GPU inference to reduce costs with SLO guarantees.
-- **GPU Hardware Failure Detection (TBD)**: Proactive detection of GPU hardware issues.
 
 ## Architecture
 
