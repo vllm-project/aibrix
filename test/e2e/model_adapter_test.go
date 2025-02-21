@@ -1,3 +1,19 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package e2e
 
 import (
@@ -23,20 +39,24 @@ func TestModelAdapter(t *testing.T) {
 	k8sClient, v1alpha1Client := initializeClient(context.Background(), t)
 
 	t.Cleanup(func() {
-		assert.NoError(t, v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(), adapter.Name, v1.DeleteOptions{}))
-		wait.PollImmediate(1*time.Second, 30*time.Second,
-			func() (done bool, err error) {
-				adapter, err = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Get(context.Background(), adapter.Name, v1.GetOptions{})
+		assert.NoError(t, v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Delete(context.Background(),
+			adapter.Name, v1.DeleteOptions{}))
+		assert.NoError(t, wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 30*time.Second, true,
+			func(ctx context.Context) (done bool, err error) {
+				adapter, err = v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Get(context.Background(),
+					adapter.Name, v1.GetOptions{})
 				if apierrors.IsNotFound(err) {
 					return true, nil
 				}
 				return false, nil
-			})
+			}))
+
 	})
 
 	// create model adapter
 	fmt.Println("creating model adapter")
-	adapter, err := v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Create(context.Background(), adapter, v1.CreateOptions{})
+	adapter, err := v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Create(context.Background(),
+		adapter, v1.CreateOptions{})
 	assert.NoError(t, err)
 	adapter = validateModelAdapter(t, v1alpha1Client, adapter.Name)
 	oldPod := adapter.Status.Instances[0]
@@ -80,14 +100,14 @@ func createModelAdapterConfig(name, model string) *modelv1alpha1.ModelAdapter {
 
 func validateModelAdapter(t *testing.T, client *v1alpha1.Clientset, name string) *modelv1alpha1.ModelAdapter {
 	var adapter *modelv1alpha1.ModelAdapter
-	wait.PollImmediate(1*time.Second, 30*time.Second,
-		func() (done bool, err error) {
+	assert.NoError(t, wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 30*time.Second, true,
+		func(ctx context.Context) (done bool, err error) {
 			adapter, err = client.ModelV1alpha1().ModelAdapters("default").Get(context.Background(), name, v1.GetOptions{})
 			if err != nil || adapter.Status.Phase != modelv1alpha1.ModelAdapterRunning {
 				return false, nil
 			}
 			return true, nil
-		})
+		}))
 	assert.True(t, len(adapter.Status.Instances) > 0, "model adapter scheduled on atleast one pod")
 	return adapter
 }

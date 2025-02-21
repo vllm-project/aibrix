@@ -121,7 +121,7 @@ func validateInferenceWithClient(t *testing.T, client *openai.Client, modelName 
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("Say this is a test"),
 		}),
-		Model: openai.F(openai.ChatModel(modelName)),
+		Model: openai.F(modelName),
 	})
 	if err != nil {
 		t.Fatalf("chat completions failed : %v", err)
