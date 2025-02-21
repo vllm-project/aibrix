@@ -46,25 +46,43 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
                     output_tokens = chunk.usage.completion_tokens
                     total_tokens = chunk.usage.total_tokens
         response = "".join(text_chunks)
-        response_time = asyncio.get_event_loop().time()
-        latency = response_time - start_time
-        throughput = output_tokens / latency
-        ttft = first_response_time - start_time
-        tpot = (response_time - first_response_time) / output_tokens
-        result = {
-            "input": prompt,
-            "output": response,
-            "prompt_tokens": prompt_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": total_tokens,
-            "latency": latency,
-            "throughput": throughput,
-            "start_time": start_time,
-            "current_time": asyncio.get_event_loop().time(),
-            "ttft": ttft,
-            "tpot": tpot, 
-        }
         logging.info(result)
+        if response.status_code == 200:
+            response_time = asyncio.get_event_loop().time()
+            latency = response_time - start_time
+            throughput = output_tokens / latency
+            ttft = first_response_time - start_time
+            tpot = (response_time - first_response_time) / output_tokens
+            result = {
+                "status_code": response.status_code,
+                "input": prompt,
+                "output": response,
+                "prompt_tokens": prompt_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "latency": latency,
+                "throughput": throughput,
+                "start_time": start_time,
+                "current_time": asyncio.get_event_loop().time(),
+                "ttft": ttft,
+                "tpot": tpot, 
+            }
+        else:
+            logging.error(f"Request failed status-code: {response.status_code}, raw response: {response.text}")
+            result = {
+                "status_code": response.status_code,
+                "input": prompt,
+                "output": response,
+                "prompt_tokens": prompt_tokens,
+                "output_tokens": None,
+                "total_tokens": total_tokens,
+                "latency": latency,
+                "throughput": None,
+                "start_time": start_time,
+                "current_time": asyncio.get_event_loop().time(),
+                "ttft": None,
+                "tpot": None, 
+            }
         # Write result to JSONL file
         output_file.write(json.dumps(result) + "\n")
         output_file.flush()  # Ensure data is written immediately to the file
