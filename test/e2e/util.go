@@ -130,18 +130,3 @@ func validateInferenceWithClient(t *testing.T, client *openai.Client, modelName 
 	assert.NotEmpty(t, chatCompletion.Choices, "chat completion has no choices returned")
 	assert.NotNil(t, chatCompletion.Choices[0].Message.Content, "chat completion has no message returned")
 }
-
-func isModelDeploymentAvailable(t *testing.T, modelName string) bool {
-	client := createOpenAIClient(engineURL, apiKey)
-	models, err := client.Models.List(context.Background())
-	assert.NoError(t, err)
-
-	var isModelFound bool
-	for _, m := range models.Data {
-		if m.ID == modelName {
-			isModelFound = true
-			break
-		}
-	}
-	return isModelFound
-}

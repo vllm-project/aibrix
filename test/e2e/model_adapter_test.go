@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
-	v1alpha1 "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
 	"github.com/stretchr/testify/assert"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
