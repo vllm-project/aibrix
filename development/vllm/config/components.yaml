@@ -1,0 +1,76 @@
+# Debug only: Make sure pod can be visited from controller that deployed in mac.
+apiVersion: v1
+kind: Service
+metadata:
+  name: facebook-opt-125m
+  namespace: default
+  labels:
+    prometheus-discovery: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "8000"
+spec:
+  selector:
+    model.aibrix.ai/name: "facebook-opt-125m"
+  ports:
+    - protocol: TCP
+      name: metrics
+      port: 8000
+      targetPort: 8000
+      nodePort: 30081
+  type: NodePort
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mocked-app-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mocked-app-pod-reader-role
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mocked-app-pod-reader-role-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: mocked-app-sa
+    namespace: default
+roleRef:
+  kind: Role
+  name: mocked-app-pod-reader-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: default
+  name: mocked-app-deployment-reader-role
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mocked-app-deployment-reader-role-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: mocked-app-sa
+    namespace: default
+roleRef:
+  kind: Role
+  name: mocked-app-deployment-reader-role
+  apiGroup: rbac.authorization.k8s.io

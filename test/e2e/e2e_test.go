@@ -27,17 +27,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-const (
-	baseURL   = "http://localhost:8888"
-	apiKey    = "test-key-1234567890"
-	modelName = "llama2-7b"
-	namespace = "aibrix-system"
-)
-
 func TestBaseModelInference(t *testing.T) {
 	initializeClient(context.Background(), t)
 
-	client := createOpenAIClient(baseURL, apiKey)
+	client := createOpenAIClient(gatewayURL, apiKey)
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("Say this is a test"),
@@ -87,10 +80,10 @@ func TestBaseModelInferenceFailures(t *testing.T) {
 			var client *openai.Client
 			if tc.routingStrategy != "" {
 				var dst *http.Response
-				client = createOpenAIClientWithRoutingStrategy(baseURL, tc.apiKey,
+				client = createOpenAIClientWithRoutingStrategy(gatewayURL, tc.apiKey,
 					tc.routingStrategy, option.WithResponseInto(&dst))
 			} else {
-				client = createOpenAIClient(baseURL, tc.apiKey)
+				client = createOpenAIClient(gatewayURL, tc.apiKey)
 			}
 
 			_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
