@@ -28,7 +28,11 @@ resources:
 - ../dependency/kuberay-operator
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml
-#- ../webhook
+- ../webhook
+
+# [INTERNALCERT]
+- ../internalcert
+
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'. 'WEBHOOK' components are required.
 #- ../certmanager
 # [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
@@ -54,6 +58,9 @@ patches:
       - kind: ServiceAccount
         name: aibrix-kuberay-operator-leader-election
         namespace: aibrix-system
+# [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
+# crd/kustomization.yaml
+- path: manager_webhook_patch.yaml
 
 images:
   - name: controller

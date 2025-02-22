@@ -17,7 +17,7 @@ limitations under the License.
 
 package v1alpha1
 
-// RayClusterFleetStatusApplyConfiguration represents an declarative configuration of the RayClusterFleetStatus type for use
+// RayClusterFleetStatusApplyConfiguration represents a declarative configuration of the RayClusterFleetStatus type for use
 // with apply.
 type RayClusterFleetStatusApplyConfiguration struct {
 	ObservedGeneration  *int64                                       `json:"observedGeneration,omitempty"`
@@ -30,7 +30,7 @@ type RayClusterFleetStatusApplyConfiguration struct {
 	CollisionCount      *int32                                       `json:"collisionCount,omitempty"`
 }
 
-// RayClusterFleetStatusApplyConfiguration constructs an declarative configuration of the RayClusterFleetStatus type for use with
+// RayClusterFleetStatusApplyConfiguration constructs a declarative configuration of the RayClusterFleetStatus type for use with
 // apply.
 func RayClusterFleetStatus() *RayClusterFleetStatusApplyConfiguration {
 	return &RayClusterFleetStatusApplyConfiguration{}

@@ -43,22 +43,24 @@ var modeladaptersKind = v1alpha1.SchemeGroupVersion.WithKind("ModelAdapter")
 
 // Get takes name of the modelAdapter, and returns the corresponding modelAdapter object, and an error if there is any.
 func (c *FakeModelAdapters) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha1.ModelAdapter, err error) {
+	emptyResult := &v1alpha1.ModelAdapter{}
 	obj, err := c.Fake.
-		Invokes(testing.NewGetAction(modeladaptersResource, c.ns, name), &v1alpha1.ModelAdapter{})
+		Invokes(testing.NewGetActionWithOptions(modeladaptersResource, c.ns, name, options), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.ModelAdapter), err
 }
 
 // List takes label and field selectors, and returns the list of ModelAdapters that match those selectors.
 func (c *FakeModelAdapters) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha1.ModelAdapterList, err error) {
+	emptyResult := &v1alpha1.ModelAdapterList{}
 	obj, err := c.Fake.
-		Invokes(testing.NewListAction(modeladaptersResource, modeladaptersKind, c.ns, opts), &v1alpha1.ModelAdapterList{})
+		Invokes(testing.NewListActionWithOptions(modeladaptersResource, modeladaptersKind, c.ns, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 
 	label, _, _ := testing.ExtractFromListOptions(opts)
@@ -77,40 +79,43 @@ func (c *FakeModelAdapters) List(ctx context.Context, opts v1.ListOptions) (resu
 // Watch returns a watch.Interface that watches the requested modelAdapters.
 func (c *FakeModelAdapters) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 	return c.Fake.
-		InvokesWatch(testing.NewWatchAction(modeladaptersResource, c.ns, opts))
+		InvokesWatch(testing.NewWatchActionWithOptions(modeladaptersResource, c.ns, opts))
 
 }
 
 // Create takes the representation of a modelAdapter and creates it.  Returns the server's representation of the modelAdapter, and an error, if there is any.
 func (c *FakeModelAdapters) Create(ctx context.Context, modelAdapter *v1alpha1.ModelAdapter, opts v1.CreateOptions) (result *v1alpha1.ModelAdapter, err error) {
+	emptyResult := &v1alpha1.ModelAdapter{}
 	obj, err := c.Fake.
-		Invokes(testing.NewCreateAction(modeladaptersResource, c.ns, modelAdapter), &v1alpha1.ModelAdapter{})
+		Invokes(testing.NewCreateActionWithOptions(modeladaptersResource, c.ns, modelAdapter, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.ModelAdapter), err
 }
 
 // Update takes the representation of a modelAdapter and updates it. Returns the server's representation of the modelAdapter, and an error, if there is any.
 func (c *FakeModelAdapters) Update(ctx context.Context, modelAdapter *v1alpha1.ModelAdapter, opts v1.UpdateOptions) (result *v1alpha1.ModelAdapter, err error) {
+	emptyResult := &v1alpha1.ModelAdapter{}
 	obj, err := c.Fake.
-		Invokes(testing.NewUpdateAction(modeladaptersResource, c.ns, modelAdapter), &v1alpha1.ModelAdapter{})
+		Invokes(testing.NewUpdateActionWithOptions(modeladaptersResource, c.ns, modelAdapter, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.ModelAdapter), err
 }
 
 // UpdateStatus was generated because the type contains a Status member.
 // Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *FakeModelAdapters) UpdateStatus(ctx context.Context, modelAdapter *v1alpha1.ModelAdapter, opts v1.UpdateOptions) (*v1alpha1.ModelAdapter, error) {
+func (c *FakeModelAdapters) UpdateStatus(ctx context.Context, modelAdapter *v1alpha1.ModelAdapter, opts v1.UpdateOptions) (result *v1alpha1.ModelAdapter, err error) {
+	emptyResult := &v1alpha1.ModelAdapter{}
 	obj, err := c.Fake.
-		Invokes(testing.NewUpdateSubresourceAction(modeladaptersResource, "status", c.ns, modelAdapter), &v1alpha1.ModelAdapter{})
+		Invokes(testing.NewUpdateSubresourceActionWithOptions(modeladaptersResource, "status", c.ns, modelAdapter, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.ModelAdapter), err
 }
@@ -125,7 +130,7 @@ func (c *FakeModelAdapters) Delete(ctx context.Context, name string, opts v1.Del
 
 // DeleteCollection deletes a collection of objects.
 func (c *FakeModelAdapters) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	action := testing.NewDeleteCollectionAction(modeladaptersResource, c.ns, listOpts)
+	action := testing.NewDeleteCollectionActionWithOptions(modeladaptersResource, c.ns, opts, listOpts)
 
 	_, err := c.Fake.Invokes(action, &v1alpha1.ModelAdapterList{})
 	return err
@@ -133,11 +138,12 @@ func (c *FakeModelAdapters) DeleteCollection(ctx context.Context, opts v1.Delete
 
 // Patch applies the patch and returns the patched modelAdapter.
 func (c *FakeModelAdapters) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.ModelAdapter, err error) {
+	emptyResult := &v1alpha1.ModelAdapter{}
 	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceAction(modeladaptersResource, c.ns, name, pt, data, subresources...), &v1alpha1.ModelAdapter{})
+		Invokes(testing.NewPatchSubresourceActionWithOptions(modeladaptersResource, c.ns, name, pt, data, opts, subresources...), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.ModelAdapter), err
 }
@@ -155,11 +161,12 @@ func (c *FakeModelAdapters) Apply(ctx context.Context, modelAdapter *modelv1alph
 	if name == nil {
 		return nil, fmt.Errorf("modelAdapter.Name must be provided to Apply")
 	}
+	emptyResult := &v1alpha1.ModelAdapter{}
 	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceAction(modeladaptersResource, c.ns, *name, types.ApplyPatchType, data), &v1alpha1.ModelAdapter{})
+		Invokes(testing.NewPatchSubresourceActionWithOptions(modeladaptersResource, c.ns, *name, types.ApplyPatchType, data, opts.ToPatchOptions()), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.ModelAdapter), err
 }
@@ -178,11 +185,12 @@ func (c *FakeModelAdapters) ApplyStatus(ctx context.Context, modelAdapter *model
 	if name == nil {
 		return nil, fmt.Errorf("modelAdapter.Name must be provided to Apply")
 	}
+	emptyResult := &v1alpha1.ModelAdapter{}
 	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceAction(modeladaptersResource, c.ns, *name, types.ApplyPatchType, data, "status"), &v1alpha1.ModelAdapter{})
+		Invokes(testing.NewPatchSubresourceActionWithOptions(modeladaptersResource, c.ns, *name, types.ApplyPatchType, data, opts.ToPatchOptions(), "status"), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.ModelAdapter), err
 }

@@ -19,8 +19,8 @@ package v1alpha1
 
 import (
 	v1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/listers"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -37,25 +37,17 @@ type ModelAdapterLister interface {
 
 // modelAdapterLister implements the ModelAdapterLister interface.
 type modelAdapterLister struct {
-	indexer cache.Indexer
+	listers.ResourceIndexer[*v1alpha1.ModelAdapter]
 }
 
 // NewModelAdapterLister returns a new ModelAdapterLister.
 func NewModelAdapterLister(indexer cache.Indexer) ModelAdapterLister {
-	return &modelAdapterLister{indexer: indexer}
-}
-
-// List lists all ModelAdapters in the indexer.
-func (s *modelAdapterLister) List(selector labels.Selector) (ret []*v1alpha1.ModelAdapter, err error) {
-	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1alpha1.ModelAdapter))
-	})
-	return ret, err
+	return &modelAdapterLister{listers.New[*v1alpha1.ModelAdapter](indexer, v1alpha1.Resource("modeladapter"))}
 }
 
 // ModelAdapters returns an object that can list and get ModelAdapters.
 func (s *modelAdapterLister) ModelAdapters(namespace string) ModelAdapterNamespaceLister {
-	return modelAdapterNamespaceLister{indexer: s.indexer, namespace: namespace}
+	return modelAdapterNamespaceLister{listers.NewNamespaced[*v1alpha1.ModelAdapter](s.ResourceIndexer, namespace)}
 }
 
 // ModelAdapterNamespaceLister helps list and get ModelAdapters.
@@ -73,26 +65,5 @@ type ModelAdapterNamespaceLister interface {
 // modelAdapterNamespaceLister implements the ModelAdapterNamespaceLister
 // interface.
 type modelAdapterNamespaceLister struct {
-	indexer   cache.Indexer
-	namespace string
-}
-
-// List lists all ModelAdapters in the indexer for a given namespace.
-func (s modelAdapterNamespaceLister) List(selector labels.Selector) (ret []*v1alpha1.ModelAdapter, err error) {
-	err = cache.ListAllByNamespace(s.indexer, s.namespace, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1alpha1.ModelAdapter))
-	})
-	return ret, err
-}
-
-// Get retrieves the ModelAdapter from the indexer for a given namespace and name.
-func (s modelAdapterNamespaceLister) Get(name string) (*v1alpha1.ModelAdapter, error) {
-	obj, exists, err := s.indexer.GetByKey(s.namespace + "/" + name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, errors.NewNotFound(v1alpha1.Resource("modeladapter"), name)
-	}
-	return obj.(*v1alpha1.ModelAdapter), nil
+	listers.ResourceIndexer[*v1alpha1.ModelAdapter]
 }

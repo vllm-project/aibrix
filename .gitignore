@@ -26,6 +26,7 @@ go.work.sum
 
 .DS_Store
 __pycache__
+*.xml
 
 # Python virtual environment directory
 .venv
