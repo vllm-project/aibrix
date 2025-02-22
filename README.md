@@ -58,7 +58,7 @@ For detailed documentation on installation, configuration, and usage, please vis
 
 We welcome contributions from the community! Check out our [contributing guidelines](https://github.com/vllm-project/aibrix/CONTRIBUTING.md) to see how you can make a difference.
 
-Slack Channel: https://vllm-dev.slack.com/archives/C07QP347J4D
+Slack Channel: https://vllm-dev.slack.com/archives/C08EQ883CSV
 
 ## License
 
