@@ -58,11 +58,11 @@ For detailed documentation on installation, configuration, and usage, please vis
 
 We welcome contributions from the community! Check out our [contributing guidelines](https://github.com/vllm-project/aibrix/CONTRIBUTING.md) to see how you can make a difference.
 
-Slack Channel: https://vllm-dev.slack.com/archives/C08EQ883CSV
+Slack Channel: [#aibrix](https://vllm-dev.slack.com/archives/C08EQ883CSV)
 
 ## License
 
-AIBrix is licensed under the [APACHE License](https://github.com/vllm-project/aibrix/LICENSE.md).
+AIBrix is licensed under the [APACHE 2.0 License](https://github.com/vllm-project/aibrix/LICENSE).
 
 ## Support
 
