@@ -95,7 +95,7 @@ class BasicCongestionControl(CCInterface):
             self.grow_resource()
 
     def shrink_resource(self):
-        # Alway move jobs to front.
+        # Always move jobs to front.
         self.tighten_jobs()
 
         while (
@@ -113,7 +113,7 @@ class BasicCongestionControl(CCInterface):
         )
 
     def grow_resource(self):
-        # Alway move jobs to front.
+        # Always move jobs to front.
         self.tighten_jobs()
 
         # This does not influence the relative order of jobs with self._running_job_idx
