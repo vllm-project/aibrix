@@ -132,7 +132,6 @@ func (n *TreeNode) ResetRefCounter(numPods int) {
 	n.refCounter = make([]int, numPods)
 }
 
-// Add specific methods for operations
 func (n *TreeNode) RemovePodsNotInCurrentPodSet(currentPodSet map[string]bool) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -330,7 +329,7 @@ type LPRadixCache struct {
 	mu       sync.RWMutex
 	rootNode *TreeNode
 	numPods  int
-	// allocatedSize []int
+	// allocatedSize []int // not being used. if it is not going to be used, it will be removed permanently.
 	allNodes   map[int]*TreeNode
 	nextNodeID int
 	startTime  time.Time
@@ -339,7 +338,7 @@ type LPRadixCache struct {
 func NewLPRadixCache(numPods int) *LPRadixCache {
 	cache := &LPRadixCache{
 		numPods: numPods,
-		// allocatedSize: make([]int, numPods),
+		// allocatedSize: make([]int, numPods), // not being used. if it is not going to be used, it will be removed permanently.
 		allNodes:   make(map[int]*TreeNode),
 		nextNodeID: 0,
 		startTime:  time.Now(),
@@ -379,8 +378,7 @@ func (c *LPRadixCache) GetNode(tokens []int) *TreeNode {
 }
 
 // Implementation of PrefixCacheIndexer interface
-// Not being used. Everything is being done in AddPrefix
-// Fix for MatchPrefix method in tree.go
+// NOTE: It is currently Not being used. Everything is being done in AddPrefix interface.
 func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.Pod) ([]int, []int, []*v1.Pod) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -526,7 +524,6 @@ func (c *LPRadixCache) doesExceededTTL(node *TreeNode, now time.Time) bool {
 func (c *LPRadixCache) Evict(now time.Time) []*TreeNode {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
 	var nodesToEvict []*TreeNode
 	for _, node := range c.allNodes {
 		if node != c.rootNode {
