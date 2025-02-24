@@ -23,7 +23,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// ModelAdapterApplyConfiguration represents an declarative configuration of the ModelAdapter type for use
+// ModelAdapterApplyConfiguration represents a declarative configuration of the ModelAdapter type for use
 // with apply.
 type ModelAdapterApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -32,7 +32,7 @@ type ModelAdapterApplyConfiguration struct {
 	Status                           *ModelAdapterStatusApplyConfiguration `json:"status,omitempty"`
 }
 
-// ModelAdapter constructs an declarative configuration of the ModelAdapter type for use with
+// ModelAdapter constructs a declarative configuration of the ModelAdapter type for use with
 // apply.
 func ModelAdapter(name, namespace string) *ModelAdapterApplyConfiguration {
 	b := &ModelAdapterApplyConfiguration{}
@@ -215,4 +215,10 @@ func (b *ModelAdapterApplyConfiguration) WithSpec(value *ModelAdapterSpecApplyCo
 func (b *ModelAdapterApplyConfiguration) WithStatus(value *ModelAdapterStatusApplyConfiguration) *ModelAdapterApplyConfiguration {
 	b.Status = value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *ModelAdapterApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

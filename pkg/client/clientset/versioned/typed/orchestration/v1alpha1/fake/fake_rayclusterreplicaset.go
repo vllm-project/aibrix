@@ -43,22 +43,24 @@ var rayclusterreplicasetsKind = v1alpha1.SchemeGroupVersion.WithKind("RayCluster
 
 // Get takes name of the rayClusterReplicaSet, and returns the corresponding rayClusterReplicaSet object, and an error if there is any.
 func (c *FakeRayClusterReplicaSets) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha1.RayClusterReplicaSet, err error) {
+	emptyResult := &v1alpha1.RayClusterReplicaSet{}
 	obj, err := c.Fake.
-		Invokes(testing.NewGetAction(rayclusterreplicasetsResource, c.ns, name), &v1alpha1.RayClusterReplicaSet{})
+		Invokes(testing.NewGetActionWithOptions(rayclusterreplicasetsResource, c.ns, name, options), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.RayClusterReplicaSet), err
 }
 
 // List takes label and field selectors, and returns the list of RayClusterReplicaSets that match those selectors.
 func (c *FakeRayClusterReplicaSets) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha1.RayClusterReplicaSetList, err error) {
+	emptyResult := &v1alpha1.RayClusterReplicaSetList{}
 	obj, err := c.Fake.
-		Invokes(testing.NewListAction(rayclusterreplicasetsResource, rayclusterreplicasetsKind, c.ns, opts), &v1alpha1.RayClusterReplicaSetList{})
+		Invokes(testing.NewListActionWithOptions(rayclusterreplicasetsResource, rayclusterreplicasetsKind, c.ns, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 
 	label, _, _ := testing.ExtractFromListOptions(opts)
@@ -77,40 +79,43 @@ func (c *FakeRayClusterReplicaSets) List(ctx context.Context, opts v1.ListOption
 // Watch returns a watch.Interface that watches the requested rayClusterReplicaSets.
 func (c *FakeRayClusterReplicaSets) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 	return c.Fake.
-		InvokesWatch(testing.NewWatchAction(rayclusterreplicasetsResource, c.ns, opts))
+		InvokesWatch(testing.NewWatchActionWithOptions(rayclusterreplicasetsResource, c.ns, opts))
 
 }
 
 // Create takes the representation of a rayClusterReplicaSet and creates it.  Returns the server's representation of the rayClusterReplicaSet, and an error, if there is any.
 func (c *FakeRayClusterReplicaSets) Create(ctx context.Context, rayClusterReplicaSet *v1alpha1.RayClusterReplicaSet, opts v1.CreateOptions) (result *v1alpha1.RayClusterReplicaSet, err error) {
+	emptyResult := &v1alpha1.RayClusterReplicaSet{}
 	obj, err := c.Fake.
-		Invokes(testing.NewCreateAction(rayclusterreplicasetsResource, c.ns, rayClusterReplicaSet), &v1alpha1.RayClusterReplicaSet{})
+		Invokes(testing.NewCreateActionWithOptions(rayclusterreplicasetsResource, c.ns, rayClusterReplicaSet, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.RayClusterReplicaSet), err
 }
 
 // Update takes the representation of a rayClusterReplicaSet and updates it. Returns the server's representation of the rayClusterReplicaSet, and an error, if there is any.
 func (c *FakeRayClusterReplicaSets) Update(ctx context.Context, rayClusterReplicaSet *v1alpha1.RayClusterReplicaSet, opts v1.UpdateOptions) (result *v1alpha1.RayClusterReplicaSet, err error) {
+	emptyResult := &v1alpha1.RayClusterReplicaSet{}
 	obj, err := c.Fake.
-		Invokes(testing.NewUpdateAction(rayclusterreplicasetsResource, c.ns, rayClusterReplicaSet), &v1alpha1.RayClusterReplicaSet{})
+		Invokes(testing.NewUpdateActionWithOptions(rayclusterreplicasetsResource, c.ns, rayClusterReplicaSet, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.RayClusterReplicaSet), err
 }
 
 // UpdateStatus was generated because the type contains a Status member.
 // Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *FakeRayClusterReplicaSets) UpdateStatus(ctx context.Context, rayClusterReplicaSet *v1alpha1.RayClusterReplicaSet, opts v1.UpdateOptions) (*v1alpha1.RayClusterReplicaSet, error) {
+func (c *FakeRayClusterReplicaSets) UpdateStatus(ctx context.Context, rayClusterReplicaSet *v1alpha1.RayClusterReplicaSet, opts v1.UpdateOptions) (result *v1alpha1.RayClusterReplicaSet, err error) {
+	emptyResult := &v1alpha1.RayClusterReplicaSet{}
 	obj, err := c.Fake.
-		Invokes(testing.NewUpdateSubresourceAction(rayclusterreplicasetsResource, "status", c.ns, rayClusterReplicaSet), &v1alpha1.RayClusterReplicaSet{})
+		Invokes(testing.NewUpdateSubresourceActionWithOptions(rayclusterreplicasetsResource, "status", c.ns, rayClusterReplicaSet, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.RayClusterReplicaSet), err
 }
@@ -125,7 +130,7 @@ func (c *FakeRayClusterReplicaSets) Delete(ctx context.Context, name string, opt
 
 // DeleteCollection deletes a collection of objects.
 func (c *FakeRayClusterReplicaSets) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	action := testing.NewDeleteCollectionAction(rayclusterreplicasetsResource, c.ns, listOpts)
+	action := testing.NewDeleteCollectionActionWithOptions(rayclusterreplicasetsResource, c.ns, opts, listOpts)
 
 	_, err := c.Fake.Invokes(action, &v1alpha1.RayClusterReplicaSetList{})
 	return err
@@ -133,11 +138,12 @@ func (c *FakeRayClusterReplicaSets) DeleteCollection(ctx context.Context, opts v
 
 // Patch applies the patch and returns the patched rayClusterReplicaSet.
 func (c *FakeRayClusterReplicaSets) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.RayClusterReplicaSet, err error) {
+	emptyResult := &v1alpha1.RayClusterReplicaSet{}
 	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceAction(rayclusterreplicasetsResource, c.ns, name, pt, data, subresources...), &v1alpha1.RayClusterReplicaSet{})
+		Invokes(testing.NewPatchSubresourceActionWithOptions(rayclusterreplicasetsResource, c.ns, name, pt, data, opts, subresources...), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.RayClusterReplicaSet), err
 }
@@ -155,11 +161,12 @@ func (c *FakeRayClusterReplicaSets) Apply(ctx context.Context, rayClusterReplica
 	if name == nil {
 		return nil, fmt.Errorf("rayClusterReplicaSet.Name must be provided to Apply")
 	}
+	emptyResult := &v1alpha1.RayClusterReplicaSet{}
 	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceAction(rayclusterreplicasetsResource, c.ns, *name, types.ApplyPatchType, data), &v1alpha1.RayClusterReplicaSet{})
+		Invokes(testing.NewPatchSubresourceActionWithOptions(rayclusterreplicasetsResource, c.ns, *name, types.ApplyPatchType, data, opts.ToPatchOptions()), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.RayClusterReplicaSet), err
 }
@@ -178,11 +185,12 @@ func (c *FakeRayClusterReplicaSets) ApplyStatus(ctx context.Context, rayClusterR
 	if name == nil {
 		return nil, fmt.Errorf("rayClusterReplicaSet.Name must be provided to Apply")
 	}
+	emptyResult := &v1alpha1.RayClusterReplicaSet{}
 	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceAction(rayclusterreplicasetsResource, c.ns, *name, types.ApplyPatchType, data, "status"), &v1alpha1.RayClusterReplicaSet{})
+		Invokes(testing.NewPatchSubresourceActionWithOptions(rayclusterreplicasetsResource, c.ns, *name, types.ApplyPatchType, data, opts.ToPatchOptions(), "status"), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.RayClusterReplicaSet), err
 }

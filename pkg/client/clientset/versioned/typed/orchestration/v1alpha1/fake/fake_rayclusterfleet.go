@@ -43,22 +43,24 @@ var rayclusterfleetsKind = v1alpha1.SchemeGroupVersion.WithKind("RayClusterFleet
 
 // Get takes name of the rayClusterFleet, and returns the corresponding rayClusterFleet object, and an error if there is any.
 func (c *FakeRayClusterFleets) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha1.RayClusterFleet, err error) {
+	emptyResult := &v1alpha1.RayClusterFleet{}
 	obj, err := c.Fake.
-		Invokes(testing.NewGetAction(rayclusterfleetsResource, c.ns, name), &v1alpha1.RayClusterFleet{})
+		Invokes(testing.NewGetActionWithOptions(rayclusterfleetsResource, c.ns, name, options), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.RayClusterFleet), err
 }
 
 // List takes label and field selectors, and returns the list of RayClusterFleets that match those selectors.
 func (c *FakeRayClusterFleets) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha1.RayClusterFleetList, err error) {
+	emptyResult := &v1alpha1.RayClusterFleetList{}
 	obj, err := c.Fake.
-		Invokes(testing.NewListAction(rayclusterfleetsResource, rayclusterfleetsKind, c.ns, opts), &v1alpha1.RayClusterFleetList{})
+		Invokes(testing.NewListActionWithOptions(rayclusterfleetsResource, rayclusterfleetsKind, c.ns, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 
 	label, _, _ := testing.ExtractFromListOptions(opts)
@@ -77,40 +79,43 @@ func (c *FakeRayClusterFleets) List(ctx context.Context, opts v1.ListOptions) (r
 // Watch returns a watch.Interface that watches the requested rayClusterFleets.
 func (c *FakeRayClusterFleets) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 	return c.Fake.
-		InvokesWatch(testing.NewWatchAction(rayclusterfleetsResource, c.ns, opts))
+		InvokesWatch(testing.NewWatchActionWithOptions(rayclusterfleetsResource, c.ns, opts))
 
 }
 
 // Create takes the representation of a rayClusterFleet and creates it.  Returns the server's representation of the rayClusterFleet, and an error, if there is any.
 func (c *FakeRayClusterFleets) Create(ctx context.Context, rayClusterFleet *v1alpha1.RayClusterFleet, opts v1.CreateOptions) (result *v1alpha1.RayClusterFleet, err error) {
+	emptyResult := &v1alpha1.RayClusterFleet{}
 	obj, err := c.Fake.
-		Invokes(testing.NewCreateAction(rayclusterfleetsResource, c.ns, rayClusterFleet), &v1alpha1.RayClusterFleet{})
+		Invokes(testing.NewCreateActionWithOptions(rayclusterfleetsResource, c.ns, rayClusterFleet, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.RayClusterFleet), err
 }
 
 // Update takes the representation of a rayClusterFleet and updates it. Returns the server's representation of the rayClusterFleet, and an error, if there is any.
 func (c *FakeRayClusterFleets) Update(ctx context.Context, rayClusterFleet *v1alpha1.RayClusterFleet, opts v1.UpdateOptions) (result *v1alpha1.RayClusterFleet, err error) {
+	emptyResult := &v1alpha1.RayClusterFleet{}
 	obj, err := c.Fake.
-		Invokes(testing.NewUpdateAction(rayclusterfleetsResource, c.ns, rayClusterFleet), &v1alpha1.RayClusterFleet{})
+		Invokes(testing.NewUpdateActionWithOptions(rayclusterfleetsResource, c.ns, rayClusterFleet, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.RayClusterFleet), err
 }
 
 // UpdateStatus was generated because the type contains a Status member.
 // Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *FakeRayClusterFleets) UpdateStatus(ctx context.Context, rayClusterFleet *v1alpha1.RayClusterFleet, opts v1.UpdateOptions) (*v1alpha1.RayClusterFleet, error) {
+func (c *FakeRayClusterFleets) UpdateStatus(ctx context.Context, rayClusterFleet *v1alpha1.RayClusterFleet, opts v1.UpdateOptions) (result *v1alpha1.RayClusterFleet, err error) {
+	emptyResult := &v1alpha1.RayClusterFleet{}
 	obj, err := c.Fake.
-		Invokes(testing.NewUpdateSubresourceAction(rayclusterfleetsResource, "status", c.ns, rayClusterFleet), &v1alpha1.RayClusterFleet{})
+		Invokes(testing.NewUpdateSubresourceActionWithOptions(rayclusterfleetsResource, "status", c.ns, rayClusterFleet, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.RayClusterFleet), err
 }
@@ -125,7 +130,7 @@ func (c *FakeRayClusterFleets) Delete(ctx context.Context, name string, opts v1.
 
 // DeleteCollection deletes a collection of objects.
 func (c *FakeRayClusterFleets) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	action := testing.NewDeleteCollectionAction(rayclusterfleetsResource, c.ns, listOpts)
+	action := testing.NewDeleteCollectionActionWithOptions(rayclusterfleetsResource, c.ns, opts, listOpts)
 
 	_, err := c.Fake.Invokes(action, &v1alpha1.RayClusterFleetList{})
 	return err
@@ -133,11 +138,12 @@ func (c *FakeRayClusterFleets) DeleteCollection(ctx context.Context, opts v1.Del
 
 // Patch applies the patch and returns the patched rayClusterFleet.
 func (c *FakeRayClusterFleets) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.RayClusterFleet, err error) {
+	emptyResult := &v1alpha1.RayClusterFleet{}
 	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceAction(rayclusterfleetsResource, c.ns, name, pt, data, subresources...), &v1alpha1.RayClusterFleet{})
+		Invokes(testing.NewPatchSubresourceActionWithOptions(rayclusterfleetsResource, c.ns, name, pt, data, opts, subresources...), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.RayClusterFleet), err
 }
@@ -155,11 +161,12 @@ func (c *FakeRayClusterFleets) Apply(ctx context.Context, rayClusterFleet *orche
 	if name == nil {
 		return nil, fmt.Errorf("rayClusterFleet.Name must be provided to Apply")
 	}
+	emptyResult := &v1alpha1.RayClusterFleet{}
 	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceAction(rayclusterfleetsResource, c.ns, *name, types.ApplyPatchType, data), &v1alpha1.RayClusterFleet{})
+		Invokes(testing.NewPatchSubresourceActionWithOptions(rayclusterfleetsResource, c.ns, *name, types.ApplyPatchType, data, opts.ToPatchOptions()), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.RayClusterFleet), err
 }
@@ -178,11 +185,12 @@ func (c *FakeRayClusterFleets) ApplyStatus(ctx context.Context, rayClusterFleet 
 	if name == nil {
 		return nil, fmt.Errorf("rayClusterFleet.Name must be provided to Apply")
 	}
+	emptyResult := &v1alpha1.RayClusterFleet{}
 	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceAction(rayclusterfleetsResource, c.ns, *name, types.ApplyPatchType, data, "status"), &v1alpha1.RayClusterFleet{})
+		Invokes(testing.NewPatchSubresourceActionWithOptions(rayclusterfleetsResource, c.ns, *name, types.ApplyPatchType, data, opts.ToPatchOptions(), "status"), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.RayClusterFleet), err
 }
