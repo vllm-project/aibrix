@@ -69,7 +69,7 @@ type MetadataStorage struct {
 
 type CacheSpec struct {
 	// Replicas is the number of kvcache pods to deploy
-	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Optional
 	// +kubebuilder:default:=3
 	Replicas int `json:"replicas,omitempty"`
 
