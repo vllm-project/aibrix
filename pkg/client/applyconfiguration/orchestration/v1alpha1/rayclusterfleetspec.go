@@ -19,14 +19,14 @@ package v1alpha1
 
 import (
 	appsv1 "k8s.io/api/apps/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// RayClusterFleetSpecApplyConfiguration represents an declarative configuration of the RayClusterFleetSpec type for use
+// RayClusterFleetSpecApplyConfiguration represents a declarative configuration of the RayClusterFleetSpec type for use
 // with apply.
 type RayClusterFleetSpecApplyConfiguration struct {
 	Replicas                *int32                                    `json:"replicas,omitempty"`
-	Selector                *v1.LabelSelector                         `json:"selector,omitempty"`
+	Selector                *v1.LabelSelectorApplyConfiguration       `json:"selector,omitempty"`
 	Template                *RayClusterTemplateSpecApplyConfiguration `json:"template,omitempty"`
 	Strategy                *appsv1.DeploymentStrategy                `json:"strategy,omitempty"`
 	MinReadySeconds         *int32                                    `json:"minReadySeconds,omitempty"`
@@ -35,7 +35,7 @@ type RayClusterFleetSpecApplyConfiguration struct {
 	ProgressDeadlineSeconds *int32                                    `json:"progressDeadlineSeconds,omitempty"`
 }
 
-// RayClusterFleetSpecApplyConfiguration constructs an declarative configuration of the RayClusterFleetSpec type for use with
+// RayClusterFleetSpecApplyConfiguration constructs a declarative configuration of the RayClusterFleetSpec type for use with
 // apply.
 func RayClusterFleetSpec() *RayClusterFleetSpecApplyConfiguration {
 	return &RayClusterFleetSpecApplyConfiguration{}
@@ -52,8 +52,8 @@ func (b *RayClusterFleetSpecApplyConfiguration) WithReplicas(value int32) *RayCl
 // WithSelector sets the Selector field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Selector field is set to the value of the last call.
-func (b *RayClusterFleetSpecApplyConfiguration) WithSelector(value v1.LabelSelector) *RayClusterFleetSpecApplyConfiguration {
-	b.Selector = &value
+func (b *RayClusterFleetSpecApplyConfiguration) WithSelector(value *v1.LabelSelectorApplyConfiguration) *RayClusterFleetSpecApplyConfiguration {
+	b.Selector = value
 	return b
 }
 

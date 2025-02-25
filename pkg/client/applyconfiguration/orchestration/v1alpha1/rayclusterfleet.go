@@ -23,7 +23,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// RayClusterFleetApplyConfiguration represents an declarative configuration of the RayClusterFleet type for use
+// RayClusterFleetApplyConfiguration represents a declarative configuration of the RayClusterFleet type for use
 // with apply.
 type RayClusterFleetApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -32,7 +32,7 @@ type RayClusterFleetApplyConfiguration struct {
 	Status                           *RayClusterFleetStatusApplyConfiguration `json:"status,omitempty"`
 }
 
-// RayClusterFleet constructs an declarative configuration of the RayClusterFleet type for use with
+// RayClusterFleet constructs a declarative configuration of the RayClusterFleet type for use with
 // apply.
 func RayClusterFleet(name, namespace string) *RayClusterFleetApplyConfiguration {
 	b := &RayClusterFleetApplyConfiguration{}
@@ -215,4 +215,10 @@ func (b *RayClusterFleetApplyConfiguration) WithSpec(value *RayClusterFleetSpecA
 func (b *RayClusterFleetApplyConfiguration) WithStatus(value *RayClusterFleetStatusApplyConfiguration) *RayClusterFleetApplyConfiguration {
 	b.Status = value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *RayClusterFleetApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

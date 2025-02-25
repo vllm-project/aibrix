@@ -21,7 +21,7 @@ import (
 	v1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 )
 
-// MetricSourceApplyConfiguration represents an declarative configuration of the MetricSource type for use
+// MetricSourceApplyConfiguration represents a declarative configuration of the MetricSource type for use
 // with apply.
 type MetricSourceApplyConfiguration struct {
 	MetricSourceType *v1alpha1.MetricSourceType `json:"metricSourceType,omitempty"`
@@ -33,7 +33,7 @@ type MetricSourceApplyConfiguration struct {
 	TargetValue      *string                    `json:"targetValue,omitempty"`
 }
 
-// MetricSourceApplyConfiguration constructs an declarative configuration of the MetricSource type for use with
+// MetricSourceApplyConfiguration constructs a declarative configuration of the MetricSource type for use with
 // apply.
 func MetricSource() *MetricSourceApplyConfiguration {
 	return &MetricSourceApplyConfiguration{}

@@ -19,8 +19,8 @@ package v1alpha1
 
 import (
 	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/listers"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -37,25 +37,17 @@ type RayClusterReplicaSetLister interface {
 
 // rayClusterReplicaSetLister implements the RayClusterReplicaSetLister interface.
 type rayClusterReplicaSetLister struct {
-	indexer cache.Indexer
+	listers.ResourceIndexer[*v1alpha1.RayClusterReplicaSet]
 }
 
 // NewRayClusterReplicaSetLister returns a new RayClusterReplicaSetLister.
 func NewRayClusterReplicaSetLister(indexer cache.Indexer) RayClusterReplicaSetLister {
-	return &rayClusterReplicaSetLister{indexer: indexer}
-}
-
-// List lists all RayClusterReplicaSets in the indexer.
-func (s *rayClusterReplicaSetLister) List(selector labels.Selector) (ret []*v1alpha1.RayClusterReplicaSet, err error) {
-	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1alpha1.RayClusterReplicaSet))
-	})
-	return ret, err
+	return &rayClusterReplicaSetLister{listers.New[*v1alpha1.RayClusterReplicaSet](indexer, v1alpha1.Resource("rayclusterreplicaset"))}
 }
 
 // RayClusterReplicaSets returns an object that can list and get RayClusterReplicaSets.
 func (s *rayClusterReplicaSetLister) RayClusterReplicaSets(namespace string) RayClusterReplicaSetNamespaceLister {
-	return rayClusterReplicaSetNamespaceLister{indexer: s.indexer, namespace: namespace}
+	return rayClusterReplicaSetNamespaceLister{listers.NewNamespaced[*v1alpha1.RayClusterReplicaSet](s.ResourceIndexer, namespace)}
 }
 
 // RayClusterReplicaSetNamespaceLister helps list and get RayClusterReplicaSets.
@@ -73,26 +65,5 @@ type RayClusterReplicaSetNamespaceLister interface {
 // rayClusterReplicaSetNamespaceLister implements the RayClusterReplicaSetNamespaceLister
 // interface.
 type rayClusterReplicaSetNamespaceLister struct {
-	indexer   cache.Indexer
-	namespace string
-}
-
-// List lists all RayClusterReplicaSets in the indexer for a given namespace.
-func (s rayClusterReplicaSetNamespaceLister) List(selector labels.Selector) (ret []*v1alpha1.RayClusterReplicaSet, err error) {
-	err = cache.ListAllByNamespace(s.indexer, s.namespace, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1alpha1.RayClusterReplicaSet))
-	})
-	return ret, err
-}
-
-// Get retrieves the RayClusterReplicaSet from the indexer for a given namespace and name.
-func (s rayClusterReplicaSetNamespaceLister) Get(name string) (*v1alpha1.RayClusterReplicaSet, error) {
-	obj, exists, err := s.indexer.GetByKey(s.namespace + "/" + name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, errors.NewNotFound(v1alpha1.Resource("rayclusterreplicaset"), name)
-	}
-	return obj.(*v1alpha1.RayClusterReplicaSet), nil
+	listers.ResourceIndexer[*v1alpha1.RayClusterReplicaSet]
 }
