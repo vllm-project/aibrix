@@ -63,11 +63,7 @@ ginkgo: ## Download ginkgo locally if necessary.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) \
-	rbac:roleName=controller-manager-role output:rbac:artifacts:config=config/rbac/controller-manager \
-	crd:maxDescLen=0,generateEmbeddedObjectMeta=true output:crd:artifacts:config=config/crd/bases \
-	webhook output:webhook:artifacts:config=config/webhook \
-	paths="./..."
+	$(CONTROLLER_GEN) rbac:roleName=controller-manager-role crd:maxDescLen=0,generateEmbeddedObjectMeta=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
