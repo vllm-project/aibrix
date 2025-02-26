@@ -24,14 +24,14 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// RayClusterTemplateSpecApplyConfiguration represents an declarative configuration of the RayClusterTemplateSpec type for use
+// RayClusterTemplateSpecApplyConfiguration represents a declarative configuration of the RayClusterTemplateSpec type for use
 // with apply.
 type RayClusterTemplateSpecApplyConfiguration struct {
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
 	Spec                             *rayv1.RayClusterSpec `json:"spec,omitempty"`
 }
 
-// RayClusterTemplateSpecApplyConfiguration constructs an declarative configuration of the RayClusterTemplateSpec type for use with
+// RayClusterTemplateSpecApplyConfiguration constructs a declarative configuration of the RayClusterTemplateSpec type for use with
 // apply.
 func RayClusterTemplateSpec() *RayClusterTemplateSpecApplyConfiguration {
 	return &RayClusterTemplateSpecApplyConfiguration{}
@@ -185,4 +185,10 @@ func (b *RayClusterTemplateSpecApplyConfiguration) ensureObjectMetaApplyConfigur
 func (b *RayClusterTemplateSpecApplyConfiguration) WithSpec(value rayv1.RayClusterSpec) *RayClusterTemplateSpecApplyConfiguration {
 	b.Spec = &value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *RayClusterTemplateSpecApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }

@@ -19,18 +19,19 @@ package v1alpha1
 
 import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// PodAutoscalerStatusApplyConfiguration represents an declarative configuration of the PodAutoscalerStatus type for use
+// PodAutoscalerStatusApplyConfiguration represents a declarative configuration of the PodAutoscalerStatus type for use
 // with apply.
 type PodAutoscalerStatusApplyConfiguration struct {
-	LastScaleTime *v1.Time       `json:"lastScaleTime,omitempty"`
-	DesiredScale  *int32         `json:"desiredScale,omitempty"`
-	ActualScale   *int32         `json:"actualScale,omitempty"`
-	Conditions    []v1.Condition `json:"conditions,omitempty"`
+	LastScaleTime *v1.Time                             `json:"lastScaleTime,omitempty"`
+	DesiredScale  *int32                               `json:"desiredScale,omitempty"`
+	ActualScale   *int32                               `json:"actualScale,omitempty"`
+	Conditions    []metav1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
 
-// PodAutoscalerStatusApplyConfiguration constructs an declarative configuration of the PodAutoscalerStatus type for use with
+// PodAutoscalerStatusApplyConfiguration constructs a declarative configuration of the PodAutoscalerStatus type for use with
 // apply.
 func PodAutoscalerStatus() *PodAutoscalerStatusApplyConfiguration {
 	return &PodAutoscalerStatusApplyConfiguration{}
@@ -63,9 +64,12 @@ func (b *PodAutoscalerStatusApplyConfiguration) WithActualScale(value int32) *Po
 // WithConditions adds the given value to the Conditions field in the declarative configuration
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
 // If called multiple times, values provided by each call will be appended to the Conditions field.
-func (b *PodAutoscalerStatusApplyConfiguration) WithConditions(values ...v1.Condition) *PodAutoscalerStatusApplyConfiguration {
+func (b *PodAutoscalerStatusApplyConfiguration) WithConditions(values ...*metav1.ConditionApplyConfiguration) *PodAutoscalerStatusApplyConfiguration {
 	for i := range values {
-		b.Conditions = append(b.Conditions, values[i])
+		if values[i] == nil {
+			panic("nil value passed to WithConditions")
+		}
+		b.Conditions = append(b.Conditions, *values[i])
 	}
 	return b
 }

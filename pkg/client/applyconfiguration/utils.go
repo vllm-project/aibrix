@@ -22,9 +22,12 @@ import (
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/autoscaling/v1alpha1"
+	internal "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/internal"
 	applyconfigurationmodelv1alpha1 "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/model/v1alpha1"
 	applyconfigurationorchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/orchestration/v1alpha1"
+	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
+	testing "k8s.io/client-go/testing"
 )
 
 // ForKind returns an apply configuration type for the given GroupVersionKind, or nil if no
@@ -69,4 +72,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 
 	}
 	return nil
+}
+
+func NewTypeConverter(scheme *runtime.Scheme) *testing.TypeConverter {
+	return &testing.TypeConverter{Scheme: scheme, TypeResolver: internal.Parser()}
 }
