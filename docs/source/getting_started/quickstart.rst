@@ -14,8 +14,8 @@ Install Docker and Kubernetes, get your Kubernetes cluster ready, and run the fo
 
 .. code-block:: bash
 
-    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.2.0/aibrix-dependency-v0.2.0.yaml
-    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.2.0/aibrix-core-v0.2.0.yaml
+    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.2.0/aibrix-dependency-v0.2.0.yaml
+    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.2.0/aibrix-core-v0.2.0.yaml
 
 Wait for few minutes and run `kubectl get pods -n aibrix-system` to check pod status util they are ready.
 
