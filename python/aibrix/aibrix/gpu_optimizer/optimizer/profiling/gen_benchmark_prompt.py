@@ -286,7 +286,8 @@ def main():
     print(f"QPS: {args.qps}")
     print(f"Max candidates: {args.max_candidates}")
     print(f"Model endpoint: http://{args.host}:{args.port}/v1/chat/completions")
-    print(f"Using API key: {'default' if args.api_key == 'any_key' else '****'}")
+    print(f"Using API key: {args.api_key}")
+    print(f"Workload dataset file: {args.workload_dataset_file}")
     print("-" * 80)
 
     model_endpoint = f"http://{args.host}:{args.port}/v1/chat/completions"

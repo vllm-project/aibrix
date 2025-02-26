@@ -39,17 +39,12 @@ generate_workload() {
     local api_key=$3
     local num_prompts=$4
     local model=$5
-    
-    echo "  input_len: $input_len"
-    echo "  output_len: $output_len"
-    echo "  api_key: $api_key"
-    echo "  num_prompts: $num_prompts"
-    echo "  model: $model"
-    echo "  temperature: $TEMPERATURE"
-    echo "Generating workload for input=$input_len, output=$output_len, API_KEY=$api_key, num_prompts=$num_prompts, model=$model, temperature=$TEMPERATURE"
+    local workload_path=$6
+
+    echo "Generating workload for input=$input_len, output=$output_len, API_KEY=$api_key, num_prompts=$num_prompts, model=$model, temperature=$TEMPERATURE, workload_path=$workload_path"
 
     python $PATH_PREFIX/gen_benchmark_prompt.py \
-        $workload  \
+        $workload_path  \
         --input-tokens "$input_len" \
         --min-output-tokens "$output_len" \
         --tolerance "0.2" \
@@ -148,18 +143,30 @@ input_len=$input_start
 while [[ $input_len -le $input_limit ]]; do
   output_len=$output_start
   while [[ $output_len -le $output_limit ]]; do
-    # Make sure all arguments are passed in the correct order
-    generate_workload "$input_len" "$output_len" "$LLM_API_KEY" "$TOTAL" "$MODEL"
-  
-    # Convert rate_start to integer (multiply by 100 and remove decimals)
-    req_rate=$(echo "$rate_start * 100" | bc | cut -d. -f1)
-    rate_limit_scaled=$(echo "$rate_limit * 100" | bc | cut -d. -f1)
-    while [[ $req_rate -le $rate_limit_scaled ]]; do
-      actual_rate=$(echo "scale=2; $req_rate / 100" | bc)
 
-      WORKLOAD_FILE="$PROMPT_DIR/prompt_in${input_len}_out${output_len}.json"
-      if [[ -f "$WORKLOAD_FILE" ]]; then
-        python $PATH_PREFIX/gpu_benchmark.py --backend=vllm --port 8010 --model=$MODEL --request-rate=$actual_rate --num-prompts=$TOTAL --input-len $input_len --output-len $output_len --api-key "$LLM_API_KEY" --temperature "$TEMPERATURE" --workload_dataset_file "$WORKLOAD_FILE" --stream >> "$OUTPUT_FILE" 
+    if [[ -n "$workload" ]]; then
+      # Make sure all arguments are passed in the correct order
+      generate_workload "$input_len" "$output_len" "$LLM_API_KEY" "$TOTAL" "$MODEL" "$workload"
+    else
+      echo "Skip workload pattern generation, benchmark with fixed prompts"
+    fi
+  
+    # Convert rate_start to integer (multiply by 1000 and remove decimals)
+    req_rate=$(echo "$rate_start * 1000" | bc | cut -d. -f1)
+    rate_limit_scaled=$(echo "$rate_limit * 1000" | bc | cut -d. -f1)
+    while [[ $req_rate -le $rate_limit_scaled ]]; do
+      actual_rate=$(echo "scale=3; $req_rate / 1000" | bc)
+
+      if [[ -n "$workload" ]]; then
+        WORKLOAD_FILE="$PROMPT_DIR/prompt_in${input_len}_out${output_len}.json"
+        if [[ -f "$WORKLOAD_FILE" ]]; then
+          # If workload file exists, run the benchmark
+            python $PATH_PREFIX/gpu_benchmark.py --backend=vllm --port 8010 --model=$MODEL --request-rate=$actual_rate --num-prompts=$TOTAL --input-len $input_len --output-len $output_len --api-key "$LLM_API_KEY" --temperature "$TEMPERATURE" --workload_dataset_file "$WORKLOAD_FILE" --stream >> "$OUTPUT_FILE" 
+        fi
+        # If workload file does not exist, print the command to run the benchmark
+      else
+        echo "run benchmark with fixed prompts: input=$input_len, output=$output_len, rate=$actual_rate"
+        python $PATH_PREFIX/gpu_benchmark.py --backend=vllm --port 8010 --model=$MODEL --request-rate=$actual_rate --num-prompts=$TOTAL --input-len $input_len --output-len $output_len --api-key "$LLM_API_KEY" --temperature "$TEMPERATURE" --stream >> "$OUTPUT_FILE" 
       fi
       req_rate=$((req_rate * 2)) 
     done
@@ -167,5 +174,4 @@ while [[ $input_len -le $input_limit ]]; do
   done
   input_len=$((input_len * 2))
 done
-
 echo "Profiling finished."

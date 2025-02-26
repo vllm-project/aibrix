@@ -85,17 +85,16 @@ def sample_requests(
                 # print('the least requests: ', requests[len(requests) - 1])
                 return requests
         except Exception as e:
-            print_err(
-                f"Warning: Failed to load prompt dataset ({e}), falling back to synthetic prompts"
-            )
-
-    # # Original synthetic prompt generation
-    # requests = []
-    # for _ in range(num_requests):
-    #     synthetic_prompt = "hi " * config_input_len
-    #     # assign timestamp to -1 for all requests
-    #     requests.append((synthetic_prompt, config_input_len, config_output_len, -1))
-    return []
+            print_err(f"Warning: Failed to load prompt dataset ({e})")
+            return []
+    else:
+        # Original synthetic prompt generation
+        requests = []
+        for _ in range(num_requests):
+            synthetic_prompt = "hi " * config_input_len
+            # assign timestamp to -1 for all requests
+            requests.append((synthetic_prompt, config_input_len, config_output_len, -1))
+        return requests
 
 
 async def get_request(
