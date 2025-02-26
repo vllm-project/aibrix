@@ -114,16 +114,14 @@ func filterHPAObject(ctx context.Context, object client.Object) []reconcile.Requ
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// Build raw source for periodical requeue events from event channel
 	reconciler := r.(*PodAutoscalerReconciler)
-	src := &source.Channel{
-		Source: reconciler.eventCh,
-	}
+	src := source.Channel(reconciler.eventCh, &handler.EnqueueRequestForObject{})
 
 	// Create a new controller managed by AIBrix manager, watching for changes to PodAutoscaler objects
 	// and HorizontalPodAutoscaler objects.
 	err := ctrl.NewControllerManagedBy(mgr).
 		For(&autoscalingv1alpha1.PodAutoscaler{}).
 		Watches(&autoscalingv2.HorizontalPodAutoscaler{}, handler.EnqueueRequestsFromMapFunc(filterHPAObject)).
-		WatchesRawSource(src, &handler.EnqueueRequestForObject{}).
+		WatchesRawSource(src).
 		Complete(r)
 
 	klog.InfoS("Added AIBrix pod-autoscaler-controller successfully")

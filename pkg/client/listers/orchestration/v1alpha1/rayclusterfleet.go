@@ -19,8 +19,8 @@ package v1alpha1
 
 import (
 	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/listers"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -37,25 +37,17 @@ type RayClusterFleetLister interface {
 
 // rayClusterFleetLister implements the RayClusterFleetLister interface.
 type rayClusterFleetLister struct {
-	indexer cache.Indexer
+	listers.ResourceIndexer[*v1alpha1.RayClusterFleet]
 }
 
 // NewRayClusterFleetLister returns a new RayClusterFleetLister.
 func NewRayClusterFleetLister(indexer cache.Indexer) RayClusterFleetLister {
-	return &rayClusterFleetLister{indexer: indexer}
-}
-
-// List lists all RayClusterFleets in the indexer.
-func (s *rayClusterFleetLister) List(selector labels.Selector) (ret []*v1alpha1.RayClusterFleet, err error) {
-	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1alpha1.RayClusterFleet))
-	})
-	return ret, err
+	return &rayClusterFleetLister{listers.New[*v1alpha1.RayClusterFleet](indexer, v1alpha1.Resource("rayclusterfleet"))}
 }
 
 // RayClusterFleets returns an object that can list and get RayClusterFleets.
 func (s *rayClusterFleetLister) RayClusterFleets(namespace string) RayClusterFleetNamespaceLister {
-	return rayClusterFleetNamespaceLister{indexer: s.indexer, namespace: namespace}
+	return rayClusterFleetNamespaceLister{listers.NewNamespaced[*v1alpha1.RayClusterFleet](s.ResourceIndexer, namespace)}
 }
 
 // RayClusterFleetNamespaceLister helps list and get RayClusterFleets.
@@ -73,26 +65,5 @@ type RayClusterFleetNamespaceLister interface {
 // rayClusterFleetNamespaceLister implements the RayClusterFleetNamespaceLister
 // interface.
 type rayClusterFleetNamespaceLister struct {
-	indexer   cache.Indexer
-	namespace string
-}
-
-// List lists all RayClusterFleets in the indexer for a given namespace.
-func (s rayClusterFleetNamespaceLister) List(selector labels.Selector) (ret []*v1alpha1.RayClusterFleet, err error) {
-	err = cache.ListAllByNamespace(s.indexer, s.namespace, selector, func(m interface{}) {
-		ret = append(ret, m.(*v1alpha1.RayClusterFleet))
-	})
-	return ret, err
-}
-
-// Get retrieves the RayClusterFleet from the indexer for a given namespace and name.
-func (s rayClusterFleetNamespaceLister) Get(name string) (*v1alpha1.RayClusterFleet, error) {
-	obj, exists, err := s.indexer.GetByKey(s.namespace + "/" + name)
-	if err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, errors.NewNotFound(v1alpha1.Resource("rayclusterfleet"), name)
-	}
-	return obj.(*v1alpha1.RayClusterFleet), nil
+	listers.ResourceIndexer[*v1alpha1.RayClusterFleet]
 }

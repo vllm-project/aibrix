@@ -23,7 +23,7 @@ import (
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
-// PodAutoscalerApplyConfiguration represents an declarative configuration of the PodAutoscaler type for use
+// PodAutoscalerApplyConfiguration represents a declarative configuration of the PodAutoscaler type for use
 // with apply.
 type PodAutoscalerApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
@@ -32,7 +32,7 @@ type PodAutoscalerApplyConfiguration struct {
 	Status                           *PodAutoscalerStatusApplyConfiguration `json:"status,omitempty"`
 }
 
-// PodAutoscaler constructs an declarative configuration of the PodAutoscaler type for use with
+// PodAutoscaler constructs a declarative configuration of the PodAutoscaler type for use with
 // apply.
 func PodAutoscaler(name, namespace string) *PodAutoscalerApplyConfiguration {
 	b := &PodAutoscalerApplyConfiguration{}
@@ -215,4 +215,10 @@ func (b *PodAutoscalerApplyConfiguration) WithSpec(value *PodAutoscalerSpecApply
 func (b *PodAutoscalerApplyConfiguration) WithStatus(value *PodAutoscalerStatusApplyConfiguration) *PodAutoscalerApplyConfiguration {
 	b.Status = value
 	return b
+}
+
+// GetName retrieves the value of the Name field in the declarative configuration.
+func (b *PodAutoscalerApplyConfiguration) GetName() *string {
+	b.ensureObjectMetaApplyConfigurationExists()
+	return b.Name
 }
