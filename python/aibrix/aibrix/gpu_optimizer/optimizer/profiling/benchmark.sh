@@ -16,7 +16,7 @@
 
 # Result files will be added to 'PATH_PREFIX' directory.
 PATH_PREFIX=`dirname "$0"`
-FILE_NAME="result"
+OUTPUT_FILE=
 MODEL="llama2-7b"
 TEMPERATURE=0.0  
 
@@ -40,8 +40,9 @@ generate_workload() {
     local num_prompts=$4
     local model=$5
     local workload_path=$6
+    local output_dir=$7
 
-    echo "Generating workload for input=$input_len, output=$output_len, API_KEY=$api_key, num_prompts=$num_prompts, model=$model, temperature=$TEMPERATURE, workload_path=$workload_path"
+    echo "Generating workload for input=$input_len, output=$output_len, API_KEY=$api_key, num_prompts=$num_prompts, model=$model, temperature=$TEMPERATURE, workload_path=$workload_path, output_dir=$output_dir"
 
     python $PATH_PREFIX/gen_benchmark_prompt.py \
         $workload_path  \
@@ -54,7 +55,8 @@ generate_workload() {
         --api-key "$api_key" \
         --total-prompts "$num_prompts" \
         --model "$model" \
-        --temperature "$TEMPERATURE"
+        --temperature "$TEMPERATURE" \
+        --output-dir "$output_dir"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -64,7 +66,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     -o|--output)
-      FILE_NAME="$2"
+      OUTPUT_FILE="$2"
       shift 2
       ;;
     --input-start)
@@ -115,10 +117,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 
-# Make sure the directory exists and clear output file
-OUTPUT_FILE="${PATH_PREFIX}/result/${FILE_NAME}.jsonl"
-PROMPT_DIR="${PATH_PREFIX}/result/prompts"
-mkdir -p `dirname "$OUTPUT_FILE"`
+if [[ -z "$OUTPUT_FILE" ]]; then
+  echo "Use default output path"
+  OUTPUT_FILE="${PATH_PREFIX}/result/${MODEL}.jsonl"
+fi
+
+dir_path=$(dirname "$OUTPUT_FILE")
+PROMPT_DIR="${dir_path}/prompts"
+
+mkdir -p "$(dirname "$OUTPUT_FILE")"
 mkdir -p "$PROMPT_DIR"
 
 # Clear the workload directory
@@ -146,17 +153,16 @@ while [[ $input_len -le $input_limit ]]; do
 
     if [[ -n "$workload" ]]; then
       # Make sure all arguments are passed in the correct order
-      generate_workload "$input_len" "$output_len" "$LLM_API_KEY" "$TOTAL" "$MODEL" "$workload"
+      generate_workload "$input_len" "$output_len" "$LLM_API_KEY" "$TOTAL" "$MODEL" "$workload" "$dir_path"
     else
       echo "Skip workload pattern generation, benchmark with fixed prompts"
     fi
   
-    # Convert rate_start to integer (multiply by 1000 and remove decimals)
-    req_rate=$(echo "$rate_start * 1000" | bc | cut -d. -f1)
-    rate_limit_scaled=$(echo "$rate_limit * 1000" | bc | cut -d. -f1)
+    # Convert rate_start to integer (multiply by 1000 and remove decimals since -le does not work with floats)
+    req_rate=$(printf "%.0f\n" "$(echo "$rate_start * 1000" | awk '{print $1 * 1000}')")    
+    rate_limit_scaled=$(printf "%.0f\n" "$(echo "$rate_limit * 1000" | awk '{print $1 * 1000}')")
     while [[ $req_rate -le $rate_limit_scaled ]]; do
-      actual_rate=$(echo "scale=3; $req_rate / 1000" | bc)
-
+      actual_rate=$(echo "$req_rate" | awk '{ printf "%.3f", $1 / 1000 }')
       if [[ -n "$workload" ]]; then
         WORKLOAD_FILE="$PROMPT_DIR/prompt_in${input_len}_out${output_len}.json"
         if [[ -f "$WORKLOAD_FILE" ]]; then

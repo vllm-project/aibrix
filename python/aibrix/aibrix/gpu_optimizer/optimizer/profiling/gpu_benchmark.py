@@ -254,8 +254,8 @@ async def send_request(
             else len(token_latencies) + 1,
             "timestamp": ts.strftime("%Y-%m-%d %H:%M:%S %Z%z"),
             "E2E": request_latency,
-            "status_code": status_code,  # Add status code to trace
-            "success": status_code == 200 if status_code else False,  # Add success flag
+            "status_code": status_code,
+            "success": status_code == 200 if status_code else False,
         }
         if len(token_latencies) > 0:
             request_trace["TTFT"] = time_to_first

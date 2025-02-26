@@ -47,6 +47,7 @@ class PromptSelector:
         temperature: float = 0.0,
         api_key: str = "any_key",
         total_prompts: int = 1,
+        output_dir: str = ".",
     ):
         self.trace_file = trace_file
         self.model_endpoint = model_endpoint
@@ -56,6 +57,7 @@ class PromptSelector:
         self.temperature = temperature
         self.api_key = api_key
         self.total_prompts = total_prompts
+        self.output_dir = output_dir
 
     def count_tokens(self, text: str) -> int:
         """Estimate token count using VLLM's tokenizer."""
@@ -163,9 +165,7 @@ class PromptSelector:
             return
 
         # Get the directory where the script is located
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        # Create the prompts directory relative to the script location
-        prompts_dir = os.path.join(script_dir, "result", "prompts")
+        prompts_dir = os.path.join(self.output_dir, "prompts")
         os.makedirs(prompts_dir, exist_ok=True)
 
         filename = os.path.join(
@@ -272,6 +272,12 @@ def parse_args():
         default="deepseek-coder-7b",
         help="Model name to use for completion",
     )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        help="Directory to save output files",
+        default=".",
+    )
     return parser.parse_args()
 
 
@@ -300,6 +306,7 @@ def main():
         temperature=args.temperature,
         api_key=args.api_key,
         total_prompts=args.total_prompts,
+        output_dir=args.output_dir,
     )
 
     matching_prompts = selector.find_matching_prompts(
@@ -319,12 +326,12 @@ def main():
         print(f"Output tokens: {output_tokens}")
         print(f"Complete usage data: {response_data.get('usage', {})}")
         print("-" * 40)
-        print("Prompt:")
-        print(prompt)
-        print("-" * 40)
-        print("Model completion:")
-        if "choices" in response_data:
-            print(response_data["choices"][0].get("message", {}).get("content", ""))
+        # print("Prompt:")
+        # print(prompt)
+        # print("-" * 40)
+        # print("Model completion:")
+        # if "choices" in response_data:
+        #     print(response_data["choices"][0].get("message", {}).get("content", ""))
 
     end_time = time.time()
     print(f"\nTotal execution time: {end_time - start_time:.2f} seconds")
