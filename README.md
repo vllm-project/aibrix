@@ -27,9 +27,13 @@ The initial release includes the following key features:
 
 ## Quick Start
 
-To get started with AIBrix, clone this repository and follow the setup instructions in the documentation. Our comprehensive guide will help you configure and deploy your first LLM infrastructure seamlessly.
+To get started with AIBrix, clone this repository and follow the setup instructions in the [documentation](https://aibrix.readthedocs.io/latest/getting_started/quickstart.html), which will help you configure and deploy your first LLM infrastructure seamlessly.
 
 ```shell
+# Prerequisites:
+# After installing Docker and Kubernetes, please make sure your Kubernetes cluster ready, and then run the following commands to install AIBrix components in your Kubernetes cluster.
+
+
 # Local Testing
 git clone https://github.com/vllm-project/aibrix.git
 cd aibrix

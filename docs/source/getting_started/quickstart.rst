@@ -7,7 +7,7 @@ Quickstart
 Install AIBrix
 ^^^^^^^^^^^^^^
 
-Get your kubernetes cluster ready, run following commands to install aibrix components in your cluster.
+Install Docker and Kubernetes, get your Kubernetes cluster ready, and run the following commands to install AIBrix components in your Kubernetes cluster.
 
 .. note::
     If you just want to install specific components or specific version, please check installation guidance for more installation options.
@@ -30,8 +30,11 @@ Wait for few minutes and run `kubectl get pods -n aibrix-system` to check pod st
     aibrix-redis-master-84769768cb-fsq45         1/1     Running   0          5h24m
 
 
-Deploy base model
+Deploy Base Model
 ^^^^^^^^^^^^^^^^^
+
+.. note::
+In the given example, please ensure that your node is equipped with NVIDIA GPUs. Otherwise, the pod will stuck in pending state.
 
 Save yaml as `model.yaml` and run `kubectl apply -f model.yaml`.
 
@@ -44,7 +47,7 @@ Ensure that:
 2. The `--served-model-name` argument value in the `Deployment` command is also consistent with the `Service` name and `model.aibrix.ai/name` label.
 
 
-Invoke the model endpoint using gateway api
+Invoke the Model Endpoint via Gateway API
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Depending on where you deployed the AIBrix, you can use either of the following options to query the gateway.
