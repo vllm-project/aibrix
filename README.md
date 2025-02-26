@@ -66,7 +66,7 @@ Slack Channel: [#aibrix](https://vllm-dev.slack.com/archives/C08EQ883CSV)
 
 ## License
 
-AIBrix is licensed under the [APACHE 2.0 License](https://github.com/vllm-project/aibrix/LICENSE).
+AIBrix is licensed under the [Apache 2.0 License](LICENSE).
 
 ## Support
 
