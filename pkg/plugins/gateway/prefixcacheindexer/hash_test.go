@@ -18,9 +18,11 @@ package prefixcacheindexer
 
 import (
 	"fmt"
+	"math/rand"
 	"testing"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -28,8 +30,12 @@ import (
 )
 
 func Test_PrefixHashTableE2E(t *testing.T) {
+	r := rand.New(rand.NewSource(time.Now().Unix()))
+	seed := r.Uint64()
 	cache := PrefixHashTable{
 		blocks: map[uint64]Block{},
+		hash:   xxhash.NewWithSeed(seed),
+		seed:   seed,
 	}
 	pods := []*v1.Pod{
 		{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
@@ -64,6 +70,8 @@ func Test_PrefixHashTableE2E(t *testing.T) {
 }
 
 func Test_MatchPrefix(t *testing.T) {
+	r := rand.New(rand.NewSource(time.Now().Unix()))
+	seed := r.Uint64()
 	tests := []*struct {
 		name          string
 		inputText     string
@@ -79,6 +87,8 @@ func Test_MatchPrefix(t *testing.T) {
 			inputText: "Hello World! What a Good Day! 你好世界！多么美好的一天啊！",
 			cache: PrefixHashTable{
 				blocks: map[uint64]Block{},
+				hash:   xxhash.NewWithSeed(seed),
+				seed:   seed,
 			},
 			model: "m1",
 			pods: []*v1.Pod{
@@ -103,6 +113,8 @@ func Test_MatchPrefix(t *testing.T) {
 						lastAccessTime: time.Now(),
 					},
 				},
+				hash: xxhash.NewWithSeed(0),
+				seed: 0,
 			},
 			model: "m1",
 			pods: []*v1.Pod{

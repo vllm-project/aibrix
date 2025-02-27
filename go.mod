@@ -5,7 +5,7 @@ go 1.22.5
 toolchain go1.22.6
 
 require (
-	github.com/cespare/xxhash v1.1.0
+	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/envoyproxy/go-control-plane v0.12.0
 	github.com/go-playground/validator/v10 v10.22.1
 	github.com/google/uuid v1.6.0
@@ -39,7 +39,6 @@ require (
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cncf/xds/go v0.0.0-20240423153145-555b57ec207b // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
