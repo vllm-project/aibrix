@@ -6,12 +6,12 @@ on:
     branches: [ "main" ]
     paths:
       - '.github/workflows/**'
-      - 'build/container/**' 
+      - 'build/container/**'
       - 'config/**'
       - 'pkg/**'
       - 'test/**'
       - 'cmd/**'
-      - 'python/**' 
+      - 'python/**'
       - 'Makefile'
       - 'go.mod'
       - 'go.sum'
@@ -19,12 +19,12 @@ on:
     branches: [ "main" ]
     paths:
       - '.github/workflows/**'
-      - 'build/container/**' 
+      - 'build/container/**'
       - 'config/**'
       - 'pkg/**'
       - 'test/**'
       - 'cmd/**'
-      - 'python/**' 
+      - 'python/**'
       - 'Makefile'
       - 'go.mod'
       - 'go.sum'
@@ -66,7 +66,7 @@ jobs:
 
       - name: Download all image artifacts
         uses: actions/download-artifact@v4
-      
+
       - name: Free disk space
         run: |-
           # https://github.com/actions/runner-images/issues/2840#issuecomment-2272410832
@@ -108,7 +108,7 @@ jobs:
         run: |
           for image in controller-manager gateway-plugins runtime metadata-service; do
               docker load < ${image}-image/${image}.tar
-          
+
               # Retag the image
               # This is for application integration, since it is not that easy to override all commits in manifest
               # It is better to use nightly to represent the latest image
@@ -134,21 +134,21 @@ jobs:
           docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
           kind load docker-image aibrix/vllm-mock:nightly --name installation-test
           kubectl create -k config/mock
-        
+
       - name: Check pod status
         run: |
           sleep 30s
           kubectl get pods --all-namespaces
           kubectl wait pod --all --for=condition=ready --all-namespaces --timeout=300s
-      
+
           kubectl port-forward svc/llama2-7b 8000:8000 &
           kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc  8888:80 &
-      
+
       - name: Run e2e tests
         run: |
           kind get kubeconfig --name installation-test > /tmp/admin.conf
           export KUBECONFIG=/tmp/admin.conf
           make test-e2e
-          
+
       - name: Clean up
         run: kind delete cluster --name installation-test
