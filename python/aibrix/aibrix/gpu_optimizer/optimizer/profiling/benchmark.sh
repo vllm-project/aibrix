@@ -23,9 +23,9 @@ TEMPERATURE=0.0
 TOTAL=100
 # TODO: Set your preferred request sizes and rates here.
 input_start=4
-input_limit=$((2**11)) # 2K
+input_limit=$((2**12)) # 4K
 output_start=4
-output_limit=$((2**9)) # 512
+output_limit=$((2**12)) # 4K
 rate_start=1
 rate_limit=$((2**6)) # 64
 workload=
@@ -42,7 +42,7 @@ generate_workload() {
     local workload_path=$6
     local output_dir=$7
 
-    echo "Generating workload for input=$input_len, output=$output_len, API_KEY=$api_key, num_prompts=$num_prompts, model=$model, temperature=$TEMPERATURE, workload_path=$workload_path, output_dir=$output_dir"
+    echo "Generating workload for input=$input_len, output=$output_len, API_KEY=$api_key, num_prompts=$num_prompts, model=$model, temperature=$TEMPERATURE, dataset_path=$workload_path, output_dir=$output_dir"
 
     python $PATH_PREFIX/gen_benchmark_prompt.py \
         $workload_path  \
@@ -136,7 +136,7 @@ rm -rf "$PROMPT_DIR"/*
 > "$OUTPUT_FILE"
 
 # Print the arguments (or use them in your script logic)
-echo "Start benchmark $MODEL, input tokens:[$input_start:$input_limit], output tokens:[$output_start:$output_limit], rates:[$rate_start:$rate_limit], save as: $OUTPUT_FILE", workload: "$workload":
+echo "Start benchmark $MODEL, input tokens:[$input_start:$input_limit], output tokens:[$output_start:$output_limit], rates:[$rate_start:$rate_limit], save as: $OUTPUT_FILE", workload: "$workload"
 
 
 if [[ $dry_run == 1 ]]; then
