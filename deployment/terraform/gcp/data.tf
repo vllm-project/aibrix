@@ -1,0 +1,11 @@
+data "google_compute_zones" "default_region" {
+  region = var.default_region
+}
+
+data "google_compute_machine_types" "available" {
+  for_each = toset(var.node_pool_zone != "" ? [var.node_pool_zone] : data.google_compute_zones.default_region.names)
+
+  # Filter for instances in the A3, A2, or G2 lines. These instances have NVidia GPUs attached by default.
+  filter = "name = \"a3*\" OR name = \"a2*\" OR name = \"g2*\""
+  zone   = each.value
+}
