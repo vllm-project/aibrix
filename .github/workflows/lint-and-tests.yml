@@ -66,3 +66,5 @@ jobs:
             ${{ runner.os }}-go-
       - name: Run Unit Tests
         run: make test
+      - name: Run Integration Tests
+        run: make test-integration
