@@ -19,11 +19,12 @@ package prefixcacheindexer
 import (
 	"bytes"
 	"encoding/binary"
+	"math/rand"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/cespare/xxhash"
+	"github.com/cespare/xxhash/v2"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -90,6 +91,8 @@ func getPrefixCacheEvictionDuration() time.Duration {
 type PrefixHashTable struct {
 	mu     sync.RWMutex
 	blocks map[uint64]Block
+	hash   *xxhash.Digest
+	seed   uint64
 }
 
 type Block struct {
@@ -98,8 +101,12 @@ type Block struct {
 }
 
 func NewPrefixHashTable() PrefixCacheIndexer {
+	r := rand.New(rand.NewSource(time.Now().Unix()))
+	seed := r.Uint64()
 	instance := &PrefixHashTable{
 		blocks: map[uint64]Block{},
+		hash:   xxhash.NewWithSeed(seed),
+		seed:   seed,
 	}
 
 	ticker := time.NewTicker(prefixCacheEvictionInterval)
@@ -128,7 +135,9 @@ func (c *PrefixHashTable) MatchPrefix(tokens []int, model string, pods []*v1.Pod
 		}
 
 		chunk := tokens[i:end]
-		prefixHash := xxhash.Sum64(IntArrayToByteArray(chunk))
+		_, _ = c.hash.Write(IntArrayToByteArray(chunk))
+		prefixHash := c.hash.Sum64()
+		c.hash.ResetWithSeed(c.seed)
 		block, ok = c.blocks[prefixHash]
 		if !ok || len(block.modelToPods[model]) == 0 {
 			lastTokenMatchIndex = i
@@ -166,7 +175,9 @@ func (c *PrefixHashTable) AddPrefix(unMatchedTokens []int, model, pod string) {
 		}
 
 		chunk := unMatchedTokens[i:end]
-		prefixHash := xxhash.Sum64(IntArrayToByteArray(chunk))
+		_, _ = c.hash.Write(IntArrayToByteArray(chunk))
+		prefixHash := c.hash.Sum64()
+		c.hash.ResetWithSeed(c.seed)
 		block, ok := c.blocks[prefixHash]
 		if !ok {
 			block = Block{
