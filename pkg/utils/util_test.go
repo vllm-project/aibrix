@@ -29,8 +29,12 @@ func TestTokenizeInputText(t *testing.T) {
 	tokens, err := TokenizeInputText(inputStr)
 	assert.Equal(t, nil, err)
 
+	outputStr, err := DetokenizeText(tokens)
+	assert.NoError(t, err)
+	assert.Equal(t, inputStr, outputStr)
+
 	tiktoken.SetBpeLoader(tiktoken_loader.NewOfflineLoader())
 	tke, _ := tiktoken.GetEncoding(encoding)
-	outputStr := tke.Decode(tokens)
+	outputStr = tke.Decode(tokens)
 	assert.Equal(t, inputStr, outputStr)
 }
