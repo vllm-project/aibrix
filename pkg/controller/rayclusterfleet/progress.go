@@ -112,7 +112,7 @@ func (r *RayClusterFleetReconciler) syncRolloutStatus(ctx context.Context, allRS
 
 	newDeployment := d
 	newDeployment.Status = newStatus
-	err := r.Status().Update(context.Background(), newDeployment)
+	err := r.Status().Update(ctx, newDeployment)
 	return err
 }
 
