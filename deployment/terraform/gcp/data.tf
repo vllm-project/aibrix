@@ -1,3 +1,4 @@
+# Retrieve zones in the default region for usage in machine type lookup.
 data "google_compute_zones" "default_region" {
   region = var.default_region
 }
