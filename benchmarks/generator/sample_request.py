@@ -4,6 +4,7 @@ import sys
 import random 
 
 import pandas as pd
+import numpy as np
 
 from typing import Tuple, Optional, List
 from transformers import PreTrainedTokenizerBase
@@ -73,16 +74,8 @@ def sample_requests_len_range(
         err_perc = initial_err_perc
 
         while err_perc <= 1:
-            input_range = range(0, sys.maxsize)
-            output_range = range(0, sys.maxsize)
-            if input_len is not None:
-                input_range = (int(input_len * (1 - err_perc)), int(input_len * (1 + err_perc)))
-            else:
-                input_range = (0, sys.maxsize)
-            if output_len is not None:
-                output_range = (int(output_len * (1 - err_perc)), int(output_len * (1 + err_perc))) 
-            else:
-                output_range = (0, sys.maxsize)
+            input_range = (int(input_len * (1 - err_perc)), int(input_len * (1 + err_perc))) if input_len else (0, sys.maxsize)
+            output_range = (int(output_len * (1 - err_perc)), int(output_len * (1 + err_perc))) if output_len else (0, sys.maxsize)
             filtered = df[
                 (df["prompt_len"] >= input_range[0]) &
                 (df["prompt_len"] <= input_range[1]) &
@@ -103,14 +96,15 @@ def sample_requests_len_range(
             logging.debug(f"Relax err_perc {err_perc} by {err_step} new err_perc {err_perc + err_step} input_range {input_range} output_range {output_range}")
             err_perc += err_step
 
-        if err_perc >= 1:
-            logging.warn(f"No match found for request {i + 1} even after relaxing err_perc to {err_perc} fallback to random")
-            total_rows = len(df)
-            sample = df.iloc[random.randint(0, total_rows - 1)] 
-            filtered_results.append({"prompt": sample["prompt"],
+        if err_perc >= 1: 
+            df["distance"] = np.sqrt((df["prompt_len"] - input_len) ** 2 + (df["completion_len"] - output_len) ** 2)
+            closest_sample = df.nsmallest(1, "distance").iloc[0]
+            closest_input, closest_output = closest_sample["prompt_len"], closest_sample["completion_len"]
+            filtered_results.append({"prompt": closest_sample["prompt"],
                                      "model": model,
-                                     "prompt_length": sample["prompt_len"],
-                                     "output_length": sample["completion_len"]})
+                                     "prompt_length": closest_sample["prompt_len"],
+                                     "output_length": closest_sample["completion_len"]})
+            logging.warn(f"No exact match found for request {i + 1}, target input/output lengths {input_len}/{output_len}, use closest QA pair input {closest_input} output {closest_output}.")
 
     return filtered_results
 

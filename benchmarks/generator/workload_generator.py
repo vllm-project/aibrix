@@ -52,7 +52,7 @@ def generate_from_internal_csv(prompt_file_path: str,
     output_len_dist = []
     rps_dist = []
     for rps_config in rps_configs:
-        rps_segment = generate_poisson_dist(target = rps_config['mean_rps'], sample_size = rps_config['total_seconds'], generate_poisson_dist = 10)
+        rps_segment = generate_poisson_dist(target = rps_config['mean_rps'], sample_size = rps_config['total_seconds'], smooth_window_size = 10)
         rps_dist.extend(rps_segment)
     if internal_trace_type == "maas":
         for config in input_len_configs:
@@ -151,8 +151,8 @@ def generate_constant(prompt_file_path: str,
             num_requests=qps,
             input_lens=[None] * qps, 
             output_lens=[None] * qps, 
-            initial_err_perc=0.5,
-            err_step=0.05,
+            initial_err_perc=0.1,
+            err_step=0.05
             model=model,
         )
         if concurrent_reqs:  # Only add non-empty groups
@@ -321,8 +321,8 @@ def generate_from_azure_csv(file_path: str,
             num_requests=len(input_lens),
             input_lens=input_lens,
             output_lens=output_lens,
-            initial_err_perc=0.5,
-            err_step=0.05,
+            initial_err_perc=0.1,
+            err_step=0.05
             model=model,
         )
 
@@ -448,7 +448,7 @@ if __name__ == '__main__':
                                                     adapter_name=args.adapter_name,
                                                     output_file=f"{args.output_dir}/{args.trace_type}",
                                                     to_jsonl=(args.output_format == "jsonl"),
-                                                    )
+                                                )
         elif args.trace_type == "internal":
             generated_workload = generate_from_internal_csv(prompt_file_path=args.prompt_file, 
                                                             duration_ms=args.duration_ms, 
@@ -484,5 +484,5 @@ if __name__ == '__main__':
             plot_workload(
                 workload_name = workload_name, 
                 workload = workload, 
-                bin_size_sec = int(args.interval_ms/1000), 
-                output_dir = f"./plot")
+                bin_size_sec = int(args.interval_ms/1000) * 60, 
+                output_dir = f"{args.output_dir}")

@@ -184,7 +184,7 @@ def plot_workload(workload_name: str,
     # Convert workload data to a DataFrame
     data = []
     for entry in workload:
-        timestamp_sec = entry["timestamp"] / 1000  # Convert ms to sec
+        timestamp_sec = int(entry["timestamp"] / 1000)  # Convert ms to sec
         num_requests = len(entry["requests"])
         total_prompt_tokens = np.mean([req["prompt_length"] for req in entry["requests"]]) if entry["requests"] else 0
         total_output_tokens = np.mean([req["output_length"] for req in entry["requests"]]) if entry["requests"] else 0
@@ -200,13 +200,18 @@ def plot_workload(workload_name: str,
     df["time_bin"] = pd.cut(df["timestamp"], bins, labels=bins[:-1])
 
     # Aggregate within each bin
-    binned_df = df.groupby("time_bin").sum()
+    # binned_df = df.groupby("time_bin").sum()
+    binned_df = df.groupby("time_bin").agg({
+        "num_requests": "sum", 
+        "total_prompt_tokens": "mean", 
+        "total_output_tokens": "mean"
+    })
 
     # Convert index back to numeric
     binned_df.index = binned_df.index.astype(float)
-
+    print(binned_df)
     # Plotting
-    fig, (ax_qps, ax_input, ax_output) = plt.subplots(3, 1, figsize=(15, 12))
+    fig, (ax_qps, ax_input, ax_output) = plt.subplots(3, 1, figsize=(10, 8))
 
     ax_qps.plot(binned_df.index, binned_df["num_requests"], label="Total Requests")
     ax_input.plot(binned_df.index, binned_df["total_prompt_tokens"], label="Total Prompt Tokens")
@@ -214,8 +219,8 @@ def plot_workload(workload_name: str,
 
     # Formatting plots
     for ax, ylabel, title in zip([ax_qps, ax_input, ax_output],
-                                  ["Requests per Second", "Prompt Token Count", "Output Token Count"],
-                                  ["Total Requests Sent per Second", "Total Prompt Tokens per Second", "Total Output Tokens per Second"]):
+                                  ["Requests per Minute", "Prompt Token Count", "Output Token Count"],
+                                  ["Total Requests Sent per Minute", "Total Prompt Tokens per Minute", "Total Output Tokens per Minute"]):
         ax.set_xlabel("Time (seconds)")
         ax.set_ylabel(ylabel)
         ax.set_title(title)
