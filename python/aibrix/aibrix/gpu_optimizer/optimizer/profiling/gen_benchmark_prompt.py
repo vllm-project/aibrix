@@ -94,11 +94,8 @@ class PromptSelector:
         min_output_tokens: int,
         input_tolerance: float = 0.1,
         max_candidates: Optional[int] = None,
-    ) -> List[Tuple[str, int, int, Dict]]:
-        """
-        Find prompts and save results to a file.
-        Returns list of tuples (prompt, input_tokens, output_tokens, response_data)
-        """
+    ) -> Optional[str]:
+        """Find prompts and save results to a file. Returns matching prompts and filename."""
         matching_prompts = []
         candidates = []
 
@@ -131,14 +128,10 @@ class PromptSelector:
         if max_candidates is not None:
             candidates = candidates[:max_candidates]
 
-        print(f"\nFound {len(candidates)} candidates. Querying model for each...")
+        print(f"Found {len(candidates)} candidates. Querying model for each...")
         print("-" * 80)
 
-        for idx, (prompt, input_tokens, input_diff) in enumerate(candidates, 1):
-            print(f"\nCandidate {idx}/{len(candidates)}:")
-            print(f"Input tokens: {input_tokens} (diff from target: {input_diff})")
-            print(f"Prompt preview: {prompt[:200]}...")
-
+        for _, (prompt, input_tokens, input_diff) in enumerate(candidates, 1):
             output_tokens, response_data = self.get_completion_tokens(prompt)
 
             if output_tokens and output_tokens >= min_output_tokens:
@@ -149,20 +142,22 @@ class PromptSelector:
 
             print("-" * 80)
 
-        self.save_results(matching_prompts, target_input_tokens, min_output_tokens)
-        return matching_prompts
+        filename = self.save_results(
+            matching_prompts, target_input_tokens, min_output_tokens
+        )
+        return filename
 
     def save_results(
         self,
         matching_prompts: List[Tuple[str, int, int, Dict]],
         target_input_tokens: int,
         min_output_tokens: int,
-    ):
-        """Save matching prompts to a JSON file."""
+    ) -> Optional[str]:
+        """Save matching prompts to a JSON file and return the file path."""
         # Only proceed if there are matching prompts to save
         if not matching_prompts:
             print("\nNo matching prompts found, skipping file creation.")
-            return
+            return None
 
         # Get the directory where the script is located
         prompts_dir = os.path.join(self.output_dir, "prompts")
@@ -200,6 +195,7 @@ class PromptSelector:
             json.dump(benchmark_format, f, indent=2)
 
         print(f"\nResults saved to: {filename}")
+        return filename
 
 
 def parse_args():
@@ -309,32 +305,25 @@ def main():
         output_dir=args.output_dir,
     )
 
-    matching_prompts = selector.find_matching_prompts(
+    filename = selector.find_matching_prompts(
         target_input_tokens=args.input_tokens,
         min_output_tokens=args.min_output_tokens,
         input_tolerance=args.tolerance,
         max_candidates=args.max_candidates,
     )
 
-    print(f"\nFound {len(matching_prompts)} matching prompts:")
-    for idx, (prompt, input_tokens, output_tokens, response_data) in enumerate(
-        matching_prompts, 1
-    ):
-        print(f"\nMatch {idx}:")
-        print("=" * 80)
-        print(f"Input tokens: {input_tokens}")
-        print(f"Output tokens: {output_tokens}")
-        print(f"Complete usage data: {response_data.get('usage', {})}")
-        print("-" * 40)
-        # print("Prompt:")
-        # print(prompt)
-        # print("-" * 40)
-        # print("Model completion:")
-        # if "choices" in response_data:
-        #     print(response_data["choices"][0].get("message", {}).get("content", ""))
+    print("Found matching prompts:")
 
     end_time = time.time()
     print(f"\nTotal execution time: {end_time - start_time:.2f} seconds")
+
+    # Print just the path at the very end for the shell script to capture
+    if filename:
+        print(filename)
+        return filename
+    else:
+        print(filename)
+        return ""
 
 
 if __name__ == "__main__":
