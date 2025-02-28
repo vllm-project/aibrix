@@ -62,12 +62,12 @@ func (s *httpServer) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if utils.CheckUser(u, s.redisClient) {
+	if utils.CheckUser(r.Context(), u, s.redisClient) {
 		fmt.Fprintf(w, "User: %+v exists", u.Name)
 		return
 	}
 
-	if err := utils.SetUser(u, s.redisClient); err != nil {
+	if err := utils.SetUser(r.Context(), u, s.redisClient); err != nil {
 		http.Error(w, fmt.Sprintf("error occurred on creating user: %+v", err), http.StatusInternalServerError)
 		return
 	}
@@ -90,7 +90,7 @@ func (s *httpServer) readUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := utils.GetUser(u, s.redisClient)
+	user, err := utils.GetUser(r.Context(), u, s.redisClient)
 	if err != nil {
 		fmt.Fprint(w, "user does not exists")
 		return
@@ -114,12 +114,12 @@ func (s *httpServer) updateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !utils.CheckUser(u, s.redisClient) {
+	if !utils.CheckUser(r.Context(), u, s.redisClient) {
 		fmt.Fprintf(w, "User: %+v does not exists", u.Name)
 		return
 	}
 
-	if err := utils.SetUser(u, s.redisClient); err != nil {
+	if err := utils.SetUser(r.Context(), u, s.redisClient); err != nil {
 		http.Error(w, fmt.Sprintf("error occurred on updating user: %+v", err), http.StatusInternalServerError)
 		return
 	}
@@ -142,12 +142,12 @@ func (s *httpServer) deleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !utils.CheckUser(u, s.redisClient) {
+	if !utils.CheckUser(r.Context(), u, s.redisClient) {
 		fmt.Fprintf(w, "User: %+v does not exists", u.Name)
 		return
 	}
 
-	if err := utils.DelUser(u, s.redisClient); err != nil {
+	if err := utils.DelUser(r.Context(), u, s.redisClient); err != nil {
 		http.Error(w, fmt.Sprintf("error occurred on deleting user: %+v", err), http.StatusInternalServerError)
 		return
 	}

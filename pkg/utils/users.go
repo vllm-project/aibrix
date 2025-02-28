@@ -30,8 +30,8 @@ type User struct {
 	Tpm  int64  `json:"tpm"`
 }
 
-func CheckUser(u User, redisClient *redis.Client) bool {
-	val, err := redisClient.Exists(context.Background(), genKey(u.Name)).Result()
+func CheckUser(ctx context.Context, u User, redisClient *redis.Client) bool {
+	val, err := redisClient.Exists(ctx, genKey(u.Name)).Result()
 	if err != nil {
 		return false
 	}
@@ -39,8 +39,8 @@ func CheckUser(u User, redisClient *redis.Client) bool {
 	return val != 0
 }
 
-func GetUser(u User, redisClient *redis.Client) (User, error) {
-	val, err := redisClient.Get(context.Background(), genKey(u.Name)).Result()
+func GetUser(ctx context.Context, u User, redisClient *redis.Client) (User, error) {
+	val, err := redisClient.Get(ctx, genKey(u.Name)).Result()
 	if err != nil {
 		return User{}, err
 	}
@@ -53,7 +53,7 @@ func GetUser(u User, redisClient *redis.Client) (User, error) {
 	return *user, nil
 }
 
-func SetUser(u User, redisClient *redis.Client) error {
+func SetUser(ctx context.Context, u User, redisClient *redis.Client) error {
 	if u.Rpm < 0 || u.Tpm < 0 {
 		return fmt.Errorf("rpm or tpm can not negative")
 	}
@@ -63,11 +63,11 @@ func SetUser(u User, redisClient *redis.Client) error {
 		return err
 	}
 
-	return redisClient.Set(context.Background(), genKey(u.Name), string(b), 0).Err()
+	return redisClient.Set(ctx, genKey(u.Name), string(b), 0).Err()
 }
 
-func DelUser(u User, redisClient *redis.Client) error {
-	return redisClient.Del(context.Background(), genKey(u.Name)).Err()
+func DelUser(ctx context.Context, u User, redisClient *redis.Client) error {
+	return redisClient.Del(ctx, genKey(u.Name)).Err()
 }
 
 func genKey(s string) string {

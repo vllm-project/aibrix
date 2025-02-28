@@ -302,7 +302,7 @@ func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			// the finalizer is present, so let's unload lora from those inference engines
 			// note: the base model pod could be deleted as well, so here we do best effort offloading
 			// we do not need to reconcile the object if it encounters the unloading error.
-			if err := r.unloadModelAdapter(modelAdapter); err != nil {
+			if err := r.unloadModelAdapter(ctx, modelAdapter); err != nil {
 				return ctrl.Result{}, err
 			}
 			if ok := controllerutil.RemoveFinalizer(modelAdapter, ModelAdapterFinalizer); !ok {
@@ -682,7 +682,7 @@ func (r *ModelAdapterReconciler) loadModelAdapter(url string, instance *modelv1a
 
 // unloadModelAdapter unloads the loras from inference engines
 // base model pod could be deleted, in this case, we just do optimistic unloading. It only returns some necessary errors and http errors should not be returned.
-func (r *ModelAdapterReconciler) unloadModelAdapter(instance *modelv1alpha1.ModelAdapter) error {
+func (r *ModelAdapterReconciler) unloadModelAdapter(ctx context.Context, instance *modelv1alpha1.ModelAdapter) error {
 	if len(instance.Status.Instances) == 0 {
 		klog.Warningf("model adapter %s/%s has not been deployed to any pods yet, skip unloading", instance.GetNamespace(), instance.GetName())
 		return nil
@@ -692,7 +692,7 @@ func (r *ModelAdapterReconciler) unloadModelAdapter(instance *modelv1alpha1.Mode
 
 	podName := instance.Status.Instances[0]
 	targetPod := &corev1.Pod{}
-	if err := r.Get(context.TODO(), types.NamespacedName{
+	if err := r.Get(ctx, types.NamespacedName{
 		Namespace: instance.Namespace,
 		Name:      podName,
 	}, targetPod); err != nil {
@@ -803,7 +803,7 @@ func (r *ModelAdapterReconciler) reconcileEndpointSlice(ctx context.Context, ins
 	// TODO: do necessary refactor to support multiple lora instance
 	podName := instance.Status.Instances[0]
 	pod := &corev1.Pod{}
-	if err := r.Get(context.TODO(), types.NamespacedName{Namespace: instance.Namespace, Name: podName}, pod); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: podName}, pod); err != nil {
 		if !apierrors.IsNotFound(err) {
 			klog.Warning("Error getting Pod from lora instance list", err)
 			return ctrl.Result{}, err
