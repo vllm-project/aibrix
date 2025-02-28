@@ -516,7 +516,7 @@ func (r *PodAutoscalerReconciler) scaleForResourceMappings(ctx context.Context, 
 		scale.SetNamespace(namespace)
 		scale.SetName(name)
 
-		err := r.Get(context.TODO(), client.ObjectKey{Namespace: namespace, Name: name}, scale)
+		err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, scale)
 		if err == nil {
 			return scale, targetGR, nil
 		}

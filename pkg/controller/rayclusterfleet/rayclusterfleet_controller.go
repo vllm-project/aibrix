@@ -140,7 +140,7 @@ func (r *RayClusterFleetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	clusterMap, err := r.getRayClusterMapForFleet(f, rsList)
+	clusterMap, err := r.getRayClusterMapForFleet(ctx, f, rsList)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -209,7 +209,7 @@ func (r *RayClusterFleetReconciler) getReplicaSetsForFleet(ctx context.Context, 
 	return ownedReplicaSets, nil
 }
 
-func (r *RayClusterFleetReconciler) getRayClusterMapForFleet(f *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestrationv1alpha1.RayClusterReplicaSet) (map[types.UID][]*rayclusterv1.RayCluster, error) {
+func (r *RayClusterFleetReconciler) getRayClusterMapForFleet(ctx context.Context, f *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestrationv1alpha1.RayClusterReplicaSet) (map[types.UID][]*rayclusterv1.RayCluster, error) {
 	clusterList := &rayclusterv1.RayClusterList{}
 
 	// Get all RayClusters matches the fleet
@@ -218,7 +218,7 @@ func (r *RayClusterFleetReconciler) getRayClusterMapForFleet(f *orchestrationv1a
 		return nil, err
 	}
 
-	err = r.List(context.TODO(), clusterList, client.InNamespace(f.Namespace), client.MatchingLabelsSelector{Selector: selector})
+	err = r.List(ctx, clusterList, client.InNamespace(f.Namespace), client.MatchingLabelsSelector{Selector: selector})
 	if err != nil {
 		return nil, err
 	}
