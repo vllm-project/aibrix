@@ -45,7 +45,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
-	ratelimiter "github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 )
@@ -254,7 +254,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	}
 
 	if username != "" {
-		user, err = utils.GetUser(utils.User{Name: username}, s.redisClient)
+		user, err = utils.GetUser(ctx, utils.User{Name: username}, s.redisClient)
 		if err != nil {
 			klog.ErrorS(err, "unable to process user info", "requestID", requestID, "username", username)
 			return generateErrorResponse(

@@ -153,7 +153,7 @@ func (r *RayClusterReplicaSetReconciler) Reconcile(ctx context.Context, req ctrl
 
 	// status update if necessary
 	newStatus := calculateStatus(replicaset, filteredClusters, scaleError)
-	if err := r.updateReplicaSetStatus(replicaset, newStatus, rsKey); err != nil {
+	if err := r.updateReplicaSetStatus(ctx, replicaset, newStatus, rsKey); err != nil {
 		return reconcile.Result{}, err
 	}
 
@@ -202,7 +202,7 @@ func (r *RayClusterReplicaSetReconciler) scaleDown(ctx context.Context, replicas
 }
 
 // updateReplicaSetStatus attempts to update the Status.Replicas of the given ReplicaSet, with a single GET/PUT retry.
-func (r *RayClusterReplicaSetReconciler) updateReplicaSetStatus(rs *orchestrationv1alpha1.RayClusterReplicaSet, newStatus orchestrationv1alpha1.RayClusterReplicaSetStatus, rsKey string) error {
+func (r *RayClusterReplicaSetReconciler) updateReplicaSetStatus(ctx context.Context, rs *orchestrationv1alpha1.RayClusterReplicaSet, newStatus orchestrationv1alpha1.RayClusterReplicaSetStatus, rsKey string) error {
 	// Check if the expectations have been fulfilled for this ReplicaSet
 	if !r.Expectations.SatisfiedExpectations(rsKey) {
 		klog.V(4).Info("Expectations not yet fulfilled for ReplicaSet, delaying status update", "replicaSet", rsKey)
@@ -227,7 +227,7 @@ func (r *RayClusterReplicaSetReconciler) updateReplicaSetStatus(rs *orchestratio
 	// Update ReplicaSet status if necessary
 	newInstance := rs.DeepCopy()
 	newInstance.Status = newStatus
-	if err := r.Status().Update(context.Background(), newInstance); err != nil {
+	if err := r.Status().Update(ctx, newInstance); err != nil {
 		klog.ErrorS(err, "unable to update ReplicaSet status")
 		return err
 	}
