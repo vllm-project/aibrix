@@ -85,3 +85,15 @@ def to_fluctuate_pattern_config(config_type: str,
                 'only_rise': False}
     else:
         raise ValueError(f"Unknown config type: {config_type}")
+    
+    
+def user_to_synthetic_config(user_config: Dict,
+                             duration_ms: int,):
+    return {
+        'A': float(user_config['fluctuate']), 
+        'B': float(user_config['mean']),
+        'sigma': float(user_config['noise']),
+        'period': duration_ms/float(user_config['period_len_ms']), 
+        'omega': None,
+        'only_rise': user_config['only_rise'],
+    }

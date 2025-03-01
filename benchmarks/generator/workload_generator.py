@@ -17,6 +17,7 @@ from sample_request import (load_requests,
 from distribution import (generate_poisson_dist,
                           generate_token_len_from_percentiles,
                           to_fluctuate_pattern_config,
+                          user_to_synthetic_config,
                           )
                           
 from utils import (convert_to_stat_df,
@@ -247,8 +248,10 @@ def generate_synthetic(prompt_file_path: str,
     sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
     while t < length:
         current_concurrency, previous_concurrency = math_function(t, qps_pattern_config, length, previous_concurrency)
-        current_input_len, previous_input_len = math_function(t, input_pattern_config, length, previous_input_len)
+        current_input_len, previous_input_len = math_function(t, input_pattern_config, length, previous_input_len) 
         current_output_len, previous_output_len = math_function(t, output_pattern_config, length, previous_output_len)
+        current_input_len = current_input_len if current_input_len > 0 else 1
+        current_output_len = current_output_len if current_output_len > 0 else 1
         current_concurrency_pois = generate_poisson_dist(target = current_concurrency, sample_size = 1)
         current_input_len_pois = generate_poisson_dist(target = current_input_len, sample_size = 1)
         current_output_len_pois = generate_poisson_dist(target = current_output_len, sample_size = 1)
@@ -421,9 +424,9 @@ if __name__ == '__main__':
         elif args.traffic_pattern_config and args.prompt_len_pattern_config and args.completion_len_pattern_config:
             logging.info(f"Generating synthetic workload with traffic pattern config: {args.traffic_pattern_config}, prompt length pattern config: {args.prompt_len_pattern_config}, completion length pattern config: {args.completion_len_pattern_config}")
             comp_pattern_type = f"synthetic_manual_config"
-            qps_pattern_config = load_config(args.traffic_pattern_config)
-            input_pattern_config = load_config(args.prompt_len_pattern_config)
-            output_pattern_config = load_config(args.completion_len_pattern_config)
+            qps_pattern_config = user_to_synthetic_config(user_config = load_config(args.traffic_pattern_config), duration_ms = args.duration_ms)
+            input_pattern_config = user_to_synthetic_config(user_config = load_config(args.prompt_len_pattern_config), duration_ms = args.duration_ms)
+            output_pattern_config = user_to_synthetic_config(user_config = load_config(args.completion_len_pattern_config), duration_ms = args.duration_ms)
             logging.debug(f"qps_pattern_config {qps_pattern_config}")
             logging.debug(f"input_pattern_config {input_pattern_config}")
             logging.debug(f"output_pattern_config {output_pattern_config}")
