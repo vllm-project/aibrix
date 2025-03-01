@@ -75,6 +75,7 @@ type Block struct {
 
 const (
 	modelIdentifier                       = "model.aibrix.ai/name"
+	nodeType                              = "ray.io/node-type"
 	podPort                               = 8000
 	defaultPodMetricRefreshIntervalInMS   = 50
 	expireWriteRequestTraceIntervalInMins = 10
@@ -294,6 +295,11 @@ func (c *Cache) addPod(obj interface{}) {
 	// only track pods with model deployments
 	modelName, ok := pod.Labels[modelIdentifier]
 	if !ok {
+		return
+	}
+	// ignore worker pods
+	nodeType, ok := pod.Labels[nodeType]
+	if ok && nodeType == "worker" {
 		return
 	}
 
