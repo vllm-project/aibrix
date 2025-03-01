@@ -34,7 +34,7 @@ COPY --from=builder /app/dist/*.whl ./
 
 # Install build dependencies and clean up in one step (avoiding creating another new layer)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc python3-dev \
+    && apt-get install -y --no-install-recommends gcc python3-dev mawk \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir ./*.whl \

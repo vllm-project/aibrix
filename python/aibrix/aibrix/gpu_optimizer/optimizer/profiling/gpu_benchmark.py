@@ -85,17 +85,16 @@ def sample_requests(
                 # print('the least requests: ', requests[len(requests) - 1])
                 return requests
         except Exception as e:
-            print_err(
-                f"Warning: Failed to load prompt dataset ({e}), falling back to synthetic prompts"
-            )
-
-    # Original synthetic prompt generation
-    requests = []
-    for _ in range(num_requests):
-        synthetic_prompt = "hi " * config_input_len
-        # assign timestamp to -1 for all requests
-        requests.append((synthetic_prompt, config_input_len, config_output_len, -1))
-    return requests
+            print_err(f"Warning: Failed to load prompt dataset ({e})")
+            return []
+    else:
+        # Original synthetic prompt generation
+        requests = []
+        for _ in range(num_requests):
+            synthetic_prompt = "hi " * config_input_len
+            # assign timestamp to -1 for all requests
+            requests.append((synthetic_prompt, config_input_len, config_output_len, -1))
+        return requests
 
 
 async def get_request(
@@ -169,6 +168,7 @@ async def send_request(
     }
     if api_key is not None or api_key != "":
         headers["Authorization"] = f"Bearer {api_key}"
+
     streaming = stream
     if backend == "vllm":
         pload = {
@@ -193,10 +193,12 @@ async def send_request(
     request_start_time = time.perf_counter()
     ts = datetime.now(timezone.utc)
     timeout = aiohttp.ClientTimeout(total=3 * 3600)
+    status_code = None
     async with aiohttp.ClientSession(timeout=timeout) as session:
         while True:
             # print(f"Sending request: {api_url}:{pload}")
             async with session.post(api_url, headers=headers, json=pload) as response:
+                status_code = response.status
                 chunks = []
                 token_latencies = []
                 previous_token_time = time.perf_counter()
@@ -245,12 +247,15 @@ async def send_request(
 
     if trace:
         request_trace = {
+            "request_id": idx,
             "input_tokens": prompt_len,
             "output_tokens": output_len
             if len(token_latencies) == 0
             else len(token_latencies) + 1,
             "timestamp": ts.strftime("%Y-%m-%d %H:%M:%S %Z%z"),
             "E2E": request_latency,
+            "status_code": status_code,
+            "success": status_code == 200 if status_code else False,
         }
         if len(token_latencies) > 0:
             request_trace["TTFT"] = time_to_first
@@ -310,6 +315,10 @@ async def benchmark(
 
 
 def main(args: argparse.Namespace):
+    # Set global temperature from args
+    global TEMPERATURE
+    TEMPERATURE = args.temperature
+
     result = {}
     if args.verbose:
         print(args)
@@ -319,6 +328,7 @@ def main(args: argparse.Namespace):
         result["request_rate"] = args.request_rate
         result["seed"] = args.seed
         result["model"] = args.model
+        result["temperature"] = args.temperature
         result["samples"] = args.num_prompts
 
     random.seed(args.seed)
@@ -498,5 +508,11 @@ if __name__ == "__main__":
         help="Path to a JSON file containing prompts",
     )
     parser.add_argument("--use-workload-interval", action="store_true")
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help="Temperature for text generation (default: 0.0)",
+    )
     args = parser.parse_args()
     main(args)
