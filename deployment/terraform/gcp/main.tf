@@ -39,5 +39,5 @@ module "aibrix" {
 
   aibrix_release_version = var.aibrix_release_version
 
-  deploy_model = var.deploy_example_model
+  deploy_example_model = var.deploy_example_model
 }
