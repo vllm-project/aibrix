@@ -11,24 +11,26 @@ def get_all_pods(namespace):
     pod_list = pod_list_output.decode('utf-8').split()
     return pod_list
 
-def write_logs(keywords, fname, process):
+def write_logs(include, exclude, fname, process):
     with open(fname, 'w') as log_file:
         while True:
             line = process.stdout.readline()
             if not line:
                 break
-            if len(keywords) == 0: # If there is no keyword, write all logs
+            if include is None and exclude is None:
                 log_file.write(line)
-                log_file.flush()
-            else:
-                for keyword in keywords:
-                    if keyword in line:
-                        # If there is keyword, write only the lines containing the keyword
-                        log_file.write(line)
-                        log_file.flush()
-                        break
+            elif include is not None and exclude is None:
+                if include in line:
+                    log_file.write(line)
+            elif include is None and exclude is not None:
+                if exclude not in line:
+                    log_file.write(line)
+            elif include is not None and exclude is not None:
+                if include in line and exclude not in line:
+                    log_file.write(line)
+            log_file.flush()
 
-def save_proxy_logs_streaming(pod_log_dir, pod_name, namespace):
+def save_proxy_logs_streaming(pod_log_dir, pod_name, namespace, include, exclude):
     if not os.path.exists(pod_log_dir):
         os.makedirs(pod_log_dir)
     
@@ -40,11 +42,7 @@ def save_proxy_logs_streaming(pod_log_dir, pod_name, namespace):
         stderr=subprocess.PIPE,
         universal_newlines=True
     )
-    if namespace == "default":
-        keywords = ["Avg prompt throughput:", "logger.py", "engine.py"]
-    else:
-        keywords = []
-    log_thread = threading.Thread(target=write_logs, args=(keywords, fname, process))
+    log_thread = threading.Thread(target=write_logs, args=(include, exclude, fname, process))
     log_thread.start()
     return process, log_thread
 
@@ -59,6 +57,12 @@ if __name__ == "__main__":
     target_deployment = sys.argv[1]
     namespace = sys.argv[2]
     pod_log_dir = sys.argv[3]
+    include = sys.argv[4]
+    exclude = sys.argv[5]
+    if include == "none":
+        include = None
+    if exclude == "none":
+        exclude = None
 
     running_processes = []
     signal.signal(signal.SIGINT, signal_handler)
@@ -68,7 +72,7 @@ if __name__ == "__main__":
         assert False
     for pod_name in all_pods:
         if target_deployment in pod_name:
-            process, thread = save_proxy_logs_streaming(pod_log_dir, pod_name, namespace)
+            process, thread = save_proxy_logs_streaming(pod_log_dir, pod_name, namespace, include, exclude)
             running_processes.append((process, thread))
     
     print(f"Started streaming logs for {len(all_pods)} pods")

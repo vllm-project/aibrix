@@ -43,10 +43,10 @@ For example,
 There are two plots that you can plot.
 
 ### Generating report
-`python plot-everything.py <experiment_home_dir>`
+`python <aibrix_root_repo>/benchmarks/plot/plot-everything.py <experiment_home_dir>`
 
 For example, 
-`python plot-everything.py experiment_results/25min_test`
+`python <aibrix_root_repo>/benchmarks/plot/plot-everything.py experiment_results/25min_test`
 
 The directories should look like
 ```bash
@@ -60,12 +60,12 @@ ls experiment_results/25min_test
 
 ### Generating per pod graph
 ```bash
-python plot_per_pod.py <experiment_pod_logs_dir>
+python <aibrix_root_repo>/benchmarks/plot/plot_per_pod.py <experiment_pod_logs_dir>
 ```
 
 For example,
 ```bash
-python plot_per_pod.py experiment_results/25min_test/25min_up_and_down-apa-least-request-20250209-064742/pod_logs
+python <aibrix_root_repo>/benchmarks/plot/plot_per_pod.py experiment_results/25min_test/25min_up_and_down-apa-least-request-20250209-064742/pod_logs
 ```
 Move all experiment output dir under the same dir (e.g., 25min_test) to compare them in the report.
 

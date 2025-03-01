@@ -2,8 +2,8 @@
 
 input_workload_path=$1
 autoscaler=$2
-aibrix_repo="/Users/bytedance/projects/aibrix-2" # root dir of aibrix repo
-api_key="sk-kFJ12nKsFVfVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BlbLi" # set your api key
+aibrix_repo="" # root dir of aibrix repo
+api_key="" # set your api key
 k8s_yaml_dir="deepseek-llm-7b-chat"
 target_deployment="deepseek-llm-7b-chat" # "aibrix-model-deepseek-llm-7b-chat"
 target_ai_model=deepseek-llm-7b-chat
@@ -66,7 +66,7 @@ kubectl delete -f ${k8s_yaml_dir}/deploy.yaml
 kubectl apply -f ${k8s_yaml_dir}/deploy.yaml
 kubectl apply -f ${k8s_yaml_dir}/${autoscaler}.yaml
 echo "kubectl apply -f ${k8s_yaml_dir}/${autoscaler}.yaml"
-python set_num_replicas.py --deployment ${target_deployment} --replicas 1
+python3 ${aibrix_repo}/benchmarks/utils/set_num_replicas.py --deployment ${target_deployment} --replicas 1
 echo "Set number of replicas to \"1\". Autoscaling experiment will start from 1 pod"
 
 echo "Restart aibrix-controller-manager deployment"
@@ -82,9 +82,9 @@ kubectl rollout restart deploy ${target_deployment} -n default
 sleep_before_pod_check=20
 echo "Sleep for ${sleep_before_pod_check} seconds after restarting deployment"
 sleep ${sleep_before_pod_check}
-python check_k8s_is_ready.py ${target_deployment}
-python check_k8s_is_ready.py aibrix-controller-manager
-python check_k8s_is_ready.py aibrix-gateway-plugins
+python3 ${aibrix_repo}/benchmarks/utils/check_k8s_is_ready.py ${target_deployment}
+python3 ${aibrix_repo}/benchmarks/utils/check_k8s_is_ready.py aibrix-controller-manager
+python3 ${aibrix_repo}/benchmarks/utils/check_k8s_is_ready.py aibrix-gateway-plugins
 
 # Start pod log monitoring
 pod_log_dir="${experiment_result_dir}/pod_logs"
@@ -94,14 +94,14 @@ mkdir -p ${pod_log_dir}
 cp ${input_workload_path} ${experiment_result_dir}
 
 # Start pod counter. It will run on background until the end of the experiment.
-python count_num_pods.py ${target_deployment} ${experiment_result_dir} &
+python3 ${aibrix_repo}/benchmarks/utils/count_num_pods.py ${target_deployment} ${experiment_result_dir} &
 COUNT_NUM_POD_PID=$!
 echo "started count_num_pods.py with PID: $COUNT_NUM_POD_PID"
 
 # Streaming pod logs to files on the background
-python streaming_pod_log_to_file.py ${target_deployment} default ${pod_log_dir} & pid_1=$!
-python streaming_pod_log_to_file.py aibrix-controller-manager aibrix-system ${pod_log_dir} & pid_2=$!
-python streaming_pod_log_to_file.py aibrix-gateway-plugins aibrix-system ${pod_log_dir} & pid_3=$!
+python3 ${aibrix_repo}/benchmarks/utils/streaming_pod_log_to_file.py ${target_deployment} default ${pod_log_dir} & pid_1=$!
+python3 ${aibrix_repo}/benchmarks/utils/streaming_pod_log_to_file.py aibrix-controller-manager aibrix-system ${pod_log_dir} & pid_2=$!
+python3 ${aibrix_repo}/benchmarks/utils/streaming_pod_log_to_file.py aibrix-gateway-plugins aibrix-system ${pod_log_dir} & pid_3=$!
 
 # Run experiment!!!
 output_jsonl_path=${experiment_result_dir}/output.jsonl
@@ -123,7 +123,7 @@ sleep 1
 
 # Cleanup
 kubectl delete podautoscaler --all --all-namespaces
-python set_num_replicas.py --deployment ${target_deployment} --replicas 1
+python3 ${aibrix_repo}/benchmarks/utils/set_num_replicas.py --deployment ${target_deployment} --replicas 1
 kubectl delete -f ${k8s_yaml_dir}/deploy.yaml
 
 # Stop monitoring processes
