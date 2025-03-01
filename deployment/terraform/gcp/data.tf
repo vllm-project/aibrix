@@ -12,5 +12,5 @@ data "google_compute_machine_types" "available" {
 }
 
 data "google_client_config" "default" {
-  depends_on = [google_container_cluster.main]
+  depends_on = [google_container_cluster.main, google_container_node_pool.gpu_node_pool]
 }

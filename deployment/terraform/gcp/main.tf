@@ -37,9 +37,7 @@ resource "google_container_node_pool" "gpu_node_pool" {
 module "aibrix" {
   source = "../kubernetes"
 
-  kube_host = "https://${google_container_cluster.main.endpoint}"
-  kube_access_token = data.google_client_config.default.access_token
-  kube_cluster_ca_certificate = base64decode(google_container_cluster.main.master_auth.0.cluster_ca_certificate)
-
   aibrix_release_version = var.aibrix_release_version
+
+  deploy_model = false
 }
