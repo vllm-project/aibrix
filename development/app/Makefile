@@ -1,13 +1,22 @@
-all: build
+# CONTAINER_TOOL defines the container tool to be used for building images.
+# Be aware that the target commands are only tested with Docker which is
+# scaffolded by default. However, you might want to replace it to use other
+# tools. (i.e. podman)
+CONTAINER_TOOL ?= docker
+
+# Image URL to use all building/pushing image targets
+AIBRIX_CONTAINER_REGISTRY_NAMESPACE ?= aibrix
+
+docker-build-all: docker-build-mock docker-build-simulator docker-build-simulator-a40
 
 docker-build-mock:
-	docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
+	$(CONTAINER_TOOL) build -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/vllm-mock:nightly -f Dockerfile .
 
 docker-build-simulator: 
-	docker build -t aibrix/vllm-simulator:nightly --build-arg SIMULATION=a100 -f Dockerfile .
+	$(CONTAINER_TOOL) build -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/vllm-simulator:nightly --build-arg SIMULATION=a100 -f Dockerfile .
 
 docker-build-simulator-a40:
-	docker build -t aibrix/vllm-simulator-a40:nightly --build-arg SIMULATION=a40 -f Dockerfile .
+	$(CONTAINER_TOOL) build -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/vllm-simulator-a40:nightly --build-arg SIMULATION=a40 -f Dockerfile .
 
 docker-build: docker-build-mock
 
