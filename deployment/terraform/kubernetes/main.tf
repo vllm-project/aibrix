@@ -43,7 +43,7 @@ resource "kubectl_manifest" "aibrix_core" {
 }
 
 resource "kubectl_manifest" "model_deployment" {
-  yaml_body = local.model_yaml[0]
+  yaml_body = local.model_yaml["Deployment"]
 
   depends_on = [kubectl_manifest.aibrix_core]
 
@@ -52,7 +52,7 @@ resource "kubectl_manifest" "model_deployment" {
 }
 
 resource "kubectl_manifest" "model_service" {
-  yaml_body = local.model_yaml[1]
+  yaml_body = local.model_yaml["Service"]
 
   depends_on = [kubectl_manifest.aibrix_core]
 
