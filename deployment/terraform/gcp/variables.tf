@@ -47,3 +47,9 @@ variable "node_pool_machine_count" {
   type        = number
   default     = 1
 }
+
+variable "aibrix_release_version" {
+  description = "The version of AIBRix to deploy"
+  type = string
+  default = "v0.2.0"
+}

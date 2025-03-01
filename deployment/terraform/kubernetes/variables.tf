@@ -1,7 +1,16 @@
-variable "kube_config_path" {
-  description = "Path to kubernetes config file."
+variable "kube_host" {
+  description = "Cluster API endpoint."
   type        = string
-  default     = "~/.kube/config"
+}
+
+variable "kube_access_token" {
+  description = "Kubernetes access token."
+  type = string
+}
+
+variable "kube_cluster_ca_certificate" {
+  description = "Kubernetes cluster CA certificate."
+  type = string
 }
 
 variable "aibrix_release_version" {

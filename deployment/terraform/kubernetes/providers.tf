@@ -1,9 +1,11 @@
 provider "kubernetes" {
-  config_path = var.kube_config_path
+  host = var.kube_host
+  token = var.kube_access_token
+  cluster_ca_certificate = var.kube_cluster_ca_certificate
 }
 
 provider "kubectl" {
-  config_path = var.kube_config_path
+  host = var.kube_host
+  token = var.kube_access_token
+  cluster_ca_certificate = var.kube_cluster_ca_certificate
 }
-
-provider "http" {}

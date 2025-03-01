@@ -10,3 +10,7 @@ data "google_compute_machine_types" "available" {
   filter = "name = \"a3*\" OR name = \"a2*\" OR name = \"g2*\""
   zone   = each.value
 }
+
+data "google_client_config" "default" {
+  depends_on = [google_container_cluster.main]
+}
