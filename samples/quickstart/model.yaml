@@ -51,7 +51,7 @@ spec:
               path: /health
               port: 8000
               scheme: HTTP
-            initialDelaySeconds: 360
+            initialDelaySeconds: 240
             periodSeconds: 5
             successThreshold: 1
             timeoutSeconds: 1
@@ -61,7 +61,7 @@ spec:
               path: /health
               port: 8000
               scheme: HTTP
-            initialDelaySeconds: 360
+            initialDelaySeconds: 240
             periodSeconds: 5
             successThreshold: 1
             timeoutSeconds: 1
