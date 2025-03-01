@@ -21,7 +21,7 @@ resource "google_container_node_pool" "gpu_node_pool" {
   cluster  = google_container_cluster.main.id
 
   node_locations = [local.available_node_pool_zones[0]]
-  node_count = var.node_pool_machine_count
+  node_count     = var.node_pool_machine_count
 
   node_config {
     machine_type = var.node_pool_machine_type
@@ -39,5 +39,5 @@ module "aibrix" {
 
   aibrix_release_version = var.aibrix_release_version
 
-  deploy_model = false
+  deploy_model = var.deploy_example_model
 }

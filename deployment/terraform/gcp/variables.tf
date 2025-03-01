@@ -49,7 +49,13 @@ variable "node_pool_machine_count" {
 }
 
 variable "aibrix_release_version" {
-  description = "The version of AIBRix to deploy"
-  type = string
-  default = "v0.2.0"
+  description = "The version of AIBRix to deploy."
+  type        = string
+  default     = "v0.2.0"
+}
+
+variable "deploy_example_model" {
+  description = "Whether to deploy the example model."
+  type        = bool
+  default     = true
 }
