@@ -4,8 +4,8 @@ variable "aibrix_release_version" {
   default     = "v0.2.0"
 }
 
-variable "deploy_model" {
+variable "deploy_example_model" {
   description = "Whether to deploy example model."
-  type = bool
-  default = true
+  type        = bool
+  default     = true
 }
