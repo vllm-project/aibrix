@@ -25,11 +25,11 @@ data "http" "model" {
   }
 }
 
-data "kubernetes_service" "model_service" {
+data "kubernetes_service" "aibrix_service" {
   metadata {
     name = "envoy-aibrix-system-aibrix-eg-903790dc"
     namespace = kubernetes_namespace.aibrix_dependency.metadata[0].name
   }
 
-  depends_on = [ kubectl_manifest.model ]
+  depends_on = [ kubectl_manifest.aibrix_dependency, kubectl_manifest.aibrix_core ]
 }

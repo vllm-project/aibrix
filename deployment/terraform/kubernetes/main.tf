@@ -42,13 +42,20 @@ resource "kubectl_manifest" "aibrix_core" {
   depends_on = [ kubernetes_namespace.aibrix_core, kubectl_manifest.aibrix_dependency ]
 }
 
-resource "kubectl_manifest" "model" {
-  for_each = local.model_yaml
-
-  yaml_body = each.value
-
-  # Server side apply to prevent errors installing CRDs
-  server_side_apply = true
+resource "kubectl_manifest" "model_deployment" {
+  yaml_body = local.model_yaml[0]
 
   depends_on = [ kubectl_manifest.aibrix_core ]
+
+  # Only create if deploy model is set true
+  count = var.deploy_model ? 1 : 0
+}
+
+resource "kubectl_manifest" "model_service" {
+  yaml_body = local.model_yaml[1]
+
+  depends_on = [ kubectl_manifest.aibrix_core ]
+
+  # Only create if deploy model is set true
+  count = var.deploy_model ? 1 : 0
 }
