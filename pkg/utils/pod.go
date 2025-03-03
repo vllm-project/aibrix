@@ -39,7 +39,7 @@ func IsPodTerminating(pod *v1.Pod) bool {
 
 // IsPodReady returns true if a pod is ready; false otherwise.
 func IsPodReady(pod *v1.Pod) bool {
-	return IsPodReadyConditionTrue(pod.Status)
+	return IsPodReadyConditionTrue(pod.Status) && IsContainerReadyConditionTrue(pod.Status)
 }
 
 // IsPodReadyConditionTrue returns true if a pod is ready; false otherwise.
@@ -48,10 +48,23 @@ func IsPodReadyConditionTrue(status v1.PodStatus) bool {
 	return condition != nil && condition.Status == v1.ConditionTrue
 }
 
+// IsContainerReadyConditionTrue returns true if a containers are ready; false otherwise.
+func IsContainerReadyConditionTrue(status v1.PodStatus) bool {
+	condition := GetContainersReadyCondition(status)
+	return condition != nil && condition.Status == v1.ConditionTrue
+}
+
 // GetPodReadyCondition extracts the pod ready condition from the given status and returns that.
 // Returns nil if the condition is not present.
 func GetPodReadyCondition(status v1.PodStatus) *v1.PodCondition {
 	_, condition := GetPodCondition(&status, v1.PodReady)
+	return condition
+}
+
+// GetContainersReadyCondition extracts the containers ready condition from the given status and returns that.
+// Returns nil if the condition is not present.
+func GetContainersReadyCondition(status v1.PodStatus) *v1.PodCondition {
+	_, condition := GetPodCondition(&status, v1.ContainersReady)
 	return condition
 }
 
