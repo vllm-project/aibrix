@@ -300,6 +300,7 @@ func (c *Cache) addPod(obj interface{}) {
 	// ignore worker pods
 	nodeType, ok := pod.Labels[nodeType]
 	if ok && nodeType == "worker" {
+		klog.InfoS("ignored ray worker pod", "name", pod.Name)
 		return
 	}
 
@@ -327,6 +328,20 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 	if oldOk {
 		delete(c.Pods, oldPod.Name)
 		c.deletePodAndModelMapping(oldPod.Name, oldModelName)
+	}
+
+	// ignore worker pods
+	nodeType, ok := oldPod.Labels[nodeType]
+	if ok && nodeType == "worker" {
+		klog.InfoS("ignored ray worker pod", "name", oldPod.Name)
+		return
+	}
+
+	// ignore worker pods
+	nodeType, ok = newPod.Labels[nodeType]
+	if ok && nodeType == "worker" {
+		klog.InfoS("ignored ray worker pod", "name", newPod.Name)
+		return
 	}
 
 	// Add new mappings if present
