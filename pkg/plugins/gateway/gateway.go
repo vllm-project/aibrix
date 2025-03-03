@@ -338,24 +338,6 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	}
 
 	stream, ok = jsonMap["stream"].(bool)
-	if stream && ok {
-		streamOptions, ok := jsonMap["stream_options"].(map[string]interface{})
-		if !ok {
-			klog.ErrorS(nil, "no stream option available", "requestID", requestID, "jsonMap", jsonMap)
-			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderErrorNoStreamOptions, RawValue: []byte("stream options not set")}}},
-				"no stream option available"), model, targetPodIP, stream, term
-		}
-		includeUsage, ok := streamOptions["include_usage"].(bool)
-		if !includeUsage || !ok {
-			klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID, "jsonMap", jsonMap)
-			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderErrorStreamOptionsIncludeUsage, RawValue: []byte("include usage for stream options not set")}}},
-				"no stream with usage option available"), model, targetPodIP, stream, term
-		}
-	}
 
 	headers := []*configPb.HeaderValueOption{}
 	if routingStrategy == "" {
