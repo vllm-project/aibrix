@@ -106,6 +106,10 @@ func TestWithIPPods(t *testing.T) {
 							Type:   v1.PodReady,
 							Status: v1.ConditionTrue,
 						},
+						{
+							Type:   v1.ContainersReady,
+							Status: v1.ConditionTrue,
+						},
 					},
 				},
 			},
@@ -119,6 +123,10 @@ func TestWithIPPods(t *testing.T) {
 					Conditions: []v1.PodCondition{
 						{
 							Type:   v1.PodReady,
+							Status: v1.ConditionTrue,
+						},
+						{
+							Type:   v1.ContainersReady,
 							Status: v1.ConditionTrue,
 						},
 					},
@@ -182,6 +190,10 @@ func TestSelectRandomPod(t *testing.T) {
 								Type:   v1.PodReady,
 								Status: v1.ConditionTrue,
 							},
+							{
+								Type:   v1.ContainersReady,
+								Status: v1.ConditionTrue,
+							},
 						},
 					},
 				},
@@ -199,6 +211,10 @@ func TestSelectRandomPod(t *testing.T) {
 								Type:   v1.PodReady,
 								Status: v1.ConditionTrue,
 							},
+							{
+								Type:   v1.ContainersReady,
+								Status: v1.ConditionTrue,
+							},
 						},
 					},
 				},
@@ -210,6 +226,10 @@ func TestSelectRandomPod(t *testing.T) {
 								Type:   v1.PodReady,
 								Status: v1.ConditionTrue,
 							},
+							{
+								Type:   v1.ContainersReady,
+								Status: v1.ConditionTrue,
+							},
 						},
 					},
 				},
@@ -219,6 +239,10 @@ func TestSelectRandomPod(t *testing.T) {
 						Conditions: []v1.PodCondition{
 							{
 								Type:   v1.PodReady,
+								Status: v1.ConditionTrue,
+							},
+							{
+								Type:   v1.ContainersReady,
 								Status: v1.ConditionTrue,
 							},
 						},
