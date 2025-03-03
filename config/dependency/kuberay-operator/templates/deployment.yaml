@@ -51,7 +51,7 @@ spec:
               protocol: TCP
           env:
             - name: ENABLE_PROBES_INJECTION
-              value: '"false"'
+              value: "false"
           livenessProbe:
             httpGet:
               path: /metrics
