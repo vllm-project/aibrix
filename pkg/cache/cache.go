@@ -75,6 +75,8 @@ type Block struct {
 
 const (
 	modelIdentifier                       = "model.aibrix.ai/name"
+	nodeType                              = "ray.io/node-type"
+	nodeWorker                            = "worker"
 	podPort                               = 8000
 	defaultPodMetricRefreshIntervalInMS   = 50
 	expireWriteRequestTraceIntervalInMins = 10
@@ -296,6 +298,12 @@ func (c *Cache) addPod(obj interface{}) {
 	if !ok {
 		return
 	}
+	// ignore worker pods
+	nodeType, ok := pod.Labels[nodeType]
+	if ok && nodeType == nodeWorker {
+		klog.InfoS("ignored ray worker pod", "name", pod.Name)
+		return
+	}
 
 	c.Pods[pod.Name] = pod
 	c.addPodAndModelMappingLocked(pod.Name, modelName)
@@ -321,6 +329,20 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 	if oldOk {
 		delete(c.Pods, oldPod.Name)
 		c.deletePodAndModelMapping(oldPod.Name, oldModelName)
+	}
+
+	// ignore worker pods
+	nodeType, ok := oldPod.Labels[nodeType]
+	if ok && nodeType == nodeWorker {
+		klog.InfoS("ignored ray worker pod", "name", oldPod.Name)
+		return
+	}
+
+	// ignore worker pods
+	nodeType, ok = newPod.Labels[nodeType]
+	if ok && nodeType == nodeWorker {
+		klog.InfoS("ignored ray worker pod", "name", newPod.Name)
+		return
 	}
 
 	// Add new mappings if present
