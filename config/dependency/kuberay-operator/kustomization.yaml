@@ -4,9 +4,9 @@ kind: Kustomization
 # The workaround is to use kustomize namespace override to create under aibrix-system namespace.
 
 resources:
-- crds/ray.io_rayclusters.yaml
-- crds/ray.io_rayjobs.yaml
-- crds/ray.io_rayservices.yaml
+# - crds/ray.io_rayclusters.yaml
+# - crds/ray.io_rayjobs.yaml
+# - crds/ray.io_rayservices.yaml
 - templates/deployment.yaml
 - templates/leader_election_role.yaml
 - templates/leader_election_role_binding.yaml
