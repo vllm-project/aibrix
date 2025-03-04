@@ -1,0 +1,137 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-facebook-opt-125m
+  namespace: default
+  labels:
+    model.aibrix.ai/name: "facebook-opt-125m"
+    model.aibrix.ai/port: "8000"
+    adapter.model.aibrix.ai/enabled: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      adapter.model.aibrix.ai/enabled: "true"
+      model.aibrix.ai/name: "facebook-opt-125m"
+      app: "mock-facebook-opt-125m"
+  template:
+    metadata:
+      labels:
+        adapter.model.aibrix.ai/enabled: "true"
+        model.aibrix.ai/name: "facebook-opt-125m"
+        app: "mock-facebook-opt-125m"
+    spec:
+      serviceAccountName: mocked-app-sa
+      containers:
+        - name: llm-engine
+          image: aibrix/vllm-cpu-env:macos
+          ports:
+            - containerPort: 8000
+          command:
+            - python3
+            - -m
+            - vllm.entrypoints.openai.api_server
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --uvicorn-log-level
+            - warning
+            - --model
+            - facebook/opt-125m 
+            - --served-model-name 
+            - facebook-opt-125m 
+            - --chat-template 
+            - /etc/chat-template-config/chat-template.j2 
+            - --trust-remote-code 
+            - --device 
+            - cpu 
+            - --disable_async_output_proc 
+            - --enforce-eager 
+            - --dtype 
+            - float16
+          env:
+            - name: DEPLOYMENT_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app']
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          volumeMounts:
+          - name: model
+            mountPath: /root/.cache/huggingface
+          - name: chat-template-volume
+            mountPath: /etc/chat-template-config
+        - name: aibrix-runtime
+          image: aibrix/runtime:nightly
+          command:
+            - aibrix_runtime
+            - --port
+            - "8080"
+          env:
+            - name: INFERENCE_ENGINE
+              value: vllm
+            - name: INFERENCE_ENGINE_ENDPOINT
+              value: http://localhost:8000
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: model
+          hostPath:
+            path: /root/.cache/huggingface
+        - name: chat-template-volume
+          configMap:
+            name: chat-template-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chat-template-config
+data:
+  chat-template.j2: |
+    {%- if messages[0]['role'] == 'system' -%}
+    {%- set system_message = messages[0]['content'] -%}
+    {%- set messages = messages[1:] -%}
+    {%- else -%}
+        {% set system_message = '' -%}
+    {%- endif -%}
+
+    {{ bos_token + system_message }}
+    {%- for message in messages -%}
+        {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
+            {{ raise_exception('Conversation roles must alternate user/assistant/user/assistant/...') }}
+        {%- endif -%}
+
+        {%- if message['role'] == 'user' -%}
+            {{ 'USER: ' + message['content'] + '\n' }}
+        {%- elif message['role'] == 'assistant' -%}
+            {{ 'ASSISTANT: ' + message['content'] + eos_token + '\n' }}
+        {%- endif -%}
+    {%- endfor -%}
+
+    {%- if add_generation_prompt -%}
+        {{ 'ASSISTANT:' }}
+    {% endif %}

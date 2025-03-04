@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -233,7 +232,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		}
 	}
 
-	routingStrategy, routingStrategyEnabled := GetRoutingStrategy(h.RequestHeaders.Headers.Headers)
+	routingStrategy, routingStrategyEnabled := getRoutingStrategy(h.RequestHeaders.Headers.Headers)
 	if routingStrategyEnabled && !validateRoutingStrategy(routingStrategy) {
 		klog.ErrorS(nil, "incorrect routing strategy", "routing-strategy", routingStrategy)
 		return generateErrorResponse(
@@ -328,22 +327,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	}
 
 	stream, ok = jsonMap["stream"].(bool)
-	if stream && ok {
-		streamOptions, ok := jsonMap["stream_options"].(map[string]interface{})
-		if !ok {
-			klog.ErrorS(nil, "no stream option available", "requestID", requestID, "jsonMap", jsonMap)
-			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderErrorNoStreamOptions, RawValue: []byte("stream options not set")}}},
-				"no stream option available"), model, targetPodIP, stream, term
-		}
-		includeUsage, ok := streamOptions["include_usage"].(bool)
-		if !includeUsage || !ok {
-			klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID, "jsonMap", jsonMap)
-			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderErrorStreamOptionsIncludeUsage, RawValue: []byte("include usage for stream options not set")}}},
-				"no stream with usage option available"), model, targetPodIP, stream, term
+	if ok && stream {
+		if errRes := validateStreamOptions(requestID, user, jsonMap); errRes != nil {
+			return errRes, model, targetPodIP, stream, term
 		}
 	}
 
@@ -437,7 +423,7 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 
 func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, targetPodIP string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
-	klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID, "endOfSteam", b.ResponseBody.EndOfStream)
+	klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID, "endOfStream", b.ResponseBody.EndOfStream)
 
 	var res openai.ChatCompletion
 	var usage openai.CompletionUsage
@@ -685,87 +671,4 @@ func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, po
 	}
 
 	return route.Route(ctx, pods, model, message)
-}
-
-func validateRoutingStrategy(routingStrategy string) bool {
-	routingStrategy = strings.TrimSpace(routingStrategy)
-	return slices.Contains(routingStrategies, routingStrategy)
-}
-
-func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, body string) *extProcPb.ProcessingResponse {
-	// Set the Content-Type header to application/json
-	headers = append(headers, &configPb.HeaderValueOption{
-		Header: &configPb.HeaderValue{
-			Key:   "Content-Type",
-			Value: "application/json",
-		},
-	})
-
-	return &extProcPb.ProcessingResponse{
-		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
-			ImmediateResponse: &extProcPb.ImmediateResponse{
-				Status: &envoyTypePb.HttpStatus{
-					Code: statusCode,
-				},
-				Headers: &extProcPb.HeaderMutation{
-					SetHeaders: headers,
-				},
-				Body: generateErrorMessage(body, int(statusCode)),
-			},
-		},
-	}
-}
-
-func getRequestMessage(jsonMap map[string]interface{}) (string, *extProcPb.ProcessingResponse) {
-	messages, ok := jsonMap["messages"]
-	if !ok {
-		return "", generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: HeaderErrorRequestBodyProcessing, RawValue: []byte("true")}}},
-			"no messages in the request body")
-	}
-	messagesJSON, err := json.Marshal(messages)
-	if err != nil {
-		return "", generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: HeaderErrorRequestBodyProcessing, RawValue: []byte("true")}}},
-			"unable to marshal messages from request body")
-	}
-	return string(messagesJSON), nil
-}
-
-// GetRoutingStrategy retrieves the routing strategy from the headers or environment variable
-// It returns the routing strategy value and whether custom routing strategy is enabled.
-func GetRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
-	var routingStrategy string
-	routingStrategyEnabled := false
-
-	// Check headers for routing strategy
-	for _, header := range headers {
-		if strings.ToLower(header.Key) == HeaderRoutingStrategy {
-			routingStrategy = string(header.RawValue)
-			routingStrategyEnabled = true
-			break // Prioritize header value over environment variable
-		}
-	}
-
-	// If header not set, check environment variable
-	if !routingStrategyEnabled {
-		if value, exists := utils.CheckEnvExists(EnvRoutingAlgorithm); exists {
-			routingStrategy = value
-			routingStrategyEnabled = true
-		}
-	}
-
-	return routingStrategy, routingStrategyEnabled
-}
-
-// generateErrorMessage constructs a JSON error message using fmt.Sprintf
-func generateErrorMessage(message string, code int) string {
-	errorStruct := map[string]interface{}{
-		"error": map[string]interface{}{
-			"message": message,
-			"code":    code,
-		},
-	}
-	jsonData, _ := json.Marshal(errorStruct)
-	return string(jsonData)
 }
