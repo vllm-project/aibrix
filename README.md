@@ -38,7 +38,7 @@ cd aibrix
 kubectl create -k config/dependency
 
 # Install nightly aibrix components
-kubectl create -k config/default
+kubectl apply -k config/default
 ```
 
 Install stable distribution
@@ -47,7 +47,7 @@ Install stable distribution
 kubectl create -k "github.com/vllm-project/aibrix/config/dependency?ref=v0.2.0"
 
 # Install aibrix components
-kubectl create -k "github.com/vllm-project/aibrix/config/overlays/release?ref=v0.2.0"
+kubectl apply -k "github.com/vllm-project/aibrix/config/overlays/release?ref=v0.2.0"
 ```
 
 ## Documentation
