@@ -16,15 +16,6 @@ data "http" "aibrix_core" {
   }
 }
 
-data "http" "model" {
-  url = "https://raw.githubusercontent.com/vllm-project/aibrix/refs/heads/main/samples/quickstart/model.yaml"
-
-  # Optional request headers
-  request_headers = {
-    Accept = "application/json"
-  }
-}
-
 data "kubernetes_service" "aibrix_service" {
   metadata {
     name      = "envoy-aibrix-system-aibrix-eg-903790dc"
