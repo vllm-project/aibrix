@@ -9,3 +9,4 @@ plotly_express
 fasteners
 transformers
 git+https://github.com/zhangjyr/vidur.git
+ray[default]
