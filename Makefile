@@ -227,7 +227,7 @@ endif
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
     ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization
-	$(KUBECTL) create -k config/dependency
+	$(KUBECTL) apply -k config/dependency --server-side
 
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
@@ -244,7 +244,7 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 .PHONY: install-vke
 install-vke: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
     ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization
-	$(KUBECTL) create -k config/overlays/vke/dependency
+	$(KUBECTL) apply -k config/overlays/vke/dependency --server-side
 
 .PHONY: uninstall-vke
 uninstall-vke: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
@@ -252,7 +252,7 @@ uninstall-vke: manifests kustomize ## Uninstall CRDs from the K8s cluster specif
 
 .PHONY: deploy-vke
 deploy-vke: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/overlays/vke/default | $(KUBECTL) create -f -
+	$(KUSTOMIZE) build config/overlays/vke/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy-vke
 undeploy-vke: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
@@ -260,7 +260,7 @@ undeploy-vke: kustomize ## Undeploy controller from the K8s cluster specified in
 
 .PHONY: deploy-vke-ipv4
 deploy-vke-ipv4: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/overlays/vke-ipv4/default | $(KUBECTL) create -f -
+	$(KUSTOMIZE) build config/overlays/vke-ipv4/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy-vke-ipv4
 undeploy-vke-ipv4: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
