@@ -115,7 +115,7 @@ func TestGetRoutingStrategy(t *testing.T) {
 			_ = os.Unsetenv("ROUTING_ALGORITHM")
 		}
 
-		routingStrategy, enabled := GetRoutingStrategy(tt.headers)
+		routingStrategy, enabled := getRoutingStrategy(tt.headers)
 		assert.Equal(t, tt.expectedStrategy, routingStrategy, tt.message)
 		assert.Equal(t, tt.expectedEnabled, enabled, tt.message)
 
