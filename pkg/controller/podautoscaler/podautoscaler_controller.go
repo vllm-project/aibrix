@@ -22,8 +22,11 @@ import (
 	"time"
 
 	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/config"
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/scaler"
 	podutil "github.com/aibrix/aibrix/pkg/utils"
@@ -621,6 +624,16 @@ func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context,
 		return 0, "", currentTimestamp, err
 	}
 
+	// Append ray head worker requirement for label selector
+	if scale.GetAPIVersion() == orchestrationv1alpha1.GroupVersion.String() && scale.GetKind() == "RayClusterFleet" {
+		newRequirement, err := labels.NewRequirement("ray.io/node-type", selection.Equals, []string{"head"})
+		if err != nil {
+			klog.ErrorS(err, "Failed to add new requirements ray.io/node-type: head to label selector")
+			return 0, "", currentTimestamp, err
+		}
+		labelsSelector = labelsSelector.Add(*newRequirement)
+	}
+
 	originalReadyPodsCount, err := scaler.GetReadyPodsCount(ctx, r.Client, pa.Namespace, labelsSelector)
 
 	if err != nil {
@@ -700,6 +713,16 @@ func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa 
 	labelsSelector, err := extractLabelSelector(scale)
 	if err != nil {
 		return err
+	}
+
+	// Append ray head worker requirement for label selector
+	if scale.GetAPIVersion() == orchestrationv1alpha1.GroupVersion.String() && scale.GetKind() == "RayClusterFleet" {
+		newRequirement, err := labels.NewRequirement("ray.io/node-type", selection.Equals, []string{"head"})
+		if err != nil {
+			klog.ErrorS(err, "Failed to add new requirements ray.io/node-type: head to label selector")
+			return err
+		}
+		labelsSelector = labelsSelector.Add(*newRequirement)
 	}
 
 	// Get pod list managed by scaleTargetRef
