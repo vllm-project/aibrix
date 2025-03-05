@@ -17,8 +17,6 @@ limitations under the License.
 package prefixcacheindexer
 
 import (
-	"bytes"
-	"encoding/binary"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -121,7 +119,7 @@ func NewPrefixHashTable() PrefixCacheIndexer {
 
 // returns matchedTokens, unMatchedTokens, matchedPods
 // TODO: add an interface with multiple implementations such as hash or radix tree
-func (c *PrefixHashTable) MatchPrefix(tokens []int, model string, pods []*v1.Pod) ([]int, []int, []*v1.Pod) {
+func (c *PrefixHashTable) MatchPrefix(tokens []string, model string, pods []*v1.Pod) ([]string, []string, []*v1.Pod) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	var block, lastMatchedBlock Block
@@ -134,8 +132,9 @@ func (c *PrefixHashTable) MatchPrefix(tokens []int, model string, pods []*v1.Pod
 			end = len(tokens)
 		}
 
-		chunk := tokens[i:end]
-		_, _ = c.hash.Write(IntArrayToByteArray(chunk))
+		for _, b := range stringArrayToByteArray(tokens[i:end]) {
+			_, _ = c.hash.Write(b)
+		}
 		prefixHash := c.hash.Sum64()
 		c.hash.ResetWithSeed(c.seed)
 		block, ok = c.blocks[prefixHash]
@@ -164,7 +163,7 @@ func (c *PrefixHashTable) MatchPrefix(tokens []int, model string, pods []*v1.Pod
 	return matchedTokens, unMatchedTokens, matchedPods
 }
 
-func (c *PrefixHashTable) AddPrefix(unMatchedTokens []int, model, pod string) {
+func (c *PrefixHashTable) AddPrefix(unMatchedTokens []string, model, pod string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -174,8 +173,9 @@ func (c *PrefixHashTable) AddPrefix(unMatchedTokens []int, model, pod string) {
 			end = len(unMatchedTokens)
 		}
 
-		chunk := unMatchedTokens[i:end]
-		_, _ = c.hash.Write(IntArrayToByteArray(chunk))
+		for _, b := range stringArrayToByteArray(unMatchedTokens[i:end]) {
+			_, _ = c.hash.Write(b)
+		}
 		prefixHash := c.hash.Sum64()
 		c.hash.ResetWithSeed(c.seed)
 		block, ok := c.blocks[prefixHash]
@@ -209,13 +209,11 @@ func (c *PrefixHashTable) Evict(now time.Time) {
 	}
 }
 
-func IntArrayToByteArray(intArray []int) []byte {
-	buf := new(bytes.Buffer)
-	for _, val := range intArray {
-		err := binary.Write(buf, binary.LittleEndian, int32(val))
-		if err != nil {
-			panic(err)
-		}
+// stringArrayToByteArray converts a string array to a byte array.
+func stringArrayToByteArray(stringArray []string) [][]byte {
+	byteArray := make([][]byte, len(stringArray))
+	for i, str := range stringArray {
+		byteArray[i] = []byte(str)
 	}
-	return buf.Bytes()
+	return byteArray
 }
