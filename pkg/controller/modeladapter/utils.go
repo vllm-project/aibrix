@@ -23,45 +23,9 @@ import (
 	"os"
 	"strings"
 
-	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-func validateModelAdapter(instance *modelv1alpha1.ModelAdapter) error {
-	if instance.Spec.ArtifactURL == "" {
-		return fmt.Errorf("artifactURL is required")
-	}
-
-	if instance.Spec.PodSelector == nil {
-		return fmt.Errorf("podSelector is required")
-	}
-
-	if _, err := url.ParseRequestURI(instance.Spec.ArtifactURL); err != nil {
-		return fmt.Errorf("artifactURL is not a valid URL: %v", err)
-	}
-
-	if err := validateArtifactURL(instance.Spec.ArtifactURL); err != nil {
-		return err
-	}
-
-	if instance.Spec.Replicas != nil && *instance.Spec.Replicas <= 0 {
-		return fmt.Errorf("replicas must be greater than 0")
-	}
-
-	return nil
-}
-
-// validateArtifactURL checks if the ArtifactURL has a valid schema (s3://, gcs://, huggingface://, https://, /)
-func validateArtifactURL(artifactURL string) error {
-	allowedSchemes := []string{"s3://", "gcs://", "huggingface://", "hf://", "/"}
-	for _, scheme := range allowedSchemes {
-		if strings.HasPrefix(artifactURL, scheme) {
-			return nil
-		}
-	}
-	return fmt.Errorf("artifactURL must start with one of the following schemes: s3://, gcs://, huggingface://")
-}
 
 func equalStringSlices(a, b []string) bool {
 	if len(a) != len(b) {
