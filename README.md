@@ -31,7 +31,7 @@ To get started with AIBrix, clone this repository and follow the setup instructi
 
 ```shell
 # Prerequisites:
-# After installing Docker and Kubernetes, please make sure your Kubernetes cluster ready, and then run the following commands to install AIBrix components in your Kubernetes cluster.
+# Please get your Kubernetes cluster ready, and then run the following commands to install AIBrix components in your Kubernetes cluster.
 
 
 # Local Testing

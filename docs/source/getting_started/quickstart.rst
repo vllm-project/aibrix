@@ -34,7 +34,8 @@ Deploy Base Model
 ^^^^^^^^^^^^^^^^^
 
 .. note::
-In the given example, please ensure that your node is equipped with NVIDIA GPUs. Otherwise, the pod will stuck in pending state.
+In the given example, please ensure that your node is equipped with AI accelerators supported by Kubernetes [Device Plugin](https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/device-plugins/).
+Otherwise, the pod will stuck in pending state.
 
 Save yaml as `model.yaml` and run `kubectl apply -f model.yaml`.
 
