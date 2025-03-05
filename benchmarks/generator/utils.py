@@ -96,18 +96,16 @@ def read_distribution_stats(df: pd.DataFrame) -> Tuple[List[Dict], List[Dict], L
     rps_configs = []
     for _, row in df.iterrows():
         input_len_configs.append({
-            "p50": float(row['input_len_p50']),
-            "p70": float(row['input_len_p70']),
-            "p90": float(row['input_len_p90']),
-            "p99": float(row['input_len_p99']),
+            "median": float(row['input_len_p50']),
+            "percentiles": [0.5, 0.7, 0.9, 0.99],
+            "token_lengths": [float(row['input_len_p50']), float(row['input_len_p70']), float(row['input_len_p90']), float(row['input_len_p99'])],
             "period": section_in_seconds,
             "total_seconds": section_in_seconds
         })
         output_len_configs.append({
-            "p50": float(row['output_len_p50']),
-            "p70": float(row['output_len_p70']),
-            "p90": float(row['output_len_p90']),
-            "p99": float(row['output_len_p99']),
+            "median": float(row['output_len_p50']),
+            "percentiles": [0.5, 0.7, 0.9, 0.99],
+            "token_lengths": [float(row['output_len_p50']), float(row['output_len_p70']), float(row['output_len_p90']), float(row['output_len_p99'])],
             "period": section_in_seconds,
             "total_seconds": section_in_seconds
         })
