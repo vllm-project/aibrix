@@ -17,6 +17,7 @@ from sample_request import (load_requests,
 from distribution import (generate_poisson_dist,
                           generate_token_len_from_percentiles,
                           to_fluctuate_pattern_config,
+                          user_to_synthetic_config,
                           )
                           
 from utils import (convert_to_stat_df,
@@ -51,7 +52,7 @@ def generate_from_internal_csv(prompt_file_path: str,
     output_len_dist = []
     rps_dist = []
     for rps_config in rps_configs:
-        rps_segment = generate_poisson_dist(target = rps_config['mean_rps'], sample_size = rps_config['total_seconds'], generate_poisson_dist = 10)
+        rps_segment = generate_poisson_dist(target = rps_config['mean_rps'], sample_size = rps_config['total_seconds'], smooth_window_size = 10)
         rps_dist.extend(rps_segment)
     if internal_trace_type == "maas":
         for config in input_len_configs:
@@ -146,7 +147,7 @@ def generate_constant(prompt_file_path: str,
             num_requests=qps,
             input_lens=[None] * qps, 
             output_lens=[None] * qps, 
-            initial_err_perc=0.5,
+            initial_err_perc=0.1,
             err_step=0.05
         )
         if concurrent_reqs:  # Only add non-empty groups
@@ -240,8 +241,10 @@ def generate_synthetic(prompt_file_path: str,
     sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
     while t < length:
         current_concurrency, previous_concurrency = math_function(t, qps_pattern_config, length, previous_concurrency)
-        current_input_len, previous_input_len = math_function(t, input_pattern_config, length, previous_input_len)
+        current_input_len, previous_input_len = math_function(t, input_pattern_config, length, previous_input_len) 
         current_output_len, previous_output_len = math_function(t, output_pattern_config, length, previous_output_len)
+        current_input_len = current_input_len if current_input_len > 0 else 1
+        current_output_len = current_output_len if current_output_len > 0 else 1
         current_concurrency_pois = generate_poisson_dist(target = current_concurrency, sample_size = 1)
         current_input_len_pois = generate_poisson_dist(target = current_input_len, sample_size = 1)
         current_output_len_pois = generate_poisson_dist(target = current_output_len, sample_size = 1)
@@ -312,7 +315,7 @@ def generate_from_azure_csv(file_path: str,
             num_requests=len(input_lens),
             input_lens=input_lens,
             output_lens=output_lens,
-            initial_err_perc=0.5,
+            initial_err_perc=0.1,
             err_step=0.05
         )
 
@@ -426,9 +429,9 @@ if __name__ == '__main__':
         elif args.traffic_pattern_config and args.prompt_len_pattern_config and args.completion_len_pattern_config:
             logging.info(f"Generating synthetic workload with traffic pattern config: {args.traffic_pattern_config}, prompt length pattern config: {args.prompt_len_pattern_config}, completion length pattern config: {args.completion_len_pattern_config}")
             comp_pattern_type = f"synthetic_manual_config"
-            qps_pattern_config = load_config(args.traffic_pattern_config)
-            input_pattern_config = load_config(args.prompt_len_pattern_config)
-            output_pattern_config = load_config(args.completion_len_pattern_config)
+            qps_pattern_config = user_to_synthetic_config(user_config = load_config(args.traffic_pattern_config), duration_ms = args.duration_ms)
+            input_pattern_config = user_to_synthetic_config(user_config = load_config(args.prompt_len_pattern_config), duration_ms = args.duration_ms)
+            output_pattern_config = user_to_synthetic_config(user_config = load_config(args.completion_len_pattern_config), duration_ms = args.duration_ms)
             logging.debug(f"qps_pattern_config {qps_pattern_config}")
             logging.debug(f"input_pattern_config {input_pattern_config}")
             logging.debug(f"output_pattern_config {output_pattern_config}")
@@ -451,7 +454,7 @@ if __name__ == '__main__':
                                                     interval_ms=args.interval_ms,
                                                     output_file=f"{args.output_dir}/{args.trace_type}",
                                                     to_jsonl=(args.output_format == "jsonl"),
-                                                    )
+                                                )
         elif args.trace_type == "internal":
             generated_workload = generate_from_internal_csv(prompt_file_path=args.prompt_file, 
                                                             duration_ms=args.duration_ms, 
@@ -465,7 +468,7 @@ if __name__ == '__main__':
                                                             input_scale=args.input_scale,
                                                             output_scale=args.output_scale,
                                                             internal_trace_type=args.internal_trace_type,
-                                                            )
+                                                        )
 
         elif args.trace_type == "azure":
             generated_workload = generate_from_azure_csv(file_path=args.traffic_file, 
@@ -485,5 +488,5 @@ if __name__ == '__main__':
             plot_workload(
                 workload_name = workload_name, 
                 workload = workload, 
-                bin_size_sec = int(args.interval_ms/1000), 
-                output_dir = f"./plot")
+                bin_size_sec = int(args.interval_ms/1000) * 60, 
+                output_dir = f"{args.output_dir}")
