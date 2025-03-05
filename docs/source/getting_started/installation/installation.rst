@@ -43,7 +43,7 @@ Nightly Version
     kubectl create -k config/default
 
 
-Install AIBrix in testing Environments
+Install AIBrix in Testing Environments
 --------------------------------------
 
 .. toctree::
