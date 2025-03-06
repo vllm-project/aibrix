@@ -62,7 +62,7 @@ def sample_requests_len_range(
         output_lens: List[int],
         initial_err_perc: Optional[float] = 0.5,
         err_step: float = 0.05,
-        adapter_name: str = None,
+        model: str = None,
 ) -> List[Tuple[str, int, int, None]]:
     filtered_results = []
 
@@ -94,7 +94,7 @@ def sample_requests_len_range(
                 total_rows = len(filtered)
                 sample = filtered.iloc[random.randint(0, total_rows - 1)] 
                 filtered_results.append({"prompt": sample["prompt"],
-                                         "adapter_name": adapter_name,
+                                         "model": model,
                                          "prompt_length": sample["prompt_len"],
                                          "output_length": sample["completion_len"]})
                 break  # Stop relaxing for this request once a match is found
@@ -108,7 +108,7 @@ def sample_requests_len_range(
             total_rows = len(df)
             sample = df.iloc[random.randint(0, total_rows - 1)] 
             filtered_results.append({"prompt": sample["prompt"],
-                                     "adapter_name": adapter_name,
+                                     "model": model,
                                      "prompt_length": sample["prompt_len"],
                                      "output_length": sample["completion_len"]})
 
@@ -119,7 +119,7 @@ def sample_requests_all(
         df: pd.DataFrame,
         start_idx: int,
         qps: int,
-        adapter_name: None,
+        model: None,
 ) -> List[Tuple[str, int, int, None]]:
     results = []
 
@@ -129,7 +129,7 @@ def sample_requests_all(
         print(f"start_idx {start_idx} end_idx {end_idx} i {i} len {len(df)} ")
         row = df.iloc[i]
         results.append({"prompt": row["prompt"],
-                        "adapter": adapter_name,
+                        "model": model,
                         "prompt_length": row["prompt_len"],
                         "output_length": row["completion_len"]})
 
