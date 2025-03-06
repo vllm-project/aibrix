@@ -3,7 +3,7 @@ name: Linter and Unit Tests
 on:
   workflow_dispatch:  # Allows manual trigger
   push:
-    branches: [ "main" ]
+    branches: [ "main", "release-*" ]
     paths:
       - 'pkg/**'
       - 'cmd/**'
