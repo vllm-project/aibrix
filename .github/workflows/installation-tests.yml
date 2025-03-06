@@ -15,7 +15,7 @@ on:
       - 'go.mod'
       - 'go.sum'
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "release-*" ]
     paths:
       - '.github/workflows/**'
       - 'build/container/**' 
