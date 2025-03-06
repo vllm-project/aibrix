@@ -5,13 +5,17 @@ from scipy import stats
 from scipy.optimize import minimize
 
 def generate_poisson_dist(target: int, sample_size: int, smooth_window_size: int = 1) -> List[int]:
-    rps_list = np.random.poisson(lam=target, size=sample_size).tolist()
-    # Apply moving average smoothing
     smoothed = []
-    for i in range(len(rps_list)):
-        start = max(0, i - smooth_window_size + 1)
-        window = rps_list[start:i + 1]
-        smoothed.append(max(1, round(sum(window) / len(window))))
+    if target == 0:
+        for _ in range(0, sample_size):
+            smoothed.append(0)
+    else:
+        rps_list = np.random.poisson(lam=target, size=sample_size).tolist()
+        # Apply moving average smoothing
+        for i in range(len(rps_list)):
+            start = max(0, i - smooth_window_size + 1)
+            window = rps_list[start:i + 1]
+            smoothed.append(max(1, round(sum(window) / len(window))))
     return smoothed
 
 def generate_token_len_from_percentiles(
@@ -24,12 +28,12 @@ def generate_token_len_from_percentiles(
     amplitude_factor: float = 0.2  # Controls the amplitude of sinusoidal variation
 ) -> List[int]:
     for idx in range(len(token_lengths) - 1):
-        if token_lengths[idx] >= token_lengths[idx + 1]:
-            raise ValueError("Percentiles must be strictly increasing")
+        if token_lengths[idx] > token_lengths[idx + 1]:
+            raise ValueError("Percentiles must be non-decreasing")
     if not len(percentiles) == len(token_lengths):
         raise ValueError(f"percentiles and token_lengths should have matching length: {percentiles} : {token_lengths}")
-    if token_lengths[0] <= 0:
-        raise ValueError("Token lengths must be positive")
+    if token_lengths[0] < 0:
+        raise ValueError(f"Token lengths must be non-negative: {token_lengths[0]}")
     
     token_lengths = [x / scale for x in token_lengths]
     log_lengths = np.log(token_lengths)

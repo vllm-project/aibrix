@@ -120,15 +120,18 @@ def generate_synthetic_from_dist(
         inter_arrival_time = 1000 if current_rate == 0 else np.random.exponential(scale=1000/current_rate) 
         current_time += inter_arrival_time
         if current_time < total_seconds * 1000:
-            request = sample_requests_len_range(
-                df=prompt_df,
-                num_requests=1,
-                input_lens=[current_input_len],
-                output_lens=[current_output_len],
-                initial_err_perc=0.5,
-                err_step=0.05,
-                model=model,
-            )
+            if current_rate != 0:
+                request = sample_requests_len_range(
+                    df=prompt_df,
+                    num_requests=1,
+                    input_lens=[current_input_len],
+                    output_lens=[current_output_len],
+                    initial_err_perc=0.5,
+                    err_step=0.05,
+                    model=model,
+                )
+            else:
+                request = []
             workload.append({"timestamp": int(current_time), "requests": request})  
             if current_time > duration_ms:
                 break
@@ -243,34 +246,33 @@ def generate_synthetic(prompt_file_path: str,
     previous_input_len = -1
     previous_output_len = -1
     ts = 0
-    base_req_id = 0
     
-    sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
+    rps_dist = []
+    input_token_len_dist = []
+    output_token_len_dist = []
     while t < length:
         current_concurrency, previous_concurrency = math_function(t, qps_pattern_config, length, previous_concurrency)
         current_input_len, previous_input_len = math_function(t, input_pattern_config, length, previous_input_len) 
         current_output_len, previous_output_len = math_function(t, output_pattern_config, length, previous_output_len)
         current_input_len = current_input_len if current_input_len > 0 else 1
         current_output_len = current_output_len if current_output_len > 0 else 1
-        current_concurrency_pois = generate_poisson_dist(target = current_concurrency, sample_size = 1)
-        current_input_len_pois = generate_poisson_dist(target = current_input_len, sample_size = 1)
-        current_output_len_pois = generate_poisson_dist(target = current_output_len, sample_size = 1)
-        # start from last end index
-        logging.debug(f"search requests for current_concurrency {current_concurrency} : {current_concurrency_pois} input_lens {current_input_len} : {current_input_len_pois} output_lens {current_output_len} : {current_output_len_pois}")
-        concurrent_reqs = sample_requests_len_range(
-            df=sharegpt_df,
-            num_requests=current_concurrency,
-            input_lens=[current_input_len] * current_concurrency, 
-            output_lens=[current_output_len] * current_concurrency, 
-            initial_err_perc=0.1,
-            err_step=0.05,
-            model=model,
-        )
-        workload.append({"timestamp": ts, "requests": concurrent_reqs})  
-        base_req_id += current_concurrency
+        rps_dist.append(current_concurrency)
+        input_token_len_dist.append(current_input_len)
+        output_token_len_dist.append(current_output_len)
         ts += interval_ms
         t += 1
-   
+        
+    workload = generate_synthetic_from_dist(
+        prompt_file_path = prompt_file_path,
+        tokenizer = tokenizer,
+        duration_ms =  duration_ms,
+        rps_dist = rps_dist,
+        input_token_len_dist = input_token_len_dist,
+        output_token_len_dist = output_token_len_dist,
+        qps_scale = 1.0,
+        input_scale = 1.0,
+        output_scale = 1.0,
+    )
     workload = make_serializable(workload)
     save_workload(workload, output_file, use_jsonl=to_jsonl)
     return workload
@@ -487,5 +489,5 @@ if __name__ == '__main__':
             plot_workload(
                 workload_name = workload_name, 
                 workload = workload, 
-                bin_size_sec = int(args.interval_ms/1000) * 60, 
+                bin_size_sec = int(args.interval_ms/1000), 
                 output_dir = f"{args.output_dir}")

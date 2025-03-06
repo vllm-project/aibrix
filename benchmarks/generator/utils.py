@@ -217,8 +217,8 @@ def plot_workload(workload_name: str,
 
     # Formatting plots
     for ax, ylabel, title in zip([ax_qps, ax_input, ax_output],
-                                  ["Requests per Minute", "Prompt Token Count", "Output Token Count"],
-                                  ["Total Requests Sent per Minute", "Total Prompt Tokens per Minute", "Total Output Tokens per Minute"]):
+                                  ["Requests per Second", "Prompt Token Count", "Output Token Count"],
+                                  ["Total Requests Sent per Second", "Total Prompt Tokens per Second", "Total Output Tokens per Second"]):
         ax.set_xlabel("Time (seconds)")
         ax.set_ylabel(ylabel)
         ax.set_title(title)
