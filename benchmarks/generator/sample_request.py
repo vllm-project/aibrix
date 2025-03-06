@@ -55,47 +55,6 @@ def load_generated_dataset(
     logging.warn(f"...Complete dataframe transformation")
     return df
 
-def sample_sharegpt_requests(
-        dataset_path: str,
-        num_requests: int,
-        tokenizer: Optional[PreTrainedTokenizerBase] = None,
-        fixed_output_len: Optional[int] = None,
-        adapter_name: str = None,
-) -> List[Tuple[str, int, int, None]]:
-    # Load the dataset
-    with open(dataset_path, encoding='utf-8') as f:
-        dataset = json.load(f)
-    dataset = [data for data in dataset if len(data["conversations"]) >= 2]
-    dataset = [(data["conversations"][0]["value"], data["conversations"][1]["value"]) for data in dataset]
-
-    filtered_dataset: List[Tuple[str, int, int]] = []
-    for i in range(len(dataset)):
-        if len(filtered_dataset) == num_requests:
-            break
-        prompt = dataset[i][0]
-        if tokenizer is not None:
-            prompt_token_ids = tokenizer(prompt).input_ids
-            completion = dataset[i][1]
-            completion_token_ids = tokenizer(completion).input_ids
-            prompt_len = len(prompt_token_ids)
-            output_len = len(completion_token_ids) if fixed_output_len is None else fixed_output_len
-            if prompt_len < 4 or (fixed_output_len is None and output_len < 4):
-                continue
-            if prompt_len > 1024 or prompt_len + output_len > 2048:
-                continue
-            filtered_dataset.append({"prompt": prompt,
-                                     "adapter_name": adapter_name,
-                                     "prompt_length": prompt_len,
-                                     "output_length": output_len})
-        else:
-            filtered_dataset.append({"prompt": prompt,
-                                     "adapter_name": adapter_name,
-                                     "prompt_length": -1,
-                                     "output_length": -1})
-
-    return filtered_dataset
-
-
 def sample_requests_len_range(
         df: pd.DataFrame,
         num_requests: int,
