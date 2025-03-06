@@ -21,6 +21,7 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	modelapi "github.com/vllm-project/aibrix/api/model/v1alpha1"
 )
@@ -60,6 +61,22 @@ var _ = ginkgo.Describe("modelAdapter default and validation", func() {
 				gomega.Expect(k8sClient.Create(ctx, tc.adapter())).To(gomega.Succeed())
 			}
 		},
+		ginkgo.Entry("normal creation", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				adapter := modelapi.ModelAdapter{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-adapter",
+						Namespace: ns.Name,
+					},
+					Spec: modelapi.ModelAdapterSpec{
+						ArtifactURL: "s3://test-bucket/test-model",
+						PodSelector: &metav1.LabelSelector{},
+					},
+				}
+				return &adapter
+			},
+			failed: false,
+		}),
 		ginkgo.Entry("adapter creation with invalid artifactURL should be failed", &testValidatingCase{
 			adapter: func() *modelapi.ModelAdapter {
 				adapter := modelapi.ModelAdapter{
@@ -69,6 +86,71 @@ var _ = ginkgo.Describe("modelAdapter default and validation", func() {
 					},
 					Spec: modelapi.ModelAdapterSpec{
 						ArtifactURL: "aabbcc",
+						PodSelector: &metav1.LabelSelector{},
+					},
+				}
+				return &adapter
+			},
+			failed: true,
+		}),
+		ginkgo.Entry("adapter creation with empty artifactURL should be failed", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				adapter := modelapi.ModelAdapter{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-adapter",
+						Namespace: ns.Name,
+					},
+					Spec: modelapi.ModelAdapterSpec{
+						ArtifactURL: "",
+						PodSelector: &metav1.LabelSelector{},
+					},
+				}
+				return &adapter
+			},
+			failed: true,
+		}),
+		ginkgo.Entry("adapter creation with empty podSelector should be failed", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				adapter := modelapi.ModelAdapter{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-adapter",
+						Namespace: ns.Name,
+					},
+					Spec: modelapi.ModelAdapterSpec{
+						ArtifactURL: "s3://test-bucket/test-model",
+						PodSelector: &metav1.LabelSelector{},
+						Replicas:    ptr.To[int32](0),
+					},
+				}
+				return &adapter
+			},
+			failed: true,
+		}),
+		ginkgo.Entry("adapter creation with replicas less than 0 should be failed", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				adapter := modelapi.ModelAdapter{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-adapter",
+						Namespace: ns.Name,
+					},
+					Spec: modelapi.ModelAdapterSpec{
+						ArtifactURL: "s3://test-bucket/test-model",
+						PodSelector: nil,
+					},
+				}
+				return &adapter
+			},
+			failed: true,
+		}),
+		ginkgo.Entry("adapter creation with unsupported schema should be failed", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				adapter := modelapi.ModelAdapter{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-adapter",
+						Namespace: ns.Name,
+					},
+					Spec: modelapi.ModelAdapterSpec{
+						ArtifactURL: "ms://",
 						PodSelector: &metav1.LabelSelector{},
 					},
 				}
