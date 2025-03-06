@@ -2,7 +2,7 @@ name: Docker Push Images
 
 on:
   push:
-    branches: [ "main", "release-*"]
+    branches: [ "main", "release-*" ]
 
 jobs:
   build:
