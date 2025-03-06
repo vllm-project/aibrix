@@ -34,16 +34,17 @@ logging.basicConfig(level=logging.INFO)
 
 def generate_from_internal_csv(prompt_file_path: str, 
                             duration_ms: int,
-                            tokenizer: PreTrainedTokenizerBase,
-                            output_file: str = 'output/output',
+                            tokenizer: PreTrainedTokenizerBase,       
                             qps_stat: str = None,
                             input_stat: str = None,
                             output_stat: str = None,
-                            to_jsonl: bool = False,
                             qps_scale: float = 1.0,
                             input_scale: float = 1.0,
                             output_scale: float = 1.0,
                             internal_trace_type: str = 'maas',
+                            model: str = None,
+                            output_file: str = 'output/output',
+                            to_jsonl: bool = False,
                             ) -> Dict[str, Any]:
     merged_df = convert_to_stat_df(qps_stat, input_stat, output_stat, internal_trace_type)
     input_len_configs, output_len_configs, rps_configs = read_distribution_stats(merged_df)
@@ -80,6 +81,7 @@ def generate_from_internal_csv(prompt_file_path: str,
         qps_scale = qps_scale,
         input_scale = input_scale,
         output_scale = output_scale,
+        model = model,
     )
     
     workload = make_serializable(workload)
@@ -96,6 +98,7 @@ def generate_synthetic_from_dist(
         qps_scale: float,
         input_scale: float,
         output_scale: float,
+        model: str = None,
     ) -> List[Dict[str, Any]]:
     
     if not (len(rps_dist) == len(input_token_len_dist) == len(output_token_len_dist)):
@@ -122,7 +125,8 @@ def generate_synthetic_from_dist(
                 input_lens=[current_input_len],
                 output_lens=[current_output_len],
                 initial_err_perc=0.5,
-                err_step=0.05
+                err_step=0.05,
+                model=model,
             )
             workload.append({"timestamp": int(current_time), "requests": request})  
             if current_time > duration_ms:
@@ -134,6 +138,7 @@ def generate_constant(prompt_file_path: str,
                        qps: int, 
                        duration_ms: int = None,
                        interval_ms: int = None,
+                       model: str = None,
                        output_file: str = 'output/output',
                        to_jsonl: bool = False,
                        ) -> List[List[Any]]:
@@ -147,7 +152,8 @@ def generate_constant(prompt_file_path: str,
             input_lens=[None] * qps, 
             output_lens=[None] * qps, 
             initial_err_perc=0.5,
-            err_step=0.05
+            err_step=0.05,
+            model=model,
         )
         if concurrent_reqs:  # Only add non-empty groups
             workload.append({"timestamp": ts, "requests": concurrent_reqs})  
@@ -172,6 +178,7 @@ def generate_synthetic(prompt_file_path: str,
                        output_pattern_config: Dict[str, Any],
                        duration_ms: int = None,
                        interval_ms: int = None,
+                       model: str = None,
                        output_file: str = 'output/output',
                        to_jsonl: bool = False,
                        ) -> List[List[Any]]:
@@ -253,7 +260,8 @@ def generate_synthetic(prompt_file_path: str,
             input_lens=[current_input_len] * current_concurrency, 
             output_lens=[current_output_len] * current_concurrency, 
             initial_err_perc=0.1,
-            err_step=0.05
+            err_step=0.05,
+            model=model,
         )
         workload.append({"timestamp": ts, "requests": concurrent_reqs})  
         base_req_id += current_concurrency
@@ -270,6 +278,7 @@ def generate_from_azure_csv(file_path: str,
                             duration_ms: int,
                             tokenizer: PreTrainedTokenizerBase,
                             interval_ms: int,
+                            model: str = None,
                             output_file: str = 'output/output',
                             to_jsonl: bool = False,
                             ) -> List[List[Any]]:
@@ -313,7 +322,8 @@ def generate_from_azure_csv(file_path: str,
             input_lens=input_lens,
             output_lens=output_lens,
             initial_err_perc=0.5,
-            err_step=0.05
+            err_step=0.05,
+            model=model,
         )
 
         if sampled_requests:  # Only add non-empty groups
@@ -331,25 +341,6 @@ def generate_from_azure_csv(file_path: str,
     return grouped_requests
 
 
-def pair_requests_with_prompts_round_robin(workload: List[List[Any]],
-                                           prompts: List[Tuple[str, int, int, None]],
-                                           output_file: str = 'output/output',
-                                           to_jsonl: bool = False
-                                           ) -> List[List[Tuple[Any, str]]]:
-    paired_workload = []
-    prompt_count = len(prompts)
-    for ts, requests in workload:
-        requests_with_prompts = [
-            prompts[request % prompt_count] for request in requests
-        ]
-        paired_workload.append({"timestamp": ts, "requests": requests_with_prompts})
-
-    # Save to file
-    save_workload(paired_workload, output_file, use_jsonl = to_jsonl)
-
-    return paired_workload
-
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Workload Generator')
@@ -357,12 +348,15 @@ if __name__ == '__main__':
     parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'internal', 'azure'],
                         help='Type of trace consumed. Choose among: synthetic, internal, azure.')
     parser.add_argument('--model', type=str, required=False, default="Qwen/Qwen2.5-Coder-7B-Instruct",
+                        help='Target model for the workload.')
+    parser.add_argument('--tokenizer', type=str, required=False, default="Qwen/Qwen2.5-Coder-7B-Instruct",
                         help='Target model tokenizer.')
     parser.add_argument('--interval-ms', type=int, required=False, default=1000,
                         help='Granularity of request injection interval in milliseconds.')
     parser.add_argument('--duration-ms', type=int, default=60000, help='Duration of the trace generated.')
     parser.add_argument('--group-interval-seconds', type=int, default=1, help='Grouping interval seconds.')
     parser.add_argument('--internal-trace-type', type=str, choices=['maas', 'cloudide'], default="maas", help='Type of internal traces.')
+    parser.add_argument('--adapter-name', type=str, required=False, default=None, help='Adapter name associated with workload (if applied).')
     parser.add_argument('--output-dir', type=str, required=False, default="output", help='Output directory to save.'
                                                                                          'the workload.')
     parser.add_argument('--output-format', type=str, choices=['json', 'jsonl'], default='json',
@@ -401,7 +395,7 @@ if __name__ == '__main__':
 
     # Generate workloads and pair with prompts
     workload_dict = {}
-    tokenizer = get_tokenizer(pretrained_model_name_or_path=args.model, trust_remote_code=True)
+    tokenizer = get_tokenizer(pretrained_model_name_or_path=args.tokenizer, trust_remote_code=True)
 
     if args.trace_type == "synthetic":
         if args.traffic_pattern and args.prompt_len_pattern and args.completion_len_pattern:
@@ -419,6 +413,7 @@ if __name__ == '__main__':
                                                     output_pattern_config = output_pattern_config,
                                                     duration_ms=args.duration_ms,
                                                     interval_ms=args.interval_ms,
+                                                    model=args.model,
                                                     output_file=f"{args.output_dir}/{comp_pattern_type}",
                                                     to_jsonl=(args.output_format == "jsonl"),
                                                 )
@@ -438,6 +433,7 @@ if __name__ == '__main__':
                                                     output_pattern_config = output_pattern_config,
                                                     duration_ms=args.duration_ms,
                                                     interval_ms=args.interval_ms,
+                                                    model=args.model,
                                                     output_file=f"{args.output_dir}/{comp_pattern_type}",
                                                     to_jsonl=(args.output_format == "jsonl"),
                                                 )
@@ -449,6 +445,7 @@ if __name__ == '__main__':
                                                     qps=1,
                                                     duration_ms=args.duration_ms, 
                                                     interval_ms=args.interval_ms,
+                                                    adapter_name=args.adapter_name,
                                                     output_file=f"{args.output_dir}/{args.trace_type}",
                                                     to_jsonl=(args.output_format == "jsonl"),
                                                     )
@@ -456,15 +453,16 @@ if __name__ == '__main__':
             generated_workload = generate_from_internal_csv(prompt_file_path=args.prompt_file, 
                                                             duration_ms=args.duration_ms, 
                                                             tokenizer=tokenizer,
-                                                            output_file=f"{args.output_dir}/{args.trace_type}",
                                                             qps_stat=args.traffic_file, 
                                                             input_stat=args.prompt_len_file, 
                                                             output_stat=args.completion_len_file,
-                                                            to_jsonl=(args.output_format == "jsonl"),
                                                             qps_scale=args.qps_scale,
                                                             input_scale=args.input_scale,
                                                             output_scale=args.output_scale,
                                                             internal_trace_type=args.internal_trace_type,
+                                                            model=args.model,
+                                                            output_file=f"{args.output_dir}/{args.trace_type}",
+                                                            to_jsonl=(args.output_format == "jsonl"),
                                                             )
 
         elif args.trace_type == "azure":
@@ -473,6 +471,7 @@ if __name__ == '__main__':
                                                          duration_ms=args.duration_ms, 
                                                          tokenizer=tokenizer,
                                                          interval_ms=args.interval_ms, 
+                                                         model=args.model,
                                                          output_file=f"{args.output_dir}/{args.trace_type}",
                                                          to_jsonl=(args.output_format == "jsonl"),
                                                          )
