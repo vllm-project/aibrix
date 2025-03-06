@@ -18,7 +18,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metadata"
@@ -31,7 +30,7 @@ import (
 func main() {
 	redisClient := utils.GetRedisClient()
 
-	fmt.Println("starting cache")
+	klog.Info("starting cache")
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 	var config *rest.Config
