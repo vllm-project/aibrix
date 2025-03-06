@@ -51,7 +51,7 @@ spec:
       value:
         name: original_route
         match:
-          prefix: "/v1/chat/completions"
+          prefix: "/v1"
           headers:
           - name: "routing-strategy"
             string_match:

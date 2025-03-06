@@ -49,7 +49,7 @@ func NewHTTPServer(addr string, redis *redis.Client) *http.Server {
 	r.HandleFunc("/ReadUser", server.readUser).Methods("POST")
 	r.HandleFunc("/UpdateUser", server.updateUser).Methods("POST")
 	r.HandleFunc("/DeleteUser", server.deleteUser).Methods("POST")
-	r.HandleFunc("/models", server.models).Methods("GET")
+	r.HandleFunc("/v1/models", server.models).Methods("GET")
 
 	return &http.Server{
 		Addr:    addr,
