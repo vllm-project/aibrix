@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	modelapi "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 type ModelAdapterWebhook struct{}
@@ -63,6 +64,14 @@ func (w *ModelAdapterWebhook) ValidateCreate(ctx context.Context, obj runtime.Ob
 
 	if _, err := url.ParseRequestURI(adapter.Spec.ArtifactURL); err != nil {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("artifactURL"), adapter.Spec.ArtifactURL, fmt.Sprintf("artifactURL is invalid: %v", err)))
+	}
+
+	if adapter.Spec.Replicas != nil && *adapter.Spec.Replicas <= 0 {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("replicas"), adapter.Spec.Replicas, "replicas must be greater than 0"))
+	}
+
+	if err := utils.ValidateArtifactURL(adapter.Spec.ArtifactURL); err != nil {
+		allErrs = append(allErrs, field.NotSupported(specPath.Child("artifactURL"), adapter.Spec.ArtifactURL, utils.AllowedSchemas))
 	}
 
 	return nil, allErrs.ToAggregate()
