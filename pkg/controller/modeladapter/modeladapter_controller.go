@@ -335,20 +335,6 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	oldInstance := instance.DeepCopy()
-	// Step 0: Validate ModelAdapter configurations
-	if err := validateModelAdapter(instance); err != nil {
-		klog.Error(err, "Failed to validate the ModelAdapter")
-		instance.Status.Phase = modelv1alpha1.ModelAdapterFailed
-		condition := NewCondition(string(modelv1alpha1.ModelAdapterPending), metav1.ConditionFalse,
-			ValidationFailedReason, "ModelAdapter resource is not valid")
-		// TODO: no need to update the status if the status remain the same
-		if updateErr := r.updateStatus(ctx, instance, condition); updateErr != nil {
-			klog.ErrorS(err, "Failed to update ModelAdapter status", "modelAdapter", klog.KObj(instance))
-			return reconcile.Result{}, updateErr
-		}
-
-		return ctrl.Result{}, err
-	}
 
 	// Step 1: Schedule Pod for ModelAdapter
 	selectedPod := &corev1.Pod{}
