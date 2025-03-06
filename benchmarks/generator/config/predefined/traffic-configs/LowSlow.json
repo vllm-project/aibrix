@@ -2,6 +2,6 @@
     "fluctuate": 0.6, 
     "mean": 6, 
     "noise": 0.1,
-    "period_len_ms": 1200000,
+    "period_len_ms": 840000,
     "only_rise": false
 }

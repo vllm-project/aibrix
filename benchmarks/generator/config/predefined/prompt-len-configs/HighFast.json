@@ -1,5 +1,5 @@
 {
-    "fluctuate": 2048, 
+    "fluctuate": 696, 
     "mean": 1024, 
     "noise": 0.1,
     "period_len_ms": 90000,

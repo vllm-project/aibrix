@@ -1,7 +1,7 @@
 {
-    "fluctuate": 3.6, 
+    "fluctuate": 1.74, 
     "mean": 6, 
     "noise": 0.1,
-    "period_len_ms": 1200000,
+    "period_len_ms": 840000,
     "only_rise": false
 }
