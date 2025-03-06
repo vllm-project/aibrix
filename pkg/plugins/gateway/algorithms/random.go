@@ -24,6 +24,14 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
+var (
+	RouterRandom Algorithms = "random"
+)
+
+func init() {
+	Register(RouterRandom, func() (Router, error) { return NewRandomRouter() })
+}
+
 type randomRouter struct {
 }
 

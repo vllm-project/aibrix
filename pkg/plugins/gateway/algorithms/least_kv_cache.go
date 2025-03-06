@@ -28,6 +28,14 @@ import (
 	"k8s.io/klog/v2"
 )
 
+var (
+	RouterLeastKvCache Algorithms = "least-kv-cache"
+)
+
+func init() {
+	Register(RouterLeastKvCache, func() (Router, error) { return NewLeastKvCacheRouter() })
+}
+
 type leastKvCacheRouter struct {
 	cache *cache.Cache
 }

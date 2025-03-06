@@ -88,7 +88,7 @@ func main() {
 	s := grpc.NewServer()
 
 	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(redisClient, k8sClient))
-	healthPb.RegisterHealthServer(s, &gateway.HealthServer{})
+	healthPb.RegisterHealthServer(s, gateway.NewHealthCheckServer())
 
 	klog.Info("starting gRPC server on port :50052")
 
