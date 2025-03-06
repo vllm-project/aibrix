@@ -86,10 +86,14 @@ func validateRoutingStrategy(routingStrategy string) bool {
 // getRequestMessage returns input request message field which has user prompt
 func getRequestMessage(jsonMap map[string]interface{}) (string, *extProcPb.ProcessingResponse) {
 	messages, ok := jsonMap["messages"]
+	if !ok || messages == "" {
+		messages, ok = jsonMap["prompt"]
+	}
+
 	if !ok {
 		return "", generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: HeaderErrorRequestBodyProcessing, RawValue: []byte("true")}}},
-			"no messages in the request body")
+			"no messages/prompt in the request body")
 	}
 	messagesJSON, err := json.Marshal(messages)
 	if err != nil {
