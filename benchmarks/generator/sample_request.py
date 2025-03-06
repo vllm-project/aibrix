@@ -60,6 +60,7 @@ def sample_sharegpt_requests(
         num_requests: int,
         tokenizer: Optional[PreTrainedTokenizerBase] = None,
         fixed_output_len: Optional[int] = None,
+        adapter_name: str = None,
 ) -> List[Tuple[str, int, int, None]]:
     # Load the dataset
     with open(dataset_path, encoding='utf-8') as f:
@@ -83,10 +84,12 @@ def sample_sharegpt_requests(
             if prompt_len > 1024 or prompt_len + output_len > 2048:
                 continue
             filtered_dataset.append({"prompt": prompt,
+                                     "adapter_name": adapter_name,
                                      "prompt_length": prompt_len,
                                      "output_length": output_len})
         else:
             filtered_dataset.append({"prompt": prompt,
+                                     "adapter_name": adapter_name,
                                      "prompt_length": -1,
                                      "output_length": -1})
 
@@ -99,7 +102,8 @@ def sample_requests_len_range(
         input_lens: List[int],
         output_lens: List[int],
         initial_err_perc: Optional[float] = 0.5,
-        err_step: float = 0.05
+        err_step: float = 0.05,
+        adapter_name: str = None,
 ) -> List[Tuple[str, int, int, None]]:
     filtered_results = []
 
@@ -131,6 +135,7 @@ def sample_requests_len_range(
                 total_rows = len(filtered)
                 sample = filtered.iloc[random.randint(0, total_rows - 1)] 
                 filtered_results.append({"prompt": sample["prompt"],
+                                         "adapter_name": adapter_name,
                                          "prompt_length": sample["prompt_len"],
                                          "output_length": sample["completion_len"]})
                 break  # Stop relaxing for this request once a match is found
@@ -144,6 +149,7 @@ def sample_requests_len_range(
             total_rows = len(df)
             sample = df.iloc[random.randint(0, total_rows - 1)] 
             filtered_results.append({"prompt": sample["prompt"],
+                                     "adapter_name": adapter_name,
                                      "prompt_length": sample["prompt_len"],
                                      "output_length": sample["completion_len"]})
 
@@ -153,7 +159,8 @@ def sample_requests_len_range(
 def sample_requests_all(
         df: pd.DataFrame,
         start_idx: int,
-        qps: int
+        qps: int,
+        adapter_name: None,
 ) -> List[Tuple[str, int, int, None]]:
     results = []
 
@@ -163,6 +170,7 @@ def sample_requests_all(
         print(f"start_idx {start_idx} end_idx {end_idx} i {i} len {len(df)} ")
         row = df.iloc[i]
         results.append({"prompt": row["prompt"],
+                        "adapter": adapter_name,
                         "prompt_length": row["prompt_len"],
                         "output_length": row["completion_len"]})
 
