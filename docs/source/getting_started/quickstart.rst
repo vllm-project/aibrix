@@ -66,7 +66,7 @@ Depending on where you deployed the AIBrix, you can use either of the following 
 
 .. code-block:: bash
     # list models
-    curl -v http://${ENDPOINT}/models
+    curl -v http://${ENDPOINT}/v1/models
 
     # completion api
     curl -v http://${ENDPOINT}/v1/completions \

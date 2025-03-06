@@ -127,6 +127,12 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 		return
 	}
 
+	modelHeaderMatch := gatewayv1.HTTPHeaderMatch{
+		Type:  ptr.To(gatewayv1.HeaderMatchExact),
+		Name:  modelHeaderIdentifier,
+		Value: modelName,
+	}
+
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-router", modelName),
@@ -150,11 +156,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 								Value: ptr.To("/v1/completions"),
 							},
 							Headers: []gatewayv1.HTTPHeaderMatch{
-								{
-									Type:  ptr.To(gatewayv1.HeaderMatchExact),
-									Name:  modelHeaderIdentifier,
-									Value: modelName,
-								},
+								modelHeaderMatch,
 							},
 						},
 						{
@@ -163,11 +165,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 								Value: ptr.To("/v1/chat/completions"),
 							},
 							Headers: []gatewayv1.HTTPHeaderMatch{
-								{
-									Type:  ptr.To(gatewayv1.HeaderMatchExact),
-									Name:  modelHeaderIdentifier,
-									Value: modelName,
-								},
+								modelHeaderMatch,
 							},
 						},
 					},
