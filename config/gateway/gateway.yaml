@@ -32,27 +32,6 @@ spec:
     bufferLimit: 1048576
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: EnvoyExtensionPolicy
-metadata:
-  name: gateway-plugins-extension-policy
-  namespace: aibrix-system
-spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: Gateway
-    name: aibrix-eg
-  extProc:
-    - backendRefs:
-        - name: aibrix-gateway-plugins
-          port: 50052
-      processingMode:
-        request:
-          body: Buffered
-        response: 
-          body: Streamed
-      messageTimeout: 5s
----
-apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyPatchPolicy
 metadata:
   name: epp
@@ -72,7 +51,7 @@ spec:
       value:
         name: original_route
         match:
-          prefix: "/"
+          prefix: "/v1"
           headers:
           - name: "routing-strategy"
             string_match:

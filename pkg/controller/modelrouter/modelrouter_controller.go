@@ -152,6 +152,10 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 									Value: modelName,
 								},
 							},
+							Path: &gatewayv1.HTTPPathMatch{
+								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+								Value: ptr.To("/v1"),
+							},
 						},
 					},
 					BackendRefs: []gatewayv1.HTTPBackendRef{

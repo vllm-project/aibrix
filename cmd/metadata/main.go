@@ -17,13 +17,40 @@ limitations under the License.
 package main
 
 import (
+	"flag"
+	"fmt"
+
+	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metadata"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 )
 
 func main() {
 	redisClient := utils.GetRedisClient()
+
+	fmt.Println("starting cache")
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	var config *rest.Config
+	var err error
+
+	// ref: https://github.com/kubernetes-sigs/controller-runtime/issues/878#issuecomment-1002204308
+	kubeConfig := flag.Lookup("kubeconfig").Value.String()
+	if kubeConfig == "" {
+		klog.Info("using in-cluster configuration")
+		config, err = rest.InClusterConfig()
+	} else {
+		klog.Infof("using configuration from '%s'", kubeConfig)
+		config, err = clientcmd.BuildConfigFromFlags("", kubeConfig)
+	}
+
+	if err != nil {
+		panic(err)
+	}
+	cache.NewCache(config, stopCh, redisClient)
 
 	klog.Info("Starting listening on port 8090")
 	srv := metadata.NewHTTPServer(":8090", redisClient)

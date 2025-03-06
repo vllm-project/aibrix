@@ -542,6 +542,18 @@ func (c *Cache) GetPodsForModel(modelName string) (map[string]*v1.Pod, error) {
 	return podsMap, nil
 }
 
+func (c *Cache) GetModels() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	models := []string{}
+	for model := range c.ModelToPodMapping {
+		models = append(models, model)
+	}
+
+	return models
+}
+
 func (c *Cache) GetModelsForPod(podName string) (map[string]struct{}, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
