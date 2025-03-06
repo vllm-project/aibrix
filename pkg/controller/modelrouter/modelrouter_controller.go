@@ -145,6 +145,10 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 				{
 					Matches: []gatewayv1.HTTPRouteMatch{
 						{
+							Path: &gatewayv1.HTTPPathMatch{
+								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+								Value: ptr.To("/v1/completions"),
+							},
 							Headers: []gatewayv1.HTTPHeaderMatch{
 								{
 									Type:  ptr.To(gatewayv1.HeaderMatchExact),
@@ -152,9 +156,18 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 									Value: modelName,
 								},
 							},
+						},
+						{
 							Path: &gatewayv1.HTTPPathMatch{
 								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
-								Value: ptr.To("/v1"),
+								Value: ptr.To("/v1/chat/completions"),
+							},
+							Headers: []gatewayv1.HTTPHeaderMatch{
+								{
+									Type:  ptr.To(gatewayv1.HeaderMatchExact),
+									Name:  modelHeaderIdentifier,
+									Value: modelName,
+								},
 							},
 						},
 					},

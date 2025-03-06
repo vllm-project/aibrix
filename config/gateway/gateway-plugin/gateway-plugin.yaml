@@ -76,7 +76,7 @@ spec:
     - matches:
         - path:
             type: PathPrefix
-            value: /models
+            value: /v1/models
       backendRefs:
         - name: aibrix-metadata-service
           port: 8090
@@ -108,7 +108,10 @@ spec:
     - matches:
         - path:
             type: PathPrefix
-            value: /v1
+            value: /v1/chat/completions
+        - path:
+            type: PathPrefix
+            value: /v1/completions
       backendRefs:
         - name: aibrix-gateway-plugins
           port: 50052
