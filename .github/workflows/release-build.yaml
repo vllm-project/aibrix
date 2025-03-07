@@ -4,7 +4,7 @@ on:
   workflow_dispatch:  # Allows manual trigger
   push:
     tags:
-      - 'v*'  # This triggers the workflow on any new tag
+      - "v*.*.*"  # This triggers the workflow on any new tag
 
 jobs:
   image-release:
