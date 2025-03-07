@@ -1,6 +1,6 @@
 output "configure_kubectl_command" {
   description = "Command to run which will allow kubectl access."
-  value       = "gcloud container clusters get-credentials ${google_container_cluster.main.name} --region ${var.default_region} --project ${var.project_id}"
+  value       = "gcloud container clusters get-credentials ${data.google_container_cluster.main.name} --region ${var.default_region} --project ${var.project_id}"
 }
 
 output "aibrix_service_public_ip" {
