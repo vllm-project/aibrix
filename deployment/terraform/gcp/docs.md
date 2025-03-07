@@ -17,7 +17,23 @@ This module deploys an AIBrix cluster in its entirety onto a Google Container Cl
 4. Run `terraform init` to initialize the module.
 5. Run `terraform plan` to see details on the resources created by this module.
 6. When you are satisfied with the plan and want to create the resources, run `terraform apply`. NOTE: if you recieve `NodePool aibrix-gpu-nodes was created in the error state "ERROR"` while running the script, check your quotas for GPUs and the specific instances you're trying to deploy.
-7. When you are finished testing and no longer want the resources, run `terraform destroy`. **Ensure that you complete this step once you are done trying it out, as GPUs are expensive.**
+7. Wait for module to complete running. It will output a command to recieve the kubernetes config file and a public IP address.
+8. Run a command against the public IP:
+```bash
+ENDPOINT="<YOUR PUBLIC IP>"
+
+curl http://${ENDPOINT}/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "deepseek-r1-distill-llama-8b",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "help me write a random generator in python"}
+        ]
+    }'
+```
+
+9. When you are finished testing and no longer want the resources, run `terraform destroy`. **Ensure that you complete this step once you are done trying it out, as GPUs are expensive.**
 
 ## Testing
 Testing is done completely end to end, no resources need to be initialized beforehand. The testing script will spin up the entire stack, run its tests with the generic OpenAI client against the created resources, and then will destroy everything it has created. Tests are modeled after the E2E tests found in `test/e2e/e2e_test.go`.
