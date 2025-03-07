@@ -11,15 +11,21 @@ data "google_compute_machine_types" "available" {
   zone   = each.value
 }
 
+data "google_container_cluster" "main" {
+  name = module.cluster.name
+
+  depends_on = [module.cluster]
+}
+
 data "google_client_config" "default" {
-  depends_on = [google_container_cluster.main, google_container_node_pool.gpu_node_pool]
+  depends_on = [module.cluster]
 }
 
 data "kubernetes_service" "aibrix_service" {
   metadata {
-    name = module.aibrix.aibrix_service.metadata[0].name
+    name      = module.aibrix.aibrix_service.metadata[0].name
     namespace = module.aibrix.aibrix_service.metadata[0].namespace
   }
 
-  depends_on = [ module.aibrix ]
+  depends_on = [module.aibrix]
 }
