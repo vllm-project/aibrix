@@ -18,7 +18,6 @@ package gateway
 
 import (
 	"encoding/json"
-	"slices"
 	"strings"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -75,12 +74,6 @@ func getRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
 	}
 
 	return routingStrategy, routingStrategyEnabled
-}
-
-// validateRoutingStrategy validates if user provided routing strategy is supported by gateway
-func validateRoutingStrategy(routingStrategy string) bool {
-	routingStrategy = strings.TrimSpace(routingStrategy)
-	return slices.Contains(routingStrategies, routingStrategy)
 }
 
 // getRequestMessage returns input request message field which has user prompt

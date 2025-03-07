@@ -28,6 +28,14 @@ import (
 	"k8s.io/klog/v2"
 )
 
+var (
+	RouterPrefixCache Algorithms = "prefix-cache"
+)
+
+func init() {
+	Register(RouterPrefixCache, func() (Router, error) { return NewPrefixCacheRouter() })
+}
+
 const (
 	defaultPrefixCacheMatchThresholdPercent = 50
 )
