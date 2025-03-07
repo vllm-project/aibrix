@@ -5,5 +5,5 @@ output "configure_kubectl_command" {
 
 output "aibrix_service_public_ip" {
   description = "Public IP address for AIBrix service."
-  value       = module.aibrix.aibrix_service.status.0.load_balancer.0.ingress.0.ip
+  value       = data.kubernetes_service.aibrix_service.status.0.load_balancer.0.ingress.0.ip
 }
