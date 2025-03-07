@@ -38,6 +38,9 @@ func Validate(algorithms Algorithms) bool {
 
 // Select the user provided routing routers is supported by gateway
 func Select(algorithms Algorithms) routerFunc {
+	if !Validate(algorithms) {
+		algorithms = RouterRandom
+	}
 	return routerRegistry[algorithms]
 }
 
