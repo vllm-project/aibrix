@@ -30,6 +30,14 @@ import (
 	"k8s.io/klog/v2"
 )
 
+var (
+	RouterPrefixCacheAndLoad Algorithms = "prefix-cache-and-load"
+)
+
+func init() {
+	Register(RouterPrefixCacheAndLoad, func() (Router, error) { return NewPrefixCacheAndLoadRouter() })
+}
+
 const (
 	defaultDecodingLength = 45                      // FIXME: decode length is hardcoded. Preble as well.
 	slidingWindowPeriod   = 3 * time.Minute         // NOTE: hardcoded
