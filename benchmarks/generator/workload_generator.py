@@ -239,10 +239,10 @@ def generate_synthetic(prompt_file_path: str,
 
     assert duration_ms is not None and interval_ms is not None, \
         "duration_ms and interval_ms must be specified."
-    length = int(duration_ms // interval_ms) + 1
+    num_intervals = int(duration_ms // interval_ms) + 1
     workload = []
-    t = 0
-    previous_concurrency = -1
+    interval = 0
+    previous_rate = -1
     previous_input_len = -1
     previous_output_len = -1
     ts = 0
@@ -250,17 +250,17 @@ def generate_synthetic(prompt_file_path: str,
     rps_dist = []
     input_token_len_dist = []
     output_token_len_dist = []
-    while t < length:
-        current_concurrency, previous_concurrency = math_function(t, qps_pattern_config, length, previous_concurrency)
-        current_input_len, previous_input_len = math_function(t, input_pattern_config, length, previous_input_len) 
-        current_output_len, previous_output_len = math_function(t, output_pattern_config, length, previous_output_len)
+    while interval < num_intervals:
+        current_rate, previous_rate = math_function(interval, qps_pattern_config, num_intervals, previous_rate)
+        current_input_len, previous_input_len = math_function(interval, input_pattern_config, num_intervals, previous_input_len) 
+        current_output_len, previous_output_len = math_function(interval, output_pattern_config, num_intervals, previous_output_len)
         current_input_len = current_input_len if current_input_len > 0 else 1
         current_output_len = current_output_len if current_output_len > 0 else 1
-        rps_dist.append(current_concurrency)
+        rps_dist.append(current_rate)
         input_token_len_dist.append(current_input_len)
         output_token_len_dist.append(current_output_len)
         ts += interval_ms
-        t += 1
+        interval += 1
         
     workload = generate_synthetic_from_dist(
         prompt_file_path = prompt_file_path,
