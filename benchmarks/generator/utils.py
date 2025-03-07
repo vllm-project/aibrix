@@ -96,18 +96,16 @@ def read_distribution_stats(df: pd.DataFrame) -> Tuple[List[Dict], List[Dict], L
     rps_configs = []
     for _, row in df.iterrows():
         input_len_configs.append({
-            "p50": float(row['input_len_p50']),
-            "p70": float(row['input_len_p70']),
-            "p90": float(row['input_len_p90']),
-            "p99": float(row['input_len_p99']),
+            "median": float(row['input_len_p50']),
+            "percentiles": [0.5, 0.7, 0.9, 0.99],
+            "token_lengths": [float(row['input_len_p50']), float(row['input_len_p70']), float(row['input_len_p90']), float(row['input_len_p99'])],
             "period": section_in_seconds,
             "total_seconds": section_in_seconds
         })
         output_len_configs.append({
-            "p50": float(row['output_len_p50']),
-            "p70": float(row['output_len_p70']),
-            "p90": float(row['output_len_p90']),
-            "p99": float(row['output_len_p99']),
+            "median": float(row['output_len_p50']),
+            "percentiles": [0.5, 0.7, 0.9, 0.99],
+            "token_lengths": [float(row['output_len_p50']), float(row['output_len_p70']), float(row['output_len_p90']), float(row['output_len_p99'])],
             "period": section_in_seconds,
             "total_seconds": section_in_seconds
         })
@@ -184,7 +182,7 @@ def plot_workload(workload_name: str,
     # Convert workload data to a DataFrame
     data = []
     for entry in workload:
-        timestamp_sec = entry["timestamp"] / 1000  # Convert ms to sec
+        timestamp_sec = int(entry["timestamp"] / 1000)  # Convert ms to sec
         num_requests = len(entry["requests"])
         total_prompt_tokens = np.mean([req["prompt_length"] for req in entry["requests"]]) if entry["requests"] else 0
         total_output_tokens = np.mean([req["output_length"] for req in entry["requests"]]) if entry["requests"] else 0
@@ -200,13 +198,18 @@ def plot_workload(workload_name: str,
     df["time_bin"] = pd.cut(df["timestamp"], bins, labels=bins[:-1])
 
     # Aggregate within each bin
-    binned_df = df.groupby("time_bin").sum()
+    # binned_df = df.groupby("time_bin").sum()
+    binned_df = df.groupby("time_bin").agg({
+        "num_requests": "sum", 
+        "total_prompt_tokens": "mean", 
+        "total_output_tokens": "mean"
+    })
 
     # Convert index back to numeric
     binned_df.index = binned_df.index.astype(float)
-
+    print(binned_df)
     # Plotting
-    fig, (ax_qps, ax_input, ax_output) = plt.subplots(3, 1, figsize=(15, 12))
+    fig, (ax_qps, ax_input, ax_output) = plt.subplots(3, 1, figsize=(10, 8))
 
     ax_qps.plot(binned_df.index, binned_df["num_requests"], label="Total Requests")
     ax_input.plot(binned_df.index, binned_df["total_prompt_tokens"], label="Total Prompt Tokens")

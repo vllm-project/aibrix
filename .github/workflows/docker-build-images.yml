@@ -2,7 +2,7 @@ name: Docker Build Images
 
 on:
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "release-*" ]
 
 jobs:
   build:

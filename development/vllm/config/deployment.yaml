@@ -27,8 +27,29 @@ spec:
           image: aibrix/vllm-cpu-env:macos
           ports:
             - containerPort: 8000
-          command: ["/bin/sh", "-c"]
-          args: ["vllm serve facebook/opt-125m --served-model-name facebook-opt-125m --chat-template /etc/chat-template-config/chat-template.j2 --trust-remote-code --device cpu --disable_async_output_proc --enforce-eager --dtype float16"]
+          command:
+            - python3
+            - -m
+            - vllm.entrypoints.openai.api_server
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --uvicorn-log-level
+            - warning
+            - --model
+            - facebook/opt-125m 
+            - --served-model-name 
+            - facebook-opt-125m 
+            - --chat-template 
+            - /etc/chat-template-config/chat-template.j2 
+            - --trust-remote-code 
+            - --device 
+            - cpu 
+            - --disable_async_output_proc 
+            - --enforce-eager 
+            - --dtype 
+            - float16
           env:
             - name: DEPLOYMENT_NAME
               valueFrom:

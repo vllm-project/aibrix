@@ -18,6 +18,9 @@ package routingalgorithms
 
 import (
 	"fmt"
+
+	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
 )
 
 const podMetricPort = "8000"
@@ -27,4 +30,15 @@ func getPodAddress(podIP string) (string, error) {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 	return fmt.Sprintf("%v:%v", podIP, podMetricPort), nil
+}
+
+// selectRandomPodWithRand selects a random pod from the provided pod map.
+// It returns an error if no ready pods are available.
+func selectRandomPod(pods map[string]*v1.Pod, randomFn func(int) int) (string, error) {
+	readyPods := utils.FilterReadyPods(pods)
+	if len(readyPods) == 0 {
+		return "", fmt.Errorf("no ready pods available for fallback")
+	}
+	randomPod := readyPods[randomFn(len(readyPods))]
+	return randomPod.Status.PodIP, nil
 }

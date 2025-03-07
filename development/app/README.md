@@ -75,13 +75,14 @@ kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-
 kubectl -n default port-forward svc/llama2-7b 8000:8000 &
 ```
 
+> The default Bearer Token is test-key-1234567890, defined in [api-key-patch.yaml](./config/mock/api-key-patch.yaml)
 
 1. Test model invocation
 
 ```shell
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer any_key" \
+  -H "Authorization: Bearer test-key-1234567890" \
   -d '{
      "model": "llama2-7b",
      "messages": [{"role": "user", "content": "Say this is a test!"}],
@@ -113,7 +114,7 @@ Test request
 ```shell
 curl -v http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer any_key" \
+  -H "Authorization: Bearer test-key-1234567890" \
   -d '{
      "model": "llama2-7b",
      "messages": [{"role": "user", "content": "Say this is a test!"}],
@@ -128,7 +129,7 @@ valid options: `random`, `least-latency`, `throughput`
 ```shell
 curl -v http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer any_key" \
+  -H "Authorization: Bearer test-key-1234567890" \
   -H "routing-strategy: random" \
   -d '{
      "model": "llama2-7b",

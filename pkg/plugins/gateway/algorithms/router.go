@@ -18,27 +18,38 @@ package routingalgorithms
 
 import (
 	"context"
-	"fmt"
-
-	"github.com/vllm-project/aibrix/pkg/utils"
 
 	v1 "k8s.io/api/core/v1"
 )
 
+type Algorithms string
+
 // Router defines the interface for routing logic to select target pods.
 type Router interface {
-	// TODO: add routeContext as a function parameter.
 	// Route returns the target pod
 	Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error)
 }
 
-// selectRandomPodWithRand selects a random pod from the provided pod map.
-// It returns an error if no ready pods are available.
-func selectRandomPod(pods map[string]*v1.Pod, randomFn func(int) int) (string, error) {
-	readyPods := utils.FilterReadyPods(pods)
-	if len(readyPods) == 0 {
-		return "", fmt.Errorf("no ready pods available for fallback")
-	}
-	randomPod := readyPods[randomFn(len(readyPods))]
-	return randomPod.Status.PodIP, nil
+// Validate validates if user provided routing routers is supported by gateway
+func Validate(algorithms Algorithms) bool {
+	_, ok := routerStores[algorithms]
+	return ok
 }
+
+// Select the user provided routing routers is supported by gateway
+func Select(algorithms Algorithms) routerFunc {
+	if !Validate(algorithms) {
+		algorithms = RouterRandom
+	}
+	return routerRegistry[algorithms]
+}
+
+func Register(algorithms Algorithms, router routerFunc) {
+	routerRegistry[algorithms] = router
+	routerStores[algorithms] = struct{}{}
+}
+
+var routerRegistry = map[Algorithms]routerFunc{}
+var routerStores = map[Algorithms]any{}
+
+type routerFunc func() (Router, error)

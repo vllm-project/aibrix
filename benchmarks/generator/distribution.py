@@ -5,31 +5,36 @@ from scipy import stats
 from scipy.optimize import minimize
 
 def generate_poisson_dist(target: int, sample_size: int, smooth_window_size: int = 1) -> List[int]:
-    rps_list = np.random.poisson(lam=target, size=sample_size).tolist()
-    # Apply moving average smoothing
     smoothed = []
-    for i in range(len(rps_list)):
-        start = max(0, i - smooth_window_size + 1)
-        window = rps_list[start:i + 1]
-        smoothed.append(max(1, round(sum(window) / len(window))))
+    if target == 0:
+        for _ in range(0, sample_size):
+            smoothed.append(0)
+    else:
+        rps_list = np.random.poisson(lam=target, size=sample_size).tolist()
+        # Apply moving average smoothing
+        for i in range(len(rps_list)):
+            start = max(0, i - smooth_window_size + 1)
+            window = rps_list[start:i + 1]
+            smoothed.append(max(1, round(sum(window) / len(window))))
     return smoothed
 
 def generate_token_len_from_percentiles(
-    p50: int,
-    p70: int,
-    p90: int,
-    p99: int,
+    median: int,
+    percentiles: List[float],
+    token_lengths: List[int],
     period: int,
     total_seconds: int,
     scale: float,
     amplitude_factor: float = 0.2  # Controls the amplitude of sinusoidal variation
 ) -> List[int]:
-    if not (p50 < p70 < p90 < p99):
-        raise ValueError("Percentiles must be strictly increasing: p50 < p70 < p90 < p99")
-    if p50 <= 0:
-        raise ValueError("Token lengths must be positive")
-    percentiles = [0.50, 0.70, 0.90, 0.99]
-    token_lengths = [p50, p70, p90, p99]
+    for idx in range(len(token_lengths) - 1):
+        if token_lengths[idx] > token_lengths[idx + 1]:
+            raise ValueError("Percentiles must be non-decreasing")
+    if not len(percentiles) == len(token_lengths):
+        raise ValueError(f"percentiles and token_lengths should have matching length: {percentiles} : {token_lengths}")
+    if token_lengths[0] < 0:
+        raise ValueError(f"Token lengths must be non-negative: {token_lengths[0]}")
+    
     token_lengths = [x / scale for x in token_lengths]
     log_lengths = np.log(token_lengths)
     def objective(params, percs, lengths):
@@ -44,10 +49,10 @@ def generate_token_len_from_percentiles(
     )
     mu, sigma = result.x
     t = np.arange(total_seconds)
-    amplitude = p50 * amplitude_factor
+    amplitude = median * amplitude_factor
     sinusoidal_variation = amplitude * np.sin(2 * np.pi * t / period)
     base_samples = np.random.lognormal(mu, sigma, size=total_seconds)
-    scale_factor = p50 / np.median(base_samples)
+    scale_factor = median / np.median(base_samples)
     token_len_list = base_samples * scale_factor + sinusoidal_variation
     token_len_list = [int(max(1, x)) for x in token_len_list]
     return token_len_list
@@ -85,3 +90,15 @@ def to_fluctuate_pattern_config(config_type: str,
                 'only_rise': False}
     else:
         raise ValueError(f"Unknown config type: {config_type}")
+    
+    
+def user_to_synthetic_config(user_config: Dict,
+                             duration_ms: int,):
+    return {
+        'A': float(user_config['fluctuate']), 
+        'B': float(user_config['mean']),
+        'sigma': float(user_config['noise']),
+        'period': duration_ms/float(user_config['period_len_ms']), 
+        'omega': None,
+        'only_rise': user_config['only_rise'],
+    }

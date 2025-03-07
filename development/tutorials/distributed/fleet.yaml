@@ -3,7 +3,7 @@ kind: RayClusterFleet
 metadata:
   labels:
     app.kubernetes.io/name: aibrix
-    app.kubernetes.io/managed-by: kustomize
+    model.aibrix.ai/name: facebook-opt-13b
   name: facebook-opt-13b
 spec:
   replicas: 1
@@ -20,13 +20,17 @@ spec:
       labels:
         model.aibrix.ai/name: facebook-opt-13b
       annotations:
-          ray.io/overwrite-container-cmd: "true"
+        ray.io/overwrite-container-cmd: "true"
     spec:
-      rayVersion: '2.10.0' # should match the Ray version in the image of the containers
+      rayVersion: "2.10.0"
       headGroupSpec:
         rayStartParams:
           dashboard-host: '0.0.0.0'
+          block: 'false'
         template:
+          metadata:
+            labels:
+              model.aibrix.ai/name: facebook-opt-13b
           spec:
             containers:
               - name: ray-head
@@ -40,35 +44,35 @@ spec:
                     name: client
                   - containerPort: 8000
                     name: service
-                    command: ["/bin/bash", "-lc", "--"]
-                    args: ["ulimit -n 65536; echo head; $KUBERAY_GEN_RAY_START_CMD"; vllm serve facebook/opt-125m --tensor-parallel-size 2 --distributed-executor-backend ray]
+                command: ["/bin/bash", "-lc", "--"]
+                args: ["ulimit -n 65536; echo head; $KUBERAY_GEN_RAY_START_CMD; sleep 600"]
                 resources:
                   limits:
-                    cpu: "1000m"
-                    nvidia.com/gpu: 1
+                    cpu: 1000m
                   requests:
-                    cpu: "200m"
-                    nvidia.com/gpu: 1
+                    cpu: 200m
       workerGroupSpecs:
-        # the pod replicas in this group typed worker
-        - replicas: 1
+        - replicas: 2
           minReplicas: 1
           maxReplicas: 5
           groupName: small-group
           rayStartParams: {}
           template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: facebook-opt-13b
             spec:
               containers:
-                - name: ray-worker # must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character (e.g. 'my-name',  or '123-abc'
-                  image: rayproject/ray:2.10.0
+                - name: ray-worker
+                  image: 'rayproject/ray:2.10.0'
+                  command: [ "/bin/bash", "-lc", "--" ]
+                  args: [ "ulimit -n 65536; echo head; $KUBERAY_GEN_RAY_START_CMD;" ]
                   lifecycle:
                     preStop:
                       exec:
                         command: [ "/bin/sh","-c","ray stop" ]
                   resources:
                     limits:
-                      cpu: "1000m"
-                      nvidia.com/gpu: 1
+                      cpu: 1000m
                     requests:
-                      cpu: "200m"
-                      nvidia.com/gpu: 1
+                      cpu: 200m
