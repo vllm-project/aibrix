@@ -1,23 +1,23 @@
 package tests
 
 import (
+	"context"
+	"fmt"
 	"testing"
 	"net"
+	"net/http"
 
 	"github.com/gruntwork-io/terratest/modules/terraform"
 	"github.com/stretchr/testify/assert"
-
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
+	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 )
 
 func TestAIBrixGCPDeployment(t *testing.T) {
 	t.Parallel()
 
 	clusterName := "aibrix-test-cluster"
+	modelName := "deepseek-r1-distill-llama-8b"
 
 	terraformOptions := terraform.WithDefaultRetryableErrors(t, &terraform.Options{
 		// The path to where our Terraform code is located
@@ -49,71 +49,27 @@ func TestAIBrixGCPDeployment(t *testing.T) {
 	// Verify the terraform output is a valid IP address
 	assert.NotNil(t, net.ParseIP(aibrixServicePublicIp), "expecting output:aibrix_service_public_ip to be valid IP")
 
-	// Construct url from validated ip
-	url := fmt.Sprintf("http://%s/v1/completions", aibrixServicePublicIp)
+	// Create OpenAI client
+	client := openai.NewClient(
+		option.WithBaseURL(fmt.Sprintf("http://%s", aibrixServicePublicIp)),
+		option.WithMiddleware(func(r *http.Request, mn option.MiddlewareNext) (*http.Response, error) {
+			r.URL.Path = "/v1" + r.URL.Path
+			return mn(r)
+		}),
+		option.WithMaxRetries(0),
+	)
 
-	// Define the request payload
-	payload := map[string]string{
-		"model": "deepseek-r1-distill-llama-8b",
-        "prompt": "San Francisco is a",
-        "max_tokens": "128",
-        "temperature": "0",
-	}
-
-	// Convert payload to JSON
-	jsonData, err := json.Marshal(payload)
+	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage("What can you tell me about San Francisco?"),
+		}),
+		Model: openai.F(modelName),
+	})
 	if err != nil {
-		t.Fatal("Test failed due to error: Error marshalling request JSON: ", err)
+		t.Fatalf("chat completions failed: %v", err)
 	}
 
-	// Create a new HTTP request for model service
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		t.Fatal("Test failed due to error: Error creating request: ", err)
-	}
-
-	// Set headers
-	req.Header.Set("Content-Type", "application/json")
-
-	// Create an HTTP client and send the request to the model service
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatal("Test failed due to error: Error sending request: ", err)
-	}
-	defer resp.Body.Close()
-
-	// Read the response body from the model service
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal("Test failed due to error: Error reading response body: ", err)
-	}
-
-	// Assertions based on response from the model service
-	assert.Equal(t, "200 OK", resp.Status, "expecting 200 OK response")
-	assert.NotNil(t, body, "expecting body to be defined")
-
-	var data map[string]interface{}
-
-	// Decoding response body
-	err = json.Unmarshal(body, &data)
-	if err != nil {
-		t.Fatal("Test failed due to error: Error decoding response body: ", err)
-	}
-
-	//Assertions based on response data
-	assert.Equal(t, "deepseek-r1-distill-llama-8b", data["model"], "expecting model to be deepseek-r1-distill-llama-8b")
-	assert.Equal(t, "text_completion", data["object"], "expecting object to be text_completion")
-	assert.NotNil(t, data["choices"], "expecting choices to be defined")
-
-	choices := data["choices"].([]interface{})
-	assert.NotNil(t, choices[0], "expecting choices[0] to be defined")
-
-	choice, ok := choices[0].(map[string]interface{})
-	if !ok {
-		t.Fatal("Test failed due to error: Error decoding choices[0]")
-	}
-
-	// Asserting we get a response text back from the model
-	assert.NotNil(t, choice["text"], "expecting response text to be defined")
+	assert.Equal(t, modelName, chatCompletion.Model, fmt.Sprintf("expecting chat completions model to be %v", modelName))
+	assert.NotEmpty(t, chatCompletion.Choices, "chat completion has no choices returned")
+	assert.NotNil(t, chatCompletion.Choices[0].Message.Content, "chat completion has no message returned")
 }
