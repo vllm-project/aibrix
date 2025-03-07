@@ -120,7 +120,6 @@ def sample_requests_all(
     # Relaxation mechanism
     end_idx = min(start_idx + qps, len(df))
     for i in  range(start_idx, end_idx):
-        print(f"start_idx {start_idx} end_idx {end_idx} i {i} len {len(df)} ")
         row = df.iloc[i]
         results.append({"prompt": row["prompt"],
                         "model": model,
