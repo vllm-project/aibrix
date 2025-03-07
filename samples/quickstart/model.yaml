@@ -46,22 +46,20 @@ spec:
             requests:
               nvidia.com/gpu: "1"
           livenessProbe:
-            failureThreshold: 3
             httpGet:
               path: /health
               port: 8000
               scheme: HTTP
-            initialDelaySeconds: 120
+            failureThreshold: 3
             periodSeconds: 5
             successThreshold: 1
             timeoutSeconds: 1
           readinessProbe:
-            failureThreshold: 5
             httpGet:
               path: /health
               port: 8000
               scheme: HTTP
-            initialDelaySeconds: 120
+            failureThreshold: 5
             periodSeconds: 5
             successThreshold: 1
             timeoutSeconds: 1
