@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
+	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/config"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
@@ -46,9 +47,12 @@ const (
 	// TODO (varun): parameterize it or dynamically resolve it
 	aibrixEnvoyGateway          = "aibrix-eg"
 	aibrixEnvoyGatewayNamespace = "aibrix-system"
+
+	defaultModelServingPort = 8000
 )
 
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rayclusterfleets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch;create;update;patch;delete
 
@@ -66,6 +70,11 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 		return err
 	}
 
+	fleetInformer, err := cacher.GetInformer(context.TODO(), &orchestrationv1alpha1.RayClusterFleet{})
+	if err != nil {
+		return err
+	}
+
 	utilruntime.Must(gatewayv1.AddToScheme(mgr.GetClient().Scheme()))
 	utilruntime.Must(gatewayv1beta1.AddToScheme(mgr.GetClient().Scheme()))
 
@@ -75,16 +84,24 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 	}
 
 	_, err = deploymentInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    modelRouter.addModel,
-		DeleteFunc: modelRouter.deleteModel,
+		AddFunc:    modelRouter.addRouteFromDeployment,
+		DeleteFunc: modelRouter.deleteRouteFromDeployment,
 	})
 	if err != nil {
 		return err
 	}
 
 	_, err = modelInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    modelRouter.addModelAdapter,
-		DeleteFunc: modelRouter.deleteModelAdapter,
+		AddFunc:    modelRouter.addRouteFromModelAdapter,
+		DeleteFunc: modelRouter.deleteRouteFromModelAdapter,
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = fleetInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    modelRouter.addRouteFromRayClusterFleet,
+		DeleteFunc: modelRouter.deleteRouteFromRayClusterFleet,
 	})
 
 	return err
@@ -96,24 +113,35 @@ type ModelRouter struct {
 	RuntimeConfig config.RuntimeConfig
 }
 
-func (m *ModelRouter) addModel(obj interface{}) {
+func (m *ModelRouter) addRouteFromDeployment(obj interface{}) {
 	deployment := obj.(*appsv1.Deployment)
 	m.createHTTPRoute(deployment.Namespace, deployment.Labels)
 }
 
-func (m *ModelRouter) deleteModel(obj interface{}) {
+func (m *ModelRouter) deleteRouteFromDeployment(obj interface{}) {
 	deployment := obj.(*appsv1.Deployment)
 	m.deleteHTTPRoute(deployment.Namespace, deployment.Labels)
 }
 
-func (m *ModelRouter) addModelAdapter(obj interface{}) {
+func (m *ModelRouter) addRouteFromModelAdapter(obj interface{}) {
 	modelAdapter := obj.(*modelv1alpha1.ModelAdapter)
 	m.createHTTPRoute(modelAdapter.Namespace, modelAdapter.Labels)
 }
 
-func (m *ModelRouter) deleteModelAdapter(obj interface{}) {
+func (m *ModelRouter) deleteRouteFromModelAdapter(obj interface{}) {
 	modelAdapter := obj.(*modelv1alpha1.ModelAdapter)
 	m.deleteHTTPRoute(modelAdapter.Namespace, modelAdapter.Labels)
+}
+
+func (m *ModelRouter) addRouteFromRayClusterFleet(obj interface{}) {
+	klog.Info("addModelFromRayCluster triggered")
+	fleet := obj.(*orchestrationv1alpha1.RayClusterFleet)
+	m.createHTTPRoute(fleet.Namespace, fleet.Labels)
+}
+
+func (m *ModelRouter) deleteRouteFromRayClusterFleet(obj interface{}) {
+	fleet := obj.(*orchestrationv1alpha1.RayClusterFleet)
+	m.deleteHTTPRoute(fleet.Namespace, fleet.Labels)
 }
 
 func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string) {
@@ -124,7 +152,9 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 
 	modelPort, err := strconv.ParseInt(labels[modelPortIdentifier], 10, 32)
 	if err != nil {
-		return
+		klog.Warningf("failed to parse model port: %v", err)
+		klog.Infof("pelase ensure %s is configured, default port %d will be used", modelPortIdentifier, defaultModelServingPort)
+		modelPort = defaultModelServingPort
 	}
 
 	httpRoute := gatewayv1.HTTPRoute{
