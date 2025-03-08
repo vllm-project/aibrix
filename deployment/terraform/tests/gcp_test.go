@@ -59,6 +59,7 @@ func TestAIBrixGCPDeployment(t *testing.T) {
 		option.WithMaxRetries(0),
 	)
 
+	// Run a chat completion against the model endpoint
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("What can you tell me about San Francisco?"),
@@ -69,6 +70,7 @@ func TestAIBrixGCPDeployment(t *testing.T) {
 		t.Fatalf("chat completions failed: %v", err)
 	}
 
+	// Assertions to check the response
 	assert.Equal(t, modelName, chatCompletion.Model, fmt.Sprintf("expecting chat completions model to be %v", modelName))
 	assert.NotEmpty(t, chatCompletion.Choices, "chat completion has no choices returned")
 	assert.NotNil(t, chatCompletion.Choices[0].Message.Content, "chat completion has no message returned")
