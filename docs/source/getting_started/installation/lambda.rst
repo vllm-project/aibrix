@@ -60,11 +60,14 @@ Once completed, restart your terminal or run:
 
 2. Verify Installation
 ~~~~~~~~~~~~~~~~~~~~~~
+
+The path for the following script assumes that you are in the root directory of the AIBrix repository.
+
 Run the following script to ensure that the NVIDIA drivers and Docker integration are correctly configured:
 
 .. code-block:: bash
 
-    bash verify.sh
+    bash ./hack/lambda-cloud/verify.sh
 
 **Summary:**
 
@@ -87,7 +90,7 @@ Create a Kubernetes cluster using nvkind:
 
 .. code-block:: bash
 
-    nvkind cluster create --config-template=nvkind-cluster.yaml
+    nvkind cluster create --config-template=./hack/lambda-cloud/nvkind-cluster.yaml
 
 This will set up a single-node cluster with GPU support. Make sure you see `Ready` status for the node:
 
@@ -103,7 +106,7 @@ Run the following script to install the NVIDIA GPU Operator and configure the cl
 
 .. code-block:: bash
 
-    bash setup.sh
+    bash ./hack/lambda-cloud/setup.sh
 
 **Summary:**
 
