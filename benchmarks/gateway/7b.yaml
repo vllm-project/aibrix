@@ -97,7 +97,7 @@ spec:
                       fi
                     done
         - name: aibrix-runtime
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.2.0
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.2.1
           command:
             - aibrix_runtime
             - --port
@@ -127,7 +127,7 @@ spec:
             periodSeconds: 10
       initContainers:
         - name: init-model
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.1.1
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.2.1
           command:
             - aibrix_download
             - --model-uri

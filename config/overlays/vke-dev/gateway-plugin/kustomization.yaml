@@ -14,4 +14,4 @@ images:
   newTag: stable
 - name: gateway-plugins
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins
-  newTag: nightly
+  newTag: v0.2.1

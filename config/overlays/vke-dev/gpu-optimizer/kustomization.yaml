@@ -6,4 +6,4 @@ resources:
 images:
 - name: aibrix/runtime
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
-  newTag: nightly
+  newTag: v0.2.1

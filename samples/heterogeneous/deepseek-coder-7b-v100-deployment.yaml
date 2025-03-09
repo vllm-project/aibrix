@@ -108,7 +108,7 @@ spec:
           value: vllm
         - name: INFERENCE_ENGINE_ENDPOINT
           value: http://localhost:8000
-        image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.2.0-test
+        image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.2.1
         livenessProbe:
           httpGet:
             path: /healthz
@@ -155,7 +155,7 @@ spec:
           value: tos-cn-beijing.ivolces.com
         - name: TOS_REGION
           value: cn-beijing
-        image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.2.0-test
+        image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.2.1
         name: init-model
         volumeMounts:
         - mountPath: /models
