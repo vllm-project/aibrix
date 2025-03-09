@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    model.aibrix.ai/name: deepseek-r1-671b
+    prometheus-discovery: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+  name: deepseek-r1-671b # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
+  namespace: default
+spec:
+  ports:
+    - name: serve
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    model.aibrix.ai/name: deepseek-r1-671b
+    ray.io/node-type: head
+  type: ClusterIP
