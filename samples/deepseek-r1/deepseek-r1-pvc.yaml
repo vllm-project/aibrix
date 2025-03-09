@@ -82,7 +82,7 @@ spec:
           spec:
             containers:
             - name: ray-head
-              image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.7.3.self.post1
+              image: aibrix/vllm-openai:v0.7.3.self.post1
               ports:
               - containerPort: 6379
                 name: gcs-server
@@ -193,7 +193,7 @@ spec:
           spec:
             containers:
             - name: ray-worker
-              image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.7.3.self.post1
+              image: aibrix/vllm-openai:v0.7.3.self.post1
               command: ["/bin/bash", "-lc", "--"]
               args: ["ulimit -n 65536; echo head; $KUBERAY_GEN_RAY_START_CMD;"]
               env:
