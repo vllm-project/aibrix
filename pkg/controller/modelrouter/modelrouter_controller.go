@@ -134,7 +134,6 @@ func (m *ModelRouter) deleteRouteFromModelAdapter(obj interface{}) {
 }
 
 func (m *ModelRouter) addRouteFromRayClusterFleet(obj interface{}) {
-	klog.Info("addModelFromRayCluster triggered")
 	fleet := obj.(*orchestrationv1alpha1.RayClusterFleet)
 	m.createHTTPRoute(fleet.Namespace, fleet.Labels)
 }
