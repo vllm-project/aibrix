@@ -2,3 +2,6 @@ kind: Kustomization
 
 resources:
 - envoy-gateway
+- kuberay-operator/crds/ray.io_rayclusters.yaml
+- kuberay-operator/crds/ray.io_rayjobs.yaml
+- kuberay-operator/crds/ray.io_rayservices.yaml
