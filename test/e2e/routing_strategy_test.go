@@ -31,12 +31,13 @@ import (
 
 func TestPrefixCacheModelInference(t *testing.T) {
 	// #1 request - cache first time request
-	targetPod := getTargetPodFromChatCompletion(t, "this is first message")
-	fmt.Printf("target pod from #1 request: %v\n", targetPod)
+	req := "this is first message"
+	targetPod := getTargetPodFromChatCompletion(t, req)
+	fmt.Printf("req: %s, target pod: %v\n", req, targetPod)
 
 	// #2 request - reuse target pod from first time
-	targetPod2 := getTargetPodFromChatCompletion(t, "this is first message")
-	fmt.Printf("target pod from #2 request: %v\n", targetPod2)
+	targetPod2 := getTargetPodFromChatCompletion(t, req)
+	fmt.Printf("req: %s, target pod: %v\n", req, targetPod2)
 	assert.Equal(t, targetPod, targetPod2)
 
 	// #3 request - new request, match to random pod

@@ -33,7 +33,8 @@ var (
 )
 
 func init() {
-	Register(RouterPrefixCache, func() (Router, error) { return NewPrefixCacheRouter() })
+	router, err := NewPrefixCacheRouter()
+	Register(RouterPrefixCache, func() (Router, error) { return router, err })
 }
 
 const (
@@ -105,8 +106,6 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, m
 		readyPodNames = append(readyPodNames, p.Status.PodIP)
 	}
 	klog.InfoS("prefix cache route",
-		"message", message,
-		"tokens", tokens,
 		"matched_tokens", matchedTokens,
 		"unmatched_tokens", unMatchedTokens,
 		"matched_pods", matchedPodNames,

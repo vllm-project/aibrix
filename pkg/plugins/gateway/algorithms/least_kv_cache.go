@@ -33,7 +33,8 @@ var (
 )
 
 func init() {
-	Register(RouterLeastKvCache, func() (Router, error) { return NewLeastKvCacheRouter() })
+	router, err := NewLeastKvCacheRouter()
+	Register(RouterLeastKvCache, func() (Router, error) { return router, err })
 }
 
 type leastKvCacheRouter struct {

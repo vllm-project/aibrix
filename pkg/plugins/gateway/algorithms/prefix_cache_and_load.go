@@ -35,7 +35,8 @@ var (
 )
 
 func init() {
-	Register(RouterPrefixCacheAndLoad, func() (Router, error) { return NewPrefixCacheAndLoadRouter() })
+	router, err := NewPrefixCacheAndLoadRouter()
+	Register(RouterPrefixCacheAndLoad, func() (Router, error) { return router, err })
 }
 
 const (

@@ -34,7 +34,8 @@ var (
 )
 
 func init() {
-	Register(RouterLeastRequest, func() (Router, error) { return NewLeastRequestRouter() })
+	router, err := NewLeastRequestRouter()
+	Register(RouterLeastRequest, func() (Router, error) { return router, err })
 }
 
 type leastRequestRouter struct {
