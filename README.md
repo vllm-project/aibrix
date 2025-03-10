@@ -7,6 +7,11 @@ Welcome to AIBrix, an open-source initiative designed to provide essential build
 | <a href="https://aibrix.readthedocs.io/latest/"><b>Documentation</b></a> | <a href="https://aibrix.github.io/"><b>Blog</b></a> | <a href="https://github.com/vllm-project/aibrix/blob/main/docs/paper/AIBrix_White_Paper_0219_2025.pdf"><b>White Paper</b></a> | <a href="https://x.com/vllm_project"><b>Twitter/X</b></a> | <a href="https://vllm-dev.slack.com/archives/C08EQ883CSV"><b>Developer Slack</b></a> |
 </p>
 
+## Latest News
+
+- **[2025-03-09]** AIBrix v0.2.1 is released. DeepSeek-R1 full weights deployment is supported and gateway stability has been improved! Check [Blog Post](https://aibrix.github.io/posts/2025-03-10-deepseek-r1/) for more details.
+- **[2025-02-19]** AIBrix v0.2.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.2.0) for more details.
+
 ## Key Features
 
 The initial release includes the following key features:
