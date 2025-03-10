@@ -51,7 +51,7 @@ spec:
             requests:
               nvidia.com/gpu: "1"
         - name: aibrix-runtime
-          image: aibrix/runtime:v0.2.0
+          image: aibrix/runtime:v0.2.1
           command:
             - aibrix_runtime
             - --port
