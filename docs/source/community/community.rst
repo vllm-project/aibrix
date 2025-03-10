@@ -7,7 +7,7 @@ Community
 AIBrix Slack Channels
 ---------------------
 
-We use the `AIBrix Slack <https://join.slack.com/t/aibrix/shared_invite/zt-2r893y8c7-wdwPxeJLqNWf2SdLlRDYCg>`_ for informal discussions among users and contributors.
+We use the vLLM Slack `#AIBrix <https://vllm-dev.slack.com/archives/C08EQ883CSV>`_ for informal discussions among users and contributors.
 Join the channels to start conversations and get support from the community.
 
 
