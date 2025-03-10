@@ -29,7 +29,8 @@ var (
 )
 
 func init() {
-	Register(RouterRandom, func() (Router, error) { return NewRandomRouter() })
+	router, err := NewRandomRouter()
+	Register(RouterRandom, func() (Router, error) { return router, err })
 }
 
 type randomRouter struct {

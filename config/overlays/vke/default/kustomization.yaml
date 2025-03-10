@@ -23,13 +23,13 @@ images:
   newTag: latest
 - name: aibrix/gateway-plugins
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins
-  newTag: v0.2.0
+  newTag: v0.2.1
 - name: aibrix/metadata-service
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/metadata-service
-  newTag: v0.2.0
+  newTag: v0.2.1
 - name: aibrix/controller-manager
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
-  newTag: v0.2.0
+  newTag: v0.2.1
 - name: aibrix/runtime
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
-  newTag: v0.2.0
+  newTag: v0.2.1

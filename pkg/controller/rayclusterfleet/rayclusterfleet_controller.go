@@ -107,7 +107,7 @@ func (r *RayClusterFleetReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	fleet := &orchestrationv1alpha1.RayClusterFleet{}
 	if err := r.Get(ctx, req.NamespacedName, fleet); err != nil {
 		if errors.IsNotFound(err) {
-			klog.Info("Fleet not found, might have been deleted", "namespace", req.Namespace, "name", req.Name)
+			klog.InfoS("Fleet not found, might have been deleted", "namespace", req.Namespace, "name", req.Name)
 			return ctrl.Result{}, nil
 		}
 

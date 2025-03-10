@@ -48,6 +48,10 @@ spec:
               value: aibrix-redis-master
             - name: REDIS_PORT
               value: "6379" 
+            # TODO: cache is shared across all control plane so add feature flags to enable metric pull
+            # for now setting to a 1 hr for metadata service
+            - name: AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS
+              value: "3600000"
             - name: POD_NAME
               valueFrom:
                 fieldRef:

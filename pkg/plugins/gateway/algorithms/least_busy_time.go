@@ -32,7 +32,8 @@ var (
 )
 
 func init() {
-	Register(RouterLeastBusyTime, func() (Router, error) { return NewLeastBusyTimeRouter() })
+	router, err := NewLeastBusyTimeRouter()
+	Register(RouterLeastBusyTime, func() (Router, error) { return router, err })
 }
 
 type leastBusyTimeRouter struct {

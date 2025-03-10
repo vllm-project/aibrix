@@ -137,7 +137,7 @@ func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, pods []*v1.Po
 		c.hash.ResetWithSeed(c.seed)
 
 		block, ok = c.blocks[prefixHash]
-		if !ok || len(block.modelToPods[model]) == 0 {
+		if !ok || len(block.modelToPods[model]) == 0 || len(matchPods(block.modelToPods[model], pods)) == 0 {
 			lastTokenMatchIndex = i
 			break
 		}
@@ -152,11 +152,8 @@ func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, pods []*v1.Po
 	unMatchedTokens := tokens[lastTokenMatchIndex:]
 
 	var matchedPods []*v1.Pod
-	blockPods := lastMatchedBlock.modelToPods[model]
-	for _, pod := range pods {
-		if _, ok := blockPods[pod.Name]; ok {
-			matchedPods = append(matchedPods, pod)
-		}
+	if len(matchedTokens) > 0 {
+		matchedPods = matchPods(lastMatchedBlock.modelToPods[model], pods)
 	}
 
 	return matchedTokens, unMatchedTokens, matchedPods
@@ -178,19 +175,23 @@ func (c *PrefixHashTable) AddPrefix(unMatchedTokens []byte, model, pod string) {
 		block, ok := c.blocks[prefixHash]
 		if !ok {
 			block = Block{
-				modelToPods:    map[string]map[string]time.Time{},
-				lastAccessTime: time.Now(),
+				modelToPods: map[string]map[string]time.Time{
+					model: {
+						pod: time.Now(),
+					},
+				},
 			}
-			c.blocks[prefixHash] = block
-		}
-
-		blockPods, ok := block.modelToPods[model]
-		if !ok {
-			blockPods = map[string]time.Time{}
+		} else {
+			blockPods, ok := block.modelToPods[model]
+			if !ok {
+				blockPods = map[string]time.Time{}
+			}
+			blockPods[pod] = time.Now()
 			block.modelToPods[model] = blockPods
 		}
 
-		blockPods[pod] = time.Now()
+		block.lastAccessTime = time.Now()
+		c.blocks[prefixHash] = block
 	}
 }
 
@@ -213,4 +214,15 @@ func stringArrayToByteArray(stringArray []string) [][]byte {
 		byteArray[i] = []byte(str)
 	}
 	return byteArray
+}
+
+// matchPods returns ready pods that intersect with pods on which prefix tokens are catched.
+func matchPods(blockPods map[string]time.Time, readyPods []*v1.Pod) []*v1.Pod {
+	var matchedPods []*v1.Pod
+	for _, pod := range readyPods {
+		if _, ok := blockPods[pod.Name]; ok {
+			matchedPods = append(matchedPods, pod)
+		}
+	}
+	return matchedPods
 }

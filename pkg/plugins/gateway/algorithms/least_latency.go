@@ -33,7 +33,8 @@ var (
 )
 
 func init() {
-	Register(RouterLeastLatency, func() (Router, error) { return NewLeastExpectedLatencyRouter() })
+	router, err := NewLeastExpectedLatencyRouter()
+	Register(RouterLeastLatency, func() (Router, error) { return router, err })
 }
 
 type leastExpectedLatencyRouter struct {

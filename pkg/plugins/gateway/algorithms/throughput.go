@@ -34,7 +34,8 @@ var (
 )
 
 func init() {
-	Register(RouterThroughput, func() (Router, error) { return NewThroughputRouter() })
+	router, err := NewThroughputRouter()
+	Register(RouterThroughput, func() (Router, error) { return router, err })
 }
 
 type throughputRouter struct {
