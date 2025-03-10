@@ -52,6 +52,7 @@ Install AIBrix in testing Environments
 
    lambda.rst
    mac-for-desktop.rst
+   terraform-gcp.rst
 
 
 Install Individual AIBrix Components
