@@ -184,8 +184,8 @@ def plot_workload(workload_name: str,
     for entry in workload:
         timestamp_sec = int(entry["timestamp"] / 1000)  # Convert ms to sec
         num_requests = len(entry["requests"])
-        total_prompt_tokens = np.mean([req["prompt_length"] for req in entry["requests"]]) if entry["requests"] else 0
-        total_output_tokens = np.mean([req["output_length"] for req in entry["requests"]]) if entry["requests"] else 0
+        total_prompt_tokens = np.mean([req["prompt_length"] if req["prompt_length"] else 0 for req in entry["requests"]]) if entry["requests"] else 0
+        total_output_tokens = np.mean([req["output_length"] if req["output_length"] else 0 for req in entry["requests"]]) if entry["requests"]  else 0
         data.append((timestamp_sec, num_requests, total_prompt_tokens, total_output_tokens))
 
     df = pd.DataFrame(data, columns=["timestamp", "num_requests", "total_prompt_tokens", "total_output_tokens"])
