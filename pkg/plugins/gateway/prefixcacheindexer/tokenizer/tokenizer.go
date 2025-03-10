@@ -1,5 +1,5 @@
 package tokenizer
 
-type PrefixCacheIndexer interface {
-	TokenizeInputText(string) []byte
+type Tokenizer interface {
+	TokenizeInputText(string) ([]byte, error)
 }

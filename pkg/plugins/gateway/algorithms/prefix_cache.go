@@ -21,9 +21,9 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
-	"strings"
 
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/prefixcacheindexer"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/prefixcacheindexer/tokenizer"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -61,11 +61,13 @@ func getPrefixCacheMatchThresholdPercent() int {
 }
 
 type prefixCacheRouter struct {
+	tokenizer          tokenizer.Tokenizer
 	prefixCacheIndexer prefixcacheindexer.PrefixCacheIndexer
 }
 
 func NewPrefixCacheRouter() (Router, error) {
 	return prefixCacheRouter{
+		tokenizer:          tokenizer.NewStringTokenizer(),
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 	}, nil
 }
@@ -81,7 +83,10 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, m
 		}
 	}
 
-	tokens := strings.Split(message, " ")
+	tokens, err := p.tokenizer.TokenizeInputText(message)
+	if err != nil {
+		return "", err
+	}
 
 	var targetPod *v1.Pod
 	matchedTokens, unMatchedTokens, matchedPods := p.prefixCacheIndexer.MatchPrefix(tokens, model, readyPods)

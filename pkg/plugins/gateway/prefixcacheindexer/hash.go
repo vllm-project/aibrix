@@ -119,7 +119,7 @@ func NewPrefixHashTable() PrefixCacheIndexer {
 
 // returns matchedTokens, unMatchedTokens, matchedPods
 // TODO: add an interface with multiple implementations such as hash or radix tree
-func (c *PrefixHashTable) MatchPrefix(tokens []string, model string, pods []*v1.Pod) ([]string, []string, []*v1.Pod) {
+func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, pods []*v1.Pod) ([]byte, []byte, []*v1.Pod) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	var block, lastMatchedBlock Block
@@ -132,11 +132,10 @@ func (c *PrefixHashTable) MatchPrefix(tokens []string, model string, pods []*v1.
 			end = len(tokens)
 		}
 
-		for _, b := range stringArrayToByteArray(tokens[i:end]) {
-			_, _ = c.hash.Write(b)
-		}
+		_, _ = c.hash.Write(tokens[i:end])
 		prefixHash := c.hash.Sum64()
 		c.hash.ResetWithSeed(c.seed)
+
 		block, ok = c.blocks[prefixHash]
 		if !ok || len(block.modelToPods[model]) == 0 {
 			lastTokenMatchIndex = i
@@ -163,7 +162,7 @@ func (c *PrefixHashTable) MatchPrefix(tokens []string, model string, pods []*v1.
 	return matchedTokens, unMatchedTokens, matchedPods
 }
 
-func (c *PrefixHashTable) AddPrefix(unMatchedTokens []string, model, pod string) {
+func (c *PrefixHashTable) AddPrefix(unMatchedTokens []byte, model, pod string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -173,9 +172,7 @@ func (c *PrefixHashTable) AddPrefix(unMatchedTokens []string, model, pod string)
 			end = len(unMatchedTokens)
 		}
 
-		for _, b := range stringArrayToByteArray(unMatchedTokens[i:end]) {
-			_, _ = c.hash.Write(b)
-		}
+		_, _ = c.hash.Write(unMatchedTokens[i:end])
 		prefixHash := c.hash.Sum64()
 		c.hash.ResetWithSeed(c.seed)
 		block, ok := c.blocks[prefixHash]
