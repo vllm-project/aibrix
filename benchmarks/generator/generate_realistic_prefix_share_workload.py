@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import random
-import string
 import json
 import numpy as np
 from tqdm import tqdm
@@ -152,18 +151,43 @@ def prepare_prompts(tokenizer, config):
     Returns:
         Tuple of (all_prompts, tot_input_len, prompts_token_counts)
     """
-    prefix_length = config["prefix_length"]
-    suffix_length = config["suffix_length"]
+    # prefix_workload_configs = [
+    #     {
+    #         "prompt_length": prompt_length,
+    #         "prompt_length_std" : prompt_length_std,
+    #         "shared_proportion": shared_proportion,
+    #         "shared_proportion_std": shared_proportion_std,
+    #         "num_samples_per_prefix": num_samples_per_prefix,
+    #         "num_prefix": num_prefix,
+    #         "rps": rps,
+    #         "randomize_order": randomize_order  # Add the randomization parameter
+    #     },
+    # ]
+    
+    prompt_length = config["prompt_length"]
+    prompt_length_std = config["prompt_length_std"]
+    shared_proportion_mean = config["shared_proportion"]
+    shared_proportion_std = config["shared_proportion_std"]
+    sampled_prompt_length = np.random.normal(prompt_length, prompt_length_std)
+    sampled_shared_proportion = np.random.normal(shared_proportion_mean, shared_proportion_std)
+    
+    
+    
+    prefix_length = int(sampled_shared_proportion * sampled_prompt_length) #config["prefix_length"]
+    # suffix_length = config["suffix_length"]
+    suffix_length = prompt_length - prefix_length
     num_samples_per_prefix = config["num_samples_per_prefix"]
     num_prefix = config["num_prefix"]
     
     # Generate a base prefix using realistic content
-    base_prefix = generate_realistic_prompt(tokenizer, prefix_length)
+    
     tot_input_len = 0
     all_prompts = []
     prompts_token_counts = []  # Store token counts for each prompt
     
     for i in tqdm(range(num_prefix), desc=f"Preparing prompts for config {config['id']}"):
+        
+        base_prefix = generate_realistic_prompt(tokenizer, prefix_length)
         unique_prefix = generate_unique_prefix(base_prefix, i)
         prompt_list = []
         token_count_list = []
@@ -229,7 +253,8 @@ def calculate_prefix_sharing_ratio(tokenizer, all_prompts, prompts_token_counts,
         if prompt_list and len(prompt_list) > 0:
             # Take first prompt from each list to get the unique prefix
             first_prompt = prompt_list[0]
-            prefix = first_prompt[:len(str(len(unique_prefixes))) + prefix_length]
+            print(f"len(unique_prefixes) {len(unique_prefixes)} len(str(len(unique_prefixes))) {len(str(len(unique_prefixes)))} (len(str(len(unique_prefixes))) + prefix_length) {(len(str(len(unique_prefixes))) + prefix_length)}")
+            prefix = first_prompt[:(len(str(len(unique_prefixes))) + prefix_length)]
             unique_prefixes.append(prefix)
     
     # Calculate token counts for each unique prefix
@@ -274,7 +299,7 @@ def generate_poisson_arrival_times(num_requests, rps, start_time=0):
     
     return timestamps
 
-def process_workload_configs(tokenizer, configs):
+def generate_workload_from_config(tokenizer, configs):
     """
     Process multiple workload configurations and combine them
     
@@ -306,19 +331,20 @@ def process_workload_configs(tokenizer, configs):
     for i, config in enumerate(configs):
         # Add an ID to the config for reference
         config["id"] = i+1
-        
+        prefix_length = int(config["prompt_length"] * config["shared_proportion"])
+        suffix_length = int(config["prompt_length"] - prefix_length)
         # Generate prompts for this config
         prompts, tokens, token_counts = prepare_prompts(tokenizer, config)
         total_tokens += tokens
         
         # Calculate prefix sharing ratio for this config
         sharing_ratio = calculate_prefix_sharing_ratio(
-            tokenizer, prompts, token_counts, config["prefix_length"]
+            tokenizer, prompts, token_counts, prefix_length
         )
         
         # Calculate prefix proportion
         prefix_proportion = calculate_prefix_proportion(
-            config["prefix_length"], config["suffix_length"]
+            prefix_length, suffix_length
         )
         
         # Create flattened prompt data with prefix group information
@@ -362,7 +388,7 @@ def process_workload_configs(tokenizer, configs):
         # Store config data for overall prefix calculation
         all_prompts_for_sharing.extend(prompts)
         all_prompts_token_counts.extend(token_counts)
-        all_prefix_lengths.extend([config["prefix_length"]] * len(prompts))
+        all_prefix_lengths.extend([prefix_length] * len(prompts))
         
         # Store stats for this config
         total_num_req = config["num_prefix"] * config["num_samples_per_prefix"]
@@ -370,8 +396,8 @@ def process_workload_configs(tokenizer, configs):
         
         config_stats.append({
             "config_id": config["id"],
-            "prefix_length": config["prefix_length"],
-            "suffix_length": config["suffix_length"],
+            "prefix_length": prefix_length,
+            "suffix_length": suffix_length,
             "num_samples_per_prefix": config["num_samples_per_prefix"],
             "num_prefix": config["num_prefix"],
             "rps": rps,
@@ -418,7 +444,140 @@ def process_workload_configs(tokenizer, configs):
         "overall_prefix_proportion": overall_prefix_proportion
     }
 
-def save_to_jsonl(workload_data, output_file):
+
+def generate_dataset_from_config(tokenizer, configs):
+    """
+    Process multiple workload configurations and combine them
+    
+    Args:
+        tokenizer: The tokenizer to use
+        configs: List of workload configuration dictionaries
+        
+    Returns:
+        Dictionary with combined workload data
+    """
+    all_prompts_combined = []
+    total_tokens = 0
+    config_stats = []
+    
+    # Variables to track overall prefix sharing
+    total_prompts_count = 0
+    
+    # Variables for overall prefix sharing calculation
+    all_prompts_for_sharing = []
+    all_prompts_token_counts = []
+    all_prefix_lengths = []
+    
+    # prefix_workload_configs = [
+    #     {
+    #         "prompt_length": prompt_length,
+    #         "prompt_length_std" : prompt_length_std,
+    #         "shared_proportion": shared_proportion,
+    #         "shared_proportion_std": shared_proportion_std,
+    #         "num_samples_per_prefix": num_samples_per_prefix,
+    #         "num_prefix": num_prefix,
+    #         "rps": rps,
+    #         "randomize_order": randomize_order  # Add the randomization parameter
+    #     },
+    # ]
+    
+    # Process each configuration
+    for i, config in enumerate(configs):
+        # Add an ID to the config for reference
+        config["id"] = i+1
+        prefix_length = int(config["prompt_length"] * config["shared_proportion"])
+        suffix_length = int(config["prompt_length"] - prefix_length)
+        # Generate prompts for this config
+        prompts, tokens, token_counts = prepare_prompts(tokenizer, config)
+        total_tokens += tokens
+        
+        # Calculate prefix sharing ratio for this config
+        sharing_ratio = calculate_prefix_sharing_ratio(
+            tokenizer, prompts, token_counts, prefix_length
+        )
+        
+        # Calculate prefix proportion
+        prefix_proportion = calculate_prefix_proportion(
+            prefix_length, suffix_length
+        )
+        
+        # Create flattened prompt data with prefix group information
+        flat_prompts_data = []
+        for prefix_idx, prompt_list in enumerate(prompts):
+            for j, prompt in enumerate(prompt_list):
+                flat_prompts_data.append({
+                    "prompt": prompt,
+                    "token_count": token_counts[prefix_idx][j],
+                    "prefix_group": prefix_idx,
+                    "config_id": config["id"]
+                })
+        
+
+        for j, prompt_data in enumerate(flat_prompts_data):
+            all_prompts_combined.append(prompt_data)
+        
+        # Update overall prefix sharing tracking
+        total_prompts_count += len(flat_prompts_data)
+        
+        # Store config data for overall prefix calculation
+        all_prompts_for_sharing.extend(prompts)
+        all_prompts_token_counts.extend(token_counts)
+        all_prefix_lengths.extend([prefix_length] * len(prompts))
+        
+        # Store stats for this config
+        total_num_req = config["num_prefix"] * config["num_samples_per_prefix"]
+        total_duration = total_num_req / rps
+        
+        config_stats.append({
+            "config_id": config["id"],
+            "prefix_length": prefix_length,
+            "suffix_length": suffix_length,
+            "num_samples_per_prefix": config["num_samples_per_prefix"],
+            "num_prefix": config["num_prefix"],
+            "rps": rps,
+            "randomize_order": randomize_order,
+            "num_requests": len(flat_prompts_data),
+            "total_tokens": tokens,
+            "total_duration": total_duration,
+            "prefix_sharing_ratio": sharing_ratio,
+            "prefix_proportion": prefix_proportion,
+        })
+    
+    # Calculate overall prefix sharing ratio using the same token-based method
+    overall_sharing_ratio = 0
+    if len(configs) == 1:
+        # If there's only one config, use its sharing ratio
+        overall_sharing_ratio = config_stats[0]["prefix_sharing_ratio"]
+        overall_prefix_proportion = config_stats[0]["prefix_proportion"]
+    else:
+        # For multiple configs, calculate an overall ratio based on all prompts
+        # This is more complex and would need special handling for different prefix lengths
+        # For now, we'll use a weighted average based on token counts
+        total_config_tokens = sum(cfg["total_tokens"] for cfg in config_stats)
+        overall_sharing_ratio = sum(
+            cfg["prefix_sharing_ratio"] * cfg["total_tokens"] / total_config_tokens
+            for cfg in config_stats
+        ) if total_config_tokens > 0 else 0
+        
+        # Calculate weighted average of prefix proportions
+        overall_prefix_proportion = sum(
+            cfg["prefix_proportion"] * cfg["total_tokens"] / total_config_tokens
+            for cfg in config_stats
+        ) if total_config_tokens > 0 else 0
+    
+    # Sort combined data by timestamp
+
+    return {
+        "prompts": all_prompts_combined,
+        "stats": config_stats,
+        "total_tokens": total_tokens,
+        "overall_sharing_ratio": overall_sharing_ratio,
+        "overall_prefix_proportion": overall_prefix_proportion
+    }
+
+
+
+def save_workload_jsonl(workload_data, output_file):
     """
     Save the combined workload to a JSONL file
     
@@ -441,6 +600,11 @@ def save_to_jsonl(workload_data, output_file):
                 ]
             }
             f.write(json.dumps(entry) + '\n')
+            
+def save_dataset_jsonl(workload_data, output_file):
+    with open(output_file, 'w') as f:
+        for prompt in workload_data:
+            f.write(json.dumps(prompt) + '\n')
 
 def save_stats(workload_data, stats_file):
     """
@@ -493,36 +657,35 @@ if __name__ == "__main__":
     np.random.seed(0)
     
     # Define workload configurations
-    prefix_length = 8192
-    suffix_length = 128
+    # prefix_length = 8192
+    # prefix_length = 512
+    # suffix_length = 128
+    prompt_length = 2048
+    prompt_length_std = 512
+    shared_proportion = 0.8
+    shared_proportion_std = 0.1
     num_samples_per_prefix = 32
     num_prefix = 10
-    rps = 10
+    rps = 5
     randomize_order = True
+    to_workload = False
 
     prefix_workload_configs = [
         {
-            "prefix_length": prefix_length,
-            "suffix_length": suffix_length,
+            "prompt_length": prompt_length,
+            "prompt_length_std" : prompt_length_std,
+            "shared_proportion": shared_proportion,
+            "shared_proportion_std": shared_proportion_std,
             "num_samples_per_prefix": num_samples_per_prefix,
             "num_prefix": num_prefix,
             "rps": rps,
             "randomize_order": randomize_order  # Add the randomization parameter
         },
-        # Uncomment to add more configurations
-        # {
-        #     "prefix_length": 2048,
-        #     "suffix_length": 128,
-        #     "num_samples_per_prefix": 32,
-        #     "num_prefix": 10,
-        #     "rps": 5,
-        #     "randomize_order": False  # Can be set differently per config
-        # }
     ]
     
     # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
-        "hf-internal-testing/llama-tokenizer", 
+        "deepseek-ai/deepseek-llm-7b-chat", 
         legacy=True,
         model_max_length=4096,  # Increased to handle longer prefixes
         padding_side="right",
@@ -530,16 +693,32 @@ if __name__ == "__main__":
         use_fast=True
     )
     
-    # Add randomization info to filename
     rand_str = "-randomized" if randomize_order else ""
-    base_filename = f"realistic-prefix-share-workload-p{prefix_length}-s{suffix_length}-rps{rps}{rand_str}"
-    print("Generating multi-configuration workload...")
-    workload_data = process_workload_configs(tokenizer, prefix_workload_configs)
-    
-    # Save results
-    output_file = f"{base_filename}.jsonl"
-    stats_file = f"{base_filename}-stats.json"
-    save_to_jsonl(workload_data, output_file)
-    save_stats(workload_data, stats_file)
-    print(f"Saving workload statistics to {stats_file}")
-    print(f"Saving workload traces to {output_file}")
+    if to_workload:
+        prefix_estimate = prompt_length * shared_proportion
+        suffix_estimate = prompt_length * (1 - shared_proportion)
+        base_filename = f"prefix-share-workload-p{prefix_estimate}-s{suffix_estimate}-rps{rps}{rand_str}"
+        # Add randomization info to filename
+        print("Generating multi-configuration workload...")
+        workload_data = generate_workload_from_config(tokenizer, prefix_workload_configs)
+        # Save results
+        output_file = f"{base_filename}.jsonl"
+        stats_file = f"{base_filename}-stats.json"
+        save_workload_jsonl(workload_data, output_file)
+        save_stats(workload_data, stats_file)
+        print(f"Saving workload statistics to {stats_file}")
+        print(f"Saving workload traces to {output_file}")
+    else: # To dataset
+        base_filename = f"prefix-share-dataset-p{prompt_length}:{prompt_length_std}-shared{shared_proportion}:{shared_proportion_std}.jsonl"
+        dataset_dict = generate_dataset_from_config(tokenizer, prefix_workload_configs)
+        save_dataset_jsonl(dataset_dict["prompts"], f"{base_filename}-dataset.jsonl")
+        print(f"Saving dataset to {base_filename}-dataset.jsonl")
+        print(f"Dataset statistics: {dataset_dict['stats']} total_tokens: {dataset_dict['total_tokens']} overall_sharing_ratio: {dataset_dict['overall_sharing_ratio']} overall_prefix_proportion: {dataset_dict['overall_prefix_proportion']}")
+        
+        
+        # df = pd.DataFrame({
+        #     'prompt': [entry['input'][0]['content'] for entry in dataset],
+        #     'completion': [entry['output'] for entry in dataset],
+        #     'prompt_len': [entry['prompt_tokens'] for entry in dataset],
+        #     'completion_len': [entry['output_tokens'] for entry in dataset]
+        # })
