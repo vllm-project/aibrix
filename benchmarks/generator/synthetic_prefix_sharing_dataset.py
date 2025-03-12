@@ -3,6 +3,8 @@ import random
 import json
 import logging
 import numpy as np
+import argparse
+
 from tqdm import tqdm
 from transformers import AutoTokenizer
 from scipy.stats import truncnorm
@@ -671,8 +673,35 @@ def save_stats(workload_data, stats_file):
 if __name__ == "__main__":
     random.seed(0)
     np.random.seed(0)
-    to_workload = False
-    app_name = ""
+    parser = argparse.ArgumentParser(description="Configure workload parameters.")
+    
+    parser.add_argument("--app-name", type=str, default="app", help="Name of the application.")
+    parser.add_argument("--prompt-length", type=int, default=3871, help="Length of the prompt.")
+    parser.add_argument("--prompt-length-std", type=int, default=1656, help="Standard deviation of the prompt length.")
+    parser.add_argument("--shared-proportion", type=float, default=0.97, help="Proportion of shared content.")
+    parser.add_argument("--shared-proportion-std", type=float, default=0.074, help="Standard deviation of shared proportion.")
+    parser.add_argument("--num-samples-per-prefix", type=int, default=200, help="Number of samples per prefix.")
+    parser.add_argument("--num-prefix", type=int, default=10, help="Number of prefixes.")
+    parser.add_argument("--rps", type=int, default=0, help="Requests per second.")
+    parser.add_argument("--randomize-order", action="store_true", help="Randomize order if flag is set.")
+    parser.add_argument("--to-workload", action="store_true", help="Generate workload if flag is set (needs rps to be set).")
+    
+    args = parser.parse_args()
+    
+    to_workload = args.to_workload
+    app_name = args.app_name
+    prefix_workload_configs = [
+        {
+            "prompt_length": args.prompt_length,
+            "prompt_length_std": args.prompt_length_std,
+            "shared_proportion": args.shared_proportion,
+            "shared_proportion_std": args.shared_proportion_std,
+            "num_samples_per_prefix": args.num_samples_per_prefix,
+            "num_prefix": args.num_prefix,
+            "rps": args.rps,
+            "randomize_order": args.randomize_order
+        },
+    ]
     
     # prompt_length = 2048
     # prompt_length_std = 512
@@ -728,19 +757,19 @@ if __name__ == "__main__":
     # ]
         
     ## Programming
-    app_name = "programming"
-    prefix_workload_configs = [
-        {
-            "prompt_length": 3871,
-            "prompt_length_std" : 1656,
-            "shared_proportion": 0.97,
-            "shared_proportion_std": 0.074,
-            "num_samples_per_prefix": 200,
-            "num_prefix": 10,
-            "rps": 0,
-            "randomize_order": True  # Add the randomization parameter
-        },
-    ]
+    # app_name = "programming"
+    # prefix_workload_configs = [
+    #     {
+    #         "prompt_length": 3871,
+    #         "prompt_length_std" : 1656,
+    #         "shared_proportion": 0.97,
+    #         "shared_proportion_std": 0.074,
+    #         "num_samples_per_prefix": 200,
+    #         "num_prefix": 10,
+    #         "rps": 0,
+    #         "randomize_order": True  # Add the randomization parameter
+    #     },
+    # ]
     
     # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
