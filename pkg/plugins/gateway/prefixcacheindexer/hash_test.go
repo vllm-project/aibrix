@@ -24,7 +24,7 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/stretchr/testify/assert"
-	"github.com/vllm-project/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/prefixcacheindexer/tokenizer"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -42,21 +42,23 @@ func Test_PrefixHashTableE2E(t *testing.T) {
 		{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
 	}
 
-	inputText := "Hello World! What a Good Day! Good Morning! 你好世界！多么美好的一天啊！早上好！"
-	tokens, err := utils.TokenizeInputText(inputText)
-	assert.Equal(t, nil, err)
+	inputText := "Hello World! What a Good Day! Good day to code and learn new things in LLM!! 你好世界！ 多么美好的一天啊！"
+	tokens, err := tokenizer.NewStringTokenizer().TokenizeInputText(inputText)
+	assert.NoError(t, err)
 
 	matchedTokens, unMatchedTokens, matchPods := cache.MatchPrefix(tokens, "m1", pods)
+	fmt.Println(matchedTokens)
+	fmt.Println(unMatchedTokens)
 	assert.Equal(t, 0, len(matchedTokens))
 	assert.Equal(t,
-		[]int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 7839, 29084, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447, 6079, 102, 17905, 53901, 6447},
+		[]byte{72, 101, 108, 108, 111, 87, 111, 114, 108, 100, 33, 87, 104, 97, 116, 97, 71, 111, 111, 100, 68, 97, 121, 33, 71, 111, 111, 100, 100, 97, 121, 116, 111, 99, 111, 100, 101, 97, 110, 100, 108, 101, 97, 114, 110, 110, 101, 119, 116, 104, 105, 110, 103, 115, 105, 110, 76, 76, 77, 33, 33, 228, 189, 160, 229, 165, 189, 228, 184, 150, 231, 149, 140, 239, 188, 129, 229, 164, 154, 228, 185, 136, 231, 190, 142, 229, 165, 189, 231, 154, 132, 228, 184, 128, 229, 164, 169, 229, 149, 138, 239, 188, 129},
 		unMatchedTokens)
 	assert.Equal(t, 0, len(matchPods))
 
 	cache.AddPrefix(unMatchedTokens, "m1", "p1")
 	matchedTokens, unMatchedTokens, matchPods = cache.MatchPrefix(tokens, "m1", pods)
 	assert.Equal(t,
-		[]int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 7839, 29084, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447, 6079, 102, 17905, 53901, 6447},
+		[]byte{72, 101, 108, 108, 111, 87, 111, 114, 108, 100, 33, 87, 104, 97, 116, 97, 71, 111, 111, 100, 68, 97, 121, 33, 71, 111, 111, 100, 100, 97, 121, 116, 111, 99, 111, 100, 101, 97, 110, 100, 108, 101, 97, 114, 110, 110, 101, 119, 116, 104, 105, 110, 103, 115, 105, 110, 76, 76, 77, 33, 33, 228, 189, 160, 229, 165, 189, 228, 184, 150, 231, 149, 140, 239, 188, 129, 229, 164, 154, 228, 185, 136, 231, 190, 142, 229, 165, 189, 231, 154, 132, 228, 184, 128, 229, 164, 169, 229, 149, 138, 239, 188, 129},
 		matchedTokens)
 	assert.Equal(t, 0, len(unMatchedTokens))
 	assert.Equal(t, "p1", matchPods[0].Name)
@@ -64,7 +66,7 @@ func Test_PrefixHashTableE2E(t *testing.T) {
 	cache.Evict(time.Now().Add(60 * time.Minute))
 	_, unMatchedTokens, matchPods = cache.MatchPrefix(tokens, "m1", pods)
 	assert.Equal(t,
-		[]int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 7839, 29084, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447, 6079, 102, 17905, 53901, 6447},
+		[]byte{72, 101, 108, 108, 111, 87, 111, 114, 108, 100, 33, 87, 104, 97, 116, 97, 71, 111, 111, 100, 68, 97, 121, 33, 71, 111, 111, 100, 100, 97, 121, 116, 111, 99, 111, 100, 101, 97, 110, 100, 108, 101, 97, 114, 110, 110, 101, 119, 116, 104, 105, 110, 103, 115, 105, 110, 76, 76, 77, 33, 33, 228, 189, 160, 229, 165, 189, 228, 184, 150, 231, 149, 140, 239, 188, 129, 229, 164, 154, 228, 185, 136, 231, 190, 142, 229, 165, 189, 231, 154, 132, 228, 184, 128, 229, 164, 169, 229, 149, 138, 239, 188, 129},
 		unMatchedTokens)
 	assert.Equal(t, 0, len(matchPods))
 }
@@ -78,8 +80,8 @@ func Test_MatchPrefix(t *testing.T) {
 		cache         PrefixHashTable
 		model         string
 		pods          []*v1.Pod
-		matchTokens   []int
-		unMatchTokens []int
+		matchTokens   []byte
+		unMatchTokens []byte
 		matchPods     []*v1.Pod
 	}{
 		{
@@ -95,16 +97,24 @@ func Test_MatchPrefix(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
 			},
-			matchTokens:   []int{},
-			unMatchTokens: []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240, 82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447},
+			matchTokens:   []byte{},
+			unMatchTokens: []byte{72, 101, 108, 108, 111, 87, 111, 114, 108, 100, 33, 87, 104, 97, 116, 97, 71, 111, 111, 100, 68, 97, 121, 33, 228, 189, 160, 229, 165, 189, 228, 184, 150, 231, 149, 140, 239, 188, 129, 229, 164, 154, 228, 185, 136, 231, 190, 142, 229, 165, 189, 231, 154, 132, 228, 184, 128, 229, 164, 169, 229, 149, 138, 239, 188, 129},
 			matchPods:     nil,
 		},
 		{
 			name:      "token length more than prefix block size, one prefix block exist in the cache",
-			inputText: "Hello World! What a Good Day! 你好世界！多么美好的一天啊！",
+			inputText: "Hello World! What a Good Day! Good day to code and learn new things in LLM!! 你好世界！多么美好的一天啊！",
 			cache: PrefixHashTable{
 				blocks: map[uint64]Block{
-					8954089069687757318: {
+					14691102025703449771: {
+						modelToPods: map[string]map[string]time.Time{
+							"m1": {
+								"p1": time.Now(),
+							},
+						},
+						lastAccessTime: time.Now(),
+					},
+					8713185073040773989: {
 						modelToPods: map[string]map[string]time.Time{
 							"m1": {
 								"p1": time.Now(),
@@ -121,8 +131,8 @@ func Test_MatchPrefix(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
 			},
-			matchTokens:   []int{9906, 4435, 0, 3639, 264, 7839, 6187, 0, 220, 57668, 53901, 3574, 244, 98220, 6447, 43240},
-			unMatchTokens: []int{82696, 58666, 53901, 9554, 15120, 36827, 28308, 232, 6447},
+			matchTokens:   []byte{72, 101, 108, 108, 111, 87, 111, 114, 108, 100, 33, 87, 104, 97, 116, 97, 71, 111, 111, 100, 68, 97, 121, 33, 71, 111, 111, 100, 100, 97, 121, 116},
+			unMatchTokens: []byte{111, 99, 111, 100, 101, 97, 110, 100, 108, 101, 97, 114, 110, 110, 101, 119, 116, 104, 105, 110, 103, 115, 105, 110, 76, 76, 77, 33, 33, 228, 189, 160, 229, 165, 189, 228, 184, 150, 231, 149, 140, 239, 188, 129, 229, 164, 154, 228, 185, 136, 231, 190, 142, 229, 165, 189, 231, 154, 132, 228, 184, 128, 229, 164, 169, 229, 149, 138, 239, 188, 129},
 			matchPods: []*v1.Pod{
 				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
 			},
@@ -130,15 +140,12 @@ func Test_MatchPrefix(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tokens, err := utils.TokenizeInputText(tt.inputText)
-		assert.Equal(t, nil, err)
-		fmt.Println(len(tokens))
-		fmt.Println(tokens)
-
+		tokens, err := tokenizer.NewStringTokenizer().TokenizeInputText(tt.inputText)
+		assert.NoError(t, err)
 		matchTokens, unMatchTokens, matchPods := tt.cache.MatchPrefix(tokens, tt.model, tt.pods)
 
-		assert.Equal(t, tt.matchTokens, matchTokens)
-		assert.Equal(t, tt.unMatchTokens, unMatchTokens)
-		assert.Equal(t, tt.matchPods, matchPods)
+		assert.Equal(t, tt.matchTokens, matchTokens, tt.name)
+		assert.Equal(t, tt.unMatchTokens, unMatchTokens, tt.name)
+		assert.Equal(t, tt.matchPods, matchPods, tt.name)
 	}
 }
