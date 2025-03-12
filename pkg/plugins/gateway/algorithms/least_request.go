@@ -53,7 +53,7 @@ func NewLeastRequestRouter() (Router, error) {
 	}, nil
 }
 
-func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
+func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
 	var targetPodIP string
 	minCount := math.MaxFloat64
 
@@ -67,17 +67,17 @@ func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod, 
 	}
 
 	for _, pod := range readyPods {
-		runningReq, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.NumRequestsRunning)
+		runningReq, err := r.cache.GetPodModelMetric(pod.Name, routingCtx.Model, metrics.NumRequestsRunning)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		waitingReq, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.NumRequestsWaiting)
+		waitingReq, err := r.cache.GetPodModelMetric(pod.Name, routingCtx.Model, metrics.NumRequestsWaiting)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		swappedReq, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.NumRequestsSwapped)
+		swappedReq, err := r.cache.GetPodModelMetric(pod.Name, routingCtx.Model, metrics.NumRequestsSwapped)
 		if err != nil {
 			klog.Error(err)
 			continue
