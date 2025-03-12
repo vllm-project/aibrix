@@ -9,6 +9,9 @@ set -o pipefail
 
 cd "$(dirname "${0}")/.."
 
+# kube_codegen.sh may be confused by the symbolic links in the path, so cd to the canonicalized path
+cd "$(readlink -f .)"
+
 CODEGEN_VERSION=$(grep 'k8s.io/code-generator' go.sum | awk '{print $2}' | sed 's/\/go.mod//g' | head -1)
 CODEGEN_PKG=$(echo `go env GOPATH`"/pkg/mod/k8s.io/code-generator@${CODEGEN_VERSION}")
 if [[ ! -d ${CODEGEN_PKG} ]]; then
