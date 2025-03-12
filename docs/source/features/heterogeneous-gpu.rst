@@ -50,8 +50,6 @@ Incoming requests are routed through the gateway and directed to the optimal pod
 
 Step 2: Install aibrix python module:
 
-Step 2: Install aibrix python module:
-
 .. code-block:: bash
 
     pip3 install aibrix

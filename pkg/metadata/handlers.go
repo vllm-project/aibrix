@@ -45,10 +45,12 @@ func NewHTTPServer(addr string, redis *redis.Client) *http.Server {
 		cache:       c,
 	}
 	r := mux.NewRouter()
+	// User related handlers
 	r.HandleFunc("/CreateUser", server.createUser).Methods("POST")
 	r.HandleFunc("/ReadUser", server.readUser).Methods("POST")
 	r.HandleFunc("/UpdateUser", server.updateUser).Methods("POST")
 	r.HandleFunc("/DeleteUser", server.deleteUser).Methods("POST")
+	// OpenAI API related handlers
 	r.HandleFunc("/v1/models", server.models).Methods("GET")
 
 	return &http.Server{
@@ -59,12 +61,14 @@ func NewHTTPServer(addr string, redis *redis.Client) *http.Server {
 
 // models returns base and lora adapters registered to aibrix control plane
 func (s *httpServer) models(w http.ResponseWriter, r *http.Request) {
-	models := s.cache.GetModels()
-	jsonBytes, err := json.Marshal(models)
+	modelNames := s.cache.GetModels()
+	response := BuildModelsResponse(modelNames)
+	jsonBytes, err := json.Marshal(response)
 	if err != nil {
 		http.Error(w, "error in processing model list", http.StatusInternalServerError)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, "%s", string(jsonBytes))
 }
 
