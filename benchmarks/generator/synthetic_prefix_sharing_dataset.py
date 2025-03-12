@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import random
 import json
+import logging
 import numpy as np
 from tqdm import tqdm
 from transformers import AutoTokenizer
+from scipy.stats import truncnorm
 
 # A collection of realistic text templates for generating prompts
 REALISTIC_TEMPLATES = [
@@ -140,6 +142,27 @@ def generate_realistic_prompt(tokenizer, target_token_length):
 def generate_unique_prefix(base_text, index):
     return str(index) + base_text[len(str(index)):]
 
+def adjust_prompt_length(tokenizer, prompt, target_token_length):
+    token_count = len(tokenizer.encode(prompt))
+    adjusted_prompt = prompt
+    if token_count < target_token_length:
+        while token_count < target_token_length:
+            additional_content = [
+                f" Additionally, I'm interested in learning about {random.choice(TOPICS)}.",
+                f" Could you also explain how this relates to {random.choice(TOPICS)}?",
+                f" I'm asking because I need to {random.choice(ACTIONS)} for {random.choice(['my work', 'a client', 'a project', 'my research'])}.",
+                f" For context, I have experience with {random.choice(TOPICS)} but I'm new to this specific area.",
+                f" I've been trying to understand this concept for {random.choice(['days', 'weeks', 'months'])} and would appreciate a clear explanation."
+            ]
+            adjusted_prompt += random.choice(additional_content)
+            token_count = len(tokenizer.encode(adjusted_prompt))
+    elif token_count > target_token_length:
+        adjusted_prompt_tokenized = tokenizer.encode(prompt)[:target_token_length]
+        adjusted_prompt = tokenizer.decode(adjusted_prompt_tokenized, skip_special_tokens=True)
+    return adjusted_prompt
+    
+    
+
 def prepare_prompts(tokenizer, config):
     """
     Prepare prompts based on the provided configuration
@@ -151,54 +174,59 @@ def prepare_prompts(tokenizer, config):
     Returns:
         Tuple of (all_prompts, tot_input_len, prompts_token_counts)
     """
-    # prefix_workload_configs = [
-    #     {
-    #         "prompt_length": prompt_length,
-    #         "prompt_length_std" : prompt_length_std,
-    #         "shared_proportion": shared_proportion,
-    #         "shared_proportion_std": shared_proportion_std,
-    #         "num_samples_per_prefix": num_samples_per_prefix,
-    #         "num_prefix": num_prefix,
-    #         "rps": rps,
-    #         "randomize_order": randomize_order  # Add the randomization parameter
-    #     },
-    # ]
     
-    prompt_length = config["prompt_length"]
+    prompt_length_mean = config["prompt_length"]
     prompt_length_std = config["prompt_length_std"]
     shared_proportion_mean = config["shared_proportion"]
     shared_proportion_std = config["shared_proportion_std"]
-    sampled_prompt_length = np.random.normal(prompt_length, prompt_length_std)
-    sampled_shared_proportion = np.random.normal(shared_proportion_mean, shared_proportion_std)
-    
-    
-    
-    prefix_length = int(sampled_shared_proportion * sampled_prompt_length) #config["prefix_length"]
-    # suffix_length = config["suffix_length"]
-    suffix_length = prompt_length - prefix_length
     num_samples_per_prefix = config["num_samples_per_prefix"]
     num_prefix = config["num_prefix"]
     
     # Generate a base prefix using realistic content
-    
     tot_input_len = 0
     all_prompts = []
     prompts_token_counts = []  # Store token counts for each prompt
     
     for i in tqdm(range(num_prefix), desc=f"Preparing prompts for config {config['id']}"):
-        
-        base_prefix = generate_realistic_prompt(tokenizer, prefix_length)
+        shared_length_mean = int(prompt_length_mean * shared_proportion_mean)
+        base_prefix = generate_realistic_prompt(tokenizer, shared_length_mean)
         unique_prefix = generate_unique_prefix(base_prefix, i)
         prompt_list = []
         token_count_list = []
         
         for j in range(num_samples_per_prefix):
             # Generate a realistic suffix
-            suffix = generate_realistic_prompt(tokenizer, suffix_length)
-            prompt = unique_prefix + " " + suffix
+            
+            # Function to sample L from a normal distribution with truncation at 1 (to ensure L > 0)
+            def sample_L(mu_L, sigma_L):
+                L = int(np.round(truncnorm.rvs((1 - mu_L) / sigma_L, np.inf, loc=mu_L, scale=sigma_L)))
+                return max(1, L)  # Ensure L is at least 1
+
+            # Function to sample P from a truncated normal distribution ensuring 0 <= P <= L
+            def sample_P(mu_P, sigma_P, L):
+                lower, upper = 0, L
+                P = int(np.round(truncnorm.rvs((lower - mu_P) / sigma_P, (upper - mu_P) / sigma_P, loc=mu_P, scale=sigma_P)))
+                return max(0, min(P, L))  # Ensure P is within [0, L]
+            
+            sampled_prompt_length = int(sample_L(prompt_length_mean, prompt_length_std))
+            sampled_shared_length = int(sample_P(
+                shared_proportion_mean  * sampled_prompt_length, 
+                shared_proportion_std * sampled_prompt_length,
+                sampled_prompt_length))
+            
+            target_prefix_length = sampled_shared_length
+            target_suffix_length = sampled_prompt_length - target_prefix_length
+            
+            adjusted_prefix = adjust_prompt_length(tokenizer, unique_prefix, target_prefix_length)
+            suffix = generate_realistic_prompt(tokenizer, target_suffix_length)
+            adjusted_suffix = adjust_prompt_length(tokenizer, suffix, target_suffix_length)
+            
+            prompt = adjusted_prefix + " " + adjusted_suffix
             
             # Count tokens
             token_count = len(tokenizer.encode(prompt))
+            logging.info(f"generate_realistic_prompt num_prefix {num_prefix} config {config['id']} sampled_prompt_length {sampled_prompt_length} sampled_shared_length {sampled_shared_length} target_prefix_length {target_prefix_length} suffix_length {target_suffix_length} num_samples_per_prefix {num_samples_per_prefix} total token count {token_count}")
+            
             tot_input_len += token_count
             
             prompt_list.append(prompt)
@@ -253,7 +281,7 @@ def calculate_prefix_sharing_ratio(tokenizer, all_prompts, prompts_token_counts,
         if prompt_list and len(prompt_list) > 0:
             # Take first prompt from each list to get the unique prefix
             first_prompt = prompt_list[0]
-            print(f"len(unique_prefixes) {len(unique_prefixes)} len(str(len(unique_prefixes))) {len(str(len(unique_prefixes)))} (len(str(len(unique_prefixes))) + prefix_length) {(len(str(len(unique_prefixes))) + prefix_length)}")
+            logging.debug(f"len(unique_prefixes) {len(unique_prefixes)} len(str(len(unique_prefixes))) {len(str(len(unique_prefixes)))} (len(str(len(unique_prefixes))) + prefix_length) {(len(str(len(unique_prefixes))) + prefix_length)}")
             prefix = first_prompt[:(len(str(len(unique_prefixes))) + prefix_length)]
             unique_prefixes.append(prefix)
     
@@ -468,19 +496,6 @@ def generate_dataset_from_config(tokenizer, configs):
     all_prompts_token_counts = []
     all_prefix_lengths = []
     
-    # prefix_workload_configs = [
-    #     {
-    #         "prompt_length": prompt_length,
-    #         "prompt_length_std" : prompt_length_std,
-    #         "shared_proportion": shared_proportion,
-    #         "shared_proportion_std": shared_proportion_std,
-    #         "num_samples_per_prefix": num_samples_per_prefix,
-    #         "num_prefix": num_prefix,
-    #         "rps": rps,
-    #         "randomize_order": randomize_order  # Add the randomization parameter
-    #     },
-    # ]
-    
     # Process each configuration
     for i, config in enumerate(configs):
         # Add an ID to the config for reference
@@ -511,7 +526,12 @@ def generate_dataset_from_config(tokenizer, configs):
                     "prefix_group": prefix_idx,
                     "config_id": config["id"]
                 })
+        # Determine if we should randomize the order
+        randomize_order = config.get("randomize_order", False)
         
+        # If randomize_order is True, shuffle the prompts across different prefix groups
+        if randomize_order:
+            random.shuffle(flat_prompts_data)
 
         for j, prompt_data in enumerate(flat_prompts_data):
             all_prompts_combined.append(prompt_data)
@@ -524,21 +544,17 @@ def generate_dataset_from_config(tokenizer, configs):
         all_prompts_token_counts.extend(token_counts)
         all_prefix_lengths.extend([prefix_length] * len(prompts))
         
-        # Store stats for this config
-        total_num_req = config["num_prefix"] * config["num_samples_per_prefix"]
-        total_duration = total_num_req / rps
-        
+
         config_stats.append({
             "config_id": config["id"],
             "prefix_length": prefix_length,
             "suffix_length": suffix_length,
             "num_samples_per_prefix": config["num_samples_per_prefix"],
             "num_prefix": config["num_prefix"],
-            "rps": rps,
+            "rps": config['rps'],
             "randomize_order": randomize_order,
             "num_requests": len(flat_prompts_data),
             "total_tokens": tokens,
-            "total_duration": total_duration,
             "prefix_sharing_ratio": sharing_ratio,
             "prefix_proportion": prefix_proportion,
         })
@@ -655,31 +671,74 @@ def save_stats(workload_data, stats_file):
 if __name__ == "__main__":
     random.seed(0)
     np.random.seed(0)
-    
-    # Define workload configurations
-    # prefix_length = 8192
-    # prefix_length = 512
-    # suffix_length = 128
-    prompt_length = 2048
-    prompt_length_std = 512
-    shared_proportion = 0.8
-    shared_proportion_std = 0.1
-    num_samples_per_prefix = 32
-    num_prefix = 10
-    rps = 5
-    randomize_order = True
     to_workload = False
+    app_name = ""
+    
+    # prompt_length = 2048
+    # prompt_length_std = 512
+    # shared_proportion = 0.6
+    # shared_proportion_std = 0.1
+    # num_samples_per_prefix = 2
+    # num_prefix = 2
+    # rps = 5
+    # randomize_order = True
 
+    # prefix_workload_configs = [
+    #     {
+    #         "prompt_length": prompt_length,
+    #         "prompt_length_std" : prompt_length_std,
+    #         "shared_proportion": shared_proportion,
+    #         "shared_proportion_std": shared_proportion_std,
+    #         "num_samples_per_prefix": num_samples_per_prefix,
+    #         "num_prefix": num_prefix,
+    #         "rps": rps,
+    #         "randomize_order": randomize_order  # Add the randomization parameter
+    #     },
+    # ]
+    
+
+    # ToolBench
+    # app_name = "toolbench"
+    # prefix_workload_configs = [
+    #     {
+    #         "prompt_length": 1835,
+    #         "prompt_length_std" : 742,
+    #         "shared_proportion": 0.85,
+    #         "shared_proportion_std": 0.13,
+    #         "num_samples_per_prefix": 200,
+    #         "num_prefix": 10,
+    #         "rps": 0,
+    #         "randomize_order": True  # Add the randomization parameter
+    #     },
+    # ]
+    
+    ## Agent
+    # app_name = "agent"
+    # prefix_workload_configs = [
+    #     {
+    #         "prompt_length": 2285,
+    #         "prompt_length_std" : 471,
+    #         "shared_proportion": 0.97,
+    #         "shared_proportion_std": 0.14,
+    #         "num_samples_per_prefix": 200,
+    #         "num_prefix": 10,
+    #         "rps": 0,
+    #         "randomize_order": True  # Add the randomization parameter
+    #     },
+    # ]
+        
+    ## Programming
+    app_name = "programming"
     prefix_workload_configs = [
         {
-            "prompt_length": prompt_length,
-            "prompt_length_std" : prompt_length_std,
-            "shared_proportion": shared_proportion,
-            "shared_proportion_std": shared_proportion_std,
-            "num_samples_per_prefix": num_samples_per_prefix,
-            "num_prefix": num_prefix,
-            "rps": rps,
-            "randomize_order": randomize_order  # Add the randomization parameter
+            "prompt_length": 3871,
+            "prompt_length_std" : 1656,
+            "shared_proportion": 0.97,
+            "shared_proportion_std": 0.074,
+            "num_samples_per_prefix": 200,
+            "num_prefix": 10,
+            "rps": 0,
+            "randomize_order": True  # Add the randomization parameter
         },
     ]
     
@@ -693,11 +752,12 @@ if __name__ == "__main__":
         use_fast=True
     )
     
-    rand_str = "-randomized" if randomize_order else ""
+    rand_str = "-randomized" if prefix_workload_configs[0]["randomize_order"] else ""
+    prefix_estimate = int(prefix_workload_configs[0]["prompt_length"] * prefix_workload_configs[0]["shared_proportion"])
+    suffix_estimate = int(prefix_workload_configs[0]["prompt_length"] * (1 - prefix_workload_configs[0]["shared_proportion"]))
     if to_workload:
-        prefix_estimate = prompt_length * shared_proportion
-        suffix_estimate = prompt_length * (1 - shared_proportion)
-        base_filename = f"prefix-share-workload-p{prefix_estimate}-s{suffix_estimate}-rps{rps}{rand_str}"
+        rps = prefix_workload_configs[0]["rps"]
+        base_filename = f"{app_name}-prefix-share-workload-p{prefix_estimate}-s{suffix_estimate}-rps{rps}{rand_str}"
         # Add randomization info to filename
         print("Generating multi-configuration workload...")
         workload_data = generate_workload_from_config(tokenizer, prefix_workload_configs)
@@ -709,7 +769,7 @@ if __name__ == "__main__":
         print(f"Saving workload statistics to {stats_file}")
         print(f"Saving workload traces to {output_file}")
     else: # To dataset
-        base_filename = f"prefix-share-dataset-p{prompt_length}:{prompt_length_std}-shared{shared_proportion}:{shared_proportion_std}.jsonl"
+        base_filename = f"{app_name}-prefix-share-dataset-p{prefix_estimate}-{suffix_estimate}.jsonl"
         dataset_dict = generate_dataset_from_config(tokenizer, prefix_workload_configs)
         save_dataset_jsonl(dataset_dict["prompts"], f"{base_filename}-dataset.jsonl")
         print(f"Saving dataset to {base_filename}-dataset.jsonl")
