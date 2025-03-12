@@ -35,7 +35,14 @@ spec:
           image: gateway-plugins:latest
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 50052
+            - name: gateway
+              protocol: TCP
+              port: 50052
+              targetPort: 50052
+            - name: profiling
+              protocol: TCP
+              port: 6060
+              targetPort: 6060
           resources:
             limits:
               cpu: 1
