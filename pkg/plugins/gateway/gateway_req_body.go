@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package gateway
 
 import (
@@ -94,8 +95,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		if extErr != nil {
 			return extErr, model, targetPodIP, stream, term
 		}
-
-		targetPodIP, err = s.selectTargetPod(ctx, routing.Algorithms(routingStrategy), pods, model, message)
+		routingCtx := routing.RoutingContext{Model: model, Message: message}
+		targetPodIP, err = s.selectTargetPod(ctx, routing.Algorithms(routingStrategy), pods, routingCtx)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingStrategy, "model", model)
 			return generateErrorResponse(
