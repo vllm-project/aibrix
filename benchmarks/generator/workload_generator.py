@@ -338,7 +338,6 @@ if __name__ == '__main__':
     parser.add_argument('--duration-ms', type=int, default=60000, help='Duration of the trace generated.')
     parser.add_argument('--group-interval-seconds', type=int, default=1, help='Grouping interval seconds.')
     parser.add_argument('--internal-trace-type', type=str, choices=['maas', 'cloudide'], default="maas", help='Type of internal traces.')
-    parser.add_argument('--adapter-name', type=str, required=False, default=None, help='Adapter name associated with workload (if applied).')
     parser.add_argument('--output-dir', type=str, required=False, default="output", help='Output directory to save.'
                                                                                          'the workload.')
     parser.add_argument('--output-format', type=str, choices=['json', 'jsonl'], default='json',
@@ -422,7 +421,6 @@ if __name__ == '__main__':
                                                     qps=args.target_qps,
                                                     duration_ms=args.duration_ms, 
                                                     interval_ms=args.interval_ms,
-                                                    adapter_name=args.adapter_name,
                                                     output_file=f"{args.output_dir}/{args.trace_type}",
                                                     to_jsonl=(args.output_format == "jsonl"),
                                                     )
