@@ -67,8 +67,18 @@ type prefixCacheRouter struct {
 }
 
 func NewPrefixCacheRouter() (Router, error) {
+	var tokenizerObj tokenizer.Tokenizer
+	// TODO: refactor initilization
+	// supported tokenizers: ["string", "tiktoken"]
+	tokenizerType := utils.LoadEnv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "string")
+	if tokenizerType == "tiktoken" {
+		tokenizerObj = tokenizer.NewTiktokenTokenizer()
+	} else {
+		tokenizerObj = tokenizer.NewStringTokenizer()
+	}
+
 	return prefixCacheRouter{
-		tokenizer:          tokenizer.NewStringTokenizer(),
+		tokenizer:          tokenizerObj,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 	}, nil
 }

@@ -95,7 +95,7 @@ type PrefixHashTable struct {
 
 type Block struct {
 	modelToPods    map[string]map[string]time.Time // model_name: map[pod_name]pod_last_access_time
-	lastAccessTime time.Time                       //block_last_access_time
+	lastAccessTime time.Time                       // block_last_access_time
 }
 
 func NewPrefixHashTable() PrefixCacheIndexer {
@@ -118,10 +118,9 @@ func NewPrefixHashTable() PrefixCacheIndexer {
 }
 
 // returns matchedTokens, unMatchedTokens, matchedPods
-// TODO: add an interface with multiple implementations such as hash or radix tree
 func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, pods []*v1.Pod) ([]byte, []byte, []*v1.Pod) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	var block, lastMatchedBlock Block
 	var ok bool
 	var lastTokenMatchIndex int
@@ -205,15 +204,6 @@ func (c *PrefixHashTable) Evict(now time.Time) {
 			klog.InfoS("prefix cache block evicted", "hash", hash)
 		}
 	}
-}
-
-// stringArrayToByteArray converts a string array to a byte array.
-func stringArrayToByteArray(stringArray []string) [][]byte {
-	byteArray := make([][]byte, len(stringArray))
-	for i, str := range stringArray {
-		byteArray[i] = []byte(str)
-	}
-	return byteArray
 }
 
 // matchPods returns ready pods that intersect with pods on which prefix tokens are catched.
