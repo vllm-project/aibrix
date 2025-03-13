@@ -56,7 +56,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			Body: io.NopCloser(bytes.NewReader(b.ResponseBody.GetBody())),
 		}
 		streaming := ssestream.NewStream[openai.ChatCompletionChunk](ssestream.NewDecoder(t), nil)
-		defer streaming.Close()
+		defer func() {
+			_ = streaming.Close()
+		}()
 		for streaming.Next() {
 			evt := streaming.Current()
 			if len(evt.Choices) == 0 {
