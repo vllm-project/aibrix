@@ -311,7 +311,16 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 		}
 	}
 
-	// TODO: add status update. Currently, actualScale and desireScale are not synced from HPA object yet.
+	// Add status update. Sync actualScale, desireScale, conditions, and lastScaleTime from HPA to pa.
+	pa.Status.ActualScale = existingHPA.Status.CurrentReplicas
+	pa.Status.DesiredScale = existingHPA.Status.DesiredReplicas
+	pa.Status.LastScaleTime = existingHPA.Status.LastScaleTime
+	for _, condition := range existingHPA.Status.Conditions {
+		setCondition(&pa, string(condition.Type), metav1.ConditionStatus(condition.Status), condition.Reason, condition.Message)
+	}
+	if err = r.Status().Update(ctx, &pa); err != nil {
+		klog.ErrorS(err, "Failed to update PodAutoscaler status")
+	}
 	// Return with no error and no requeue needed.
 	return ctrl.Result{}, nil
 }
