@@ -176,5 +176,5 @@ spec:
                   - key: machine.cluster.vke.volcengine.com/gpu-name
                     operator: In
                     values:
-                      # - NVIDIA-L20
-                      - Tesla-V100
+                      - NVIDIA-L20
+                      # - Tesla-V100

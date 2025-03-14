@@ -2,8 +2,9 @@
 
 input_workload_path=$1
 autoscaler=$2
-aibrix_repo="" # root dir of aibrix repo
-api_key="" # set your api key
+aibrix_repo=$3 # root dir of aibrix repo
+api_key=$4 # set your api key
+kube_context=$5
 k8s_yaml_dir="deepseek-llm-7b-chat"
 target_deployment="deepseek-llm-7b-chat" # "aibrix-model-deepseek-llm-7b-chat"
 target_ai_model=deepseek-llm-7b-chat
@@ -66,7 +67,7 @@ kubectl delete -f ${k8s_yaml_dir}/deploy.yaml
 kubectl apply -f ${k8s_yaml_dir}/deploy.yaml
 kubectl apply -f ${k8s_yaml_dir}/${autoscaler}.yaml
 echo "kubectl apply -f ${k8s_yaml_dir}/${autoscaler}.yaml"
-python3 ${aibrix_repo}/benchmarks/utils/set_num_replicas.py --deployment ${target_deployment} --replicas 1
+python3 ${aibrix_repo}/benchmarks/utils/set_num_replicas.py --deployment ${target_deployment} --replicas 1 --context ${kube_context}
 echo "Set number of replicas to \"1\". Autoscaling experiment will start from 1 pod"
 
 echo "Restart aibrix-controller-manager deployment"
