@@ -9,7 +9,7 @@ export kube_context="ccr3aths9g2gqedu8asdg@35122069-kcu0n2lfb7pjdd83330h0"
 
 for WORKLOAD_TYPE in "T_HighSlow_I_HighSlow_O_HighFast"  "T_HighSlow_I_HighSlow_O_HighSlow" "T_HighSlow_I_LowFast_O_HighSlow" "T_HighSlow_I_LowSlow_O_HighSlow"
 do
-    workload_path="workload/${WORKLOAD_TYPE}/synthetic_manual_config.jsonl"
+    workload_path="workload/synthetic_patterns/${WORKLOAD_TYPE}/synthetic_manual_config.jsonl"
     if [ -z "${workload_path}" ]; then
         echo "workload path is not given"
         echo "Usage: $0 <workload_path>"
