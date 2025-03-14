@@ -104,6 +104,26 @@ type CacheSpec struct {
 	CPU string `json:"cpu,omitempty"`
 }
 
+type AffinityConfig struct {
+	// NodeAffinity specifies node affinity scheduling rules for the pod
+	// +kubebuilder:validation:Optional
+	NodeAffinity *corev1.NodeAffinity `json:"nodeAffinity,omitempty"`
+
+	// PodAffinity specifies pod affinity scheduling rules
+	// +kubebuilder:validation:Optional
+	PodAffinity *corev1.PodAffinity `json:"podAffinity,omitempty"`
+
+	// PodAntiAffinity specifies pod anti-affinity scheduling rules
+	// +kubebuilder:validation:Optional
+	PodAntiAffinity *corev1.PodAntiAffinity `json:"podAntiAffinity,omitempty"`
+
+	// EnableDefaultAntiAffinity will create default anti-affinity rules between KVCache pods
+	// to distribute them across different nodes when true
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default:=true
+	EnableDefaultAntiAffinity bool `json:"enableDefaultAntiAffinity,omitempty"`
+}
+
 // KVCacheSpec defines the desired state of KVCache
 type KVCacheSpec struct {
 	// Replicas is the number of kv cache pods to deploy
@@ -131,6 +151,11 @@ type KVCacheSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default:={type: "ClusterIP", port: 9600}
 	Service ServiceConfig `json:"service,omitempty"`
+
+	// Affinity configuration for pod scheduling
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default:={enableDefaultAntiAffinity: true}
+	Affinity AffinityConfig `json:"affinity,omitempty"`
 }
 
 // KVCacheStatus defines the observed state of KVCache

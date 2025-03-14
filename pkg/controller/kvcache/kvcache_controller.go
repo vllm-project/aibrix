@@ -54,6 +54,8 @@ const (
 	KVCacheAnnotationNodeAffinityGPUType    = "kvcache.orchestration.aibrix.ai/node-affinity-gpu-type"
 	KVCacheAnnotationPodAffinityKey         = "kvcache.orchestration.aibrix.ai/pod-affinity-workload"
 
+	KVCacheAnnotationPodAntiAffinityKey = "kvcache.orchestration.aibrix.ai/pod-anti-affinity-key"
+
 	KVCacheLabelValueRoleCache    = "cache"
 	KVCacheLabelValueRoleMetadata = "metadata"
 )
@@ -461,6 +463,52 @@ func (r *KVCacheReconciler) reconcileDeployment(ctx context.Context, kvCache *or
 			},
 		}
 		affinity.PodAffinity = podAffinity
+	}
+
+	// Add pod anti-affinity handling
+	if value, ok := kvCache.Annotations[KVCacheAnnotationPodAntiAffinityKey]; ok {
+		podAntiAffinity := &corev1.PodAntiAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+				{
+					LabelSelector: &metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{
+							{
+								Key:      "model.aibrix.ai/name",
+								Operator: metav1.LabelSelectorOpIn,
+								Values:   []string{value},
+							},
+						},
+					},
+					TopologyKey: "kubernetes.io/hostname",
+				},
+			},
+		}
+		affinity.PodAntiAffinity = podAntiAffinity
+	}
+
+	// Adding a default anti-affinity between KVCache pods
+	// to ensure high availability by distributing replicas across nodes
+	if kvCache.Spec.Replicas > 1 {
+		// If no explicit anti-affinity is set and we have multiple replicas,
+		// set a preferred anti-affinity for KVCache pods of the same deployment
+		if affinity.PodAntiAffinity == nil {
+			affinity.PodAntiAffinity = &corev1.PodAntiAffinity{
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+					{
+						Weight: 100,
+						PodAffinityTerm: corev1.PodAffinityTerm{
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									KVCacheLabelKeyIdentifier: kvCache.Name,
+									KVCacheLabelKeyRole:       KVCacheLabelValueRoleCache,
+								},
+							},
+							TopologyKey: "kubernetes.io/hostname",
+						},
+					},
+				},
+			}
+		}
 	}
 
 	deployment := &appsv1.Deployment{
