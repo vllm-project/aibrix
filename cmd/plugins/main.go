@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -91,6 +92,12 @@ func main() {
 	healthPb.RegisterHealthServer(s, gateway.NewHealthCheckServer())
 
 	klog.Info("starting gRPC server on port :50052")
+
+	go func() {
+		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+			klog.Fatalf("failed to setup profiling: %v", err)
+		}
+	}()
 
 	// shutdown
 	var gracefulStop = make(chan os.Signal, 1)
