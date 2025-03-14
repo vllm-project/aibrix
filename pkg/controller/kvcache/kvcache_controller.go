@@ -54,6 +54,8 @@ const (
 	KVCacheAnnotationNodeAffinityGPUType    = "kvcache.orchestration.aibrix.ai/node-affinity-gpu-type"
 	KVCacheAnnotationPodAffinityKey         = "kvcache.orchestration.aibrix.ai/pod-affinity-workload"
 
+	KVCacheAnnotationPodAntiAffinity = "kvcache.orchestration.aibrix.ai/pod-anti-affinity"
+
 	KVCacheLabelValueRoleCache    = "cache"
 	KVCacheLabelValueRoleMetadata = "metadata"
 )
@@ -461,6 +463,23 @@ func (r *KVCacheReconciler) reconcileDeployment(ctx context.Context, kvCache *or
 			},
 		}
 		affinity.PodAffinity = podAffinity
+	}
+
+	if _, ok := kvCache.Annotations[KVCacheAnnotationPodAntiAffinity]; ok {
+		podAntiAffinity := &corev1.PodAntiAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+				{
+					LabelSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							KVCacheLabelKeyIdentifier: kvCache.Name,
+							KVCacheLabelKeyRole:       KVCacheLabelValueRoleCache,
+						},
+					},
+					TopologyKey: "kubernetes.io/hostname",
+				},
+			},
+		}
+		affinity.PodAntiAffinity = podAntiAffinity
 	}
 
 	deployment := &appsv1.Deployment{
