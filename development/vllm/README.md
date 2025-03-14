@@ -13,27 +13,41 @@ Update path for huggingface cache in kind config
 ```shell
 kind create cluster --config=./development/vllm/kind-config.yaml
 ```
-(Optional) Load container image to docker context
-
-> Note: If you are using Docker-Desktop on Mac, Kubernetes shares the local image repository with Docker.
-> Therefore, the following command is not necessary. Only kind user need this step.
-
-```shell
-docker pull aibrix/vllm-cpu-env:macos
-kind load docker-image aibrix/vllm-cpu-env:macos
-```
-
 Build aibrix runtime component
 ```shell
 make docker-build-all
 kind load docker-image aibrix/runtime:nightly
 ```
 
-### Deploy model
+(Optional) Load container image to docker context
+#### Mac
+> Note: If you are using Docker-Desktop on Mac, Kubernetes shares the local image repository with Docker.
+> Therefore, the following command is not necessary. Only kind user need this step.
 ```shell
-kubectl create -k vllm/config
+docker pull aibrix/vllm-cpu-env:macos
+kind load docker-image aibrix/vllm-cpu-env:macos
+```
 
-kubectl delete -k vllm/config
+#### Linux
+```shell
+docker pull aibrix/vllm-cpu-env:linux-amd64
+kind load docker-image aibrix/vllm-cpu-env:linux-amd64
+```
+
+### Deploy model
+
+#### Mac
+```shell
+kubectl create -k vllm/macos
+
+kubectl delete -k vllm/macos
+```
+
+#### Linux
+```shell
+kubectl create -k vllm/linux
+
+kubectl delete -k vllm/linux
 ```
 
 ### Setup port forwarding
