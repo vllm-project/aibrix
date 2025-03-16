@@ -422,7 +422,7 @@ if __name__ == '__main__':
                                                     interval_ms=args.interval_ms,
                                                     output_file=f"{args.output_dir}/{args.trace_type}",
                                                     to_jsonl=(args.output_format == "jsonl"),
-                                                    )
+                                                )
         elif args.trace_type == "internal":
             generated_workload = generate_from_internal_csv(prompt_file_path=args.prompt_file, 
                                                             duration_ms=args.duration_ms, 
