@@ -703,29 +703,6 @@ if __name__ == "__main__":
         },
     ]
     
-    # prompt_length = 2048
-    # prompt_length_std = 512
-    # shared_proportion = 0.6
-    # shared_proportion_std = 0.1
-    # num_samples_per_prefix = 2
-    # num_prefix = 2
-    # rps = 5
-    # randomize_order = True
-
-    # prefix_workload_configs = [
-    #     {
-    #         "prompt_length": prompt_length,
-    #         "prompt_length_std" : prompt_length_std,
-    #         "shared_proportion": shared_proportion,
-    #         "shared_proportion_std": shared_proportion_std,
-    #         "num_samples_per_prefix": num_samples_per_prefix,
-    #         "num_prefix": num_prefix,
-    #         "rps": rps,
-    #         "randomize_order": randomize_order  # Add the randomization parameter
-    #     },
-    # ]
-    
-
     # ToolBench
     # app_name = "toolbench"
     # prefix_workload_configs = [
