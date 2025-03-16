@@ -30,7 +30,7 @@ AI Engine Runtime serves as an essential bridge between the AIBrix Control Plane
 Installation
 ------------
 
-By default, user does not need to install runtime seperately. The guidance for the base model deployment has the runtime enabled. You can enable the
+By default, user does not need to install runtime separately. The guidance for the base model deployment has the runtime enabled. You can enable the
 runtime by adding the following to your deployment yaml. In future, we will provide a more convenient way to enable the runtime like mutating webhook.
 
 .. code-block:: yaml
