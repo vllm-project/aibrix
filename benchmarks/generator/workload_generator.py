@@ -249,6 +249,7 @@ def generate_synthetic(prompt_file_path: str,
         qps_scale = 1.0,
         input_scale = 1.0,
         output_scale = 1.0,
+        model = model,
     )
     workload = make_serializable(workload)
     save_workload(workload, output_file, use_jsonl=to_jsonl)
@@ -331,8 +332,6 @@ if __name__ == '__main__':
                         help='Type of trace consumed. Choose among: synthetic, internal, azure.')
     parser.add_argument('--model', type=str, required=False, default="Qwen/Qwen2.5-Coder-7B-Instruct",
                         help='Target model for the workload.')
-    parser.add_argument('--tokenizer', type=str, required=False, default="Qwen/Qwen2.5-Coder-7B-Instruct",
-                        help='Target model tokenizer.')
     parser.add_argument('--interval-ms', type=int, required=False, default=1000,
                         help='Granularity of request injection interval in milliseconds.')
     parser.add_argument('--duration-ms', type=int, default=60000, help='Duration of the trace generated.')
@@ -378,7 +377,7 @@ if __name__ == '__main__':
 
     # Generate workloads and pair with prompts
     workload_dict = {}
-    tokenizer = get_tokenizer(pretrained_model_name_or_path=args.tokenizer, trust_remote_code=True)
+    tokenizer = get_tokenizer(pretrained_model_name_or_path=args.model, trust_remote_code=True)
 
     if args.trace_type == "synthetic":
         qps_pattern_config = None
