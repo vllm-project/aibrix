@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import json
+import re
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,10 +25,15 @@ def parse_experiment_output(lines):
             continue
         try:
             data = json.loads(line.strip())
-            required_fields = ['status_code', 'start_time', 'end_time', 'latency', 'throughput', 
+            # required_fields = ['status_code', 'start_time', 'end_time', 'latency', 'throughput', 
+            #                  'prompt_tokens', 'output_tokens', 'total_tokens', 'input', 'output']
+            required_fields = ['start_time', 'end_time', 'latency', 'throughput', 
                              'prompt_tokens', 'output_tokens', 'total_tokens', 'input', 'output']
             if any(field not in data for field in required_fields):
+                missingfields = [field not in data for field in required_fields]
+                print(missingfields)
                 continue
+            data['status_code'] = 200
             results.append(data)
         except json.JSONDecodeError:
             continue
@@ -52,15 +58,27 @@ def parse_experiment_output(lines):
 
 def get_autoscaler_name(output_dir):
     autoscaling = None
-    with open(f"{output_dir}/output.txt", 'r', encoding='utf-8') as f_:
-        lines = f_.readlines()
-        for line in lines:
-            if "autoscaler" in line:
-                autoscaling = line.split(":")[-1].strip()
-                break
+    print(f"output_dir: {output_dir}")
+    # Extract the last part of the path after the last slash
+    filename = output_dir.split("/")[-1]
+
+    # Regular expression to match the autoscaler name
+    match = re.search(r"^[^-]+-[^-]+-([^-]+(?:-[^-]+)*)-\d{8}-\d{6}$", filename)
+    
+    if match:
+        print(match)
+        autoscaling = match.group(1)
+    
+    # with open(f"{output_dir}/output.txt", 'r', encoding='utf-8') as f_:
+    #     lines = f_.readlines()
+    #     for line in lines:
+    #         if "autoscaler" in line:
+    #             autoscaling = line.split(":")[-1].strip()
+    #             break
     if autoscaling == None:
         print(f"Invalid parsed autoscaling name: {autoscaling}")
         assert False
+    print(autoscaling)
     return autoscaling.upper()
 
 def parse_performance_stats(file_content):
