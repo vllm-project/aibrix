@@ -239,7 +239,6 @@ async def benchmark_batch(client: openai.AsyncOpenAI,
             task = asyncio.create_task(
                 send_request_batch(client = client,
                                    model = model,
-                                   endpoint = endpoint,
                                    formatted_prompt = formatted_prompts[i],
                                    output_file = output_file,
                                    request_id = request_id)
@@ -302,7 +301,7 @@ if __name__ == "__main__":
     parser.add_argument("--api-key", type=str, default=None, help="API key to the service. ")
     parser.add_argument('--output-file-path', type=str, default="output.jsonl")
     parser.add_argument("--streaming", action="store_true", help="Use streaming client.")
-    parser.add_argument("--routing-strategy", type=str, required=False, default=None, help="Routing strategy to use.")
+    parser.add_argument("--routing-strategy", type=str, required=False, default="random", help="Routing strategy to use.")
 
     args = parser.parse_args()
     main(args)
