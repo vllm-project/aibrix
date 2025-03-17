@@ -33,21 +33,21 @@ func TestNoPods(t *testing.T) {
 	c := cache.Cache{}
 	r1 := randomRouter{}
 	model := ""
-	targetPodIP, err := r1.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err := r1.Route(context.TODO(), c.Pods, RoutingContext{Model: model, Message: ""})
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 
 	r2 := leastRequestRouter{
 		cache: &c,
 	}
-	targetPodIP, err = r2.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err = r2.Route(context.TODO(), c.Pods, RoutingContext{Model: model, Message: ""})
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 
 	r3 := throughputRouter{
 		cache: &c,
 	}
-	targetPodIP, err = r3.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err = r3.Route(context.TODO(), c.Pods, RoutingContext{Model: model, Message: ""})
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 }
@@ -70,21 +70,21 @@ func TestWithNoIPPods(t *testing.T) {
 	model := ""
 
 	r1 := randomRouter{}
-	targetPodIP, err := r1.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err := r1.Route(context.TODO(), c.Pods, RoutingContext{Model: model, Message: ""})
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 
 	r2 := leastRequestRouter{
 		cache: &c,
 	}
-	targetPodIP, err = r2.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err = r2.Route(context.TODO(), c.Pods, RoutingContext{Model: model, Message: ""})
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 
 	r3 := throughputRouter{
 		cache: &c,
 	}
-	targetPodIP, err = r3.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err = r3.Route(context.TODO(), c.Pods, RoutingContext{Model: model, Message: ""})
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 }
@@ -145,21 +145,21 @@ func TestWithIPPods(t *testing.T) {
 	model := ""
 
 	r1 := randomRouter{}
-	targetPodIP, err := r1.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err := r1.Route(context.TODO(), c.Pods, RoutingContext{Model: model, Message: ""})
 	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
 	assert.NoError(t, err)
 
 	r2 := leastRequestRouter{
 		cache: &c,
 	}
-	targetPodIP, err = r2.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err = r2.Route(context.TODO(), c.Pods, RoutingContext{Model: model, Message: ""})
 	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
 	assert.NoError(t, err)
 
 	r3 := throughputRouter{
 		cache: &c,
 	}
-	targetPodIP, err = r3.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err = r3.Route(context.TODO(), c.Pods, RoutingContext{Model: model, Message: ""})
 	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
 	assert.NoError(t, err)
 }

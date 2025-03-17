@@ -4,10 +4,23 @@
 
 ### Prerequisite
 
+#### Preparing Dataset for Requests
+
+Using ShareGPT dataset
 ```shell
 wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json -O /tmp/ShareGPT_V3_unfiltered_cleaned_split.json
 export SHAREGPT_FILE_PATH=/tmp/ShareGPT_V3_unfiltered_cleaned_split.json
 ```
+
+Generate Synthetic Prefix-shared Dataset
+```shell
+python synthetic_prefix_sharing_dataset.py --app-name programming --prompt-length 3871 --prompt-length-std 1656 --shared-proportion 0.97 --shared-proportion-std 0.074 --num-samples-per-prefix 200 --num-prefix 10 --randomize-order
+```
+
+The command above simulate a cache sharing scheme for programming workload described in [Preble](https://arxiv.org/pdf/2407.00023), as shown below:
+![image](dataset-examples.png )
+
+You can also modify the argument to simulate a dataset that has a similar prompt sharing pattern as examples like Toolbench and Embodied Agent as described. 
 
 ### Generate a workload file based with constant target QPS (synthetic patterns)
 

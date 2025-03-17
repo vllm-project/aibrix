@@ -34,16 +34,15 @@ def main(args):
     tokens_per_second = [item["total_tokens"] / item["latency"] for item in data]
     ttft = [item["ttft"] if "ttft" in item else 0.0 for item in data]  # Time to First Token
     tpot = [item["tpot"] if "tpot" in item else 0.0 for item in data]  # Time per Output Token
-    
     goodput = None
     if args.goodput_target is not None:
         metric, threshold = parse_goodput_target(args.goodput_target)
         if metric == "e2e":
-            goodput = len([item for item in latencies if item <= threshold]) / float(len(latencies))
+            goodput = len([item for item in latencies if (item is not None and item <= threshold)]) / float(len(latencies))
         elif metric == "ttft":
-            goodput = len([item for item in ttft if item <= threshold]) / float(len(ttft))
+            goodput = len([item for item in ttft if (item is not None  and item <= threshold)]) / float(len(ttft))
         elif metric == "tpot":
-            goodput = len([item for item in tpot if item <= threshold]) / float(len(tpot))
+            goodput = len([item for item in tpot if (item is not None and item <= threshold)]) / float(len(tpot))
         else:
             raise ValueError(f"Invalid goodput target: {args.goodput_target}")
 
@@ -67,6 +66,7 @@ def main(args):
 
     # Helper function to calculate statistics
     def calculate_statistics(values):
+        values = [value for value in values if value is not None]
         values = sorted(values)
         avg = sum(values) / len(values)
         median = np.median(values)

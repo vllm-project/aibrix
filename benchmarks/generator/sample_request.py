@@ -16,6 +16,8 @@ def load_requests(
 ) -> pd.DataFrame:
     if "ShareGPT" in dataset_path:
         return load_sharegpt_requests(dataset_path, tokenizer)
+    elif "prefix" in dataset_path:
+        return load_share_prefix_requests(dataset_path, tokenizer)
     else:
         return load_generated_dataset(dataset_path, tokenizer)
     
@@ -56,6 +58,24 @@ def load_generated_dataset(
     logging.warn(f"...Complete dataframe transformation")
     return df
 
+def load_share_prefix_requests(
+        dataset_path: str,
+        tokenizer: PreTrainedTokenizerBase,
+) -> pd.DataFrame:
+    # Load the dataset into a DataFrame
+    with open(dataset_path, encoding='utf-8') as f:
+        dataset = [json.loads(line) for line in f]
+    # Create a DataFrame with the desired columns
+    logging.warn(f"...Start dataframe transformation")
+    df = pd.DataFrame({
+        'prompt': [entry['prompt'] for entry in dataset],
+        'completion': [None for _ in dataset],
+        'prompt_len': [len(tokenizer(entry['prompt']).input_ids) for entry in dataset],
+        'completion_len': [None for _ in dataset]
+    })
+    logging.warn(f"...Complete dataframe transformation")
+    return df
+
 def sample_requests_len_range(
         df: pd.DataFrame,
         num_requests: int,
@@ -72,15 +92,16 @@ def sample_requests_len_range(
         input_len = input_lens[i]
         output_len = output_lens[i]
         err_perc = initial_err_perc
-
+        # print(df["prompt_len"])
         while err_perc <= 1:
             input_range = (int(input_len * (1 - err_perc)), int(input_len * (1 + err_perc))) if input_len else (0, sys.maxsize)
             output_range = (int(output_len * (1 - err_perc)), int(output_len * (1 + err_perc))) if output_len else (0, sys.maxsize)
             filtered = df[
                 (df["prompt_len"] >= input_range[0]) &
                 (df["prompt_len"] <= input_range[1]) &
-                (df["completion_len"] >= output_range[0]) &
-                (df["completion_len"] <= output_range[1])
+                ((pd.isna(df["completion_len"])) |
+                ((df["completion_len"] >= output_range[0]) &
+                (df["completion_len"] <= output_range[1])))
                 ]
             if not filtered.empty:
                 # Select the first match or random sample

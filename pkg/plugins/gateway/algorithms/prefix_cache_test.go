@@ -53,10 +53,10 @@ func Test_PrefixCache(t *testing.T) {
 			}},
 	}
 
-	targetPod, err := prefixCacheRouter.Route(context.Background(), pods, "m1", "this is first message")
+	targetPod, err := prefixCacheRouter.Route(context.Background(), pods, RoutingContext{Model: "m1", Message: "this is first message"})
 	assert.NoError(t, err)
 
-	targetPod2, err := prefixCacheRouter.Route(context.Background(), pods, "m1", "this is first message")
+	targetPod2, err := prefixCacheRouter.Route(context.Background(), pods, RoutingContext{Model: "m1", Message: "this is first message"})
 	assert.NoError(t, err)
 
 	assert.Equal(t, targetPod, targetPod2)

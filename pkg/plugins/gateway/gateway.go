@@ -120,12 +120,12 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	}
 }
 
-func (s *Server) selectTargetPod(ctx context.Context, routingStrategy routing.Algorithms, pods map[string]*v1.Pod, model, message string) (string, error) {
+func (s *Server) selectTargetPod(ctx context.Context, routingStrategy routing.Algorithms, pods map[string]*v1.Pod, routingCtx routing.RoutingContext) (string, error) {
 	router, err := routing.Select(routingStrategy)()
 	if err != nil {
 		return "", err
 	}
-	return router.Route(ctx, pods, model, message)
+	return router.Route(ctx, pods, routingCtx)
 }
 
 func NewHealthCheckServer() *HealthServer {
