@@ -1,5 +1,7 @@
 from typing import List, Any, Dict
 import numpy as np
+import math
+import random
 
 from scipy import stats
 from scipy.optimize import minimize
@@ -88,6 +90,13 @@ def to_fluctuate_pattern_config(config_type: str,
                 'period': 12, 
                 'omega': None,
                 'only_rise': False}
+    elif config_type == 'constant':
+        return {'A': 0, 
+                'B': mean,
+                'sigma': 0.1,
+                'period': 12, 
+                'omega': None,
+                'only_rise': False}
     else:
         raise ValueError(f"Unknown config type: {config_type}")
     
@@ -102,3 +111,31 @@ def user_to_synthetic_config(user_config: Dict,
         'omega': None,
         'only_rise': user_config['only_rise'],
     }
+
+def sine_fluctuation(t, pattern_config, length, prev_value):
+    """
+    Calculates the concurrency value based on the given concurrency function.
+
+    The concurrency function is defined as:
+    concurrency(t) = trend(t) + noise
+    trend(t) = A * sin(omega * t) + B
+    noise ~ N(0, sigma^2)
+
+    Args:
+        t (int): The discrete integer value of t, starting from 0.
+
+    Returns:
+        int: The concurrency value rounded to the nearest integer.
+    """
+    assert length is not None, \
+    "length cannot be None"
+    if pattern_config['omega'] is None:
+        omega = 2 * math.pi / (length / pattern_config['period'])
+    trend = pattern_config['A'] * math.sin(omega * t) + pattern_config['B']
+    noise = random.gauss(0, pattern_config['sigma'])
+    current_value = round(trend + noise)
+    if pattern_config['only_rise']:
+        current_value = max(prev_value, current_value)
+        prev_value = current_value
+    return current_value, prev_value
+

@@ -51,7 +51,7 @@ func NewLeastBusyTimeRouter() (Router, error) {
 	}, nil
 }
 
-func (r leastBusyTimeRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
+func (r leastBusyTimeRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
 	var targetPodIP string
 	minBusyTimeRatio := math.MaxFloat64 // <= 1 in general
 

@@ -116,7 +116,8 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
 async def benchmark_streaming(client: openai.AsyncOpenAI,
                               endpoint: str,  
                               load_struct: List,
-                              output_file: io.TextIOWrapper):
+                              output_file: io.TextIOWrapper,
+                              default_model: str,):
     request_id = 0
     batch_tasks = []
     base_time = time.time()
@@ -133,7 +134,7 @@ async def benchmark_streaming(client: openai.AsyncOpenAI,
         for i in range(len(requests)):
             task = asyncio.create_task(
                 send_request_streaming(client = client, 
-                                       model = requests[i]["model"], 
+                                       model = requests[i]["model"] if "model" in requests[i] else default_model, 
                                        endpoint = endpoint, 
                                        prompt = formatted_prompts[i], 
                                        output_file = output_file, 
@@ -217,7 +218,9 @@ async def send_request_batch(client: openai.AsyncOpenAI,
 async def benchmark_batch(client: openai.AsyncOpenAI,
                           endpoint: str, 
                           load_struct: List, 
-                          output_file: io.TextIOWrapper):
+                          output_file: io.TextIOWrapper,
+                          default_model: str,
+                          ):
     request_id = 0
     batch_tasks = []
     base_time = time.time()
@@ -234,7 +237,7 @@ async def benchmark_batch(client: openai.AsyncOpenAI,
         for i in range(len(requests)):
             task = asyncio.create_task(
                 send_request_batch(client = client, 
-                                   model = requests[i]["model"], 
+                                   model = requests[i]["model"] if "model" in requests[i] else default_model, 
                                    endpoint = endpoint, 
                                    formatted_prompt = formatted_prompts[i], 
                                    output_file = output_file, 
@@ -267,6 +270,7 @@ def main(args):
                 endpoint=args.endpoint, 
                 load_struct=load_struct, 
                 output_file=output_file, 
+                default_model=args.model,
             ))
             end_time = time.time()
             logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
@@ -278,6 +282,7 @@ def main(args):
                 endpoint=args.endpoint, 
                 load_struct=load_struct, 
                 output_file=output_file,
+                default_model=args.model,
             ))
             end_time = time.time()
             logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
@@ -286,6 +291,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Workload Generator')
     parser.add_argument("--workload-path", type=str, default=None, help="File path to the workload file.")
+    parser.add_argument("--model", type=str, default=None, help="Default target model (if workload does not contains target model).")
     parser.add_argument('--endpoint', type=str, required=True)
     parser.add_argument("--api-key", type=str, required=True, help="API key to the service. ")
     parser.add_argument('--output-file-path', type=str, default="output.jsonl")

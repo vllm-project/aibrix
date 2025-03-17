@@ -274,13 +274,13 @@ func (c *LPRadixCache) GetAllNodes() map[int]*TreeNode {
 func (c *LPRadixCache) GetAllPodsInNode(node *TreeNode) []string {
 	node.mu.RLock()
 	defer node.mu.RUnlock()
-	all_pods_in_node := make([]string, 0)
+	allPodsInNode := make([]string, 0)
 	for _, pods := range node.modelToPods {
 		for podName := range pods {
-			all_pods_in_node = append(all_pods_in_node, podName)
+			allPodsInNode = append(allPodsInNode, podName)
 		}
 	}
-	return all_pods_in_node
+	return allPodsInNode
 }
 
 func (c *LPRadixCache) prettyPrintHelper(node *TreeNode, prefix string, isLast bool) {
@@ -296,13 +296,13 @@ func (c *LPRadixCache) prettyPrintHelper(node *TreeNode, prefix string, isLast b
 		childPrefix = prefix + "│   "
 	}
 	// klog.Infof("%s%s[Key: %v, Value: %v, Load: %d, Depth: %d]", prefix, marker, node.key, node.value, node.load, node.depth)
-	tokens_in_string, err := utils.DetokenizeText(node.key)
+	tokensInString, err := utils.DetokenizeText(node.key)
 	if err != nil {
 		klog.Errorf("Failed to detokenize key for node %d: %v", node.id, err)
-		tokens_in_string = "ERROR"
+		tokensInString = "ERROR"
 	}
-	all_pods_in_node := c.GetAllPodsInNode(node)
-	klog.Infof("%s%s[Node: %d, Tokens: '%s', Load: %d, Pods: %v, Depth: %d]", prefix, marker, node.id, tokens_in_string, node.load, all_pods_in_node, node.depth)
+	allPodsInNode := c.GetAllPodsInNode(node)
+	klog.Infof("%s%s[Node: %d, Tokens: '%s', Load: %d, Pods: %v, Depth: %d]", prefix, marker, node.id, tokensInString, node.load, allPodsInNode, node.depth)
 	// if len(node.ModelToPods) > 0 {
 	// 	klog.Infof("%s    Models:", prefix)
 	// 	for model, pods := range node.ModelToPods {
@@ -369,7 +369,7 @@ func matchLen(key, seq []int) int {
 	return i
 }
 
-// Add internal method to get node
+// GetNode adds internal method to get node
 func (c *LPRadixCache) GetNode(tokens []int) *TreeNode {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -377,8 +377,6 @@ func (c *LPRadixCache) GetNode(tokens []int) *TreeNode {
 	return node
 }
 
-// Implementation of PrefixCacheIndexer interface
-// NOTE: It is currently Not being used. Everything is being done in AddPrefix interface.
 func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.Pod) ([]int, []int, []*v1.Pod) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

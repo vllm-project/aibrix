@@ -52,7 +52,7 @@ func NewLeastKvCacheRouter() (Router, error) {
 	}, nil
 }
 
-func (r leastKvCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
+func (r leastKvCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
 	var targetPodIP string
 	minKvCache := math.MaxFloat64
 
@@ -68,12 +68,12 @@ func (r leastKvCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, 
 		// Due to metric refactor (pull/543) to better support lora and multi models,
 		// we change to use PodModelMetrics instead of PodMetrics in some scenarios.
 		// This works but doesn't look very promising, we can revisit this part later.
-		gpuCache, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.GPUCacheUsagePerc)
+		gpuCache, err := r.cache.GetPodModelMetric(pod.Name, routingCtx.Model, metrics.GPUCacheUsagePerc)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		cpuCache, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.CPUCacheUsagePerc)
+		cpuCache, err := r.cache.GetPodModelMetric(pod.Name, routingCtx.Model, metrics.CPUCacheUsagePerc)
 		if err != nil {
 			klog.Error(err)
 			continue

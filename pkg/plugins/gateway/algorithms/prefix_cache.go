@@ -83,7 +83,7 @@ func NewPrefixCacheRouter() (Router, error) {
 	}, nil
 }
 
-func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
+func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
 	readyPods := utils.FilterReadyPods(pods)
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
@@ -94,13 +94,13 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, m
 		}
 	}
 
-	tokens, err := p.tokenizer.TokenizeInputText(message)
+	tokens, err := p.tokenizer.TokenizeInputText(routingCtx.Message)
 	if err != nil {
 		return "", err
 	}
 
 	var targetPod *v1.Pod
-	matchedTokens, unMatchedTokens, matchedPods := p.prefixCacheIndexer.MatchPrefix(tokens, model, readyPods)
+	matchedTokens, unMatchedTokens, matchedPods := p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPods)
 	if len(matchedTokens)*100/len(tokens) > prefixCacheMatchThresholdPercent {
 		targetPod = matchedPods[rand.Intn(len(matchedPods))]
 	} else {
@@ -108,7 +108,7 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, m
 		targetPod = readyPods[rand.Intn(len(readyPods))]
 	}
 	if len(unMatchedTokens) > 0 {
-		p.prefixCacheIndexer.AddPrefix(unMatchedTokens, model, targetPod.Name)
+		p.prefixCacheIndexer.AddPrefix(unMatchedTokens, routingCtx.Model, targetPod.Name)
 	}
 
 	var matchedPodNames, readyPodNames []string
