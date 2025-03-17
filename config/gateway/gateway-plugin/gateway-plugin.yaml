@@ -7,9 +7,14 @@ spec:
   selector:
     app: gateway-plugins
   ports:
-    - protocol: TCP
+    - name: gateway
+      protocol: TCP
       port: 50052
       targetPort: 50052
+    - name: profiling
+      protocol: TCP
+      port: 6060
+      targetPort: 6060
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -36,13 +41,9 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - name: gateway
-              protocol: TCP
-              port: 50052
-              targetPort: 50052
+              containerPort: 50052
             - name: profiling
-              protocol: TCP
-              port: 6060
-              targetPort: 6060
+              containerPort: 6060
           resources:
             limits:
               cpu: 1
