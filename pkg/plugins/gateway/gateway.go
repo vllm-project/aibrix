@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,6 +39,20 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 )
+
+var (
+	enableGPUOptimizerTracing = getGPUOptimizerTracingFlag()
+)
+
+func getGPUOptimizerTracingFlag() bool {
+	value := utils.LoadEnv("AIBRIX_GPU_OPTIMIZER_TRACING_FLAG", "false")
+	boolVal, err := strconv.ParseBool(value)
+	if err != nil || !boolVal {
+		return false
+	}
+
+	return boolVal
+}
 
 type Server struct {
 	redisClient         *redis.Client
