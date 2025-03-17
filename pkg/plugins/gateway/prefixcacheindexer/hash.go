@@ -17,8 +17,6 @@ limitations under the License.
 package prefixcacheindexer
 
 import (
-	"bytes"
-	"encoding/binary"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -97,7 +95,7 @@ type PrefixHashTable struct {
 
 type Block struct {
 	modelToPods    map[string]map[string]time.Time // model_name: map[pod_name]pod_last_access_time
-	lastAccessTime time.Time                       //block_last_access_time
+	lastAccessTime time.Time                       // block_last_access_time
 }
 
 func NewPrefixHashTable() PrefixCacheIndexer {
@@ -120,8 +118,7 @@ func NewPrefixHashTable() PrefixCacheIndexer {
 }
 
 // returns matchedTokens, unMatchedTokens, matchedPods
-// TODO: add an interface with multiple implementations such as hash or radix tree
-func (c *PrefixHashTable) MatchPrefix(tokens []int, model string, pods []*v1.Pod) ([]int, []int, []*v1.Pod) {
+func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, pods []*v1.Pod) ([]byte, []byte, []*v1.Pod) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var block, lastMatchedBlock Block
@@ -134,10 +131,10 @@ func (c *PrefixHashTable) MatchPrefix(tokens []int, model string, pods []*v1.Pod
 			end = len(tokens)
 		}
 
-		chunk := tokens[i:end]
-		_, _ = c.hash.Write(IntArrayToByteArray(chunk))
+		_, _ = c.hash.Write(tokens[i:end])
 		prefixHash := c.hash.Sum64()
 		c.hash.ResetWithSeed(c.seed)
+
 		block, ok = c.blocks[prefixHash]
 		if !ok || len(block.modelToPods[model]) == 0 || len(matchPods(block.modelToPods[model], pods)) == 0 {
 			lastTokenMatchIndex = i
@@ -161,7 +158,7 @@ func (c *PrefixHashTable) MatchPrefix(tokens []int, model string, pods []*v1.Pod
 	return matchedTokens, unMatchedTokens, matchedPods
 }
 
-func (c *PrefixHashTable) AddPrefix(unMatchedTokens []int, model, pod string) {
+func (c *PrefixHashTable) AddPrefix(unMatchedTokens []byte, model, pod string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -171,8 +168,7 @@ func (c *PrefixHashTable) AddPrefix(unMatchedTokens []int, model, pod string) {
 			end = len(unMatchedTokens)
 		}
 
-		chunk := unMatchedTokens[i:end]
-		_, _ = c.hash.Write(IntArrayToByteArray(chunk))
+		_, _ = c.hash.Write(unMatchedTokens[i:end])
 		prefixHash := c.hash.Sum64()
 		c.hash.ResetWithSeed(c.seed)
 		block, ok := c.blocks[prefixHash]
@@ -208,17 +204,6 @@ func (c *PrefixHashTable) Evict(now time.Time) {
 			klog.InfoS("prefix cache block evicted", "hash", hash)
 		}
 	}
-}
-
-func IntArrayToByteArray(intArray []int) []byte {
-	buf := new(bytes.Buffer)
-	for _, val := range intArray {
-		err := binary.Write(buf, binary.LittleEndian, int32(val))
-		if err != nil {
-			panic(err)
-		}
-	}
-	return buf.Bytes()
 }
 
 // matchPods returns ready pods that intersect with pods on which prefix tokens are catched.

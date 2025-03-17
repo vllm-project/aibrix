@@ -23,6 +23,7 @@ import (
 	"strconv"
 
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/prefixcacheindexer"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/prefixcacheindexer/tokenizer"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -61,11 +62,23 @@ func getPrefixCacheMatchThresholdPercent() int {
 }
 
 type prefixCacheRouter struct {
+	tokenizer          tokenizer.Tokenizer
 	prefixCacheIndexer prefixcacheindexer.PrefixCacheIndexer
 }
 
 func NewPrefixCacheRouter() (Router, error) {
+	var tokenizerObj tokenizer.Tokenizer
+	// TODO: refactor initilization
+	// supported tokenizers: ["string", "tiktoken"]
+	tokenizerType := utils.LoadEnv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "string")
+	if tokenizerType == "tiktoken" {
+		tokenizerObj = tokenizer.NewTiktokenTokenizer()
+	} else {
+		tokenizerObj = tokenizer.NewStringTokenizer()
+	}
+
 	return prefixCacheRouter{
+		tokenizer:          tokenizerObj,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 	}, nil
 }
@@ -81,7 +94,7 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, r
 		}
 	}
 
-	tokens, err := utils.TokenizeInputText(routingCtx.Message)
+	tokens, err := p.tokenizer.TokenizeInputText(routingCtx.Message)
 	if err != nil {
 		return "", err
 	}
