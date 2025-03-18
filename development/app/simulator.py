@@ -4,7 +4,7 @@ import heapq
 import json
 import sys
 import threading
-from typing import List
+from typing import List, Dict
 
 from vidur.config import SimulationConfig
 from vidur.entities import Cluster, Request
@@ -56,6 +56,8 @@ class Simulator:
         self._expect_next_tick = sys.float_info.max
         self._queue_buffer: List[Request] = []
         self._queue = None
+        
+        self._model_metadata = {}
 
         # self._init_event_queue()
         atexit.register(self._write_output)
@@ -68,6 +70,10 @@ class Simulator:
     def metric_store(self) -> MetricsStore:
         return self._metric_store
 
+    @property
+    def model_metadata(self) -> Dict:
+        return self._model_metadata
+    
     def start(self):
         logger.info(
             f"Starting simulation with cluster: {self._cluster}, model: {self._config.cluster_config.replica_config.model_name}, seed: {self._config.seed}"
