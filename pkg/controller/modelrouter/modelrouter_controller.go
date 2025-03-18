@@ -211,7 +211,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 						},
 					},
 					Timeouts: &gatewayv1.HTTPRouteTimeouts{
-						Request: ptr.To(gatewayv1.Duration("120s")),
+						Request: ptr.To(gatewayv1.Duration("1800s")),
 					},
 				},
 			},
