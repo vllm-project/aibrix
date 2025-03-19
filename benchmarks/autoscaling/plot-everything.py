@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import json
+import re
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,10 +25,15 @@ def parse_experiment_output(lines):
             continue
         try:
             data = json.loads(line.strip())
-            required_fields = ['status_code', 'start_time', 'end_time', 'latency', 'throughput', 
+            # required_fields = ['status_code', 'start_time', 'end_time', 'latency', 'throughput', 
+            #                  'prompt_tokens', 'output_tokens', 'total_tokens', 'input', 'output']
+            required_fields = ['status', 'start_time', 'end_time', 'latency', 'throughput', 
                              'prompt_tokens', 'output_tokens', 'total_tokens', 'input', 'output']
             if any(field not in data for field in required_fields):
+                missingfields = [field not in data for field in required_fields]
+                print(missingfields)
                 continue
+            data['status_code'] = 200
             results.append(data)
         except json.JSONDecodeError:
             continue
@@ -43,8 +49,8 @@ def parse_experiment_output(lines):
     rps_series = df.groupby('second_bucket').size()
     df['rps'] = df['second_bucket'].map(rps_series)
     
-    success_rps = df[df['status_code'] == 200].groupby('second_bucket').size()
-    failed_rps = df[df['status_code'] != 200].groupby('second_bucket').size()
+    success_rps = df[df['status'] == 'success'].groupby('second_bucket').size()
+    failed_rps = df[df['status'] != 'success'].groupby('second_bucket').size()
     df['success_rps'] = df['second_bucket'].map(success_rps).fillna(0)
     df['failed_rps'] = df['second_bucket'].map(failed_rps).fillna(0)
     
@@ -52,15 +58,27 @@ def parse_experiment_output(lines):
 
 def get_autoscaler_name(output_dir):
     autoscaling = None
-    with open(f"{output_dir}/output.txt", 'r', encoding='utf-8') as f_:
-        lines = f_.readlines()
-        for line in lines:
-            if "autoscaler" in line:
-                autoscaling = line.split(":")[-1].strip()
-                break
+    print(f"output_dir: {output_dir}")
+    # Extract the last part of the path after the last slash
+    filename = output_dir.split("/")[-1]
+
+    # Regular expression to match the autoscaler name
+    match = re.search(r"^[^-]+-[^-]+-([^-]+(?:-[^-]+)*)-\d{8}-\d{6}$", filename)
+    
+    if match:
+        print(match)
+        autoscaling = match.group(1)
+    
+    # with open(f"{output_dir}/output.txt", 'r', encoding='utf-8') as f_:
+    #     lines = f_.readlines()
+    #     for line in lines:
+    #         if "autoscaler" in line:
+    #             autoscaling = line.split(":")[-1].strip()
+    #             break
     if autoscaling == None:
         print(f"Invalid parsed autoscaling name: {autoscaling}")
         assert False
+    print(autoscaling)
     return autoscaling.upper()
 
 def parse_performance_stats(file_content):
@@ -160,7 +178,7 @@ def analyze_performance(df):
         raise Exception(f"Error analyzing performance metrics: {e}")
     
 
-def plot_combined_visualization(experiment_home_dir):
+def plot_combined_visualization(experiment_home_dir, workload_type):
     # Create figure
     fig = plt.figure(figsize=(12, 12))
     
@@ -400,18 +418,19 @@ def plot_combined_visualization(experiment_home_dir):
     plt.tight_layout()
     
     # Save the combined figure
-    output_path = os.path.join(experiment_home_dir, 'combined_visualization.pdf')
+    output_path = os.path.join(experiment_home_dir, f'combined_visualization-{workload_type}.pdf')
     plt.savefig(output_path, bbox_inches='tight')
     print(f"** Saved combined visualization to: {output_path}")
     plt.close()
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python script.py <experiment_home_dir>")
+    if len(sys.argv) != 3:
+        print("Usage: python script.py <experiment_home_dir> <workload_type>")
         return 1
     
     experiment_home_dir = sys.argv[1]
-    plot_combined_visualization(experiment_home_dir)
+    workload_type = sys.argv[2]
+    plot_combined_visualization(experiment_home_dir, workload_type)
     return 0
 
 if __name__ == "__main__":
