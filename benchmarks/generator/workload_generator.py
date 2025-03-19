@@ -139,6 +139,8 @@ def generate_synthetic_from_dist(
 
 def generate_constant(prompt_file_path: str,
                        qps: int, 
+                       input_len: int = None,
+                       output_len: int = None,
                        duration_ms: int = None,
                        interval_ms: int = None,
                        model: str = None,
@@ -148,21 +150,46 @@ def generate_constant(prompt_file_path: str,
     workload = []
     ts = 0
     sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
-    while ts < duration_ms:
-        concurrent_reqs = sample_requests_len_range(
-            df=sharegpt_df,
-            num_requests=qps,
-            input_lens=[None] * qps, 
-            output_lens=[None] * qps, 
-            initial_err_perc=0.1,
-            err_step=0.05,
-            model=model,
+    
+    if input_len != None and output_len != None:
+        rps_dist = []
+        input_token_len_dist = []
+        output_token_len_dist = []
+        while ts < duration_ms:
+            rps_dist.append(qps)
+            input_token_len_dist.append(input_len)
+            output_token_len_dist.append(output_len)
+            ts += interval_ms
+        workload = generate_synthetic_from_dist(
+            prompt_file_path = prompt_file_path,
+            tokenizer = tokenizer,
+            duration_ms =  duration_ms,
+            rps_dist = rps_dist,
+            input_token_len_dist = input_token_len_dist,
+            output_token_len_dist = output_token_len_dist,
+            qps_scale = 1.0,
+            input_scale = 1.0,
+            output_scale = 1.0,
+            model = model,
         )
-        if concurrent_reqs:  # Only add non-empty groups
-            workload.append({"timestamp": ts, "requests": concurrent_reqs})  
-        else:
-            logging.error(f"sampled return {concurrent_reqs}")
-        ts += interval_ms
+    else:
+        while ts < duration_ms:
+            concurrent_reqs = sample_requests_len_range(
+                df=sharegpt_df,
+                num_requests=qps,
+                input_lens=[None] * qps, 
+                output_lens=[None] * qps, 
+                initial_err_perc=0.1,
+                err_step=0.05,
+                model=model,
+            )
+            if concurrent_reqs:  # Only add non-empty groups
+                workload.append({"timestamp": ts, "requests": concurrent_reqs})  
+            else:
+                logging.error(f"sampled return {concurrent_reqs}")
+            ts += interval_ms
+        
+    
     ### Generate constant load for all requests
     # idx = 0
     # while idx < len(sharegpt_df):
@@ -344,6 +371,8 @@ if __name__ == '__main__':
     
     ###### Synthetic and constant workload
     parser.add_argument('--target-qps', type=int, required=False, default=1, help='Target QPS for the workload.')
+    parser.add_argument('--target-prompt-len', type=int, required=False, default=None, help='Target prompt length for the workload.')
+    parser.add_argument('--target-completion-len', type=int, required=False, default=None, help='Target completion length for the workload.')
     parser.add_argument('--traffic-pattern', type=str, required=False, choices=['quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'], default=None,
                         help='Traffic patterns used for synthetic workload type.')
     parser.add_argument('--prompt-len-pattern', type=str, required=False, choices=['quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'], default=None,
@@ -418,6 +447,8 @@ if __name__ == '__main__':
         if args.trace_type == "constant":
             generated_workload = generate_constant(prompt_file_path=args.prompt_file, 
                                                     qps=args.target_qps,
+                                                    input_len=args.target_prompt_len,
+                                                    output_len=args.target_completion_len,
                                                     duration_ms=args.duration_ms, 
                                                     interval_ms=args.interval_ms,
                                                     output_file=f"{args.output_dir}/{args.trace_type}",
