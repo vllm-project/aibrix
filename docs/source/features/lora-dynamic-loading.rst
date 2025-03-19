@@ -49,7 +49,7 @@ Prerequisites
 ^^^^^^^^^^^^^
 
 1. You have a base model deployed in the same namespace. 
-2. vLLM engine needs to enable `VLLM_ALLOW_RUNTIME_LORA_UPDATING <VLLM_ALLOW_RUNTIME_LORA_UPDATING>`_ feature flag.
+2. vLLM engine needs to enable `VLLM_ALLOW_RUNTIME_LORA_UPDATING <https://docs.vllm.ai/en/stable/features/lora.html#dynamically-serving-lora-adapters>`_ feature flag.
 3. You have a lora model hosted on Huggingface or S3 compatible storage.
 
 
