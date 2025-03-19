@@ -147,7 +147,7 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 	endpointSliceLister := discoverylisters.NewEndpointSliceLister(endpointSliceInformer.(toolscache.SharedIndexInformer).GetIndexer())
 
 	// init scheduler
-	c, err := cache.GetCache()
+	c, err := cache.Get()
 	if err != nil {
 		klog.Fatal(err)
 	}

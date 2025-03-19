@@ -29,8 +29,8 @@ import (
 	"k8s.io/klog/v2"
 )
 
-func newTraceCache() *Cache {
-	return &Cache{
+func newTraceCache() *Store {
+	return &Store{
 		initialized:     true,
 		requestTrace:    &sync.Map{},
 		pendingRequests: &sync.Map{},

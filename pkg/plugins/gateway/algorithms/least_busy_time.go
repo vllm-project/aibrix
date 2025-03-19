@@ -37,11 +37,11 @@ func init() {
 }
 
 type leastBusyTimeRouter struct {
-	cache *cache.Cache
+	cache cache.Cache
 }
 
 func NewLeastBusyTimeRouter() (Router, error) {
-	c, err := cache.GetCache()
+	c, err := cache.Get()
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +64,7 @@ func (r leastBusyTimeRouter) Route(ctx context.Context, pods map[string]*v1.Pod,
 			continue
 		}
 
-		busyTimeRatio, err := r.cache.GetPodMetric(pod.Name, "gpu_busy_time_ratio") // todo: replace mock
+		busyTimeRatio, err := r.cache.GetMetricValueByPod(pod.Name, "gpu_busy_time_ratio") // todo: replace mock
 		if err != nil {
 			klog.Error(err)
 			continue

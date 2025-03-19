@@ -59,11 +59,11 @@ type Server struct {
 	ratelimiter         ratelimiter.RateLimiter
 	client              kubernetes.Interface
 	requestCountTracker map[string]int
-	cache               *cache.Cache
+	cache               cache.Cache
 }
 
 func NewServer(redisClient *redis.Client, client kubernetes.Interface) *Server {
-	c, err := cache.GetCache()
+	c, err := cache.Get()
 	if err != nil {
 		panic(err)
 	}

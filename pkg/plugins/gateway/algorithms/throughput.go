@@ -39,11 +39,11 @@ func init() {
 }
 
 type throughputRouter struct {
-	cache *cache.Cache
+	cache cache.Cache
 }
 
 func NewThroughputRouter() (Router, error) {
-	c, err := cache.GetCache()
+	c, err := cache.Get()
 	if err != nil {
 		return nil, err
 	}
@@ -67,12 +67,12 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod, ro
 	}
 
 	for _, pod := range readyPods {
-		promptThroughput, err := r.cache.GetPodModelMetric(pod.Name, routingCtx.Model, metrics.AvgPromptThroughputToksPerS)
+		promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, routingCtx.Model, metrics.AvgPromptThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		generationThroughput, err := r.cache.GetPodModelMetric(pod.Name, routingCtx.Model, metrics.AvgGenerationThroughputToksPerS)
+		generationThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, routingCtx.Model, metrics.AvgGenerationThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue

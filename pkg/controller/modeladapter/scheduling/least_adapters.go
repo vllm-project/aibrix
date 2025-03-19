@@ -26,10 +26,10 @@ import (
 )
 
 type leastAdapters struct {
-	cache *cache.Cache
+	cache cache.Cache
 }
 
-func NewLeastAdapters(c *cache.Cache) Scheduler {
+func NewLeastAdapters(c cache.Cache) Scheduler {
 	return leastAdapters{
 		cache: c,
 	}
@@ -40,7 +40,7 @@ func (r leastAdapters) SelectPod(ctx context.Context, model string, pods []v1.Po
 	modelAdapterCountMin := math.MaxInt
 
 	for _, pod := range pods {
-		models, err := r.cache.GetModelsForPod(pod.Name)
+		models, err := r.cache.ListModelsByPod(pod.Name)
 		if err != nil {
 			return nil, err
 		}

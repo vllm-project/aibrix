@@ -33,6 +33,7 @@ const (
 )
 
 var requestTraceMetaKeys = [...]string{"meta_v", "meta_interval_sec", "meta_precision", "meta_total_reqs", "meta_pending_reqs", "meta_len"}
+var NewRequestTrace = newRequestTraceGen(nil)
 
 func (key RequestTraceMetaKey) ToString() string {
 	return requestTraceMetaKeys[key]
@@ -193,5 +194,3 @@ func newRequestTraceGen(tracePool *sync.Pool) func(term int64) *RequestTrace {
 		return reqTrace
 	}
 }
-
-var NewRequestTrace = newRequestTraceGen(nil)

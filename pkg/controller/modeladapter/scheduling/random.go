@@ -27,10 +27,10 @@ import (
 )
 
 type randomScheduler struct {
-	cache *cache.Cache
+	cache cache.Cache
 }
 
-func NewRandomScheduler(c *cache.Cache) Scheduler {
+func NewRandomScheduler(c cache.Cache) Scheduler {
 	return randomScheduler{
 		cache: c,
 	}

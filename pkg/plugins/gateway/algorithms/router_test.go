@@ -30,7 +30,7 @@ import (
 )
 
 func TestNoPods(t *testing.T) {
-	c := cache.Cache{}
+	c := cache.Store{}
 	r1 := randomRouter{}
 	model := ""
 	targetPodIP, err := r1.Route(context.TODO(), c.Pods, RoutingContext{Model: model, Message: ""})
@@ -53,7 +53,7 @@ func TestNoPods(t *testing.T) {
 }
 
 func TestWithNoIPPods(t *testing.T) {
-	c := cache.Cache{
+	c := cache.Store{
 		Pods: map[string]*v1.Pod{
 			"p1": {
 				ObjectMeta: metav1.ObjectMeta{
@@ -93,7 +93,7 @@ func TestWithIPPods(t *testing.T) {
 	// two case:
 	// case 1: pod ready
 	// case 2: pod ready & terminating -> we can send request at this moment.
-	c := cache.Cache{
+	c := cache.Store{
 		Pods: map[string]*v1.Pod{
 			"p1": {
 				ObjectMeta: metav1.ObjectMeta{

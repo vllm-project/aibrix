@@ -27,10 +27,10 @@ import (
 )
 
 type leastThroughputScheduler struct {
-	cache *cache.Cache
+	cache cache.Cache
 }
 
-func NewLeastThroughputScheduler(c *cache.Cache) Scheduler {
+func NewLeastThroughputScheduler(c cache.Cache) Scheduler {
 	return leastThroughputScheduler{
 		cache: c,
 	}
@@ -41,11 +41,11 @@ func (r leastThroughputScheduler) SelectPod(ctx context.Context, model string, p
 	podThroughputMin := math.MaxFloat64
 
 	for _, pod := range pods {
-		promptThroughput, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.AvgPromptThroughputToksPerMinPod)
+		promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, model, metrics.AvgPromptThroughputToksPerMinPod)
 		if err != nil {
 			return nil, err
 		}
-		generationThroughput, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.AvgGenerationThroughputToksPerMinPod)
+		generationThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, model, metrics.AvgGenerationThroughputToksPerMinPod)
 		if err != nil {
 			return nil, err
 		}

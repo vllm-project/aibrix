@@ -232,7 +232,7 @@ func main() {
 
 	if features.IsControllerEnabled(features.ModelAdapterController) {
 		// cache is enabled for model adapter scheduling.
-		cache.NewCache(config, stopCh, nil)
+		cache.Init(config, stopCh, nil)
 	}
 
 	certsReady := make(chan struct{})

@@ -72,7 +72,7 @@ func main() {
 		panic(err)
 	}
 
-	cache.NewCache(config, stopCh, redisClient)
+	cache.Init(config, stopCh, redisClient)
 
 	// Connect to K8s cluster
 	k8sClient, err := kubernetes.NewForConfig(config)

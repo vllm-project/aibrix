@@ -26,10 +26,10 @@ import (
 )
 
 type binPackScheduler struct {
-	cache *cache.Cache
+	cache cache.Cache
 }
 
-func NewBinPackScheduler(c *cache.Cache) Scheduler {
+func NewBinPackScheduler(c cache.Cache) Scheduler {
 	return binPackScheduler{
 		cache: c,
 	}
@@ -42,7 +42,7 @@ func (r binPackScheduler) SelectPod(ctx context.Context, model string, pods []v1
 	podRemainCapMin := math.MaxInt
 
 	for _, pod := range pods {
-		models, err := r.cache.GetModelsForPod(pod.Name)
+		models, err := r.cache.ListModelsByPod(pod.Name)
 		if err != nil {
 			return nil, err
 		}

@@ -31,11 +31,11 @@ import (
 
 type httpServer struct {
 	redisClient *redis.Client
-	cache       *cache.Cache
+	cache       cache.Cache
 }
 
 func NewHTTPServer(addr string, redis *redis.Client) *http.Server {
-	c, err := cache.GetCache()
+	c, err := cache.Get()
 	if err != nil {
 		panic(err)
 	}
@@ -61,7 +61,7 @@ func NewHTTPServer(addr string, redis *redis.Client) *http.Server {
 
 // models returns base and lora adapters registered to aibrix control plane
 func (s *httpServer) models(w http.ResponseWriter, r *http.Request) {
-	modelNames := s.cache.GetModels()
+	modelNames := s.cache.ListModels()
 	response := BuildModelsResponse(modelNames)
 	jsonBytes, err := json.Marshal(response)
 	if err != nil {

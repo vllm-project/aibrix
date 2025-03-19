@@ -31,7 +31,7 @@ type Scheduler interface {
 }
 
 // NewScheduler leverages the factory method to choose the right scheduler
-func NewScheduler(policyName string, c *cache.Cache) (Scheduler, error) {
+func NewScheduler(policyName string, c cache.Cache) (Scheduler, error) {
 	switch policyName {
 	case "random":
 		return NewRandomScheduler(c), nil
