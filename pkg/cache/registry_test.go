@@ -23,8 +23,12 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
+var (
+	testKeys = []string{"key1", "key2", "key3"}
+)
+
 var _ = Describe("Registry", func() {
-	Context("Registy", func() {
+	Context("Registry", func() {
 		var registry *Registry[string]
 
 		BeforeEach(func() {
@@ -46,7 +50,7 @@ var _ = Describe("Registry", func() {
 
 		It("should reflect registry updates after added new element", func() {
 			// Add an item to the registry
-			item := "testItem"
+			item := testKeys[0]
 			registry.Store(item, item)
 
 			// Check if the item is in the Array() output
@@ -54,7 +58,7 @@ var _ = Describe("Registry", func() {
 			Expect(registry.Array()).To(ContainElement(item))
 
 			// Remove the item from the registry
-			item2 := "testItem2"
+			item2 := testKeys[1]
 			registry.Store(item2, item2)
 			// Check if the item is no longer in the Array() output
 			Expect(registry.Len()).To(Equal(2))
@@ -64,7 +68,7 @@ var _ = Describe("Registry", func() {
 
 		It("should reflect registry updates after element changes", func() {
 			// Add an item to the registry
-			item := "testItem"
+			item := testKeys[0]
 			registry.Store(item, item)
 
 			// Check if the item is in the Array() output
@@ -72,7 +76,7 @@ var _ = Describe("Registry", func() {
 			Expect(registry.Array()).To(ContainElement(item))
 
 			// Remove the item from the registry
-			item2 := "testItem2"
+			item2 := testKeys[1]
 			registry.Store(item, item2)
 			// Check if the item is no longer in the Array() output
 			Expect(registry.Len()).To(Equal(1))
@@ -81,7 +85,7 @@ var _ = Describe("Registry", func() {
 
 		It("should reflect registry updates after removal element", func() {
 			// Add an item to the registry
-			item := "testItem"
+			item := testKeys[0]
 			registry.Store(item, item)
 			// Check if the item is in the Array() output
 			Expect(registry.Len()).To(Equal(1))
@@ -94,7 +98,7 @@ var _ = Describe("Registry", func() {
 			Expect(registry.Array()).NotTo(ContainElement(item))
 
 			// Check 0 length leads same result as nil
-			item2 := "testItem2"
+			item2 := testKeys[1]
 			registry.Store(item, item)
 			registry.Store(item2, item2)
 			// Check if the item is in the Array() output
@@ -129,7 +133,7 @@ var _ = Describe("Registry", func() {
 
 		It("should reflect customized registry updates after added new element", func() {
 			// Add an item to the registry
-			key, item := "pod1", &v1.Pod{}
+			key, item := testKeys[0], &v1.Pod{}
 			registry.Store(key, item)
 
 			// Check if the item is in the Array() output
@@ -137,7 +141,7 @@ var _ = Describe("Registry", func() {
 			Expect(registry.Array().Pods).To(ContainElement(item))
 
 			// Remove the item from the registry
-			key2, item2 := "pod2", &v1.Pod{}
+			key2, item2 := testKeys[1], &v1.Pod{}
 			registry.Store(key2, item2)
 			// Check if the item is no longer in the Array() output
 			Expect(registry.Len()).To(Equal(2))
@@ -147,7 +151,7 @@ var _ = Describe("Registry", func() {
 
 		It("should reflect customized registry updates after element changes", func() {
 			// Add an item to the registry
-			key, item := "pod1", &v1.Pod{}
+			key, item := testKeys[0], &v1.Pod{}
 			registry.Store(key, item)
 
 			// Check if the item is in the Array() output
@@ -164,7 +168,7 @@ var _ = Describe("Registry", func() {
 
 		It("should reflect customized registry updates after removal element", func() {
 			// Add an item to the registry
-			key, item := "pod1", &v1.Pod{}
+			key, item := testKeys[0], &v1.Pod{}
 			registry.Store(key, item)
 			// Check if the item is in the Array() output
 			Expect(registry.Len()).To(Equal(1))
