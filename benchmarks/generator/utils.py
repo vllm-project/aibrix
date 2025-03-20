@@ -228,7 +228,7 @@ def plot_workload(workload_name: str,
 
     # Save or show the plot
     if output_dir:
-        os.makedirs(os.path.dirname(output_dir), exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
         plt.savefig(f"{output_dir}/{workload_name}.pdf")
         logging.info(f'Saved workload plot to {output_dir}/{workload_name}.pdf')
     else:
