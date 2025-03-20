@@ -18,7 +18,7 @@ python synthetic_prefix_sharing_dataset.py --app-name programming --prompt-lengt
 ```
 
 The command above simulate a cache sharing scheme for programming workload described in [Preble](https://arxiv.org/pdf/2407.00023), as shown below:
-![image](dataset-examples.png )
+![image](dataset-examples.png)
 
 You can also modify the argument to simulate a dataset that has a similar prompt sharing pattern as examples like Toolbench and Embodied Agent as described. 
 
