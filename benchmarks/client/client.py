@@ -14,10 +14,10 @@ from utils import (load_workload, wrap_prompt_as_chat_message)
 logging.basicConfig(level=logging.INFO)
 
 
-async def send_request_streaming(client: openai.AsyncOpenAI, 
-                             model: str, 
-                             endpoint: str, 
-                             prompt: str, 
+async def send_request_streaming(client: openai.AsyncOpenAI,
+                             model: str,
+                             endpoint: str,
+                             prompt: str,
                              output_file: str,
                              request_id: int):
     start_time = asyncio.get_event_loop().time()
@@ -39,8 +39,8 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
         text_chunks = []
         prompt_tokens = 0
         output_tokens = 0
-        total_tokens = 0   
-        
+        total_tokens = 0
+
         try:
             async for chunk in response_stream:
                 if chunk.choices:
@@ -61,14 +61,14 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
         except Exception as stream_error:
             # Handle errors during streaming
             logging.error(f"Request {request_id}: Stream interrupted: {type(stream_error).__name__}: {str(stream_error)}")
-        
+
         response_text = "".join(text_chunks)
         response_time = asyncio.get_event_loop().time()
         latency = response_time - start_time
         throughput = output_tokens / latency if output_tokens > 0 else 0
         ttft = first_response_time - start_time if first_response_time else None
         tpot = (response_time - first_response_time) / output_tokens if first_response_time and output_tokens > 0 else None
-        
+
         result = {
             "request_id": request_id,
             "status": "success",
@@ -82,16 +82,16 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
             "start_time": start_time,
             "end_time": response_time,
             "ttft": ttft,
-            "tpot": tpot, 
+            "tpot": tpot,
             "target_pod": target_pod,
         }
-        
+
         # Write result to JSONL file
         logging.info(f"Request {request_id}: Completed successfully. Tokens: {total_tokens}, Latency: {latency:.2f}s")
         output_file.write(json.dumps(result) + "\n")
         output_file.flush()  # Ensure data is written immediately to the file
         return result
-        
+
     except Exception as e:
         error_time = asyncio.get_event_loop().time()
         # Determine error type based on exception class
@@ -114,7 +114,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
         return error_result
 
 async def benchmark_streaming(client: openai.AsyncOpenAI,
-                              endpoint: str,  
+                              endpoint: str,
                               load_struct: List,
                               output_file: io.TextIOWrapper,
                               default_model: str,):
@@ -133,11 +133,11 @@ async def benchmark_streaming(client: openai.AsyncOpenAI,
         formatted_prompts = [wrap_prompt_as_chat_message(request["prompt"]) for request in requests]
         for i in range(len(requests)):
             task = asyncio.create_task(
-                send_request_streaming(client = client, 
-                                       model = requests[i]["model"] if "model" in requests[i] else default_model, 
-                                       endpoint = endpoint, 
-                                       prompt = formatted_prompts[i], 
-                                       output_file = output_file, 
+                send_request_streaming(client = client,
+                                       model = requests[i].get("model", default_model) if "model" in requests[i] else default_model,
+                                       endpoint = endpoint,
+                                       prompt = formatted_prompts[i],
+                                       output_file = output_file,
                                        request_id = request_id)
             )
             request_id += 1
@@ -145,12 +145,12 @@ async def benchmark_streaming(client: openai.AsyncOpenAI,
         num_requests += len(requests)
     await asyncio.gather(*batch_tasks)
     logging.warning(f"All {num_requests} requests completed for deployment.")
-    
+
 # Asynchronous request handler
 async def send_request_batch(client: openai.AsyncOpenAI,
                              model: str,
-                             prompt: str, 
-                             output_file: str, 
+                             prompt: str,
+                             output_file: str,
                              request_id: int):
     start_time = asyncio.get_event_loop().time()
     target_pod = ""
@@ -185,7 +185,7 @@ async def send_request_batch(client: openai.AsyncOpenAI,
             "start_time": start_time,
             "end_time": response_time,
             "ttft": "Unknown",
-            "tpot": "Unknown", 
+            "tpot": "Unknown",
             "target_pod": target_pod,
         }
         logging.info(result)
@@ -193,7 +193,7 @@ async def send_request_batch(client: openai.AsyncOpenAI,
         output_file.write(json.dumps(result) + "\n")
         output_file.flush()  # Ensure data is written immediately to the file
         return result
-    
+
     except Exception as e:
         error_time = asyncio.get_event_loop().time()
         error_type = type(e).__name__
@@ -216,8 +216,8 @@ async def send_request_batch(client: openai.AsyncOpenAI,
 
 
 async def benchmark_batch(client: openai.AsyncOpenAI,
-                          endpoint: str, 
-                          load_struct: List, 
+                          endpoint: str,
+                          load_struct: List,
                           output_file: io.TextIOWrapper,
                           default_model: str,
                           ):
@@ -236,11 +236,11 @@ async def benchmark_batch(client: openai.AsyncOpenAI,
         formatted_prompts = [wrap_prompt_as_chat_message(request["prompt"]) for request in requests]
         for i in range(len(requests)):
             task = asyncio.create_task(
-                send_request_batch(client = client, 
-                                   model = requests[i]["model"] if "model" in requests[i] else default_model, 
-                                   endpoint = endpoint, 
-                                   formatted_prompt = formatted_prompts[i], 
-                                   output_file = output_file, 
+                send_request_batch(client = client,
+                                   model = requests[i].get("model", default_model) if "model" in requests[i] else default_model,
+                                   endpoint = endpoint,
+                                   formatted_prompt = formatted_prompts[i],
+                                   output_file = output_file,
                                    request_id = request_id)
             )
             request_id += 1
@@ -255,7 +255,7 @@ def main(args):
     with open(args.output_file_path, 'w', encoding='utf-8') as output_file:
         load_struct = load_workload(args.workload_path)
         client = openai.AsyncOpenAI(
-            api_key=args.api_key,
+            #api_key=args.api_key,
             base_url=args.endpoint + "/v1",
         )
         if args.routing_strategy is not None:
@@ -267,9 +267,9 @@ def main(args):
             start_time = time.time()
             asyncio.run(benchmark_batch(
                 client = client,
-                endpoint=args.endpoint, 
-                load_struct=load_struct, 
-                output_file=output_file, 
+                endpoint=args.endpoint,
+                load_struct=load_struct,
+                output_file=output_file,
                 default_model=args.model,
             ))
             end_time = time.time()
@@ -279,8 +279,8 @@ def main(args):
             start_time = time.time()
             asyncio.run(benchmark_streaming(
                 client = client,
-                endpoint=args.endpoint, 
-                load_struct=load_struct, 
+                endpoint=args.endpoint,
+                load_struct=load_struct,
                 output_file=output_file,
                 default_model=args.model,
             ))
@@ -293,10 +293,11 @@ if __name__ == "__main__":
     parser.add_argument("--workload-path", type=str, default=None, help="File path to the workload file.")
     parser.add_argument("--model", type=str, default=None, help="Default target model (if workload does not contains target model).")
     parser.add_argument('--endpoint', type=str, required=True)
-    parser.add_argument("--api-key", type=str, required=True, help="API key to the service. ")
+    parser.add_argument("--api-key", type=str, help="API key to the service. ")
     parser.add_argument('--output-file-path', type=str, default="output.jsonl")
     parser.add_argument("--streaming", action="store_true", help="Use streaming client.")
     parser.add_argument("--routing-strategy", type=str, required=False, default=None, help="Routing strategy to use.")
 
     args = parser.parse_args()
     main(args)
+
