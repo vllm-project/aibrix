@@ -117,7 +117,8 @@ async def benchmark_streaming(client: openai.AsyncOpenAI,
                               endpoint: str,
                               load_struct: List,
                               output_file: io.TextIOWrapper,
-                              default_model: str,):
+                              model: str,
+                              ):
     request_id = 0
     batch_tasks = []
     base_time = time.time()
@@ -134,7 +135,7 @@ async def benchmark_streaming(client: openai.AsyncOpenAI,
         for i in range(len(requests)):
             task = asyncio.create_task(
                 send_request_streaming(client = client,
-                                       model = requests[i].get("model", default_model) if "model" in requests[i] else default_model,
+                                       model = model,
                                        endpoint = endpoint,
                                        prompt = formatted_prompts[i],
                                        output_file = output_file,
@@ -219,7 +220,7 @@ async def benchmark_batch(client: openai.AsyncOpenAI,
                           endpoint: str,
                           load_struct: List,
                           output_file: io.TextIOWrapper,
-                          default_model: str,
+                          model: str,
                           ):
     request_id = 0
     batch_tasks = []
@@ -237,7 +238,7 @@ async def benchmark_batch(client: openai.AsyncOpenAI,
         for i in range(len(requests)):
             task = asyncio.create_task(
                 send_request_batch(client = client,
-                                   model = requests[i].get("model", default_model) if "model" in requests[i] else default_model,
+                                   model = model,
                                    endpoint = endpoint,
                                    formatted_prompt = formatted_prompts[i],
                                    output_file = output_file,
@@ -270,7 +271,7 @@ def main(args):
                 endpoint=args.endpoint,
                 load_struct=load_struct,
                 output_file=output_file,
-                default_model=args.model,
+                model=args.model,
             ))
             end_time = time.time()
             logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
@@ -282,7 +283,7 @@ def main(args):
                 endpoint=args.endpoint,
                 load_struct=load_struct,
                 output_file=output_file,
-                default_model=args.model,
+                model=args.model,
             ))
             end_time = time.time()
             logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")

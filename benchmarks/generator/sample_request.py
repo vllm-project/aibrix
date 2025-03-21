@@ -83,7 +83,6 @@ def sample_requests_len_range(
         output_lens: List[int],
         initial_err_perc: Optional[float] = 0.5,
         err_step: float = 0.05,
-        model: str = None,
 ) -> List[Tuple[str, int, int, None]]:
     filtered_results = []
 
@@ -108,7 +107,6 @@ def sample_requests_len_range(
                 total_rows = len(filtered)
                 sample = filtered.iloc[random.randint(0, total_rows - 1)] 
                 filtered_results.append({"prompt": sample["prompt"],
-                                         "model": model,
                                          "prompt_length": sample["prompt_len"],
                                          "output_length": sample["completion_len"]})
                 break  # Stop relaxing for this request once a match is found
@@ -122,7 +120,6 @@ def sample_requests_len_range(
             closest_sample = df.nsmallest(1, "distance").iloc[0]
             closest_input, closest_output = closest_sample["prompt_len"], closest_sample["completion_len"]
             filtered_results.append({"prompt": closest_sample["prompt"],
-                                     "model": model,
                                      "prompt_length": closest_sample["prompt_len"],
                                      "output_length": closest_sample["completion_len"]})
             logging.warn(f"No exact match found for request {i + 1}, target input/output lengths {input_len}/{output_len}, use closest QA pair input {closest_input} output {closest_output}.")
@@ -134,7 +131,6 @@ def sample_requests_all(
         df: pd.DataFrame,
         start_idx: int,
         qps: int,
-        model: None,
 ) -> List[Tuple[str, int, int, None]]:
     results = []
 
@@ -143,7 +139,6 @@ def sample_requests_all(
     for i in  range(start_idx, end_idx):
         row = df.iloc[i]
         results.append({"prompt": row["prompt"],
-                        "model": model,
                         "prompt_length": row["prompt_len"],
                         "output_length": row["completion_len"]})
 
