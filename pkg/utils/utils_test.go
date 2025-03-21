@@ -14,22 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package routingalgorithms
+package utils
 
 import (
-	"fmt"
+	"testing"
 
-	"github.com/vllm-project/aibrix/pkg/utils"
-	v1 "k8s.io/api/core/v1"
+	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
 )
 
-// selectRandomPod selects a random pod from the provided pod map.
-// It returns an error if no ready pods are available.
-func selectRandomPod(pods []*v1.Pod, randomFn func(int) int) (*v1.Pod, error) {
-	readyPods := utils.FilterRoutablePods(pods)
-	if len(readyPods) == 0 {
-		return nil, fmt.Errorf("no ready pods available for fallback")
-	}
-	randomPod := readyPods[randomFn(len(readyPods))]
-	return randomPod, nil
+func TestCache(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Utils Suite")
 }

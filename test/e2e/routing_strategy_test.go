@@ -19,6 +19,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand"
 	"net/http"
 	"testing"
@@ -29,14 +30,40 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPrefixCacheModelInference(t *testing.T) {
+func TestRandomRouting(t *testing.T) {
+	histogram := make(map[string]int)
+	iterration := 100
+
+	for i := 0; i < iterration; i++ {
+		req := "hello test"
+		targetPod := getTargetPodFromChatCompletion(t, req, "random")
+		assert.NotEmpty(t, targetPod, "target pod should not be empty")
+		histogram[targetPod]++
+	}
+
+	assert.True(t, len(histogram) > 1, "target pod distribution should be more than 1")
+
+	// Calculate the variance of the distribution stored in the histogram using sum and sum of squared values
+	sum := float64(iterration)
+	var sumSquared float64
+	for _, count := range histogram {
+		sumSquared += float64(count) * float64(count)
+	}
+	mean := sum / float64(len(histogram))
+	stddev := math.Sqrt(sumSquared/float64(len(histogram)) - mean*mean)
+
+	assert.True(t, stddev/mean < 0.2,
+		"stand deviation of pod distribution should be less than 20%%, but got %f, mean %f", stddev, mean)
+}
+
+func TestPrefixCacheRouting(t *testing.T) {
 	// #1 request - cache first time request
 	req := "this is first message"
-	targetPod := getTargetPodFromChatCompletion(t, req)
+	targetPod := getTargetPodFromChatCompletion(t, req, "prefix-cache")
 	fmt.Printf("req: %s, target pod: %v\n", req, targetPod)
 
 	// #2 request - reuse target pod from first time
-	targetPod2 := getTargetPodFromChatCompletion(t, req)
+	targetPod2 := getTargetPodFromChatCompletion(t, req, "prefix-cache")
 	fmt.Printf("req: %s, target pod: %v\n", req, targetPod2)
 	assert.Equal(t, targetPod, targetPod2)
 
@@ -44,7 +71,7 @@ func TestPrefixCacheModelInference(t *testing.T) {
 	var count int
 	for count < 5 {
 		generateMessage := fmt.Sprintf("this is %v message", rand.Intn(1000))
-		targetPod3 := getTargetPodFromChatCompletion(t, generateMessage)
+		targetPod3 := getTargetPodFromChatCompletion(t, generateMessage, "prefix-cache")
 		fmt.Printf("target pod from #3 request: %v\n", targetPod3)
 		if targetPod != targetPod3 {
 			break
@@ -55,9 +82,9 @@ func TestPrefixCacheModelInference(t *testing.T) {
 	assert.NotEqual(t, 5, count)
 }
 
-func getTargetPodFromChatCompletion(t *testing.T, message string) string {
+func getTargetPodFromChatCompletion(t *testing.T, message string, routingStrategy string) string {
 	var dst *http.Response
-	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "prefix-cache", option.WithResponseInto(&dst))
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, routingStrategy, option.WithResponseInto(&dst))
 
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{

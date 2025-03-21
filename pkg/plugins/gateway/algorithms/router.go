@@ -16,27 +16,9 @@ limitations under the License.
 
 package routingalgorithms
 
-import (
-	"context"
-
-	v1 "k8s.io/api/core/v1"
-)
+import "github.com/vllm-project/aibrix/pkg/types"
 
 type Algorithms string
-
-// RoutingContext encapsulates the context information required for routing.
-// It can be extended with more fields as needed in the future.
-type RoutingContext struct {
-	Model   string
-	Message string
-	// Additional fields can be added here to expand the routing context.
-}
-
-// Router defines the interface for routing logic to select target pods.
-type Router interface {
-	// Route returns the target pod
-	Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error)
-}
 
 // Validate validates if user provided routing routers is supported by gateway
 func Validate(algorithms Algorithms) bool {
@@ -60,4 +42,4 @@ func Register(algorithms Algorithms, router routerFunc) {
 var routerRegistry = map[Algorithms]routerFunc{}
 var routerStores = map[Algorithms]any{}
 
-type routerFunc func() (Router, error)
+type routerFunc func(*types.RoutingContext) (types.Router, error)

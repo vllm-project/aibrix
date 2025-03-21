@@ -21,6 +21,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -28,8 +30,8 @@ import (
 func Test_PrefixCache(t *testing.T) {
 	prefixCacheRouter, _ := NewPrefixCacheRouter()
 
-	pods := map[string]*v1.Pod{
-		"p1": {
+	pods := []*v1.Pod{
+		{
 			ObjectMeta: metav1.ObjectMeta{Name: "p1"},
 			Status: v1.PodStatus{
 				PodIP: "1.1.1.1",
@@ -40,7 +42,7 @@ func Test_PrefixCache(t *testing.T) {
 					},
 				},
 			}},
-		"p2": {
+		{
 			ObjectMeta: metav1.ObjectMeta{Name: "p2"},
 			Status: v1.PodStatus{
 				PodIP: "2.2.2.2",
@@ -53,10 +55,10 @@ func Test_PrefixCache(t *testing.T) {
 			}},
 	}
 
-	targetPod, err := prefixCacheRouter.Route(context.Background(), pods, RoutingContext{Model: "m1", Message: "this is first message"})
+	targetPod, err := prefixCacheRouter.Route(types.NewRoutingContext(context.Background(), "m1", "this is first message"), &utils.PodArray{Pods: pods})
 	assert.NoError(t, err)
 
-	targetPod2, err := prefixCacheRouter.Route(context.Background(), pods, RoutingContext{Model: "m1", Message: "this is first message"})
+	targetPod2, err := prefixCacheRouter.Route(types.NewRoutingContext(context.Background(), "m1", "this is first message"), &utils.PodArray{Pods: pods})
 	assert.NoError(t, err)
 
 	assert.Equal(t, targetPod, targetPod2)

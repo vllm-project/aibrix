@@ -27,7 +27,6 @@ import (
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
@@ -36,6 +35,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 )
@@ -82,7 +82,8 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var user utils.User
 	var rpm, traceTerm int64
 	var respErrorCode int
-	var model, routingStrategy, targetPodIP string
+	var model, routingStrategy string
+	var routerCtx *types.RoutingContext
 	var stream, isRespError bool
 	ctx := srv.Context()
 	requestID := uuid.New().String()
@@ -112,10 +113,13 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			resp, user, rpm, routingStrategy = s.HandleRequestHeaders(ctx, requestID, req)
 
 		case *extProcPb.ProcessingRequest_RequestBody:
-			resp, model, targetPodIP, stream, traceTerm = s.HandleRequestBody(ctx, requestID, req, user, routingStrategy)
+			resp, model, routerCtx, stream, traceTerm = s.HandleRequestBody(ctx, requestID, req, user, routingStrategy)
+			if routerCtx != nil {
+				ctx = routerCtx
+			}
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
-			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, requestID, req, targetPodIP)
+			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, requestID, req)
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
 			respBody := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
@@ -123,7 +127,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 				klog.ErrorS(errors.New("request end"), string(respBody.ResponseBody.GetBody()), "requestID", requestID)
 				generateErrorResponse(envoyTypePb.StatusCode(respErrorCode), nil, string(respBody.ResponseBody.GetBody()))
 			} else {
-				resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, targetPodIP, stream, traceTerm, completed)
+				resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, stream, traceTerm, completed)
 			}
 		default:
 			klog.Infof("Unknown Request type %+v\n", v)
@@ -135,12 +139,12 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	}
 }
 
-func (s *Server) selectTargetPod(ctx context.Context, routingStrategy routing.Algorithms, pods map[string]*v1.Pod, routingCtx routing.RoutingContext) (string, error) {
-	router, err := routing.Select(routingStrategy)()
+func (s *Server) selectTargetPod(ctx *types.RoutingContext, routingStrategy routing.Algorithms, pods *utils.PodArray) (string, error) {
+	router, err := routing.Select(routingStrategy)(ctx)
 	if err != nil {
 		return "", err
 	}
-	return router.Route(ctx, pods, routingCtx)
+	return router.Route(ctx, pods)
 }
 
 func NewHealthCheckServer() *HealthServer {

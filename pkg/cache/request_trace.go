@@ -16,6 +16,8 @@ limitations under the License.
 package cache
 
 import (
+	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -83,36 +85,48 @@ func (t *RequestTrace) DoneRequest(requestID string, term int64) {
 }
 
 // Add request trace profile. key must be provided and will not be checked
-func (t *RequestTrace) AddRequestTrace(requestID string, key string) bool {
+func (t *RequestTrace) AddRequestTrace(requestID string, inputTokens, outputTokens int64, key string) (string, bool) {
+	if key == "" {
+		inputBucket, outputBucket := t.getTokenBucket(inputTokens), t.getTokenBucket(outputTokens)
+		key = t.getTraceKey(inputBucket, outputBucket)
+	}
+
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	// Check if recycled
 	if t.recycler == nil {
-		return false
+		return key, false
 	}
 
 	t.addRequestTraceLocked(key)
-	return true
+	return key, true
 }
 
 // Decrease request counting and add request trace profile.
-func (t *RequestTrace) DoneRequestTrace(requestID string, key string, term int64) bool {
+func (t *RequestTrace) DoneRequestTrace(requestID string, inputTokens, outputTokens int64, key string, term int64) (string, bool) {
+	inputBucket, outputBucket := t.getTokenBucket(inputTokens), t.getTokenBucket(outputTokens)
+	if key == "" {
+		key = t.getTraceKey(inputBucket, outputBucket)
+	}
+
 	if term != t.term && key == "" {
-		return true
+		return key, true
 	}
 
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	// Check if recycled
 	if t.recycler == nil {
-		return false
+		return key, false
 	}
 
 	t.doneRequestLocked(term)
 	if key != "" {
 		t.addRequestTraceLocked(key)
 	}
-	return true
+
+	// TODO: Track output stats based on input tokens
+	return key, true
 }
 
 func (t *RequestTrace) Lock() {
@@ -171,6 +185,20 @@ func (t *RequestTrace) addRequestTraceLocked(key string) {
 		// Increase counter of total keys
 		atomic.AddInt32(&t.numKeys, 1)
 	}
+}
+
+func (t *RequestTrace) getTraceKey(inputBucket, outputBucket float64) (traceKey string) {
+	inputIndex := int64(inputBucket / RequestTracePrecision) // Convert to int without precision loss.
+	outputIndex := int64(outputBucket / RequestTracePrecision)
+	traceKey = fmt.Sprintf("%v:%v", inputIndex, outputIndex)
+	return
+}
+
+func (t *RequestTrace) getTokenBucket(tokens int64) (bucket float64) {
+	if tokens > 0 {
+		return math.Round(math.Log2(float64(tokens))/RequestTracePrecision) * RequestTracePrecision // Round to the nearest precision
+	}
+	return
 }
 
 // Get a RequestTrace generator by hidding the tracePool in closure. Do not call this directly unless for testing purpose.

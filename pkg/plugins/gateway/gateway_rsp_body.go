@@ -31,10 +31,11 @@ import (
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, targetPodIP string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
+func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 	klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID, "endOfStream", b.ResponseBody.EndOfStream)
 
@@ -43,11 +44,17 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	var promptTokens, completionTokens int64
 	var headers []*configPb.HeaderValueOption
 	complete := hasCompleted
+	routerCtx, _ := ctx.(*types.RoutingContext)
 
 	defer func() {
 		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
-		if enableGPUOptimizerTracing && !hasCompleted && complete && b.ResponseBody.EndOfStream {
-			s.cache.DoneRequestTrace(requestID, model, promptTokens, completionTokens, traceTerm)
+		if !hasCompleted && complete && b.ResponseBody.EndOfStream {
+			if enableGPUOptimizerTracing {
+				s.cache.DoneRequestTrace(routerCtx, requestID, model, promptTokens, completionTokens, traceTerm)
+			}
+			if routerCtx != nil {
+				routerCtx.Delete()
+			}
 		}
 	}()
 
@@ -163,7 +170,8 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			requestEnd = fmt.Sprintf(requestEnd+"rpm: %s, tpm: %s, ", rpm, tpm)
 		}
 
-		if targetPodIP != "" {
+		if routerCtx != nil {
+			targetPodIP := routerCtx.TargetAddress()
 			headers = append(headers,
 				&configPb.HeaderValueOption{
 					Header: &configPb.HeaderValue{

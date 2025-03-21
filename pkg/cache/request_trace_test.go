@@ -39,7 +39,7 @@ var _ = Describe("reqeustTrace", func() {
 		Expect(term).To(Equal(ts))
 		oldTrace.AddRequest("no use now", "no use now")
 		oldTrace.DoneRequest("no use now", term)
-		oldTrace.AddRequestTrace("no use now", "1:1")
+		oldTrace.AddRequestTrace("no use now", 1, 1, "1:1")
 		Expect(oldTrace.numRequests).ToNot(Equal(int32(0)))
 		oldTraceMap := oldTrace.trace
 		oldTrace.Recycle()
@@ -57,7 +57,7 @@ var _ = Describe("reqeustTrace", func() {
 		trace := NewRequestTrace(0)
 		trace.AddRequest("no use now", "no use now")
 		trace.DoneRequest("no use now", 0)
-		trace.AddRequestTrace("no use now", "1:1")
+		trace.AddRequestTrace("no use now", 1, 1, "1:1")
 		traceMap := trace.ToMap(2)
 		expected := []byte("{\"1:1\":1,\"meta_interval_sec\":10,\"meta_pending_reqs\":2,\"meta_precision\":10,\"meta_total_reqs\":1,\"meta_v\":3}")
 		marshaled, err := json.Marshal(traceMap)
@@ -109,9 +109,13 @@ var _ = Describe("reqeustTrace", func() {
 					}
 					// Retry until success
 					runtime.Gosched()
-					for !current.DoneRequestTrace("no use now", "1:1", term) {
-						current = trace
-						runtime.Gosched() // Create chance for possible change
+					for {
+						if _, ok := current.DoneRequestTrace("no use now", 1, 1, "1:1", term); !ok {
+							current = trace
+							runtime.Gosched() // Create chance for possible change
+						} else {
+							break
+						}
 					}
 				}
 				close(done)

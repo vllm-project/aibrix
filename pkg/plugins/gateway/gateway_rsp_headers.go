@@ -24,11 +24,13 @@ import (
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	"github.com/vllm-project/aibrix/pkg/types"
 )
 
-func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, targetPodIP string) (*extProcPb.ProcessingResponse, bool, int) {
+func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, bool, int) {
 	klog.InfoS("-- In ResponseHeaders processing ...", "requestID", requestID)
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseHeaders)
+	routerCtx, _ := ctx.(*types.RoutingContext)
 
 	headers := []*configPb.HeaderValueOption{{
 		Header: &configPb.HeaderValue{
@@ -36,11 +38,11 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 			RawValue: []byte("true"),
 		},
 	}}
-	if targetPodIP != "" {
+	if routerCtx != nil {
 		headers = append(headers, &configPb.HeaderValueOption{
 			Header: &configPb.HeaderValue{
 				Key:      HeaderTargetPod,
-				RawValue: []byte(targetPodIP),
+				RawValue: []byte(routerCtx.TargetAddress()),
 			},
 		})
 	}

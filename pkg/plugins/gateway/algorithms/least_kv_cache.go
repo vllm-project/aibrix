@@ -17,13 +17,14 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"math/rand"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	metrics "github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -33,15 +34,14 @@ var (
 )
 
 func init() {
-	router, err := NewLeastKvCacheRouter()
-	Register(RouterLeastKvCache, func() (Router, error) { return router, err })
+	Register(RouterLeastKvCache, func(*types.RoutingContext) (types.Router, error) { return NewLeastKvCacheRouter() })
 }
 
 type leastKvCacheRouter struct {
 	cache *cache.Cache
 }
 
-func NewLeastKvCacheRouter() (Router, error) {
+func NewLeastKvCacheRouter() (types.Router, error) {
 	c, err := cache.GetCache()
 	if err != nil {
 		return nil, err
@@ -52,15 +52,15 @@ func NewLeastKvCacheRouter() (Router, error) {
 	}, nil
 }
 
-func (r leastKvCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
-	var targetPodIP string
+func (r leastKvCacheRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
+	var targetPod *v1.Pod
 	minKvCache := math.MaxFloat64
 
-	if len(pods) == 0 {
+	if len(pods.Pods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	for _, pod := range pods {
+	for _, pod := range pods.Pods {
 		if pod.Status.PodIP == "" {
 			continue
 		}
@@ -68,12 +68,12 @@ func (r leastKvCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, 
 		// Due to metric refactor (pull/543) to better support lora and multi models,
 		// we change to use PodModelMetrics instead of PodMetrics in some scenarios.
 		// This works but doesn't look very promising, we can revisit this part later.
-		gpuCache, err := r.cache.GetPodModelMetric(pod.Name, routingCtx.Model, metrics.GPUCacheUsagePerc)
+		gpuCache, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.GPUCacheUsagePerc)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		cpuCache, err := r.cache.GetPodModelMetric(pod.Name, routingCtx.Model, metrics.CPUCacheUsagePerc)
+		cpuCache, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.CPUCacheUsagePerc)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -85,24 +85,25 @@ func (r leastKvCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, 
 
 		if totalCache <= minKvCache {
 			minKvCache = totalCache
-			targetPodIP = pod.Status.PodIP
+			targetPod = pod
 		}
 	}
 
 	// Use fallback if no valid metrics
-	if targetPodIP == "" {
+	if targetPod == nil {
 		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPodIP, err = selectRandomPod(pods, rand.Intn)
+		targetPod, err = selectRandomPod(pods.Pods, rand.Intn)
 		if err != nil {
 			return "", err
 		}
 	}
 
-	if targetPodIP == "" {
+	if targetPod == nil {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	klog.V(4).Infof("targetPodIP: %v", targetPodIP)
-	return targetPodIP + ":" + podMetricPort, nil
+	klog.V(4).Infof("targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
+	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
 }
