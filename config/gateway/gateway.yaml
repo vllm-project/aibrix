@@ -83,7 +83,7 @@ spec:
                 regex: .*
         route:  
           cluster: original_destination_cluster
-          timeout: 120s  # Increase route timeout
+          timeout: 1800s  # Increase route timeout
         typed_per_filter_config:
           "envoy.filters.http.ext_proc/envoyextensionpolicy/aibrix-system/aibrix-gateway-plugins-extension-policy/extproc/0":
             "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
