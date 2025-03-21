@@ -22,6 +22,7 @@ curl -LO "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
 chmod +x kubectl
 mkdir -p ~/.local/bin
 mv ./kubectl ~/.local/bin/kubectl
+echo 'export PATH=$PATH:~/.local/bin/' >> ~/.bashrc
 echo "kubectl installation completed."
 
 # Install kind
