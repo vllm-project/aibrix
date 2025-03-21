@@ -42,7 +42,6 @@ def generate_from_internal_csv(prompt_file_path: str,
                             input_scale: float = 1.0,
                             output_scale: float = 1.0,
                             internal_trace_type: str = 'maas',
-                            model: str = None,
                             output_file: str = 'output/output',
                             to_jsonl: bool = False,
                             ) -> Dict[str, Any]:
@@ -81,7 +80,6 @@ def generate_from_internal_csv(prompt_file_path: str,
         qps_scale = qps_scale,
         input_scale = input_scale,
         output_scale = output_scale,
-        model = model,
     )
     
     workload = make_serializable(workload)
@@ -98,7 +96,6 @@ def generate_synthetic_from_dist(
         qps_scale: float,
         input_scale: float,
         output_scale: float,
-        model: str = None,
     ) -> List[Dict[str, Any]]:
     
     if not (len(rps_dist) == len(input_token_len_dist) == len(output_token_len_dist)):
@@ -127,7 +124,6 @@ def generate_synthetic_from_dist(
                     output_lens=[current_output_len],
                     initial_err_perc=0.5,
                     err_step=0.05,
-                    model=model,
                 )
             else:
                 request = []
@@ -143,7 +139,6 @@ def generate_constant(prompt_file_path: str,
                        output_len: int = None,
                        duration_ms: int = None,
                        interval_ms: int = None,
-                       model: str = None,
                        output_file: str = 'output/output',
                        to_jsonl: bool = False,
                        ) -> List[List[Any]]:
@@ -170,7 +165,6 @@ def generate_constant(prompt_file_path: str,
             qps_scale = 1.0,
             input_scale = 1.0,
             output_scale = 1.0,
-            model = model,
         )
     else:
         while ts < duration_ms:
@@ -181,7 +175,6 @@ def generate_constant(prompt_file_path: str,
                 output_lens=[None] * qps, 
                 initial_err_perc=0.1,
                 err_step=0.05,
-                model=model,
             )
             if concurrent_reqs:  # Only add non-empty groups
                 workload.append({"timestamp": ts, "requests": concurrent_reqs})  
@@ -208,7 +201,6 @@ def generate_synthetic(prompt_file_path: str,
                        output_pattern_config: Dict[str, Any],
                        duration_ms: int = None,
                        interval_ms: int = None,
-                       model: str = None,
                        output_file: str = 'output/output',
                        to_jsonl: bool = False,
                        ) -> List[List[Any]]:
@@ -276,7 +268,6 @@ def generate_synthetic(prompt_file_path: str,
         qps_scale = 1.0,
         input_scale = 1.0,
         output_scale = 1.0,
-        model = model,
     )
     workload = make_serializable(workload)
     save_workload(workload, output_file, use_jsonl=to_jsonl)
@@ -288,7 +279,6 @@ def generate_from_azure_csv(file_path: str,
                             duration_ms: int,
                             tokenizer: PreTrainedTokenizerBase,
                             interval_ms: int,
-                            model: str = None,
                             output_file: str = 'output/output',
                             to_jsonl: bool = False,
                             ) -> List[List[Any]]:
@@ -333,7 +323,6 @@ def generate_from_azure_csv(file_path: str,
             output_lens=output_lens,
             initial_err_perc=0.1,
             err_step=0.05,
-            model=model,
         )
 
         if sampled_requests:  # Only add non-empty groups
@@ -437,7 +426,6 @@ if __name__ == '__main__':
                                                 output_pattern_config = output_pattern_config,
                                                 duration_ms=args.duration_ms,
                                                 interval_ms=args.interval_ms,
-                                                model=args.model,
                                                 output_file=f"{args.output_dir}/{comp_pattern_type}",
                                                 to_jsonl=(args.output_format == "jsonl"),
                                             )
@@ -465,7 +453,6 @@ if __name__ == '__main__':
                                                             input_scale=args.input_scale,
                                                             output_scale=args.output_scale,
                                                             internal_trace_type=args.internal_trace_type,
-                                                            model=args.model,
                                                             output_file=f"{args.output_dir}/{args.trace_type}",
                                                             to_jsonl=(args.output_format == "jsonl"),
                                                             )
@@ -476,7 +463,6 @@ if __name__ == '__main__':
                                                          duration_ms=args.duration_ms, 
                                                          tokenizer=tokenizer,
                                                          interval_ms=args.interval_ms, 
-                                                         model=args.model,
                                                          output_file=f"{args.output_dir}/{args.trace_type}",
                                                          to_jsonl=(args.output_format == "jsonl"),
                                                          )

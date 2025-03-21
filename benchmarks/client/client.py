@@ -117,7 +117,8 @@ async def benchmark_streaming(client: openai.AsyncOpenAI,
                               endpoint: str,
                               load_struct: List,
                               output_file: io.TextIOWrapper,
-                              default_model: str,):
+                              model: str,
+                              ):
     request_id = 0
     batch_tasks = []
     base_time = time.time()
@@ -134,7 +135,7 @@ async def benchmark_streaming(client: openai.AsyncOpenAI,
         for i in range(len(requests)):
             task = asyncio.create_task(
                 send_request_streaming(client = client,
-                                       model = requests[i].get("model", default_model) if "model" in requests[i] else default_model,
+                                       model = model,
                                        endpoint = endpoint,
                                        prompt = formatted_prompts[i],
                                        output_file = output_file,
@@ -219,7 +220,7 @@ async def benchmark_batch(client: openai.AsyncOpenAI,
                           endpoint: str,
                           load_struct: List,
                           output_file: io.TextIOWrapper,
-                          default_model: str,
+                          model: str,
                           ):
     request_id = 0
     batch_tasks = []
@@ -237,7 +238,7 @@ async def benchmark_batch(client: openai.AsyncOpenAI,
         for i in range(len(requests)):
             task = asyncio.create_task(
                 send_request_batch(client = client,
-                                   model = requests[i].get("model", default_model) if "model" in requests[i] else default_model,
+                                   model = model,
                                    endpoint = endpoint,
                                    formatted_prompt = formatted_prompts[i],
                                    output_file = output_file,
@@ -254,10 +255,15 @@ def main(args):
     logging.info(f"Starting benchmark on endpoint {args.endpoint}")
     with open(args.output_file_path, 'w', encoding='utf-8') as output_file:
         load_struct = load_workload(args.workload_path)
-        client = openai.AsyncOpenAI(
-            #api_key=args.api_key,
-            base_url=args.endpoint + "/v1",
-        )
+        if args.api_key is None:
+            client = openai.AsyncOpenAI(
+                base_url=args.endpoint + "/v1",
+            )
+        else:
+            client = openai.AsyncOpenAI(
+                api_key=args.api_key,
+                base_url=args.endpoint + "/v1",
+            )
         if args.routing_strategy is not None:
             client = client.with_options(
                 default_headers={"routing-strategy": args.routing_strategy}
@@ -270,7 +276,7 @@ def main(args):
                 endpoint=args.endpoint,
                 load_struct=load_struct,
                 output_file=output_file,
-                default_model=args.model,
+                model=args.model,
             ))
             end_time = time.time()
             logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
@@ -282,7 +288,7 @@ def main(args):
                 endpoint=args.endpoint,
                 load_struct=load_struct,
                 output_file=output_file,
-                default_model=args.model,
+                model=args.model,
             ))
             end_time = time.time()
             logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
@@ -293,7 +299,7 @@ if __name__ == "__main__":
     parser.add_argument("--workload-path", type=str, default=None, help="File path to the workload file.")
     parser.add_argument("--model", type=str, default=None, help="Default target model (if workload does not contains target model).")
     parser.add_argument('--endpoint', type=str, required=True)
-    parser.add_argument("--api-key", type=str, help="API key to the service. ")
+    parser.add_argument("--api-key", type=str, default=None, help="API key to the service. ")
     parser.add_argument('--output-file-path', type=str, default="output.jsonl")
     parser.add_argument("--streaming", action="store_true", help="Use streaming client.")
     parser.add_argument("--routing-strategy", type=str, required=False, default=None, help="Routing strategy to use.")
