@@ -255,10 +255,15 @@ def main(args):
     logging.info(f"Starting benchmark on endpoint {args.endpoint}")
     with open(args.output_file_path, 'w', encoding='utf-8') as output_file:
         load_struct = load_workload(args.workload_path)
-        client = openai.AsyncOpenAI(
-            #api_key=args.api_key,
-            base_url=args.endpoint + "/v1",
-        )
+        if args.api_key is None:
+            client = openai.AsyncOpenAI(
+                base_url=args.endpoint + "/v1",
+            )
+        else:
+            client = openai.AsyncOpenAI(
+                api_key=args.api_key,
+                base_url=args.endpoint + "/v1",
+            )
         if args.routing_strategy is not None:
             client = client.with_options(
                 default_headers={"routing-strategy": args.routing_strategy}
@@ -294,7 +299,7 @@ if __name__ == "__main__":
     parser.add_argument("--workload-path", type=str, default=None, help="File path to the workload file.")
     parser.add_argument("--model", type=str, default=None, help="Default target model (if workload does not contains target model).")
     parser.add_argument('--endpoint', type=str, required=True)
-    parser.add_argument("--api-key", type=str, help="API key to the service. ")
+    parser.add_argument("--api-key", type=str, default=None, help="API key to the service. ")
     parser.add_argument('--output-file-path', type=str, default="output.jsonl")
     parser.add_argument("--streaming", action="store_true", help="Use streaming client.")
     parser.add_argument("--routing-strategy", type=str, required=False, default=None, help="Routing strategy to use.")
