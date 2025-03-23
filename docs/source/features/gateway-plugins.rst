@@ -257,9 +257,9 @@ Rate Limiting Headers
 
    * - Header Name
      - Description
-   * - ``x-update-tpm``
-     - Indicates that the RPM (requests per minute) count was updated successfully
    * - ``x-update-rpm``
+     - Indicates that the RPM (requests per minute) count was updated successfully
+   * - ``x-update-tpm``
      - Indicates that the TPM (tokens per minute) count was updated successfully
    * - ``x-error-rpm-exceeded``
      - Signals that the request exceeded the allowed RPM threshold.
