@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llama3-1-8b
+  labels:
+    model.aibrix.ai/name: llama3-1-8b
+    model.aibrix.ai/port: "8000"
+spec:
+  replicas: 8
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: llama3-1-8b
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: llama3-1-8b
+    spec:
+      containers:
+        - name: vllm-openai
+          image: aibrix/vllm-openai:v0.6.1-edb07092-20250118
+          imagePullPolicy: Always
+          command:
+            - python3
+            - -m
+            - vllm.entrypoints.openai.api_server
+            - --port
+            - "8000"
+            - --uvicorn-log-level
+            - warning
+            - --model
+            - meta-llama/Llama-3.1-8B-Instruct
+            - --served-model-name
+            - llama3-1-8b
+            - --max-model-len
+            - "32000" # please modify this field if your gpu has more room
+            - --enable-prefix-caching
+            - --disable-fastapi-docs
+          env:
+            - name: VLLM_USE_VINEYARD_CACHE
+              value: "1"
+            - name: VINEYARD_CACHE_CPU_MEM_LIMIT_GB
+              value: "120"
+            - name: AIBRIX_LLM_KV_CACHE
+              value: "1"
+            - name: AIBRIX_LLM_KV_CACHE_KV_CACHE_NS
+              value: "aibrix"
+            - name: AIBRIX_LLM_KV_CACHE_CHUNK_SIZE
+              value: "16"
+            - name: AIBRIX_LLM_KV_CACHE_SOCKET
+              value: /var/run/vineyard.sock
+            - name: AIBRIX_LLM_KV_CACHE_RPC_ENDPOINT
+              value: "llama3-1-8b-kvcache-rpc:9600"
+            - name: VINEYARD_CACHE_ENABLE_ASYNC_UPDATE
+              value: "1"
+            - name: "VINEYARD_CACHE_METRICS_ENABLED"
+              value: "1"
+          volumeMounts:
+            - mountPath: /var/run
+              name: kvcache-socket
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+              cpu: "10"
+              memory: "150G"
+            requests:
+              nvidia.com/gpu: "1"
+              cpu: "10"
+              memory: "150G"
+      volumes:
+        - name: kvcache-socket
+          hostPath:
+            path: /var/run/vineyard-kubernetes/default/llama3-1-8b-kvcache
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    model.aibrix.ai/name: llama3-1-8b
+    prometheus-discovery: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+  name: llama3-1-8b # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
+  namespace: default
+spec:
+  ports:
+    - name: serve
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    model.aibrix.ai/name: llama3-1-8b
+  type: ClusterIP
+
+---
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: KVCache
+metadata:
+  name: llama3-1-8b-kvcache
+  namespace: default
+  annotations:
+    kvcache.orchestration.aibrix.ai/pod-affinity-workload: llama3-1-8b
+spec:
+  replicas: 1
+  service:
+    type: ClusterIP
+    port: 9600
+  cacheSpec:
+    image: aibrix/vineyardd:20241120
+    imagePullPolicy: IfNotPresent
+    cpu: 8000m
+    memory: 150Gi
