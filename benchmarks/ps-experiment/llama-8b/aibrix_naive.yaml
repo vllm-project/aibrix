@@ -62,7 +62,7 @@ spec:
               name: model-hostpath
       containers:
         - name: vllm-openai
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.6.1-edb07092-20250118
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.7.0
           imagePullPolicy: Always
           command:
             - python3
@@ -89,27 +89,7 @@ spec:
           env:
             - name: VLLM_RPC_TIMEOUT
               value: "1000000"
-            - name: VLLM_USE_VINEYARD_CACHE
-              value: "1"
-            - name: VINEYARD_CACHE_CPU_MEM_LIMIT_GB
-              value: "120"
-            - name: AIBRIX_LLM_KV_CACHE
-              value: "1"
-            - name: AIBRIX_LLM_KV_CACHE_KV_CACHE_NS
-              value: "aibrix"
-            - name: AIBRIX_LLM_KV_CACHE_CHUNK_SIZE
-              value: "16"
-            - name: AIBRIX_LLM_KV_CACHE_SOCKET
-              value: /var/run/vineyard.sock
-            - name: AIBRIX_LLM_KV_CACHE_RPC_ENDPOINT
-              value: "llama3-1-8b-kvcache-rpc:9600"
-            - name: VINEYARD_CACHE_ENABLE_ASYNC_UPDATE
-              value: "1"
-            - name: "VINEYARD_CACHE_METRICS_ENABLED"
-              value: "1"
           volumeMounts:
-            - mountPath: /var/run
-              name: kvcache-socket
             - mountPath: /models
               name: model-hostpath
           resources:
@@ -122,9 +102,6 @@ spec:
               cpu: "10"
               memory: "150G"
       volumes:
-        - name: kvcache-socket
-          hostPath:
-            path: /var/run/vineyard-kubernetes/default/llama3-1-8b-kvcache
         - name: model-hostpath
           hostPath:
             path: /root/models
@@ -156,22 +133,3 @@ spec:
   selector:
     model.aibrix.ai/name: llama3-1-8b
   type: ClusterIP
-
----
-apiVersion: orchestration.aibrix.ai/v1alpha1
-kind: KVCache
-metadata:
-  name: llama3-1-8b-kvcache
-  namespace: default
-  annotations:
-    kvcache.orchestration.aibrix.ai/pod-affinity-workload: llama3-1-8b
-spec:
-  replicas: 1
-  service:
-    type: ClusterIP
-    port: 9600
-  cacheSpec:
-    image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vineyardd:20241120
-    imagePullPolicy: IfNotPresent
-    cpu: 8000m
-    memory: 150Gi
