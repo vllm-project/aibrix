@@ -104,21 +104,3 @@ func CloneSelectorAndAddLabel(selector *metav1.LabelSelector, labelKey, labelVal
 
 	return newSelector
 }
-
-// AddLabelToSelector returns a selector with the given key and value added to the given selector's MatchLabels.
-func AddLabelToSelector(selector *metav1.LabelSelector, labelKey, labelValue string) *metav1.LabelSelector {
-	if labelKey == "" {
-		// Don't need to add a label.
-		return selector
-	}
-	if selector.MatchLabels == nil {
-		selector.MatchLabels = make(map[string]string)
-	}
-	selector.MatchLabels[labelKey] = labelValue
-	return selector
-}
-
-// SelectorHasLabel checks if the given selector contains the given label key in its MatchLabels
-func SelectorHasLabel(selector *metav1.LabelSelector, labelKey string) bool {
-	return len(selector.MatchLabels[labelKey]) > 0
-}
