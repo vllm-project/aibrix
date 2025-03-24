@@ -114,7 +114,7 @@ python3 ${aibrix_repo}/benchmarks/client/client.py \
     --model ${target_ai_model} \
     --api-key ${api_key} \
     --output-file-path ${output_jsonl_path} \
-    #--output-dir ${experiment_result_dir} \
+    --streaming
 
 echo "Experiment is done. date: $(date)"
 
