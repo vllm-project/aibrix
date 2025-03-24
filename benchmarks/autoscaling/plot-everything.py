@@ -56,14 +56,12 @@ def parse_experiment_output(lines):
     
     return df, base_time
 
-def get_autoscaler_name(output_dir):
+def get_autoscaler_name(output_dir, workload_type):
     autoscaling = None
     print(f"output_dir: {output_dir}")
     # Extract the last part of the path after the last slash
     filename = output_dir.split("/")[-1]
-
-    # Regular expression to match the autoscaler name
-    match = re.search(r"^[^-]+-[^-]+-([^-]+(?:-[^-]+)*)-\d{8}-\d{6}$", filename)
+    match = re.search(rf"^[^-]+-{workload_type}-([^-]+(?:-[^-]+)*)-\d{{8}}-\d{{6}}$", filename)
     
     if match:
         print(match)
@@ -246,11 +244,10 @@ def plot_combined_visualization(experiment_home_dir, workload_type):
         output_dir = os.path.join(experiment_home_dir, subdir)
         if "pod_logs" in output_dir:
             continue
-        autoscaler = get_autoscaler_name(output_dir)
+        autoscaler = get_autoscaler_name(output_dir, workload_type)
         color = colors[autoscaler]
         marker = '.'
         label_name = f'{autoscaler}'
-
         # Read and parse data
         experiment_output_file = os.path.join(output_dir, "output.jsonl")
         parsed_lines = read_experiment_file(experiment_output_file)
@@ -380,7 +377,7 @@ def plot_combined_visualization(experiment_home_dir, workload_type):
         content = read_stats_file(stat_fn)
         if content:
             stats = parse_performance_stats(content)
-            autoscaler = get_autoscaler_name(output_dir)
+            autoscaler = get_autoscaler_name(output_dir, workload_type)
             title = f"{autoscaler}"
             if autoscaler is None or autoscaler == "none" or autoscaler == "NONE":
                 color_list.append(colors[autoscaler])
