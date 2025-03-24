@@ -6,6 +6,10 @@ kind: Kustomization
 resources:
 - ../../default
 
+patches:
+  - path: dependency_patch.yaml
+  - path: default_patch.yaml
+
 images:
 - name: quay.io/kuberay/operator
   newName: aibrix/kuberay-operator

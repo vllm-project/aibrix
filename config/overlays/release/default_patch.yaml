@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-plugins
+  namespace: aibrix-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: gateway-plugin
+          resources:
+            limits:
+              cpu: 2
+              memory: 8Gi
+            requests:
+              cpu: 2
+              memory: 8Gi
+          env:
+            - name: AIBRIX_GPU_OPTIMIZER_TRACING_FLAG
+              value: "false"
