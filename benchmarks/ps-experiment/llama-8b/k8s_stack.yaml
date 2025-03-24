@@ -109,12 +109,15 @@ spec:
           - "--disable-log-requests"
           - "--swap-space"
           - "0"
+          env:
+            - name: VLLM_RPC_TIMEOUT
+              value: "1000000"
           securityContext:
             runAsNonRoot: false
           imagePullPolicy: IfNotPresent
           ports:
             - name: "container-port"
-              containerPort: 8000          
+              containerPort: 8000
           startupProbe:
             failureThreshold: 60
             httpGet:

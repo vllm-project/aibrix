@@ -266,6 +266,9 @@ spec:
           - "--disable-log-requests"
           - "--swap-space"
           - "0"
+          env:
+            - name: VLLM_RPC_TIMEOUT
+              value: "1000000"
           securityContext:
             runAsNonRoot: false
           imagePullPolicy: IfNotPresent
