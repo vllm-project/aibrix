@@ -264,8 +264,8 @@ func (r *KVCacheReconciler) reconcileMetadataService(ctx context.Context, kvCach
 			},
 			Spec: corev1.ServiceSpec{
 				Ports: []corev1.ServicePort{
-					{Name: "client", Port: 2379, TargetPort: intstr.FromInt(2379), Protocol: corev1.ProtocolTCP},
-					{Name: "server", Port: 2380, TargetPort: intstr.FromInt(2380), Protocol: corev1.ProtocolTCP},
+					{Name: "client", Port: 2379, TargetPort: intstr.FromInt32(2379), Protocol: corev1.ProtocolTCP},
+					{Name: "server", Port: 2380, TargetPort: intstr.FromInt32(2380), Protocol: corev1.ProtocolTCP},
 				},
 				Selector: map[string]string{
 					KVCacheLabelKeyIdentifier:    kvCache.Name,
@@ -296,7 +296,7 @@ func (r *KVCacheReconciler) reconcileMetadataService(ctx context.Context, kvCach
 		},
 		Spec: corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{
-				{Name: "etcd-for-vineyard-port", Port: 2379, TargetPort: intstr.FromInt(2379), Protocol: corev1.ProtocolTCP},
+				{Name: "etcd-for-vineyard-port", Port: 2379, TargetPort: intstr.FromInt32(2379), Protocol: corev1.ProtocolTCP},
 			},
 			Selector: map[string]string{
 				KVCacheLabelKeyIdentifier: kvCache.Name,
@@ -358,7 +358,7 @@ func (r *KVCacheReconciler) reconcileServices(ctx context.Context, kvCache *orch
 		},
 		Spec: corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{
-				{Name: "vineyard-rpc", Port: 9600, TargetPort: intstr.FromInt(9600), Protocol: corev1.ProtocolTCP},
+				{Name: "vineyard-rpc", Port: 9600, TargetPort: intstr.FromInt32(9600), Protocol: corev1.ProtocolTCP},
 			},
 			Selector: map[string]string{
 				KVCacheLabelKeyIdentifier: kvCache.Name,
@@ -549,7 +549,7 @@ func (r *KVCacheReconciler) reconcileDeployment(ctx context.Context, kvCache *or
 								TimeoutSeconds:   1,
 								ProbeHandler: corev1.ProbeHandler{
 									TCPSocket: &corev1.TCPSocketAction{
-										Port: intstr.FromInt(9600),
+										Port: intstr.FromInt32(9600),
 									},
 								},
 							},

@@ -94,7 +94,7 @@ func TestBuildModelAdapterService(t *testing.T) {
 	// Check ports
 	assert.Len(t, service.Spec.Ports, 1)
 	assert.Equal(t, int32(8000), service.Spec.Ports[0].Port)
-	assert.Equal(t, intstr.FromInt(8000), service.Spec.Ports[0].TargetPort)
+	assert.Equal(t, intstr.FromInt32(8000), service.Spec.Ports[0].TargetPort)
 	assert.Equal(t, corev1.ProtocolTCP, service.Spec.Ports[0].Protocol)
 
 	// Check owner references
