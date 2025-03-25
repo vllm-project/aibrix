@@ -23,12 +23,14 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/cache"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
 const (
+	defaultPrefixCacheBlockNumber            = 100
 	defaultPrefixCacheBlockSize              = 16
 	defaultPrefixCacheEvictionInternalInMS   = 50
 	defaultPrefixCacheEvictionDurationInMins = 60
@@ -36,10 +38,26 @@ const (
 
 var (
 	// TODO: add a helper function for get methods.
+	prefixCacheBlockNumber      = getPrefixCacheBlockNumber()
 	prefixCacheBlockSize        = getPrefixCacheBlockSize()
 	prefixCacheEvictionInterval = getPrefixCacheEvictionInterval()
 	prefixCacheEvictionDuration = getPrefixCacheEvictionDuration()
 )
+
+func getPrefixCacheBlockNumber() int {
+	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_BLOCK_NUMBER", "")
+	if value != "" {
+		intValue, err := strconv.Atoi(value)
+		if err != nil || intValue <= 0 {
+			klog.Infof("invalid AIBRIX_PREFIX_CACHE_BLOCK_NUMBER: %s, falling back to default", value)
+		} else {
+			klog.Infof("using AIBRIX_PREFIX_CACHE_BLOCK_NUMBER env value for prefix cache block number: %d", intValue)
+			return intValue
+		}
+	}
+	klog.Infof("using default prefix cache block number: %d", defaultPrefixCacheBlockNumber)
+	return defaultPrefixCacheBlockNumber
+}
 
 func getPrefixCacheBlockSize() int {
 	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_BLOCK_SIZE", "")
@@ -87,40 +105,34 @@ func getPrefixCacheEvictionDuration() time.Duration {
 }
 
 type PrefixHashTable struct {
-	mu     sync.RWMutex
-	blocks map[uint64]Block
-	hash   *xxhash.Digest
-	seed   uint64
+	mu    sync.RWMutex
+	hash  *xxhash.Digest
+	seed  uint64
+	store cache.Store[uint64, Block]
 }
 
 type Block struct {
-	modelToPods    map[string]map[string]time.Time // model_name: map[pod_name]pod_last_access_time
-	lastAccessTime time.Time                       // block_last_access_time
+	modelToPods map[string]map[string]time.Time // model_name: map[pod_name]pod_last_access_time
 }
 
 func NewPrefixHashTable() PrefixCacheIndexer {
 	r := rand.New(rand.NewSource(time.Now().Unix()))
 	seed := r.Uint64()
 	instance := &PrefixHashTable{
-		blocks: map[uint64]Block{},
-		hash:   xxhash.NewWithSeed(seed),
-		seed:   seed,
+		hash: xxhash.NewWithSeed(seed),
+		seed: seed,
+		store: cache.NewLRUStore[uint64, Block](getPrefixCacheBlockNumber(),
+			getPrefixCacheEvictionDuration(),
+			getPrefixCacheEvictionInterval()),
 	}
-
-	ticker := time.NewTicker(prefixCacheEvictionInterval)
-	go func() {
-		for range ticker.C {
-			instance.Evict(time.Now())
-		}
-	}()
 
 	return instance
 }
 
 // returns matchedTokens, unMatchedTokens, matchedPods
 func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, pods []*v1.Pod) ([]byte, []byte, []*v1.Pod) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	var block, lastMatchedBlock Block
 	var ok bool
 	var lastTokenMatchIndex int
@@ -134,8 +146,7 @@ func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, pods []*v1.Po
 		_, _ = c.hash.Write(tokens[i:end])
 		prefixHash := c.hash.Sum64()
 		c.hash.ResetWithSeed(c.seed)
-
-		block, ok = c.blocks[prefixHash]
+		block, ok = c.store.Get(prefixHash)
 		if !ok || len(block.modelToPods[model]) == 0 || len(matchPods(block.modelToPods[model], pods)) == 0 {
 			lastTokenMatchIndex = i
 			break
@@ -143,8 +154,7 @@ func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, pods []*v1.Po
 
 		lastTokenMatchIndex = end
 		lastMatchedBlock = block
-		block.lastAccessTime = time.Now()
-		c.blocks[prefixHash] = block
+		c.store.Put(prefixHash, block)
 	}
 
 	matchedTokens := tokens[0:lastTokenMatchIndex]
@@ -171,7 +181,7 @@ func (c *PrefixHashTable) AddPrefix(unMatchedTokens []byte, model, pod string) {
 		_, _ = c.hash.Write(unMatchedTokens[i:end])
 		prefixHash := c.hash.Sum64()
 		c.hash.ResetWithSeed(c.seed)
-		block, ok := c.blocks[prefixHash]
+		block, ok := c.store.Get(prefixHash)
 		if !ok {
 			block = Block{
 				modelToPods: map[string]map[string]time.Time{
@@ -189,20 +199,7 @@ func (c *PrefixHashTable) AddPrefix(unMatchedTokens []byte, model, pod string) {
 			block.modelToPods[model] = blockPods
 		}
 
-		block.lastAccessTime = time.Now()
-		c.blocks[prefixHash] = block
-	}
-}
-
-func (c *PrefixHashTable) Evict(now time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	for hash, block := range c.blocks {
-		if now.Sub(block.lastAccessTime) > prefixCacheEvictionDuration {
-			delete(c.blocks, hash)
-			klog.InfoS("prefix cache block evicted", "hash", hash)
-		}
+		c.store.Put(prefixHash, block)
 	}
 }
 

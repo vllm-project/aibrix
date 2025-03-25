@@ -17,8 +17,6 @@ limitations under the License.
 package prefixcacheindexer
 
 import (
-	"time"
-
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -32,5 +30,5 @@ type PrefixCacheIndexer interface {
 
 	// Evict is invoked at fixed internal to clean up expired tokens from prefix cache.
 	// TODO: Add max blocks to cache, add LRU policy along with TTL and add performance benchmark tests.
-	Evict(now time.Time)
+	// Evict(now time.Time)
 }
