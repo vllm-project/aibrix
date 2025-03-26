@@ -701,7 +701,7 @@ if __name__ == '__main__':
         from transformers import AutoTokenizer
         from transformers import AutoConfig
         
-        num_layers, num_heads, hidden_size = None
+        num_layers, num_heads, hidden_size = None, None, None
         default_model = 'bert-base-uncased'
         try:
             # can we make this as an application argument.
@@ -714,9 +714,9 @@ if __name__ == '__main__':
                 clean_up_tokenization_spaces=True)
             config = AutoConfig.from_pretrained(token_model)
             # Extract required details
-            num_layers = config.get("num_hidden_layers", config.get("n_layers"))
-            num_heads = config.get("num_attention_heads", config.get("n_heads"))
-            hidden_size = config.get("hidden_size", config.get("dim"))
+            num_layers = config.num_hidden_layers
+            num_heads = config.num_attention_heads
+            hidden_size = config.hidden_size
         except Exception as e:
             logger.error(f"Failed to initialize tokenizer, will use default tokenizer model: {e}")
             tokenizer = AutoTokenizer.from_pretrained(
@@ -725,9 +725,9 @@ if __name__ == '__main__':
                 clean_up_tokenization_spaces=True)
             config = AutoConfig.from_pretrained(default_model)
             # Extract required details
-            num_layers = config.get("num_hidden_layers", config.get("n_layers"))
-            num_heads = config.get("num_attention_heads", config.get("n_heads"))
-            hidden_size = config.get("hidden_size", config.get("dim"))
+            num_layers = config.num_hidden_layers
+            num_heads = config.num_attention_heads
+            hidden_size = config.hidden_size
 
         # TODO: check whether able to use argparse to build SimulationConfig
         simulator = Simulator(SimulationConfig.create_from_cli_args())
