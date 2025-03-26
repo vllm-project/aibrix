@@ -34,7 +34,7 @@ func Test_PrefixHashTableE2E(t *testing.T) {
 	r := rand.New(rand.NewSource(time.Now().Unix()))
 	seed := r.Uint64()
 	cache := PrefixHashTable{
-		store: cache.NewLRUStore[uint64, Block](defaultPrefixCacheBlockNumber, 20*time.Second, 10*time.Second),
+		store: cache.NewLRUStore[uint64, Block](defaultPrefixCacheBlockNumber, 20*time.Second, 2*time.Second),
 		hash:  xxhash.NewWithSeed(seed),
 		seed:  seed,
 	}

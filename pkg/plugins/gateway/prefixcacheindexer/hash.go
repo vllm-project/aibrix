@@ -30,10 +30,10 @@ import (
 )
 
 const (
-	defaultPrefixCacheBlockNumber            = 100
-	defaultPrefixCacheBlockSize              = 16
-	defaultPrefixCacheEvictionInternalInMS   = 50
-	defaultPrefixCacheEvictionDurationInMins = 60
+	defaultPrefixCacheBlockNumber               = 100
+	defaultPrefixCacheBlockSize                 = 16
+	defaultPrefixCacheEvictionInternalInMS      = 1000 // 1 second
+	defaultPrefixCacheEvictionDurationInSeconds = 1200 // 20 minutes
 )
 
 var (
@@ -100,8 +100,8 @@ func getPrefixCacheEvictionDuration() time.Duration {
 			return time.Duration(intValue) * time.Minute
 		}
 	}
-	klog.Infof("using default prefix cache eviction duration: %d mins", defaultPrefixCacheEvictionDurationInMins)
-	return defaultPrefixCacheEvictionDurationInMins * time.Minute
+	klog.Infof("using default prefix cache eviction duration: %d mins", defaultPrefixCacheEvictionDurationInSeconds)
+	return defaultPrefixCacheEvictionDurationInSeconds * time.Minute
 }
 
 type PrefixHashTable struct {
@@ -131,8 +131,8 @@ func NewPrefixHashTable() PrefixCacheIndexer {
 
 // returns matchedTokens, unMatchedTokens, matchedPods
 func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, pods []*v1.Pod) ([]byte, []byte, []*v1.Pod) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Lock()
 	var block, lastMatchedBlock Block
 	var ok bool
 	var lastTokenMatchIndex int

@@ -22,6 +22,7 @@ import (
 	"time"
 )
 
+// TODO: add performance benchmark tests
 func TestLRUStore_PutAndGet(t *testing.T) {
 	store := NewLRUStore[string, string](2, 5*time.Second, 1*time.Second)
 

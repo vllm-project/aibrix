@@ -62,14 +62,12 @@ func (e *LRUStore[K, V]) Put(key K, value V) bool {
 	defer e.Unlock()
 
 	if entry, exists := e.freeTable[key]; exists {
-		// Update existing entry
 		entry.lastAccessTime = time.Now()
 		entry.Value = value
 		e.lruList.moveToHead(entry)
 		return false
 	}
 
-	// Add new entry
 	entry := &entry[K, V]{Key: key, Value: value, lastAccessTime: time.Now()}
 	e.lruList.addToHead(entry)
 	e.freeTable[key] = entry
