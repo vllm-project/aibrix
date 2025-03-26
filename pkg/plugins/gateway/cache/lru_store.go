@@ -49,11 +49,8 @@ func NewLRUStore[K comparable, V any](cap int, ttl, interval time.Duration) *LRU
 func (e *LRUStore[K, V]) startEviction() {
 	ticker := time.NewTicker(e.interval)
 	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			e.evict(time.Now())
-		}
+	for range ticker.C {
+		e.evict(time.Now())
 	}
 }
 
