@@ -2,7 +2,7 @@ import argparse
 import numpy as np
 from transformers import AutoTokenizer
 from typing import Dict, Any
-from synthetic_prompt_generator import generate_synthetic_prompt
+from synthetic_prompt import generate_synthetic_prompt
 from util import save_dataset_jsonl
 
 mean = 10   # Example mean
