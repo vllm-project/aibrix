@@ -34,8 +34,7 @@ var (
 )
 
 func init() {
-	router, err := NewLeastRequestRouter()
-	Register(RouterLeastRequest, func() (Router, error) { return router, err })
+	RegisterDelayedConstructor(RouterLeastRequest, NewLeastRequestRouter)
 }
 
 type leastRequestRouter struct {
@@ -53,7 +52,7 @@ func NewLeastRequestRouter() (Router, error) {
 	}, nil
 }
 
-func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
+func (r leastRequestRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx *RoutingContext) (string, error) {
 	var targetPodIP string
 	minCount := math.MaxFloat64
 

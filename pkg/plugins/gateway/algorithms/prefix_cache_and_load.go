@@ -35,8 +35,7 @@ var (
 )
 
 func init() {
-	router, err := NewPrefixCacheAndLoadRouter()
-	Register(RouterPrefixCacheAndLoad, func() (Router, error) { return router, err })
+	RegisterDelayedConstructor(RouterPrefixCacheAndLoad, NewPrefixCacheAndLoadRouter)
 }
 
 const (
@@ -438,7 +437,7 @@ func (p *prefixCacheAndLoadRouter) updatePodSet(readyPods []*v1.Pod) {
 	}
 }
 
-func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
+func (p *prefixCacheAndLoadRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx *RoutingContext) (string, error) {
 	readyPods := utils.FilterReadyPods(pods)
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")

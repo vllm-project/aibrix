@@ -33,8 +33,7 @@ var (
 )
 
 func init() {
-	router, err := NewLeastKvCacheRouter()
-	Register(RouterLeastKvCache, func() (Router, error) { return router, err })
+	RegisterDelayedConstructor(RouterLeastKvCache, NewLeastKvCacheRouter)
 }
 
 type leastKvCacheRouter struct {
@@ -52,7 +51,7 @@ func NewLeastKvCacheRouter() (Router, error) {
 	}, nil
 }
 
-func (r leastKvCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
+func (r leastKvCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx *RoutingContext) (string, error) {
 	var targetPodIP string
 	minKvCache := math.MaxFloat64
 

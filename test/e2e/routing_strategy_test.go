@@ -29,14 +29,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestStrategyRequiresCache(t *testing.T) {
+	req := "this is test message"
+	targetPod := getTargetPodFromChatCompletion(t, req, "least-request")
+	assert.NotEmpty(t, targetPod, "least request target pod is empty")
+}
+
 func TestPrefixCacheModelInference(t *testing.T) {
 	// #1 request - cache first time request
 	req := "this is first message"
-	targetPod := getTargetPodFromChatCompletion(t, req)
+	targetPod := getTargetPodFromChatCompletion(t, req, "prefix-cache")
 	fmt.Printf("req: %s, target pod: %v\n", req, targetPod)
 
 	// #2 request - reuse target pod from first time
-	targetPod2 := getTargetPodFromChatCompletion(t, req)
+	targetPod2 := getTargetPodFromChatCompletion(t, req, "prefix-cache")
 	fmt.Printf("req: %s, target pod: %v\n", req, targetPod2)
 	assert.Equal(t, targetPod, targetPod2)
 
@@ -44,7 +50,7 @@ func TestPrefixCacheModelInference(t *testing.T) {
 	var count int
 	for count < 5 {
 		generateMessage := fmt.Sprintf("this is %v message", rand.Intn(1000))
-		targetPod3 := getTargetPodFromChatCompletion(t, generateMessage)
+		targetPod3 := getTargetPodFromChatCompletion(t, generateMessage, "prefix-cache")
 		fmt.Printf("target pod from #3 request: %v\n", targetPod3)
 		if targetPod != targetPod3 {
 			break
@@ -55,9 +61,9 @@ func TestPrefixCacheModelInference(t *testing.T) {
 	assert.NotEqual(t, 5, count)
 }
 
-func getTargetPodFromChatCompletion(t *testing.T, message string) string {
+func getTargetPodFromChatCompletion(t *testing.T, message string, strategy string) string {
 	var dst *http.Response
-	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "prefix-cache", option.WithResponseInto(&dst))
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, strategy, option.WithResponseInto(&dst))
 
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{

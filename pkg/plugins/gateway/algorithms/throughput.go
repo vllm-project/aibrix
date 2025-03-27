@@ -34,8 +34,7 @@ var (
 )
 
 func init() {
-	router, err := NewThroughputRouter()
-	Register(RouterThroughput, func() (Router, error) { return router, err })
+	RegisterDelayedConstructor(RouterThroughput, NewThroughputRouter)
 }
 
 type throughputRouter struct {
@@ -53,7 +52,7 @@ func NewThroughputRouter() (Router, error) {
 	}, nil
 }
 
-func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
+func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx *RoutingContext) (string, error) {
 	var targetPodIP string
 	minCount := math.MaxFloat64
 

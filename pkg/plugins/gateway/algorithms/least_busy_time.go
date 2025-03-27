@@ -32,8 +32,7 @@ var (
 )
 
 func init() {
-	router, err := NewLeastBusyTimeRouter()
-	Register(RouterLeastBusyTime, func() (Router, error) { return router, err })
+	RegisterDelayedConstructor(RouterLeastBusyTime, NewLeastBusyTimeRouter)
 }
 
 type leastBusyTimeRouter struct {
@@ -51,7 +50,7 @@ func NewLeastBusyTimeRouter() (Router, error) {
 	}, nil
 }
 
-func (r leastBusyTimeRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
+func (r leastBusyTimeRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx *RoutingContext) (string, error) {
 	var targetPodIP string
 	minBusyTimeRatio := math.MaxFloat64 // <= 1 in general
 

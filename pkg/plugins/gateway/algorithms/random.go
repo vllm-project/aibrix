@@ -29,8 +29,7 @@ var (
 )
 
 func init() {
-	router, err := NewRandomRouter()
-	Register(RouterRandom, func() (Router, error) { return router, err })
+	RegisterDelayedConstructor(RouterRandom, NewRandomRouter)
 }
 
 type randomRouter struct {
@@ -40,7 +39,7 @@ func NewRandomRouter() (Router, error) {
 	return randomRouter{}, nil
 }
 
-func (r randomRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
+func (r randomRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx *RoutingContext) (string, error) {
 	var targetPodIP string
 	if len(pods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")

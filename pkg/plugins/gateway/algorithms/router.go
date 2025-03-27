@@ -20,6 +20,7 @@ import (
 	"context"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 type Algorithms string
@@ -35,12 +36,12 @@ type RoutingContext struct {
 // Router defines the interface for routing logic to select target pods.
 type Router interface {
 	// Route returns the target pod
-	Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error)
+	Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx *RoutingContext) (string, error)
 }
 
 // Validate validates if user provided routing routers is supported by gateway
 func Validate(algorithms Algorithms) bool {
-	_, ok := routerStores[algorithms]
+	_, ok := routerRegistry[algorithms]
 	return ok
 }
 
@@ -53,11 +54,45 @@ func Select(algorithms Algorithms) routerFunc {
 }
 
 func Register(algorithms Algorithms, router routerFunc) {
+	if router == nil {
+		return
+	}
+
 	routerRegistry[algorithms] = router
-	routerStores[algorithms] = struct{}{}
+	klog.Infof("Registered router for %s", algorithms)
+}
+
+func RegisterDelayed(algorithms Algorithms, router routerDelayedFunc) {
+	routerDelayedRegistry[algorithms] = router
+}
+
+func RegisterDelayedConstructor(algorithms Algorithms, router routerConstructor) {
+	routerDelayedRegistry[algorithms] = func() routerFunc {
+		router, err := router()
+		if err != nil {
+			klog.Errorf("Failed to construct router for %s: %v", algorithms, err)
+			return nil
+		}
+		return func(_ *RoutingContext) (Router, error) {
+			return router, nil
+		}
+	}
+}
+
+func Init() {
+	for key, delayed := range routerDelayedRegistry {
+		Register(key, delayed())
+	}
 }
 
 var routerRegistry = map[Algorithms]routerFunc{}
-var routerStores = map[Algorithms]any{}
+var routerDelayedRegistry = map[Algorithms]routerDelayedFunc{}
 
-type routerFunc func() (Router, error)
+// routerConstructor is used to construct router instance.
+type routerConstructor func() (Router, error)
+
+// routerFunc is used to get router instance.
+type routerFunc func(*RoutingContext) (Router, error)
+
+// routerDelayedFunc is used to get router instance in delayed way.
+type routerDelayedFunc func() routerFunc

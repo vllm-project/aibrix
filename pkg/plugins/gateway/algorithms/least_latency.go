@@ -33,8 +33,7 @@ var (
 )
 
 func init() {
-	router, err := NewLeastExpectedLatencyRouter()
-	Register(RouterLeastLatency, func() (Router, error) { return router, err })
+	RegisterDelayedConstructor(RouterLeastLatency, NewLeastExpectedLatencyRouter)
 }
 
 type leastExpectedLatencyRouter struct {
@@ -52,7 +51,7 @@ func NewLeastExpectedLatencyRouter() (Router, error) {
 	}, nil
 }
 
-func (r leastExpectedLatencyRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
+func (r leastExpectedLatencyRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx *RoutingContext) (string, error) {
 	var targetPodIP string
 	minExpectedLatency := math.MaxFloat64
 
