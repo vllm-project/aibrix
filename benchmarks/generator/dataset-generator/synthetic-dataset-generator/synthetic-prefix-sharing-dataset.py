@@ -8,7 +8,7 @@ import argparse
 from tqdm import tqdm
 from transformers import AutoTokenizer
 from scipy.stats import truncnorm
-from synthetic_prompt_generator import generate_synthetic_prompt, adjust_prompt_length
+from synthetic_prompt import generate_synthetic_prompt, adjust_prompt_length
 from util import save_workload_jsonl, save_dataset_jsonl
 
 
