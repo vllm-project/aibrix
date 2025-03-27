@@ -139,7 +139,7 @@ def generate_synthetic_prompt(tokenizer, target_token_length):
         tokenized = tokenizer.encode(filled_template)[:target_token_length]
         filled_template = tokenizer.decode(tokenized, skip_special_tokens=True)
     
-    return filled_template
+    return filled_template, token_count
 
 
 def adjust_prompt_length(tokenizer, prompt, target_token_length):

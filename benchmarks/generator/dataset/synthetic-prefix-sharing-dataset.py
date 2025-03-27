@@ -9,6 +9,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 from scipy.stats import truncnorm
 from synthetic_prompt_generator import generate_synthetic_prompt, adjust_prompt_length
+from util import save_workload_jsonl, save_dataset_jsonl
 
 
 def generate_unique_prefix(base_text, index):
@@ -443,37 +444,6 @@ def generate_dataset_from_config(tokenizer, configs):
         "overall_prefix_proportion": overall_prefix_proportion
     }
 
-
-
-def save_workload_jsonl(workload_data, output_file):
-    """
-    Save the combined workload to a JSONL file
-    
-    Args:
-        workload_data: Dictionary with prompts and stats
-        output_file: Output file path
-    """
-    with open(output_file, 'w') as f:
-        for item in workload_data["prompts"]:
-            entry = {
-                "timestamp": item["timestamp"],
-                "requests": [
-                    {
-                        "Prompt Length": item["token_count"],  # Use token count instead of character length
-                        "Output Length": 8,  # Fixed value as per example
-                        "prompt": item["prompt"],
-                        "prefix_group": item["prefix_group"],  # Add prefix group info for analysis
-                        "config_id": item["config_id"]
-                    }
-                ]
-            }
-            f.write(json.dumps(entry) + '\n')
-            
-def save_dataset_jsonl(workload_data, output_file):
-    with open(output_file, 'w') as f:
-        for prompt in workload_data:
-            f.write(json.dumps(prompt) + '\n')
-
 def save_stats(workload_data, stats_file):
     """
     Save workload statistics to a JSON file
@@ -524,7 +494,7 @@ if __name__ == "__main__":
     random.seed(0)
     np.random.seed(0)
     parser = argparse.ArgumentParser(description="Configure workload parameters.")
-    
+    parser.add_argument("--tokenizer", type=str, default="deepseek-ai/deepseek-llm-7b-chat", help="Name of the tokenizer.")
     parser.add_argument("--app-name", type=str, default="app", help="Name of the application.")
     parser.add_argument("--prompt-length", type=int, default=3871, help="Length of the prompt.")
     parser.add_argument("--prompt-length-std", type=int, default=1656, help="Standard deviation of the prompt length.")
@@ -600,7 +570,7 @@ if __name__ == "__main__":
     
     # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
-        "deepseek-ai/deepseek-llm-7b-chat", 
+        args.tokenizer, 
         legacy=True,
         model_max_length=4096,  # Increased to handle longer prefixes
         padding_side="right",
