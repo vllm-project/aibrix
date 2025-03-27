@@ -98,6 +98,14 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API) *Store {
 	}
 }
 
+// InitForTest initializes the cache store for testing purposes
+func InitForTest() *Store {
+	once.Do(func() {
+		store = New(nil, nil)
+	})
+	return store
+}
+
 // Init initializes the cache store (singleton pattern)
 // Parameters:
 //

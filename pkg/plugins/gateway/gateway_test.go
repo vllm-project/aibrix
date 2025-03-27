@@ -22,6 +22,7 @@ import (
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/cache"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 )
 
@@ -57,7 +58,8 @@ func Test_ValidateRoutingStrategy(t *testing.T) {
 			expectedValidation: false,
 		},
 	}
-
+	cache.InitForTest()
+	routing.Init()
 	for _, tt := range tests {
 		currentValidation := routing.Validate(routing.Algorithms(tt.routingStrategy))
 		assert.Equal(t, tt.expectedValidation, currentValidation, tt.message)
