@@ -561,6 +561,13 @@ func (r *KVCacheReconciler) reconcileDeployment(ctx context.Context, kvCache *or
 						},
 					},
 					Affinity: &affinity,
+					Tolerations: []corev1.Toleration{
+						{
+							Key:      "nvidia.com/gpu",
+							Operator: corev1.TolerationOpExists,
+							Effect:   corev1.TaintEffectNoSchedule,
+						},
+					},
 					Volumes: []corev1.Volume{
 						{
 							Name: "vineyard-socket",
