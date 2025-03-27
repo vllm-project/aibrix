@@ -18,7 +18,6 @@ package scheduling
 
 import (
 	"context"
-	"errors"
 	"math/rand"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
@@ -37,10 +36,6 @@ func NewRandomScheduler(c cache.Cache) Scheduler {
 }
 
 func (r randomScheduler) SelectPod(ctx context.Context, model string, pods []v1.Pod) (*v1.Pod, error) {
-	if len(pods) == 0 {
-		return nil, errors.New("no pods to schedule model adapter")
-	}
-
 	idx := rand.Intn(len(pods))
 	selectedPod := pods[idx]
 
