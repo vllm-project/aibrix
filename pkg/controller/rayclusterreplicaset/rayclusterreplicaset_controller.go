@@ -176,12 +176,18 @@ func (r *RayClusterReplicaSetReconciler) scaleUp(ctx context.Context, replicaset
 func (r *RayClusterReplicaSetReconciler) scaleDown(ctx context.Context, replicaset *orchestrationv1alpha1.RayClusterReplicaSet, clusters []rayclusterv1.RayCluster, diff int) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, diff)
+	// limit the number of concurrent deletions goroutine.
+	// todo: make this configurable?
+	const maxConcurrency = 10
+	semaphore := make(chan struct{}, maxConcurrency)
 
 	for i := 0; i < diff; i++ {
 		cluster := clusters[i]
+		semaphore <- struct{}{}
 		wg.Add(1)
 		go func(cluster rayclusterv1.RayCluster) {
 			defer wg.Done()
+			defer func() { <-semaphore }() // release the semaphore
 			if err := r.Delete(ctx, &cluster); err != nil {
 				if !apierrors.IsNotFound(err) {
 					errCh <- fmt.Errorf("failed to delete pod: %w", err)
@@ -192,13 +198,18 @@ func (r *RayClusterReplicaSetReconciler) scaleDown(ctx context.Context, replicas
 	}
 
 	wg.Wait()
+	close(errCh)
 
-	select {
-	case err := <-errCh:
-		return err
-	default:
-		return nil
+	// aggregate errors if any.
+	var aggregatedErrors []error
+	for err := range errCh {
+		aggregatedErrors = append(aggregatedErrors, err)
 	}
+
+	if len(aggregatedErrors) > 0 {
+		return fmt.Errorf("encountered %d errors during deletion: %v", len(aggregatedErrors), aggregatedErrors)
+	}
+	return nil
 }
 
 // updateReplicaSetStatus attempts to update the Status.Replicas of the given ReplicaSet, with a single GET/PUT retry.
