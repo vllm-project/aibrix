@@ -5,8 +5,6 @@ from typing import Dict, Any
 from synthetic_prompt import generate_synthetic_prompt
 from util import save_dataset_jsonl
 
-mean = 10   # Example mean
-std_dev = 2  # Example standard deviation
 
 def sample_normal(mean: int, std: int):
     sample = np.random.normal(mean, std)
@@ -22,23 +20,21 @@ def generate_synthetic(args):
         truncation_side="right",
         use_fast=True
     )
-    flat_prompts_data = []
+    sessioned_prompts = []
     for session_id in range(0, num_sessions):
         num_turns = sample_normal(args.num_turns_mean, args.num_turns_std)
+        flat_prompts_data = []
         for _ in range(0, num_turns):
             prompt_length = sample_normal(args.prompt_length_mean, args.prompt_length_std)
             prompt, token_count = generate_synthetic_prompt(tokenizer, prompt_length)
             # Process the prompt as needed
-            flat_prompts_data.append({
-                "prompt": prompt,
-                "token_count": token_count,
-                "prefix_group": session_id,
-                "config_id": 0
-            })
+            flat_prompts_data.append(prompt)
+        sessioned_prompts.append({
+            "session_id": session_id,
+            "prompts": flat_prompts_data,
+        })
     save_dataset_jsonl(flat_prompts_data, f"multiturn-sessions{args.num_sessions_mean}-turns{args.num_turns_mean}-len{args.prompt_length_mean}-dataset.jsonl")
         
-
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Configure workload parameters.")
