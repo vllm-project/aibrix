@@ -6,17 +6,42 @@ import openai
 import json
 import io
 import traceback
+import threading
+from queue import Queue
+from concurrent.futures import ThreadPoolExecutor
 
 
 from typing import List
 from utils import (load_workload, wrap_prompt_as_chat_message)
 
 logging.basicConfig(level=logging.INFO)
+task_queue = Queue()
+thread_pool_size = 8
+
+def worker(client, model, send_request_func, output_file):
+    """Worker function to run an asyncio event loop in a separate thread."""
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    loop = asyncio.get_event_loop()
+    while True:
+        task = task_queue.get()
+        if task is None:  # Stop signal
+            break
+        loop.run_until_complete(send_request_func(client, model, *task))
+
+
+def start_worker_threads(num_threads, client, model, send_request_func, output_file):
+    """Start multiple threads, each running an event loop for handling tasks."""
+    threads = []
+    for _ in range(num_threads):
+        thread = threading.Thread(target=worker, args=(client, model, send_request_func, output_file), daemon=True)
+        thread.start()
+        threads.append(thread)
+    return threads
+
 
 
 async def send_request_streaming(client: openai.AsyncOpenAI,
                              model: str,
-                             endpoint: str,
                              prompt: str,
                              output_file: str,
                              request_id: int):
@@ -24,7 +49,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
     first_response_time = None
     target_pod = ""
     try:
-        logging.info(f"Request {request_id}: Starting streaming request to {endpoint}")
+        logging.info(f"Request {request_id}: Starting streaming request")
         response_stream = await client.chat.completions.create(
             model=model,
             messages=prompt,
@@ -113,8 +138,11 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
         output_file.flush()
         return error_result
 
-async def benchmark_streaming(client: openai.AsyncOpenAI,
+async def benchmark_streaming(api_key: str,
                               endpoint: str,
+                              max_retries: int,
+                              timeout: float,
+                              routing_strategy: str,
                               load_struct: List,
                               output_file: io.TextIOWrapper,
                               model: str,
@@ -123,6 +151,10 @@ async def benchmark_streaming(client: openai.AsyncOpenAI,
     batch_tasks = []
     base_time = time.time()
     num_requests = 0
+    threads = []
+    for _ in range(0, thread_pool_size):
+        client = create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
+        threads.extend(start_worker_threads(1, client, model, send_request_streaming, output_file))
     for requests_dict in load_struct:
         ts = int(requests_dict["timestamp"])
         requests = requests_dict["requests"]
@@ -133,18 +165,16 @@ async def benchmark_streaming(client: openai.AsyncOpenAI,
             await asyncio.sleep(target_time - cur_time)
         formatted_prompts = [wrap_prompt_as_chat_message(request["prompt"]) for request in requests]
         for i in range(len(requests)):
-            task = asyncio.create_task(
-                send_request_streaming(client = client,
-                                       model = model,
-                                       endpoint = endpoint,
-                                       prompt = formatted_prompts[i],
-                                       output_file = output_file,
-                                       request_id = request_id)
-            )
+            task_queue.put((formatted_prompts[i], output_file, request_id))
             request_id += 1
-            batch_tasks.append(task)
         num_requests += len(requests)
-    await asyncio.gather(*batch_tasks)
+    task_queue.join()
+    # Stop all worker threads
+    for _ in threads:
+        task_queue.put(None)
+
+    for thread in threads:
+        thread.join()
     logging.warning(f"All {num_requests} requests completed for deployment.")
 
 # Asynchronous request handler
@@ -216,8 +246,11 @@ async def send_request_batch(client: openai.AsyncOpenAI,
         return error_result
 
 
-async def benchmark_batch(client: openai.AsyncOpenAI,
+async def benchmark_batch(api_key: str,
                           endpoint: str,
+                          max_retries: int,
+                          timeout: float,
+                          routing_strategy: str,
                           load_struct: List,
                           output_file: io.TextIOWrapper,
                           model: str,
@@ -226,6 +259,10 @@ async def benchmark_batch(client: openai.AsyncOpenAI,
     batch_tasks = []
     base_time = time.time()
     num_requests = 0
+    threads = []
+    for _ in range(0, thread_pool_size):
+        client = create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
+        threads.extend(start_worker_threads(1, client, model, send_request_batch, output_file))
     for requests_dict in load_struct:
         ts = int(requests_dict["timestamp"])
         requests = requests_dict["requests"]
@@ -233,47 +270,52 @@ async def benchmark_batch(client: openai.AsyncOpenAI,
         target_time = base_time + ts / 1000.0
         logging.warning(f"Prepare to launch {len(requests)} batched tasks after {target_time - cur_time}")
         if target_time > cur_time:
-            await asyncio.sleep(target_time - cur_time)
+            await asyncio.sleep((target_time - cur_time)/4)
         formatted_prompts = [wrap_prompt_as_chat_message(request["prompt"]) for request in requests]
         for i in range(len(requests)):
-            task = asyncio.create_task(
-                send_request_batch(client = client,
-                                   model = model,
-                                   endpoint = endpoint,
-                                   formatted_prompt = formatted_prompts[i],
-                                   output_file = output_file,
-                                   request_id = request_id)
-            )
-            request_id += 1
-            batch_tasks.append(task)
+            task_queue.put((formatted_prompts[i], output_file, request_id))
         num_requests += len(requests)
     await asyncio.gather(*batch_tasks)
     logging.warning(f"All {num_requests} requests completed for deployment.")
 
+def create_client(api_key: str,
+                  endpoint: str,
+                  max_retries: int,
+                  timeout: float,
+                  routing_strategy: str,
+                  ):
+    if args.api_key is None:
+        client = openai.AsyncOpenAI(
+            base_url=args.endpoint + "/v1",
+            max_retries=max_retries,
+            timeout=timeout,
+        )
+    else:
+        client = openai.AsyncOpenAI(
+            api_key=args.api_key,
+            base_url=args.endpoint + "/v1",
+            max_retries=max_retries,
+            timeout=timeout,
+        )
+    if routing_strategy is not None:
+        client = client.with_options(
+            default_headers={"routing-strategy": routing_strategy}
+        )
+    return client
 
 def main(args):
     logging.info(f"Starting benchmark on endpoint {args.endpoint}")
     with open(args.output_file_path, 'w', encoding='utf-8') as output_file:
         load_struct = load_workload(args.workload_path)
-        if args.api_key is None:
-            client = openai.AsyncOpenAI(
-                base_url=args.endpoint + "/v1",
-            )
-        else:
-            client = openai.AsyncOpenAI(
-                api_key=args.api_key,
-                base_url=args.endpoint + "/v1",
-            )
-        if args.routing_strategy is not None:
-            client = client.with_options(
-                default_headers={"routing-strategy": args.routing_strategy}
-            )
         if not args.streaming:
             logging.info("Using batch client")
             start_time = time.time()
             asyncio.run(benchmark_batch(
-                client = client,
-                endpoint=args.endpoint,
+                api_key = args.api_key,
+                endpoint = args.endpoint,
+                max_retries = 0,
+                timeout = 60.0,
+                routing_strategy = args.routing_strategy,
                 load_struct=load_struct,
                 output_file=output_file,
                 model=args.model,
@@ -284,8 +326,11 @@ def main(args):
             logging.info("Using streaming client")
             start_time = time.time()
             asyncio.run(benchmark_streaming(
-                client = client,
-                endpoint=args.endpoint,
+                api_key = args.api_key,
+                endpoint = args.endpoint,
+                max_retries = 0,
+                timeout = 60.0,
+                routing_strategy = args.routing_strategy,
                 load_struct=load_struct,
                 output_file=output_file,
                 model=args.model,
@@ -302,7 +347,7 @@ if __name__ == "__main__":
     parser.add_argument("--api-key", type=str, default=None, help="API key to the service. ")
     parser.add_argument('--output-file-path', type=str, default="output.jsonl")
     parser.add_argument("--streaming", action="store_true", help="Use streaming client.")
-    parser.add_argument("--routing-strategy", type=str, required=False, default=None, help="Routing strategy to use.")
+    parser.add_argument("--routing-strategy", type=str, required=False, default="random", help="Routing strategy to use.")
 
     args = parser.parse_args()
     main(args)
