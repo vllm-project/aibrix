@@ -19,12 +19,23 @@ package config
 type RuntimeConfig struct {
 	EnableRuntimeSidecar bool
 	DebugMode            bool
+	ModelAdapterOpt      ModelAdapterOpt
+}
+
+// ModelAdapterOpt contains options for model adapter controller.
+type ModelAdapterOpt struct {
+	// SchedulerPolicyName is the name of the scheduler policy
+	// to use for model adapter controller.
+	SchedulerPolicyName string
 }
 
 // NewRuntimeConfig creates a new RuntimeConfig with specified settings.
-func NewRuntimeConfig(enableRuntimeSidecar, debugMode bool) RuntimeConfig {
+func NewRuntimeConfig(enableRuntimeSidecar, debugMode bool, schedulerPolicyName string) RuntimeConfig {
 	return RuntimeConfig{
 		EnableRuntimeSidecar: enableRuntimeSidecar,
 		DebugMode:            debugMode,
+		ModelAdapterOpt: ModelAdapterOpt{
+			SchedulerPolicyName: schedulerPolicyName,
+		},
 	}
 }

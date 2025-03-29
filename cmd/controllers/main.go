@@ -49,6 +49,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/controller"
+	"github.com/vllm-project/aibrix/pkg/controller/modeladapter"
 	apiwebhook "github.com/vllm-project/aibrix/pkg/webhook"
 	//+kubebuilder:scaffold:imports
 )
@@ -108,6 +109,7 @@ func main() {
 	var leaderElectionResourceLock string
 	var leaderElectionId string
 	var controllers string
+	var modeladapterSchedulerPolicy string
 	var enableRuntimeSidecar bool
 	var debugMode bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -131,6 +133,7 @@ func main() {
 	flag.StringVar(&leaderElectionId, "leader-election-id", "aibrix-controller-manager",
 		"leader-election-id determines the name of the resource that leader election will use for holding the leader lock, Default is aibrix-controller-manager.")
 	flag.StringVar(&controllers, "controllers", "*", "Comma-separated list of controllers to enable or disable, default value is * which indicates all controllers should be started.")
+	flag.StringVar(&modeladapterSchedulerPolicy, "model-adapter-scheduler-policy", modeladapter.DefaultModelAdapterSchedulerPolicy, "model-adapter-scheduler-policy is the name of the scheduler policy to use for model adapter controller.")
 	flag.BoolVar(&enableRuntimeSidecar, "enable-runtime-sidecar", false,
 		"If set, Runtime management API will be enabled for the metrics, model adapter and model downloading interactions, control plane will not talk to engine directly anymore")
 	flag.BoolVar(&debugMode, "debug-mode", false,
@@ -173,7 +176,7 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	runtimeConfig := config.NewRuntimeConfig(enableRuntimeSidecar, debugMode)
+	runtimeConfig := config.NewRuntimeConfig(enableRuntimeSidecar, debugMode, modeladapterSchedulerPolicy)
 
 	webhookServer := webhook.NewServer(webhook.Options{
 		TLSOpts: tlsOpts,

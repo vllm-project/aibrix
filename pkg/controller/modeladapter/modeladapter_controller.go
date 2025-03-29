@@ -96,13 +96,15 @@ const (
 	LoadLoraRuntimeAPIPath   = "/v1/lora_adapter/load"
 	UnloadLoraAdapterPath    = "/v1/unload_lora_adapter"
 	UnloadLoraRuntimeAPIPath = "/v1/lora_adapter/unload"
+
+	// DefaultModelAdapterSchedulerPolicy is the default scheduler policy for ModelAdapter Controller.
+	DefaultModelAdapterSchedulerPolicy = "leastAdapters"
 )
 
 var (
-	controllerKind                     = modelv1alpha1.GroupVersion.WithKind("ModelAdapter")
-	controllerName                     = "model-adapter-controller"
-	defaultModelAdapterSchedulerPolicy = "leastAdapters"
-	defaultRequeueDuration             = 3 * time.Second
+	controllerKind         = modelv1alpha1.GroupVersion.WithKind("ModelAdapter")
+	controllerName         = "model-adapter-controller"
+	defaultRequeueDuration = 3 * time.Second
 )
 
 type URLConfig struct {
@@ -152,8 +154,7 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		klog.Fatal(err)
 	}
 
-	// TODO: policy should be configured by users
-	scheduler, err := scheduling.NewScheduler(defaultModelAdapterSchedulerPolicy, c)
+	scheduler, err := scheduling.NewScheduler(runtimeConfig.ModelAdapterOpt.SchedulerPolicyName, c)
 	if err != nil {
 		return nil, err
 	}
