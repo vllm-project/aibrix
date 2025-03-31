@@ -79,7 +79,28 @@ func (sm *SyncMap[K, V]) Values() []V {
 }
 
 func (sm *SyncMap[K, V]) Store(key K, value V) {
-	sm.LoadOrStore(key, value)
+	sm.Swap(key, value)
+}
+
+func (sm *SyncMap[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
+	if deleted = sm.m.CompareAndDelete(key, old); deleted {
+		atomic.AddInt32(&sm.len, -1)
+	}
+	return
+}
+
+func (sm *SyncMap[K, V]) CompareAndSwap(key K, old V, new V) bool {
+	return sm.m.CompareAndSwap(key, old, new)
+}
+
+func (sm *SyncMap[K, V]) Swap(key K, value V) (V, bool) {
+	old, loaded := sm.m.Swap(key, value)
+	if !loaded {
+		var ret V
+		atomic.AddInt32(&sm.len, 1)
+		return ret, loaded
+	}
+	return old.(V), loaded
 }
 
 func (sm *SyncMap[K, V]) Len() int {
