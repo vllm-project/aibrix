@@ -143,6 +143,7 @@ def generate_synthetic_prompt(tokenizer, target_token_length):
 
 
 def adjust_prompt_length(tokenizer, prompt, target_token_length):
+    #print(f"prompt type {type(prompt)}")
     token_count = len(tokenizer.encode(prompt))
     adjusted_prompt = prompt
     if token_count < target_token_length:

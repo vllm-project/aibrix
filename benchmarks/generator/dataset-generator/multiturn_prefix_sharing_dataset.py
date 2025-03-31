@@ -1,5 +1,6 @@
 import argparse
 import numpy as np
+import logging
 from transformers import AutoTokenizer
 from typing import Dict, Any
 from synthetic_prompt import generate_synthetic_prompt
@@ -11,7 +12,7 @@ def sample_normal(mean: int, std: int):
     return sample
     
 def generate_synthetic(args):
-    num_sessions = sample_normal(args.num_sessions_mean, args.num_sessions_std)
+    num_sessions = int(sample_normal(args.num_sessions_mean, args.num_sessions_std))
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer,
         legacy=True,
@@ -22,10 +23,10 @@ def generate_synthetic(args):
     )
     sessioned_prompts = []
     for session_id in range(0, num_sessions):
-        num_turns = sample_normal(args.num_turns_mean, args.num_turns_std)
+        num_turns = int(sample_normal(args.num_turns_mean, args.num_turns_std))
         flat_prompts_data = []
         for _ in range(0, num_turns):
-            prompt_length = sample_normal(args.prompt_length_mean, args.prompt_length_std)
+            prompt_length = int(sample_normal(args.prompt_length_mean, args.prompt_length_std))
             prompt, token_count = generate_synthetic_prompt(tokenizer, prompt_length)
             # Process the prompt as needed
             flat_prompts_data.append(prompt)
@@ -33,7 +34,9 @@ def generate_synthetic(args):
             "session_id": session_id,
             "prompts": flat_prompts_data,
         })
-    save_dataset_jsonl(flat_prompts_data, f"multiturn-sessions{args.num_sessions_mean}-turns{args.num_turns_mean}-len{args.prompt_length_mean}-dataset.jsonl")
+    filename = f"multiturn-sessions{args.num_sessions_mean}-turns{args.num_turns_mean}-len{args.prompt_length_mean}-dataset.jsonl"
+    save_dataset_jsonl(sessioned_prompts, filename)
+    logging.warn(f"...Finished saving dataset {filename}.")
         
 
 if __name__ == "__main__":
@@ -45,7 +48,6 @@ if __name__ == "__main__":
     parser.add_argument("--num-turns-std", type=int, default=1, help="Number of turns (std).")
     parser.add_argument("--num-sessions-mean", type=int, default=10, help="Number of sessions (mean).")
     parser.add_argument("--num-sessions-std", type=int, default=10, help="Number of sessions (std).")
-    parser.add_argument('--type', type=str, required=True, choices=['synthetic'], help='Type of data.')
     
     args = parser.parse_args()
     generate_synthetic(args)
