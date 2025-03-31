@@ -30,10 +30,10 @@ import (
 )
 
 const (
-	defaultPrefixCacheBlockNumber            = 100
+	defaultPrefixCacheBlockNumber            = 200000
 	defaultPrefixCacheBlockSize              = 16
-	defaultPrefixCacheEvictionInternalInMS   = 1000 // 1 second
-	defaultPrefixCacheEvictionDurationInMins = 20   // 20 minutes
+	defaultPrefixCacheEvictionInternalInSec  = 1  // 1 second
+	defaultPrefixCacheEvictionDurationInMins = 20 // 20 minutes
 )
 
 var (
@@ -75,18 +75,18 @@ func getPrefixCacheBlockSize() int {
 }
 
 func getPrefixCacheEvictionInterval() time.Duration {
-	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS", "")
+	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_Secs", "")
 	if value != "" {
 		intValue, err := strconv.Atoi(value)
 		if err != nil || intValue <= 0 {
-			klog.Infof("invalid AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS: %s, falling back to default", value)
+			klog.Infof("invalid AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_Secs: %s, falling back to default", value)
 		} else {
-			klog.Infof("using AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_MS env value for prefix cache eviction interval: %d ms", intValue)
-			return time.Duration(intValue) * time.Millisecond
+			klog.Infof("using AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_Secs env value for prefix cache eviction interval: %d ms", intValue)
+			return time.Duration(intValue) * time.Second
 		}
 	}
-	klog.Infof("using default prefix cache eviction interval: %d ms", defaultPrefixCacheEvictionInternalInMS)
-	return defaultPrefixCacheEvictionInternalInMS * time.Millisecond
+	klog.Infof("using default prefix cache eviction interval: %d ms", defaultPrefixCacheEvictionInternalInSec)
+	return defaultPrefixCacheEvictionInternalInSec * time.Second
 }
 
 func getPrefixCacheEvictionDuration() time.Duration {

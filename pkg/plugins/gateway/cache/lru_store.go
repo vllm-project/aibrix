@@ -22,7 +22,7 @@ import (
 )
 
 type LRUStore[K comparable, V any] struct {
-	sync.Mutex
+	sync.RWMutex
 	freeTable map[K]*entry[K, V]
 	lruList   *list[K, V]
 	cap       int
@@ -70,6 +70,9 @@ func (e *LRUStore[K, V]) Put(key K, value V) bool {
 	e.freeTable[key] = entry
 	if len(e.freeTable) > e.cap {
 		removed := e.lruList.removeTail()
+		if removed == nil {
+			return false
+		}
 		delete(e.freeTable, removed.Key)
 		return true
 	}
@@ -90,8 +93,8 @@ func (e *LRUStore[K, V]) Get(key K) (V, bool) {
 }
 
 func (e *LRUStore[K, V]) Len() int {
-	e.Lock()
-	defer e.Unlock()
+	e.RLock()
+	defer e.RUnlock()
 	return len(e.freeTable)
 }
 
@@ -153,6 +156,9 @@ func (l *list[K, V]) remove(e *entry[K, V]) {
 }
 
 func (l *list[K, V]) removeTail() *entry[K, V] {
+	if l.tail.prev == l.head {
+		return nil
+	}
 	entry := l.tail.prev
 	l.remove(entry)
 	return entry
