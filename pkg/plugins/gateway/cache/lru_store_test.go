@@ -24,7 +24,7 @@ import (
 
 // TODO: add performance benchmark tests
 func TestLRUStore_PutAndGet(t *testing.T) {
-	store := NewLRUStore[string, string](2, 5*time.Second, 1*time.Second)
+	store := NewLRUStore[string, string](2, 5*time.Second, 1*time.Second, DefaultGetCurrentTime)
 
 	// Test adding and retrieving items
 	store.Put("key1", "value1")
@@ -49,7 +49,7 @@ func TestLRUStore_PutAndGet(t *testing.T) {
 }
 
 func TestLRUStore_TTL(t *testing.T) {
-	store := NewLRUStore[string, string](2, 2*time.Second, 1*time.Second)
+	store := NewLRUStore[string, string](2, 2*time.Second, 1*time.Second, DefaultGetCurrentTime)
 
 	// Test TTL expiration
 	store.Put("key1", "value1")
@@ -61,7 +61,7 @@ func TestLRUStore_TTL(t *testing.T) {
 }
 
 func TestLRUStore_UpdateExistingKey(t *testing.T) {
-	store := NewLRUStore[string, string](2, 5*time.Second, 1*time.Second)
+	store := NewLRUStore[string, string](2, 5*time.Second, 1*time.Second, DefaultGetCurrentTime)
 
 	// Test updating an existing key
 	store.Put("key1", "value1")
@@ -73,7 +73,7 @@ func TestLRUStore_UpdateExistingKey(t *testing.T) {
 }
 
 func TestLRUStore_ConcurrentEvictions(t *testing.T) {
-	store := NewLRUStore[string, string](5, 5*time.Second, 1*time.Second) // Small capacity to force evictions
+	store := NewLRUStore[string, string](5, 5*time.Second, 1*time.Second, DefaultGetCurrentTime) // Small capacity to force evictions
 
 	const numGoroutines = 10
 	const numOperations = 20

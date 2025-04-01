@@ -75,13 +75,13 @@ func getPrefixCacheBlockSize() int {
 }
 
 func getPrefixCacheEvictionInterval() time.Duration {
-	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_Secs", "")
+	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_SECONDS", "")
 	if value != "" {
 		intValue, err := strconv.Atoi(value)
 		if err != nil || intValue <= 0 {
-			klog.Infof("invalid AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_Secs: %s, falling back to default", value)
+			klog.Infof("invalid AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_SECONDS: %s, falling back to default", value)
 		} else {
-			klog.Infof("using AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_Secs env value for prefix cache eviction interval: %d ms", intValue)
+			klog.Infof("using AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_SECONDS env value for prefix cache eviction interval: %d ms", intValue)
 			return time.Duration(intValue) * time.Second
 		}
 	}
@@ -121,9 +121,10 @@ func NewPrefixHashTable() PrefixCacheIndexer {
 	instance := &PrefixHashTable{
 		hash: xxhash.NewWithSeed(seed),
 		seed: seed,
-		store: cache.NewLRUStore[uint64, Block](getPrefixCacheBlockNumber(),
-			getPrefixCacheEvictionDuration(),
-			getPrefixCacheEvictionInterval()),
+		store: cache.NewLRUStore[uint64, Block](prefixCacheBlockNumber,
+			prefixCacheEvictionDuration,
+			prefixCacheEvictionInterval,
+			func() time.Time { return time.Now() }),
 	}
 
 	return instance
@@ -131,8 +132,6 @@ func NewPrefixHashTable() PrefixCacheIndexer {
 
 // returns matchedTokens, unMatchedTokens, matchedPods
 func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, pods []*v1.Pod) ([]byte, []byte, []*v1.Pod) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	var block, lastMatchedBlock Block
 	var ok bool
 	var lastTokenMatchIndex int
@@ -143,9 +142,11 @@ func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, pods []*v1.Po
 			end = len(tokens)
 		}
 
+		c.mu.Lock()
 		_, _ = c.hash.Write(tokens[i:end])
 		prefixHash := c.hash.Sum64()
 		c.hash.ResetWithSeed(c.seed)
+		c.mu.Unlock()
 		block, ok = c.store.Get(prefixHash)
 		if !ok || len(block.modelToPods[model]) == 0 || len(matchPods(block.modelToPods[model], pods)) == 0 {
 			lastTokenMatchIndex = i

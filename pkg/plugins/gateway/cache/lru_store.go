@@ -21,23 +21,31 @@ import (
 	"time"
 )
 
+type getCurrentTime func() time.Time
+
+var DefaultGetCurrentTime = func() time.Time {
+	return time.Now()
+}
+
 type LRUStore[K comparable, V any] struct {
 	sync.RWMutex
 	freeTable map[K]*entry[K, V]
 	lruList   *list[K, V]
 	cap       int
 
+	getCurrentTime
 	interval time.Duration
 	ttl      time.Duration
 }
 
-func NewLRUStore[K comparable, V any](cap int, ttl, interval time.Duration) *LRUStore[K, V] {
+func NewLRUStore[K comparable, V any](cap int, ttl, interval time.Duration, f getCurrentTime) *LRUStore[K, V] {
 	store := &LRUStore[K, V]{
-		freeTable: make(map[K]*entry[K, V]),
-		lruList:   &list[K, V]{head: &entry[K, V]{}, tail: &entry[K, V]{}},
-		cap:       cap,
-		ttl:       ttl,
-		interval:  interval,
+		freeTable:      make(map[K]*entry[K, V]),
+		lruList:        &list[K, V]{head: &entry[K, V]{}, tail: &entry[K, V]{}},
+		cap:            cap,
+		ttl:            ttl,
+		interval:       interval,
+		getCurrentTime: f,
 	}
 	store.lruList.head.next = store.lruList.tail
 	store.lruList.tail.prev = store.lruList.head
@@ -50,7 +58,7 @@ func (e *LRUStore[K, V]) startEviction() {
 	ticker := time.NewTicker(e.interval)
 	defer ticker.Stop()
 	for range ticker.C {
-		e.evict(time.Now())
+		e.evict(e.getCurrentTime())
 	}
 }
 
@@ -101,13 +109,13 @@ func (e *LRUStore[K, V]) Len() int {
 func (e *LRUStore[K, V]) evict(now time.Time) {
 	var keysToEvict []K
 
-	e.Lock()
+	e.RLock()
 	for key, entry := range e.freeTable {
 		if now.Sub(entry.lastAccessTime) > e.ttl {
 			keysToEvict = append(keysToEvict, key)
 		}
 	}
-	e.Unlock()
+	e.RUnlock()
 
 	for _, key := range keysToEvict {
 		e.Lock()

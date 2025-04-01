@@ -32,9 +32,11 @@ import (
 
 func Test_PrefixHashTableE2E(t *testing.T) {
 	r := rand.New(rand.NewSource(time.Now().Unix()))
+	mockTime := time.Now()
+	f := func() time.Time { return mockTime }
 	seed := r.Uint64()
 	cache := PrefixHashTable{
-		store: cache.NewLRUStore[uint64, Block](defaultPrefixCacheBlockNumber, 20*time.Second, 2*time.Second),
+		store: cache.NewLRUStore[uint64, Block](defaultPrefixCacheBlockNumber, 20*time.Second, 1*time.Second, f),
 		hash:  xxhash.NewWithSeed(seed),
 		seed:  seed,
 	}
@@ -64,7 +66,8 @@ func Test_PrefixHashTableE2E(t *testing.T) {
 	assert.Equal(t, 0, len(unMatchedTokens))
 	assert.Equal(t, "p1", matchPods[0].Name)
 
-	time.Sleep(25 * time.Second)
+	mockTime = mockTime.Add(30 * time.Second)
+	time.Sleep(2 * time.Second)
 	_, unMatchedTokens, matchPods = cache.MatchPrefix(tokens, "m1", pods)
 	assert.Equal(t,
 		[]byte{72, 101, 108, 108, 111, 87, 111, 114, 108, 100, 33, 87, 104, 97, 116, 97, 71, 111, 111, 100, 68, 97, 121, 33, 71, 111, 111, 100, 100, 97, 121, 116, 111, 99, 111, 100, 101, 97, 110, 100, 108, 101, 97, 114, 110, 110, 101, 119, 116, 104, 105, 110, 103, 115, 105, 110, 76, 76, 77, 33, 33, 228, 189, 160, 229, 165, 189, 228, 184, 150, 231, 149, 140, 239, 188, 129, 229, 164, 154, 228, 185, 136, 231, 190, 142, 229, 165, 189, 231, 154, 132, 228, 184, 128, 229, 164, 169, 229, 149, 138, 239, 188, 129},
@@ -90,7 +93,7 @@ func Test_MatchPrefix(t *testing.T) {
 			name:      "token length more than prefix block size, no prefix blocks exist in the cache",
 			inputText: "Hello World! What a Good Day! 你好世界！多么美好的一天啊！",
 			cache: PrefixHashTable{
-				store: cache.NewLRUStore[uint64, Block](defaultPrefixCacheBlockNumber, 20*time.Second, 10*time.Second),
+				store: cache.NewLRUStore[uint64, Block](defaultPrefixCacheBlockNumber, 20*time.Second, 10*time.Second, cache.DefaultGetCurrentTime),
 				hash:  xxhash.NewWithSeed(seed),
 				seed:  seed,
 			},
@@ -123,7 +126,7 @@ func Test_MatchPrefix(t *testing.T) {
 			name:      "token length more than prefix block size, one prefix block exist in the cache",
 			inputText: "Hello World! What a Good Day! Good day to code and learn new things in LLM!! 你好世界！多么美好的一天啊！",
 			cache: PrefixHashTable{
-				store: cache.NewLRUStore[uint64, Block](defaultPrefixCacheBlockNumber, 20*time.Second, 10*time.Second),
+				store: cache.NewLRUStore[uint64, Block](defaultPrefixCacheBlockNumber, 20*time.Second, 10*time.Second, cache.DefaultGetCurrentTime),
 				hash:  xxhash.NewWithSeed(0),
 				seed:  0,
 			},
