@@ -6,6 +6,9 @@ resources:
   - ../../rbac/model
   - ../../rbac/controller-manager
   - ../../manager
+  # lora needs webhook manifest
+  - ../../webhook
+  - ../../internalcert
 
 # Adds namespace to all resources.
 namespace: aibrix-system

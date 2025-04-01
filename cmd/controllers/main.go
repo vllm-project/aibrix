@@ -39,6 +39,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	"k8s.io/klog/v2"
 	"k8s.io/klog/v2/klogr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -180,7 +181,7 @@ func main() {
 
 	runtimeConfig := config.NewRuntimeConfig(enableRuntimeSidecar, debugMode, modeladapterSchedulerPolicy)
 
-	var webhookServer *webhook.Server
+	var webhookServer webhook.Server
 	if !disableWebhook {
 		webhookServer = webhook.NewServer(webhook.Options{
 			TLSOpts: tlsOpts,
@@ -261,7 +262,7 @@ func main() {
 	// Cert won't be ready until manager starts, so start a goroutine here which
 	// will block until the cert is ready before setting up the controllers.
 	// Controllers who register after manager starts will start directly.
-	go setupControllers(mgr, runtimeConfig, certsReady)
+	go setupControllers(mgr, runtimeConfig, certsReady, disableWebhook)
 
 	//+kubebuilder:scaffold:builder
 
@@ -281,12 +282,15 @@ func main() {
 	}
 }
 
-func setupControllers(mgr ctrl.Manager, runtimeConfig config.RuntimeConfig, certsReady chan struct{}) {
+// TODO: if the argument list will grow, we should create a ControllerSetupOptions struct instead.
+func setupControllers(mgr ctrl.Manager, runtimeConfig config.RuntimeConfig, certsReady chan struct{}, disableWebhook bool) {
 	// The controllers won't work until the webhooks are operating,
 	// and the webhook won't work until the certs are all in places.
-	setupLog.Info("waiting for the cert generation to complete")
-	<-certsReady
-	setupLog.Info("certs ready")
+	if !disableWebhook {
+		setupLog.Info("waiting for the cert generation to complete")
+		<-certsReady
+		setupLog.Info("certs ready")
+	}
 
 	// Kind controller registration is encapsulated inside the pkg/controller/controller.go
 	// So here we can use more clean registration flow and there's no need to change logics in future.
