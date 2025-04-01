@@ -5,17 +5,17 @@
 ### Prerequisite
 
 Our workload generator expects prompt collection files that follow one of the two data schema:
-* .jsonl file with plain prompts collection
+* .jsonl file with plain prompts collection **(the "completion" field is optional)**
 ```
-{"prompt": XXX}
-{"prompt": YYY}
-{"prompt": ZZZ}
+{"prompt": XXX, "completion": AAA}
+{"prompt": YYY, "completion": AAA}
+{"prompt": ZZZ, "completion": AAA}
 ...
 ```
-* .jsonl file with sesssioned prompts collection
+* .jsonl file with sesssioned prompts collection **(the "completions" field is optional)**
 ```
-{"session_id": 0, "prompts": ["prompt 1", "prompt 2"]}
-{"session_id": 1, "prompts": ["prompt 3", "prompt 4"]}
+{"session_id": 0, "prompts": ["prompt 1", "prompt 2"], "completions": ["completion 1", "completion 2"]}
+{"session_id": 1, "prompts": ["prompt 3", "prompt 4"], "completions": ["completion 3", "completion 4"]}
 ...
 ```
 Please refer to [this](../dataset-generator/README.md) to create synthetic prompts or convert existing dataset to one of these formats before generating workloads. 

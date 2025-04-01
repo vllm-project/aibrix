@@ -48,9 +48,21 @@ python multiturn_prefix_sharing_dataset.py \
 This will generate a .jsonl file that contains collection of sessioned prompts. to serve as input to the workload generator. The prompts within the same session will be played at the same order as appeared in the dataset. 
 
 
-## Convert an existing dataset
+## Convert client traces to dataset
 
-We can also convert existing dataset to a sessioned prompt output like the following. For example, download ShareGPT dataset:
+We can convert ```output.jsonl```, which contains both prompt and completion from a previous run, to prompt file like the following:
+```shell
+export TRACE="output.jsonl"
+python convert.py \
+    --path ${TRACE} \
+    --type trace \
+    --tokenizer deepseek-ai/deepseek-llm-7b-chat
+```
+
+
+## Convert ShareGPT dataset
+
+We can convert existing dataset to a sessioned prompt output like the following. For example, download ShareGPT dataset:
 
 ```shell
 export TARGET_DATASET="/tmp/ShareGPT_V3_unfiltered_cleaned_split.json"
@@ -60,8 +72,9 @@ wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/r
 ... convert dataset like 
 
 ```shell
-python sharegpt_converter.py  \
+python convert.py  \
     --path ${TARGET_DATASET} \
+    --type sharegpt \
     --tokenizer deepseek-ai/deepseek-llm-7b-chat
 ```
 We will extend the converter to other dataset beyond ShareGPT. Stay tuned!

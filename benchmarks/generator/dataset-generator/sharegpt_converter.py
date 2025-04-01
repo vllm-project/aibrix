@@ -24,15 +24,17 @@ def process_dataset_sharegpt(
             "session_id": session_id,
             "prompts": flat_prompts_data,
         })
-    save_dataset_jsonl(sessioned_prompts, output)
-    logging.warn(f"...Finished saving dataset to {output}")
+    output_filename = f"sharegpt-{output}"
+    save_dataset_jsonl(sessioned_prompts, output_filename)
+    logging.warn(f"...Finished saving dataset to {output_filename}")
     
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Configure workload parameters.")
     parser.add_argument("--path", type=str, default=".", help="Dataset Path.")
     parser.add_argument("--tokenizer", type=str, default="deepseek-ai/deepseek-llm-7b-chat", help="Name of the tokenizer.")
-    parser.add_argument("--output", type=str, default="sharegpt-dataset.jsonl", help="Output file name.")
+    parser.add_argument("--output", type=str, default="prompts.jsonl", help="Output file name.")
+    parser.add_argument('--type', type=str, required=True, choices=['trace','sharegpt'], help='Type of dataset consumed. Choose among: trace, sharegpt.')
     args = parser.parse_args()
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer, 
@@ -42,7 +44,10 @@ if __name__ == "__main__":
         truncation_side="right",
         use_fast=True
     )
-    process_dataset_sharegpt(args.path, tokenizer, args.output)
+    if args.type == 'trace':
+        process_dataset_trace(args.path, tokenizer, args.output)
+    elif args.type == 'sharegpt':
+        process_dataset_sharegpt(args.path, tokenizer, args.output)
     
 
         

@@ -6,7 +6,7 @@ import random
 import pandas as pd
 import numpy as np
 
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Dict, Any
 from transformers import PreTrainedTokenizerBase
 
 
@@ -14,67 +14,64 @@ def load_requests(
         dataset_path: str,
         tokenizer: PreTrainedTokenizerBase,
 ) -> pd.DataFrame:
-    if "ShareGPT" in dataset_path:
-        return load_sharegpt_requests(dataset_path, tokenizer)
-    elif "prefix" in dataset_path:
-        return load_share_prefix_requests(dataset_path, tokenizer)
-    else:
-        return load_generated_dataset(dataset_path, tokenizer)
+    with open(dataset_path, encoding='utf-8') as f:
+        dataset = [json.loads(line) for line in f]
+        if "session_id" in dataset[0]:
+            return load_sessioned_dataset(dataset, tokenizer)
+        else:
+            return load_plain_dataset(dataset, tokenizer)
     
-def load_sharegpt_requests(
-        dataset_path: str,
-        tokenizer: PreTrainedTokenizerBase,
-) -> pd.DataFrame:
-    # Load the dataset into a DataFrame
-    logging.warn(f"...Start dataframe transformation")
-    with open(dataset_path, encoding='utf-8') as f:
-        dataset = json.load(f)
-    dataset = [
-        (data["conversations"][0]["value"], data["conversations"][1]["value"])
-        for data in dataset if len(data["conversations"]) >= 2
-    ]
-    df = pd.DataFrame(dataset, columns=["prompt", "completion"])
-    # Tokenize and calculate lengths
-    df["prompt_len"] = df["prompt"].apply(lambda x: len(tokenizer(x).input_ids))
-    df["completion_len"] = df["completion"].apply(lambda x: len(tokenizer(x).input_ids))
-    logging.warn(f"...Complete dataframe transformation")
+    
+def load_sessioned_dataset(
+    dataset: List[Dict[str, Any]],
+    tokenizer: PreTrainedTokenizerBase,
+) -> pd.DataFrame: 
+    df = pd.DataFrame()
+    for entry in dataset:
+        for i, prompt in enumerate(entry['prompts']):
+            df = df.concat({
+                'prompt': prompt,
+                'completion': entry['completions'][i] if 'completions' in entry else None,
+                'prompt_len': len(tokenizer(prompt).input_ids),
+                'completion_len': len(entry['completions'][i]) if 'completions' in entry else None,
+                'session_id': entry['session_id']
+            }, ignore_index=True)
+    logging.warn(f"...Complete sessioned dataframe transformation")
     return df
 
-def load_generated_dataset(
-        dataset_path: str,
-        tokenizer: PreTrainedTokenizerBase,
+def load_plain_dataset(
+    dataset: List[Dict[str, Any]],
+    tokenizer: PreTrainedTokenizerBase,
 ) -> pd.DataFrame:
-    # Load the dataset into a DataFrame
-    with open(dataset_path, encoding='utf-8') as f:
-        dataset = [json.loads(line) for line in f]
-    # Create a DataFrame with the desired columns
-    logging.warn(f"...Start dataframe transformation")
-    df = pd.DataFrame({
-        'prompt': [entry['input'][0]['content'] for entry in dataset],
-        'completion': [entry['output'] for entry in dataset],
-        'prompt_len': [entry['prompt_tokens'] for entry in dataset],
-        'completion_len': [entry['output_tokens'] for entry in dataset]
-    })
-    logging.warn(f"...Complete dataframe transformation")
-    return df
-
-def load_share_prefix_requests(
-        dataset_path: str,
-        tokenizer: PreTrainedTokenizerBase,
-) -> pd.DataFrame:
-    # Load the dataset into a DataFrame
-    with open(dataset_path, encoding='utf-8') as f:
-        dataset = [json.loads(line) for line in f]
-    # Create a DataFrame with the desired columns
-    logging.warn(f"...Start dataframe transformation")
     df = pd.DataFrame({
         'prompt': [entry['prompt'] for entry in dataset],
-        'completion': [None for _ in dataset],
+        'completion': [entry['completion'] if 'completion' in entry else None for entry in dataset],
         'prompt_len': [len(tokenizer(entry['prompt']).input_ids) for entry in dataset],
-        'completion_len': [None for _ in dataset]
+        'completion_len': [len(tokenizer(entry['completion']).input_ids) if 'completion' in entry else None for entry in dataset],
     })
-    logging.warn(f"...Complete dataframe transformation")
+    logging.warn(f"...Complete sessioned dataframe transformation")
     return df
+
+
+
+# def load_generated_dataset(
+#         dataset_path: str,
+#         tokenizer: PreTrainedTokenizerBase,
+# ) -> pd.DataFrame:
+#     # Load the dataset into a DataFrame
+#     with open(dataset_path, encoding='utf-8') as f:
+#         dataset = [json.loads(line) for line in f]
+#     # Create a DataFrame with the desired columns
+#     logging.warn(f"...Start dataframe transformation")
+#     df = pd.DataFrame({
+#         'prompt': [entry['input'][0]['content'] for entry in dataset],
+#         'completion': [entry['output'] for entry in dataset],
+#         'prompt_len': [entry['prompt_tokens'] for entry in dataset],
+#         'completion_len': [entry['output_tokens'] for entry in dataset]
+#     })
+#     logging.warn(f"...Complete dataframe transformation")
+#     return df
+
 
 def sample_requests_len_range(
         df: pd.DataFrame,
