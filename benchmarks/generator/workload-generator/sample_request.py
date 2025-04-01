@@ -52,27 +52,6 @@ def load_plain_dataset(
     logging.warn(f"...Complete sessioned dataframe transformation")
     return df
 
-
-
-# def load_generated_dataset(
-#         dataset_path: str,
-#         tokenizer: PreTrainedTokenizerBase,
-# ) -> pd.DataFrame:
-#     # Load the dataset into a DataFrame
-#     with open(dataset_path, encoding='utf-8') as f:
-#         dataset = [json.loads(line) for line in f]
-#     # Create a DataFrame with the desired columns
-#     logging.warn(f"...Start dataframe transformation")
-#     df = pd.DataFrame({
-#         'prompt': [entry['input'][0]['content'] for entry in dataset],
-#         'completion': [entry['output'] for entry in dataset],
-#         'prompt_len': [entry['prompt_tokens'] for entry in dataset],
-#         'completion_len': [entry['output_tokens'] for entry in dataset]
-#     })
-#     logging.warn(f"...Complete dataframe transformation")
-#     return df
-
-
 def sample_requests_len_range(
         df: pd.DataFrame,
         num_requests: int,

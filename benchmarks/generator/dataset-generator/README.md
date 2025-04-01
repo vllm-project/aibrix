@@ -53,7 +53,7 @@ This will generate a .jsonl file that contains collection of sessioned prompts. 
 We can convert ```output.jsonl```, which contains both prompt and completion from a previous run, to prompt file like the following:
 ```shell
 export TRACE="output.jsonl"
-python convert.py \
+python converter.py \
     --path ${TRACE} \
     --type trace \
     --tokenizer deepseek-ai/deepseek-llm-7b-chat
@@ -72,7 +72,7 @@ wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/r
 ... convert dataset like 
 
 ```shell
-python convert.py  \
+python converter.py  \
     --path ${TARGET_DATASET} \
     --type sharegpt \
     --tokenizer deepseek-ai/deepseek-llm-7b-chat
