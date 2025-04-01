@@ -158,10 +158,32 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 }
 
 func (c *Store) deletePod(obj interface{}) {
-	pod := obj.(*v1.Pod)
-	_, ok := pod.Labels[modelIdentifier]
-	_, existed := c.metaPods.Load(pod.Name) // Make sure nothing left.
-	if !ok && !existed {
+	var namespace, name string
+	var hasModelLabel bool
+	switch obj := obj.(type) {
+	case *v1.Pod:
+		namespace, name = obj.Namespace, obj.Name
+		_, hasModelLabel = obj.Labels[modelIdentifier]
+	case cache.DeletedFinalStateUnknown:
+		if pod, ok := obj.Obj.(*v1.Pod); ok {
+			namespace, name = pod.Namespace, pod.Name
+			_, hasModelLabel = pod.Labels[modelIdentifier]
+			break
+		}
+
+		// We can usually ignore cases where the object contained in the tombstone isn't a *v1.Pod. However,
+		// since the following logic in this function still works fine with just the namespace and name,
+		// let's try parsing the tombstone.Key here for added robustness.
+		var err error
+		namespace, name, err = cache.SplitMetaNamespaceKey(obj.Key)
+		if err != nil {
+			klog.ErrorS(err, "couldn't get pod's namespace and name from tombstone", "key", obj.Key)
+			return
+		}
+	}
+
+	_, existed := c.metaPods.Load(name)
+	if !hasModelLabel && !existed {
 		return
 	}
 
@@ -169,14 +191,14 @@ func (c *Store) deletePod(obj interface{}) {
 	defer c.mu.Unlock()
 
 	// delete base model and associated lora models on this pod
-	metaPod := c.deletePodLocked(pod.Name)
+	metaPod := c.deletePodLocked(name)
 	if metaPod != nil {
 		for _, modelName := range metaPod.Models.Array() {
-			c.deletePodAndModelMappingLocked(pod.Name, modelName, 1)
+			c.deletePodAndModelMappingLocked(name, modelName, 1)
 		}
 	}
 
-	klog.V(4).Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
+	klog.V(4).Infof("POD DELETED: %s/%s", namespace, name)
 	c.debugInfo()
 }
 
@@ -212,10 +234,21 @@ func (c *Store) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 }
 
 func (c *Store) deleteModelAdapter(obj interface{}) {
+	model, ok := obj.(*modelv1alpha1.ModelAdapter)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		model, ok = tombstone.Obj.(*modelv1alpha1.ModelAdapter)
+		if !ok {
+			return
+		}
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	model := obj.(*modelv1alpha1.ModelAdapter)
 	for _, pod := range model.Status.Instances {
 		c.deletePodAndModelMappingLocked(pod, model.Name, 0)
 	}
