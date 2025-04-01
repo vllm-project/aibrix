@@ -374,8 +374,6 @@ if __name__ == '__main__':
                         help='Prompt lengths configuration file used for synthetic workload type.')
     parser.add_argument('--completion-len-pattern-config', type=str, required=False, default=None,
                         help='Completion lengths configuration file used for synthetic workload type.')
-    parser.add_argument('--shared-prefix-percentage', type=str, required=False, default=None,
-                        help='Specify the shared prefix length for the workload in the form of mean and std deviation, devided by a colon (e.g., 0.8:0.1).')
     
     ##### Trace and stats-driven workload
     parser.add_argument('--traffic-file', type=str, required=False, default=None,
