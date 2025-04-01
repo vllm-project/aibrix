@@ -4,42 +4,40 @@
 
 ### Prerequisite
 
-#### Preparing Dataset for Requests
-
-Using ShareGPT dataset
-```shell
-wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json -O /tmp/ShareGPT_V3_unfiltered_cleaned_split.json
-export SHAREGPT_FILE_PATH=/tmp/ShareGPT_V3_unfiltered_cleaned_split.json
+Our workload generator expects prompt collection files that follow one of the two data schema:
+* .jsonl file with plain prompts collection
 ```
-
-Generate Synthetic Prefix-shared Dataset
-```shell
-python synthetic_prefix_sharing_dataset.py --app-name programming --prompt-length 3871 --prompt-length-std 1656 --shared-proportion 0.97 --shared-proportion-std 0.074 --num-samples-per-prefix 200 --num-prefix 10 --randomize-order
+{"prompt": XXX}
+{"prompt": YYY}
+{"prompt": ZZZ}
+...
 ```
-
-The command above simulate a cache sharing scheme for programming workload described in [Preble](https://arxiv.org/pdf/2407.00023), as shown below:
-![image](dataset-examples.png)
-
-You can also modify the argument to simulate a dataset that has a similar prompt sharing pattern as examples like Toolbench and Embodied Agent as described. 
+* .jsonl file with sesssioned prompts collection
+```
+{"session_id": 0, "prompts": ["prompt 1", "prompt 2"]}
+{"session_id": 1, "prompts": ["prompt 3", "prompt 4"]}
+...
+```
+Please refer to [this](../dataset-generator/README.md) to create synthetic prompts or convert existing dataset to one of these formats before generating workloads. 
 
 ### Generate a workload file based with constant target QPS (synthetic patterns)
 
 ```shell
 export TARGET_QPS=1
 
-python workload_generator.py --prompt-file $SHAREGPT_FILE_PATH --interval-ms 1000 --duration-ms 300000 --target-qps $TARGET_QPS --trace-type constant --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "output" --output-format jsonl 
+python workload_generator.py --prompt-file $PROMPT_FILE --interval-ms 1000 --duration-ms 300000 --target-qps $TARGET_QPS --trace-type constant --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "output" --output-format jsonl 
 ```
 
 ### Generate a workload file based on workload patterns (synthetic patterns)
 
 The can generate workload file based on synthetic traffic (qps), input lengths (prompt lengths) and output lengths (completion lengths) patterns. Currently we support 4 patterns (`'quick_rising`, `'slow_rising'`, `'slight_fluctuation'`, `'severe_fluctuation'`), described [here](https://github.com/vllm-project/aibrix/blob/main/benchmarks/autoscaling/bench_workload_generator.py).:
 ```shell
-python workload_generator.py --prompt-file $SHAREGPT_FILE_PATH --interval-ms 1000 --duration-ms 300000 --trace-type synthetic --traffic-pattern "slight_fluctuation" --prompt-len-pattern "slight_fluctuation" --completion-len-pattern "slight_fluctuation" --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl 
+python workload_generator.py --prompt-file $PROMPT_FILE --interval-ms 1000 --duration-ms 300000 --trace-type synthetic --traffic-pattern "slight_fluctuation" --prompt-len-pattern "slight_fluctuation" --completion-len-pattern "slight_fluctuation" --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl 
 ```
 
 Alternatively, you could specify fluctuation patterns in .json file and pass to the generator like the following. Example configuration files are under `config` directory.
 ```shell
-python workload_generator.py --prompt-file $SHAREGPT_FILE_PATH --interval-ms 1000 --duration-ms 1400000 --trace-type synthetic --traffic-pattern-config config/traffic-config.json --prompt-len-pattern-config config/prompt-len-config.json --completion-len-pattern-config config/completion-len-config.json --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl 
+python workload_generator.py --prompt-file $PROMPT_FILE --interval-ms 1000 --duration-ms 1400000 --trace-type synthetic --traffic-pattern-config config/traffic-config.json --prompt-len-pattern-config config/prompt-len-config.json --completion-len-pattern-config config/completion-len-config.json --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl 
 ```
 
 
@@ -54,7 +52,7 @@ export TRAFFIC_FILE=${PATH_TO_TRAFFIC_FILE}
 export PROMPT_LEN_FILE=${PATH_TO_PROMPT_LEN_FILE}
 export COMPLETION_LEN_FILE=${PATH_TO_COMPLETION_LEN_FILE}
 
-python workload_generator.py --prompt-file $SHAREGPT_FILE_PATH --interval-ms 1000 --duration-ms 1800000 --trace-type internal --traffic-file "$TRAFFIC_FILE" --prompt-len-file "$PROMPT_LEN_FILE" --completion-len-file "$COMPLETION_LEN_FILE"  --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl --qps-scale 1.0 --output-scale 1.0 --input-scale 1.0 --internal-trace-type "maas" 
+python workload_generator.py --prompt-file $PROMPT_FILE --interval-ms 1000 --duration-ms 1800000 --trace-type internal --traffic-file "$TRAFFIC_FILE" --prompt-len-file "$PROMPT_LEN_FILE" --completion-len-file "$COMPLETION_LEN_FILE"  --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl --qps-scale 1.0 --output-scale 1.0 --input-scale 1.0 --internal-trace-type "maas" 
 ```
 
 The scaling factor here (e.g., `qps-scale`) scale down rate from the original trace to the desired rate, i.e., if the peak rate in the original file is 80 and the desired peak rate is 8, the scale is set to 10.0. 
