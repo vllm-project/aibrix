@@ -39,7 +39,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
-	"k8s.io/klog/v2"
 	"k8s.io/klog/v2/klogr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -111,6 +110,7 @@ func main() {
 	var controllers string
 	var modeladapterSchedulerPolicy string
 	var enableRuntimeSidecar bool
+	var disableWebhook bool
 	var debugMode bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -136,6 +136,8 @@ func main() {
 	flag.StringVar(&modeladapterSchedulerPolicy, "model-adapter-scheduler-policy", modeladapter.DefaultModelAdapterSchedulerPolicy, "model-adapter-scheduler-policy is the name of the scheduler policy to use for model adapter controller.")
 	flag.BoolVar(&enableRuntimeSidecar, "enable-runtime-sidecar", false,
 		"If set, Runtime management API will be enabled for the metrics, model adapter and model downloading interactions, control plane will not talk to engine directly anymore")
+	flag.BoolVar(&disableWebhook, "disable-webhook", false,
+		"If set, mutation and validation webhook will be disabled, this will be only used in standalone setup mode for some controllers")
 	flag.BoolVar(&debugMode, "debug-mode", false,
 		"If set, control plane will talk to localhost nodePort for testing purpose")
 
@@ -178,9 +180,12 @@ func main() {
 
 	runtimeConfig := config.NewRuntimeConfig(enableRuntimeSidecar, debugMode, modeladapterSchedulerPolicy)
 
-	webhookServer := webhook.NewServer(webhook.Options{
-		TLSOpts: tlsOpts,
-	})
+	var webhookServer *webhook.Server
+	if !disableWebhook {
+		webhookServer = webhook.NewServer(webhook.Options{
+			TLSOpts: tlsOpts,
+		})
+	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
@@ -240,9 +245,14 @@ func main() {
 
 	certsReady := make(chan struct{})
 
-	if err = cert.CertsManager(mgr, leaderElectionNamespace, certsReady); err != nil {
-		setupLog.Error(err, "unable to setup cert rotation")
-		os.Exit(1)
+	if disableWebhook {
+		setupLog.Error(err, "Close the certsReady channel if webhook is disabled, this is to avoid blocking setupControllers")
+		close(certsReady)
+	} else {
+		if err = cert.CertsManager(mgr, leaderElectionNamespace, certsReady); err != nil {
+			setupLog.Error(err, "unable to setup cert rotation")
+			os.Exit(1)
+		}
 	}
 
 	// Initialize controllers
@@ -285,8 +295,12 @@ func setupControllers(mgr ctrl.Manager, runtimeConfig config.RuntimeConfig, cert
 		os.Exit(1)
 	}
 
-	if err := apiwebhook.SetupBackendRuntimeWebhook(mgr); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "Model")
-		os.Exit(1)
+	if !disableWebhook {
+		if err := apiwebhook.SetupBackendRuntimeWebhook(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "Model")
+			os.Exit(1)
+		}
+	} else {
+		setupLog.Info("webhook setup skipped due to --disable-webhook flag")
 	}
 }
