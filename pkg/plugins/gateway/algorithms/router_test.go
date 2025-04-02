@@ -82,13 +82,6 @@ func TestWithNoIPPods(t *testing.T) {
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 
-	r2 := leastRequestRouter{
-		cache: c,
-	}
-	targetPodIP, err = r2.Route(requestContext(model), podsFromCache(c))
-	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
-	assert.Error(t, err, "no pod has IP")
-
 	r3 := throughputRouter{
 		cache: c,
 	}

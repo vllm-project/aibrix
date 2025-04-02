@@ -19,7 +19,6 @@ package routingalgorithms
 import (
 	"context"
 	"fmt"
-	"os"
 	"slices"
 	"testing"
 
@@ -52,7 +51,6 @@ func Test_PrefixCacheE2E(t *testing.T) {
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 	}
 
-	os.Setenv("AIBRIX_PREFIX_CACHE_BLOCK_SIZE", "4")
 	// no prefix match -> select least request pod
 	// input: abcdegfh
 	// pre_request_count: [p1: 0, p2: 0, p3: 0, p4: 0]

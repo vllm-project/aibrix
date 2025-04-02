@@ -106,7 +106,9 @@ func NewTestCacheWithPodsMetrics(pods []*v1.Pod, model string, podMetrics map[st
 	c.metaPods.Range(func(podName string, metaPod *Pod) bool {
 		if podmetrics, ok := podMetrics[podName]; ok {
 			for metricName, metric := range podmetrics {
-				c.updatePodRecord(metaPod, model, metricName, metrics.PodMetricScope, metric)
+				if err := c.updatePodRecord(metaPod, model, metricName, metrics.PodMetricScope, metric); err != nil {
+					return false
+				}
 			}
 		}
 		return true
