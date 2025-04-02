@@ -123,7 +123,6 @@ func NewPrefixHashTable() *PrefixHashTable {
 			prefixCacheEvictionInterval,
 			func() time.Time { return time.Now() }),
 	}
-
 	return instance
 }
 
@@ -191,7 +190,6 @@ func matchPods(blockPods map[string]time.Time, readyPods map[string]struct{}, pr
 			delete(readyPods, pod)
 		}
 	}
-
 	return isMatch
 }
 
