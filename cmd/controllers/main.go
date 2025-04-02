@@ -247,7 +247,7 @@ func main() {
 	certsReady := make(chan struct{})
 
 	if disableWebhook {
-		setupLog.Error(err, "Close the certsReady channel if webhook is disabled, this is to avoid blocking setupControllers")
+		setupLog.Info("Closing the certsReady channel because the webhook is disabled, this is to avoid blocking setupControllers")
 		close(certsReady)
 	} else {
 		if err = cert.CertsManager(mgr, leaderElectionNamespace, certsReady); err != nil {
