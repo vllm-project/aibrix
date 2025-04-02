@@ -86,9 +86,13 @@ func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod
 
 	minCount := math.MaxInt32
 	podRequestCount := getRequestCounts(cache, readyPods)
-	for podname, totalReq := range podRequestCount {
+	for _, totalReq := range podRequestCount {
 		if totalReq <= minCount {
 			minCount = totalReq
+		}
+	}
+	for podname, totalReq := range podRequestCount {
+		if totalReq == minCount {
 			targetPods = append(targetPods, podname)
 		}
 	}
