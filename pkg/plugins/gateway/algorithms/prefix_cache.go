@@ -91,13 +91,11 @@ func NewPrefixCacheRouter() (types.Router, error) {
 }
 
 func (p prefixCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	var prefixHashes []uint64
+	var matchedPods map[string]int
 	var targetPod *v1.Pod
 
-	trimMessage := utils.TrimMessage(ctx.Message)
-	// klog.InfoS("prefix_cache_trim_message",
-	// 	"request_id", routingCtx.RequestID,
-	// 	"trim_message", trimMessage)
-	tokens, err := p.tokenizer.TokenizeInputText(trimMessage)
+	tokens, err := p.tokenizer.TokenizeInputText(ctx.Message)
 	if err != nil {
 		return "", err
 	}
@@ -108,9 +106,6 @@ func (p prefixCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList) 
 		readyPodsMap[pod.Name] = struct{}{}
 	}
 
-	var prefixHashes []uint64
-	var matchedPods map[string]int
-
 	var isLoadImbalanced bool
 	targetPod, isLoadImbalanced = getTargetPodOnLoadImbalance(p.cache, readyPods)
 	if isLoadImbalanced {
@@ -120,12 +115,9 @@ func (p prefixCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList) 
 			"target_pod", targetPod.Name,
 			"target_pod_ip", targetPod.Status.PodIP,
 			"pod_request_count", getRequestCounts(p.cache, readyPods))
-
 	} else {
 		matchedPods, prefixHashes = p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
-		klog.InfoS("prefix_hashes",
-			"request_id", ctx.RequestID,
-			"prefix_hashes", prefixHashes)
+		klog.InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
 
 		if len(matchedPods) > 0 {
 			targetPod = getTargetPodFromMatchedPods(p.cache, readyPods, matchedPods)
