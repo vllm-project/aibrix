@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/prefixcacheindexer"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"

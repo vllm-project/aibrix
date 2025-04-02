@@ -18,6 +18,7 @@ package routingalgorithms
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -32,4 +33,24 @@ func selectRandomPod(pods []*v1.Pod, randomFn func(int) int) (*v1.Pod, error) {
 	}
 	randomPod := readyPods[randomFn(len(readyPods))]
 	return randomPod, nil
+}
+
+// mean calculates the mean of a slice of float64 numbers.
+func mean(numbers []float64) float64 {
+	sum := 0.0
+	for _, number := range numbers {
+		sum += number
+	}
+	return sum / float64(len(numbers))
+}
+
+// standardDeviation calculates the standard deviation of a slice of float64 numbers.
+func standardDeviation(numbers []float64) float64 {
+	avg := mean(numbers)
+	sumOfSquares := 0.0
+	for _, number := range numbers {
+		sumOfSquares += math.Pow(number-avg, 2)
+	}
+	variance := sumOfSquares / float64(len(numbers)-1)
+	return math.Sqrt(variance)
 }

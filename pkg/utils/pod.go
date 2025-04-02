@@ -201,3 +201,12 @@ func FilterPods(pods []v1.Pod, filterFn filterPod) []v1.Pod {
 	}
 	return filtered
 }
+
+func FilterPodByName(podname string, pods []*v1.Pod) (*v1.Pod, bool) {
+	for _, pod := range pods {
+		if pod.Name == podname {
+			return pod, true
+		}
+	}
+	return nil, false
+}

@@ -40,6 +40,7 @@ type RoutingContext struct {
 	Algorithm RoutingAlgorithm
 	Model     string
 	Message   string
+	RequestID string
 
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
@@ -50,15 +51,15 @@ var requestPool = sync.Pool{
 	New: func() any { return &RoutingContext{} },
 }
 
-func (alg RoutingAlgorithm) NewContext(ctx context.Context, model string, message string) *RoutingContext {
+func (alg RoutingAlgorithm) NewContext(ctx context.Context, model string, message string, requestID string) *RoutingContext {
 	request := requestPool.Get().(*RoutingContext)
-	request.reset(ctx, alg, model, message)
+	request.reset(ctx, alg, model, message, requestID)
 	return request
 }
 
-func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithm, model string, message string) *RoutingContext {
+func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithm, model string, message string, requestID string) *RoutingContext {
 	request := requestPool.Get().(*RoutingContext)
-	request.reset(ctx, algorithms, model, message)
+	request.reset(ctx, algorithms, model, message, requestID)
 	return request
 }
 
@@ -96,11 +97,12 @@ func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
 	return fmt.Sprintf("%v:%v", pod.Status.PodIP, podMetricPort)
 }
 
-func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model string, message string) {
+func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model string, message string, requestID string) {
 	r.Context = ctx
 	r.Algorithm = algorithms
 	r.Model = model
 	r.Message = message
+	r.RequestID = requestID
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
 }

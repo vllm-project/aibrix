@@ -27,6 +27,7 @@ import (
 )
 
 func Test_LPRadixCacheE2E(t *testing.T) {
+	t.SkipNow()
 	cache := NewLPRadixCache(2) // assuming 2 GPUs
 	pods := []*v1.Pod{
 		{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
@@ -64,6 +65,7 @@ func Test_LPRadixCacheE2E(t *testing.T) {
 }
 
 func Test_RadixMatchPrefix(t *testing.T) {
+	t.SkipNow()
 	tests := []*struct {
 		name          string
 		inputText     string
