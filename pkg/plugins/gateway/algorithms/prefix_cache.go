@@ -17,7 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"fmt"
 	"math"
 	"math/rand"
 	"sort"
@@ -79,7 +78,7 @@ func NewPrefixCacheRouter() (types.Router, error) {
 
 	c, err := cache.Get()
 	if err != nil {
-		fmt.Println("fail to get cache store in prefix cache router")
+		klog.Error("fail to get cache store in prefix cache router")
 		return nil, err
 	}
 
@@ -203,13 +202,17 @@ func getTargetPodOnLoadImbalance(cache cache.Cache, readyPods []*v1.Pod) (*v1.Po
 	maxValue := math.MinInt32
 
 	podRequestCount := getRequestCounts(cache, readyPods)
-	for podname, value := range podRequestCount {
+	for _, value := range podRequestCount {
 		if value <= minValue {
 			minValue = value
-			targetPods = append(targetPods, podname)
 		}
 		if value > maxValue {
 			maxValue = value
+		}
+	}
+	for podname, value := range podRequestCount {
+		if minValue == value {
+			targetPods = append(targetPods, podname)
 		}
 	}
 
