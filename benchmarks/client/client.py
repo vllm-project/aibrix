@@ -53,6 +53,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
     start_time = asyncio.get_event_loop().time()
     first_response_time = None
     target_pod = ""
+    target_request_id = ""
     try:
         cur_time = time.time()
         logging.warning(f"send_request_streaming: Prepare to launch task after {target_time - cur_time}")
@@ -66,6 +67,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
         )
         if hasattr(response_stream, 'response') and hasattr(response_stream.response, 'headers'):
             target_pod = response_stream.response.headers.get('target-pod')
+            target_request_id = response_stream.response.headers.get('request-id')
 
         text_chunks = []
         prompt_tokens = 0
@@ -117,6 +119,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
             "ttft": ttft,
             "tpot": tpot,
             "target_pod": target_pod,
+            "target_request_id": target_request_id,
             "session_id": session_id,
         }
 
@@ -141,6 +144,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
             "start_time": start_time,
             "end_time": error_time,
             "target_pod": target_pod,
+            "target_request_id": target_request_id,
             "session_id": session_id,
         }
         logging.error(f"Request {request_id}: Error ({error_type}): {str(e)}")
@@ -375,4 +379,3 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     main(args)
-

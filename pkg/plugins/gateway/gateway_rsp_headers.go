@@ -20,17 +20,25 @@ import (
 	"context"
 	"strconv"
 
-	"k8s.io/klog/v2"
-
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
-func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, bool, int) {
-	klog.InfoS("-- In ResponseHeaders processing ...", "requestID", requestID)
+func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, model string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, bool, int) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseHeaders)
 	routerCtx, _ := ctx.(*types.RoutingContext)
+
+	var isProcessingError bool
+	var processingErrorCode int
+	defer func() {
+		if isProcessingError {
+			s.cache.DoneRequestCount(routerCtx, requestID, model, 0)
+			if routerCtx != nil {
+				routerCtx.Delete()
+			}
+		}
+	}()
 
 	headers := []*configPb.HeaderValueOption{{
 		Header: &configPb.HeaderValue{
@@ -39,16 +47,22 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 		},
 	}}
 	if routerCtx != nil {
-		headers = append(headers, &configPb.HeaderValueOption{
-			Header: &configPb.HeaderValue{
-				Key:      HeaderTargetPod,
-				RawValue: []byte(routerCtx.TargetAddress()),
+		headers = append(headers,
+			&configPb.HeaderValueOption{
+				Header: &configPb.HeaderValue{
+					Key:      HeaderTargetPod,
+					RawValue: []byte(routerCtx.TargetAddress()),
+				},
 			},
-		})
+			&configPb.HeaderValueOption{
+				Header: &configPb.HeaderValue{
+					Key:      HeaderRequestID,
+					RawValue: []byte(requestID),
+				},
+			},
+		)
 	}
 
-	var isProcessingError bool
-	var processingErrorCode int
 	for _, headerValue := range b.ResponseHeaders.Headers.Headers {
 		if headerValue.Key == ":status" {
 			code, _ := strconv.Atoi(string(headerValue.RawValue))

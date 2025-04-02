@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -78,7 +79,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	requestID := uuid.New().String()
 	completed := false
 
-	klog.InfoS("Processing request", "requestID", requestID)
+	klog.InfoS("processing request", "requestID", requestID)
 
 	for {
 		select {
@@ -108,7 +109,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			}
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
-			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, requestID, req)
+			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, requestID, model, req)
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
 			respBody := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
@@ -122,8 +123,12 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			klog.Infof("Unknown Request type %+v\n", v)
 		}
 
-		if err := srv.Send(resp); err != nil {
-			klog.Infof("send error %v", err)
+		if err := srv.Send(resp); err != nil && len(model) > 0 {
+			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
+			if routerCtx != nil {
+				routerCtx.Delete()
+			}
+			klog.ErrorS(err, "requestID", requestID)
 		}
 	}
 }
@@ -133,7 +138,22 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) 
 	if err != nil {
 		return "", err
 	}
-	return router.Route(ctx, pods)
+
+	if pods.Len() == 0 {
+		return "", fmt.Errorf("no pods to forward request")
+	}
+	readyPods := utils.FilterRoutablePods(pods.All())
+	if len(readyPods) == 0 {
+		return "", fmt.Errorf("no ready pods available for fallback")
+	}
+	if len(readyPods) == 1 {
+		for _, pod := range readyPods {
+			ctx.SetTargetPod(pod)
+			return ctx.TargetAddress(), nil
+		}
+	}
+
+	return router.Route(ctx, &utils.PodArray{Pods: readyPods})
 }
 
 func NewHealthCheckServer() *HealthServer {

@@ -23,15 +23,14 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/cache"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcacheindexer/cache"
 	"github.com/vllm-project/aibrix/pkg/utils"
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
 const (
 	defaultPrefixCacheBlockNumber            = 200000
-	defaultPrefixCacheBlockSize              = 16
+	defaultPrefixCacheBlockSize              = 4
 	defaultPrefixCacheEvictionInternalInSec  = 1  // 1 second
 	defaultPrefixCacheEvictionDurationInMins = 20 // 20 minutes
 )
@@ -106,7 +105,6 @@ func getPrefixCacheEvictionDuration() time.Duration {
 
 type PrefixHashTable struct {
 	mu    sync.RWMutex
-	hash  *xxhash.Digest
 	seed  uint64
 	store cache.Store[uint64, Block]
 }
@@ -115,11 +113,10 @@ type Block struct {
 	modelToPods map[string]map[string]time.Time // model_name: map[pod_name]pod_last_access_time
 }
 
-func NewPrefixHashTable() PrefixCacheIndexer {
+func NewPrefixHashTable() *PrefixHashTable {
 	r := rand.New(rand.NewSource(time.Now().Unix()))
 	seed := r.Uint64()
 	instance := &PrefixHashTable{
-		hash: xxhash.NewWithSeed(seed),
 		seed: seed,
 		store: cache.NewLRUStore[uint64, Block](prefixCacheBlockNumber,
 			prefixCacheEvictionDuration,
@@ -130,58 +127,37 @@ func NewPrefixHashTable() PrefixCacheIndexer {
 	return instance
 }
 
-// returns matchedTokens, unMatchedTokens, matchedPods
-func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, pods []*v1.Pod) ([]byte, []byte, []*v1.Pod) {
-	var block, lastMatchedBlock Block
-	var ok bool
-	var lastTokenMatchIndex int
-
-	for i := 0; i < len(tokens); i += prefixCacheBlockSize {
-		end := i + prefixCacheBlockSize
-		if end > len(tokens) {
-			end = len(tokens)
-		}
-
-		c.mu.Lock()
-		_, _ = c.hash.Write(tokens[i:end])
-		prefixHash := c.hash.Sum64()
-		c.hash.ResetWithSeed(c.seed)
-		c.mu.Unlock()
-		block, ok = c.store.Get(prefixHash)
-		if !ok || len(block.modelToPods[model]) == 0 || len(matchPods(block.modelToPods[model], pods)) == 0 {
-			lastTokenMatchIndex = i
-			break
-		}
-
-		lastTokenMatchIndex = end
-		lastMatchedBlock = block
-		c.store.Put(prefixHash, block)
-	}
-
-	matchedTokens := tokens[0:lastTokenMatchIndex]
-	unMatchedTokens := tokens[lastTokenMatchIndex:]
-
-	var matchedPods []*v1.Pod
-	if len(matchedTokens) > 0 {
-		matchedPods = matchPods(lastMatchedBlock.modelToPods[model], pods)
-	}
-
-	return matchedTokens, unMatchedTokens, matchedPods
+// MatchPrefix matches the input token prefix's if already cached
+// returns map[podname]%prefixmatch along with all prefix hashes
+func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
+	prefixHashes := getPrefixHashes(c.seed, tokens)
+	return c.seqSearchPrefix(prefixHashes, model, readyPods)
 }
 
-func (c *PrefixHashTable) AddPrefix(unMatchedTokens []byte, model, pod string) {
+func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
+	// podname -> %prefixmatch
+	prefixMatchPods := map[string]int{}
+	for i := 0; i < len(prefixHashes); i++ {
+		prefixHash := prefixHashes[i]
+		prefixMatchPercent := (i + 1) * 100 / len(prefixHashes)
+
+		block, ok := c.store.Get(prefixHash)
+		if !ok || len(block.modelToPods[model]) == 0 ||
+			!matchPods(block.modelToPods[model], readyPods, prefixMatchPods, prefixMatchPercent) {
+			break
+		}
+	}
+	return prefixMatchPods, prefixHashes
+}
+
+// AddPrefix add prefix hashes for input tokens
+func (c *PrefixHashTable) AddPrefix(prefixHashes []uint64, model, pod string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for i := 0; i < len(unMatchedTokens); i += prefixCacheBlockSize {
-		end := i + prefixCacheBlockSize
-		if end > len(unMatchedTokens) {
-			end = len(unMatchedTokens)
-		}
+	for i := 0; i < len(prefixHashes); i++ {
+		prefixHash := prefixHashes[i]
 
-		_, _ = c.hash.Write(unMatchedTokens[i:end])
-		prefixHash := c.hash.Sum64()
-		c.hash.ResetWithSeed(c.seed)
 		block, ok := c.store.Get(prefixHash)
 		if !ok {
 			block = Block{
@@ -205,12 +181,35 @@ func (c *PrefixHashTable) AddPrefix(unMatchedTokens []byte, model, pod string) {
 }
 
 // matchPods returns ready pods that intersect with pods on which prefix tokens are catched.
-func matchPods(blockPods map[string]time.Time, readyPods []*v1.Pod) []*v1.Pod {
-	var matchedPods []*v1.Pod
-	for _, pod := range readyPods {
-		if _, ok := blockPods[pod.Name]; ok {
-			matchedPods = append(matchedPods, pod)
+func matchPods(blockPods map[string]time.Time, readyPods map[string]struct{}, prefixMatchPods map[string]int, prefixMatchPercent int) bool {
+	var isMatch bool
+	for pod := range readyPods {
+		if _, ok := blockPods[pod]; ok {
+			prefixMatchPods[pod] = prefixMatchPercent
+			isMatch = true
+		} else {
+			delete(readyPods, pod)
 		}
 	}
-	return matchedPods
+
+	return isMatch
+}
+
+func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
+	prefixHashes := []uint64{}
+	digest := xxhash.NewWithSeed(seed)
+	for i := 0; i < len(tokens); i += prefixCacheBlockSize {
+		end := i + prefixCacheBlockSize
+		if end > len(tokens) {
+			break
+		}
+		_, _ = digest.Write(tokens[i:end])
+		prefixHashes = append(prefixHashes, digest.Sum64())
+		digest.ResetWithSeed(seed)
+	}
+	return prefixHashes
+}
+
+func (c *PrefixHashTable) GetPrefixHashes(tokens []byte) []uint64 {
+	return getPrefixHashes(c.seed, tokens)
 }

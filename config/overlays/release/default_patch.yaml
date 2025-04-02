@@ -18,3 +18,5 @@ spec:
           env:
             - name: AIBRIX_GPU_OPTIMIZER_TRACING_FLAG
               value: "false"
+            - name: AIBRIX_PREFIX_CACHE_BLOCK_SIZE
+              value: "128"

@@ -329,9 +329,6 @@ func (c *Store) queryUpdatePromQLMetrics(metric metrics.Metric, queryLabels map[
 // TODO: replace in-place metric update podMetrics and podModelMetrics to fresh copy for preventing stale metric keys
 func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, scope metrics.MetricScope, metricValue metrics.MetricValue) error {
 	if scope == metrics.PodMetricScope {
-		if modelName != "" {
-			return fmt.Errorf("modelName should be empty for scope %v", scope)
-		}
 		pod.Metrics.Store(metricName, metricValue)
 	} else if scope == metrics.PodModelMetricScope {
 		if modelName == "" {

@@ -91,22 +91,22 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API) *Store {
 	}
 }
 
-func NewTestCacheWithPods(pods []*v1.Pod) *Store {
+func NewTestCacheWithPods(pods []*v1.Pod, model string) *Store {
 	c := &Store{}
 	for _, pod := range pods {
 		pod.Labels = make(map[string]string)
-		pod.Labels[modelIdentifier] = "modelName"
+		pod.Labels[modelIdentifier] = model
 		c.addPod(pod)
 	}
 	return c
 }
 
-func NewTestCacheWithPodsMetrics(pods []*v1.Pod, podMetrics map[string]map[string]metrics.MetricValue) *Store {
-	c := NewTestCacheWithPods(pods)
+func NewTestCacheWithPodsMetrics(pods []*v1.Pod, model string, podMetrics map[string]map[string]metrics.MetricValue) *Store {
+	c := NewTestCacheWithPods(pods, model)
 	c.metaPods.Range(func(podName string, metaPod *Pod) bool {
-		if metrics, ok := podMetrics[podName]; ok {
-			for metricName, metric := range metrics {
-				metaPod.Metrics.Store(metricName, metric)
+		if podmetrics, ok := podMetrics[podName]; ok {
+			for metricName, metric := range podmetrics {
+				c.updatePodRecord(metaPod, model, metricName, metrics.PodMetricScope, metric)
 			}
 		}
 		return true

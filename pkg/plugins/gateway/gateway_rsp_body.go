@@ -37,7 +37,6 @@ import (
 
 func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
-	klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID, "endOfStream", b.ResponseBody.EndOfStream)
 
 	var res openai.ChatCompletion
 	var usage openai.CompletionUsage
@@ -48,7 +47,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 
 	defer func() {
 		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
-		if !hasCompleted && complete && b.ResponseBody.EndOfStream {
+		if !hasCompleted && complete {
 			s.cache.DoneRequestTrace(routerCtx, requestID, model, promptTokens, completionTokens, traceTerm)
 			if routerCtx != nil {
 				routerCtx.Delete()
@@ -177,11 +176,19 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 						RawValue: []byte(targetPodIP),
 					},
 				},
+				&configPb.HeaderValueOption{
+					Header: &configPb.HeaderValue{
+						Key:      HeaderRequestID,
+						RawValue: []byte(requestID),
+					},
+				},
 			)
 			requestEnd = fmt.Sprintf(requestEnd+"targetPod: %s", targetPodIP)
 		}
 
 		klog.Infof("request end, requestID: %s - %s", requestID, requestEnd)
+	} else if b.ResponseBody.EndOfStream {
+		complete = true
 	}
 
 	return &extProcPb.ProcessingResponse{
