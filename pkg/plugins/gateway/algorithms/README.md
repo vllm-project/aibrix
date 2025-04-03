@@ -56,7 +56,7 @@ func select_least_loaded_match_pod(match_pods_with_prefix_match_percent, ready_p
 
     // select match pod with highest prefix and running_request < (mean + std_dev)
     for pod := range match_pods_with_prefix_match_percent {
-        if pod.running_request < mean + std_dev {
+        if pod.running_request < mean + load_factor*std_dev {
             return pod
         }
     }
@@ -67,3 +67,40 @@ func select_pod_with_least_running_requests(ready_pods) {
     return select_pod_min_running_requests()
 }
 ```
+
+## Configurations
+
+- **_AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE_**
+
+    AIBrix gateway implements two tokenizers **_character_** and **_tiktoken_**. Default tokenizer is <ins>**_character_**</ins>.
+    
+    | Tokenizer Type  | Details |
+    | ------------- | ------------- |
+    | character  | splits input text into characters  |
+    | tiktoken  | open-source openai/tiktoken [tokenizer](https://github.com/openai/tiktoken)  |
+
+- **_AIBRIX_PREFIX_CACHE_BLOCK_SIZE_**
+
+    Tokenized input request is split into blocks and hash value of the blocks is cached for future match. Size of the block (i.e. number of tokens per block) defines how effective prefix match will be. Default is <ins>**_character tokenizer and 64 block size (tokens per block)_**</ins>.
+
+    | Tokenizer Type  | Block Size Recommendation |
+    | ------------- | ------------- |
+    | character  | 64 to 128  |
+    | tiktoken  | 16  |
+
+- **AIBRIX_PREFIX_CACHE_BLOCK_NUMBER**
+
+    Maximum number of prefix cache blocks. Default is <ins>**_200000_**</ins>.
+
+- **AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT**
+
+    Before evaluating prefix cache match, router checks if there is imbalance of running requests across pods. Imbalance is measured using absolute difference between max & min running requests across pods, for example if imbalance_abs_count = 8 and running requests for pods are [p1: 1, p2: 4, p3:10] then current scenario is flagged as imbalanced. If flagged as imbalanced then prefix match is ignored and request is routed to pod with least running requests which in above example will to route to pod p1. Default is <ins>**_16_**</ins> and should be adjusted based on GPU hardware & prompt length.
+
+- **AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR**
+
+    After evaluating prefix match, pods are selected with matching prefix cache. Selected pods are re-evaluated to prevent a hotspot scenario where bulk of prefix matching requests are routed to same pod. Imbalanced is checked as follows
+    <pre>
+    prefix_match_pod.running_requests <= mean + <b>load_factor</b> * standard_deviation
+    </pre>
+
+    **load_factor** determines number of standard deviations. Default is <ins>**_2_**</ins>

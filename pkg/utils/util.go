@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/pkoukk/tiktoken-go"
 	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader"
@@ -81,4 +82,19 @@ func LoadEnv(key, defaultValue string) string {
 		return defaultValue
 	}
 	return value
+}
+
+func LoadEnvInt(key string, defaultValue int) int {
+	value := os.Getenv(key)
+	if value != "" {
+		intValue, err := strconv.Atoi(value)
+		if err != nil || intValue <= 0 {
+			klog.Warningf("invalid %s: %s, falling back to default: %d", key, value, defaultValue)
+		} else {
+			klog.Infof("set %s: %d", key, intValue)
+			return intValue
+		}
+	}
+	klog.Infof("set %s: %d, using default value", key, defaultValue)
+	return defaultValue
 }

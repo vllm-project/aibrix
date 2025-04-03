@@ -18,7 +18,6 @@ package prefixcacheindexer
 
 import (
 	"math/rand"
-	"strconv"
 	"sync"
 	"time"
 
@@ -36,72 +35,11 @@ const (
 )
 
 var (
-	// TODO: add a helper function for get methods.
-	prefixCacheBlockNumber      = getPrefixCacheBlockNumber()
-	prefixCacheBlockSize        = getPrefixCacheBlockSize()
-	prefixCacheEvictionInterval = getPrefixCacheEvictionInterval()
-	prefixCacheEvictionDuration = getPrefixCacheEvictionDuration()
+	prefixCacheBlockNumber      = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_BLOCK_NUMBER", defaultPrefixCacheBlockNumber)
+	prefixCacheBlockSize        = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_BLOCK_SIZE", defaultPrefixCacheBlockSize)
+	prefixCacheEvictionInterval = time.Duration(utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_SECONDS", defaultPrefixCacheEvictionInternalInSec)) * time.Second
+	prefixCacheEvictionDuration = time.Duration(utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS", defaultPrefixCacheEvictionDurationInMins)) * time.Minute
 )
-
-func getPrefixCacheBlockNumber() int {
-	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_BLOCK_NUMBER", "")
-	if value != "" {
-		intValue, err := strconv.Atoi(value)
-		if err != nil || intValue <= 0 {
-			klog.Infof("invalid AIBRIX_PREFIX_CACHE_BLOCK_NUMBER: %s, falling back to default", value)
-		} else {
-			klog.Infof("using AIBRIX_PREFIX_CACHE_BLOCK_NUMBER env value for prefix cache block number: %d", intValue)
-			return intValue
-		}
-	}
-	klog.Infof("using default prefix cache block number: %d", defaultPrefixCacheBlockNumber)
-	return defaultPrefixCacheBlockNumber
-}
-
-func getPrefixCacheBlockSize() int {
-	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_BLOCK_SIZE", "")
-	if value != "" {
-		intValue, err := strconv.Atoi(value)
-		if err != nil || intValue <= 0 {
-			klog.Infof("invalid AIBRIX_PREFIX_CACHE_BLOCK_SIZE: %s, falling back to default", value)
-		} else {
-			klog.Infof("using AIBRIX_PREFIX_CACHE_BLOCK_SIZE env value for prefix cache block size: %d", intValue)
-			return intValue
-		}
-	}
-	klog.Infof("using default prefix cache block size: %d", defaultPrefixCacheBlockSize)
-	return defaultPrefixCacheBlockSize
-}
-
-func getPrefixCacheEvictionInterval() time.Duration {
-	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_SECONDS", "")
-	if value != "" {
-		intValue, err := strconv.Atoi(value)
-		if err != nil || intValue <= 0 {
-			klog.Infof("invalid AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_SECONDS: %s, falling back to default", value)
-		} else {
-			klog.Infof("using AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_SECONDS env value for prefix cache eviction interval: %d ms", intValue)
-			return time.Duration(intValue) * time.Second
-		}
-	}
-	klog.Infof("using default prefix cache eviction interval: %d ms", defaultPrefixCacheEvictionInternalInSec)
-	return defaultPrefixCacheEvictionInternalInSec * time.Second
-}
-
-func getPrefixCacheEvictionDuration() time.Duration {
-	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS", "")
-	if value != "" {
-		intValue, err := strconv.Atoi(value)
-		if err != nil || intValue <= 0 {
-			klog.Infof("invalid AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS: %s, falling back to default", value)
-		} else {
-			klog.Infof("using AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS env value for prefix cache eviction duration: %d ms", intValue)
-			return time.Duration(intValue) * time.Minute
-		}
-	}
-	klog.Infof("using default prefix cache eviction duration: %d mins", defaultPrefixCacheEvictionDurationInMins)
-	return defaultPrefixCacheEvictionDurationInMins * time.Minute
-}
 
 type PrefixHashTable struct {
 	mu    sync.RWMutex
@@ -116,6 +54,11 @@ type Block struct {
 func NewPrefixHashTable() *PrefixHashTable {
 	r := rand.New(rand.NewSource(time.Now().Unix()))
 	seed := r.Uint64()
+	klog.InfoS("prefix_cache_hash_table_configurations",
+		"prefix_cache_block_number", prefixCacheBlockNumber,
+		"prefix_cache_block_size", prefixCacheBlockSize,
+		"prefix_cache_block_eviction_interval_seconds", prefixCacheEvictionInterval,
+		"prefix_cache_block_eviction_duration_minutes", prefixCacheEvictionDuration)
 	instance := &PrefixHashTable{
 		seed: seed,
 		store: cache.NewLRUStore[uint64, Block](prefixCacheBlockNumber,

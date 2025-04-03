@@ -20,7 +20,6 @@ import (
 	"math"
 	"math/rand"
 	"sort"
-	"strconv"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcacheindexer"
@@ -32,28 +31,17 @@ import (
 )
 
 const (
+	defaultTokenizerType                      = "character"
 	defaultPodRunningRequestImbalanceAbsCount = 8
+	defaultStandardDeviationFactor            = 1
 )
 
 var (
 	RouterPrefixCache                  types.RoutingAlgorithm = "prefix-cache"
-	podRunningRequestImbalanceAbsCount int                    = getPodRequestImbalanceAbsCount()
+	tokenizerType                                             = utils.LoadEnv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "character")
+	podRunningRequestImbalanceAbsCount int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT", defaultPodRunningRequestImbalanceAbsCount)
+	standardDeviationFactor            int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR", defaultStandardDeviationFactor)
 )
-
-func getPodRequestImbalanceAbsCount() int {
-	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT", "")
-	if value != "" {
-		intValue, err := strconv.Atoi(value)
-		if err != nil || intValue <= 0 {
-			klog.Infof("invalid AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT: %s, falling back to default", value)
-		} else {
-			klog.Infof("using AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT env value for prefix cache pod running request imbalance abs count: %d", intValue)
-			return intValue
-		}
-	}
-	klog.Infof("using default prefix cache pod running request imbalance abs count: %d", defaultPodRunningRequestImbalanceAbsCount)
-	return defaultPodRunningRequestImbalanceAbsCount
-}
 
 func init() {
 	RegisterDelayedConstructor(RouterPrefixCache, NewPrefixCacheRouter)
@@ -69,7 +57,6 @@ func NewPrefixCacheRouter() (types.Router, error) {
 	var tokenizerObj tokenizer.Tokenizer
 	// TODO: refactor initilization
 	// supported tokenizers: ["character", "tiktoken"]
-	tokenizerType := utils.LoadEnv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "string")
 	if tokenizerType == "tiktoken" {
 		tokenizerObj = tokenizer.NewTiktokenTokenizer()
 	} else {
@@ -81,6 +68,11 @@ func NewPrefixCacheRouter() (types.Router, error) {
 		klog.Error("fail to get cache store in prefix cache router")
 		return nil, err
 	}
+
+	klog.InfoS("prefix_cache_configurations",
+		"tokenizer_type", tokenizerType,
+		"pod_running_request_imbalance_abs_count", podRunningRequestImbalanceAbsCount,
+		"matched_pods_running_requests_standard_deviation_factor", standardDeviationFactor)
 
 	return prefixCacheRouter{
 		cache:              c,
@@ -185,7 +177,7 @@ func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matched
 	// select targetpod with highest %prefixmatch and request_count within stddev
 	for _, podname := range podnames {
 		reqCnt := float64(podRequestCount[podname])
-		if reqCnt <= meanRequestCount+stdDevRequestCount {
+		if reqCnt <= meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
 			targetPodName = podname
 			break
 		}
