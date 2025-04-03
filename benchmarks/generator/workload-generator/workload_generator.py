@@ -9,9 +9,9 @@ from typing import List, Dict, Any
 from transformers import PreTrainedTokenizerBase
 from datetime import timedelta
 from sample_request import (load_requests,  
-                            sample_requests_len_range, 
+                            find_requests_len_range, 
                             sample_requests_all,
-                            )
+                        )
 from distribution import (generate_poisson_dist,
                           generate_token_len_from_percentiles,
                           to_fluctuate_pattern_config,
@@ -117,7 +117,7 @@ def generate_synthetic_from_dist(
         current_time += inter_arrival_time
         if current_time < total_seconds * 1000:
             if current_rate != 0:
-                request = sample_requests_len_range(
+                request = find_requests_len_range(
                     df=prompt_df,
                     num_requests=1,
                     input_lens=[current_input_len],
@@ -144,7 +144,6 @@ def generate_constant(prompt_file_path: str,
                        ) -> List[List[Any]]:
     workload = []
     ts = 0
-    sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
     
     if input_len != None and output_len != None:
         rps_dist = []
@@ -167,8 +166,9 @@ def generate_constant(prompt_file_path: str,
             output_scale = 1.0,
         )
     else:
+        sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
         while ts < duration_ms:
-            concurrent_reqs = sample_requests_len_range(
+            concurrent_reqs = find_requests_len_range(
                 df=sharegpt_df,
                 num_requests=qps,
                 input_lens=[None] * qps, 
@@ -316,7 +316,7 @@ def generate_from_azure_csv(file_path: str,
         for _, row in group.iterrows():
             input_lens.append(int(row['ContextTokens']))
             output_lens.append(int(row['GeneratedTokens']))
-        sampled_requests = sample_requests_len_range(
+        sampled_requests = find_requests_len_range(
             df=sharegpt_df,
             num_requests=len(input_lens),
             input_lens=input_lens,
