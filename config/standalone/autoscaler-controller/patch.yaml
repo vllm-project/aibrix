@@ -14,3 +14,4 @@ spec:
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=0
             - --controllers=pod-autoscaler-controller
+            - --disable-webhook
