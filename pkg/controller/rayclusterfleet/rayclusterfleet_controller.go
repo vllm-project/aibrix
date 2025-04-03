@@ -80,9 +80,12 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		Owns(&orchestrationv1alpha1.RayClusterReplicaSet{}).
 		Owns(&rayclusterv1.RayCluster{}).
 		Complete(r)
+	if err != nil {
+		return err
+	}
 
 	klog.V(4).InfoS("Finished to add model-adapter-controller")
-	return err
+	return nil
 }
 
 var _ reconcile.Reconciler = &RayClusterFleetReconciler{}

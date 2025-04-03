@@ -122,9 +122,12 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		Owns(&appsv1.Deployment{}).
 		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}, builder.WithPredicates(podWithLabelFilter(KVCacheLabelKeyIdentifier))).
 		Complete(r)
+	if err != nil {
+		return err
+	}
 
 	klog.InfoS("Finished to add kv-cache-controller")
-	return err
+	return nil
 }
 
 // KVCacheReconciler reconciles a KVCache object

@@ -126,6 +126,9 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		Watches(&autoscalingv2.HorizontalPodAutoscaler{}, handler.EnqueueRequestsFromMapFunc(filterHPAObject)).
 		WatchesRawSource(src).
 		Complete(r)
+	if err != nil {
+		return err
+	}
 
 	klog.InfoS("Added AIBrix pod-autoscaler-controller successfully")
 
@@ -139,7 +142,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		}
 	}()
 
-	return err
+	return nil
 }
 
 var _ reconcile.Reconciler = &PodAutoscalerReconciler{}

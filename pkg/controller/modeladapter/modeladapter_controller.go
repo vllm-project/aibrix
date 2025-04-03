@@ -230,9 +230,12 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(lookupLinkedModelAdapterInNamespace(mgr.GetClient())),
 			builder.WithPredicates(podWithLabelFilter(ModelAdapterPodTemplateLabelKey, ModelAdapterPodTemplateLabelValue, ModelIdentifierKey))).
 		Complete(r)
+	if err != nil {
+		return err
+	}
 
 	klog.V(4).InfoS("Finished to add model-adapter-controller")
-	return err
+	return nil
 }
 
 var _ reconcile.Reconciler = &ModelAdapterReconciler{}
