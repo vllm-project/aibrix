@@ -8,23 +8,6 @@ from transformers import AutoTokenizer
 from util import save_dataset_jsonl
 
 
-# def load_generated_dataset(
-#         dataset_path: str,
-#         tokenizer: PreTrainedTokenizerBase,
-# ) -> pd.DataFrame:
-#     # Load the dataset into a DataFrame
-#     with open(dataset_path, encoding='utf-8') as f:
-#         dataset = [json.loads(line) for line in f]
-#     # Create a DataFrame with the desired columns
-#     logging.warn(f"...Start dataframe transformation")
-#     df = pd.DataFrame({
-#         'prompt': [entry['input'][0]['content'] for entry in dataset],
-#         'completion': [entry['output'] for entry in dataset],
-#         'prompt_len': [entry['prompt_tokens'] for entry in dataset],
-#         'completion_len': [entry['output_tokens'] for entry in dataset]
-#     })
-#     logging.warn(f"...Complete dataframe transformation")
-#     return df
 
 def process_dataset_trace(
         dataset_path: str,
@@ -41,7 +24,7 @@ def process_dataset_trace(
             "prompt": entry['input'][0]['content'],
             "completion": entry['output'],
         })
-    output_filename = f"trace-{output}"
+    output_filename = f"output/trace-{output}"
     save_dataset_jsonl(prompts, output_filename)
     logging.warn(f"...Finished saving dataset to {output_filename}")
     
@@ -58,12 +41,12 @@ def process_dataset_sharegpt(
     sessioned_prompts = []
     for session_dict in dataset:
         session_id = session_dict["id"]
-        flat_prompts_data = [conv_dict["value"] for conv_dict in session_dict["conversations"] if conv_dict["from"] == "gpt"]
+        flat_prompts_data = [conv_dict["value"] for conv_dict in session_dict["conversations"] if conv_dict["from"] == "human"]
         sessioned_prompts.append({
             "session_id": session_id,
             "prompts": flat_prompts_data,
         })
-    output_filename = f"sharegpt-{output}"
+    output_filename = f"output/sharegpt-{output}"
     save_dataset_jsonl(sessioned_prompts, output_filename)
     logging.warn(f"...Finished saving dataset to {output_filename}")
     

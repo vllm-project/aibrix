@@ -11,6 +11,7 @@ from typing import List, Union, Any, Optional, Tuple, Dict
 from transformers import (AutoTokenizer, PreTrainedTokenizer,
                           PreTrainedTokenizerFast)
 from datetime import datetime
+from collections import Counter
 
 def convert_to_stat_df(qps_file: str, 
                        input_file: str, 
@@ -166,64 +167,87 @@ def get_tokenizer(
 
 
 def plot_workload(workload_name: str, 
-                  workload: str,
+                  workload: list,
                   bin_size_sec: int = 1,
                   output_dir: str = None):
     """
     Plots workload statistics: total requests, prompt token count, and output token count binned by time.
+    Also plots session ID frequency ranking.
 
     Args:
         workload_name (str): Name of the workload.
         workload (list of dict): Workload entries with timestamps and request details.
         bin_size_sec (int): Size of each bin in seconds for aggregation.
-        output_file (str, optional): File path to save the plot.
+        output_dir (str, optional): Directory path to save the plot.
     """
     print(f"plot_workload in directory {output_dir}")
+    
     # Convert workload data to a DataFrame
     data = []
+    session_ids = []
+
     for entry in workload:
         timestamp_sec = int(entry["timestamp"] / 1000)  # Convert ms to sec
         num_requests = len(entry["requests"])
         total_prompt_tokens = np.mean([req["prompt_length"] if req["prompt_length"] else 0 for req in entry["requests"]]) if entry["requests"] else 0
-        total_output_tokens = np.mean([req["output_length"] if req["output_length"] else 0 for req in entry["requests"]]) if entry["requests"]  else 0
+        total_output_tokens = np.mean([req["output_length"] if req["output_length"] else 0 for req in entry["requests"]]) if entry["requests"] else 0
+        
         data.append((timestamp_sec, num_requests, total_prompt_tokens, total_output_tokens))
+
+        # Collect session IDs
+        for req in entry["requests"]:
+            if "session_id" in req:  
+                session_ids.append(req["session_id"])
 
     df = pd.DataFrame(data, columns=["timestamp", "num_requests", "total_prompt_tokens", "total_output_tokens"])
 
     # Define bins based on min/max timestamp
-    min_time, max_time = df["timestamp"].min(), df["timestamp"].max()
-    bins = np.arange(min_time, max_time + bin_size_sec, bin_size_sec)
-    
-    # Bin the data
-    df["time_bin"] = pd.cut(df["timestamp"], bins, labels=bins[:-1])
+    if not df.empty:
+        min_time, max_time = df["timestamp"].min(), df["timestamp"].max()
+        bins = np.arange(min_time, max_time + bin_size_sec, bin_size_sec)
 
-    # Aggregate within each bin
-    # binned_df = df.groupby("time_bin").sum()
-    binned_df = df.groupby("time_bin").agg({
-        "num_requests": "sum", 
-        "total_prompt_tokens": "mean", 
-        "total_output_tokens": "mean"
-    })
+        # Bin the data
+        df["time_bin"] = pd.cut(df["timestamp"], bins, labels=bins[:-1])
 
-    # Convert index back to numeric
-    binned_df.index = binned_df.index.astype(float)
-    print(binned_df)
-    # Plotting
-    fig, (ax_qps, ax_input, ax_output) = plt.subplots(3, 1, figsize=(10, 8))
+        # Aggregate within each bin
+        binned_df = df.groupby("time_bin").agg({
+            "num_requests": "sum", 
+            "total_prompt_tokens": "mean", 
+            "total_output_tokens": "mean"
+        })
 
-    ax_qps.plot(binned_df.index, binned_df["num_requests"], label="Total Requests")
-    ax_input.plot(binned_df.index, binned_df["total_prompt_tokens"], label="Total Prompt Tokens")
-    ax_output.plot(binned_df.index, binned_df["total_output_tokens"], label="Total Output Tokens")
+        # Convert index back to numeric
+        binned_df.index = binned_df.index.astype(float)
+        print(binned_df)
 
-    # Formatting plots
-    for ax, ylabel, title in zip([ax_qps, ax_input, ax_output],
-                                  ["Requests per Second", "Prompt Token Count", "Output Token Count"],
-                                  ["Total Requests Sent per Second", "Total Prompt Tokens per Second", "Total Output Tokens per Second"]):
-        ax.set_xlabel("Time (seconds)")
-        ax.set_ylabel(ylabel)
-        ax.set_title(title)
-        ax.legend()
-    
+    # **NEW: Count session ID frequencies**
+    session_counts = Counter(session_ids)
+    sorted_sessions = sorted(session_counts.items(), key=lambda x: x[1], reverse=True)  # Sort by frequency
+    session_labels, session_frequencies = zip(*sorted_sessions) if sorted_sessions else ([], [])
+
+    # **Plotting**
+    fig, axes = plt.subplots(4, 1, figsize=(10, 10))  # 4 plots now
+
+    # Plot request statistics
+    if not df.empty:
+        axes[0].plot(binned_df.index, binned_df["num_requests"], label="Total Requests")
+        axes[1].plot(binned_df.index, binned_df["total_prompt_tokens"], label="Total Prompt Tokens")
+        axes[2].plot(binned_df.index, binned_df["total_output_tokens"], label="Total Output Tokens")
+
+        for ax, ylabel, title in zip(axes[:3],
+                                    ["Requests per Second", "Prompt Token Count", "Output Token Count"],
+                                    ["Total Requests Sent per Second", "Total Prompt Tokens per Second", "Total Output Tokens per Second"]):
+            ax.set_xlabel("Time (seconds)")
+            ax.set_ylabel(ylabel)
+            ax.set_title(title)
+            ax.legend()
+
+    # **Plot ranked session ID frequencies**
+    axes[3].bar(range(len(session_frequencies)), session_frequencies)
+    axes[3].set_title("Session ID Frequency (Ranked)")
+    axes[3].set_ylabel("Frequency")
+    axes[3].set_xticks([])  # Remove x-axis labels
+
     plt.tight_layout()
 
     # Save or show the plot
