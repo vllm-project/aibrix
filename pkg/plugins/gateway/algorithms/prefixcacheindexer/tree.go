@@ -239,7 +239,7 @@ func (c *LPRadixCache) NewTreeNode(numPods int, parent *TreeNode, key []int, val
 	}
 
 	// Increment node ID for next creation
-	klog.Infof("Created a new node(%d) with key: %v and value: %v", node.id, key, value)
+	klog.V(4).Infof("Created a new node(%d) with key: %v and value: %v", node.id, key, value)
 	c.nextNodeID++
 
 	// Set depth and context length based on parent

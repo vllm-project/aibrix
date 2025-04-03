@@ -18,5 +18,13 @@ spec:
           env:
             - name: AIBRIX_GPU_OPTIMIZER_TRACING_FLAG
               value: "false"
+            - name: AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE
+              value: "character"
             - name: AIBRIX_PREFIX_CACHE_BLOCK_SIZE
-              value: "128"
+              value: "64"
+            - name: AIBRIX_PREFIX_CACHE_BLOCK_NUMBER
+              value: "200000"
+            - name: AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT
+              value: "16"
+            - name: AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR
+              value: "2"
