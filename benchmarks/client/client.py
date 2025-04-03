@@ -14,9 +14,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List
 from utils import (load_workload, wrap_prompt_as_chat_message)
 
-logging.basicConfig(level=logging.INFO)
-task_queue = Queue()
 thread_pool_size = 8
+QUEUE_SIZE = thread_pool_size * 2
+logging.basicConfig(level=logging.INFO)
+task_queue = Queue(maxsize=QUEUE_SIZE)
 
 def worker(client, model, send_request_func, output_file):
     """Worker function to run an asyncio event loop in a separate thread."""
@@ -25,6 +26,7 @@ def worker(client, model, send_request_func, output_file):
     while True:
         task = task_queue.get()
         if task is None:  # Stop signal
+            logging.warn(f"Worker exit.")
             break
         loop.run_until_complete(send_request_func(client, model, *task))
 
@@ -44,12 +46,15 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
                              model: str,
                              prompt: str,
                              output_file: str,
-                             request_id: int):
+                             request_id: int,
+                             target_time: int,
+                             ):
     start_time = asyncio.get_event_loop().time()
     first_response_time = None
     target_pod = ""
     try:
-        logging.info(f"Request {request_id}: Starting streaming request")
+        cur_time = time.time()
+        logging.warning(f"send_request_streaming: Prepare to launch task after {target_time - cur_time}")
         response_stream = await client.chat.completions.create(
             model=model,
             messages=prompt,
@@ -160,21 +165,20 @@ async def benchmark_streaming(api_key: str,
         requests = requests_dict["requests"]
         cur_time = time.time()
         target_time = base_time + ts / 1000.0
-        logging.warning(f"Prepare to launch {len(requests)} streaming tasks after {target_time - cur_time}")
-        if target_time > cur_time:
-            await asyncio.sleep(target_time - cur_time)
         formatted_prompts = [wrap_prompt_as_chat_message(request["prompt"]) for request in requests]
         for i in range(len(requests)):
-            task_queue.put((formatted_prompts[i], output_file, request_id))
+            task_queue.put((formatted_prompts[i], output_file, request_id, target_time))
             request_id += 1
         num_requests += len(requests)
     task_queue.join()
     # Stop all worker threads
+    logging.warn("Producer completed ...")
     for _ in threads:
         task_queue.put(None)
 
     for thread in threads:
         thread.join()
+        logging.warn(f"Worker thread {thread} completed ...")
     logging.warning(f"All {num_requests} requests completed for deployment.")
 
 # Asynchronous request handler
@@ -182,10 +186,16 @@ async def send_request_batch(client: openai.AsyncOpenAI,
                              model: str,
                              prompt: str,
                              output_file: str,
-                             request_id: int):
+                             request_id: int,
+                             target_time: int,
+                             ):
     start_time = asyncio.get_event_loop().time()
     target_pod = ""
     try:
+        cur_time = time.time()
+        logging.warning(f"send_request_batch: Prepare to launch task after {target_time - cur_time}")
+        if target_time > cur_time:
+            await asyncio.sleep(target_time - cur_time)
         response = await client.chat.completions.create(
             model=model,
             messages=prompt,
@@ -266,14 +276,10 @@ async def benchmark_batch(api_key: str,
     for requests_dict in load_struct:
         ts = int(requests_dict["timestamp"])
         requests = requests_dict["requests"]
-        cur_time = time.time()
         target_time = base_time + ts / 1000.0
-        logging.warning(f"Prepare to launch {len(requests)} batched tasks after {target_time - cur_time}")
-        if target_time > cur_time:
-            await asyncio.sleep((target_time - cur_time)/4)
         formatted_prompts = [wrap_prompt_as_chat_message(request["prompt"]) for request in requests]
         for i in range(len(requests)):
-            task_queue.put((formatted_prompts[i], output_file, request_id))
+            task_queue.put((formatted_prompts[i], output_file, request_id, target_time))
         num_requests += len(requests)
     await asyncio.gather(*batch_tasks)
     logging.warning(f"All {num_requests} requests completed for deployment.")
