@@ -151,8 +151,8 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 
 	modelPort, err := strconv.ParseInt(labels[modelPortIdentifier], 10, 32)
 	if err != nil {
-		klog.Warningf("failed to par5se model port: %v", err)
-		klog.Infof("pelase ensure %s is configured, default port %d will be used", modelPortIdentifier, defaultModelServingPort)
+		klog.Warningf("failed to parse model port: %v", err)
+		klog.Infof("please ensure %s is configured, default port %d will be used", modelPortIdentifier, defaultModelServingPort)
 		modelPort = defaultModelServingPort
 	}
 
