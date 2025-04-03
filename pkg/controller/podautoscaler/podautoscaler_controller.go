@@ -281,14 +281,18 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) *a
 
 func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
 	// Generate a corresponding HorizontalPodAutoscaler
-	hpa := makeHPA(&pa)
+	hpa, err := makeHPA(&pa)
+	if err != nil {
+		klog.ErrorS(err, "Failed to generate a HPA object", "PA", types.NamespacedName{Name: pa.Name, Namespace: pa.Namespace})
+		return ctrl.Result{}, err
+	}
 	hpaName := types.NamespacedName{
 		Name:      hpa.Name,
 		Namespace: hpa.Namespace,
 	}
 
 	existingHPA := &autoscalingv2.HorizontalPodAutoscaler{}
-	err := r.Get(ctx, hpaName, existingHPA)
+	err = r.Get(ctx, hpaName, existingHPA)
 	if err != nil && errors.IsNotFound(err) {
 		// HPA does not exist, create a new one.
 		klog.InfoS("Creating a new HPA", "HPA", hpaName)

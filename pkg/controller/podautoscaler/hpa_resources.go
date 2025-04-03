@@ -36,7 +36,7 @@ var (
 )
 
 // MakeHPA creates an HPA resource from a PodAutoscaler resource.
-func makeHPA(pa *pav1.PodAutoscaler) *autoscalingv2.HorizontalPodAutoscaler {
+func makeHPA(pa *pav1.PodAutoscaler) (*autoscalingv2.HorizontalPodAutoscaler, error) {
 	minReplicas, maxReplicas := pa.Spec.MinReplicas, pa.Spec.MaxReplicas
 	// TODO: add some validation logics, has to be larger than minReplicas
 	if maxReplicas == 0 {
@@ -66,12 +66,11 @@ func makeHPA(pa *pav1.PodAutoscaler) *autoscalingv2.HorizontalPodAutoscaler {
 	}
 	source, err := pav1.GetPaMetricSources(*pa)
 	if err != nil {
-		klog.ErrorS(err, "Failed to GetPaMetricSources")
-		return nil
+		return nil, fmt.Errorf("failed to GetPaMetricSources: %w", err)
 	}
 
 	if targetValue, err := strconv.ParseFloat(source.TargetValue, 64); err != nil {
-		klog.ErrorS(err, "Failed to parse target value")
+		return nil, fmt.Errorf("failed to parse target value of the metric source: %w", err)
 	} else {
 		klog.V(4).InfoS("Creating HPA", "metric", source.TargetMetric, "target", targetValue)
 
@@ -119,5 +118,5 @@ func makeHPA(pa *pav1.PodAutoscaler) *autoscalingv2.HorizontalPodAutoscaler {
 		}
 	}
 
-	return hpa
+	return hpa, nil
 }
