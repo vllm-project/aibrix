@@ -18,7 +18,6 @@ package cache
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
@@ -75,8 +74,7 @@ var (
 		metrics.WaitingLoraAdapters,
 		metrics.RunningLoraAdapters,
 	}
-	// TODO: add a helper function for get methods.
-	podMetricRefreshInterval = getPodMetricRefreshInterval()
+	podMetricRefreshInterval = time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
 )
 
 func initPrometheusAPI() prometheusv1.API {
@@ -97,21 +95,6 @@ func initPrometheusAPI() prometheusv1.API {
 		}
 	}
 	return prometheusApi
-}
-
-func getPodMetricRefreshInterval() time.Duration {
-	value := utils.LoadEnv("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", "")
-	if value != "" {
-		intValue, err := strconv.Atoi(value)
-		if err != nil || intValue <= 0 {
-			klog.Infof("invalid AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: %s, falling back to default", value)
-		} else {
-			klog.Infof("using AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS env value for pod metrics refresh interval: %d ms", intValue)
-			return time.Duration(intValue) * time.Millisecond
-		}
-	}
-	klog.Infof("using default refresh interval: %d ms", defaultPodMetricRefreshIntervalInMS)
-	return defaultPodMetricRefreshIntervalInMS * time.Millisecond
 }
 
 func (c *Store) getPodMetricImpl(podName string, metricStore *utils.SyncMap[string, metrics.MetricValue], metricName string) (metrics.MetricValue, error) {
