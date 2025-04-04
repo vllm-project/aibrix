@@ -91,6 +91,10 @@ func RegisterSchemas(scheme *runtime.Scheme) error {
 		utilruntime.Must(rayclusterv1.AddToScheme(scheme))
 	}
 
+	if features.IsControllerEnabled(features.KVCacheController) {
+		utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
+	}
+
 	scheme.AddUnversionedTypes(metav1.SchemeGroupVersion, &metav1.UpdateOptions{}, &metav1.DeleteOptions{}, &metav1.CreateOptions{})
 	//+kubebuilder:scaffold:scheme
 

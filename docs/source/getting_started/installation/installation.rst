@@ -84,3 +84,9 @@ Model Adapter(Lora)
     kubectl apply -k config/standalone/model-adapter-controller
 
 
+KV Cache
+^^^^^^^^
+
+.. code:: bash
+
+    kubectl apply -k config/standalone/kv-cache-controller
