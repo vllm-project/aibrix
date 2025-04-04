@@ -51,8 +51,6 @@ var (
 // Add creates a new RayClusterFleet Controller and adds it to the Manager with default RBAC.
 // The Manager will set fields on the Controller and Start it when the Manager is Started.
 func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
-	// TODO: check crd exists or not. If not, we should fail here directly without moving forward.
-
 	r, err := newReconciler(mgr, runtimeConfig)
 	if err != nil {
 		return err

@@ -51,7 +51,6 @@ func Initialize() {
 	}
 
 	if features.IsControllerEnabled(features.DistributedInferenceController) {
-		// TODO: only enable them if KubeRay is installed (check RayCluster CRD exist)
 		controllerAddFuncs = append(controllerAddFuncs, rayclusterreplicaset.Add)
 		controllerAddFuncs = append(controllerAddFuncs, rayclusterfleet.Add)
 	}
