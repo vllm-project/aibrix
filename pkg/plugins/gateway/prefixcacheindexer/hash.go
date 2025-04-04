@@ -37,71 +37,40 @@ const (
 )
 
 var (
-	// TODO: add a helper function for get methods.
-	prefixCacheBlockNumber      = getPrefixCacheBlockNumber()
-	prefixCacheBlockSize        = getPrefixCacheBlockSize()
-	prefixCacheEvictionInterval = getPrefixCacheEvictionInterval()
-	prefixCacheEvictionDuration = getPrefixCacheEvictionDuration()
+	prefixCacheBlockNumber      = getEnvValueOrDefault("AIBRIX_PREFIX_CACHE_BLOCK_NUMBER", defaultPrefixCacheBlockNumber)
+	prefixCacheBlockSize        = getEnvValueOrDefault("AIBRIX_PREFIX_CACHE_BLOCK_SIZE", defaultPrefixCacheBlockSize)
+	prefixCacheEvictionInterval = getEnvDurationOrDefault("AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_SECONDS", defaultPrefixCacheEvictionInternalInSec, time.Second)
+	prefixCacheEvictionDuration = getEnvDurationOrDefault("AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS", defaultPrefixCacheEvictionDurationInMins, time.Minute)
 )
 
-func getPrefixCacheBlockNumber() int {
-	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_BLOCK_NUMBER", "")
+func getEnvValueOrDefault(envKey string, defaultValue int) int {
+	value := utils.LoadEnv(envKey, "")
 	if value != "" {
 		intValue, err := strconv.Atoi(value)
 		if err != nil || intValue <= 0 {
-			klog.Infof("invalid AIBRIX_PREFIX_CACHE_BLOCK_NUMBER: %s, falling back to default", value)
+			klog.Infof("invalid %s: %s, falling back to default", envKey, value)
 		} else {
-			klog.Infof("using AIBRIX_PREFIX_CACHE_BLOCK_NUMBER env value for prefix cache block number: %d", intValue)
+			klog.Infof("using %s env value: %d", envKey, intValue)
 			return intValue
 		}
 	}
-	klog.Infof("using default prefix cache block number: %d", defaultPrefixCacheBlockNumber)
-	return defaultPrefixCacheBlockNumber
+	klog.Infof("using default %s: %d", envKey, defaultValue)
+	return defaultValue
 }
 
-func getPrefixCacheBlockSize() int {
-	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_BLOCK_SIZE", "")
+func getEnvDurationOrDefault(envKey string, defaultValue int, unit time.Duration) time.Duration {
+	value := utils.LoadEnv(envKey, "")
 	if value != "" {
 		intValue, err := strconv.Atoi(value)
 		if err != nil || intValue <= 0 {
-			klog.Infof("invalid AIBRIX_PREFIX_CACHE_BLOCK_SIZE: %s, falling back to default", value)
+			klog.Infof("invalid %s: %s, falling back to default", envKey, value)
 		} else {
-			klog.Infof("using AIBRIX_PREFIX_CACHE_BLOCK_SIZE env value for prefix cache block size: %d", intValue)
-			return intValue
+			klog.Infof("using %s env value: %d", envKey, intValue)
+			return time.Duration(intValue) * unit
 		}
 	}
-	klog.Infof("using default prefix cache block size: %d", defaultPrefixCacheBlockSize)
-	return defaultPrefixCacheBlockSize
-}
-
-func getPrefixCacheEvictionInterval() time.Duration {
-	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_SECONDS", "")
-	if value != "" {
-		intValue, err := strconv.Atoi(value)
-		if err != nil || intValue <= 0 {
-			klog.Infof("invalid AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_SECONDS: %s, falling back to default", value)
-		} else {
-			klog.Infof("using AIBRIX_PREFIX_CACHE_EVICTION_INTERVAL_SECONDS env value for prefix cache eviction interval: %d ms", intValue)
-			return time.Duration(intValue) * time.Second
-		}
-	}
-	klog.Infof("using default prefix cache eviction interval: %d ms", defaultPrefixCacheEvictionInternalInSec)
-	return defaultPrefixCacheEvictionInternalInSec * time.Second
-}
-
-func getPrefixCacheEvictionDuration() time.Duration {
-	value := utils.LoadEnv("AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS", "")
-	if value != "" {
-		intValue, err := strconv.Atoi(value)
-		if err != nil || intValue <= 0 {
-			klog.Infof("invalid AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS: %s, falling back to default", value)
-		} else {
-			klog.Infof("using AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS env value for prefix cache eviction duration: %d ms", intValue)
-			return time.Duration(intValue) * time.Minute
-		}
-	}
-	klog.Infof("using default prefix cache eviction duration: %d mins", defaultPrefixCacheEvictionDurationInMins)
-	return defaultPrefixCacheEvictionDurationInMins * time.Minute
+	klog.Infof("using default %s: %d", envKey, defaultValue)
+	return time.Duration(defaultValue) * unit
 }
 
 type PrefixHashTable struct {
