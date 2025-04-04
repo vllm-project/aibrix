@@ -17,6 +17,9 @@ limitations under the License.
 package prefixcacheindexer
 
 import (
+	"fmt"
+	"math/rand"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -75,6 +78,23 @@ func Test_PrefixHashTableE2E(t *testing.T) {
 	assert.Equal(t, 100, matchedPods[targetPod])
 	assert.Equal(t, 66, matchedPods[targetPod2])
 	assert.Equal(t, 3, len(prefixHashes))
+}
+
+func Test_PrefixHashTableConcurrency(t *testing.T) {
+	prefixHashTable := NewPrefixHashTable()
+	model := "m1"
+	targetPod := "p1"
+	var wg sync.WaitGroup
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tokens := []byte(fmt.Sprintf("this is %v message", rand.Intn(10)))
+			_, prefixHashes := prefixHashTable.MatchPrefix(tokens, model, getReadyPods())
+			prefixHashTable.AddPrefix(prefixHashes, model, targetPod)
+		}()
+	}
+	wg.Wait()
 }
 
 func getFirstKey(matchedPods map[string]int) string {

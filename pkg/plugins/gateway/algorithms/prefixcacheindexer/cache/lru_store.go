@@ -27,6 +27,7 @@ var DefaultGetCurrentTime = func() time.Time {
 	return time.Now()
 }
 
+// TODO: make LRUStore thread-safe
 type LRUStore[K comparable, V any] struct {
 	sync.RWMutex
 	freeTable map[K]*entry[K, V]
@@ -88,12 +89,10 @@ func (e *LRUStore[K, V]) Put(key K, value V) bool {
 }
 
 func (e *LRUStore[K, V]) Get(key K) (V, bool) {
-	e.Lock()
-	defer e.Unlock()
+	e.RLock()
+	defer e.RUnlock()
 
 	if entry, exists := e.freeTable[key]; exists {
-		entry.lastAccessTime = time.Now()
-		e.lruList.moveToHead(entry)
 		return entry.Value, true
 	}
 	var zero V
