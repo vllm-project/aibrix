@@ -94,12 +94,11 @@ def _find_requests_plain_len_range(
         err_step: float = 0.05,
         repeating: bool = True,
 ) -> List[Tuple[str, int, int, None]]:
-    if df.empty:
-        return None
     filtered_results = []
-
     # Relaxation mechanism
     for i in range(num_requests):
+        if df.empty:
+            return filtered_results
         input_len = input_lens[i]
         output_len = output_lens[i]
         err_perc = initial_err_perc
@@ -154,11 +153,11 @@ def _find_requests_sessioned_len_range(
     initial_err_perc: Optional[float] = 0.5,
     err_step: float = 0.05,
 ):
-    if df.empty:
-        return None
     filtered_results = []
     # Relaxation mechanism
     for i in range(num_requests):
+        if df.empty:
+            return filtered_results
         input_len = input_lens[i]
         output_len = output_lens[i]
         err_perc = initial_err_perc
@@ -202,6 +201,8 @@ def _find_requests_sessioned_len_range(
                 (df["prompt_lens"].apply(lambda x: x[0]) - input_len) ** 2 + 
                 (df["completion_lens"].apply(lambda x: output_len if pd.isna(x[0]) else x[0]) - output_len) ** 2
             )
+            print(df)
+            print(f"if df empty {df.empty}")
             closest_session = df.nsmallest(1, "distance").iloc[0]
             closest_input, closest_output = closest_session["prompt_len"][0], closest_session["completion_len"][0]
             sample_idx = closest_session.name
