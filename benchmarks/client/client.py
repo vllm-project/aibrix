@@ -8,7 +8,6 @@ import io
 import traceback
 import threading
 from queue import Queue
-from concurrent.futures import ThreadPoolExecutor
 
 
 from typing import List
@@ -21,26 +20,25 @@ task_queue = Queue(maxsize=QUEUE_SIZE)
 session_history = {}
 lock = threading.Lock()
 
-def worker(client, model, send_request_func, output_file):
+def worker(thread_idx, client, model, send_request_func, output_file):
     """Worker function to run an asyncio event loop in a separate thread."""
     asyncio.set_event_loop(asyncio.new_event_loop())
     loop = asyncio.get_event_loop()
     while True:
         task = task_queue.get()
         if task is None:  # Stop signal
-            logging.warn(f"Worker exit.")
+            logging.warn(f"Worker {thread_idx} exit.")
             break
-        loop.run_until_complete(send_request_func(client, model, *task))
+        else:
+            loop.run_until_complete(send_request_func(client, model, *task))
+        task_queue.task_done()
 
 
-def start_worker_threads(num_threads, client, model, send_request_func, output_file):
+def start_worker_threads(thread_idx, client, model, send_request_func, output_file):
     """Start multiple threads, each running an event loop for handling tasks."""
-    threads = []
-    for _ in range(num_threads):
-        thread = threading.Thread(target=worker, args=(client, model, send_request_func, output_file), daemon=True)
-        thread.start()
-        threads.append(thread)
-    return threads
+    thread = threading.Thread(target=worker, args=(thread_idx, client, model, send_request_func, output_file), daemon=True)
+    thread.start()
+    return thread
 
 
 
@@ -119,6 +117,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
             "ttft": ttft,
             "tpot": tpot,
             "target_pod": target_pod,
+            "session_id": session_id,
         }
 
         # Write result to JSONL file
@@ -142,6 +141,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
             "start_time": start_time,
             "end_time": error_time,
             "target_pod": target_pod,
+            "session_id": session_id,
         }
         logging.error(f"Request {request_id}: Error ({error_type}): {str(e)}")
         output_file.write(json.dumps(error_result) + "\n")
@@ -161,9 +161,9 @@ async def benchmark_streaming(api_key: str,
     base_time = time.time()
     num_requests = 0
     threads = []
-    for _ in range(0, thread_pool_size):
+    for thread_idx in range(0, thread_pool_size):
         client = create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
-        threads.extend(start_worker_threads(1, client, model, send_request_streaming, output_file))
+        threads.append(start_worker_threads(thread_idx, client, model, send_request_streaming, output_file))
     for requests_dict in load_struct:
         ts = int(requests_dict["timestamp"])
         requests = requests_dict["requests"]
@@ -235,6 +235,7 @@ async def send_request_batch(client: openai.AsyncOpenAI,
             "ttft": "Unknown",
             "tpot": "Unknown",
             "target_pod": target_pod,
+            "session_id": session_id,
         }
         logging.info(result)
         # Write result to JSONL file
@@ -255,7 +256,8 @@ async def send_request_batch(client: openai.AsyncOpenAI,
             "latency": error_time - start_time,
             "start_time": start_time,
             "end_time": error_time,
-            "target_pod": target_pod
+            "target_pod": target_pod,
+            "session_id": session_id,
         }
         logging.error(f"Request {request_id}: Error ({error_type}): {str(e)}")
         output_file.write(json.dumps(error_result) + "\n")
@@ -277,9 +279,9 @@ async def benchmark_batch(api_key: str,
     num_requests = 0
     threads = []
     
-    for _ in range(0, thread_pool_size):
+    for thread_idx in range(0, thread_pool_size):
         client = create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
-        threads.extend(start_worker_threads(1, client, model, send_request_batch, output_file))
+        threads.append(start_worker_threads(thread_idx, client, model, send_request_batch, output_file))
     for requests_dict in load_struct:
         ts = int(requests_dict["timestamp"])
         requests = requests_dict["requests"]
@@ -288,10 +290,10 @@ async def benchmark_batch(api_key: str,
         for i in range(len(requests)):
             session_id = requests[i].get("session_id", None)
             task_queue.put((formatted_prompts[i], output_file, request_id, session_id, target_time))
+            request_id += 1
         num_requests += len(requests)
     task_queue.join()
     # Stop all worker threads
-    logging.warn("Producer completed ...")
     for _ in threads:
         task_queue.put(None)
 
