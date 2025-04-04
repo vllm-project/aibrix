@@ -126,6 +126,19 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	assert.True(t, slices.Contains([]string{p2, p4}, targetPod))
 	c.AddRequestCount(ctx6, ctx6.RequestID, ctx6.Model)
 	fmt.Println(targetPod)
+
+	// pre prefix match, load imbalance -> select least request pod
+	input = "abcdefgh"
+	// pre_request_count: [p1: 0, p2: 9 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
+	// post_request_count: [p1: 1 (abcdefgh), p2: 9 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
+	fmt.Println(input)
+	for i := 0; i < 6; i++ {
+		c.AddRequestCount(ctx6, ctx6.RequestID, ctx6.Model)
+	}
+	ctx7 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r6")
+	p1, err := prefixCacheRouter.Route(ctx7, podList)
+	assert.NoError(t, err)
+	assert.False(t, slices.Contains([]string{p2, p3, p4}, p1))
 }
 
 func getReadyPods() []*v1.Pod {
@@ -174,5 +187,141 @@ func getReadyPods() []*v1.Pod {
 					},
 				},
 			}},
+	}
+}
+
+func Test_ValidatePrePrefixMatchLoadBalance(t *testing.T) {
+	// no imbalance
+	readyPods := getReadyPods()
+	c := cache.NewTestCacheWithPodsMetrics(
+		readyPods,
+		"m1",
+		map[string]map[string]metrics.MetricValue{
+			"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+			"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 2}},
+			"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 3}},
+			"p4": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 9}},
+		})
+	targetPod, imbalance := getTargetPodOnLoadImbalance(c, readyPods)
+	assert.False(t, imbalance, "pod running request count is less than equal to default abs value of 8")
+	assert.Nil(t, targetPod)
+
+	// imbalance with multiple pods matching criteria
+	c = cache.NewTestCacheWithPodsMetrics(
+		readyPods,
+		"m1",
+		map[string]map[string]metrics.MetricValue{
+			"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 2}},
+			"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 2}},
+			"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 8}},
+			"p4": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 16}},
+		})
+	targetPod, imbalance = getTargetPodOnLoadImbalance(c, readyPods)
+	assert.True(t, imbalance, "pod running request count is more than default abs value of 8")
+	assert.True(t, slices.Contains([]string{"p1", "p2"}, targetPod.Name))
+}
+
+func Test_ValidatePostPrefixMatchLoadBalance(t *testing.T) {
+	readyPods := getReadyPods()
+	testcases := []struct {
+		name        string
+		c           cache.Cache
+		readyPods   []*v1.Pod
+		matchedPods map[string]int
+		targetPods  []string
+	}{
+		{
+			name: "match pod with highest prefix match percent",
+			c: cache.NewTestCacheWithPodsMetrics(
+				readyPods,
+				"m1",
+				map[string]map[string]metrics.MetricValue{
+					"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+					"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 2}},
+					"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 3}},
+					"p4": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 4}},
+				}),
+			matchedPods: map[string]int{
+				"p1": 50,
+				"p2": 60,
+			},
+			targetPods: []string{"p2"},
+		},
+		{
+			name: "match pod with lowest running request count for same prefix match percent",
+			c: cache.NewTestCacheWithPodsMetrics(
+				readyPods,
+				"m1",
+				map[string]map[string]metrics.MetricValue{
+					"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+					"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 2}},
+					"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 3}},
+					"p4": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 4}},
+				}),
+			matchedPods: map[string]int{
+				"p1": 50,
+				"p2": 50,
+				"p3": 50,
+			},
+			targetPods: []string{"p1"},
+		},
+		{
+			name: "match any pod with same running request count and same prefix match percent",
+			c: cache.NewTestCacheWithPodsMetrics(
+				readyPods,
+				"m1",
+				map[string]map[string]metrics.MetricValue{
+					"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+					"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+					"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+					"p4": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 4}},
+				}),
+			matchedPods: map[string]int{
+				"p1": 50,
+				"p2": 50,
+				"p3": 50,
+			},
+			targetPods: []string{"p1", "p2", "p3"},
+		},
+		{
+			name: "match pod with lower prefix match percent with running requests below imbalance threshold",
+			c: cache.NewTestCacheWithPodsMetrics(
+				readyPods,
+				"m1",
+				map[string]map[string]metrics.MetricValue{
+					"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+					"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 10}},
+					"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+					"p4": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 4}},
+				}),
+			matchedPods: map[string]int{
+				"p1": 50,
+				"p2": 100,
+			},
+			targetPods: []string{"p1"},
+		},
+		{
+			name: "ignore matched pod if their running requests are more than threshold",
+			c: cache.NewTestCacheWithPodsMetrics(
+				readyPods,
+				"m1",
+				map[string]map[string]metrics.MetricValue{
+					"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 4}},
+					"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+					"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+				}),
+			matchedPods: map[string]int{
+				"p1": 100,
+			},
+			targetPods: []string{},
+		},
+	}
+	for _, test := range testcases {
+		targetPod := getTargetPodFromMatchedPods(test.c, readyPods, test.matchedPods)
+		if len(test.targetPods) == 0 {
+			assert.Nil(t, targetPod, test.name)
+		} else {
+			assert.True(t, slices.Contains(test.targetPods, targetPod.Name), test.name)
+		}
 	}
 }
