@@ -32,14 +32,12 @@ import (
 )
 
 func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingAlgorithm types.RoutingAlgorithm) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
-	klog.InfoS("-- In RequestBody processing ...", "requestID", requestID)
 	var model string
 	var routingCtx *types.RoutingContext
 	var ok, stream bool
 	var term int64 // Identify the trace window
 
 	var jsonMap map[string]interface{}
-
 	body := req.Request.(*extProcPb.ProcessingRequest_RequestBody)
 	if err := json.Unmarshal(body.RequestBody.GetBody(), &jsonMap); err != nil {
 		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "requestBody", string(body.RequestBody.GetBody()))
@@ -98,8 +96,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			return extErr, model, routingCtx, stream, term
 		}
 
-		routingCtx = routingAlgorithm.NewContext(ctx, model, message)
-
+		routingCtx = routingAlgorithm.NewContext(ctx, model, message, requestID)
 		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingAlgorithm", routingAlgorithm, "model", model)

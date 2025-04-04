@@ -31,7 +31,6 @@ import (
 )
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, types.RoutingAlgorithm) {
-	klog.InfoS("-- In RequestHeaders processing ...", "requestID", requestID)
 	var username string
 	var user utils.User
 	var rpm int64
@@ -48,7 +47,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	routingStrategy, routingStrategyEnabled := getRoutingStrategy(h.RequestHeaders.Headers.Headers)
 	routingAlgorithm, ok := routing.Validate(routingStrategy)
 	if routingStrategyEnabled && !ok {
-		klog.ErrorS(nil, "incorrect routing strategy", "routing-strategy", routingStrategy)
+		klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", routingStrategy)
 		return generateErrorResponse(
 			envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{

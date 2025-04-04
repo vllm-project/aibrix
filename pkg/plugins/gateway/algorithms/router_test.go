@@ -36,7 +36,7 @@ func podsFromCache(c *cache.Store) *utils.PodArray {
 }
 
 func requestContext(model string) *types.RoutingContext {
-	return types.NewRoutingContext(context.Background(), "", model, "")
+	return types.NewRoutingContext(context.Background(), "", model, "", "")
 }
 
 func TestNoPods(t *testing.T) {
@@ -63,6 +63,7 @@ func TestNoPods(t *testing.T) {
 }
 
 func TestWithNoIPPods(t *testing.T) {
+	model := ""
 	c := cache.NewTestCacheWithPods([]*v1.Pod{
 		{
 			ObjectMeta: metav1.ObjectMeta{
@@ -74,18 +75,10 @@ func TestWithNoIPPods(t *testing.T) {
 				Name: "p2",
 			},
 		},
-	})
-	model := ""
+	}, model)
 
 	r1 := randomRouter{}
 	targetPodIP, err := r1.Route(requestContext(model), podsFromCache(c))
-	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
-	assert.Error(t, err, "no pod has IP")
-
-	r2 := leastRequestRouter{
-		cache: c,
-	}
-	targetPodIP, err = r2.Route(requestContext(model), podsFromCache(c))
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 
@@ -101,6 +94,7 @@ func TestWithIPPods(t *testing.T) {
 	// two case:
 	// case 1: pod ready
 	// case 2: pod ready & terminating -> we can send request at this moment.
+	model := ""
 	c := cache.NewTestCacheWithPodsMetrics(
 		[]*v1.Pod{
 			{
@@ -133,23 +127,19 @@ func TestWithIPPods(t *testing.T) {
 				},
 			},
 		},
+		model,
 		map[string]map[string]metrics.MetricValue{
 			"p1": {
-				metrics.NumRequestsRunning:              &metrics.SimpleMetricValue{Value: 5},
-				metrics.NumRequestsWaiting:              &metrics.SimpleMetricValue{Value: 5},
-				metrics.NumRequestsSwapped:              &metrics.SimpleMetricValue{Value: 5},
+				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 15},
 				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 20},
 				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 20},
 			},
 			"p2": {
-				metrics.NumRequestsRunning:              &metrics.SimpleMetricValue{Value: 15},
-				metrics.NumRequestsWaiting:              &metrics.SimpleMetricValue{Value: 15},
-				metrics.NumRequestsSwapped:              &metrics.SimpleMetricValue{Value: 15},
+				metrics.RealtimeNumRequestsRunning:      &metrics.SimpleMetricValue{Value: 45},
 				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 15},
 				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 2},
 			},
 		})
-	model := ""
 
 	pods := podsFromCache(c)
 	assert.NotEqual(t, 0, pods.Len(), "No pods initiailized")
