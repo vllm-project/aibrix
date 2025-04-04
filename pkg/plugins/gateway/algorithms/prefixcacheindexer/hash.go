@@ -77,6 +77,9 @@ func (c *PrefixHashTable) MatchPrefix(tokens []byte, model string, readyPods map
 }
 
 func (c *PrefixHashTable) seqSearchPrefix(prefixHashes []uint64, model string, readyPods map[string]struct{}) (map[string]int, []uint64) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	// podname -> %prefixmatch
 	prefixMatchPods := map[string]int{}
 	for i := 0; i < len(prefixHashes); i++ {
