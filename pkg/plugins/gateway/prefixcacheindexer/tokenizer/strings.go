@@ -16,8 +16,6 @@ limitations under the License.
 
 package tokenizer
 
-import "strings"
-
 type stringTokenizer struct{}
 
 func NewStringTokenizer() Tokenizer {
@@ -25,16 +23,13 @@ func NewStringTokenizer() Tokenizer {
 }
 
 func (s stringTokenizer) TokenizeInputText(text string) ([]byte, error) {
-	return convertStrArrayToByteArray(strings.Split(text, " ")), nil
-}
-
-func convertStrArrayToByteArray(tokens []string) []byte {
-	var x = []byte{}
-	for i := 0; i < len(tokens); i++ {
-		b := []byte(tokens[i])
-		for j := 0; j < len(b); j++ {
-			x = append(x, b[j])
+	var b = []byte(text)
+	j := 0
+	for i := 0; i < len(b); i++ {
+		if b[i] != ' ' {
+			b[j] = b[i]
+			j++
 		}
 	}
-	return x
+	return b[:j], nil
 }
