@@ -11,7 +11,6 @@ from util import save_dataset_jsonl
 
 def process_dataset_trace(
         dataset_path: str,
-        tokenizer: PreTrainedTokenizerBase,
         output: str
 ) -> pd.DataFrame:
     # Load the dataset into a DataFrame
@@ -31,7 +30,6 @@ def process_dataset_trace(
     
 def process_dataset_sharegpt(
         dataset_path: str,
-        tokenizer: PreTrainedTokenizerBase,
         output: str
 ) -> pd.DataFrame:
     # Load the dataset into a DataFrame
@@ -54,22 +52,10 @@ def process_dataset_sharegpt(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Configure workload parameters.")
     parser.add_argument("--path", type=str, default=".", help="Dataset Path.")
-    parser.add_argument("--tokenizer", type=str, default="deepseek-ai/deepseek-llm-7b-chat", help="Name of the tokenizer.")
     parser.add_argument("--output", type=str, default="prompts.jsonl", help="Output file name.")
     parser.add_argument('--type', type=str, required=True, choices=['trace','sharegpt'], help='Type of dataset consumed. Choose among: trace, sharegpt.')
     args = parser.parse_args()
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer, 
-        legacy=True,
-        model_max_length=4096,  
-        padding_side="right",
-        truncation_side="right",
-        use_fast=True
-    )
     if args.type == 'trace':
-        process_dataset_trace(args.path, tokenizer, args.output)
+        process_dataset_trace(args.path, args.output)
     elif args.type == 'sharegpt':
-        process_dataset_sharegpt(args.path, tokenizer, args.output)
-    
-
-        
+        process_dataset_sharegpt(args.path, args.output)
