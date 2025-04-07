@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcacheindexer/cache"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	lrustore "github.com/vllm-project/aibrix/pkg/utils/lrustore"
 	"k8s.io/klog/v2"
 )
 
@@ -44,7 +44,7 @@ var (
 type PrefixHashTable struct {
 	mu    sync.RWMutex
 	seed  uint64
-	store cache.Store[uint64, Block]
+	store lrustore.Store[uint64, Block]
 }
 
 type Block struct {
@@ -61,7 +61,7 @@ func NewPrefixHashTable() *PrefixHashTable {
 		"prefix_cache_block_eviction_duration_minutes", prefixCacheEvictionDuration)
 	instance := &PrefixHashTable{
 		seed: seed,
-		store: cache.NewLRUStore[uint64, Block](prefixCacheBlockNumber,
+		store: lrustore.NewLRUStore[uint64, Block](prefixCacheBlockNumber,
 			prefixCacheEvictionDuration,
 			prefixCacheEvictionInterval,
 			func() time.Time { return time.Now() }),

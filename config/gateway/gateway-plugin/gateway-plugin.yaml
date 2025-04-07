@@ -61,11 +61,11 @@ spec:
             - name: AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE
               value: "character"
             - name: AIBRIX_PREFIX_CACHE_BLOCK_SIZE
-              value: "32"
+              value: "128"
             - name: AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT
-              value: "8"
+              value: "16"
             - name: AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR
-              value: "1"
+              value: "2"
             # - name: AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS
             #   value: "1"
             - name: POD_NAME

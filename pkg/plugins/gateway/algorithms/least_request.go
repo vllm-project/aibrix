@@ -102,6 +102,11 @@ func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod
 	return targetPod
 }
 
+// getRequestCounts returns running request count for each pod tracked by gateway.
+// Note: Currently, gateway instance tracks active running request counts for each pod locally,
+// if multiple gateway instances are active then state is not shared across them.
+// It is advised to run on leader gateway instance.
+// TODO: Support stateful information sync across gateway instances: https://github.com/vllm-project/aibrix/issues/761
 func getRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
 	podRequestCount := map[string]int{}
 	for _, pod := range readyPods {

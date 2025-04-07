@@ -23,5 +23,9 @@ func NewCharacterTokenizer() Tokenizer {
 }
 
 func (s characterTokenizer) TokenizeInputText(text string) ([]byte, error) {
+	// Note: For some characters such as non-english letters or emoji's, one character may convert to multiple bytes.
+	// which may split across different token blocks. It does not impact prefix-match technically but characters
+	// may loose theoritical meaning.
+	// TODO: evaluate if text conversion can be done to []rune and then convert []rune to []byte with minimal overhead.
 	return []byte(text), nil
 }

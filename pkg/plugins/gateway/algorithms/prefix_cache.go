@@ -22,10 +22,10 @@ import (
 	"sort"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcacheindexer"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/tokenizer"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
+	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -189,6 +189,8 @@ func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matched
 // getTargetPodOnLoadImbalance evaluates if the load is imbalanced based on the abs difference between
 // pods with min and max outstanding request counts
 func getTargetPodOnLoadImbalance(cache cache.Cache, readyPods []*v1.Pod) (*v1.Pod, bool) {
+	var imbalance bool
+	var targetPod *v1.Pod
 	targetPods := []string{}
 	minValue := math.MaxInt32
 	maxValue := math.MinInt32
@@ -209,9 +211,9 @@ func getTargetPodOnLoadImbalance(cache cache.Cache, readyPods []*v1.Pod) (*v1.Po
 	}
 
 	if maxValue-minValue > podRunningRequestImbalanceAbsCount {
-		targetPod, _ := utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
-		return targetPod, true
+		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
+		imbalance = true
 	}
 
-	return nil, false
+	return targetPod, imbalance
 }

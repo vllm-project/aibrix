@@ -25,9 +25,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	metrics "github.com/vllm-project/aibrix/pkg/metrics"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/prefixcacheindexer"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/tokenizer"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
+	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
