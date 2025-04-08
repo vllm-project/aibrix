@@ -74,10 +74,10 @@ func TrimMessage(message string) string {
 	return message
 }
 
-// CheckEnvExists checks if an environment variable exists.
+// LookupEnv retrieves an environment variable and returns whether it exists.
 // It returns the value and a boolean indicating its existence.
-func CheckEnvExists(envVar string) (string, bool) {
-	value, exists := os.LookupEnv(envVar)
+func LookupEnv(key string) (string, bool) {
+	value, exists := os.LookupEnv(key)
 	return value, exists
 }
 

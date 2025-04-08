@@ -50,30 +50,20 @@ func validateStreamOptions(requestID string, user utils.User, jsonMap map[string
 	return nil
 }
 
+var defaultRoutingStrategy, defaultRoutingStrategyEnabled = utils.LookupEnv(EnvRoutingAlgorithm)
+
 // getRoutingStrategy retrieves the routing strategy from the headers or environment variable
 // It returns the routing strategy value and whether custom routing strategy is enabled.
 func getRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
-	var routingStrategy string
-	routingStrategyEnabled := false
-
 	// Check headers for routing strategy
 	for _, header := range headers {
 		if strings.ToLower(header.Key) == HeaderRoutingStrategy {
-			routingStrategy = string(header.RawValue)
-			routingStrategyEnabled = true
-			break // Prioritize header value over environment variable
+			return string(header.RawValue), true
 		}
 	}
 
-	// If header not set, check environment variable
-	if !routingStrategyEnabled {
-		if value, exists := utils.CheckEnvExists(EnvRoutingAlgorithm); exists {
-			routingStrategy = value
-			routingStrategyEnabled = true
-		}
-	}
-
-	return routingStrategy, routingStrategyEnabled
+	// If header not set, use default routing strategy from environment variable
+	return defaultRoutingStrategy, defaultRoutingStrategyEnabled
 }
 
 // getRequestMessage returns input request message field which has user prompt

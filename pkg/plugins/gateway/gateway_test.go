@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 func Test_ValidateRoutingStrategy(t *testing.T) {
@@ -117,6 +118,9 @@ func TestGetRoutingStrategy(t *testing.T) {
 		} else {
 			_ = os.Unsetenv("ROUTING_ALGORITHM")
 		}
+
+		// refresh default values, the process won't modify this environment variable during normal running
+		defaultRoutingStrategy, defaultRoutingStrategyEnabled = utils.LookupEnv(EnvRoutingAlgorithm)
 
 		routingStrategy, enabled := getRoutingStrategy(tt.headers)
 		assert.Equal(t, tt.expectedStrategy, routingStrategy, tt.message)
