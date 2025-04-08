@@ -246,7 +246,10 @@ func main() {
 	}
 
 	// Initialize controllers
-	controller.Initialize()
+	if err = controller.Initialize(mgr); err != nil {
+		setupLog.Error(err, "unable to initialize controllers")
+		os.Exit(1)
+	}
 
 	// Cert won't be ready until manager starts, so start a goroutine here which
 	// will block until the cert is ready before setting up the controllers.

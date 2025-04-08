@@ -17,6 +17,9 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+	"fmt"
+
 	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/controller/kvcache"
 	"github.com/vllm-project/aibrix/pkg/controller/modeladapter"
@@ -25,8 +28,13 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/rayclusterfleet"
 	"github.com/vllm-project/aibrix/pkg/controller/rayclusterreplicaset"
 	"github.com/vllm-project/aibrix/pkg/features"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
@@ -37,7 +45,7 @@ import (
 
 var controllerAddFuncs []func(manager.Manager, config.RuntimeConfig) error
 
-func Initialize() {
+func Initialize(mgr manager.Manager) error {
 	if features.IsControllerEnabled(features.PodAutoscalerController) {
 		controllerAddFuncs = append(controllerAddFuncs, podautoscaler.Add)
 	}
@@ -51,7 +59,14 @@ func Initialize() {
 	}
 
 	if features.IsControllerEnabled(features.DistributedInferenceController) {
-		// TODO: only enable them if KubeRay is installed (check RayCluster CRD exist)
+		// Check if the CRD (e.g., "rayclusters.ray.io") exists. If not, fail directly.
+		crdName := "rayclusters.ray.io"
+		if err := checkCRDExists(mgr.GetClient(), crdName); err != nil {
+			return fmt.Errorf("failed to validate CRD '%s': %v. "+
+				"Please ensure that the CRD is installed and available in the cluster. "+
+				"You can verify this by running 'kubectl get crd %s'",
+				crdName, err, crdName)
+		}
 		controllerAddFuncs = append(controllerAddFuncs, rayclusterreplicaset.Add)
 		controllerAddFuncs = append(controllerAddFuncs, rayclusterfleet.Add)
 	}
@@ -59,6 +74,7 @@ func Initialize() {
 	if features.IsControllerEnabled(features.KVCacheController) {
 		controllerAddFuncs = append(controllerAddFuncs, kvcache.Add)
 	}
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -71,6 +87,28 @@ func SetupWithManager(m manager.Manager, runtimeConfig config.RuntimeConfig) err
 			}
 			return err
 		}
+	}
+	return nil
+}
+
+// checkCRDExists checks if the specified CRD exists in the cluster.
+func checkCRDExists(c client.Client, crdName string) error {
+	gvk := schema.GroupVersionKind{
+		Group:   "apiextensions.k8s.io",
+		Version: "v1",
+		Kind:    "CustomResourceDefinition",
+	}
+	// Create an unstructured object to represent the CRD.
+	crd := &unstructured.Unstructured{}
+	crd.SetGroupVersionKind(gvk)
+	crd.SetName(crdName)
+
+	err := c.Get(context.TODO(), client.ObjectKey{Name: crdName}, crd)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("CRD %q not found. Please ensure %q is installed", crdName, crdName)
+		}
+		return fmt.Errorf("error checking CRD %q: %v", crdName, err)
 	}
 	return nil
 }

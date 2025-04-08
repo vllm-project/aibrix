@@ -28,9 +28,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/util/expectation"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
@@ -46,45 +44,15 @@ var (
 	controllerKind                              = orchestrationv1alpha1.GroupVersion.WithKind("RayClusterReplicaSet")
 )
 
-// Add first validates that the required Ray CRD (e.g., "rayclusters.ray.io") exists in the cluster.
-// If the CRD is not found, the function fails early with an error.
-// If the CRD exists, this function creates a new RayClusterReplicaSet Controller and adds it to the Manager with default RBAC.
+// Add creates a new RayClusterReplicaSet Controller and adds it to the Manager with default RBAC.
 // The Manager will set fields on the Controller and Start it when the Manager is Started.
 func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
-	// Check if the CRD exists. If not, fail directly.
-	crdName := "rayclusters.ray.io"
-	if err := checkCRDExists(mgr.GetClient(), crdName); err != nil {
-		return fmt.Errorf("failed to validate CRD: %v", err)
-	}
-
+	klog.InfoS("Starting raycluster-replicaset-controller")
 	r, err := newReconciler(mgr, runtimeConfig)
 	if err != nil {
 		return err
 	}
 	return add(mgr, r)
-}
-
-// checkCRDExists checks if the specified CRD exists in the cluster.
-func checkCRDExists(c client.Client, crdName string) error {
-	gvk := schema.GroupVersionKind{
-		Group:   "apiextensions.k8s.io",
-		Version: "v1",
-		Kind:    "CustomResourceDefinition",
-	}
-
-	// Create an unstructured object to represent the CRD.
-	crd := &unstructured.Unstructured{}
-	crd.SetGroupVersionKind(gvk)
-	crd.SetName(crdName)
-
-	err := c.Get(context.TODO(), client.ObjectKey{Name: crdName}, crd)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return fmt.Errorf("CRD %q not found. Please ensure %q is installed", crdName, crdName)
-		}
-		return fmt.Errorf("error checking CRD %q: %v", crdName, err)
-	}
-	return nil
 }
 
 // newReconciler returns a new reconcile.Reconciler

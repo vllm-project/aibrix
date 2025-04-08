@@ -22,24 +22,23 @@ import (
 	"reflect"
 	"time"
 
+	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/controller/util/expectation"
+
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-
-	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 var (
@@ -51,8 +50,7 @@ var (
 // Add creates a new RayClusterFleet Controller and adds it to the Manager with default RBAC.
 // The Manager will set fields on the Controller and Start it when the Manager is Started.
 func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
-	// TODO: check crd exists or not. If not, we should fail here directly without moving forward.
-
+	klog.InfoS("Starting raycluster-fleet-controller")
 	r, err := newReconciler(mgr, runtimeConfig)
 	if err != nil {
 		return err
@@ -84,7 +82,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
-	klog.V(4).InfoS("Finished to add model-adapter-controller")
+	klog.V(4).InfoS("Finished to add raycluster-fleet-controller")
 	return nil
 }
 
