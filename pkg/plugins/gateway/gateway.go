@@ -17,7 +17,7 @@ limitations under the License.
 package gateway
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"io"
 	"time"
@@ -36,17 +36,25 @@ import (
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayapi "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
+)
+
+const (
+	defaultAIBrixNamespace = "aibrix-system"
 )
 
 type Server struct {
 	redisClient         *redis.Client
 	ratelimiter         ratelimiter.RateLimiter
 	client              kubernetes.Interface
+	gatewayClient       *gatewayapi.Clientset
 	requestCountTracker map[string]int
 	cache               cache.Cache
 }
 
-func NewServer(redisClient *redis.Client, client kubernetes.Interface) *Server {
+func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient *gatewayapi.Clientset) *Server {
 	c, err := cache.Get()
 	if err != nil {
 		panic(err)
@@ -60,6 +68,7 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface) *Server {
 		redisClient:         redisClient,
 		ratelimiter:         r,
 		client:              client,
+		gatewayClient:       gatewayClient,
 		requestCountTracker: map[string]int{},
 		cache:               c,
 	}
@@ -76,6 +85,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	ctx := srv.Context()
 	requestID := uuid.New().String()
 	completed := false
+	resp := &extProcPb.ProcessingResponse{}
 
 	klog.InfoS("processing request", "requestID", requestID)
 
@@ -94,7 +104,6 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			return status.Errorf(codes.Unknown, "cannot receive stream request: %v", err)
 		}
 
-		resp := &extProcPb.ProcessingResponse{}
 		switch v := req.Request.(type) {
 
 		case *extProcPb.ProcessingRequest_RequestHeaders:
@@ -108,12 +117,15 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
 			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, requestID, model, req)
+			if isRespError && respErrorCode == 500 {
+				// for error code 500, ProcessingRequest_ResponseBody is not invoked
+				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID, "")
+			}
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
-			respBody := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 			if isRespError {
-				klog.ErrorS(errors.New("request end"), string(respBody.ResponseBody.GetBody()), "requestID", requestID)
-				generateErrorResponse(envoyTypePb.StatusCode(respErrorCode), nil, string(respBody.ResponseBody.GetBody()))
+				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID,
+					string(req.Request.(*extProcPb.ProcessingRequest_ResponseBody).ResponseBody.GetBody()))
 			} else {
 				resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, stream, traceTerm, completed)
 			}
@@ -152,4 +164,46 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) 
 	}
 
 	return router.Route(ctx, &utils.PodArray{Pods: readyPods})
+}
+
+// validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true
+func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) string {
+	var errMsg string
+	name := fmt.Sprintf("%s-router", model)
+	httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err.Error()
+	}
+
+	for _, status := range httproute.Status.Parents {
+		if len(status.Conditions) == 0 {
+			errMsg = fmt.Sprintf("httproute: %s/%s, does not have valid status", defaultAIBrixNamespace, name)
+			break
+		}
+		for _, condition := range status.Conditions {
+			if condition.Type == string(gatewayv1.RouteConditionAccepted) &&
+				condition.Reason != string(gatewayv1.RouteReasonAccepted) {
+				errMsg = errMsg + " " + fmt.Sprintf("httproute: %s/%s, route is not accepted: %s.", defaultAIBrixNamespace, name, condition.Reason)
+			} else if condition.Type == string(gatewayv1.RouteConditionResolvedRefs) &&
+				condition.Reason != string(gatewayv1.RouteReasonResolvedRefs) {
+				errMsg = errMsg + " " + fmt.Sprintf("httproute: %s/%s, route's object references are not resolved: %s.", defaultAIBrixNamespace, name, condition.Reason)
+			}
+		}
+	}
+	return errMsg
+}
+
+func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.ProcessingResponse, respErrorCode int,
+	model, requestID, errMsg string) *extProcPb.ProcessingResponse {
+	httprouteErr := s.validateHTTPRouteStatus(ctx, model)
+	if errMsg != "" {
+		errMsg = fmt.Sprintf("%s. %s", errMsg, httprouteErr)
+	} else {
+		errMsg = httprouteErr
+	}
+	klog.ErrorS(nil, "request end", "requestID", requestID, "errorCode", respErrorCode, "errorMessage", errMsg)
+	return generateErrorResponse(
+		envoyTypePb.StatusCode(respErrorCode),
+		resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders(),
+		errMsg)
 }
