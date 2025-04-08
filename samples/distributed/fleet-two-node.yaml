@@ -1,20 +1,20 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: RayClusterFleet
 metadata:
+  name: qwen-coder-7b-instruct
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
-  name: qwen-coder-7b-instruct
 spec:
   replicas: 1
   selector:
     matchLabels:
       model.aibrix.ai/name: qwen-coder-7b-instruct
   strategy:
+    type: RollingUpdate
     rollingUpdate:
       maxSurge: 25%
       maxUnavailable: 25%
-    type: RollingUpdate
   template:
     metadata:
       labels:
@@ -22,15 +22,39 @@ spec:
       annotations:
         ray.io/overwrite-container-cmd: "true"
     spec:
-      rayVersion: '2.10.0' # should match the Ray version in the image of the containers
+      rayVersion: "2.10.0"
       headGroupSpec:
         rayStartParams:
-          dashboard-host: '0.0.0.0'
+          dashboard-host: "0.0.0.0"
         template:
+          metadata:
+            labels:
+              model.aibrix.ai/name: qwen-coder-7b-instruct
           spec:
             containers:
               - name: ray-head
                 image: vllm/vllm-openai:v0.7.1
+                command: ["/bin/bash", "-c"]
+                args:
+                  - >
+                    ulimit -n 65536 &&
+                    echo "[INFO] Starting Ray head node..." &&
+                    eval "$KUBERAY_GEN_RAY_START_CMD" &
+
+                    echo "[INFO] Waiting for Ray dashboard to be ready..." &&
+                    until curl --max-time 5 --fail http://127.0.0.1:8265 > /dev/null 2>&1; do
+                      echo "[WAITING] $(date -u +'%Y-%m-%dT%H:%M:%SZ') - Ray dashboard not ready yet...";
+                      sleep 2;
+                    done &&
+                    echo "[SUCCESS] Ray dashboard is available!" &&
+
+                    vllm serve Qwen/Qwen2.5-Coder-7B-Instruct \
+                      --served-model-name qwen-coder-7b-instruct \
+                      --tensor-parallel-size 2 \
+                      --distributed-executor-backend ray \
+                      --host 0.0.0.0 \
+                      --port 8000 \
+                      --dtype half
                 ports:
                   - containerPort: 6379
                     name: gcs-server
@@ -40,8 +64,6 @@ spec:
                     name: client
                   - containerPort: 8000
                     name: service
-                command: ["/bin/bash", "-lc", "--"]
-                args: ["ulimit -n 65536; echo head; $KUBERAY_GEN_RAY_START_CMD; vllm serve Qwen/Qwen2.5-Coder-7B-Instruct --tensor-parallel-size 2 --distributed-executor-backend ray"]
                 resources:
                   limits:
                     cpu: "4"
@@ -49,22 +71,68 @@ spec:
                   requests:
                     cpu: "4"
                     nvidia.com/gpu: 1
+              - name: aibrix-runtime
+                image: aibrix/runtime:v0.2.1
+                command:
+                  - aibrix_runtime
+                  - --port
+                  - "8080"
+                env:
+                  - name: INFERENCE_ENGINE
+                    value: vllm
+                  - name: INFERENCE_ENGINE_ENDPOINT
+                    value: http://localhost:8000
+                  - name: PYTORCH_CUDA_ALLOC_CONF
+                    value: "expandable_segments:True"
+                ports:
+                  - containerPort: 8080
+                    protocol: TCP
+                livenessProbe:
+                  httpGet:
+                    path: /healthz
+                    port: 8080
+                  initialDelaySeconds: 3
+                  periodSeconds: 2
+                readinessProbe:
+                  httpGet:
+                    path: /ready
+                    port: 8080
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                resources:
+                  limits:
+                    cpu: "1"
+                  requests:
+                    cpu: "1"
       workerGroupSpecs:
-        # the pod replicas in this group typed worker
-        - replicas: 1
+        - groupName: small-group
+          replicas: 1
           minReplicas: 1
           maxReplicas: 5
-          groupName: small-group
           rayStartParams: {}
           template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: qwen-coder-7b-instruct
             spec:
               containers:
-                - name: ray-worker # must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character (e.g. 'my-name',  or '123-abc'
+                - name: ray-worker
                   image: vllm/vllm-openai:v0.7.1
+                  env:
+                    - name: MY_POD_IP
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: status.podIP
+                  command: [ "/bin/bash", "-c" ]
+                  args:
+                    - >
+                      ulimit -n 65536 &&
+                      eval "$KUBERAY_GEN_RAY_START_CMD --node-ip-address=$MY_POD_IP" &&
+                      tail -f /dev/null
                   lifecycle:
                     preStop:
                       exec:
-                        command: [ "/bin/sh","-c","ray stop" ]
+                        command: [ "/bin/sh", "-c", "ray stop" ]
                   resources:
                     limits:
                       cpu: "4"
@@ -72,3 +140,67 @@ spec:
                     requests:
                       cpu: "4"
                       nvidia.com/gpu: 1
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen-coder-7b-instruct
+  labels:
+    model.aibrix.ai/name: qwen-coder-7b-instruct
+    prometheus-discovery: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+spec:
+  selector:
+    model.aibrix.ai/name: qwen-coder-7b-instruct
+  ports:
+    - name: serve
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+
+---
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: qwen-coder-7b-instruct-router
+  namespace: aibrix-system
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: aibrix-eg
+      namespace: aibrix-system
+  rules:
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: qwen-coder-7b-instruct
+          namespace: default
+          port: 8000  # or 8000 if you're not using the runtime sidecar
+          weight: 1
+      matches:
+        - headers:
+            - name: model
+              type: Exact
+              value: qwen-coder-7b-instruct
+          path:
+            type: PathPrefix
+            value: /v1/completions
+        - headers:
+            - name: model
+              type: Exact
+              value: qwen-coder-7b-instruct
+          path:
+            type: PathPrefix
+            value: /v1/chat/completions
+      timeouts:
+        request: 120s
