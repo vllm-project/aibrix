@@ -37,6 +37,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
+	"sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
 
 var (
@@ -85,10 +86,14 @@ func main() {
 	if err != nil {
 		klog.Fatalf("failed to listen: %v", err)
 	}
+	gatewayK8sClient, err := versioned.NewForConfig(config)
+	if err != nil {
+		panic(err.Error())
+	}
 
 	s := grpc.NewServer()
 
-	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(redisClient, k8sClient))
+	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(redisClient, k8sClient, gatewayK8sClient))
 	healthPb.RegisterHealthServer(s, gateway.NewHealthCheckServer())
 
 	klog.Info("starting gRPC server on port :50052")
