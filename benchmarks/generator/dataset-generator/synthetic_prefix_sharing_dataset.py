@@ -293,25 +293,8 @@ def generate_workload_from_config(tokenizer, config):
     
     # Calculate overall prefix sharing ratio using the same token-based method
     overall_sharing_ratio = 0
-    # if len(configs) == 1:
-        # If there's only one config, use its sharing ratio
     overall_sharing_ratio = config_stat["prefix_sharing_ratio"]
     overall_prefix_proportion = config_stat["prefix_proportion"]
-    # else:
-    #     # For multiple configs, calculate an overall ratio based on all prompts
-    #     # This is more complex and would need special handling for different prefix lengths
-    #     # For now, we'll use a weighted average based on token counts
-    #     total_config_tokens = sum(cfg["total_tokens"] for cfg in config_stats)
-    #     overall_sharing_ratio = sum(
-    #         cfg["prefix_sharing_ratio"] * cfg["total_tokens"] / total_config_tokens
-    #         for cfg in config_stats
-    #     ) if total_config_tokens > 0 else 0
-        
-    #     # Calculate weighted average of prefix proportions
-    #     overall_prefix_proportion = sum(
-    #         cfg["prefix_proportion"] * cfg["total_tokens"] / total_config_tokens
-    #         for cfg in config_stats
-    #     ) if total_config_tokens > 0 else 0
     
     # Sort combined data by timestamp
     all_prompts_combined.sort(key=lambda x: x["timestamp"])
@@ -481,7 +464,9 @@ if __name__ == "__main__":
     parser.add_argument("--rps", type=int, default=0, help="Requests per second.")
     parser.add_argument("--randomize-order", action="store_true", help="Randomize order if flag is set.")
     parser.add_argument("--to-workload", action="store_true", help="Generate workload if flag is set (needs rps to be set).")
+    parser.add_argument("--output", type=str, default="output.jsonl", help="Output file name.")
     
+
     args = parser.parse_args()
     
     to_workload = args.to_workload
@@ -498,51 +483,6 @@ if __name__ == "__main__":
             "randomize_order": args.randomize_order
         },
     ]
-    
-    # ToolBench
-    # app_name = "toolbench"
-    # prefix_workload_configs = [
-    #     {
-    #         "prompt_length": 1835,
-    #         "prompt_length_std" : 742,
-    #         "shared_proportion": 0.85,
-    #         "shared_proportion_std": 0.13,
-    #         "num_samples_per_prefix": 200,
-    #         "num_prefix": 10,
-    #         "rps": 0,
-    #         "randomize_order": True  # Add the randomization parameter
-    #     },
-    # ]
-    
-    ## Agent
-    # app_name = "agent"
-    # prefix_workload_configs = [
-    #     {
-    #         "prompt_length": 2285,
-    #         "prompt_length_std" : 471,
-    #         "shared_proportion": 0.97,
-    #         "shared_proportion_std": 0.14,
-    #         "num_samples_per_prefix": 200,
-    #         "num_prefix": 10,
-    #         "rps": 0,
-    #         "randomize_order": True  # Add the randomization parameter
-    #     },
-    # ]
-        
-    ## Programming
-    # app_name = "programming"
-    # prefix_workload_configs = [
-    #     {
-    #         "prompt_length": 3871,
-    #         "prompt_length_std" : 1656,
-    #         "shared_proportion": 0.97,
-    #         "shared_proportion_std": 0.074,
-    #         "num_samples_per_prefix": 200,
-    #         "num_prefix": 10,
-    #         "rps": 0,
-    #         "randomize_order": True  # Add the randomization parameter
-    #     },
-    # ]
     
     # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
@@ -567,12 +507,11 @@ if __name__ == "__main__":
             print("Generating multi-configuration workload...")
             workload_data = generate_workload_from_config(tokenizer, prefix_workload_config)
             # Save results
-            output_file = f"{base_filename}.jsonl"
             stats_file = f"{base_filename}-stats.json"
-            save_workload_jsonl(workload_data, output_file)
+            save_workload_jsonl(workload_data, args.output)
             save_stats(workload_data, stats_file)
             print(f"Saving workload statistics to {stats_file}")
-            print(f"Saving workload traces to {output_file}")
+            print(f"Saving workload traces to {args.output}")
     else: # To dataset
         for i, prefix_workload_config in enumerate(prefix_workload_configs):
             rand_str = "-randomized" if prefix_workload_config["randomize_order"] else ""
@@ -581,6 +520,6 @@ if __name__ == "__main__":
             base_filename = f"{app_name}-prefix-share-dataset-p{prefix_estimate}-{suffix_estimate}.jsonl"
             prefix_workload_config["id"] = i
             dataset_dict = generate_dataset_from_config(tokenizer, prefix_workload_config)
-            save_dataset_jsonl(dataset_dict["prompts"], f"{base_filename}-dataset.jsonl")
-            print(f"Saving dataset to {base_filename}-dataset.jsonl")
+            save_dataset_jsonl(dataset_dict["prompts"], args.output)
+            print(f"Saving dataset to {args.output}")
             print(f"Dataset statistics: {dataset_dict['stats']} total_tokens: {dataset_dict['total_tokens']} overall_sharing_ratio: {dataset_dict['overall_sharing_ratio']} overall_prefix_proportion: {dataset_dict['overall_prefix_proportion']}")

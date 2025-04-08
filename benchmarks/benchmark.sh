@@ -6,7 +6,7 @@ set -e
 # ---------------
 
 # Load config.sh if available
-CONFIG_FILE="config.sh"
+CONFIG_FILE="config/base.sh"
 
 if [[ -f "$CONFIG_FILE" ]]; then
     echo "[INFO] Loading configuration from $CONFIG_FILE"
@@ -29,16 +29,50 @@ WORKLOAD_FILE="${WORKLOAD_DIR}/workload.jsonl"
 
 generate_dataset() {
     echo "[INFO] Generating synthetic dataset..."
-    python synthetic_prefix_sharing_dataset.py \
-        --app-name programming \
-        --prompt-length "$PROMPT_LENGTH" \
-        --prompt-length-std "$PROMPT_STD" \
-        --shared-proportion "$SHARED_PROP" \
-        --shared-proportion-std "$SHARED_PROP_STD" \
-        --num-samples-per-prefix "$NUM_SAMPLES" \
-        --num-prefix "$NUM_PREFIX" \
-        --randomize-order \
-        > "$DATASET_FILE"
+
+    case "$PROMPT_TYPE" in
+        synthetic_shared)
+            python generator/dataset-generator/synthetic_prefix_sharing_dataset.py \
+                --app-name "$PROMPT_TYPE" \
+                --prompt-length "$PROMPT_LENGTH" \
+                --prompt-length-std "$PROMPT_STD" \
+                --shared-proportion "$SHARED_PROP" \
+                --shared-proportion-std "$SHARED_PROP_STD" \
+                --num-samples-per-prefix "$NUM_SAMPLES" \
+                --num-prefix "$NUM_PREFIX" \
+                --output "$DATASET_FILE" \
+                --randomize-order \
+            ;;
+        synthetic_multiturn)
+            python multiturn_prefix_sharing_dataset.py \
+                --prompt-length-mean "$PROMPT_LENGTH" \
+                --prompt-length-std "$PROMPT_STD" \
+                --num-turns-mean "$NUM_TURNS" \
+                --num-turns-std "$NUM_TURNS_STD" \
+                --num-sessions-mean "$NUM_SESSIONS" \
+                --num-sessions-std "$NUM_SESSIONS_STD" \
+                --output "$DATASET_FILE" \
+            ;;
+        client_trace)
+            python converter.py \
+                --path ${TRACE} \
+                --type trace \
+                --output ${DATASET_FILE} \
+            ;;
+        sharegpt)
+            export TARGET_DATASET="/tmp/ShareGPT_V3_unfiltered_cleaned_split.json"
+            wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json -O ${TARGET_DATASET}
+            python converter.py  \
+                --path ${TARGET_DATASET} \
+                --type sharegpt \
+                --output ${DATASET_FILE} \
+            ;;
+        *)
+            echo "[ERROR] Unknown prompt type: $PROMPT_TYPE"
+            exit 1
+            ;;
+    esac
+
 }
 
 # ---------------
