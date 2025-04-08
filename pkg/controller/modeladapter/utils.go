@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"strings"
 
 	"github.com/vllm-project/aibrix/pkg/config"
@@ -44,14 +43,6 @@ func equalStringSlices(a, b []string) bool {
 	}
 
 	return true
-}
-
-// getEnvKey retrieves the value of the environment variable named by the key.
-// If the variable is present, the function returns the value and a boolean true.
-// If the variable is not present, the function returns an empty string and a boolean false.
-func getEnvKey(key string) (string, bool) {
-	value, exists := os.LookupEnv(key)
-	return value, exists
 }
 
 func extractHuggingFacePath(artifactURL string) (string, error) {

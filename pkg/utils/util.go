@@ -74,6 +74,13 @@ func TrimMessage(message string) string {
 	return message
 }
 
+// CheckEnvExists checks if an environment variable exists.
+// It returns the value and a boolean indicating its existence.
+func CheckEnvExists(envVar string) (string, bool) {
+	value, exists := os.LookupEnv(envVar)
+	return value, exists
+}
+
 // LoadEnv loads an environment variable or returns a default value if not set.
 func LoadEnv(key, defaultValue string) string {
 	value := os.Getenv(key)

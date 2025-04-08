@@ -18,7 +18,6 @@ package modeladapter
 
 import (
 	"fmt"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -47,27 +46,6 @@ func TestEqualStringSlices(t *testing.T) {
 		a := []string{"one", "two", "three"}
 		b := []string{"one", "two", "four"}
 		assert.False(t, equalStringSlices(a, b))
-	})
-}
-
-// Test for getEnvKey function
-func TestGetEnvKey(t *testing.T) {
-	// Case 1: Environment variable exists
-	t.Run("environment variable exists", func(t *testing.T) {
-		err := os.Setenv("TEST_ENV", "test_value")
-		assert.NoError(t, err)
-		value, exists := getEnvKey("TEST_ENV")
-		assert.True(t, exists)
-		assert.Equal(t, "test_value", value)
-		err = os.Unsetenv("TEST_ENV")
-		assert.NoError(t, err)
-	})
-
-	// Case 2: Environment variable does not exist
-	t.Run("environment variable does not exist", func(t *testing.T) {
-		value, exists := getEnvKey("NON_EXISTENT_ENV")
-		assert.False(t, exists)
-		assert.Equal(t, "", value)
 	})
 }
 

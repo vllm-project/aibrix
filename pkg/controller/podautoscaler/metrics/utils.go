@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -133,12 +132,4 @@ func GetMetricFromSource(ctx context.Context, fetcher MetricFetcher, source auto
 		}
 	}
 	return fetcher.FetchMetric(ctx, source.ProtocolType, endpoint, source.Path, source.TargetMetric)
-}
-
-// getEnvKey retrieves the value of the environment variable named by the key.
-// If the variable is present, the function returns the value and a boolean true.
-// If the variable is not present, the function returns an empty string and a boolean false.
-func getEnvKey(key string) (string, bool) {
-	value, exists := os.LookupEnv(key)
-	return value, exists
 }
