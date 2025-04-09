@@ -17,7 +17,6 @@ limitations under the License.
 package gateway
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -37,7 +36,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
-	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 type Server struct {
@@ -124,11 +122,11 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		}
 
 		if err := srv.Send(resp); err != nil && len(model) > 0 {
+			klog.ErrorS(nil, err.Error(), "requestID", requestID)
 			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
 			if routerCtx != nil {
 				routerCtx.Delete()
 			}
-			klog.ErrorS(err, "requestID", requestID)
 		}
 	}
 }
@@ -154,18 +152,4 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) 
 	}
 
 	return router.Route(ctx, &utils.PodArray{Pods: readyPods})
-}
-
-func NewHealthCheckServer() *HealthServer {
-	return &HealthServer{}
-}
-
-type HealthServer struct{}
-
-func (s *HealthServer) Check(ctx context.Context, in *healthPb.HealthCheckRequest) (*healthPb.HealthCheckResponse, error) {
-	return &healthPb.HealthCheckResponse{Status: healthPb.HealthCheckResponse_SERVING}, nil
-}
-
-func (s *HealthServer) Watch(in *healthPb.HealthCheckRequest, srv healthPb.Health_WatchServer) error {
-	return status.Error(codes.Unimplemented, "watch is not implemented")
 }

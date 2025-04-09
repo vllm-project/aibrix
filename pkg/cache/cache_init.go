@@ -148,6 +148,7 @@ func InitForMetadata(config *rest.Config, stopCh <-chan struct{}, redisClient *r
 
 func InitForGateway(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Store {
 	once.Do(func() {
+		klog.Info("initialize cache for gateway")
 		store = New(redisClient, initPrometheusAPI())
 
 		// Initialize cache components

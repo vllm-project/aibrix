@@ -76,6 +76,16 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+          livenessProbe:
+            grpc:
+              port: 50052
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            grpc:
+              port: 50052
+            initialDelaySeconds: 5
+            periodSeconds: 10
       serviceAccountName: aibrix-gateway-plugins
 ---
 # this is a dummy route for incoming request to list models registered to aibrix-control-plane
