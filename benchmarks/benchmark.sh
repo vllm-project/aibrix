@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+set -x
 
 # ---------------
 # CONFIGURATION
@@ -85,33 +86,39 @@ generate_workload() {
     echo "[INFO] Generating workload..."
     case "$WORKLOAD_TYPE" in
         constant)
-            python workload_generator.py \
+            python generator/workload-generator/workload_generator.py \
                 --prompt-file "$DATASET_FILE" \
                 --interval-ms "$INTERVAL_MS" \
                 --duration-ms "$DURATION_MS" \
                 --target-qps 1 \
                 --trace-type constant \
                 --model "$MODEL_NAME" \
+                --target-qps "$TARGET_QPS" \
                 --output-dir "$WORKLOAD_DIR" \
                 --output-format jsonl
             ;;
         synthetic)
-            python workload_generator.py \
-                --prompt-file "$DATASET_FILE" \
-                --interval-ms "$INTERVAL_MS" \
-                --duration-ms "$DURATION_MS" \
+            CMD="python generator/workload-generator/workload_generator.py \
+                --prompt-file \"$DATASET_FILE\" \
+                --interval-ms \"$INTERVAL_MS\" \
+                --duration-ms \"$DURATION_MS\" \
                 --trace-type synthetic \
-                --traffic-pattern slight_fluctuation \
-                --prompt-len-pattern slight_fluctuation \
-                --completion-len-pattern slight_fluctuation \
-                --model "$MODEL_NAME" \
-                --output-dir "$WORKLOAD_DIR" \
-                --output-format jsonl
+                --model \"$MODEL_NAME\" \
+                --output-dir \"$WORKLOAD_DIR\" \
+                --output-format jsonl"
+
+            # Conditionally add optional arguments
+            [ -n "$TRAFFIC_FILE" ] && CMD+=" --traffic-pattern-config \"$TRAFFIC_FILE\""
+            [ -n "$PROMPT_LEN_FILE" ] && CMD+=" --prompt-len-pattern-config \"$PROMPT_LEN_FILE\""
+            [ -n "$COMPLETION_LEN_FILE" ] && CMD+=" --completion-len-pattern-config \"$COMPLETION_LEN_FILE\""
+
+            # Run the final command
+            eval $CMD
             ;;
         azure)
             AZURE_TRACE="/tmp/AzureLLMInferenceTrace_conv.csv"
             wget https://raw.githubusercontent.com/Azure/AzurePublicDataset/refs/heads/master/data/AzureLLMInferenceTrace_conv.csv -O "$AZURE_TRACE"
-            python workload_generator.py \
+            python generator/workload-generator/workload_generator.py \
                 --prompt-file "$DATASET_FILE" \
                 --interval-ms "$INTERVAL_MS" \
                 --duration-ms "$DURATION_MS" \
@@ -119,7 +126,8 @@ generate_workload() {
                 --trace-file "$AZURE_TRACE" \
                 --group-interval-seconds 1 \
                 --model "$MODEL_NAME" \
-                --output-dir "$WORKLOAD_DIR"
+                --output-dir "$WORKLOAD_DIR" \
+                --output-format jsonl
             ;;
         *)
             echo "[ERROR] Unsupported workload type: $WORKLOAD_TYPE"
@@ -160,8 +168,8 @@ run_analysis() {
 # ---------------
 
 echo "========== Starting Benchmark =========="
-generate_dataset
-# generate_workload
+# generate_dataset
+generate_workload
 # run_client
 # run_analysis
 echo "========== Benchmark Completed =========="
