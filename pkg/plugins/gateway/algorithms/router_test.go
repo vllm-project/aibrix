@@ -26,7 +26,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/utils" // Added for SelectRandomPod
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -36,7 +36,7 @@ func podsFromCache(c *cache.Store) *utils.PodArray {
 }
 
 func requestContext(model string) *types.RoutingContext {
-	return types.NewRoutingContext(context.Background(), "", model, "", "")
+	return types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("random"), model, "", "", "")
 }
 
 func TestNoPods(t *testing.T) {
@@ -248,7 +248,7 @@ func TestSelectRandomPod(t *testing.T) {
 			// Create a new random generator with a fixed seed for consistent test results
 			// Seed randomness for consistent results in tests
 			r := rand.New(rand.NewSource(42))
-			chosenPod, err := selectRandomPod(tt.pods, r.Intn)
+			chosenPod, err := utils.SelectRandomPod(tt.pods, r.Intn)
 			if tt.expectErr {
 				if err == nil {
 					t.Errorf("expected an error but got none")

@@ -210,3 +210,14 @@ func FilterPodByName(podname string, pods []*v1.Pod) (*v1.Pod, bool) {
 	}
 	return nil, false
 }
+
+// SelectRandomPod selects a random pod from the provided list, ensuring it's routable.
+// It returns an error if no ready pods are available.
+func SelectRandomPod(pods []*v1.Pod, randomFn func(int) int) (*v1.Pod, error) {
+	readyPods := FilterRoutablePods(pods)
+	if len(readyPods) == 0 {
+		return nil, fmt.Errorf("no ready pods available for random selection")
+	}
+	randomPod := readyPods[randomFn(len(readyPods))]
+	return randomPod, nil
+}

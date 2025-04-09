@@ -164,7 +164,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 					},
 				},
 			)
-			requestEnd = fmt.Sprintf(requestEnd+"rpm: %s, tpm: %s, ", rpm, tpm)
+			requestEnd = fmt.Sprintf(requestEnd+"rpm: %d, tpm: %d, ", rpm, tpm)
 		}
 
 		if routerCtx != nil {

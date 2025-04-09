@@ -21,6 +21,7 @@ import (
 	"math/rand"
 
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -46,9 +47,10 @@ func (r randomRouter) Route(ctx *types.RoutingContext, pods types.PodList) (stri
 	}
 
 	var err error
-	targetPod, err = selectRandomPod(pods.All(), rand.Intn)
+	// if readyPods is empty, SelectRandomPod will return an error
+	targetPod, err = utils.SelectRandomPod(pods.All(), rand.Intn)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("random selection failed: %w", err)
 	}
 
 	if targetPod == nil {

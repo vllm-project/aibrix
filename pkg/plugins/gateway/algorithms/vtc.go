@@ -17,25 +17,11 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"math"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/vtc"
+	"github.com/vllm-project/aibrix/pkg/types"
 )
 
-// mean calculates the mean of a slice of float64 numbers.
-func mean(numbers []float64) float64 {
-	sum := 0.0
-	for _, number := range numbers {
-		sum += number
-	}
-	return sum / float64(len(numbers))
-}
-
-// standardDeviation calculates the standard deviation of a slice of float64 numbers.
-func standardDeviation(numbers []float64) float64 {
-	avg := mean(numbers)
-	sumOfSquares := 0.0
-	for _, number := range numbers {
-		sumOfSquares += math.Pow(number-avg, 2)
-	}
-	variance := sumOfSquares / float64(len(numbers)-1)
-	return math.Sqrt(variance)
+func init() {
+	// Register the VTC Basic router
+	RegisterDelayedConstructor(types.RoutingAlgorithm(vtc.RouterVTCBasic), vtc.NewVTCBasicRouter)
 }

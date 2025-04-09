@@ -26,7 +26,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog/v2"
+	klog "k8s.io/klog/v2"
 )
 
 var (
@@ -61,7 +61,7 @@ func (r leastRequestRouter) Route(ctx *types.RoutingContext, pods types.PodList)
 		klog.Warning("no pods with valid metrics found for least-request routing strategy; selecting a pod randomly as fallback",
 			"requestID", ctx.RequestID)
 		var err error
-		targetPod, err = selectRandomPod(pods.All(), rand.Intn)
+		targetPod, err = utils.SelectRandomPod(pods.All(), rand.Intn)
 		if err != nil {
 			return "", err
 		}
