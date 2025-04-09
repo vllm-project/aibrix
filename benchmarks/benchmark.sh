@@ -168,9 +168,9 @@ run_analysis() {
 # ---------------
 
 echo "========== Starting Benchmark =========="
-# generate_dataset
+generate_dataset
 generate_workload
-# run_client
-# run_analysis
+run_client
+run_analysis
 echo "========== Benchmark Completed =========="
 
