@@ -10,25 +10,37 @@ export TOKENIZER="deepseek-ai/deepseek-llm-7b-chat"
 # STEP 1: DATASET GENERATION
 # -------
 # Dataset config
-export DATASET_FILE="./output/dataset/"
+export DATASET_DIR="./output/dataset/"
+export PROMPT_TYPE="sharegpt"
+export DATASET_FILE="${DATASET_DIR}/${PROMPT_TYPE}.jsonl"
 
 ## synthetic shared
-export PROMPT_TYPE="synthetic_shared"
+# export PROMPT_TYPE="synthetic_shared"
 export PROMPT_LENGTH=3871
 export PROMPT_STD=1656
 export SHARED_PROP=0.97
 export SHARED_PROP_STD=0.074
 export NUM_SAMPLES=200
 export NUM_PREFIX=10
-export DATASET_FILE="${DATASET_DIR}/${PROMPT_TYPE}.jsonl"
+
 
 ## synthetic_multiturn
+# export PROMPT_TYPE="synthetic_multiturn"
 export PROMPT_LENGTH=3871
 export PROMPT_STD=1656
 export NUM_TURNS=10
 export NUM_TURNS_STD=1
 export NUM_SESSIONS=10
 export NUM_SESSIONS_STD=1
+
+
+## client trace
+# export PROMPT_TYPE="client_trace"
+export TRACE="client_trace"
+
+## sharegpt
+# export PROMPT_TYPE="sharegpt"
+export TARGET_DATASET="/tmp/ShareGPT_V3_unfiltered_cleaned_split.json"
 
 # ---------------
 # STEP 2: WORKLOAD GENERATION

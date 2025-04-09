@@ -20,7 +20,7 @@ fi
 mkdir -p "$DATASET_DIR" "$WORKLOAD_DIR" "$CLIENT_OUTPUT" "$TRACE_OUTPUT"
 
 # Dataset generation config
-DATASET_FILE="${DATASET_DIR}/synthetic_dataset.jsonl"
+# DATASET_FILE="${DATASET_DIR}/synthetic_dataset.jsonl"
 WORKLOAD_FILE="${WORKLOAD_DIR}/workload.jsonl"
 
 # ---------------
@@ -44,7 +44,7 @@ generate_dataset() {
                 --randomize-order \
             ;;
         synthetic_multiturn)
-            python multiturn_prefix_sharing_dataset.py \
+            python generator/dataset-generator/multiturn_prefix_sharing_dataset.py \
                 --prompt-length-mean "$PROMPT_LENGTH" \
                 --prompt-length-std "$PROMPT_STD" \
                 --num-turns-mean "$NUM_TURNS" \
@@ -54,15 +54,17 @@ generate_dataset() {
                 --output "$DATASET_FILE" \
             ;;
         client_trace)
-            python converter.py \
+            python generator/dataset-generator/converter.py \
                 --path ${TRACE} \
                 --type trace \
                 --output ${DATASET_FILE} \
             ;;
         sharegpt)
-            export TARGET_DATASET="/tmp/ShareGPT_V3_unfiltered_cleaned_split.json"
-            wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json -O ${TARGET_DATASET}
-            python converter.py  \
+            if [[ ! -f "$TARGET_DATASET" ]]; then
+                echo "[INFO] Downloading ShareGPT dataset..."
+                wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json -O ${TARGET_DATASET}
+            fi    
+            python generator/dataset-generator/converter.py  \
                 --path ${TARGET_DATASET} \
                 --type sharegpt \
                 --output ${DATASET_FILE} \
@@ -159,8 +161,8 @@ run_analysis() {
 
 echo "========== Starting Benchmark =========="
 generate_dataset
-generate_workload
-run_client
-run_analysis
+# generate_workload
+# run_client
+# run_analysis
 echo "========== Benchmark Completed =========="
 
