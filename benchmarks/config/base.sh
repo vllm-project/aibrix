@@ -11,7 +11,7 @@ export TOKENIZER="deepseek-ai/deepseek-llm-7b-chat"
 # -------
 # Dataset config
 export DATASET_DIR="./output/dataset/"
-export PROMPT_TYPE="sharegpt"
+export PROMPT_TYPE="synthetic_multiturn" #"sharegpt"
 export DATASET_FILE="${DATASET_DIR}/${PROMPT_TYPE}.jsonl"
 
 ## synthetic shared
@@ -49,7 +49,26 @@ export TARGET_DATASET="/tmp/ShareGPT_V3_unfiltered_cleaned_split.json"
 export INTERVAL_MS=1000
 export DURATION_MS=300000
 export WORKLOAD_TYPE="synthetic"  # Options: synthetic, constant, azure
-export WORKLOAD_DIR="./output/workloads"
+export WORKLOAD_DIR="./output/workload/${WORKLOAD_TYPE}"
+
+
+## constant
+# export WORKLOAD_DIR="./output/workload/constant"
+export TARGET_QPS=1
+
+## synthetic
+# export WORKLOAD_DIR="./output/workload/synthetic"
+unset TRAFFIC_FILE
+unset PROMPT_LEN_FILE
+unset COMPLETION_LEN_FILE
+export TRAFFIC_FILE="./generator/workload-generator/config/predefined/traffic-configs/HighSlow.json"
+# export PROMPT_LEN_FILE="./generator/workload-generator/config/predefined/prompt-len-configs/HighSlow.json"
+# export COMPLETION_LEN_FILE="./generator/workload-generator/config/predefined/completion-len-configs/HighSlow.json"
+
+## azure    
+export AZURE_TRACE="/tmp/ShareGPT_V3_unfiltered_cleaned_split.json"
+
+
 
 # ---------------
 # STEP 3: CLIENT DISPATCH
@@ -59,7 +78,6 @@ export WORKLOAD_DIR="./output/workloads"
 export CLIENT_OUTPUT="./output/client_output"
 export ENDPOINT="http://localhost:8000"
 export API_KEY=$"api_key"
-export MODEL_NAME="deepseek-llm-7b-chat"
 
 # ---------------
 # OPTIONAL: ANALYSIS
