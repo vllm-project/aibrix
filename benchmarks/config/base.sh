@@ -78,9 +78,10 @@ export AZURE_TRACE="/tmp/ShareGPT_V3_unfiltered_cleaned_split.json"
 export CLIENT_OUTPUT="./output/client_output"
 export ENDPOINT="http://localhost:8000"
 export API_KEY=$"api_key"
+export TARGET_MODEL="deepseek-llm-7b-chat"
 
 # ---------------
 # OPTIONAL: ANALYSIS
 # ---------------
 export TRACE_OUTPUT="./output/trace_analysis"
-export GOODPUT_TARGET="topt:0.5"
+export GOODPUT_TARGET="tpot:0.5"
