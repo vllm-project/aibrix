@@ -70,6 +70,32 @@ def load_plain_dataset(
     )
     logging.warn(f"...Complete sessioned dataframe transformation")
     return df
+      
+def find_requests_max_session(
+    df: pd.DataFrame,
+        num_requests: int,
+        max_concurrent_session: int,
+):
+    if "prompt" in df.columns:
+        raise NotImplementedError(f"find_requests_max_session only supports sessioned dataset")
+    filtered_results = []
+    for _ in range(num_requests):
+        if df.empty:
+            return filtered_results
+        total_rows = len(df)
+        range_search = min(total_rows, max_concurrent_session)
+        logging.warning(f"search range {range_search} total_rows {total_rows}")
+        sample_session = df.iloc[random.randint(0, range_search - 1)] 
+        sample_idx = sample_session.name
+        filtered_results.append({"prompt": sample_session["prompts"].pop(0),
+                                "prompt_length": sample_session["prompt_lens"].pop(0),
+                                "output_length": sample_session["completion_lens"].pop(0),
+                                "session_id": sample_session["session_id"]})
+        if len(sample_session["prompts"]) == 0:
+            df.drop(index=sample_idx, inplace=True)  # Remove the selected row
+            df.reset_index(drop=True, inplace=True)  # Reset index to avoid issues
+        break    
+    return filtered_results    
 
 def find_requests_len_range(
     df: pd.DataFrame,
@@ -164,8 +190,6 @@ def _find_requests_sessioned_len_range(
         while err_perc <= 1:
             input_range = (int(input_len * (1 - err_perc)), int(input_len * (1 + err_perc))) if input_len else (0, sys.maxsize)
             output_range = (int(output_len * (1 - err_perc)), int(output_len * (1 + err_perc))) if output_len else (0, sys.maxsize)
-            # Identify problematic rows
-            invalid_rows = df[df["prompt_lens"].apply(lambda x: not isinstance(x, list) or len(x) == 0)]
 
             # Print them for inspection
             filtered_sessions = df[

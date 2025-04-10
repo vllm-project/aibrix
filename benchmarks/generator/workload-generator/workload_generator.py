@@ -9,6 +9,7 @@ from typing import List, Dict, Any
 from transformers import PreTrainedTokenizerBase
 from datetime import timedelta
 from sample_request import (load_requests,  
+                            find_requests_max_session,
                             find_requests_len_range, 
                             sample_requests_all,
                         )
@@ -42,6 +43,7 @@ def generate_from_internal_csv(prompt_file_path: str,
                             input_scale: float = 1.0,
                             output_scale: float = 1.0,
                             internal_trace_type: str = 'maas',
+                            max_concurrent_sessions: int = None,
                             output_file: str = 'output/output',
                             to_jsonl: bool = False,
                             ) -> Dict[str, Any]:
@@ -80,6 +82,7 @@ def generate_from_internal_csv(prompt_file_path: str,
         qps_scale = qps_scale,
         input_scale = input_scale,
         output_scale = output_scale,
+        max_concurrent_sessions = max_concurrent_sessions,
     )
     
     workload = make_serializable(workload)
@@ -96,6 +99,7 @@ def generate_synthetic_from_dist(
         qps_scale: float,
         input_scale: float,
         output_scale: float,
+        max_concurrent_sessions: int,
     ) -> List[Dict[str, Any]]:
     
     if not (len(rps_dist) == len(input_token_len_dist) == len(output_token_len_dist)):
@@ -117,14 +121,21 @@ def generate_synthetic_from_dist(
         current_time += inter_arrival_time
         if current_time < total_seconds * 1000:
             if current_rate != 0:
-                request = find_requests_len_range(
-                    df=prompt_df,
-                    num_requests=1,
-                    input_lens=[current_input_len],
-                    output_lens=[current_output_len],
-                    initial_err_perc=0.5,
-                    err_step=0.05,
-                )
+                if max_concurrent_sessions:
+                    request = find_requests_max_session(
+                        df=prompt_df,
+                        num_requests=1,
+                        max_concurrent_session = max_concurrent_sessions,
+                    )
+                else:
+                    request = find_requests_len_range(
+                        df=prompt_df,
+                        num_requests=1,
+                        input_lens=[current_input_len],
+                        output_lens=[current_output_len],
+                        initial_err_perc=0.5,
+                        err_step=0.05,
+                    )
             else:
                 request = []
             workload.append({"timestamp": int(current_time), "requests": request})  
@@ -139,6 +150,7 @@ def generate_constant(prompt_file_path: str,
                        output_len: int = None,
                        duration_ms: int = None,
                        interval_ms: int = None,
+                       max_concurrent_sessions: int = None,
                        output_file: str = 'output/output',
                        to_jsonl: bool = False,
                        ) -> List[List[Any]]:
@@ -164,18 +176,26 @@ def generate_constant(prompt_file_path: str,
             qps_scale = 1.0,
             input_scale = 1.0,
             output_scale = 1.0,
+            max_concurrent_sessions = max_concurrent_sessions
         )
     else:
         sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
         while ts < duration_ms:
-            concurrent_reqs = find_requests_len_range(
-                df=sharegpt_df,
-                num_requests=qps,
-                input_lens=[None] * qps, 
-                output_lens=[None] * qps, 
-                initial_err_perc=0.1,
-                err_step=0.05,
-            )
+            if max_concurrent_sessions:
+                concurrent_reqs = find_requests_max_session(
+                    df=sharegpt_df,
+                    num_requests = qps,
+                    max_concurrent_session = max_concurrent_sessions,
+                )
+            else:
+                concurrent_reqs = find_requests_len_range(
+                    df=sharegpt_df,
+                    num_requests=qps,
+                    input_lens=[None] * qps, 
+                    output_lens=[None] * qps, 
+                    initial_err_perc=0.1,
+                    err_step=0.05,
+                )
             if concurrent_reqs:  # Only add non-empty groups
                 workload.append({"timestamp": ts, "requests": concurrent_reqs})  
             else:
@@ -201,6 +221,7 @@ def generate_synthetic(prompt_file_path: str,
                        output_pattern_config: Dict[str, Any],
                        duration_ms: int = None,
                        interval_ms: int = None,
+                       max_concurrent_sessions: int = None,
                        output_file: str = 'output/output',
                        to_jsonl: bool = False,
                        ) -> List[List[Any]]:
@@ -268,6 +289,7 @@ def generate_synthetic(prompt_file_path: str,
         qps_scale = 1.0,
         input_scale = 1.0,
         output_scale = 1.0,
+        max_concurrent_sessions = max_concurrent_sessions,
     )
     workload = make_serializable(workload)
     save_workload(workload, output_file, use_jsonl=to_jsonl)
@@ -388,6 +410,7 @@ if __name__ == '__main__':
     parser.add_argument('--qps-scale', type=float, required=False, default=1.0, help='QPS scaling factor.')
     parser.add_argument('--input-scale', type=float, required=False, default=1.0, help='Input length scaling factor.')
     parser.add_argument('--output-scale', type=float, required=False, default=1.0, help='Output length scaling factor.')
+    parser.add_argument('--max-concurrent-sessions', type=int, required=False, default=1, help='Maximum number of overlapping sessions.')
     
     args = parser.parse_args()
 
@@ -424,6 +447,7 @@ if __name__ == '__main__':
                                                 output_pattern_config = output_pattern_config,
                                                 duration_ms=args.duration_ms,
                                                 interval_ms=args.interval_ms,
+                                                max_concurrent_sessions=args.max_concurrent_sessions,
                                                 output_file=f"{args.output_dir}/{comp_pattern_type}",
                                                 to_jsonl=(args.output_format == "jsonl"),
                                             )
@@ -437,6 +461,7 @@ if __name__ == '__main__':
                                                     output_len=args.target_completion_len,
                                                     duration_ms=args.duration_ms, 
                                                     interval_ms=args.interval_ms,
+                                                    max_concurrent_sessions=args.max_concurrent_sessions,
                                                     output_file=f"{args.output_dir}/{args.trace_type}",
                                                     to_jsonl=(args.output_format == "jsonl"),
                                                 )
@@ -451,6 +476,7 @@ if __name__ == '__main__':
                                                             input_scale=args.input_scale,
                                                             output_scale=args.output_scale,
                                                             internal_trace_type=args.internal_trace_type,
+                                                            max_concurrent_sessions=args.max_concurrent_sessions,
                                                             output_file=f"{args.output_dir}/{args.trace_type}",
                                                             to_jsonl=(args.output_format == "jsonl"),
                                                             )
