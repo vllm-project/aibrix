@@ -368,27 +368,24 @@ def generate_dataset_from_config(tokenizer, config):
     )
     
     # Create flattened prompt data with prefix group information
-    flat_prompts_data = []
+    sessioned_prompts = []
+    total_prompts_count = 0
     for prefix_idx, prompt_list in enumerate(prompts):
+        per_session_prompts = []
         for j, prompt in enumerate(prompt_list):
-            flat_prompts_data.append({
+            all_prompts_combined.append({
                 "prompt": prompt,
                 "token_count": token_counts[prefix_idx][j],
                 "prefix_group": prefix_idx,
                 "config_id": config["id"]
             })
-    # Determine if we should randomize the order
-    randomize_order = config.get("randomize_order", False)
-    
-    # If randomize_order is True, shuffle the prompts across different prefix groups
-    if randomize_order:
-        random.shuffle(flat_prompts_data)
+            per_session_prompts.append(prompt)
+            total_prompts_count += 1
+        sessioned_prompts.append({
+            "session_id": prefix_idx,
+            "prompts": per_session_prompts,
+        })
 
-    for j, prompt_data in enumerate(flat_prompts_data):
-        all_prompts_combined.append(prompt_data)
-    
-    # Update overall prefix sharing tracking
-    total_prompts_count += len(flat_prompts_data)
     
     # Store config data for overall prefix calculation
     all_prompts_for_sharing.extend(prompts)
@@ -403,8 +400,7 @@ def generate_dataset_from_config(tokenizer, config):
         "num_samples_per_prefix": config["num_samples_per_prefix"],
         "num_prefix": config["num_prefix"],
         "rps": config['rps'],
-        "randomize_order": randomize_order,
-        "num_requests": len(flat_prompts_data),
+        "num_requests": total_prompts_count,
         "total_tokens": tokens,
         "prefix_sharing_ratio": sharing_ratio,
         "prefix_proportion": prefix_proportion,
@@ -417,7 +413,7 @@ def generate_dataset_from_config(tokenizer, config):
 
     # Sort combined data by timestamp
     return {
-        "prompts": all_prompts_combined,
+        "prompts": sessioned_prompts,
         "stats": config_stat,
         "total_tokens": total_tokens,
         "overall_sharing_ratio": overall_sharing_ratio,
