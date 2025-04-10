@@ -105,3 +105,18 @@ func LoadEnvInt(key string, defaultValue int) int {
 	klog.Infof("set %s: %d, using default value", key, defaultValue)
 	return defaultValue
 }
+
+func LoadEnvFloat(key string, defaultValue float64) float64 {
+	valueStr := os.Getenv(key)
+	if valueStr != "" {
+		value, err := strconv.ParseFloat(valueStr, 64)
+		if err != nil || value <= 0 {
+			klog.Warningf("invalid %s: %s, falling back to default: %g", key, valueStr, defaultValue)
+		} else {
+			klog.Infof("set %s: %g", key, value)
+			return value
+		}
+	}
+	klog.Infof("set %s: %g, using default value", key, defaultValue)
+	return defaultValue
+}

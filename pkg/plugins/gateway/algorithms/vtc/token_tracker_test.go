@@ -34,11 +34,11 @@ func TestInMemoryTokenTracker_GetTokenCount(t *testing.T) {
 	assert.Equal(t, float64(0), tokens, "Initial token count should be 0")
 
 	// Test count after update
-	err = tracker.UpdateTokenCount(ctx, "user1", 10, 15) // 10*1.0 + 15*1.5 = 32.5
+	err = tracker.UpdateTokenCount(ctx, "user1", 10, 15) // 10*1.0 + 15*2.0 = 40
 	assert.NoError(t, err)
 	tokens, err = tracker.GetTokenCount(ctx, "user1")
 	assert.NoError(t, err)
-	assert.Equal(t, float64(32.5), tokens, "Token count after first update")
+	assert.Equal(t, float64(40), tokens, "Token count after first update")
 
 	// Test initial count for another new user
 	tokens, err = tracker.GetTokenCount(ctx, "user2")
@@ -61,22 +61,22 @@ func TestInMemoryTokenTracker_UpdateTokenCount(t *testing.T) {
 	ctx := context.Background()
 
 	// Test initial update
-	err := tracker.UpdateTokenCount(ctx, "user1", 10, 15) // 10*1.0 + 15*1.5 = 32.5
+	err := tracker.UpdateTokenCount(ctx, "user1", 10, 15) // 10*1.0 + 15*2.0 = 40
 	assert.NoError(t, err)
 	tokens, _ := tracker.GetTokenCount(ctx, "user1")
-	assert.Equal(t, float64(32.5), tokens, "First update")
+	assert.Equal(t, float64(40), tokens, "First update")
 
 	// Test second update for the same user
-	err = tracker.UpdateTokenCount(ctx, "user1", 5, 10) // 32.5 + (5*1.0 + 10*1.5) = 32.5 + 20 = 52.5
+	err = tracker.UpdateTokenCount(ctx, "user1", 5, 10) // 40 + (5*1.0 + 10*2.0) = 40 + 25 = 65
 	assert.NoError(t, err)
 	tokens, _ = tracker.GetTokenCount(ctx, "user1")
-	assert.Equal(t, float64(52.5), tokens, "Second update")
+	assert.Equal(t, float64(65), tokens, "Second update")
 
 	// Test update for a different user
-	err = tracker.UpdateTokenCount(ctx, "user2", 100, 50) // 100*1.0 + 50*1.5 = 175
+	err = tracker.UpdateTokenCount(ctx, "user2", 100, 50) // 100*1.0 + 50*2.0 = 200
 	assert.NoError(t, err)
 	tokens, _ = tracker.GetTokenCount(ctx, "user2")
-	assert.Equal(t, float64(175), tokens, "Update for user2")
+	assert.Equal(t, float64(200), tokens, "Update for user2")
 
 	// Test update for empty user (should do nothing)
 	err = tracker.UpdateTokenCount(ctx, "", 5, 5)

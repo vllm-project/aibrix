@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package vtc implements the Virtual Token Credit routing algorithm
+// Package vtc implements the Virtual Token Counter routing algorithms focused on fairness and utilization
 package vtc
 
 import (
@@ -23,10 +23,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
-// Router constants
 const RouterVTCBasic types.RoutingAlgorithm = "vtc-basic"
-
-// TODO: add other variants - "vtc-fair", "vtc-max-fair", "vtc-pred-50", "vtc-oracle"
+// TODO: add other variants - "vtc-fair", "vtc-max-fair", "vtc-pred-50"
 
 // TokenTracker tracks token usage per user
 type TokenTracker interface {
@@ -49,10 +47,11 @@ type VTCConfig struct {
 }
 
 func DefaultVTCConfig() VTCConfig {
+	// Use the global variables loaded from environment
 	return VTCConfig{
 		Variant:           RouterVTCBasic,
-		InputTokenWeight:  1.0,
-		OutputTokenWeight: 1.5,
+		InputTokenWeight:  inputTokenWeight,
+		OutputTokenWeight: outputTokenWeight,
 	}
 }
 
