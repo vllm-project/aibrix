@@ -86,16 +86,21 @@ generate_workload() {
     echo "[INFO] Generating workload..."
     case "$WORKLOAD_TYPE" in
         constant)
-            python generator/workload-generator/workload_generator.py \
-                --prompt-file "$DATASET_FILE" \
-                --interval-ms "$INTERVAL_MS" \
-                --duration-ms "$DURATION_MS" \
-                --target-qps 1 \
+            CMD="python generator/workload-generator/workload_generator.py \
+                --prompt-file \"$DATASET_FILE\" \
+                --interval-ms \"$INTERVAL_MS\" \
+                --duration-ms \"$DURATION_MS\" \
+                --target-qps \"$TARGET_QPS\" \
                 --trace-type constant \
-                --model "$MODEL_NAME" \
-                --target-qps "$TARGET_QPS" \
-                --output-dir "$WORKLOAD_DIR" \
-                --output-format jsonl
+                --model \"$MODEL_NAME\" \
+                --output-dir \"$WORKLOAD_DIR\" \
+                --output-format jsonl"
+
+            # Optional max concurrent sessions
+            [ -n "$MAX_CONCURRENT_SESSIONS" ] && CMD+=" --max-concurrent-sessions \"$MAX_CONCURRENT_SESSIONS\""
+
+            # Run the final command
+            eval $CMD
             ;;
         synthetic)
             CMD="python generator/workload-generator/workload_generator.py \
@@ -111,7 +116,7 @@ generate_workload() {
             [ -n "$TRAFFIC_FILE" ] && CMD+=" --traffic-pattern-config \"$TRAFFIC_FILE\""
             [ -n "$PROMPT_LEN_FILE" ] && CMD+=" --prompt-len-pattern-config \"$PROMPT_LEN_FILE\""
             [ -n "$COMPLETION_LEN_FILE" ] && CMD+=" --completion-len-pattern-config \"$COMPLETION_LEN_FILE\""
-
+            [ -n "$MAX_CONCURRENT_SESSIONS" ] && CMD+=" --max-concurrent-sessions \"$MAX_CONCURRENT_SESSIONS\""
             # Run the final command
             eval $CMD
             ;;
@@ -145,7 +150,7 @@ run_client() {
     python3 client.py \
         --workload-path "$WORKLOAD_FILE" \
         --endpoint "$ENDPOINT" \
-        --model "$MODEL_PATH" \
+        --model "$TARGET_MODEL" \
         --api-key "$API_KEY" \
         --streaming \
         --output-file-path "$CLIENT_OUTPUT/output.jsonl"
