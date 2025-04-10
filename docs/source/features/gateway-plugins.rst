@@ -138,12 +138,17 @@ After you enable the authentication, you can query model with ``-H Authorization
 Routing Strategies
 ------------------
 
-Below are routing strategies gateway supports
+Below are routing strategies gateway supports:
 
-* random: routes request to a random pod.
-* least-request: routes request to a pod with least ongoing request.
-* throughput: routes request to a pod which has processed lowest tokens.
-* prefix-cache: routes request to a pod which already has KV cache for prompt.
+* ``random``: routes request to a random pod.
+* ``least-request``: routes request to a pod with the fewest ongoing requests.
+* ``throughput``: routes request to a pod which has processed the lowest total weighted tokens.
+* ``prefix-cache``: routes request to a pod which already has a KV cache matching the request's prompt prefix.
+* ``least-busy-time``: routes request to the pod with the least cumulative busy processing time.
+* ``least-kv-cache``: routes request to the pod with the smallest current KV cache size (least VRAM used).
+* ``least-latency``: routes request to the pod with the lowest average processing latency.
+* ``prefix-cache-and-load``: routes request considering both prefix cache hits and pod load.
+* ``vtc-basic``: routes request using a hybrid score balancing fairness (user token count) and pod utilization. See the `algorithm README <../../../pkg/plugins/gateway/algorithms/README.md>`_ for details.
 
 .. code-block:: bash
 
