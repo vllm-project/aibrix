@@ -22,6 +22,11 @@ metadata:
   name: gateway-plugins
   namespace: aibrix-system
 spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
   replicas: 1
   selector:
     matchLabels:
@@ -31,6 +36,24 @@ spec:
       labels:
         app: gateway-plugins
     spec:
+      affinity:
+        podAntiAffinity: # pods are placed on different nodes
+           requiredDuringSchedulingIgnoredDuringExecution:
+           - labelSelector:
+               matchExpressions:
+                 - key: app
+                   operator: In
+                   values:
+                     - gateway-plugins
+             topologyKey: "kubernetes.io/hostname"
+        nodeAffinity: # prevent gateway pod to be placed on gpu node.
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: vke.node.gpu.schedule
+                    operator: NotIn
+                    values:
+                      - nvidia
       initContainers:
         - name: init-c
           image: busybox
@@ -87,6 +110,17 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
       serviceAccountName: aibrix-gateway-plugins
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway-plugin-pdb
+  namespace: aibrix-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: gateway-plugins
 ---
 # this is a dummy route for incoming request to list models registered to aibrix-control-plane
 # TODO (varun): check if this dummy route can be removed in future

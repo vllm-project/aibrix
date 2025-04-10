@@ -2,13 +2,10 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-- ../../vke/default
+- ../vke/default
 
 patches:
-- path: ipv4_patch.yaml
-  target:
-    kind: EnvoyProxy
-    name: aibrix-custom-proxy-config
+- path: envoy_proxy_patch.yaml
 
 images:
 - name: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins

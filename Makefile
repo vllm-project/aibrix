@@ -241,6 +241,10 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
+.PHONY: release
+release: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	$(KUSTOMIZE) build config/overlays/release | $(KUBECTL) apply -f -
+
 .PHONY: install-vke
 install-vke: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
     ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization
@@ -260,11 +264,11 @@ undeploy-vke: kustomize ## Undeploy controller from the K8s cluster specified in
 
 .PHONY: deploy-vke-ipv4
 deploy-vke-ipv4: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/overlays/vke-ipv4/default | $(KUBECTL) apply -f -
+	$(KUSTOMIZE) build config/overlays/vke-ipv4 | $(KUBECTL) apply -f -
 
 .PHONY: undeploy-vke-ipv4
 undeploy-vke-ipv4: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/overlays/vke-ipv4/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+	$(KUSTOMIZE) build config/overlays/vke-ipv4 | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
 

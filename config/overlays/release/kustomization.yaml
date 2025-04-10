@@ -7,15 +7,13 @@ resources:
 - ../../default
 
 patches:
-  - path: dependency_patch.yaml
-  - path: default_patch.yaml
+  - path: envoy_proxy_patch.yaml
+  - path: gateway_plugins_patch.yaml
 
 images:
 - name: quay.io/kuberay/operator
   newName: aibrix/kuberay-operator
   newTag: v1.2.1-patch
-- name: envoyproxy/envoy
-  newTag: distroless-v1.31.0
 - name: busybox
   newTag: stable
 - name: redis

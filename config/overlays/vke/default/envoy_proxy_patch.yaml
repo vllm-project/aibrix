@@ -1,0 +1,53 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: aibrix-custom-proxy-config
+  namespace: aibrix-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        patch:
+          type: StrategicMerge
+          value:
+            metadata:
+              annotations:
+                service.beta.kubernetes.io/volcengine-loadbalancer-address-type: "PRIVATE"
+            spec:
+              ipFamilies:
+                - IPv4
+                - IPv6
+              ipFamilyPolicy: PreferDualStack
+      envoyDeployment:
+        replicas: 1
+        container:
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy:v1.33.2 
+          resources:
+            limits:
+              cpu: 2
+              memory: 8Gi
+            requests:
+              cpu: 2
+              memory: 8Gi
+        pod:
+          annotations:
+            vci.vke.volcengine.com/pod-ip-family: dualstack
+          affinity:
+            podAntiAffinity: # pods are placed on different nodes
+              requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - envoy
+                topologyKey: "kubernetes.io/hostname"
+            nodeAffinity: # prevent gateway pod to be placed on gpu node.
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: vke.node.gpu.schedule
+                        operator: NotIn
+                        values:
+                          - nvidia

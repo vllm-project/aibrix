@@ -3,18 +3,15 @@ kind: Kustomization
 
 resources:
 - ../../../default
-- gateway/envoyproxy.yaml
 
 patches:
-  - path: gateway/gateway_patch.yaml
+  - path: envoy_proxy_patch.yaml
+  - path: gateway_plugins_patch.yaml
 
 images:
 - name: quay.io/kuberay/operator
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/kuberay-operator
   newTag: v1.2.1-patch
-- name: envoyproxy/envoy
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy
-  newTag: distroless-v1.31.0
 - name: busybox
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/busybox
   newTag: stable
