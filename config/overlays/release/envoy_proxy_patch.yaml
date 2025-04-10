@@ -10,7 +10,7 @@ spec:
     type: Kubernetes
     kubernetes:
       envoyDeployment:
-        replicas: 2
+        replicas: 1
         container:
           image: envoyproxy/envoy:v1.33.2
           resources:
