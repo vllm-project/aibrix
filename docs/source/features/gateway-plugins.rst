@@ -148,7 +148,7 @@ Below are routing strategies gateway supports:
 * ``least-kv-cache``: routes request to the pod with the smallest current KV cache size (least VRAM used).
 * ``least-latency``: routes request to the pod with the lowest average processing latency.
 * ``prefix-cache-and-load``: routes request considering both prefix cache hits and pod load.
-* ``vtc-basic``: routes request using a hybrid score balancing fairness (user token count) and pod utilization. See the `algorithm README <../../../pkg/plugins/gateway/algorithms/README.md>`_ for details.
+* ``vtc-basic``: routes request using a hybrid score balancing fairness (user token count) and pod utilization. It is a simple variant of Virtual Token Counter (VTC) algorithm.  See more details at https://github.com/Ying1123/VTC-artifact
 
 .. code-block:: bash
 
