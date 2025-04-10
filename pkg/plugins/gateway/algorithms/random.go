@@ -47,7 +47,6 @@ func (r randomRouter) Route(ctx *types.RoutingContext, pods types.PodList) (stri
 	}
 
 	var err error
-	// if readyPods is empty, SelectRandomPod will return an error
 	targetPod, err = utils.SelectRandomPod(pods.All(), rand.Intn)
 	if err != nil {
 		return "", fmt.Errorf("random selection failed: %w", err)

@@ -23,7 +23,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils" // Added for SelectRandomPod
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	klog "k8s.io/klog/v2"
 )
