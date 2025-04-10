@@ -24,6 +24,7 @@ import (
 )
 
 const RouterVTCBasic types.RoutingAlgorithm = "vtc-basic"
+
 // TODO: add other variants - "vtc-fair", "vtc-max-fair", "vtc-pred-50"
 
 // TokenTracker tracks token usage per user

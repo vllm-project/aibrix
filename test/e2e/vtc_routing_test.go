@@ -47,8 +47,6 @@ var redisClient *redis.Client
 var availablePods []string
 var tokenTracker *vtc.InMemoryTokenTracker
 
-// Histograms to track pod distribution
-var initialPhaseHistogram map[string]int
 
 func setupVTCUsers(t *testing.T) {
 	if redisClient == nil {
@@ -178,13 +176,13 @@ func TestVTCHybridScoring(t *testing.T) {
 		for _, user := range users {
 			tokenCount, _ := tokenTracker.GetTokenCount(context.Background(), user)
 			finalTokens[user] = tokenCount
-			t.Logf("Final token count for user %s: %.2f (delta: +%.2f)", 
+			t.Logf("Final token count for user %s: %.2f (delta: +%.2f)",
 				user, tokenCount, tokenCount-initialTokens[user])
 		}
 
-		assert.Greater(t, finalTokens[users[1]], finalTokens[users[0]], 
+		assert.Greater(t, finalTokens[users[1]], finalTokens[users[0]],
 			"Expected medium messages to accumulate more tokens than short messages")
-		assert.Greater(t, finalTokens[users[2]], finalTokens[users[1]], 
+		assert.Greater(t, finalTokens[users[2]], finalTokens[users[1]],
 			"Expected long messages to accumulate more tokens than medium messages")
 
 		calculateDistributionStats(t, "Token Accumulation", podHistogram)
@@ -213,7 +211,7 @@ func TestVTCHybridScoring(t *testing.T) {
 			for _, pod := range podAssignments {
 				distinctPods[pod] = true
 			}
-			
+
 			calculateDistributionStats(t, "Fairness Test", convertToHistogram(podAssignments))
 		}
 	})
@@ -228,17 +226,17 @@ func TestVTCHybridScoring(t *testing.T) {
 		for _, user := range users {
 			podAssignments[user] = make(map[string]bool)
 			for i := 0; i < 5; i++ {
-				pod := getTargetPodFromChatCompletionWithUser(t, 
+				pod := getTargetPodFromChatCompletionWithUser(t,
 					fmt.Sprintf("Utilization test request %d", i), "vtc-basic", user)
 				podAssignments[user][pod] = true
 			}
-			
+
 			podCount := len(podAssignments[user])
 			t.Logf("User %s was routed to %d different pods", user, podCount)
-			
+
 			// This is a reasonable expectation for good utilization
 			if len(availablePods) >= 3 {
-				assert.GreaterOrEqual(t, podCount, 2, 
+				assert.GreaterOrEqual(t, podCount, 2,
 					"Expected user %s to be routed to at least 2 different pods for good utilization", user)
 			}
 		}
@@ -273,7 +271,7 @@ func TestVTCHybridScoring(t *testing.T) {
 		// Note: We can't always guarantee distribution across pods in a real environment
 		// as it depends on the current state of the system
 		for _, user := range users {
-			assert.NotEmpty(t, podAssignments[user], 
+			assert.NotEmpty(t, podAssignments[user],
 				"Expected valid pod assignment for user %s", user)
 		}
 	})
