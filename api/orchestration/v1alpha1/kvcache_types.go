@@ -40,8 +40,8 @@ type ServiceConfig struct {
 
 // MetadataConfig holds the configuration about the kv cache metadata service
 type MetadataConfig struct {
-	Redis RedisConfig `json:"redis,omitempty"`
-	Etcd  EtcdConfig  `json:"etcd,omitempty"`
+	Redis *RedisConfig `json:"redis,omitempty"`
+	Etcd  *EtcdConfig  `json:"etcd,omitempty"`
 }
 
 // RedisConfig provides the configuration fields for deploying Redis.

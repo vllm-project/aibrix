@@ -18,6 +18,7 @@ package kvcache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -38,14 +39,14 @@ func (r *KVCacheReconciler) reconcileCentralizedMode(ctx context.Context, kvCach
 	}
 
 	// Handle Vineyard kvCache Deployment
-	err = r.reconcileDeployment(ctx, kvCache)
-	if err != nil {
+	deployment := buildVineyardDeployment(kvCache)
+	if err := r.ReconcileDeploymentObject(ctx, deployment); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// Handle Vineyard Services
-	err = r.reconcileServices(ctx, kvCache)
-	if err != nil {
+	service := buildVineyardRpcService(kvCache)
+	if err := r.ReconcileServiceObject(ctx, service); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -53,6 +54,23 @@ func (r *KVCacheReconciler) reconcileCentralizedMode(ctx context.Context, kvCach
 }
 
 func (r *KVCacheReconciler) reconcileMetadataService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
+	if kvCache.Spec.Metadata.Etcd == nil && kvCache.Spec.Metadata.Redis == nil {
+		return errors.New("either etcd or redis configuration is required")
+	}
+
+	if kvCache.Spec.Metadata.Etcd != nil {
+		return r.reconcileEtcdService(ctx, kvCache)
+	}
+
+	if kvCache.Spec.Metadata.Redis != nil {
+		// TODO: add redis support later
+		return nil
+	}
+
+	return nil
+}
+
+func (r *KVCacheReconciler) reconcileEtcdService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
 	// We only support etcd at this moment, redis will be supported later.
 	replicas := int(kvCache.Spec.Metadata.Etcd.Replicas)
 
@@ -77,25 +95,6 @@ func (r *KVCacheReconciler) reconcileMetadataService(ctx context.Context, kvCach
 	etcdService := buildEtcdAggregateService(kvCache)
 
 	if err := r.ReconcileServiceObject(ctx, etcdService); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (r *KVCacheReconciler) reconcileDeployment(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
-	deployment := buildVineyardDeployment(kvCache)
-	if err := r.ReconcileDeploymentObject(ctx, deployment); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (r *KVCacheReconciler) reconcileServices(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
-	service := buildVineyardRpcService(kvCache)
-
-	if err := r.ReconcileServiceObject(ctx, service); err != nil {
 		return err
 	}
 
