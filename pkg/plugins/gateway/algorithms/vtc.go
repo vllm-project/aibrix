@@ -18,10 +18,9 @@ package routingalgorithms
 
 import (
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms/vtc"
-	"github.com/vllm-project/aibrix/pkg/types"
 )
 
 func init() {
 	// Register the VTC Basic router
-	RegisterDelayedConstructor(types.RoutingAlgorithm(vtc.RouterVTCBasic), vtc.NewVTCBasicRouter)
+	RegisterDelayedConstructor(vtc.RouterVTCBasic, vtc.NewVTCBasicRouter)
 }

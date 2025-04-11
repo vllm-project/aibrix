@@ -210,7 +210,8 @@ func TestVTCRouterSimple(t *testing.T) {
 	// Set up token count for a test user
 	ctx := context.Background()
 	user := "user1"
-	tokenTracker.UpdateTokenCount(ctx, user, 0, 0)
+	err := tokenTracker.UpdateTokenCount(ctx, user, 0, 0)
+	assert.NoError(t, err)
 
 	// Test 1: With user - should use VTC routing
 	routingCtx := types.NewRoutingContext(ctx, "vtc-basic", "model1", "test message", "request1", user)
@@ -238,7 +239,8 @@ func TestVTCRouterSimple(t *testing.T) {
 
 	// Test 3: Route with user that has high token count
 	// This tests the fairness aspect of the VTC router
-	tokenTracker.UpdateTokenCount(ctx, "user2", 5000, 0) // User with high token count
+	err = tokenTracker.UpdateTokenCount(ctx, "user2", 5000, 0) // User with high token count
+	assert.NoError(t, err)
 	user2 := "user2"
 	routingCtx = types.NewRoutingContext(ctx, "vtc-basic", "model1", "test message", "request3", user2)
 

@@ -44,9 +44,10 @@ var testUsers = []utils.User{
 var redisClient *redis.Client
 
 // Global variables for test state
-var availablePods []string
-var tokenTracker *vtc.InMemoryTokenTracker
-
+var (
+	availablePods []string
+	tokenTracker  *vtc.InMemoryTokenTracker
+)
 
 func setupVTCUsers(t *testing.T) {
 	if redisClient == nil {
@@ -140,7 +141,9 @@ func TestVTCHybridScoring(t *testing.T) {
 	users := []string{"user1", "user2", "user3"}
 	shortMsg := "Short message."
 	mediumMsg := "This is a medium length message with more tokens."
-	longMsg := "This is a very long message with many tokens. It should be significantly longer than the others to ensure higher token count. We want to make sure the VTC algorithm properly accounts for different token usages."
+	longMsg := "This is a very long message with many tokens. " +
+		"It should be significantly longer than the others to ensure higher token count. " +
+		"We want to make sure the VTC algorithm properly accounts for different token usages."
 
 	if len(availablePods) <= 1 {
 		t.Logf("[WARNING] Only %d pod(s) detected. VTC routing tests require multiple pods.", len(availablePods))
@@ -280,7 +283,9 @@ func TestVTCHybridScoring(t *testing.T) {
 // Helper function to get target pod with user header and track token usage
 func getTargetPodFromChatCompletionWithUser(t *testing.T, message, strategy, user string) string {
 	var dst *http.Response
-	client := createOpenAIClientWithRoutingStrategyAndUser(gatewayURL, apiKey, strategy, user, option.WithResponseInto(&dst))
+	client := createOpenAIClientWithRoutingStrategyAndUser(
+		gatewayURL, apiKey, strategy, user, option.WithResponseInto(&dst),
+	)
 
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
@@ -294,7 +299,8 @@ func getTargetPodFromChatCompletionWithUser(t *testing.T, message, strategy, use
 	if tokenTracker != nil {
 		inputTokens := float64(len(message)) / 4 // rough estimate: 4 chars per token
 		outputTokens := float64(len(chatCompletion.Choices[0].Message.Content)) / 4
-		tokenTracker.UpdateTokenCount(context.Background(), user, inputTokens, outputTokens)
+		err := tokenTracker.UpdateTokenCount(context.Background(), user, inputTokens, outputTokens)
+		require.NoError(t, err, "failed to update token count for user %s", user)
 	}
 
 	return dst.Header.Get("target-pod")

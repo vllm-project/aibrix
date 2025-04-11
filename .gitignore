@@ -23,6 +23,7 @@ go.work
 go.work.sum
 .idea
 .vscode
+.go-version
 
 .DS_Store
 __pycache__
