@@ -119,7 +119,7 @@ type KVCacheSpec struct {
 	// Metadata configuration for kv cache service
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default:={etcd: {image: "", replicas: 1, storage: {size: "10Gi"}}}
-	Metadata MetadataConfig `json:"metadata,omitempty"`
+	Metadata *MetadataConfig `json:"metadata,omitempty"`
 
 	// kvcache dataplane container configuration
 	// +kubebuilder:validation:Optional

@@ -54,7 +54,7 @@ func (r *KVCacheReconciler) reconcileCentralizedMode(ctx context.Context, kvCach
 }
 
 func (r *KVCacheReconciler) reconcileMetadataService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
-	if kvCache.Spec.Metadata.Etcd == nil && kvCache.Spec.Metadata.Redis == nil {
+	if kvCache.Spec.Metadata != nil && kvCache.Spec.Metadata.Etcd == nil && kvCache.Spec.Metadata.Redis == nil {
 		return errors.New("either etcd or redis configuration is required")
 	}
 
