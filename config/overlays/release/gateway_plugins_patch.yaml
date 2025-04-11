@@ -12,7 +12,7 @@ spec:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
             - matchExpressions:
-              - key: vke.node.gpu.schedule
+              - key: vke.node.gpu.schedule # update label name for your env
                 operator: NotIn
                 values:
                 - nvidia

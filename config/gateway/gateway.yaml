@@ -51,14 +51,16 @@ spec:
         pod:
           affinity:
             podAntiAffinity: # pods are placed on different nodes
-              requiredDuringSchedulingIgnoredDuringExecution:
-              - labelSelector:
-                  matchExpressions:
-                    - key: app.kubernetes.io/name
-                      operator: In
-                      values:
-                        - envoy
-                topologyKey: "kubernetes.io/hostname"
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchExpressions:
+                      - key: app.kubernetes.io/name
+                        operator: In
+                        values:
+                          - envoy
+                  topologyKey: "kubernetes.io/hostname"
             nodeAffinity: # prevent gateway pod to be placed on gpu node.
               requiredDuringSchedulingIgnoredDuringExecution:
                 nodeSelectorTerms:
