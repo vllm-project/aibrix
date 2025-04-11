@@ -18,8 +18,10 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -167,39 +169,39 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) 
 }
 
 // validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true
-func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) string {
-	var errMsg string
+func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) error {
+	errMsg := []string{}
 	name := fmt.Sprintf("%s-router", model)
 	httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return err.Error()
+		return err
 	}
 
 	for _, status := range httproute.Status.Parents {
 		if len(status.Conditions) == 0 {
-			errMsg = fmt.Sprintf("httproute: %s/%s, does not have valid status", defaultAIBrixNamespace, name)
+			errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, does not have valid status", defaultAIBrixNamespace, name))
 			break
 		}
 		for _, condition := range status.Conditions {
 			if condition.Type == string(gatewayv1.RouteConditionAccepted) &&
 				condition.Reason != string(gatewayv1.RouteReasonAccepted) {
-				errMsg = errMsg + " " + fmt.Sprintf("httproute: %s/%s, route is not accepted: %s.", defaultAIBrixNamespace, name, condition.Reason)
+				errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route is not accepted: %s.", defaultAIBrixNamespace, name, condition.Reason))
 			} else if condition.Type == string(gatewayv1.RouteConditionResolvedRefs) &&
 				condition.Reason != string(gatewayv1.RouteReasonResolvedRefs) {
-				errMsg = errMsg + " " + fmt.Sprintf("httproute: %s/%s, route's object references are not resolved: %s.", defaultAIBrixNamespace, name, condition.Reason)
+				errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route's object references are not resolved: %s.", defaultAIBrixNamespace, name, condition.Reason))
 			}
 		}
 	}
-	return errMsg
+	return errors.New(strings.Join(errMsg, ", "))
 }
 
 func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.ProcessingResponse, respErrorCode int,
 	model, requestID, errMsg string) *extProcPb.ProcessingResponse {
 	httprouteErr := s.validateHTTPRouteStatus(ctx, model)
-	if errMsg != "" {
-		errMsg = fmt.Sprintf("%s. %s", errMsg, httprouteErr)
-	} else {
-		errMsg = httprouteErr
+	if errMsg != "" && httprouteErr != nil {
+		errMsg = fmt.Sprintf("%s. %s", errMsg, httprouteErr.Error())
+	} else if errMsg == "" && httprouteErr != nil {
+		errMsg = httprouteErr.Error()
 	}
 	klog.ErrorS(nil, "request end", "requestID", requestID, "errorCode", respErrorCode, "errorMessage", errMsg)
 	return generateErrorResponse(
