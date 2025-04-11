@@ -22,15 +22,6 @@ spec:
               memory: 8Gi
         pod:
           affinity:
-            podAntiAffinity: # pods are placed on different nodes
-              requiredDuringSchedulingIgnoredDuringExecution:
-              - labelSelector:
-                  matchExpressions:
-                    - key: app.kubernetes.io/name
-                      operator: In
-                      values:
-                        - envoy
-                topologyKey: "kubernetes.io/hostname"
             nodeAffinity: # prevent gateway pod to be placed on gpu node.
               requiredDuringSchedulingIgnoredDuringExecution:
                 nodeSelectorTerms:
