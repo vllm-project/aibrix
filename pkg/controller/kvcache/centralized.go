@@ -63,8 +63,7 @@ func (r *KVCacheReconciler) reconcileMetadataService(ctx context.Context, kvCach
 	}
 
 	if kvCache.Spec.Metadata.Redis != nil {
-		// TODO: add redis support later
-		return nil
+		return r.reconcileRedisService(ctx, kvCache)
 	}
 
 	return nil

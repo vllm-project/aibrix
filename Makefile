@@ -153,7 +153,7 @@ endef
 
 .PHONY: docker-build-all
 docker-build-all:
-	make -j $(nproc) docker-build-controller-manager docker-build-gateway-plugins docker-build-runtime docker-build-metadata-service ## Build all docker images
+	make -j $(nproc) docker-build-controller-manager docker-build-gateway-plugins docker-build-runtime docker-build-metadata-service docker-build-kvcache-watcher ## Build all docker images
 
 .PHONY: docker-build-controller-manager
 docker-build-controller-manager: ## Build docker image with the manager.
@@ -171,9 +171,13 @@ docker-build-runtime: ## Build docker image with the AI Runtime.
 docker-build-metadata-service: ## Build docker image with the metadata-service.
 	$(call build_and_tag,metadata-service,Dockerfile.metadata)
 
+.PHONY: docker-build-kvcache-watcher
+docker-build-kvcache-watcher: ## Build docker image with the kvcache-watcher.
+	$(call build_and_tag,kvcache-watcher,Dockerfile.kvcache)
+
 .PHONY: docker-push-all
 docker-push-all:
-	make -j $(nproc) docker-push-controller-manager docker-push-gateway-plugins docker-push-runtime docker-push-metadata-service ## Push all docker images
+	make -j $(nproc) docker-push-controller-manager docker-push-gateway-plugins docker-push-runtime docker-push-metadata-service docker-push-kvcache-watcher ## Push all docker images
 
 .PHONY: docker-push-controller-manager
 docker-push-controller-manager: ## Push docker image with the manager.
@@ -190,6 +194,10 @@ docker-push-runtime: ## Push docker image with the AI Runtime.
 .PHONY: docker-push-metadata-service
 docker-push-metadata-service: ## Push docker image with the metadata-service.
 	$(call push_image,metadata-service)
+
+.PHONY: docker-push-kvcache-watcher
+docker-push-kvcache-watcher: ## Push docker image with the kvcache-watcher.
+	$(call push_image,kvcache-watcher)
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:

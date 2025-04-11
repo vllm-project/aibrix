@@ -49,7 +49,7 @@ type RedisConfig struct {
 	Image     string                      `json:"image"`
 	Replicas  int32                       `json:"replicas"`
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
-	Storage   MetadataStorage             `json:"storage"`
+	Storage   *MetadataStorage            `json:"storage,omitempty"`
 }
 
 // EtcdConfig provides the configuration fields for deploying etcd.
@@ -59,7 +59,7 @@ type EtcdConfig struct {
 	// +kubebuilder:default:=1
 	Replicas  int32                       `json:"replicas"`
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
-	Storage   MetadataStorage             `json:"storage"`
+	Storage   *MetadataStorage            `json:"storage,omitempty"`
 }
 
 // MetadataStorage configures the persistent storage used by the metadata service.
@@ -83,7 +83,7 @@ type CacheSpec struct {
 	// +kubebuilder:default:="IfNotPresent"
 	ImagePullPolicy string `json:"imagePullPolicy,omitempty"`
 
-	// shared memory size for kvcach
+	// shared memory size for kvcache
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default:=""
 	SharedMemorySize string `json:"sharedMemorySize,omitempty"`

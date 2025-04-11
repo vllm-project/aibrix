@@ -55,8 +55,9 @@ const (
 	// Vineyard, HPKV, InfiniStore
 	KVCacheAnnotationMode = "kvcache.orchestration.aibrix.ai/mode"
 
-	KVCacheLabelValueRoleCache    = "cache"
-	KVCacheLabelValueRoleMetadata = "metadata"
+	KVCacheLabelValueRoleCache     = "cache"
+	KVCacheLabelValueRoleMetadata  = "metadata"
+	KVCacheLabelValueRoleKVWatcher = "kvwatcher"
 )
 
 var (
@@ -146,6 +147,8 @@ type KVCacheReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=services/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets/status,verbs=get;update;patch
 
 // Reconcile reconciles a KVCache to desired state.
 func (r *KVCacheReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -251,6 +254,26 @@ func (r *KVCacheReconciler) ReconcileServiceObject(ctx context.Context, service 
 	return nil
 }
 
+func (r *KVCacheReconciler) ReconcileStatefulsetObject(ctx context.Context, sts *appsv1.StatefulSet) error {
+	found := &appsv1.StatefulSet{}
+	err := r.Get(ctx, types.NamespacedName{Name: sts.Name, Namespace: sts.Namespace}, found)
+	if err != nil && errors.IsNotFound(err) {
+		klog.InfoS("Creating a new StatefulSet", "Sts.Namespace", sts.Namespace, "Sts.Name", sts.Name)
+		return r.Create(ctx, sts)
+	} else if err != nil {
+		return err
+	}
+
+	// Update the found object and write the result back if there are any changes
+	if needsUpdateStatefulset(sts, found) {
+		found.Spec = sts.Spec
+		klog.InfoS("Updating Statefulset", "Sts.Namespace", found.Namespace, "Sts.Name", found.Name)
+		return r.Update(ctx, found)
+	}
+
+	return nil
+}
+
 // needsUpdateService checks if the service spec of the new service differs from the existing one
 func needsUpdateService(service, found *corev1.Service) bool {
 	// Compare relevant spec fields
@@ -274,4 +297,21 @@ func needsUpdateDeployment(deployment *appsv1.Deployment, found *appsv1.Deployme
 	}
 
 	return !reflect.DeepEqual(deployment.Spec.Replicas, found.Spec.Replicas) || imageChanged
+}
+
+// needsUpdateStatefulset checks if the StatefulSet spec of the new Statefulset differs from the existing one
+// only image and replicas are considered at this moment.
+func needsUpdateStatefulset(sts *appsv1.StatefulSet, found *appsv1.StatefulSet) bool {
+	imageChanged := false
+	for i, container := range found.Spec.Template.Spec.Containers {
+		if len(sts.Spec.Template.Spec.Containers) > i {
+			if sts.Spec.Template.Spec.Containers[i].Image != container.Image {
+				// update the image
+				found.Spec.Template.Spec.Containers[i].Image = sts.Spec.Template.Spec.Containers[i].Image
+				imageChanged = true
+			}
+		}
+	}
+
+	return !reflect.DeepEqual(sts.Spec.Replicas, found.Spec.Replicas) || imageChanged
 }
