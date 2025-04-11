@@ -80,9 +80,9 @@ func TestLRUStore_ConcurrentEvictions(t *testing.T) {
 	done := make(chan error, numGoroutines)
 	defer close(done)
 
-	for i := range numGoroutines {
+	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
-			for j := range numOperations {
+			for j := 0; j < numOperations; j++ {
 				key := fmt.Sprintf("goroutine%d_key%d", id, j)
 				value := fmt.Sprintf("value%d", j)
 
@@ -97,7 +97,7 @@ func TestLRUStore_ConcurrentEvictions(t *testing.T) {
 		}(i)
 	}
 
-	for range numGoroutines {
+	for i := 0; i < numGoroutines; i++ {
 		if err := <-done; err != nil {
 			t.Error(err)
 		}

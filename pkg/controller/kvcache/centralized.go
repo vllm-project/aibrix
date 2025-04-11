@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -32,8 +33,7 @@ import (
 // reconcileCentralizedMode is used for kv backend with metadata store, solutions like Vineyard.
 func (r *KVCacheReconciler) reconcileCentralizedMode(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) (ctrl.Result, error) {
 	// Handle metadata Pods like etcd or redis in future.
-	var err error
-	err = r.reconcileMetadataService(ctx, kvCache)
+	err := r.reconcileMetadataService(ctx, kvCache)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
