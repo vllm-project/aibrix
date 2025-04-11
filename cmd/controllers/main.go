@@ -18,8 +18,10 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -248,12 +250,11 @@ func main() {
 		cache.Init(config, stopCh)
 	}
 
-	certsReady := make(chan struct{})
-
-	if disableWebhook {
-		setupLog.Info("Closing the certsReady channel because the webhook is disabled, this is to avoid blocking setupControllers")
-		close(certsReady)
-	} else {
+	// Keep certsReady as nil when the webhook is disabled.
+	// This prevents the webhook from being set up in setupControllers and skips the readyz check for the webhook.
+	var certsReady chan struct{}
+	if !disableWebhook {
+		certsReady = make(chan struct{})
 		if err = cert.CertsManager(mgr, leaderElectionNamespace, certsReady); err != nil {
 			setupLog.Error(err, "unable to setup cert rotation")
 			os.Exit(1)
@@ -269,15 +270,25 @@ func main() {
 	// Cert won't be ready until manager starts, so start a goroutine here which
 	// will block until the cert is ready before setting up the controllers.
 	// Controllers who register after manager starts will start directly.
-	go setupControllers(mgr, runtimeConfig, certsReady, disableWebhook)
-
-	//+kubebuilder:scaffold:builder
+	go setupControllers(mgr, runtimeConfig, certsReady)
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	if err := mgr.AddReadyzCheck("readyz", func(req *http.Request) error {
+		if certsReady == nil {
+			// skip check for the webhook
+			return nil
+		}
+
+		select {
+		case <-certsReady:
+			return mgr.GetWebhookServer().StartedChecker()(req)
+		default:
+			return errors.New("certificates are not ready")
+		}
+	}); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
@@ -290,13 +301,20 @@ func main() {
 }
 
 // TODO: if the argument list will grow, we should create a ControllerSetupOptions struct instead.
-func setupControllers(mgr ctrl.Manager, runtimeConfig config.RuntimeConfig, certsReady chan struct{}, disableWebhook bool) {
+func setupControllers(mgr ctrl.Manager, runtimeConfig config.RuntimeConfig, certsReady chan struct{}) {
 	// The controllers won't work until the webhooks are operating,
 	// and the webhook won't work until the certs are all in places.
-	if !disableWebhook {
+	if certsReady == nil {
+		setupLog.Info("webhook setup skipped due to --disable-webhook flag")
+	} else {
 		setupLog.Info("waiting for the cert generation to complete")
 		<-certsReady
 		setupLog.Info("certs ready")
+
+		if err := apiwebhook.SetupBackendRuntimeWebhook(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "Model")
+			os.Exit(1)
+		}
 	}
 
 	// Kind controller registration is encapsulated inside the pkg/controller/controller.go
@@ -304,14 +322,5 @@ func setupControllers(mgr ctrl.Manager, runtimeConfig config.RuntimeConfig, cert
 	if err := controller.SetupWithManager(mgr, runtimeConfig); err != nil {
 		setupLog.Error(err, "unable to setup controller")
 		os.Exit(1)
-	}
-
-	if !disableWebhook {
-		if err := apiwebhook.SetupBackendRuntimeWebhook(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "Model")
-			os.Exit(1)
-		}
-	} else {
-		setupLog.Info("webhook setup skipped due to --disable-webhook flag")
 	}
 }
