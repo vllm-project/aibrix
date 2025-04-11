@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -49,7 +50,18 @@ func TestModelAdapter(t *testing.T) {
 				}
 				return false, nil
 			}))
-
+		allPodsReady := false
+		for i := 0; i < 3; i++ {
+			podlist, err := k8sClient.CoreV1().Pods("default").List(context.Background(), v1.ListOptions{})
+			if err != nil {
+				continue
+			}
+			assert.Equal(t, 3, len(utils.FilterActivePods(podlist.Items)))
+			fmt.Println("all pods are ready", len(utils.FilterActivePods(podlist.Items)))
+			allPodsReady = true
+			break
+		}
+		assert.True(t, allPodsReady, "ensure all pods are ready")
 	})
 
 	// create model adapter
