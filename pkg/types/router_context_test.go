@@ -46,7 +46,7 @@ func shouldNotBlock(cb func(), duration time.Duration) {
 var _ = Describe("RouterContext", func() {
 	It("should initialize correctly", func() {
 		ctx := context.Background()
-		rctx := NewRoutingContext(ctx, "algorithm", "model", "message", "r1")
+		rctx := NewRoutingContext(ctx, "algorithm", "model", "message", "r1", "")
 		Expect(rctx.Context).To(BeIdenticalTo(ctx))
 		Expect(rctx.Algorithm).To(Equal(RoutingAlgorithm("algorithm")))
 		Expect(rctx.Model).To(Equal("model"))
@@ -61,7 +61,7 @@ var _ = Describe("RouterContext", func() {
 
 		rctx.Delete()
 		ctx2 := context.Background()
-		rctx2 := NewRoutingContext(ctx2, "algorithm2", "model2", "message2", "r1")
+		rctx2 := NewRoutingContext(ctx2, "algorithm2", "model2", "message2", "r1", "")
 		Expect(rctx2).To(BeIdenticalTo(rctx)) // routing context reused
 		Expect(rctx2.Context).To(BeIdenticalTo(ctx2))
 		Expect(rctx2.Algorithm).To(Equal(RoutingAlgorithm("algorithm2")))
@@ -74,7 +74,7 @@ var _ = Describe("RouterContext", func() {
 	})
 
 	It("should HasRouted() indicate correctly", func() {
-		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1")
+		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
 		Expect(ctx.HasRouted()).To(BeFalse())
 
 		ctx.SetTargetPod(&v1.Pod{})
@@ -82,13 +82,13 @@ var _ = Describe("RouterContext", func() {
 	})
 
 	It("should reset without SetTargetPod()", func() {
-		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1")
+		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
 		ctx.Delete()
 		shouldNotBlock(func() { ctx.TargetPod() }, 100*time.Millisecond)
 	})
 
 	It("should SetTargetPod twice ok but will not change original value", func() {
-		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1")
+		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
 		pod := &v1.Pod{}
 		ctx.SetTargetPod(pod)
 		Expect(ctx.TargetPod()).To(BeIdenticalTo(pod))
@@ -100,7 +100,7 @@ var _ = Describe("RouterContext", func() {
 	})
 
 	It("should TargetPod unblock successfully", func() {
-		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1")
+		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
 		ctx.debugDelay = 100 * time.Millisecond
 		done := make(chan bool)
 		go func() {
