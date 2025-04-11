@@ -88,7 +88,7 @@ func main() {
 	}
 	gatewayK8sClient, err := versioned.NewForConfig(config)
 	if err != nil {
-		panic(err.Error())
+		klog.Fatalf("Error on creating gateway k8s client: %v", err)
 	}
 
 	s := grpc.NewServer()
