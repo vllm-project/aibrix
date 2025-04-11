@@ -23,12 +23,13 @@ spec:
         pod:
           affinity:
             nodeAffinity: # prevent gateway pod to be placed on gpu node.
-              requiredDuringSchedulingIgnoredDuringExecution:
-                nodeSelectorTerms:
-                  - matchExpressions:
-                      - key: vke.node.gpu.schedule
-                        operator: NotIn
-                        values:
-                          - nvidia
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                    - key: nvidia.com/gpu.present
+                      operator: NotIn
+                      values:
+                        - "true"
       envoyPDB:
         minAvailable: 1
