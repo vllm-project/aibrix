@@ -33,7 +33,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -52,19 +51,19 @@ func initializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset,
 	if kubeConfig == "" {
 		t.Error("kubeConfig not set")
 	}
-	klog.Infof("using configuration from '%s'", kubeConfig)
+	t.Logf("using configuration from '%s'\n", kubeConfig)
 
 	config, err = clientcmd.BuildConfigFromFlags("", kubeConfig)
 	if err != nil {
-		t.Errorf("Error during client creation with %v", err)
+		t.Errorf("Error during client creation with %v\n", err)
 	}
 	k8sClientSet, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		t.Errorf("Error during client creation with %v", err)
+		t.Errorf("Error during client creation with %v\n", err)
 	}
 	crdClientSet, err := v1alpha1.NewForConfig(config)
 	if err != nil {
-		t.Errorf("Error during client creation with %v", err)
+		t.Errorf("Error during client creation with %v\n", err)
 	}
 
 	factory := informers.NewSharedInformerFactoryWithOptions(k8sClientSet, 0)

@@ -66,11 +66,11 @@ func TestPrefixCacheRouting(t *testing.T) {
 	// #1 request - cache first time request
 	req := "ensure test message is longer than 128 bytes!! this is first message! 这是测试消息！"
 	targetPod := getTargetPodFromChatCompletion(t, req, "prefix-cache")
-	fmt.Printf("req: %s, target pod: %v\n", req, targetPod)
+	t.Logf("req: %s, target pod: %v\n", req, targetPod)
 
 	// #2 request - reuse target pod from first time
 	targetPod2 := getTargetPodFromChatCompletion(t, req, "prefix-cache")
-	fmt.Printf("req: %s, target pod: %v\n", req, targetPod2)
+	t.Logf("req: %s, target pod: %v\n", req, targetPod2)
 	assert.Equal(t, targetPod, targetPod2)
 
 	// #3 request - new request, match to random pod
@@ -79,7 +79,7 @@ func TestPrefixCacheRouting(t *testing.T) {
 		generateMessage := fmt.Sprintf("ensure test message is longer than 128 bytes!! this is %v message! 这是测试消息！",
 			rand.Intn(1000))
 		targetPod3 := getTargetPodFromChatCompletion(t, generateMessage, "prefix-cache")
-		fmt.Printf("req: %s, target pod from #3 request: %v\n", generateMessage, targetPod3)
+		t.Logf("req: %s, target pod from #3 request: %v\n", generateMessage, targetPod3)
 		if targetPod != targetPod3 {
 			break
 		}
