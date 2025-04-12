@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -142,15 +143,14 @@ func validateInferenceWithClient(t *testing.T, client *openai.Client, modelName 
 
 func validateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expectedPodCount int) {
 	allPodsReady := false
-	for i := 0; i < expectedPodCount; i++ {
+	for i := 0; i < 3; i++ {
 		podlist, err := client.CoreV1().Pods("default").List(context.Background(), v1.ListOptions{})
-		if err != nil {
-			continue
+		if err != nil && expectedPodCount == len(utils.FilterActivePods(podlist.Items)) {
+			allPodsReady = true
+			fmt.Println("all pods are ready", len(utils.FilterActivePods(podlist.Items)))
+			break
 		}
-		assert.Equal(t, expectedPodCount, len(utils.FilterActivePods(podlist.Items)))
-		fmt.Println("all pods are ready", len(utils.FilterActivePods(podlist.Items)))
-		allPodsReady = true
-		break
+		time.Sleep(1 * time.Second)
 	}
 	assert.True(t, allPodsReady, "ensure all pods are ready")
 }
