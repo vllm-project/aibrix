@@ -6,6 +6,7 @@ on:
     branches: [ "main", "release-*" ]
     paths:
       - 'pkg/**'
+      - 'test/**'
       - 'cmd/**'
       - 'api/**'
       - 'go.mod'
@@ -15,6 +16,7 @@ on:
     branches: [ "main" ]
     paths:
       - 'pkg/**'
+      - 'test/**'
       - 'cmd/**'
       - 'api/**'
       - 'go.mod'
