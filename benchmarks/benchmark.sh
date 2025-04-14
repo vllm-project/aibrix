@@ -20,10 +20,6 @@ fi
 # Create derived paths
 mkdir -p "$DATASET_DIR" "$WORKLOAD_DIR" "$CLIENT_OUTPUT" "$TRACE_OUTPUT"
 
-# Dataset generation config
-# DATASET_FILE="${DATASET_DIR}/synthetic_dataset.jsonl"
-# WORKLOAD_FILE="${WORKLOAD_DIR}/workload.jsonl"
-
 # ---------------
 # STEP 1: DATASET GENERATION
 # ---------------
@@ -33,6 +29,7 @@ generate_dataset() {
 
     case "$PROMPT_TYPE" in
         synthetic_shared)
+            source config/dataset/synthetic_shared.sh
             python generator/dataset-generator/synthetic_prefix_sharing_dataset.py \
                 --app-name "$PROMPT_TYPE" \
                 --prompt-length "$PROMPT_LENGTH" \
@@ -45,6 +42,7 @@ generate_dataset() {
                 --randomize-order \
             ;;
         synthetic_multiturn)
+            source config/dataset/synthetic_multiturn.sh
             python generator/dataset-generator/multiturn_prefix_sharing_dataset.py \
                 --prompt-length-mean "$PROMPT_LENGTH" \
                 --prompt-length-std "$PROMPT_STD" \
@@ -55,12 +53,14 @@ generate_dataset() {
                 --output "$DATASET_FILE" \
             ;;
         client_trace)
+            source config/dataset/client_trace.sh
             python generator/dataset-generator/converter.py \
                 --path ${TRACE} \
                 --type trace \
                 --output ${DATASET_FILE} \
             ;;
         sharegpt)
+            source config/dataset/sharegpt.sh
             if [[ ! -f "$TARGET_DATASET" ]]; then
                 echo "[INFO] Downloading ShareGPT dataset..."
                 wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json -O ${TARGET_DATASET}
@@ -86,6 +86,7 @@ generate_workload() {
     echo "[INFO] Generating workload..."
     case "$WORKLOAD_TYPE" in
         constant)
+            source config/workload/constant.sh
             CMD="python generator/workload-generator/workload_generator.py \
                 --prompt-file \"$DATASET_FILE\" \
                 --interval-ms \"$INTERVAL_MS\" \
@@ -103,6 +104,7 @@ generate_workload() {
             eval $CMD
             ;;
         synthetic)
+            source config/workload/synthetic.sh
             CMD="python generator/workload-generator/workload_generator.py \
                 --prompt-file \"$DATASET_FILE\" \
                 --interval-ms \"$INTERVAL_MS\" \
@@ -121,6 +123,7 @@ generate_workload() {
             eval $CMD
             ;;
         azure)
+            source config/workload/azure.sh
             AZURE_TRACE="/tmp/AzureLLMInferenceTrace_conv.csv"
             wget https://raw.githubusercontent.com/Azure/AzurePublicDataset/refs/heads/master/data/AzureLLMInferenceTrace_conv.csv -O "$AZURE_TRACE"
             python generator/workload-generator/workload_generator.py \
@@ -173,9 +176,9 @@ run_analysis() {
 # ---------------
 
 echo "========== Starting Benchmark =========="
-# generate_dataset
-# generate_workload
-# run_client
+generate_dataset
+generate_workload
+run_client
 run_analysis
 echo "========== Benchmrk Completed =========="
 
