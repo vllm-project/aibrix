@@ -25,15 +25,31 @@ def main(args):
         for line in f:
             data.append(json.loads(line))
     # Extract metrics
-    timestamps = [item.get("start_time", f"Entry {i}") for i, item in enumerate(data)]
-    prompt_tokens = [item["prompt_tokens"] for item in data]
-    output_tokens = [item["output_tokens"] for item in data]
-    total_tokens = [item["total_tokens"] for item in data]
-    latencies = [item["latency"] for item in data]
-    throughputs = [item["throughput"] for item in data]
-    tokens_per_second = [item["total_tokens"] / item["latency"] for item in data]
-    ttft = [item["ttft"] if "ttft" in item else 0.0 for item in data]  # Time to First Token
-    tpot = [item["tpot"] if "tpot" in item else 0.0 for item in data]  # Time per Output Token
+    prompt_tokens = []
+    output_tokens = []
+    total_tokens = []
+    latencies = []
+    throughputs = []
+    tokens_per_second = []
+    ttft = []
+    tpot = []
+    total_errors = 0
+    timestamps = []
+    for i, item in enumerate(data):
+        if item["status"] == "error":
+            total_errors += 1
+        else:
+            if "prompt_tokens" not in item:
+                print(item)
+            timestamps.append(item.get("start_time", f"Entry {i}"))
+            prompt_tokens.append(item["prompt_tokens"]) # Prompt tokens
+            output_tokens.append(item["output_tokens"]) 
+            total_tokens.append(item["total_tokens"]) 
+            latencies.append(item["latency"])
+            throughputs.append(item["throughput"])
+            tokens_per_second.append(item["total_tokens"] / item["latency"])
+            ttft.append(item["ttft"] if "ttft" in item else 0.0)  # Time to First Token
+            tpot.append(item["tpot"] if "tpot" in item else 0.0)# Time per Output Token
     goodput = None
     if args.goodput_target is not None:
         metric, threshold = parse_goodput_target(args.goodput_target)
@@ -90,6 +106,7 @@ def main(args):
         print(f"{metric} Statistics: Average = {avg:.4f}, Median = {median:.4f}, 99th Percentile = {p99:.4f}")
     if goodput != None:
         print(f"Goodput (reqs/s) {goodput:.4f}")
+    print(f"Failure Rate (%) {(total_errors / len(data)) * 100 if len(data) > 0 else 0}")
 
     # Create a DataFrame for plotting
     df = pd.DataFrame({
