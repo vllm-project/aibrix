@@ -26,8 +26,8 @@ export NUM_PREFIX=10
 
 ## synthetic_multiturn
 # export PROMPT_TYPE="synthetic_multiturn"
-export PROMPT_LENGTH=3871
-export PROMPT_STD=1656
+export PROMPT_LENGTH=100
+export PROMPT_STD=10
 export NUM_TURNS=10
 export NUM_TURNS_STD=1
 export NUM_SESSIONS=10
@@ -48,7 +48,7 @@ export TARGET_DATASET="/tmp/ShareGPT_V3_unfiltered_cleaned_split.json"
 # Workload config
 export INTERVAL_MS=1000
 export DURATION_MS=300000
-export WORKLOAD_TYPE="synthetic"  # Options: synthetic, constant, azure
+export WORKLOAD_TYPE="constant"  # Options: synthetic, constant, azure
 export WORKLOAD_DIR="./output/workload/${WORKLOAD_TYPE}"
 
 
@@ -74,10 +74,10 @@ export AZURE_TRACE="/tmp/ShareGPT_V3_unfiltered_cleaned_split.json"
 # STEP 3: CLIENT DISPATCH
 # ---------------
 # Client and trace analysis output directories
-
+export WORKLOAD_FILE="output/workload/constant/constant.jsonl"
 export CLIENT_OUTPUT="./output/client_output"
 export ENDPOINT="http://localhost:8000"
-export API_KEY=$"api_key"
+export API_KEY="$api_key"
 export TARGET_MODEL="deepseek-llm-7b-chat"
 
 # ---------------

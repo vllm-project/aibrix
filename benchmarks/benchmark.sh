@@ -22,7 +22,7 @@ mkdir -p "$DATASET_DIR" "$WORKLOAD_DIR" "$CLIENT_OUTPUT" "$TRACE_OUTPUT"
 
 # Dataset generation config
 # DATASET_FILE="${DATASET_DIR}/synthetic_dataset.jsonl"
-WORKLOAD_FILE="${WORKLOAD_DIR}/workload.jsonl"
+# WORKLOAD_FILE="${WORKLOAD_DIR}/workload.jsonl"
 
 # ---------------
 # STEP 1: DATASET GENERATION
@@ -147,7 +147,7 @@ generate_workload() {
 
 run_client() {
     echo "[INFO] Running client to dispatch workload..."
-    python3 client.py \
+    python3 client/client.py \
         --workload-path "$WORKLOAD_FILE" \
         --endpoint "$ENDPOINT" \
         --model "$TARGET_MODEL" \
@@ -162,7 +162,7 @@ run_client() {
 
 run_analysis() {
     echo "[INFO] Analyzing trace output..."
-    python analyze.py \
+    python client/analyze.py \
         --trace "$CLIENT_OUTPUT/output.jsonl" \
         --output "$TRACE_OUTPUT" \
         --goodput-target "$GOODPUT_TARGET" 
@@ -173,9 +173,9 @@ run_analysis() {
 # ---------------
 
 echo "========== Starting Benchmark =========="
-generate_dataset
-generate_workload
-run_client
+# generate_dataset
+# generate_workload
+# run_client
 run_analysis
-echo "========== Benchmark Completed =========="
+echo "========== Benchmrk Completed =========="
 
