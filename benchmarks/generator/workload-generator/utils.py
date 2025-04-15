@@ -165,8 +165,7 @@ def get_tokenizer(
     return AutoTokenizer.from_pretrained(pretrained_model_name_or_path,
                                          trust_remote_code=trust_remote_code)
 
-def plot_workload(workload_name: str, 
-                  workload: list,
+def plot_workload(workload: list,
                   bin_size_sec: int = 1,
                   output_dir: str = None):
     """
@@ -174,7 +173,6 @@ def plot_workload(workload_name: str,
     Also plots a session timeline as a scatter plot.
 
     Args:
-        workload_name (str): Name of the workload.
         workload (list of dict): Workload entries with timestamps and request details.
         bin_size_sec (int): Size of each bin in seconds for aggregation.
         output_dir (str, optional): Directory path to save the plot.
@@ -256,8 +254,8 @@ def plot_workload(workload_name: str,
     # Save or show the plot
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-        plt.savefig(f"{output_dir}/{workload_name}.pdf")
-        logging.info(f'Saved workload plot to {output_dir}/{workload_name}.pdf')
+        plt.savefig(f"{output_dir}/workload.pdf")
+        logging.info(f'Saved workload plot to {output_dir}/workload.pdf')
     else:
         plt.show()
 

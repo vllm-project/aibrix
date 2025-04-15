@@ -448,7 +448,7 @@ if __name__ == '__main__':
                                                 duration_ms=args.duration_ms,
                                                 interval_ms=args.interval_ms,
                                                 max_concurrent_sessions=args.max_concurrent_sessions,
-                                                output_file=f"{args.output_dir}/{comp_pattern_type}",
+                                                output_file=f"{args.output_dir}/workload",
                                                 to_jsonl=(args.output_format == "jsonl"),
                                             )
         workload_dict[comp_pattern_type] = generated_workload
@@ -462,7 +462,7 @@ if __name__ == '__main__':
                                                     duration_ms=args.duration_ms, 
                                                     interval_ms=args.interval_ms,
                                                     max_concurrent_sessions=args.max_concurrent_sessions,
-                                                    output_file=f"{args.output_dir}/{args.trace_type}",
+                                                    output_file=f"{args.output_dir}/workload",
                                                     to_jsonl=(args.output_format == "jsonl"),
                                                 )
         elif args.trace_type == "internal":
@@ -477,7 +477,7 @@ if __name__ == '__main__':
                                                             output_scale=args.output_scale,
                                                             internal_trace_type=args.internal_trace_type,
                                                             max_concurrent_sessions=args.max_concurrent_sessions,
-                                                            output_file=f"{args.output_dir}/{args.trace_type}",
+                                                            output_file=f"{args.output_dir}/workload",
                                                             to_jsonl=(args.output_format == "jsonl"),
                                                             )
 
@@ -487,7 +487,7 @@ if __name__ == '__main__':
                                                          duration_ms=args.duration_ms, 
                                                          tokenizer=tokenizer,
                                                          interval_ms=args.interval_ms, 
-                                                         output_file=f"{args.output_dir}/{args.trace_type}",
+                                                         output_file=f"{args.output_dir}/workload",
                                                          to_jsonl=(args.output_format == "jsonl"),
                                                          )
 
@@ -497,7 +497,6 @@ if __name__ == '__main__':
         # Plot the workloads
         for workload_name, workload in workload_dict.items():
             plot_workload(
-                workload_name = workload_name, 
                 workload = workload, 
                 bin_size_sec = int(args.interval_ms/1000), 
                 output_dir = f"{args.output_dir}")
