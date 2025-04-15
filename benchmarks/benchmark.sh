@@ -192,7 +192,10 @@ case "$COMMAND" in
     run_analysis
     ;;
   all|"")
-    run_all
+    generate_dataset
+    generate_workload
+    run_client
+    run_analysis
     ;;
   *)
     echo "[ERROR] Unknown command: $COMMAND"
