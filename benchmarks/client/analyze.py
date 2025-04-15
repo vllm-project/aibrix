@@ -33,32 +33,31 @@ def main(args):
     tokens_per_second = []
     ttft = []
     tpot = []
-    total_errors = 0
+    total_errors = []
     timestamps = []
     for i, item in enumerate(data):
-        if item["status"] == "error":
-            total_errors += 1
-        else:
-            if "prompt_tokens" not in item:
-                print(item)
-            timestamps.append(item.get("start_time", f"Entry {i}"))
-            prompt_tokens.append(item["prompt_tokens"]) # Prompt tokens
-            output_tokens.append(item["output_tokens"]) 
-            total_tokens.append(item["total_tokens"]) 
-            latencies.append(item["latency"])
-            throughputs.append(item["throughput"])
-            tokens_per_second.append(item["total_tokens"] / item["latency"])
-            ttft.append(item["ttft"] if "ttft" in item else 0.0)  # Time to First Token
-            tpot.append(item["tpot"] if "tpot" in item else 0.0)# Time per Output Token
-    goodput = None
+        total_errors.append(1 if item["status"] == "error" else 0)
+        timestamps.append(item.get("start_time", f"Entry {i}"))
+        prompt_tokens.append(item["prompt_tokens"]) # Prompt tokens
+        output_tokens.append(item["output_tokens"]) 
+        total_tokens.append(item["total_tokens"]) 
+        latencies.append(item["latency"])
+        throughputs.append(item["throughput"])
+        tokens_per_second.append(item["total_tokens"] / item["latency"])
+        ttft.append(item["ttft"] if "ttft" in item else 0.0) # Time to First Token
+        tpot.append(item["tpot"] if "tpot" in item else 0.0) # Time per Output Token
+    goodput = 0.0
     if args.goodput_target is not None:
         metric, threshold = parse_goodput_target(args.goodput_target)
         if metric == "e2e":
-            goodput = len([item for item in latencies if (item is not None and item <= threshold)]) / float(len(latencies))
+            if len(latencies) > 0:
+                goodput = len([item for item in latencies if (item is not None and item <= threshold)]) / float(len(latencies))
         elif metric == "ttft":
-            goodput = len([item for item in ttft if (item is not None  and item <= threshold)]) / float(len(ttft))
+            if len(ttft) > 0:
+                goodput = len([item for item in ttft if (item is not None  and item <= threshold)]) / float(len(ttft))
         elif metric == "tpot":
-            goodput = len([item for item in tpot if (item is not None and item <= threshold)]) / float(len(tpot))
+            if len(tpot) > 0:
+                goodput = len([item for item in tpot if (item is not None and item <= threshold)]) / float(len(tpot))
         else:
             raise ValueError(f"Invalid goodput target: {args.goodput_target}")
 
@@ -82,6 +81,8 @@ def main(args):
 
     # Helper function to calculate statistics
     def calculate_statistics(values):
+        if len(values) == 0:
+            return 0.0, 0.0, 0.0
         values = [value for value in values if value is not None]
         values = sorted(values)
         avg = sum(values) / len(values)
@@ -99,6 +100,7 @@ def main(args):
         "Total Tokens": calculate_statistics(total_tokens),
         "Time to First Token (TTFT)": calculate_statistics(ttft),
         "Time per Output Token (TPOT)": calculate_statistics(tpot),
+        "Errors": calculate_statistics(total_errors),
     }
 
     # Print statistics
@@ -106,7 +108,7 @@ def main(args):
         print(f"{metric} Statistics: Average = {avg:.4f}, Median = {median:.4f}, 99th Percentile = {p99:.4f}")
     if goodput != None:
         print(f"Goodput (reqs/s) {goodput:.4f}")
-    print(f"Failure Rate (%) {(total_errors / len(data)) * 100 if len(data) > 0 else 0}")
+    # print(f"Failure Rate (%) {(total_errors / len(data)) * 100 if len(data) > 0 else 0}")
 
     # Create a DataFrame for plotting
     df = pd.DataFrame({
@@ -119,6 +121,7 @@ def main(args):
         "Tokens per Second": tokens_per_second,
         "Time to First Token (TTFT)": ttft,
         "Time per Output Token (TPOT)": tpot,
+        "Errors": total_errors,
     }).set_index("Timestamp")
 
     # Plot each metric in a separate subplot
