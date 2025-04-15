@@ -33,8 +33,8 @@ import (
 
 type ModelAdapterWebhook struct{}
 
-// SetupBackendRuntimeWebhook will setup the manager to manage the webhooks
-func SetupBackendRuntimeWebhook(mgr ctrl.Manager) error {
+// SetupModelAdapterWebhook will setup the manager to manage the ModelAdapter webhook
+func SetupModelAdapterWebhook(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(&modelapi.ModelAdapter{}).
 		WithDefaulter(&ModelAdapterWebhook{}).

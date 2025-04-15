@@ -18,8 +18,10 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -277,7 +279,18 @@ func main() {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	if err := mgr.AddReadyzCheck("readyz", func(req *http.Request) error {
+		if disableWebhook {
+			return nil
+		}
+
+		select {
+		case <-certsReady:
+			return mgr.GetWebhookServer().StartedChecker()(req)
+		default:
+			return errors.New("webhook certificates are not ready")
+		}
+	}); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
@@ -293,10 +306,16 @@ func main() {
 func setupControllers(mgr ctrl.Manager, runtimeConfig config.RuntimeConfig, certsReady chan struct{}, disableWebhook bool) {
 	// The controllers won't work until the webhooks are operating,
 	// and the webhook won't work until the certs are all in places.
-	if !disableWebhook {
+	if disableWebhook {
+		setupLog.Info("webhook setup skipped due to --disable-webhook flag")
+	} else {
 		setupLog.Info("waiting for the cert generation to complete")
 		<-certsReady
 		setupLog.Info("certs ready")
+		if err := apiwebhook.SetupModelAdapterWebhook(mgr); err != nil {
+			setupLog.Error(err, "unable to setup webhook", "webhook", "ModelAdapter")
+			os.Exit(1)
+		}
 	}
 
 	// Kind controller registration is encapsulated inside the pkg/controller/controller.go
@@ -304,14 +323,5 @@ func setupControllers(mgr ctrl.Manager, runtimeConfig config.RuntimeConfig, cert
 	if err := controller.SetupWithManager(mgr, runtimeConfig); err != nil {
 		setupLog.Error(err, "unable to setup controller")
 		os.Exit(1)
-	}
-
-	if !disableWebhook {
-		if err := apiwebhook.SetupBackendRuntimeWebhook(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "Model")
-			os.Exit(1)
-		}
-	} else {
-		setupLog.Info("webhook setup skipped due to --disable-webhook flag")
 	}
 }

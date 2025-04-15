@@ -125,7 +125,7 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
-	err = apiwebhook.SetupBackendRuntimeWebhook(mgr)
+	err = apiwebhook.SetupModelAdapterWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
 	//+kubebuilder:scaffold:webhook
