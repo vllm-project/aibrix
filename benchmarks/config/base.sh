@@ -28,7 +28,7 @@ export WORKLOAD_DIR="./output/workload/${WORKLOAD_TYPE}"
 # STEP 3: CLIENT DISPATCH
 # ---------------
 # Client and trace analysis output directories
-export WORKLOAD_FILE="./output/workload/constant/constant.jsonl"
+export WORKLOAD_FILE="${WORKLOAD_DIR}/workload.jsonl"
 export CLIENT_OUTPUT="./output/client_output"
 export ENDPOINT="http://localhost:8000"
 export API_KEY="$api_key"

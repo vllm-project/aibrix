@@ -176,9 +176,29 @@ run_analysis() {
 # ---------------
 
 echo "========== Starting Benchmark =========="
-generate_dataset
-generate_workload
-run_client
-run_analysis
+COMMAND="$1"
+
+case "$COMMAND" in
+  dataset)
+    generate_dataset
+    ;;
+  workload)
+    generate_workload
+    ;;
+  client)
+    run_client
+    ;;
+  analysis)
+    run_analysis
+    ;;
+  all|"")
+    run_all
+    ;;
+  *)
+    echo "[ERROR] Unknown command: $COMMAND"
+    echo "Usage: $0 [dataset|workload|client|analysis|all]"
+    exit 1
+    ;;
+esac
 echo "========== Benchmrk Completed =========="
 
