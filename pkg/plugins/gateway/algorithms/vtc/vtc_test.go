@@ -25,26 +25,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-// SimpleTokenTracker is a simplified implementation of TokenTracker for testing
-type SimpleTokenTracker struct {
-	tokenCounter map[string]float64
-}
-
-func NewSimpleTokenTracker() *SimpleTokenTracker {
-	return &SimpleTokenTracker{
-		tokenCounter: make(map[string]float64),
-	}
-}
-
-func (t *SimpleTokenTracker) GetTokenCount(ctx context.Context, user string) (float64, error) {
-	return t.tokenCounter[user], nil
-}
-
-func (t *SimpleTokenTracker) UpdateTokenCount(ctx context.Context, user string, inputTokens, outputTokens float64) error {
-	t.tokenCounter[user] += inputTokens + outputTokens
-	return nil
-}
-
 // SimpleCache is a simplified implementation of the cache interface for testing
 type SimpleCache struct {
 	metrics map[string]map[string]map[string]float64
@@ -149,50 +129,45 @@ func (p *SimplePodList) ListByIndex(index string) []*v1.Pod {
 	return p.pods
 }
 
-// TestVTCRouterSimple tests the VTC router
 func TestVTCRouterSimple(t *testing.T) {
-	tokenTracker := NewSimpleTokenTracker()
-	tokenEstimator := NewSimpleTokenEstimator()
-	cache := NewSimpleCache()
-
-	// Create router with real implementation
-	config := &VTCConfig{
+	trackerConfig := &VTCConfig{
 		InputTokenWeight:  1.0,
 		OutputTokenWeight: 1.0,
 		Variant:           RouterVTCBasic,
 	}
-	// Create router directly with the test cache instead of using NewBasicVTCRouter
-	// This avoids the need for a real Redis connection in tests
+	tokenTracker := NewInMemorySlidingWindowTokenTracker(trackerConfig, WithWindowSize(100), WithTimeUnit(Milliseconds))
+	tokenEstimator := NewSimpleTokenEstimator()
+	cache := NewSimpleCache()
+
+	routerConfig := &VTCConfig{
+		InputTokenWeight:  1.0,
+		OutputTokenWeight: 1.0,
+		Variant:           RouterVTCBasic,
+	}
 	router := &BasicVTCRouter{
 		cache:          cache,
 		tokenTracker:   tokenTracker,
 		tokenEstimator: tokenEstimator,
-		config:         config,
+		config:         routerConfig,
 	}
 
-	// Create test pods with proper setup to be considered ready
+	// Create test pods
 	pod1 := &v1.Pod{}
 	pod1.Status.PodIP = "192.168.1.1"
 	pod1.Status.Phase = v1.PodRunning
-	pod1.Status.Conditions = []v1.PodCondition{
-		{Type: v1.PodReady, Status: v1.ConditionTrue},
-	}
+	pod1.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
 	pod1.Name = "pod1"
 
 	pod2 := &v1.Pod{}
 	pod2.Status.PodIP = "192.168.1.2"
 	pod2.Status.Phase = v1.PodRunning
-	pod2.Status.Conditions = []v1.PodCondition{
-		{Type: v1.PodReady, Status: v1.ConditionTrue},
-	}
+	pod2.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
 	pod2.Name = "pod2"
 
 	pod3 := &v1.Pod{}
 	pod3.Status.PodIP = "192.168.1.3"
 	pod3.Status.Phase = v1.PodRunning
-	pod3.Status.Conditions = []v1.PodCondition{
-		{Type: v1.PodReady, Status: v1.ConditionTrue},
-	}
+	pod3.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}
 	pod3.Name = "pod3"
 
 	// Set up pod metrics for testing
@@ -203,11 +178,6 @@ func TestVTCRouterSimple(t *testing.T) {
 	pods := []*v1.Pod{pod1, pod2, pod3}
 	podList := NewSimplePodList(pods)
 
-	// Note: The VTC router uses a hybrid scoring approach that combines fairness (based on token usage)
-	// and utilization (based on pod load). The exact pod selected may vary based on the implementation.
-	// For testing purposes, we'll just verify that a valid pod is selected.
-
-	// Set up token count for a test user
 	ctx := context.Background()
 	user := "user1"
 	err := tokenTracker.UpdateTokenCount(ctx, user, 0, 0)
@@ -235,18 +205,5 @@ func TestVTCRouterSimple(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, selectedPodAddress)
 	// Check if the selected pod address is one of the expected IP addresses with port
-	assert.Contains(t, []string{"192.168.1.1:8000", "192.168.1.2:8000", "192.168.1.3:8000"}, selectedPodAddress)
-
-	// Test 3: Route with user that has high token count
-	// This tests the fairness aspect of the VTC router
-	err = tokenTracker.UpdateTokenCount(ctx, "user2", 5000, 0) // User with high token count
-	assert.NoError(t, err)
-	user2 := "user2"
-	routingCtx = types.NewRoutingContext(ctx, "vtc-basic", "model1", "test message", "request3", user2)
-
-	selectedPodAddress, err = router.Route(routingCtx, podList)
-	assert.NoError(t, err)
-	assert.NotEmpty(t, selectedPodAddress)
-	// Check if the selected pod address is one of the expected IP addresses with port (cannot assert specific pod due to hybrid scoring)
 	assert.Contains(t, []string{"192.168.1.1:8000", "192.168.1.2:8000", "192.168.1.3:8000"}, selectedPodAddress)
 }

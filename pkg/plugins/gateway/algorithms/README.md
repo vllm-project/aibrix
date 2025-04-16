@@ -122,14 +122,16 @@ End-to-end tests for this algorithm can be found in [vtc_routing_test.go](../../
 
 #### Environment Variables
 
-| Variable                                     | Description                                                                | Default          |
-|----------------------------------------------|----------------------------------------------------------------------------|------------------|
-| `AIBRIX_ROUTING_ALGORITHM`                   | Set to `vtc-basic` to enable this routing strategy.                        | `prefix-aware`   |
-| `AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT` | Weight applied to input tokens in fairness calculations.                   | `1.0`            |
-| `AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT`| Weight applied to output tokens in fairness calculations.                  | `2.0`            |
-| `AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT`    | Weight for the fairness component in the hybrid scoring formula.           | `0.5`            |
-| `AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT` | Weight for the utilization component in the hybrid scoring formula.        | `0.5`            |
-| `AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD`       | Normalization factor for pod load in utilization score calculation.        | `100.0`          |
+| Variable                                         | Description                                                                | Default          |
+|--------------------------------------------------|----------------------------------------------------------------------------|------------------|
+| `AIBRIX_ROUTING_ALGORITHM`                       | Set to `vtc-basic` to enable this routing strategy.                        | `prefix-aware`   |
+| `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_MINUTES` | Size of the sliding window (in minutes) for tracking user token usage.     | `60`             |
+| `AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT`     | Weight applied to input tokens in fairness calculations.                   | `1.0`            |
+| `AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT`    | Weight applied to output tokens in fairness calculations.                  | `2.0`            |
+| `AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT`        | Weight for the fairness component in the hybrid scoring formula.           | `0.5`            |
+| `AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT`     | Weight for the utilization component in the hybrid scoring formula.        | `0.5`            |
+| `AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD`           | Normalization factor for pod load in utilization score calculation.        | `100.0`          |
+
 
 ### Other VTC variants
 The VTC paper and reference implementation ([slora/server/router](https://github.com/Ying1123/VTC-artifact/tree/main/slora/server/router)) describe other VTC variants like `vtc-fair` (pure fairness), `vtc-max-fair`, and `vtc-pred` (using length prediction). Adapting these variants for use within the Aibrix Kubernetes routing context, which involves selecting specific pods rather than managing a single request queue, is a potential area for future enhancement.

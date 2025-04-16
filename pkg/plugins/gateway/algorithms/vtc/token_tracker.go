@@ -19,48 +19,158 @@ package vtc
 import (
 	"context"
 	"sync"
+	"time"
+
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-// TODO: add redis token tracker so that state is shared across plugin instances
-type InMemoryTokenTracker struct {
-	mu           sync.RWMutex
-	tokenCounter map[string]float64
-	config       *VTCConfig
+// Sliding window configuration (minutes)
+const (
+	VTC_TOKEN_TRACKER_WINDOW_MINUTES = "AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_MINUTES"
+	defaultTokenTrackerWindowMinutes = 60
+)
+
+var (
+	tokenTrackerWindowMinutes = utils.LoadEnvInt(VTC_TOKEN_TRACKER_WINDOW_MINUTES, defaultTokenTrackerWindowMinutes)
+)
+
+type TimeUnit int
+
+const (
+	Minutes TimeUnit = iota
+	Seconds
+	Milliseconds
+)
+
+// Time duration mapping for each time unit
+var timeUnitDuration = map[TimeUnit]time.Duration{
+	Minutes:      time.Minute,
+	Seconds:      time.Second,
+	Milliseconds: time.Millisecond,
 }
 
-func NewInMemoryTokenTracker(config *VTCConfig) *InMemoryTokenTracker {
-	return &InMemoryTokenTracker{
-		tokenCounter: make(map[string]float64),
-		config:       config,
+// Helper functions for time unit operations
+func (unit TimeUnit) truncateTime(t time.Time) time.Time {
+	return t.Truncate(timeUnitDuration[unit])
+}
+
+func (unit TimeUnit) toTimestamp(t time.Time) int64 {
+	if unit == Milliseconds {
+		return t.UnixNano() / int64(time.Millisecond)
+	}
+	return t.Unix()
+}
+
+// InMemorySlidingWindowTokenTracker tracks tokens per user in a fixed-size sliding window (in-memory, thread-safe).
+type InMemorySlidingWindowTokenTracker struct {
+	mu          sync.RWMutex
+	windowSize  time.Duration
+	buckets     int
+	bucketUnit  TimeUnit
+	userBuckets map[string]map[int64]float64 // user -> windowStart -> tokenSum
+	config      *VTCConfig
+}
+
+// TokenTrackerOption is a function that configures a token tracker
+type TokenTrackerOption func(*InMemorySlidingWindowTokenTracker)
+
+func WithWindowSize(size int) TokenTrackerOption {
+	return func(t *InMemorySlidingWindowTokenTracker) {
+		t.buckets = size
+		t.windowSize = time.Duration(size) * timeUnitDuration[t.bucketUnit]
 	}
 }
 
-func (t *InMemoryTokenTracker) GetTokenCount(ctx context.Context, user string) (float64, error) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
+func WithTimeUnit(unit TimeUnit) TokenTrackerOption {
+	return func(t *InMemorySlidingWindowTokenTracker) {
+		t.bucketUnit = unit
+		t.windowSize = time.Duration(t.buckets) * timeUnitDuration[unit]
+	}
+}
+
+// TODO: add redis token tracker so that state is shared across plugin instances
+// NewInMemorySlidingWindowTokenTracker creates a new token tracker with configurable options
+func NewInMemorySlidingWindowTokenTracker(config *VTCConfig, opts ...TokenTrackerOption) *InMemorySlidingWindowTokenTracker {
+	// Default values
+	size := tokenTrackerWindowMinutes
+	if size < 1 {
+		size = defaultTokenTrackerWindowMinutes
+	}
+
+	tracker := &InMemorySlidingWindowTokenTracker{
+		windowSize:  time.Duration(size) * timeUnitDuration[Minutes],
+		buckets:     size,
+		bucketUnit:  Minutes,
+		userBuckets: make(map[string]map[int64]float64),
+		config:      config,
+	}
+
+	for _, opt := range opts {
+		opt(tracker)
+	}
+
+	return tracker
+}
+
+func (t *InMemorySlidingWindowTokenTracker) GetTokenCount(ctx context.Context, user string) (float64, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	if user == "" {
 		return 0, nil
 	}
-
-	if tokens, ok := t.tokenCounter[user]; ok {
-		return tokens, nil
+	buckets, ok := t.userBuckets[user]
+	if !ok {
+		return 0, nil
 	}
-	return 0, nil
+
+	cutoffTime := time.Now().Add(-t.windowSize)
+	cutoff := t.bucketUnit.toTimestamp(cutoffTime)
+
+	sum := float64(0)
+	for ts, val := range buckets {
+		if ts >= cutoff {
+			sum += val
+		}
+	}
+
+	// Prune old buckets
+	for ts := range buckets {
+		if ts < cutoff {
+			delete(buckets, ts)
+		}
+	}
+	return sum, nil
 }
 
-// UpdateTokenCount updates the token count for a user, applying weights.
-func (t *InMemoryTokenTracker) UpdateTokenCount(ctx context.Context, user string, inputTokens, outputTokens float64) error {
+func (t *InMemorySlidingWindowTokenTracker) UpdateTokenCount(ctx context.Context, user string, inputTokens, outputTokens float64) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if user == "" {
 		return nil
 	}
+	now := time.Now()
 
-	// Simply add the weighted tokens
+	truncatedTime := t.bucketUnit.truncateTime(now)
+	windowStart := t.bucketUnit.toTimestamp(truncatedTime)
+
 	tokens := inputTokens*t.config.InputTokenWeight + outputTokens*t.config.OutputTokenWeight
-	t.tokenCounter[user] += tokens
+	buckets, ok := t.userBuckets[user]
+	if !ok {
+		buckets = make(map[int64]float64)
+		t.userBuckets[user] = buckets
+	}
+	buckets[windowStart] += tokens
 
+	cutoffTime := now.Add(-t.windowSize)
+	cutoff := t.bucketUnit.toTimestamp(cutoffTime)
+
+	// Prune old buckets
+	for ts := range buckets {
+		if ts < cutoff {
+			delete(buckets, ts)
+		}
+	}
 	return nil
 }

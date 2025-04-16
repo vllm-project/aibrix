@@ -19,13 +19,14 @@ package vtc
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func TestInMemoryTokenTracker_GetTokenCount(t *testing.T) {
+func TestSlidingWindowTokenTracker_GetTokenCount(t *testing.T) {
 	config := DefaultVTCConfig()
-	tracker := NewInMemoryTokenTracker(&config)
+	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds)) // 100ms window
 	ctx := context.Background()
 
 	// Test initial count for a new user
@@ -55,9 +56,67 @@ func TestInMemoryTokenTracker_GetTokenCount(t *testing.T) {
 	assert.Equal(t, float64(0), tokens, "Token count for non-existent user should be 0")
 }
 
-func TestInMemoryTokenTracker_UpdateTokenCount(t *testing.T) {
+func TestSlidingWindowTokenTracker_WindowBehavior(t *testing.T) {
 	config := DefaultVTCConfig()
-	tracker := NewInMemoryTokenTracker(&config)
+	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds)) // 100ms window
+	ctx := context.Background()
+
+	// Initial count
+	tokens, err := tracker.GetTokenCount(ctx, "user1")
+	assert.NoError(t, err)
+	assert.Equal(t, float64(0), tokens, "Initial token count should be 0")
+
+	// Add tokens in current millisecond
+	err = tracker.UpdateTokenCount(ctx, "user1", 10, 15) // 10*1.0 + 15*2.0 = 40
+	assert.NoError(t, err)
+	tokens, err = tracker.GetTokenCount(ctx, "user1")
+	assert.NoError(t, err)
+	assert.Equal(t, float64(40), tokens, "Token count after first update")
+
+	// Add tokens in next bucket (simulate time advance)
+	nextBucket := time.Now().Add(10 * time.Millisecond)
+	tracker.mu.Lock()
+	windowStart := nextBucket.Truncate(time.Millisecond).UnixNano() / int64(time.Millisecond)
+	if _, ok := tracker.userBuckets["user1"]; !ok {
+		tracker.userBuckets["user1"] = make(map[int64]float64)
+	}
+	tracker.userBuckets["user1"][windowStart] += 20
+	tracker.mu.Unlock()
+
+	tokens, err = tracker.GetTokenCount(ctx, "user1")
+	assert.NoError(t, err)
+	assert.Equal(t, float64(60), tokens, "Sum over two buckets")
+
+	// Simulate all tokens outside window
+	tracker.mu.Lock()
+	for ts := range tracker.userBuckets["user1"] {
+		delete(tracker.userBuckets["user1"], ts)
+		// Set tokens 200ms ago (outside 100ms window)
+		tracker.userBuckets["user1"][ts-200] = 100
+	}
+	tracker.mu.Unlock()
+	tokens, err = tracker.GetTokenCount(ctx, "user1")
+	assert.NoError(t, err)
+	assert.Equal(t, float64(0), tokens, "Tokens outside window should not be counted")
+}
+
+func TestSlidingWindowTokenTracker_UpdateTokenCount_WithWeights(t *testing.T) {
+	config := DefaultVTCConfig()
+	config.InputTokenWeight = 2.0
+	config.OutputTokenWeight = 3.0
+	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds)) // 100ms window
+	ctx := context.Background()
+
+	err := tracker.UpdateTokenCount(ctx, "user2", 2, 4) // 2*2 + 4*3 = 16
+	assert.NoError(t, err)
+	tokens, err := tracker.GetTokenCount(ctx, "user2")
+	assert.NoError(t, err)
+	assert.Equal(t, float64(16), tokens, "Weighted token count")
+}
+
+func TestSlidingWindowTokenTracker_UpdateTokenCount(t *testing.T) {
+	config := DefaultVTCConfig()
+	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds)) // 100ms window
 	ctx := context.Background()
 
 	// Test initial update
@@ -85,12 +144,12 @@ func TestInMemoryTokenTracker_UpdateTokenCount(t *testing.T) {
 	assert.Equal(t, float64(0), tokens, "Update for empty user should have no effect")
 }
 
-func TestInMemoryTokenTracker_UpdateTokenCount_WithWeights(t *testing.T) {
+func TestSlidingWindowTokenTracker_UpdateTokenCount_WithCustomWeights(t *testing.T) {
 	config := VTCConfig{
 		InputTokenWeight:  2.0,
 		OutputTokenWeight: 0.5,
 	}
-	tracker := NewInMemoryTokenTracker(&config)
+	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds)) // 100ms window
 	ctx := context.Background()
 
 	// Test update with custom weights

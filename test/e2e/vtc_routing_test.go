@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -46,7 +47,7 @@ var redisClient *redis.Client
 // Global variables for test state
 var (
 	availablePods []string
-	tokenTracker  *vtc.InMemoryTokenTracker
+	tokenTracker  *vtc.InMemorySlidingWindowTokenTracker
 )
 
 func setupVTCUsers(t *testing.T) {
@@ -61,7 +62,12 @@ func setupVTCUsers(t *testing.T) {
 		InputTokenWeight:  1.0,
 		OutputTokenWeight: 1.0,
 	}
-	tokenTracker = vtc.NewInMemoryTokenTracker(config)
+
+	tokenTracker = vtc.NewInMemorySlidingWindowTokenTracker(
+		config,
+		vtc.WithWindowSize(100),
+		vtc.WithTimeUnit(vtc.Milliseconds),
+	)
 
 	getAvailablePods(t)
 
@@ -132,6 +138,44 @@ func TestVTCFallbackToRandom(t *testing.T) {
 	req := "this is a test message for VTC Basic routing"
 	targetPod := getTargetPodFromChatCompletionWithUser(t, req, "vtc-basic", "")
 	assert.NotEmpty(t, targetPod, "vtc-basic target pod is empty") //what is this
+}
+
+func TestVTCSlidingWindow(t *testing.T) {
+	setupVTCUsers(t)
+
+	user := "user1"
+	ctx := context.Background()
+
+	// Verify initial token count is zero
+	initialTokens, err := tokenTracker.GetTokenCount(ctx, user)
+	assert.NoError(t, err)
+	assert.Equal(t, float64(0), initialTokens, "Initial token count should be zero")
+
+	// Add tokens
+	err = tokenTracker.UpdateTokenCount(ctx, user, 10, 20) // 10 input tokens, 20 output tokens
+	assert.NoError(t, err)
+
+	// Verify tokens were added
+	tokensAfterUpdate, err := tokenTracker.GetTokenCount(ctx, user)
+	assert.NoError(t, err)
+	assert.Equal(t, float64(30), tokensAfterUpdate, "Token count should be 30 after update")
+
+	// Wait for the sliding window to expire (100ms + a little buffer)
+	t.Log("Waiting for token window to expire (100ms)...")
+	time.Sleep(150 * time.Millisecond)
+
+	// Verify tokens were expired
+	tokensAfterExpiry, err := tokenTracker.GetTokenCount(ctx, user)
+	assert.NoError(t, err)
+	assert.Equal(t, float64(0), tokensAfterExpiry, "Token count should be 0 after window expiry")
+
+	// Verify that new tokens can be added after expiry
+	err = tokenTracker.UpdateTokenCount(ctx, user, 5, 10) // 5 input tokens, 10 output tokens
+	assert.NoError(t, err)
+
+	tokensAfterSecondUpdate, err := tokenTracker.GetTokenCount(ctx, user)
+	assert.NoError(t, err)
+	assert.Equal(t, float64(15), tokensAfterSecondUpdate, "Token count should be 15 after second update")
 }
 
 // TestVTCHybridScoring tests the hybrid scoring approach that balances fairness and utilization
