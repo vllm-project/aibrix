@@ -21,7 +21,6 @@ import (
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -59,16 +58,6 @@ func initCacheInformers(instance *Store, config *rest.Config, stopCh <-chan stru
 	crdFactory := crdinformers.NewSharedInformerFactoryWithOptions(crdClientSet, 0)
 
 	podInformer := factory.Core().V1().Pods().Informer()
-	modelInformer := crdFactory.Model().V1alpha1().ModelAdapters().Informer()
-
-	defer runtime.HandleCrash()
-	factory.Start(stopCh)
-	crdFactory.Start(stopCh)
-
-	if !cache.WaitForCacheSync(stopCh, podInformer.HasSynced, modelInformer.HasSynced) {
-		return errors.New("timed out waiting for caches to sync")
-	}
-
 	if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    instance.addPod,
 		UpdateFunc: instance.updatePod,
@@ -77,6 +66,7 @@ func initCacheInformers(instance *Store, config *rest.Config, stopCh <-chan stru
 		return err
 	}
 
+	modelInformer := crdFactory.Model().V1alpha1().ModelAdapters().Informer()
 	if _, err = modelInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    instance.addModelAdapter,
 		UpdateFunc: instance.updateModelAdapter,
@@ -85,6 +75,12 @@ func initCacheInformers(instance *Store, config *rest.Config, stopCh <-chan stru
 		return err
 	}
 
+	factory.Start(stopCh)
+	crdFactory.Start(stopCh)
+
+	if !cache.WaitForCacheSync(stopCh, podInformer.HasSynced, modelInformer.HasSynced) {
+		return errors.New("timed out waiting for caches to sync")
+	}
 	return nil
 }
 
