@@ -25,7 +25,7 @@ mkdir -p "$DATASET_DIR" "$WORKLOAD_DIR" "$CLIENT_OUTPUT" "$TRACE_OUTPUT"
 # ---------------
 
 generate_dataset() {
-    echo "[INFO] Generating synthetic dataset..."
+    echo "[INFO] Generating synthetic dataset ${PROMPT_TYPE}..."
 
     case "$PROMPT_TYPE" in
         synthetic_shared)
@@ -150,12 +150,11 @@ generate_workload() {
 
 run_client() {
     echo "[INFO] Running client to dispatch workload..."
-    python3 client/client.py \
+    python client/client.py \
         --workload-path "$WORKLOAD_FILE" \
         --endpoint "$ENDPOINT" \
         --model "$TARGET_MODEL" \
         --api-key "$API_KEY" \
-        --streaming \
         --output-file-path "$CLIENT_OUTPUT/output.jsonl"
 }
 
