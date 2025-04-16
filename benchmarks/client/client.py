@@ -106,7 +106,8 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
         ttft = first_response_time - start_time if first_response_time else None
         tpot = (response_time - first_response_time) / output_tokens if first_response_time and output_tokens > 0 else None
 
-        update_response(response = response_text, lock = lock, session_id = session_id, history = session_history)
+        if session_id is not None:
+            update_response(response = response_text, lock = lock, session_id = session_id, history = session_history)
         
         result = {
             "request_id": request_id,
@@ -183,8 +184,12 @@ async def benchmark_streaming(api_key: str,
         target_time = base_time + ts / 1000.0
         formatted_prompts = [prepare_prompt(prompt = request["prompt"], lock = lock, session_id = request.get("session_id", None), history = session_history) for request in requests]
         for i in range(len(requests)):
-            session_id = requests[i].get("session_id", None)
-            task_queue_id = session_id % len(task_queues)
+            if "session_id" in requests[i]:
+                session_id = requests[i].get("session_id", None)
+                task_queue_id = session_id % len(task_queues)
+            else:
+                session_id = None
+                task_queue_id = request_id % len(task_queues)
             task_queues[task_queue_id].put((formatted_prompts[i], output_file, request_id, session_id, target_time))
             request_id += 1
         num_requests += len(requests)
@@ -233,7 +238,8 @@ async def send_request_batch(client: openai.AsyncOpenAI,
         throughput = output_tokens / latency
         output_text = response.choices[0].message.content
 
-        update_response(response = output_text, lock = lock, session_id = session_id, history = session_history)
+        if session_id is not None:
+            update_response(response = output_text, lock = lock, session_id = session_id, history = session_history)
         
         result = {
             "request_id": request_id,
@@ -310,8 +316,12 @@ async def benchmark_batch(api_key: str,
         target_time = base_time + ts / 1000.0
         formatted_prompts = [prepare_prompt(prompt = request["prompt"], lock = lock, session_id = request.get("session_id", None), history = session_history) for request in requests]
         for i in range(len(requests)):
-            session_id = requests[i].get("session_id", None)
-            task_queue_id = session_id % len(task_queues)
+            if "session_id" in requests[i]:
+                session_id = requests[i].get("session_id", None)
+                task_queue_id = session_id % len(task_queues)
+            else:
+                session_id = None
+                task_queue_id = request_id % len(task_queues)
             task_queues[task_queue_id].put((formatted_prompts[i], output_file, request_id, session_id, target_time))
             request_id += 1
         num_requests += len(requests)

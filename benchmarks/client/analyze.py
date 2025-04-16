@@ -81,9 +81,9 @@ def main(args):
 
     # Helper function to calculate statistics
     def calculate_statistics(values):
+        values = [value for value in values if value is not None]
         if len(values) == 0:
             return 0.0, 0.0, 0.0
-        values = [value for value in values if value is not None]
         values = sorted(values)
         avg = sum(values) / len(values)
         median = np.median(values)

@@ -13,6 +13,9 @@ from transformers import (AutoTokenizer, PreTrainedTokenizer,
 from datetime import datetime
 from collections import Counter
 
+def if_sessioned_dataset(df: pd.DataFrame):
+    return "session_id" in df.columns
+    
 def convert_to_stat_df(qps_file: str, 
                        input_file: str, 
                        output_file: str,

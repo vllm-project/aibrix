@@ -20,7 +20,8 @@ from distribution import (generate_poisson_dist,
                           sine_fluctuation,
                           )
                           
-from utils import (convert_to_stat_df,
+from utils import (if_sessioned_dataset,
+                   convert_to_stat_df,
                    read_distribution_stats,
                    get_tokenizer, 
                    plot_workload, 
@@ -121,7 +122,7 @@ def generate_synthetic_from_dist(
         current_time += inter_arrival_time
         if current_time < total_seconds * 1000:
             if current_rate != 0:
-                if max_concurrent_sessions:
+                if max_concurrent_sessions and if_sessioned_dataset(prompt_df):
                     request = find_requests_max_session(
                         df=prompt_df,
                         num_requests=1,
@@ -181,7 +182,7 @@ def generate_constant(prompt_file_path: str,
     else:
         sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
         while ts < duration_ms:
-            if max_concurrent_sessions:
+            if max_concurrent_sessions and if_sessioned_dataset(sharegpt_df):
                 concurrent_reqs = find_requests_max_session(
                     df=sharegpt_df,
                     num_requests = qps,

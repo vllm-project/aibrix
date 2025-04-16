@@ -17,12 +17,12 @@ def load_requests(
     with open(dataset_path, encoding='utf-8') as f:
         dataset = [json.loads(line) for line in f]
         if "session_id" in dataset[0]:
-            return load_sessioned_dataset(dataset, tokenizer)
+            return _load_sessioned_dataset(dataset, tokenizer)
         else:
-            return load_plain_dataset(dataset, tokenizer)
+            return _load_plain_dataset(dataset, tokenizer)
     
     
-def load_sessioned_dataset(
+def _load_sessioned_dataset(
     dataset: List[Dict[str, Any]],
     tokenizer: PreTrainedTokenizerBase,
 ) -> pd.DataFrame:
@@ -55,16 +55,16 @@ def load_sessioned_dataset(
     logging.warning("...Complete structured sessioned dataframe transformation")
     return df
 
-def load_plain_dataset(
+def _load_plain_dataset(
     dataset: List[Dict[str, Any]],
     tokenizer: PreTrainedTokenizerBase,
 ) -> pd.DataFrame:
     df = pd.DataFrame(
         {
-            'prompt': [entry['prompt'] ],
-            'completion': [entry['completion'] if 'completion' in entry else None],
-            'prompt_len': [len(tokenizer(entry['prompt']).input_ids) ],
-            'completion_len': [len(tokenizer(entry['completion']).input_ids) if 'completion' in entry else None ],
+            'prompt': entry['prompt'] ,
+            'completion': entry['completion'] if 'completion' in entry else None,
+            'prompt_len': len(tokenizer(entry['prompt']).input_ids),
+            'completion_len': len(tokenizer(entry['completion']).input_ids) if 'completion' in entry else None,
         }
         for entry in dataset if entry['prompt'] is not None
     )
@@ -76,7 +76,7 @@ def find_requests_max_session(
         num_requests: int,
         max_concurrent_session: int,
 ):
-    if "prompt" in df.columns:
+    if "session_id" not in df.columns:
         raise NotImplementedError(f"find_requests_max_session only supports sessioned dataset")
     filtered_results = []
     for _ in range(num_requests):

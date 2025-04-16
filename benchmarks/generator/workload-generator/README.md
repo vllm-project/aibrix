@@ -71,7 +71,7 @@ The scaling factor here (e.g., `qps-scale`) scale down rate from the original tr
 "Time","P50","P70","P90","P99"
 ```
 
-- `"$PROMPT_LEN_FILE"` to be in the following format
+- `"$COMPLETION_LEN_FILE"` to be in the following format
 ```
 "Time","P50","P70","P95","P99"
 ```
@@ -87,7 +87,7 @@ The scaling factor here (e.g., `qps-scale`) scale down rate from the original tr
 "Time","recv_bytes","sent_bytes"
 ```
 
-- `"$PROMPT_LEN_FILE"` to be in the following format
+- `"$COMPLETION_LEN_FILE"` to be in the following format
 ```
 "Time","recv_bytes","sent_bytes"
 ```
