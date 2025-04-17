@@ -122,6 +122,26 @@ generate_workload() {
             # Run the final command
             eval $CMD
             ;;
+        stat)            
+            source config/workload/stat.sh
+            CMD="python generator/workload-generator/workload_generator.py \
+                --prompt-file \"$DATASET_FILE\" \
+                --interval-ms \"$INTERVAL_MS\" \
+                --duration-ms \"$DURATION_MS\" \
+                --trace-type stat \
+                --stat-trace-type \"$STAT_TRACE_TYPE\" \
+                --model \"$MODEL_NAME\" \
+                --traffic-file \"$TRAFFIC_FILE\" \
+                --prompt-len-file \"$PROMPT_LEN_FILE\" \
+                --completion-len-file \"$COMPLETION_LEN_FILE\" \
+                --output-dir \"$WORKLOAD_DIR\" \
+                --output-format jsonl"
+
+            [ -n "$QPS_SCALE" ] && CMD+=" --qps-scale \"$QPS_SCALE\""
+            [ -n "$OUTPUT_SCALE" ] && CMD+=" --output-scale \"$OUTPUT_SCALE\""
+            [ -n "$INPUT_SCALE" ] && CMD+=" --input-scale \"$INPUT_SCALE\""
+            eval $CMD
+            ;;
         azure)
             source config/workload/azure.sh
             AZURE_TRACE="/tmp/AzureLLMInferenceTrace_conv.csv"

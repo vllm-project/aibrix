@@ -1,1 +1,1 @@
-export TRACE="client_trace"
+export TRACE="${client_trace_path}"
