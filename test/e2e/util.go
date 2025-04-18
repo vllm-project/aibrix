@@ -18,15 +18,19 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/stretchr/testify/assert"
 	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -128,4 +132,18 @@ func validateInferenceWithClient(t *testing.T, client *openai.Client, modelName 
 	assert.Equal(t, modelName, chatCompletion.Model)
 	assert.NotEmpty(t, chatCompletion.Choices, "chat completion has no choices returned")
 	assert.NotNil(t, chatCompletion.Choices[0].Message.Content, "chat completion has no message returned")
+}
+
+func validateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expectedPodCount int) {
+	allPodsReady := false
+	for i := 0; i < 3; i++ {
+		podlist, err := client.CoreV1().Pods("default").List(context.Background(), v1.ListOptions{})
+		if err != nil && expectedPodCount == len(utils.FilterActivePods(podlist.Items)) {
+			allPodsReady = true
+			fmt.Println("all pods are ready", len(utils.FilterActivePods(podlist.Items)))
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+	assert.True(t, allPodsReady, "ensure all pods are ready")
 }
