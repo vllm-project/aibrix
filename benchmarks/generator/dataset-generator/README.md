@@ -1,4 +1,4 @@
-# Using Workload Generator
+# Using Dataset Generator
 
 
 ## Generate Synthetic Dataset 

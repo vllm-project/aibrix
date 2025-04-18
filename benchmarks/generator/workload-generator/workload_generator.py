@@ -34,7 +34,7 @@ from utils import (if_sessioned_dataset,
 logging.basicConfig(level=logging.INFO)
 
 
-def generate_from_internal_csv(prompt_file_path: str, 
+def generate_from_stat_csv(prompt_file_path: str, 
                             duration_ms: int,
                             tokenizer: PreTrainedTokenizerBase,       
                             qps_stat: str = None,
@@ -43,12 +43,12 @@ def generate_from_internal_csv(prompt_file_path: str,
                             qps_scale: float = 1.0,
                             input_scale: float = 1.0,
                             output_scale: float = 1.0,
-                            internal_trace_type: str = 'maas',
+                            stat_trace_type: str = 'maas',
                             max_concurrent_sessions: int = None,
                             output_file: str = 'output/output',
                             to_jsonl: bool = False,
                             ) -> Dict[str, Any]:
-    merged_df = convert_to_stat_df(qps_stat, input_stat, output_stat, internal_trace_type)
+    merged_df = convert_to_stat_df(qps_stat, input_stat, output_stat, stat_trace_type)
     input_len_configs, output_len_configs, rps_configs = read_distribution_stats(merged_df)
     input_len_dist = []
     output_len_dist = []
@@ -56,7 +56,7 @@ def generate_from_internal_csv(prompt_file_path: str,
     for rps_config in rps_configs:
         rps_segment = generate_poisson_dist(target = rps_config['mean_rps'], sample_size = rps_config['total_seconds'], smooth_window_size = 10)
         rps_dist.extend(rps_segment)
-    if internal_trace_type == "maas":
+    if stat_trace_type == "maas":
         for config in input_len_configs:
             config['scale'] = input_scale
             input_segment = generate_token_len_from_percentiles(**config)
@@ -65,7 +65,7 @@ def generate_from_internal_csv(prompt_file_path: str,
             config['scale'] = output_scale
             output_segment = generate_token_len_from_percentiles(**config)
             output_len_dist.extend(output_segment)
-    elif internal_trace_type == "cloudide":
+    elif stat_trace_type == "cloudide":
         for config in input_len_configs:
             config['scale'] = input_scale
             input_segment = generate_token_len_from_percentiles(**config)
@@ -367,15 +367,15 @@ def generate_from_azure_csv(file_path: str,
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Workload Generator')
     parser.add_argument('--prompt-file', type=str, required=True, help='File containing sampling prompts.')
-    parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'internal', 'azure'],
-                        help='Type of trace consumed. Choose among: synthetic, internal, azure.')
+    parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'stat', 'azure'],
+                        help='Type of trace consumed. Choose among: synthetic, stat, azure.')
     parser.add_argument('--model', type=str, required=False, default="Qwen/Qwen2.5-Coder-7B-Instruct",
                         help='Target model for the workload.')
     parser.add_argument('--interval-ms', type=int, required=False, default=1000,
                         help='Granularity of request injection interval in milliseconds.')
     parser.add_argument('--duration-ms', type=int, default=60000, help='Duration of the trace generated.')
     parser.add_argument('--group-interval-seconds', type=int, default=1, help='Grouping interval seconds.')
-    parser.add_argument('--internal-trace-type', type=str, choices=['maas', 'cloudide'], default="maas", help='Type of internal traces.')
+    parser.add_argument('--stat-trace-type', type=str, choices=['maas', 'cloudide'], default="maas", help='Type of stat traces.')
     parser.add_argument('--output-dir', type=str, required=False, default="output", help='Output directory to save.'
                                                                                          'the workload.')
     parser.add_argument('--output-format', type=str, choices=['json', 'jsonl'], default='json',
@@ -401,13 +401,13 @@ if __name__ == '__main__':
     ##### Trace and stats-driven workload
     parser.add_argument('--traffic-file', type=str, required=False, default=None,
                         help='Traffic file containing times of arrival, which workload generator depends upon to'
-                             'convert to traffic used in workload. This is only needed for for internal and azure trace type.')
+                             'convert to traffic used in workload. This is only needed for for stat and azure trace type.')
     parser.add_argument('--prompt-len-file', type=str, required=False, default=None,
                         help='File containing request input lengths varied by time, which workload generator depends upon to '
-                             'select input prompt. This is only needed for for internal trace type. ')
+                             'select input prompt. This is only needed for for stat trace type. ')
     parser.add_argument('--completion-len-file', type=str, required=False, default=None,
                         help='File containing request output lengths varied by time, which workload generator depends upon to '
-                             'select input prompt. This is only needed for for internal trace type. ')
+                             'select input prompt. This is only needed for for stat trace type. ')
     parser.add_argument('--qps-scale', type=float, required=False, default=1.0, help='QPS scaling factor.')
     parser.add_argument('--input-scale', type=float, required=False, default=1.0, help='Input length scaling factor.')
     parser.add_argument('--output-scale', type=float, required=False, default=1.0, help='Output length scaling factor.')
@@ -454,7 +454,7 @@ if __name__ == '__main__':
                                             )
         workload_dict[comp_pattern_type] = generated_workload
     else:
-        # Process for 'internal' and 'azure'
+        # Process for 'stat' and 'azure'
         if args.trace_type == "constant":
             generated_workload = generate_constant(prompt_file_path=args.prompt_file, 
                                                     qps=args.target_qps,
@@ -466,8 +466,8 @@ if __name__ == '__main__':
                                                     output_file=f"{args.output_dir}/workload",
                                                     to_jsonl=(args.output_format == "jsonl"),
                                                 )
-        elif args.trace_type == "internal":
-            generated_workload = generate_from_internal_csv(prompt_file_path=args.prompt_file, 
+        elif args.trace_type == "stat":
+            generated_workload = generate_from_stat_csv(prompt_file_path=args.prompt_file, 
                                                             duration_ms=args.duration_ms, 
                                                             tokenizer=tokenizer,
                                                             qps_stat=args.traffic_file, 
@@ -476,7 +476,7 @@ if __name__ == '__main__':
                                                             qps_scale=args.qps_scale,
                                                             input_scale=args.input_scale,
                                                             output_scale=args.output_scale,
-                                                            internal_trace_type=args.internal_trace_type,
+                                                            stat_trace_type=args.stat_trace_type,
                                                             max_concurrent_sessions=args.max_concurrent_sessions,
                                                             output_file=f"{args.output_dir}/workload",
                                                             to_jsonl=(args.output_format == "jsonl"),

@@ -54,7 +54,7 @@ export TRAFFIC_FILE=${PATH_TO_TRAFFIC_FILE}
 export PROMPT_LEN_FILE=${PATH_TO_PROMPT_LEN_FILE}
 export COMPLETION_LEN_FILE=${PATH_TO_COMPLETION_LEN_FILE}
 
-python workload_generator.py --prompt-file $PROMPT_FILE --interval-ms 1000 --duration-ms 1800000 --trace-type internal --traffic-file "$TRAFFIC_FILE" --prompt-len-file "$PROMPT_LEN_FILE" --completion-len-file "$COMPLETION_LEN_FILE"  --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl --qps-scale 1.0 --output-scale 1.0 --input-scale 1.0 --internal-trace-type "maas" 
+python workload_generator.py --prompt-file $PROMPT_FILE --interval-ms 1000 --duration-ms 1800000 --trace-type stat --traffic-file "$TRAFFIC_FILE" --prompt-len-file "$PROMPT_LEN_FILE" --completion-len-file "$COMPLETION_LEN_FILE"  --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl --qps-scale 1.0 --output-scale 1.0 --input-scale 1.0 --stat-trace-type "maas" 
 ```
 
 The scaling factor here (e.g., `qps-scale`) scale down rate from the original trace to the desired rate, i.e., if the peak rate in the original file is 80 and the desired peak rate is 8, the scale is set to 10.0. 
