@@ -107,7 +107,8 @@ func select_pod_with_least_running_requests(ready_pods) {
 
 ## Virtual Token Counter (VTC)
 
-The Virtual Token Counter (VTC) is a fair scheduling algorithm for LLM serving based on the paper "Fairness in Serving Large Language Models" (Sheng et al.). VTC aims to provide fairness among clients by tracking the service (weighted token count) each client has received and prioritizing those who have received less service. It integrates with continuous batching and handles challenges unique to LLM serving, like variable token costs and unknown output lengths. The reference implementation and paper artifact can be found at [https://github.com/Ying1123/VTC-artifact](https://github.com/Ying1123/VTC-artifact).
+The Virtual Token Counter (VTC) is a fair scheduling algorithm for LLM serving based on the paper "Fairness in Serving Large Language Models" (Sheng et al.). VTC aims to provide fairness among clients by tracking the service (weighted token count) each client has received and prioritizing those who have received less service. It integrates with continuous batching and handles challenges unique to LLM serving, like variable token costs and unknown output lengths. The research paper and reference implementation artifact can be found at [Fairness in Serving Large Language Models (Sheng et al.)
+](https://arxiv.org/abs/2401.00588).
 
 ### vtc-basic
 

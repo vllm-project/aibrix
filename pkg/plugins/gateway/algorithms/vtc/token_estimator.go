@@ -18,7 +18,6 @@ package vtc
 
 import (
 	"math"
-	"strings"
 )
 
 type SimpleTokenEstimator struct {
@@ -26,7 +25,8 @@ type SimpleTokenEstimator struct {
 	OutputRatio        float64
 }
 
-func NewSimpleTokenEstimator() *SimpleTokenEstimator {
+// TODO: advanced token estimators
+func NewSimpleTokenEstimator() TokenEstimator {
 	return &SimpleTokenEstimator{
 		CharactersPerToken: 4.0, // Rough approximation: 4 chars per token
 		OutputRatio:        1.5, // Default output/input ratio
@@ -42,33 +42,6 @@ func (e *SimpleTokenEstimator) EstimateInputTokens(message string) float64 {
 }
 
 func (e *SimpleTokenEstimator) EstimateOutputTokens(message string) float64 {
-	inputTokens := e.EstimateInputTokens(message)
-	return math.Ceil(inputTokens * e.OutputRatio)
-}
-
-type WordBasedTokenEstimator struct {
-	TokensPerWord float64
-
-	OutputRatio float64
-}
-
-func NewWordBasedTokenEstimator() *WordBasedTokenEstimator {
-	return &WordBasedTokenEstimator{
-		TokensPerWord: 0.75, // Most words are less than 1 token
-		OutputRatio:   1.5,  // Default output/input ratio
-	}
-}
-
-func (e *WordBasedTokenEstimator) EstimateInputTokens(message string) float64 {
-	if message == "" {
-		return 0
-	}
-
-	words := strings.Fields(message)
-	return math.Ceil(float64(len(words)) * e.TokensPerWord)
-}
-
-func (e *WordBasedTokenEstimator) EstimateOutputTokens(message string) float64 {
 	inputTokens := e.EstimateInputTokens(message)
 	return math.Ceil(inputTokens * e.OutputRatio)
 }

@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -80,8 +79,6 @@ func NewBasicVTCRouter(tokenTracker TokenTracker, tokenEstimator TokenEstimator,
 
 // Route implements the VTC routing algorithm
 func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-
 	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
@@ -94,7 +91,7 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	user := ctx.User
 	if user == nil {
 		klog.Warningf("VTC routing not possible: user is nil, falling back to random pod selection")
-		randomPod, err := utils.SelectRandomPod(readyPods, rng.Intn)
+		randomPod, err := utils.SelectRandomPod(readyPods, rand.Intn)
 		if err != nil {
 			return "", fmt.Errorf("fallback to random pod selection failed: %w", err)
 		}
@@ -121,7 +118,7 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	// - Fairness: Users with higher token usage get higher-indexed pods
 	// - Utilization: Consider actual pod load to prevent underutilization
 	var targetPod *v1.Pod
-	var minScore float64 = 1<<63 - 1 // Max float64
+	var minScore float64 = math.MaxFloat64
 
 	// Calculate scores for each pod
 	for i, pod := range readyPods {
@@ -175,7 +172,7 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	if targetPod == nil {
 		klog.Warning("No pods with valid metrics found or all pods scored equally; selecting a pod randomly as fallback")
 		var err error
-		targetPod, err = utils.SelectRandomPod(readyPods, rng.Intn)
+		targetPod, err = utils.SelectRandomPod(readyPods, rand.Intn)
 		if err != nil {
 			return "", fmt.Errorf("random fallback selection failed: %w", err)
 		}

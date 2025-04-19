@@ -47,7 +47,8 @@ var redisClient *redis.Client
 // Global variables for test state
 var (
 	availablePods []string
-	tokenTracker  *vtc.InMemorySlidingWindowTokenTracker
+	tokenTracker  vtc.TokenTracker
+	tokenEstimator vtc.TokenEstimator
 )
 
 func setupVTCUsers(t *testing.T) {
@@ -68,6 +69,8 @@ func setupVTCUsers(t *testing.T) {
 		vtc.WithWindowSize(100),
 		vtc.WithTimeUnit(vtc.Milliseconds),
 	)
+	
+	tokenEstimator = vtc.NewSimpleTokenEstimator()
 
 	getAvailablePods(t)
 
@@ -340,9 +343,9 @@ func getTargetPodFromChatCompletionWithUser(t *testing.T, message, strategy, use
 	require.NoError(t, err, "chat completions failed %v", err)
 	assert.Equal(t, modelName, chatCompletion.Model)
 
-	if tokenTracker != nil {
-		inputTokens := float64(len(message)) / 4 // rough estimate: 4 chars per token
-		outputTokens := float64(len(chatCompletion.Choices[0].Message.Content)) / 4
+	if tokenTracker != nil && tokenEstimator != nil {
+		inputTokens := tokenEstimator.EstimateInputTokens(message)
+		outputTokens := tokenEstimator.EstimateOutputTokens(chatCompletion.Choices[0].Message.Content)
 		err := tokenTracker.UpdateTokenCount(context.Background(), user, inputTokens, outputTokens)
 		require.NoError(t, err, "failed to update token count for user %s", user)
 	}

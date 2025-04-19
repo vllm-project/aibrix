@@ -74,28 +74,29 @@ type InMemorySlidingWindowTokenTracker struct {
 // TokenTrackerOption is a function that configures a token tracker
 type TokenTrackerOption func(*InMemorySlidingWindowTokenTracker)
 
+// updateWindowSize recalculates the window size based on buckets and bucket unit
+func (t *InMemorySlidingWindowTokenTracker) updateWindowSize() {
+	t.windowSize = time.Duration(t.buckets) * timeUnitDuration[t.bucketUnit]
+}
+
 func WithWindowSize(size int) TokenTrackerOption {
 	return func(t *InMemorySlidingWindowTokenTracker) {
 		t.buckets = size
-		t.windowSize = time.Duration(size) * timeUnitDuration[t.bucketUnit]
+		t.updateWindowSize()
 	}
 }
 
 func WithTimeUnit(unit TimeUnit) TokenTrackerOption {
 	return func(t *InMemorySlidingWindowTokenTracker) {
 		t.bucketUnit = unit
-		t.windowSize = time.Duration(t.buckets) * timeUnitDuration[unit]
+		t.updateWindowSize()
 	}
 }
 
 // TODO: add redis token tracker so that state is shared across plugin instances
 // NewInMemorySlidingWindowTokenTracker creates a new token tracker with configurable options
-func NewInMemorySlidingWindowTokenTracker(config *VTCConfig, opts ...TokenTrackerOption) *InMemorySlidingWindowTokenTracker {
-	// Default values
+func NewInMemorySlidingWindowTokenTracker(config *VTCConfig, opts ...TokenTrackerOption) TokenTracker {
 	size := tokenTrackerWindowMinutes
-	if size < 1 {
-		size = defaultTokenTrackerWindowMinutes
-	}
 
 	tracker := &InMemorySlidingWindowTokenTracker{
 		windowSize:  time.Duration(size) * timeUnitDuration[Minutes],
@@ -112,26 +113,16 @@ func NewInMemorySlidingWindowTokenTracker(config *VTCConfig, opts ...TokenTracke
 	return tracker
 }
 
-func (t *InMemorySlidingWindowTokenTracker) GetTokenCount(ctx context.Context, user string) (float64, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+func (t *InMemorySlidingWindowTokenTracker) getCutoffTimestamp() int64 {
+	cutoffTime := time.Now().Add(-t.windowSize)
+	return t.bucketUnit.toTimestamp(cutoffTime)
+}
 
-	if user == "" {
-		return 0, nil
-	}
+// Caller must hold the write lock
+func (t *InMemorySlidingWindowTokenTracker) pruneExpiredBuckets(user string, cutoff int64) {
 	buckets, ok := t.userBuckets[user]
 	if !ok {
-		return 0, nil
-	}
-
-	cutoffTime := time.Now().Add(-t.windowSize)
-	cutoff := t.bucketUnit.toTimestamp(cutoffTime)
-
-	sum := float64(0)
-	for ts, val := range buckets {
-		if ts >= cutoff {
-			sum += val
-		}
+		return
 	}
 
 	// Prune old buckets
@@ -140,6 +131,42 @@ func (t *InMemorySlidingWindowTokenTracker) GetTokenCount(ctx context.Context, u
 			delete(buckets, ts)
 		}
 	}
+}
+
+func (t *InMemorySlidingWindowTokenTracker) GetTokenCount(ctx context.Context, user string) (float64, error) {
+	t.mu.RLock()
+
+	if user == "" {
+		t.mu.RUnlock()
+		return 0, nil
+	}
+	buckets, ok := t.userBuckets[user]
+	if !ok {
+		t.mu.RUnlock()
+		return 0, nil
+	}
+
+	cutoff := t.getCutoffTimestamp()
+	sum := float64(0)
+	var expiredTimestamps []int64
+
+	for ts, val := range buckets {
+		if ts >= cutoff {
+			sum += val
+		} else {
+			expiredTimestamps = append(expiredTimestamps, ts)
+		}
+	}
+
+	t.mu.RUnlock()
+
+	// Only acquire write lock if we need to prune
+	if len(expiredTimestamps) > 0 {
+		t.mu.Lock()
+		t.pruneExpiredBuckets(user, cutoff)
+		t.mu.Unlock()
+	}
+
 	return sum, nil
 }
 
@@ -163,14 +190,8 @@ func (t *InMemorySlidingWindowTokenTracker) UpdateTokenCount(ctx context.Context
 	}
 	buckets[windowStart] += tokens
 
-	cutoffTime := now.Add(-t.windowSize)
-	cutoff := t.bucketUnit.toTimestamp(cutoffTime)
+	cutoff := t.getCutoffTimestamp()
+	t.pruneExpiredBuckets(user, cutoff)
 
-	// Prune old buckets
-	for ts := range buckets {
-		if ts < cutoff {
-			delete(buckets, ts)
-		}
-	}
 	return nil
 }
