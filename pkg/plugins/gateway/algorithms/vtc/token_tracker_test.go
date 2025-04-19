@@ -59,7 +59,7 @@ func TestSlidingWindowTokenTracker_GetTokenCount(t *testing.T) {
 func TestSlidingWindowTokenTracker_WindowBehavior(t *testing.T) {
 	config := DefaultVTCConfig()
 	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds)) // 100ms window
-	implTracker := tracker.(*InMemorySlidingWindowTokenTracker) // Type assertion
+	implTracker := tracker.(*InMemorySlidingWindowTokenTracker)                                               // Type assertion
 	ctx := context.Background()
 
 	// Initial count
@@ -168,13 +168,13 @@ func TestSlidingWindowTokenTracker_UpdateTokenCount_WithCustomWeights(t *testing
 
 func TestTokenTrackerInterface(t *testing.T) {
 	config := DefaultVTCConfig()
-	
+
 	var tracker TokenTracker = NewInMemorySlidingWindowTokenTracker(&config)
-	
+
 	ctx := context.Background()
 	_, err := tracker.GetTokenCount(ctx, "user")
 	assert.NoError(t, err)
-	
+
 	err = tracker.UpdateTokenCount(ctx, "user", 10, 20)
 	assert.NoError(t, err)
 }

@@ -46,8 +46,8 @@ var redisClient *redis.Client
 
 // Global variables for test state
 var (
-	availablePods []string
-	tokenTracker  vtc.TokenTracker
+	availablePods  []string
+	tokenTracker   vtc.TokenTracker
 	tokenEstimator vtc.TokenEstimator
 )
 
@@ -69,7 +69,7 @@ func setupVTCUsers(t *testing.T) {
 		vtc.WithWindowSize(100),
 		vtc.WithTimeUnit(vtc.Milliseconds),
 	)
-	
+
 	tokenEstimator = vtc.NewSimpleTokenEstimator()
 
 	getAvailablePods(t)

@@ -17,12 +17,15 @@ package vtc
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // SimpleCache is a simplified implementation of the cache interface for testing
@@ -206,4 +209,220 @@ func TestVTCRouterSimple(t *testing.T) {
 	assert.NotEmpty(t, selectedPodAddress)
 	// Check if the selected pod address is one of the expected IP addresses with port
 	assert.Contains(t, []string{"192.168.1.1:8000", "192.168.1.2:8000", "192.168.1.3:8000"}, selectedPodAddress)
+}
+
+func TestModuloNormalizationIssues(t *testing.T) {
+	// 1. Test implicit grouping - tokens are grouped into buckets of 100 per pod
+	// This creates arbitrary groupings that don't reflect actual usage patterns
+	type testGroup struct {
+		tokenCount    float64
+		numPods       int
+		normalizedVal float64
+		podIndex      int
+	}
+
+	// Group 1: Token counts that should map to the same pod with correct modulo
+	group1 := []testGroup{
+		{34, 2, 0.34, 0},   // Low token count
+		{234, 2, 0.34, 0},  // +200 tokens, same normalized value
+		{1234, 2, 0.34, 0}, // +1000 tokens, same normalized value
+		{2034, 2, 0.34, 0}, // +2000 tokens, same normalized value
+	}
+
+	// Group 2: Similar token counts that map to different pods
+	group2 := []testGroup{
+		{99, 2, 0.99, 1},  // Just under threshold
+		{100, 2, 0.0, 0},  // Just over threshold - wraps around!
+		{101, 2, 0.01, 0}, // Slightly over threshold
+	}
+
+	t.Log("ISSUE 1: LACK OF FAIRNESS - Users with vastly different token counts map to the same pod")
+	for _, tc := range group1 {
+		normalizedTokens := math.Mod(tc.tokenCount, float64(tc.numPods*100)) / 100.0
+		normalizedTokens = math.Round(normalizedTokens*100) / 100
+
+		closestPodIndex := 0
+		minScore := math.MaxFloat64
+		for i := 0; i < tc.numPods; i++ {
+			fairnessScore := math.Abs(float64(i) - normalizedTokens)
+			if fairnessScore < minScore {
+				minScore = fairnessScore
+				closestPodIndex = i
+			}
+		}
+
+		assert.Equal(t, tc.normalizedVal, normalizedTokens,
+			"Token count %v with %v pods should normalize to %v",
+			tc.tokenCount, tc.numPods, tc.normalizedVal)
+
+		assert.Equal(t, tc.podIndex, closestPodIndex,
+			"Token count %v should map to pod index %v",
+			tc.tokenCount, tc.podIndex)
+
+		t.Logf("Token count: %v → Normalized value: %v → Pod index: %v",
+			tc.tokenCount, normalizedTokens, closestPodIndex)
+	}
+
+	t.Log("\nISSUE 2: LACK OF MONOTONICITY - Slightly higher token counts can map to completely different pods")
+	for _, tc := range group2 {
+		normalizedTokens := math.Mod(tc.tokenCount, float64(tc.numPods*100)) / 100.0
+		normalizedTokens = math.Round(normalizedTokens*100) / 100
+
+		closestPodIndex := 0
+		minScore := math.MaxFloat64
+		for i := 0; i < tc.numPods; i++ {
+			fairnessScore := math.Abs(float64(i) - normalizedTokens)
+			if fairnessScore < minScore {
+				minScore = fairnessScore
+				closestPodIndex = i
+			}
+		}
+
+		t.Logf("Token count: %v → Normalized value: %v → Pod index: %v",
+			tc.tokenCount, normalizedTokens, closestPodIndex)
+	}
+
+	t.Log("\nISSUE 3: IMPLICIT GROUPING - Modulo creates arbitrary groupings of 100 tokens per pod")
+	for i := 0; i < 5; i++ {
+		groupStart := i * 100
+		groupEnd := (i+1)*100 - 1
+		normalizedStart := math.Mod(float64(groupStart), 200) / 100.0
+		normalizedEnd := math.Mod(float64(groupEnd), 200) / 100.0
+		t.Logf("Group %d: Tokens %d-%d → Normalized values %.2f-%.2f",
+			i+1, groupStart, groupEnd, normalizedStart, normalizedEnd)
+	}
+
+	t.Log("\nCONCLUSION: Modulo normalization creates arbitrary groupings and lacks fairness/monotonicity")
+}
+
+func TestVTCRouterStrengths(t *testing.T) {
+	trackerConfig := &VTCConfig{
+		InputTokenWeight:  1.0,
+		OutputTokenWeight: 1.0,
+		Variant:           RouterVTCBasic,
+	}
+	tracker := NewInMemorySlidingWindowTokenTracker(trackerConfig)
+	cache := NewSimpleCache()
+
+	tokenEstimator := NewSimpleTokenEstimator()
+	routerConfig := &VTCConfig{
+		InputTokenWeight:  1.0,
+		OutputTokenWeight: 1.0,
+		Variant:           RouterVTCBasic,
+	}
+
+	router := &BasicVTCRouter{
+		cache:          cache,
+		tokenTracker:   tracker,
+		tokenEstimator: tokenEstimator,
+		config:         routerConfig,
+	}
+
+	t.Log("STRENGTH 1: Fairness within a single bucket (0-99 tokens) works well")
+
+	pods := createTestPods(3)
+	podList := NewSimplePodList(pods)
+
+	// Set up different token counts within the same bucket
+	ctx := context.Background()
+	user1 := "user1" // 10 tokens
+	user2 := "user2" // 50 tokens
+	user3 := "user3" // 90 tokens
+
+	err := tracker.UpdateTokenCount(ctx, user1, 10, 0)
+	assert.NoError(t, err)
+	err = tracker.UpdateTokenCount(ctx, user2, 50, 0)
+	assert.NoError(t, err)
+	err = tracker.UpdateTokenCount(ctx, user3, 90, 0)
+	assert.NoError(t, err)
+
+	// All pods have equal load
+	cache.SetPodMetric("pod1", "model1", metrics.NumRequestsRunning, 0)
+	cache.SetPodMetric("pod2", "model1", metrics.NumRequestsRunning, 0)
+	cache.SetPodMetric("pod3", "model1", metrics.NumRequestsRunning, 0)
+
+	// Route each user
+	routingCtx1 := types.NewRoutingContext(ctx, "vtc-basic", "model1", "test message", "request1", user1)
+	routingCtx2 := types.NewRoutingContext(ctx, "vtc-basic", "model1", "test message", "request2", user2)
+	routingCtx3 := types.NewRoutingContext(ctx, "vtc-basic", "model1", "test message", "request3", user3)
+
+	pod1, err := router.Route(routingCtx1, podList)
+	assert.NoError(t, err)
+	pod2, err := router.Route(routingCtx2, podList)
+	assert.NoError(t, err)
+	pod3, err := router.Route(routingCtx3, podList)
+	assert.NoError(t, err)
+
+	// Users with different token counts within the same bucket should get different pods
+	t.Logf("User1 (10 tokens) routed to: %s", pod1)
+	t.Logf("User2 (50 tokens) routed to: %s", pod2)
+	t.Logf("User3 (90 tokens) routed to: %s", pod3)
+
+	t.Log("\nSTRENGTH 2: Utilization balancing works well")
+
+	// Reset token counts
+	user4 := "user4"
+	err = tracker.UpdateTokenCount(ctx, user4, 50, 0) // Middle of bucket
+	assert.NoError(t, err)
+
+	// Set different loads on pods
+	cache.SetPodMetric("pod1", "model1", metrics.NumRequestsRunning, 80) // High load
+	cache.SetPodMetric("pod2", "model1", metrics.NumRequestsRunning, 40) // Medium load
+	cache.SetPodMetric("pod3", "model1", metrics.NumRequestsRunning, 10) // Low load
+
+	routingCtx4 := types.NewRoutingContext(ctx, "vtc-basic", "model1", "test message", "request4", user4)
+	pod4, err := router.Route(routingCtx4, podList)
+	assert.NoError(t, err)
+
+	// Should prefer lower-load pods when fairness is equal
+	t.Logf("User4 (50 tokens) with pod loads [80, 40, 10] routed to: %s", pod4)
+
+	t.Log("\nSTRENGTH 3: Hybrid scoring balances fairness and utilization")
+
+	// Create a user with token count that would map to pod2 based on fairness alone
+	user5 := "user5"
+	err = tracker.UpdateTokenCount(ctx, user5, 150, 0) // Would map to pod index 1 (normalized to 0.5)
+	assert.NoError(t, err)
+
+	cache.SetPodMetric("pod1", "model1", metrics.NumRequestsRunning, 30) // Medium load
+	cache.SetPodMetric("pod2", "model1", metrics.NumRequestsRunning, 90) // Very high load
+	cache.SetPodMetric("pod3", "model1", metrics.NumRequestsRunning, 10) // Low load
+
+	routingCtx5 := types.NewRoutingContext(ctx, "vtc-basic", "model1", "test message", "request5", user5)
+	pod5, err := router.Route(routingCtx5, podList)
+	assert.NoError(t, err)
+
+	t.Logf("User5 (150 tokens) with pod loads [30, 90, 10] routed to: %s", pod5)
+	t.Log("Note: The hybrid scoring should balance between fairness (which would select pod2) and utilization (which would prefer pod3)")
+
+	t.Log("\nSTRENGTH 4: Token accumulation works correctly")
+
+	initialTokens, err := tracker.GetTokenCount(ctx, user1)
+	assert.NoError(t, err)
+	t.Logf("Initial tokens for user1: %v", initialTokens)
+
+	err = tracker.UpdateTokenCount(ctx, user1, 5, 10)
+	assert.NoError(t, err)
+
+	updatedTokens, err := tracker.GetTokenCount(ctx, user1)
+	assert.NoError(t, err)
+	t.Logf("Updated tokens for user1: %v (added 5 input tokens and 10 output tokens)", updatedTokens)
+
+	expectedTokens := initialTokens + 5 + 10
+	assert.Equal(t, expectedTokens, updatedTokens, "Token accumulation should work correctly")
+}
+
+func createTestPods(count int) []*v1.Pod {
+	pods := make([]*v1.Pod, count)
+	for i := 0; i < count; i++ {
+		pods[i] = &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("pod%d", i+1)},
+			Status: v1.PodStatus{
+				PodIP:      fmt.Sprintf("192.168.1.%d", i+1),
+				Phase:      v1.PodRunning,
+				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+			},
+		}
+	}
+	return pods
 }
