@@ -137,7 +137,7 @@ jobs:
 
       - name: Check pod status
         run: |
-          sleep 10s
+          sleep 30s
           kubectl get pods --all-namespaces
           kubectl wait pod --all --for=condition=ready --all-namespaces --timeout=300s
 
