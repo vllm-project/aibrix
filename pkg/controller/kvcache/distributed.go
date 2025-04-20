@@ -19,6 +19,8 @@ package kvcache
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -29,6 +31,24 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
+
+const (
+	defaultRDMAPort         = 18512
+	defaultAdminPort        = 9100
+	defaultBlockSizeInBytes = 4096
+	defaultBlockCount       = 1048576
+	defaultTotalSlots       = 4096
+	defaultVirtualNodeCount = 100
+)
+
+type ClusterParams struct {
+	RdmaPort         int
+	AdminPort        int
+	BlockSizeInBytes int
+	BlockCount       int
+	TotalSlots       int
+	VirtualNodeCount int
+}
 
 func (r *KVCacheReconciler) reconcileDistributedMode(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) (ctrl.Result, error) {
 	err := r.reconcileMetadataService(ctx, kvCache)
@@ -57,6 +77,8 @@ func (r *KVCacheReconciler) reconcileDistributedMode(ctx context.Context, kvCach
 }
 
 func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
+	params := getKVCacheParams(kvCache.GetAnnotations())
+
 	envs := []corev1.EnvVar{
 		{
 			Name:  "REDIS_ADDR",
@@ -71,7 +93,7 @@ func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod 
 			Value: "0",
 		},
 		{
-			Name: "WATCH_NAMESPACE",
+			Name: "WATCH_KVCACHE_NAMESPACE",
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{
 					FieldPath: "metadata.namespace",
@@ -79,8 +101,20 @@ func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod 
 			},
 		},
 		{
-			Name:  "WATCH_KV_CLUSTER",
+			Name:  "WATCH_KVCACHE_CLUSTER",
 			Value: kvCache.Name,
+		},
+		{
+			Name:  "AIBRIX_KVCACHE_RDMA_PORT",
+			Value: strconv.Itoa(params.RdmaPort),
+		},
+		{
+			Name:  "AIBRIX_KVCACHE_TOTAL_SLOTS",
+			Value: strconv.Itoa(params.TotalSlots),
+		},
+		{
+			Name:  "AIBRIX_KVCACHE_VIRTUAL_NODE_COUNT",
+			Value: strconv.Itoa(params.VirtualNodeCount),
 		},
 	}
 
@@ -215,10 +249,15 @@ func buildRedisPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
 }
 
 func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.StatefulSet {
-	envs := []corev1.EnvVar{
-		{Name: "AIBRIX_KVCACHE_UID", Value: string(kvCache.ObjectMeta.UID)},
+	params := getKVCacheParams(kvCache.GetAnnotations())
+
+	metadataEnvVars := []corev1.EnvVar{
+		{Name: "AIBRIX_KVCACHE_UID", Value: string(kvCache.UID)},
 		{Name: "AIBRIX_KVCACHE_NAME", Value: kvCache.Name},
 		{Name: "AIBRIX_KVCACHE_SERVER_NAMESPACE", Value: kvCache.Namespace},
+	}
+
+	fieldRefEnvVars := []corev1.EnvVar{
 		{Name: "MY_HOST_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}}},
 		{Name: "MY_NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}},
 		{Name: "MY_POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
@@ -226,6 +265,26 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 		{Name: "MY_POD_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}}},
 		{Name: "MY_UID", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"}}},
 	}
+
+	kvCacheServerEnvVars := []corev1.EnvVar{
+		{Name: "AIBRIX_KVCACHE_RDMA_PORT", Value: strconv.Itoa(params.RdmaPort)},
+		{Name: "AIBRIX_KVCACHE_ADMIN_PORT", Value: strconv.Itoa(params.AdminPort)},
+		{Name: "AIBRIX_KVCACHE_BLOCK_SIZE_IN_BYTES", Value: strconv.Itoa(params.BlockSizeInBytes)},
+		{Name: "AIBRIX_KVCACHE_BLOCK_COUNT", Value: strconv.Itoa(params.BlockCount)},
+	}
+
+	envs := append(metadataEnvVars, fieldRefEnvVars...)
+	envs = append(envs, kvCacheServerEnvVars...)
+
+	kvCacheServerArgs := []string{
+		"-a", "$AIBRIX_KVCACHE_RDMA_IP",
+		"-p", "$AIBRIX_KVCACHE_RDMA_PORT",
+		"-v", "$AIBRIX_KVCACHE_BLOCK_SIZE_IN_BYTES",
+		"-b", "$AIBRIX_KVCACHE_BLOCK_COUNT",
+		"--acl", "any",
+	}
+	kvCacheServerArgsStr := strings.Join(kvCacheServerArgs, " ")
+	//privileged := true
 
 	ss := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -255,24 +314,32 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 					},
 				},
 				Spec: corev1.PodSpec{
+					HostNetwork: true,
+					HostIPC:     true,
 					Containers: []corev1.Container{
 						{
-							Name:  "kvcache",
+							Name:  "kvcache-server",
 							Image: kvCache.Spec.Cache.Image,
-							Ports: []corev1.ContainerPort{
-								{Name: "service", ContainerPort: 9600, Protocol: corev1.ProtocolTCP},
-							},
+							//Ports: []corev1.ContainerPort{
+							//	{Name: "service", ContainerPort: 9600, Protocol: corev1.ProtocolTCP},
+							//},
 							Command: []string{
 								"/bin/bash",
 								"-c",
-								//fmt.Sprintf(`xxx %s `, kvCache.Name),
-								"redis-server",
+								// Support two modes:
+								// option 1: read from host addr
+								// option 2: read from annotations, allocated RDMA network card (TODO://)
+								fmt.Sprintf(strings.TrimSpace(`
+									AIBRIX_KVCACHE_RDMA_IP=$(ip addr show dev eth1 | grep 'inet ' | awk '{print $2}' | awk -F/ '{print $1}')
+									echo "Binding to RDMA IP: $AIBRIX_KVCACHE_RDMA_IP"
+									./hpkv-server %s`), kvCacheServerArgsStr),
 							},
 							Env: append(envs, kvCache.Spec.Cache.Env...),
 							Resources: corev1.ResourceRequirements{
 								Limits: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse(kvCache.Spec.Cache.CPU),
 									corev1.ResourceMemory: resource.MustParse(kvCache.Spec.Cache.Memory),
+									// TODO: add rdma device resource
 								},
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse(kvCache.Spec.Cache.CPU),
@@ -280,6 +347,16 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 								},
 							},
 							ImagePullPolicy: corev1.PullPolicy(kvCache.Spec.Cache.ImagePullPolicy),
+							SecurityContext: &corev1.SecurityContext{
+								// required to use RDMA
+								Capabilities: &corev1.Capabilities{
+									Add: []corev1.Capability{
+										"IPC_LOCK",
+									},
+								},
+								// if IPC_LOCK doesn't work, then we can consider privileged
+								// Privileged: &privileged,
+							},
 						},
 					},
 				},
@@ -316,4 +393,35 @@ func buildHeadlessService(kvCache *orchestrationv1alpha1.KVCache) *corev1.Servic
 		},
 	}
 	return service
+}
+
+func getKVCacheParams(annotations map[string]string) *ClusterParams {
+	return &ClusterParams{
+		RdmaPort:         getPortAnnotation(annotations, KVCacheAnnotationRDMAPort, defaultRDMAPort),
+		AdminPort:        getPortAnnotation(annotations, KVCacheAnnotationAdminPort, defaultAdminPort),
+		BlockSizeInBytes: getPositiveIntAnnotation(annotations, KVCacheAnnotationBlockSize, defaultBlockSizeInBytes),
+		BlockCount:       getPositiveIntAnnotation(annotations, KVCacheAnnotationBlockCount, defaultBlockCount),
+		TotalSlots:       getPositiveIntAnnotation(annotations, KVCacheAnnotationTotalSlots, defaultTotalSlots),
+		VirtualNodeCount: getPositiveIntAnnotation(annotations, KVCacheAnnotationVirtualNodeCount, defaultVirtualNodeCount),
+	}
+}
+
+func getPortAnnotation(annotations map[string]string, key string, defaultValue int) int {
+	if val, ok := annotations[key]; ok {
+		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 && parsed <= 65535 {
+			return parsed
+		}
+		klog.Warningf("Invalid port for annotation %s: %s, using default %d", key, val, defaultValue)
+	}
+	return defaultValue
+}
+
+func getPositiveIntAnnotation(annotations map[string]string, key string, defaultValue int) int {
+	if val, ok := annotations[key]; ok {
+		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
+			return parsed
+		}
+		klog.Warningf("Invalid integer for annotation %s: %s, using default %d", key, val, defaultValue)
+	}
+	return defaultValue
 }
