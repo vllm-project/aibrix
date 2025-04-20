@@ -18,7 +18,6 @@ package e2e
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 	"testing"
@@ -147,7 +146,7 @@ func validateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expecte
 		podlist, err := client.CoreV1().Pods("default").List(context.Background(), v1.ListOptions{})
 		if err == nil && expectedPodCount == len(utils.FilterActivePods(podlist.Items)) {
 			allPodsReady = true
-			fmt.Println("all pods are ready", len(utils.FilterActivePods(podlist.Items)))
+			t.Log("all pods are ready", len(utils.FilterActivePods(podlist.Items)))
 			break
 		}
 		time.Sleep(1 * time.Second)
