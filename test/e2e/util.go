@@ -143,9 +143,9 @@ func validateInferenceWithClient(t *testing.T, client *openai.Client, modelName 
 
 func validateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expectedPodCount int) {
 	allPodsReady := false
-	for i := 0; i < 3; i++ {
+	for i := 0; i <= 3; i++ {
 		podlist, err := client.CoreV1().Pods("default").List(context.Background(), v1.ListOptions{})
-		if err != nil && expectedPodCount == len(utils.FilterActivePods(podlist.Items)) {
+		if err == nil && expectedPodCount == len(utils.FilterActivePods(podlist.Items)) {
 			allPodsReady = true
 			fmt.Println("all pods are ready", len(utils.FilterActivePods(podlist.Items)))
 			break
