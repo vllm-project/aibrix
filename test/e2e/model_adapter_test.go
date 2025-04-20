@@ -49,7 +49,7 @@ func TestModelAdapter(t *testing.T) {
 				}
 				return false, nil
 			}))
-
+		validateAllPodsAreReady(t, k8sClient, 3)
 	})
 
 	// create model adapter
