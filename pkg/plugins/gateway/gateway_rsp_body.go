@@ -140,7 +140,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 		completionTokens = usage.CompletionTokens
 		// Count token per user.
 		if user.Name != "" {
-			tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user), res.Usage.TotalTokens)
+			tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), res.Usage.TotalTokens)
 			if err != nil {
 				return generateErrorResponse(
 					envoyTypePb.StatusCode_InternalServerError,
