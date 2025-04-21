@@ -79,7 +79,7 @@ func (r *KVCacheReconciler) reconcileDistributedMode(ctx context.Context, kvCach
 
 func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
 	params := getKVCacheParams(kvCache.GetAnnotations())
-	kvCacheWatcherPodImage := ""
+	kvCacheWatcherPodImage := "aibrix/kvcache-watcher:nightly"
 	if params.ContainerRegistry != "" {
 		kvCacheWatcherPodImage = fmt.Sprintf("%s/%s", params.ContainerRegistry, kvCacheWatcherPodImage)
 	}
@@ -290,7 +290,7 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 		"--acl", "any",
 	}
 	kvCacheServerArgsStr := strings.Join(kvCacheServerArgs, " ")
-	//privileged := true
+	privileged := true
 
 	ss := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -318,10 +318,21 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 						KVCacheLabelKeyIdentifier: kvCache.Name,
 						KVCacheLabelKeyRole:       KVCacheLabelValueRoleCache,
 					},
+					Annotations: map[string]string{
+						"k8s.volcengine.com/pod-networks": `
+[
+  {
+    "cniConf": {
+      "name": "rdma"
+    }
+  }
+]
+`,
+					},
 				},
 				Spec: corev1.PodSpec{
-					HostNetwork: true,
-					HostIPC:     true,
+					//HostNetwork: true, // CNI doesn't need hostNetwork:true. in that case, RDMA ip won't be injected.
+					HostIPC: true,
 					Containers: []corev1.Container{
 						{
 							Name:  "kvcache-server",
@@ -343,9 +354,9 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 							Env: append(envs, kvCache.Spec.Cache.Env...),
 							Resources: corev1.ResourceRequirements{
 								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse(kvCache.Spec.Cache.CPU),
-									corev1.ResourceMemory: resource.MustParse(kvCache.Spec.Cache.Memory),
-									// TODO: add rdma device resource
+									corev1.ResourceCPU:                             resource.MustParse(kvCache.Spec.Cache.CPU),
+									corev1.ResourceMemory:                          resource.MustParse(kvCache.Spec.Cache.Memory),
+									corev1.ResourceName("vke.volcengine.com/rdma"): resource.MustParse("1"),
 								},
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse(kvCache.Spec.Cache.CPU),
@@ -361,7 +372,23 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 									},
 								},
 								// if IPC_LOCK doesn't work, then we can consider privileged
-								// Privileged: &privileged,
+								Privileged: &privileged,
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "shared-mem",
+									MountPath: "/dev/shm",
+								},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "shared-mem",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{
+									Medium: corev1.StorageMediumMemory,
+								},
 							},
 						},
 					},

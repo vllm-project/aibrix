@@ -422,7 +422,7 @@ func getRDMAIPFromExec(ctx context.Context, pod *corev1.Pod, ifName string) (str
 		Namespace(pod.Namespace).
 		Name(pod.Name).
 		SubResource("exec").
-		Param("container", "kvcache-server"). // 指定容器名称
+		Param("container", "kvcache-server").
 		Param("stdin", "false").
 		Param("stdout", "true").
 		Param("stderr", "true").
