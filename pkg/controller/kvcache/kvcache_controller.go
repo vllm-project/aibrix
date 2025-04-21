@@ -53,7 +53,8 @@ const (
 	KVCacheAnnotationPodAntiAffinity = "kvcache.orchestration.aibrix.ai/pod-anti-affinity"
 
 	// Vineyard, HPKV, InfiniStore
-	KVCacheAnnotationMode = "kvcache.orchestration.aibrix.ai/mode"
+	KVCacheAnnotationMode              = "kvcache.orchestration.aibrix.ai/mode"
+	KVCacheAnnotationContainerRegistry = "kvcache.orchestration.aibrix.ai/container-registry"
 
 	KVCacheAnnotationRDMAPort         = "hpkv.kvcache.orchestration.aibrix.ai/rdma-port"
 	KVCacheAnnotationAdminPort        = "hpkv.kvcache.orchestration.aibrix.ai/admin-port"

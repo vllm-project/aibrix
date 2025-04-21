@@ -42,12 +42,13 @@ const (
 )
 
 type ClusterParams struct {
-	RdmaPort         int
-	AdminPort        int
-	BlockSizeInBytes int
-	BlockCount       int
-	TotalSlots       int
-	VirtualNodeCount int
+	RdmaPort          int
+	AdminPort         int
+	BlockSizeInBytes  int
+	BlockCount        int
+	TotalSlots        int
+	VirtualNodeCount  int
+	ContainerRegistry string
 }
 
 func (r *KVCacheReconciler) reconcileDistributedMode(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) (ctrl.Result, error) {
@@ -78,6 +79,10 @@ func (r *KVCacheReconciler) reconcileDistributedMode(ctx context.Context, kvCach
 
 func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
 	params := getKVCacheParams(kvCache.GetAnnotations())
+	kvCacheWatcherPodImage := ""
+	if params.ContainerRegistry != "" {
+		kvCacheWatcherPodImage = fmt.Sprintf("%s/%s", params.ContainerRegistry, kvCacheWatcherPodImage)
+	}
 
 	envs := []corev1.EnvVar{
 		{
@@ -134,12 +139,13 @@ func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod 
 			Containers: []corev1.Container{
 				{
 					Name:  "kvcache-watcher",
-					Image: "aibrix/kvcache-watcher:nightly",
+					Image: kvCacheWatcherPodImage,
 					Command: []string{
 						"/kvcache-watcher",
 					},
 					// You can also add volumeMounts, env vars, etc. if needed.
-					Env: envs,
+					Env:             envs,
+					ImagePullPolicy: corev1.PullAlways,
 				},
 			},
 			ServiceAccountName: "kvcache-watcher-sa",
@@ -397,13 +403,22 @@ func buildHeadlessService(kvCache *orchestrationv1alpha1.KVCache) *corev1.Servic
 
 func getKVCacheParams(annotations map[string]string) *ClusterParams {
 	return &ClusterParams{
-		RdmaPort:         getPortAnnotation(annotations, KVCacheAnnotationRDMAPort, defaultRDMAPort),
-		AdminPort:        getPortAnnotation(annotations, KVCacheAnnotationAdminPort, defaultAdminPort),
-		BlockSizeInBytes: getPositiveIntAnnotation(annotations, KVCacheAnnotationBlockSize, defaultBlockSizeInBytes),
-		BlockCount:       getPositiveIntAnnotation(annotations, KVCacheAnnotationBlockCount, defaultBlockCount),
-		TotalSlots:       getPositiveIntAnnotation(annotations, KVCacheAnnotationTotalSlots, defaultTotalSlots),
-		VirtualNodeCount: getPositiveIntAnnotation(annotations, KVCacheAnnotationVirtualNodeCount, defaultVirtualNodeCount),
+		RdmaPort:          getPortAnnotation(annotations, KVCacheAnnotationRDMAPort, defaultRDMAPort),
+		AdminPort:         getPortAnnotation(annotations, KVCacheAnnotationAdminPort, defaultAdminPort),
+		BlockSizeInBytes:  getPositiveIntAnnotation(annotations, KVCacheAnnotationBlockSize, defaultBlockSizeInBytes),
+		BlockCount:        getPositiveIntAnnotation(annotations, KVCacheAnnotationBlockCount, defaultBlockCount),
+		TotalSlots:        getPositiveIntAnnotation(annotations, KVCacheAnnotationTotalSlots, defaultTotalSlots),
+		VirtualNodeCount:  getPositiveIntAnnotation(annotations, KVCacheAnnotationVirtualNodeCount, defaultVirtualNodeCount),
+		ContainerRegistry: getStringAnnotation(annotations, KVCacheAnnotationContainerRegistry, ""),
 	}
+}
+
+func getStringAnnotation(annotations map[string]string, key string, defaultValue string) string {
+	if val, ok := annotations[key]; ok && val != "" {
+		return val
+	}
+	klog.Infof("Annotation %s not set or empty, using default: %s", key, defaultValue)
+	return defaultValue
 }
 
 func getPortAnnotation(annotations map[string]string, key string, defaultValue int) int {
