@@ -81,8 +81,8 @@ type NodeInfo struct {
 }
 
 type ClusterNodes struct {
-	Nodes []NodeInfo `json:"nodes"`
-	//Version int64      `json:"version"`
+	Nodes   []NodeInfo `json:"nodes"`
+	Version int64      `json:"version"`
 }
 
 type hasher struct{}
@@ -303,18 +303,17 @@ func syncPods(ctx context.Context, rdb *redis.Client, informer cache.SharedIndex
 
 	needUpdate := !isNodeListEqual(currentNodes, existingClusterNodes.Nodes)
 	if !needUpdate {
-		klog.Infof("Node list unchanged, skipping update")
-		//klog.Infof("Node list unchanged, skipping update, current version: %d", existingClusterNodes.Version)
+		klog.Infof("Node list unchanged, skipping update, current version: %d", existingClusterNodes.Version)
 	}
 
-	//newVersion := int64(1)
-	//if val != "" {
-	//	newVersion = existingClusterNodes.Version + 1
-	//}
+	newVersion := int64(1)
+	if val != "" {
+		newVersion = existingClusterNodes.Version + 1
+	}
 
 	newData := ClusterNodes{
-		Nodes: currentNodes,
-		//Version: newVersion,
+		Nodes:   currentNodes,
+		Version: newVersion,
 	}
 
 	jsonData, err := json.Marshal(newData)
@@ -329,8 +328,7 @@ func syncPods(ctx context.Context, rdb *redis.Client, informer cache.SharedIndex
 		return fmt.Errorf("redis transaction failed: %v", err)
 	}
 
-	//klog.InfoS("Successfully updated cluster nodes", "version", newVersion, "nodeCount", len(currentNodes))
-	klog.InfoS("Successfully updated cluster nodes", "nodeCount", len(currentNodes))
+	klog.InfoS("Successfully updated cluster nodes", "version", newVersion, "nodeCount", len(currentNodes))
 	return nil
 }
 
@@ -381,6 +379,7 @@ func GetRDMAIP(ctx context.Context, pod *corev1.Pod) (string, error) {
 	if ip, ok := getRDMAIPFromAnnotation(pod, ifName); ok {
 		return ip, nil
 	}
+
 	return getRDMAIPFromExec(ctx, pod, ifName)
 }
 
