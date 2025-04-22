@@ -25,15 +25,17 @@ import (
 )
 
 var (
-	redis_host = LoadEnv("REDIS_HOST", "localhost")
-	redis_port = LoadEnv("REDIS_PORT", "6379")
+	redis_host     = LoadEnv("REDIS_HOST", "localhost")
+	redis_port     = LoadEnv("REDIS_PORT", "6379")
+	redis_password = LoadEnv("REDIS_PASSWORD", "")
 )
 
 func GetRedisClient() *redis.Client {
 	// Connect to Redis
 	client := redis.NewClient(&redis.Options{
-		Addr: redis_host + ":" + redis_port,
-		DB:   0, // Default DB
+		Addr:     redis_host + ":" + redis_port,
+		DB:       0, // Default DB
+		Password: redis_password,
 	})
 	pong, err := client.Ping(context.Background()).Result()
 	if err != nil {
