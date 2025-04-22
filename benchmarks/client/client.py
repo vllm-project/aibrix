@@ -23,17 +23,34 @@ def worker(thread_idx, task_queue, client, model, max_output, send_request_func,
     """Worker function to run an asyncio event loop in a separate thread."""
     asyncio.set_event_loop(asyncio.new_event_loop())
     loop = asyncio.get_event_loop()
+
+    async def handle_task(task_args):
+        task = asyncio.create_task(send_request_func(client, model, max_output, *task_args))
+        await task
+
     while True:
         logging.debug(f"Worker {thread_idx} waiting for task...")
-        task = task_queue.get()
+        task_args = task_queue.get()
         logging.debug(f"Worker {thread_idx} receive task...")
-        if task is None:  # Stop signal
+        if task_args is None:
             logging.warning(f"Worker {thread_idx} exit.")
             break
-        else:
-            loop.run_until_complete(send_request_func(client, model, max_output, *task))
+
+        loop.run_until_complete(handle_task(task_args))
         task_queue.task_done()
 
+# def worker(thread_idx, task_queue, client, model, send_request_func, output_file):
+#     """Worker function to run an asyncio event loop in a separate thread."""
+#     asyncio.set_event_loop(asyncio.new_event_loop())
+#     loop = asyncio.get_event_loop()
+#     while True:
+#         task = task_queue.get()
+#         if task is None:  # Stop signal
+#             logging.warn(f"Worker {thread_idx} exit.")
+#             break
+#         else:
+#             loop.run_until_complete(send_request_func(client, model, *task))
+#         task_queue.task_done()
 
 def start_worker_threads(thread_idx, task_queue, client, model, max_output, send_request_func, output_file):
     """Start multiple threads, each running an event loop for handling tasks."""
@@ -207,6 +224,72 @@ async def benchmark_streaming(api_key: str,
         logging.warning(f"Worker thread {thread} completed ...")
     logging.warning(f"All {num_requests} requests completed for deployment.")
 
+
+# Asynchronous request handler
+async def send_request_batch_launch(client: openai.AsyncOpenAI,
+                             model: str,
+                             prompt: str,
+                             output_file: str,
+                             request_id: int,
+                             session_id: str, 
+                             target_time: int,
+                             ):
+    start_time = asyncio.get_event_loop().time()
+    cur_time = time.time()
+    logging.warning(f"send_request_batch: Prepare to launch task after {target_time - cur_time}")
+    if target_time > cur_time:
+        await asyncio.sleep(target_time - cur_time)
+    current = time.time()
+    print(f"Request {request_id}: Sending session {session_id} request at time {current} with target time {target_time} diff {current - target_time}")
+    coroutine = client.chat.completions.create(
+        model=model,
+        messages=prompt,
+        temperature=0,
+        max_tokens=2048
+    )
+    task = asyncio.create_task(coroutine)
+    task.add_done_callback(lambda fut: send_request_batch_callback(fut.result(), prompt, output_file, request_id, session_id, target_time, start_time))
+    return task
+    
+def send_request_batch_callback(response, prompt, output_file, request_id, session_id, target_time, start_time):
+    target_pod = ""
+    if hasattr(response, 'response') and hasattr(response.response, 'headers'):
+            target_pod = response.response.headers.get('target-pod')
+    response_time = time.time()
+    latency = response_time - start_time
+    prompt_tokens = response.usage.prompt_tokens
+    output_tokens = response.usage.completion_tokens
+    total_tokens = response.usage.total_tokens
+    throughput = output_tokens / latency
+    output_text = response.choices[0].message.content
+
+    if session_id is not None:
+        update_response(response = output_text, lock = lock, session_id = session_id, history = session_history)
+    
+    result = {
+        "request_id": request_id,
+        "status": "success",
+        "input": "prompt",
+        "output": output_text,
+        "prompt_tokens": prompt_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "latency": latency,
+        "throughput": throughput,
+        "start_time": 0,
+        "end_time": response_time,
+        "ttft": None,
+        "tpot": None,
+        "target_pod": target_pod,
+        "session_id": session_id,
+    }
+    logging.info(result)
+    # Write result to JSONL file
+    output_file.write(json.dumps(result) + "\n")
+    output_file.flush()  # Ensure data is written immediately to the file
+    return result
+
+   
 # Asynchronous request handler
 async def send_request_batch(client: openai.AsyncOpenAI,
                              model: str,
@@ -315,7 +398,7 @@ async def benchmark_batch(api_key: str,
     
     for thread_idx in range(0, thread_pool_size):
         client = create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
-        threads.append(start_worker_threads(thread_idx, task_queues[thread_idx], client, model, max_output, send_request_batch, output_file))
+        threads.append(start_worker_threads(thread_idx, task_queues[thread_idx], client, model, max_output, send_request_batch_launch, output_file))
     for requests_dict in load_struct:
         ts = int(requests_dict["timestamp"] * scale_factor)
         requests = requests_dict["requests"]
