@@ -81,8 +81,8 @@ type NodeInfo struct {
 }
 
 type ClusterNodes struct {
-	Nodes   []NodeInfo `json:"nodes"`
-	Version int64      `json:"version"`
+	Nodes []NodeInfo `json:"nodes"`
+	//Version int64      `json:"version"`
 }
 
 type hasher struct{}
@@ -293,27 +293,28 @@ func syncPods(ctx context.Context, rdb *redis.Client, informer cache.SharedIndex
 	}
 
 	// get existing nodes
-	val, err := rdb.Get(ctx, "kvcache_nodes").Result()
+	val, err := rdb.Get(ctx, RedisNodeMemberKey).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return fmt.Errorf("failed to get existing data from redis %v", err)
 	}
 	existingClusterNodes := ClusterNodes{}
 	_ = json.Unmarshal([]byte(val), &existingClusterNodes)
-	klog.Infof("redis get result: %s", val)
+	klog.Infof("redis get result: key %s, value %s", RedisNodeMemberKey, val)
 
 	needUpdate := !isNodeListEqual(currentNodes, existingClusterNodes.Nodes)
 	if !needUpdate {
-		klog.Infof("Node list unchanged, skipping update, current version: %d", existingClusterNodes.Version)
+		klog.Infof("Node list unchanged, skipping update")
+		//klog.Infof("Node list unchanged, skipping update, current version: %d", existingClusterNodes.Version)
 	}
 
-	newVersion := int64(1)
-	if val != "" {
-		newVersion = existingClusterNodes.Version + 1
-	}
+	//newVersion := int64(1)
+	//if val != "" {
+	//	newVersion = existingClusterNodes.Version + 1
+	//}
 
 	newData := ClusterNodes{
-		Nodes:   currentNodes,
-		Version: newVersion,
+		Nodes: currentNodes,
+		//Version: newVersion,
 	}
 
 	jsonData, err := json.Marshal(newData)
@@ -323,12 +324,13 @@ func syncPods(ctx context.Context, rdb *redis.Client, informer cache.SharedIndex
 
 	// write to redis using pipeline
 	pipe := rdb.TxPipeline()
-	pipe.Set(ctx, "hpkv_nodes", jsonData, 0)
+	pipe.Set(ctx, RedisNodeMemberKey, jsonData, 0)
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("redis transaction failed: %v", err)
 	}
 
-	klog.InfoS("Successfully updated cluster nodes", "version", newVersion, "nodeCount", len(currentNodes))
+	//klog.InfoS("Successfully updated cluster nodes", "version", newVersion, "nodeCount", len(currentNodes))
+	klog.InfoS("Successfully updated cluster nodes", "nodeCount", len(currentNodes))
 	return nil
 }
 
