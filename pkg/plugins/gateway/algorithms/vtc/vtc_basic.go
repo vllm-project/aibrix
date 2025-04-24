@@ -30,24 +30,18 @@ import (
 )
 
 const (
-	defaultFairnessWeight    = 0.5
-	defaultUtilizationWeight = 0.5
 	defaultMaxPodLoad        = 100.0
 	defaultInputTokenWeight  = 1.0
 	defaultOutputTokenWeight = 2.0
 )
 
 const (
-	VTC_FAIRNESS_WEIGHT     = "AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT"
-	VTC_UTILIZATION_WEIGHT  = "AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT"
 	VTC_MAX_POD_LOAD        = "AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD"
 	VTC_INPUT_TOKEN_WEIGHT  = "AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT"
 	VTC_OUTPUT_TOKEN_WEIGHT = "AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT"
 )
 
 var (
-	fairnessWeight    = utils.LoadEnvFloat(VTC_FAIRNESS_WEIGHT, defaultFairnessWeight)
-	utilizationWeight = utils.LoadEnvFloat(VTC_UTILIZATION_WEIGHT, defaultUtilizationWeight)
 	maxPodLoad        = utils.LoadEnvFloat(VTC_MAX_POD_LOAD, defaultMaxPodLoad)
 	inputTokenWeight  = utils.LoadEnvFloat(VTC_INPUT_TOKEN_WEIGHT, defaultInputTokenWeight)
 	outputTokenWeight = utils.LoadEnvFloat(VTC_OUTPUT_TOKEN_WEIGHT, defaultOutputTokenWeight)
@@ -120,12 +114,42 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	var targetPod *v1.Pod
 	var minScore float64 = math.MaxFloat64
 
+	// Get the min and max token counts for adaptive bucket sizing
+	minTokens, err := r.tokenTracker.GetMinTokenCount(ctx.Context)
+	if err != nil {
+		klog.ErrorS(err, "failed to get minimum token count, using default value")
+		minTokens = tokenTrackerMinTokens // Use the configured default minimum token count
+	}
+
+	maxTokens, err := r.tokenTracker.GetMaxTokenCount(ctx.Context)
+	if err != nil {
+		klog.ErrorS(err, "failed to get maximum token count, using default value")
+		maxTokens = tokenTrackerMaxTokens // Use the configured default maximum token count
+	}
+
 	// Calculate scores for each pod
 	for i, pod := range readyPods {
 		// 1. Calculate fairness score based on pod index and user tokens
 		// Normalize user tokens to a value between 0 and len(readyPods)-1
-		normalizedTokens := math.Mod(userTokens, float64(len(readyPods)*100)) / 100.0
+		// Using adaptive bucket size calculation from benchmark analysis
+		// Calculate adaptive bucket size as average of min and max tokens with a minimum threshold
+		// Use default min tokens as the threshold to prevent extremely small bucket sizes
+		adaptiveBucketSize := math.Max(tokenTrackerMinTokens, (minTokens+maxTokens)/2)
+
+		// Apply clamped linear mapping: tokens / bucket_size, clamped to [0, npods-1]
+		normalizedTokens := math.Min(float64(userTokens)/adaptiveBucketSize, float64(len(readyPods)-1))
 		fairnessScore := math.Abs(float64(i) - normalizedTokens)
+
+		// Enhanced logging for token normalization
+		klog.InfoS("VTC token normalization details",
+			"user", *user,
+			"userTokens", userTokens,
+			"minTokens", minTokens,
+			"maxTokens", maxTokens,
+			"adaptiveBucketSize", adaptiveBucketSize,
+			"normalizedTokens", normalizedTokens,
+			"podIndex", i,
+			"fairnessScore", fairnessScore)
 
 		// 2. Get pod load for utilization score
 		var podLoad float64
@@ -143,16 +167,13 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		}
 
 		// 3. Calculate utilization score (normalized between 0-1)
-		utilizationScore := podLoad / maxPodLoad
-		if utilizationScore > 1.0 {
-			utilizationScore = 1.0
-		}
+		utilizationScore := min(podLoad/maxPodLoad, 1.0)
 
 		// 4. Add a small random factor to break ties and improve distribution
 		randomFactor := rand.Float64() * 0.1
 
-		// 5. Calculate combined score (lower is better)
-		score := (fairnessWeight * fairnessScore) + (utilizationWeight * utilizationScore) + randomFactor
+		// 5. Calculate combined score (lower is better) - using equal weights (1.0) for fairness and utilization
+		score := fairnessScore + utilizationScore + randomFactor
 
 		klog.InfoS("VTC hybrid pod selection",
 			"pod", pod.Name,

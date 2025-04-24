@@ -59,43 +59,31 @@ func TestSlidingWindowTokenTracker_GetTokenCount(t *testing.T) {
 func TestSlidingWindowTokenTracker_WindowBehavior(t *testing.T) {
 	config := DefaultVTCConfig()
 	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds)) // 100ms window
-	implTracker := tracker.(*InMemorySlidingWindowTokenTracker)                                               // Type assertion
 	ctx := context.Background()
 
-	// Initial count
+	// Initial count should be zero
 	tokens, err := tracker.GetTokenCount(ctx, "user1")
 	assert.NoError(t, err)
 	assert.Equal(t, float64(0), tokens, "Initial token count should be 0")
 
-	// Add tokens in current millisecond
+	// Add tokens in current bucket
 	err = tracker.UpdateTokenCount(ctx, "user1", 10, 15) // 10*1.0 + 15*2.0 = 40
 	assert.NoError(t, err)
 	tokens, err = tracker.GetTokenCount(ctx, "user1")
 	assert.NoError(t, err)
 	assert.Equal(t, float64(40), tokens, "Token count after first update")
 
-	// Add tokens in next bucket (simulate time advance)
-	nextBucket := time.Now().Add(10 * time.Millisecond)
-	implTracker.mu.Lock()
-	windowStart := nextBucket.Truncate(time.Millisecond).UnixNano() / int64(time.Millisecond)
-	if _, ok := implTracker.userBuckets["user1"]; !ok {
-		implTracker.userBuckets["user1"] = make(map[int64]float64)
-	}
-	implTracker.userBuckets["user1"][windowStart] += 20
-	implTracker.mu.Unlock()
-
+	// Wait to move to next time bucket
+	time.Sleep(10 * time.Millisecond)
+	// Add tokens in next bucket
+	err = tracker.UpdateTokenCount(ctx, "user1", 5, 5) // 5*1.0 + 5*2.0 = 15
+	assert.NoError(t, err)
 	tokens, err = tracker.GetTokenCount(ctx, "user1")
 	assert.NoError(t, err)
-	assert.Equal(t, float64(60), tokens, "Sum over two buckets")
+	assert.Equal(t, float64(55), tokens, "Sum over two buckets")
 
-	// Simulate all tokens outside window
-	implTracker.mu.Lock()
-	for ts := range implTracker.userBuckets["user1"] {
-		delete(implTracker.userBuckets["user1"], ts)
-		// Set tokens 200ms ago (outside 100ms window)
-		implTracker.userBuckets["user1"][ts-200] = 100
-	}
-	implTracker.mu.Unlock()
+	// Wait for tokens to expire (beyond 100ms window)
+	time.Sleep(110 * time.Millisecond)
 	tokens, err = tracker.GetTokenCount(ctx, "user1")
 	assert.NoError(t, err)
 	assert.Equal(t, float64(0), tokens, "Tokens outside window should not be counted")
@@ -138,11 +126,9 @@ func TestSlidingWindowTokenTracker_UpdateTokenCount(t *testing.T) {
 	tokens, _ = tracker.GetTokenCount(ctx, "user2")
 	assert.Equal(t, float64(200), tokens, "Update for user2")
 
-	// Test update for empty user (should do nothing)
+	// Test update for empty user (should error)
 	err = tracker.UpdateTokenCount(ctx, "", 5, 5)
-	assert.NoError(t, err)
-	tokens, _ = tracker.GetTokenCount(ctx, "")
-	assert.Equal(t, float64(0), tokens, "Update for empty user should have no effect")
+	assert.Error(t, err, "Update with empty user should error")
 }
 
 func TestSlidingWindowTokenTracker_UpdateTokenCount_WithCustomWeights(t *testing.T) {
@@ -177,4 +163,87 @@ func TestTokenTrackerInterface(t *testing.T) {
 
 	err = tracker.UpdateTokenCount(ctx, "user", 10, 20)
 	assert.NoError(t, err)
+}
+
+func TestTotalTokenCalculationDuringPruning(t *testing.T) {
+	config := DefaultVTCConfig()
+	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds))
+	ctx := context.Background()
+
+	// Add tokens for two users
+	err := tracker.UpdateTokenCount(ctx, "user1", 10, 0)
+	assert.NoError(t, err)
+	err = tracker.UpdateTokenCount(ctx, "user2", 20, 0)
+	assert.NoError(t, err)
+
+	// Check individual counts
+	t1, err := tracker.GetTokenCount(ctx, "user1")
+	assert.NoError(t, err)
+	assert.Equal(t, float64(10), t1, "user1 token count")
+	t2, err := tracker.GetTokenCount(ctx, "user2")
+	assert.NoError(t, err)
+	assert.Equal(t, float64(20), t2, "user2 token count")
+
+	// Sum totals
+	total := t1 + t2
+	assert.Equal(t, float64(30), total, "combined token count")
+
+	// Wait beyond window to expire tokens
+	time.Sleep(110 * time.Millisecond)
+
+	// Tokens should be pruned
+	t1, err = tracker.GetTokenCount(ctx, "user1")
+	assert.NoError(t, err)
+	assert.Equal(t, float64(0), t1, "user1 tokens expired")
+	t2, err = tracker.GetTokenCount(ctx, "user2")
+	assert.NoError(t, err)
+	assert.Equal(t, float64(0), t2, "user2 tokens expired")
+}
+
+func TestGetMinMaxTokenCount(t *testing.T) {
+	config := DefaultVTCConfig()
+	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds))
+	ctx := context.Background()
+
+	// No users yet: should return defaults
+	minVal, err := tracker.GetMinTokenCount(ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, defaultTokenTrackerMinTokens, minVal, "default min tokens")
+	maxVal, err := tracker.GetMaxTokenCount(ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, defaultTokenTrackerMaxTokens, maxVal, "default max tokens")
+
+	// Add user1 with 500 tokens
+	err = tracker.UpdateTokenCount(ctx, "user1", 500, 0)
+	assert.NoError(t, err)
+	minVal, _ = tracker.GetMinTokenCount(ctx)
+	maxVal, _ = tracker.GetMaxTokenCount(ctx)
+	assert.Equal(t, float64(500), minVal, "min after user1 update")
+	assert.Equal(t, float64(500), maxVal, "max after user1 update")
+
+	// Add user2 with 1000 tokens
+	err = tracker.UpdateTokenCount(ctx, "user2", 1000, 0)
+	assert.NoError(t, err)
+	minVal, _ = tracker.GetMinTokenCount(ctx)
+	maxVal, _ = tracker.GetMaxTokenCount(ctx)
+	assert.Equal(t, float64(500), minVal, "min after user2 update")
+	assert.Equal(t, float64(1000), maxVal, "max after user2 update")
+}
+
+func TestSlidingWindowTokenTracker_SecondsUnitWindow(t *testing.T) {
+	config := DefaultVTCConfig()
+	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(1), WithTimeUnit(Seconds)) // 1s window
+	ctx := context.Background()
+
+	err := tracker.UpdateTokenCount(ctx, "user", 1, 0)
+	assert.NoError(t, err)
+	toks, err := tracker.GetTokenCount(ctx, "user")
+	assert.NoError(t, err)
+	assert.Equal(t, float64(1), toks, "initial token count in seconds window")
+
+	// wait beyond 1 second (account for second-level granularity)
+	time.Sleep(2100 * time.Millisecond)
+	toks, err = tracker.GetTokenCount(ctx, "user")
+	assert.NoError(t, err)
+	assert.Equal(t, float64(0), toks, "token expired after seconds window")
 }
