@@ -152,17 +152,15 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) 
 	}
 
 	if pods.Len() == 0 {
-		return "", fmt.Errorf("no pods to forward request")
+		return "", fmt.Errorf("no pods for routing")
 	}
 	readyPods := utils.FilterRoutablePods(pods.All())
 	if len(readyPods) == 0 {
-		return "", fmt.Errorf("no ready pods available for fallback")
+		return "", fmt.Errorf("no ready pods for routing")
 	}
 	if len(readyPods) == 1 {
-		for _, pod := range readyPods {
-			ctx.SetTargetPod(pod)
-			return ctx.TargetAddress(), nil
-		}
+		ctx.SetTargetPod(readyPods[0])
+		return ctx.TargetAddress(), nil
 	}
 
 	return router.Route(ctx, &utils.PodArray{Pods: readyPods})
