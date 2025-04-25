@@ -51,3 +51,10 @@ patches:
         - kind: ServiceAccount
           name: aibrix-orchestration-kuberay-operator-leader-election
           namespace: aibrix-system
+          
+
+commonLabels:
+  app.kubernetes.io/name: aibrix
+  app.kubernetes.io/component: aibrix-distributed-inference-controller
+  app.kubernetes.io/version: nightly
+  app.kubernetes.io/managed-by: kubectl
