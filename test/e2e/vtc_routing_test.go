@@ -37,7 +37,7 @@ import (
 const (
 	tokenWindowDuration = 3 * time.Second
 	requestDelay       = 50 * time.Millisecond
-	metricsWaitTime    = 500 * time.Millisecond
+	metricsWaitTime    = 50 * time.Millisecond
 	highLoadValue      = "100"
 	normalLoadValue    = "10"
 	utilTolerance      = 1
@@ -118,6 +118,14 @@ func getAvailablePods(t *testing.T) {
 	t.Logf("Discovered %d pods using random routing", len(availablePods))
 }
 
+func TestVTCBasicValidPod(t *testing.T) {
+	setupVTCUsers(t)
+
+	req := "this is a test message for VTC Basic routing"
+	targetPod := getTargetPodFromChatCompletionWithUser(t, req, "vtc-basic", "user1")
+	assert.NotEmpty(t, targetPod, "vtc-basic target pod is empty")
+}
+
 func TestVTCFallbackToRandom(t *testing.T) {
 	setupVTCUsers(t)
 
@@ -129,7 +137,7 @@ func TestVTCFallbackToRandom(t *testing.T) {
 // TestVTCHybridScoring tests the hybrid scoring approach that balances fairness and utilization
 func TestVTCBasicRouting(t *testing.T) {
 	setupVTCUsers(t)
-
+	
 	users := []string{"user1", "user2", "user3"}
 	shortMsg := "Short message."
 	mediumMsg := "This is a medium length message with more tokens."
@@ -137,10 +145,7 @@ func TestVTCBasicRouting(t *testing.T) {
 		"It should be significantly longer than the others to ensure higher token count. " +
 		"We want to make sure the VTC algorithm properly accounts for different token usages."
 
-	if len(availablePods) <= 1 {
-		t.Logf("[WARNING] Only %d pod(s) detected. VTC routing tests require multiple pods.", len(availablePods))
-	}
-	t.Logf("[Environment] Using %d pods: %s", len(availablePods), strings.Join(availablePods, ", "))
+	ensureSufficientPods(t, 3)
 
 	// Sub-test 1: Token Accumulation - Verify that users accumulate tokens based on message size
 	t.Run("TokenAccumulation", func(t *testing.T) {
@@ -164,6 +169,7 @@ func TestVTCBasicRouting(t *testing.T) {
 			for _, user := range users {
 				pod := getTargetPodFromChatCompletionWithUser(t, msgMap[user], "vtc-basic", user)
 				podHistogram[pod]++
+				forceMetricsPropagation(t)
 			}
 		}
 
@@ -195,6 +201,7 @@ func TestVTCBasicRouting(t *testing.T) {
 			pod := getTargetPodFromChatCompletionWithUser(t, testMsg, "vtc-basic", user)
 			podAssignments[user] = pod
 			t.Logf("User %s routed to pod %s", user, pod)
+			forceMetricsPropagation(t)
 		}
 
 		if len(availablePods) > 1 {
@@ -226,7 +233,7 @@ func TestVTCUtilizationBalancing(t *testing.T) {
 		t.Logf("User %s routed to pod %s (pruning trigger)", user.Name, pod)
 	}
 
-	ensureSufficientPods(t, 2)
+	ensureSufficientPods(t, 3)
 	
 	metrics := getPodMetrics(t)
 	t.Logf("Pod metrics before controlled setup: %v", metrics)
@@ -252,10 +259,7 @@ func TestVTCUtilizationBalancing(t *testing.T) {
 		}
 	}
 	
-	// Force metrics propagation
-	t.Logf("Forcing metrics propagation")
-	redisClient.Publish(ctx, "pod_metrics_refresh", "")
-	time.Sleep(metricsWaitTime)
+	forceMetricsPropagation(t)
 	
 	// Verify metrics
 	metrics = getPodMetrics(t)
@@ -297,21 +301,6 @@ func TestVTCUtilizationBalancing(t *testing.T) {
 	}
 	
 	calculateDistributionStats(t, "Utilization Test", podDistribution)
-}
-
-// Helper function to get the most used pod from a histogram
-func getMostUsedPodFromHistogram(histogram map[string]int) string {
-	var mostUsedPod string
-	maxCount := 0
-	
-	for pod, count := range histogram {
-		if count > maxCount {
-			maxCount = count
-			mostUsedPod = pod
-		}
-	}
-	
-	return mostUsedPod
 }
 
 // Helper function to ensure sufficient pods are available
@@ -423,4 +412,10 @@ func getPodMetrics(t *testing.T) map[string]int {
 		podMetrics[pod] = count
 	}
 	return podMetrics
+}
+
+func forceMetricsPropagation(t *testing.T) {
+	t.Logf("Forcing metrics propagation")
+	redisClient.Publish(context.Background(), "pod_metrics_refresh", "")
+	time.Sleep(metricsWaitTime)
 }
