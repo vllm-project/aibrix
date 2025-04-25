@@ -52,16 +52,6 @@ var requestPool = sync.Pool{
 	New: func() any { return &RoutingContext{} },
 }
 
-func (alg RoutingAlgorithm) NewContext(ctx context.Context, model string, message string, requestID string, user string) *RoutingContext {
-	request := requestPool.Get().(*RoutingContext)
-	var userPtr *string
-	if user != "" {
-		userPtr = &user
-	}
-	request.reset(ctx, alg, model, message, requestID, userPtr)
-	return request
-}
-
 func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithm, model string, message string, requestID string, user string) *RoutingContext {
 	request := requestPool.Get().(*RoutingContext)
 	var userPtr *string
