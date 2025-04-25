@@ -422,34 +422,6 @@ func TestVTCBasicRouterStrengths(t *testing.T) {
 		assert.Equal(t, "192.168.1.2:8000", addr, "High tokens clamp fairness to middle pod index")
 	})
 
-	// Error when no pods to forward request
-	t.Run("NoPods", func(t *testing.T) {
-		emptyTracker := NewInMemorySlidingWindowTokenTracker(trackerConfig)
-		emptyRouter := &BasicVTCRouter{cache: cache, tokenTracker: emptyTracker, tokenEstimator: tokenEstimator, config: routerConfig}
-		emptyList := NewSimplePodList([]*v1.Pod{})
-		routingCtx := types.NewRoutingContext(ctx, "vtc-basic", "model1", "test", "req-empty", "userX")
-		addr, err := emptyRouter.Route(routingCtx, emptyList)
-		assert.Error(t, err)
-		assert.Empty(t, addr)
-		assert.Contains(t, err.Error(), "no pods to forward request")
-	})
-
-	// Error when no ready pods available
-	t.Run("NoReadyPods", func(t *testing.T) {
-		nrTracker := NewInMemorySlidingWindowTokenTracker(trackerConfig)
-		nrRouter := &BasicVTCRouter{cache: cache, tokenTracker: nrTracker, tokenEstimator: tokenEstimator, config: routerConfig}
-		podsNR := createTestPods(2)
-		for _, p := range podsNR {
-			p.Status.Conditions = []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse}}
-		}
-		nrList := NewSimplePodList(podsNR)
-		routingCtx := types.NewRoutingContext(ctx, "vtc-basic", "model1", "test", "req-nr", "userY")
-		addr, err := nrRouter.Route(routingCtx, nrList)
-		assert.Error(t, err)
-		assert.Empty(t, addr)
-		assert.Contains(t, err.Error(), "no ready pods")
-	})
-
 	// Random fallback when user is nil
 	t.Run("RandomFallbackNilUser", func(t *testing.T) {
 		rfTracker := NewInMemorySlidingWindowTokenTracker(trackerConfig)

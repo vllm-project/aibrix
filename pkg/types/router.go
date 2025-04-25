@@ -18,11 +18,12 @@ package types
 
 // Router defines the interface for routing logic to select target pods.
 type Router interface {
-	// Route returns the target pod
-	Route(ctx *RoutingContext, pods PodList) (string, error)
+	// Route selects a target pod from the provided list of pods.
+	// The input pods is guaranteed to be non-empty and contain only routable pods.
+	Route(ctx *RoutingContext, readyPodList PodList) (string, error)
 }
 
-// RouterFunc provides a stateful way to get a router, allowing a struct to provide the router by strategy and model.
+// RouterProvider provides a stateful way to get a router, allowing a struct to provide the router by strategy and model.
 type RouterProvider interface {
 	// GetRouter returns the router
 	GetRouter(ctx *RoutingContext) (Router, error)

@@ -78,16 +78,8 @@ func NewBasicVTCRouter(tokenTracker TokenTracker, tokenEstimator TokenEstimator,
 }
 
 // Route implements the VTC routing algorithm
-func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	if pods.Len() == 0 {
-		return "", fmt.Errorf("no pods to forward request")
-	}
-
-	readyPods := utils.FilterRoutablePods(pods.All())
-	if len(readyPods) == 0 {
-		return "", fmt.Errorf("no ready pods available for routing")
-	}
-
+func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	readyPods := readyPodList.All()
 	user := ctx.User
 	if user == nil {
 		klog.Warningf("VTC routing not possible: user is nil, falling back to random pod selection")
