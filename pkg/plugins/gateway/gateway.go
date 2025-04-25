@@ -124,6 +124,11 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID, "")
 			}
 
+			if isRespError && respErrorCode == 401 {
+				// Early return due to unauthorized or canceled context we noticed.
+				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID, `{"error":"unauthorized"}`)
+			}
+
 		case *extProcPb.ProcessingRequest_ResponseBody:
 			if isRespError {
 				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID,
@@ -140,6 +145,11 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
 			if routerCtx != nil {
 				routerCtx.Delete()
+			}
+
+			// Optional: if it's context or connection-related, don’t retry
+			if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "EOF") {
+				klog.Warning("Stream already closed by client", "requestID", requestID)
 			}
 		}
 	}
