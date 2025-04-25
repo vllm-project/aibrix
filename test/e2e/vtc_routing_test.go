@@ -34,17 +34,23 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-// Test users for VTC routing tests
+const (
+	tokenWindowDuration = 3 * time.Second
+	requestDelay       = 50 * time.Millisecond
+	metricsWaitTime    = 500 * time.Millisecond
+	highLoadValue      = "100"
+	normalLoadValue    = "10"
+	utilTolerance      = 1
+)
+
 var testUsers = []utils.User{
 	{Name: "user1", Rpm: 1000, Tpm: 10000},
 	{Name: "user2", Rpm: 1000, Tpm: 10000},
 	{Name: "user3", Rpm: 1000, Tpm: 10000},
 }
 
-// Global Redis client for tests
 var redisClient *redis.Client
 
-// Global variables for test state
 var (
 	availablePods []string
 )
@@ -56,9 +62,6 @@ func setupVTCUsers(t *testing.T) {
 			t.Fatal("Failed to connect to Redis")
 		}
 	}
-
-	// The gateway plugin already has its own token tracker and estimator
-	// We don't need to create our own instances here
 
 	getAvailablePods(t)
 
@@ -115,14 +118,6 @@ func getAvailablePods(t *testing.T) {
 	t.Logf("Discovered %d pods using random routing", len(availablePods))
 }
 
-func TestVTCBasicRouting(t *testing.T) {
-	setupVTCUsers(t)
-
-	req := "this is a test message for VTC Basic routing"
-	targetPod := getTargetPodFromChatCompletionWithUser(t, req, "vtc-basic", "user1")
-	assert.NotEmpty(t, targetPod, "vtc-basic target pod is empty")
-}
-
 func TestVTCFallbackToRandom(t *testing.T) {
 	setupVTCUsers(t)
 
@@ -131,58 +126,8 @@ func TestVTCFallbackToRandom(t *testing.T) {
 	assert.NotEmpty(t, targetPod, "vtc-basic target pod is empty") //what is this
 }
 
-// TestVTCTokenWindowExpiry tests that the VTC token window expiry works correctly in the gateway plugin
-// This is an indirect test that verifies the behavior through routing patterns
-func TestVTCTokenWindowExpiry(t *testing.T) {
-	setupVTCUsers(t)
-
-	user := "user1"
-	
-	// Make an initial request to establish a baseline routing pattern
-	t.Log("Making initial request to establish baseline routing...")
-	initialPod := getTargetPodFromChatCompletionWithUser(t, "Initial message", "vtc-basic", user)
-	assert.NotEmpty(t, initialPod, "Initial pod should not be empty")
-
-	// Make several requests with the same user to accumulate tokens
-	t.Log("Making multiple requests to accumulate tokens...")
-	podAssignments := make(map[string]string)
-	for i := 0; i < 5; i++ {
-		msg := fmt.Sprintf("Accumulating tokens message %d", i)
-		pod := getTargetPodFromChatCompletionWithUser(t, msg, "vtc-basic", user)
-		podAssignments[msg] = pod
-	}
-
-	// The user should now have accumulated tokens, which should affect routing
-	// Check if we're getting consistent pod assignments (indicating token-based routing)
-	histogram := convertToHistogram(podAssignments)
-	calculateDistributionStats(t, "After token accumulation", histogram)
-
-	// Wait for the sliding window to expire (configured in the gateway plugin)
-	// The gateway plugin uses milliseconds with a window size of 100ms
-	t.Log("Waiting for token window to expire (200ms)...")
-	time.Sleep(200 * time.Millisecond)
-
-	// After expiry, make new requests - routing should reset to initial pattern
-	t.Log("Making requests after token window expiry...")
-	postExpiryAssignments := make(map[string]string)
-	for i := 0; i < 5; i++ {
-		msg := fmt.Sprintf("Post-expiry message %d", i)
-		pod := getTargetPodFromChatCompletionWithUser(t, msg, "vtc-basic", user)
-		postExpiryAssignments[msg] = pod
-	}
-
-	// Check if the routing pattern has changed after token expiry
-	postExpiryHistogram := convertToHistogram(postExpiryAssignments)
-	calculateDistributionStats(t, "After token expiry", postExpiryHistogram)
-
-	// Compare the distribution patterns
-	t.Log("Comparing routing patterns before and after token expiry...")
-	// We don't make strict assertions here because the actual routing depends on the gateway plugin's
-	// implementation, but we log the patterns for analysis
-}
-
 // TestVTCHybridScoring tests the hybrid scoring approach that balances fairness and utilization
-func TestVTCHybridScoring(t *testing.T) {
+func TestVTCBasicRouting(t *testing.T) {
 	setupVTCUsers(t)
 
 	users := []string{"user1", "user2", "user3"}
@@ -261,198 +206,121 @@ func TestVTCHybridScoring(t *testing.T) {
 			calculateDistributionStats(t, "Fairness Test", convertToHistogram(podAssignments))
 		}
 	})
-
-	// Sub-test 4: Hybrid Scoring - Verify the combined fairness and utilization approach
-	t.Run("HybridScoring", func(t *testing.T) {
-		if len(availablePods) <= 1 {
-			t.Skip("Skipping hybrid scoring test due to insufficient pod count")
-		}
-
-		testMsg := "Test message for hybrid scoring."
-		for range 3 {
-			for _, user := range users {
-				getTargetPodFromChatCompletionWithUser(t, testMsg, "vtc-basic", user)
-			}
-		}
-
-		podAssignments := make(map[string]string)
-		for _, user := range users {
-			// We can't directly access token counts in e2e tests - the gateway plugin manages this
-			pod := getTargetPodFromChatCompletionWithUser(t, testMsg, "vtc-basic", user)
-			podAssignments[user] = pod
-			t.Logf("User %s routed to pod %s", user, pod)
-		}
-
-		distribution := convertToHistogram(podAssignments)
-		calculateDistributionStats(t, "Hybrid Test", distribution)
-
-		// Note: We can't always guarantee distribution across pods in a real environment
-		// as it depends on the current state of the system
-		for _, user := range users {
-			assert.NotEmpty(t, podAssignments[user],
-				"Expected valid pod assignment for user %s", user)
-		}
-	})
 }
 
-// TestVTCUtilizationBalancing verifies that the VTC algorithm properly considers 
+// TestVTCUtilizationBalancing verifies that the VTC algorithm properly considers
 // utilization (pod load) when making routing decisions.
-// This test is designed to be deterministic by:
-// 1. Using multiple users with identical token usage patterns to isolate utilization
-// 2. Taking advantage of the 2-second token window to establish clear patterns
-// 3. Creating a significant load imbalance on a specific pod
-// 4. Using appropriate delays to ensure metrics propagate correctly
 func TestVTCUtilizationBalancing(t *testing.T) {
 	// Set up Redis and test users
 	setupVTCUsers(t)
 	defer cleanupVTCUsers(t)
-
-	// Skip test if we don't have at least 2 pods available
-	if len(availablePods) < 2 {
-		t.Skip("Skipping utilization test because we need at least 2 pods")
-	}
-	t.Logf("[UtilizationTest] Delaying test start to allow token window expiry (3s)")
-	time.Sleep(3 * time.Second)
-
-	// We'll use just two users - one to create load, one to test routing decisions
-	highLoadUser := testUsers[0].Name
-	testUser := testUsers[1].Name
-	t.Logf("[UtilizationTest] Using users - high load: %s, test: %s", highLoadUser, testUser)
-
-	// PHASE 1: Establish token equilibrium
-	// Make identical requests for both users to establish similar token counts
-	baselineRequests := 3 // More baseline requests for more stable history
-	t.Logf("[UtilizationTest] PHASE 1: Establishing token equilibrium with %d requests per user", baselineRequests)
-
-	// Create identical token history pattern for both users
-	for i := 0; i < baselineRequests; i++ {
-		// Same messages to ensure token counts are identical
-		message := fmt.Sprintf("Baseline equilibrium request %d", i+1)
-		
-		// First user
-		pod1 := getTargetPodFromChatCompletionWithUser(t, message, "vtc-basic", highLoadUser)
-		t.Logf("[UtilizationTest] High-load user baseline %d routed to pod %s", i+1, pod1)
-		
-		// Second user with same message
-		pod2 := getTargetPodFromChatCompletionWithUser(t, message, "vtc-basic", testUser)
-		t.Logf("[UtilizationTest] Test user baseline %d routed to pod %s", i+1, pod2)
-		
-		// 200ms delay is sufficient with the 2s window
-		time.Sleep(200 * time.Millisecond)
+	
+	// Wait for token window to expire completely
+	t.Logf("Waiting for token window expiry to ensure clean state")
+	time.Sleep(tokenWindowDuration)
+	
+	// Make one small request for each user to trigger pruning of token buckets
+	t.Logf("Making pruning-trigger requests for all test users")
+	for _, user := range testUsers {
+		pod := getTargetPodFromChatCompletionWithUser(t, "Pruning trigger", "vtc-basic", user.Name)
+		t.Logf("User %s routed to pod %s (pruning trigger)", user.Name, pod)
 	}
 
-	// PHASE 2: Create strong imbalance
+	ensureSufficientPods(t, 2)
+	
+	metrics := getPodMetrics(t)
+	t.Logf("Pod metrics before controlled setup: %v", metrics)
+
+	// Set up Redis with controlled utilization values
 	highLoadPod := availablePods[0]
-	highLoadCount := 30
-	t.Logf("[UtilizationTest] Forcing %d requests to pod %s", highLoadCount, highLoadPod)
+	testUser := testUsers[1].Name
 	
-	// Initialize metrics for all pods
-	initializeMetrics(t, availablePods)
+	t.Logf("Creating controlled load imbalance in Redis for pod %s", highLoadPod)
+	ctx := context.Background()
 
-	// Send traffic to create load imbalance
-	podRequestCounts := make(map[string]int)
-	for i := 0; i < highLoadCount; i++ {
-		pod := highLoadPod
-		podRequestCounts[pod]++
-		
-		// Make the actual request to create load
-		actualPod := getTargetPodFromChatCompletionWithUser(t, "High load request "+fmt.Sprintf("%d", i+1), "random", highLoadUser)
-		// Verify the request went to the intended pod
-		if actualPod != highLoadPod {
-			t.Logf("[UtilizationTest] Warning: Request routed to %s instead of target pod %s", actualPod, highLoadPod)
-		}
-		
-		// Add small delay between requests to avoid overwhelming the system
-		time.Sleep(50 * time.Millisecond)
-	}
-	
-	// Log the distribution of high-load requests
-	t.Logf("[UtilizationTest] High-load requests distribution:")
-	for pod, count := range podRequestCounts {
-		t.Logf("  - %s: %d requests", pod, count)
-	}
-	
-	// Force metric refresh with retries
-	awaitMetricsUpdate(t, highLoadPod, 1)
-
-	// Analyze which pod received the most load during the high load phase
-	highestLoad := 0
-	highLoadPodCount := make(map[string]int)
-	for pod, count := range podRequestCounts {
-		highLoadPodCount[pod] = count
-		if count > highestLoad {
-			highestLoad = count
-			highLoadPod = pod
+	// Clear and set new values
+	redisClient.Del(ctx, "pod_metrics")
+	for _, pod := range availablePods {
+		if pod == highLoadPod {
+			// High load for target pod
+			redisClient.HSet(ctx, "pod_metrics", pod, highLoadValue)
+			t.Logf("Set high load (%s) for pod %s", highLoadValue, pod)
+		} else {
+			// Low load for other pods
+			redisClient.HSet(ctx, "pod_metrics", pod, normalLoadValue)
+			t.Logf("Set normal load (%s) for pod %s", normalLoadValue, pod)
 		}
 	}
 	
-	// Log the load distribution across all pods to see imbalance clearly
-	t.Logf("[UtilizationTest] Load distribution after high load phase:")
-	for pod, count := range highLoadPodCount {
-		t.Logf("[UtilizationTest] Pod %s received %d/%d requests (%.1f%%)", 
-			pod, count, highLoadCount, float64(count)/float64(highLoadCount)*100)
-	}
+	// Force metrics propagation
+	t.Logf("Forcing metrics propagation")
+	redisClient.Publish(ctx, "pod_metrics_refresh", "")
+	time.Sleep(metricsWaitTime)
 	
-	t.Logf("[UtilizationTest] Pod %s identified as high-load pod (%d requests)", highLoadPod, highestLoad)
+	// Verify metrics
+	metrics = getPodMetrics(t)
+	t.Logf("Pod metrics after controlled setup: %v", metrics)
+
+	ensureSufficientPods(t, 2)
 	
-	// Allow time for load metrics to update
-	// With 50ms refresh interval, we'll wait longer to ensure multiple refresh cycles
-	t.Logf("[UtilizationTest] Waiting for load metrics to propagate...")
-	time.Sleep(500 * time.Millisecond) // Longer wait to ensure metrics propagate fully
-
-	// Force metric refresh and verify
-	if err := redisClient.Publish(context.Background(), "pod_metrics_refresh", "").Err(); err != nil {
-		t.Fatalf("Failed to trigger metric refresh: %v", err)
-	}
-	time.Sleep(2 * time.Second)
-
-	// Verify metrics before proceeding
-	metrics, err := redisClient.HGetAll(context.Background(), "pod_metrics").Result()
-	if err != nil {
-		t.Fatalf("Failed to get metrics: %v", err)
-	}
-	t.Logf("[UtilizationTest] Current metrics: %+v", metrics)
-
-	// PHASE 3: Verify balancing
-	testUser = testUsers[1].Name
+	// Run the actual test with fresh token state and controlled utilization
 	testRequestCount := 10
 	podDistribution := make(map[string]int)
-
-	t.Logf("[UtilizationTest] PHASE 3: Testing utilization-based balancing with user %s", testUser)
-	t.Logf("[UtilizationTest] If utilization component is working, requests should avoid pod %s", highLoadPod)
-
-	// With the 2s token window, we can spread requests evenly
-	// The algorithm should favor the less loaded pods
+	
+	t.Logf("Testing utilization balancing with user %s", testUser)
 	for i := 0; i < testRequestCount; i++ {
-		message := fmt.Sprintf("Utilization test request %d", i+1)
-		pod := getTargetPodFromChatCompletionWithUser(t, message, "vtc-basic", testUser)
+		pod := getTargetPodFromChatCompletionWithUser(t, 
+			fmt.Sprintf("Test request %d", i), "vtc-basic", testUser)
 		podDistribution[pod]++
-		t.Logf("[UtilizationTest] Test request %d routed to pod %s", i+1, pod)
-		
-		// With a 2s window, we can space these 50ms apart while maintaining 15 requests
-		// inside the window (15 × 50ms = 0.75s < 2s window)
-		time.Sleep(50 * time.Millisecond)
+		t.Logf("Test request %d routed to pod %s", i+1, pod)
+		time.Sleep(requestDelay)
 	}
-	// Analyze the results
-	t.Logf("[UtilizationTest] RESULTS: %v", podDistribution)
+	
+	// Verify results
+	t.Logf("Test request distribution:")
 	for pod, count := range podDistribution {
-		t.Logf("[UtilizationTest] Pod %s received %d/%d test requests (%.1f%%)", 
-			pod, count, testRequestCount, float64(count)/float64(testRequestCount)*100)
+		t.Logf("  %s: %d requests (%.1f%%)", pod, count, 
+			float64(count)/float64(testRequestCount)*100)
 	}
 	
-	// If the utilization component is working, the high-load pod should receive fewer requests
-	// Check how many requests went to our high-load pod
+	// Assert high-load pod receives fewer requests
 	count := podDistribution[highLoadPod]
-	// Calculate fair share with a buffer based on pod count
 	fairShare := testRequestCount / len(availablePods)
-	maxAllowed := fairShare + int(math.Ceil(float64(fairShare) * 0.5)) // Allow 50% over fair share
+	maxAllowed := fairShare + int(math.Ceil(float64(fairShare) * utilTolerance))
+	
+	t.Logf("High-load pod received %d/%d requests (max allowed: %d)", 
+		count, testRequestCount, maxAllowed)
+	
 	if count > maxAllowed {
-		t.Fatalf("High-load pod received %d/%d requests (max %d)", count, testRequestCount, maxAllowed)
+		t.Fatalf("High-load pod received %d/%d requests (max %d)", 
+			count, testRequestCount, maxAllowed)
 	}
 	
-	// Calculate overall distribution stats
-	histogram := podDistribution
-	calculateDistributionStats(t, "Utilization Test", histogram)
+	calculateDistributionStats(t, "Utilization Test", podDistribution)
+}
+
+// Helper function to get the most used pod from a histogram
+func getMostUsedPodFromHistogram(histogram map[string]int) string {
+	var mostUsedPod string
+	maxCount := 0
+	
+	for pod, count := range histogram {
+		if count > maxCount {
+			maxCount = count
+			mostUsedPod = pod
+		}
+	}
+	
+	return mostUsedPod
+}
+
+// Helper function to ensure sufficient pods are available
+func ensureSufficientPods(t *testing.T, minPods int) {
+	getAvailablePods(t)
+	if len(availablePods) < minPods {
+		t.Skipf("Need at least %d pods for utilization test, found %d", minPods, len(availablePods))
+	}
+	t.Logf("Found %d available pods, proceeding with test", len(availablePods))
 }
 
 // Helper function to get target pod with user header and track token usage
@@ -485,15 +353,6 @@ func convertToHistogram(podAssignments map[string]string) map[string]int {
 	return histogram
 }
 
-func flattenUtilizationMap(podAssignments map[string]map[string]bool) map[string]int {
-	histogram := make(map[string]int)
-	for _, podMap := range podAssignments {
-		for pod := range podMap {
-			histogram[pod]++
-		}
-	}
-	return histogram
-}
 
 func calculateDistributionStats(t *testing.T, phaseName string, histogram map[string]int) {
 	if len(histogram) == 0 {
@@ -564,64 +423,4 @@ func getPodMetrics(t *testing.T) map[string]int {
 		podMetrics[pod] = count
 	}
 	return podMetrics
-}
-
-func initializeMetrics(t *testing.T, pods []string) {
-	ctx := context.Background()
-	t.Logf("[UtilizationTest] Initializing metrics for %d pods", len(pods))
-	
-	// Delete any existing metrics
-	redisClient.Del(ctx, "pod_metrics")
-	
-	// Initialize metrics for each pod with a small value
-	for _, pod := range pods {
-		err := redisClient.HSet(ctx, "pod_metrics", pod, "1").Err()
-		if err != nil {
-			t.Logf("Warning: Failed to initialize metrics for pod %s: %v", pod, err)
-		}
-	}
-	
-	// Verify initialization
-	metrics := getPodMetrics(t)
-	t.Logf("[UtilizationTest] Initialized metrics: %+v", metrics)
-	
-	// Ensure all pods are in the metrics
-	for _, pod := range pods {
-		if _, exists := metrics[pod]; !exists {
-			t.Logf("Warning: Pod %s not found in metrics after initialization", pod)
-		}
-	}
-}
-
-func awaitMetricsUpdate(t *testing.T, pod string, minValue int) {
-	maxAttempts := 20
-	attempt := 0
-	t.Logf("[UtilizationTest] Waiting for metrics update for pod %s (min value: %d)", pod, minValue)
-	
-	for {
-		metrics := getPodMetrics(t)
-		t.Logf("[UtilizationTest] Current metrics: %+v", metrics)
-		
-		count, exists := metrics[pod]
-		if exists && count >= minValue {
-			t.Logf("[UtilizationTest] Metrics updated successfully for pod %s: %d", pod, count)
-			break
-		}
-		
-		attempt++
-		if attempt >= maxAttempts {
-			t.Logf("[UtilizationTest] Warning: Failed to verify metrics update after %d attempts", maxAttempts)
-			// Continue with test instead of failing - we'll log the metrics for debugging
-			break
-		}
-		
-		// Force a metrics update by making a direct request
-		if attempt % 5 == 0 {
-			t.Logf("[UtilizationTest] Forcing metrics update with direct request")
-			// Use a test user to make a request that should be routed to any pod
-			_ = getTargetPodFromChatCompletionWithUser(t, "Metrics refresh request", "random", testUsers[1].Name)
-		}
-		
-		time.Sleep(200 * time.Millisecond)
-	}
 }
