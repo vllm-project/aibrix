@@ -29,29 +29,24 @@ func TestSlidingWindowTokenTracker_GetTokenCount(t *testing.T) {
 	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds)) // 100ms window
 	ctx := context.Background()
 
-	// Test initial count for a new user
 	tokens, err := tracker.GetTokenCount(ctx, "user1")
 	assert.NoError(t, err)
 	assert.Equal(t, float64(0), tokens, "Initial token count should be 0")
 
-	// Test count after update
 	err = tracker.UpdateTokenCount(ctx, "user1", 10, 15) // 10*1.0 + 15*2.0 = 40
 	assert.NoError(t, err)
 	tokens, err = tracker.GetTokenCount(ctx, "user1")
 	assert.NoError(t, err)
 	assert.Equal(t, float64(40), tokens, "Token count after first update")
 
-	// Test initial count for another new user
 	tokens, err = tracker.GetTokenCount(ctx, "user2")
 	assert.NoError(t, err)
 	assert.Equal(t, float64(0), tokens, "Initial token count for user2 should be 0")
 
-	// Test count for empty user
 	tokens, err = tracker.GetTokenCount(ctx, "")
 	assert.NoError(t, err)
 	assert.Equal(t, float64(0), tokens, "Token count for empty user should be 0")
 
-	// Test non-existent user
 	tokens, _ = tracker.GetTokenCount(ctx, "nonexistent")
 	assert.Equal(t, float64(0), tokens, "Token count for non-existent user should be 0")
 }
@@ -61,12 +56,10 @@ func TestSlidingWindowTokenTracker_WindowBehavior(t *testing.T) {
 	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds)) // 100ms window
 	ctx := context.Background()
 
-	// Initial count should be zero
 	tokens, err := tracker.GetTokenCount(ctx, "user1")
 	assert.NoError(t, err)
 	assert.Equal(t, float64(0), tokens, "Initial token count should be 0")
 
-	// Add tokens in current bucket
 	err = tracker.UpdateTokenCount(ctx, "user1", 10, 15) // 10*1.0 + 15*2.0 = 40
 	assert.NoError(t, err)
 	tokens, err = tracker.GetTokenCount(ctx, "user1")
@@ -108,25 +101,21 @@ func TestSlidingWindowTokenTracker_UpdateTokenCount(t *testing.T) {
 	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds)) // 100ms window
 	ctx := context.Background()
 
-	// Test initial update
 	err := tracker.UpdateTokenCount(ctx, "user1", 10, 15) // 10*1.0 + 15*2.0 = 40
 	assert.NoError(t, err)
 	tokens, _ := tracker.GetTokenCount(ctx, "user1")
 	assert.Equal(t, float64(40), tokens, "First update")
 
-	// Test second update for the same user
 	err = tracker.UpdateTokenCount(ctx, "user1", 5, 10) // 40 + (5*1.0 + 10*2.0) = 40 + 25 = 65
 	assert.NoError(t, err)
 	tokens, _ = tracker.GetTokenCount(ctx, "user1")
 	assert.Equal(t, float64(65), tokens, "Second update")
 
-	// Test update for a different user
 	err = tracker.UpdateTokenCount(ctx, "user2", 100, 50) // 100*1.0 + 50*2.0 = 200
 	assert.NoError(t, err)
 	tokens, _ = tracker.GetTokenCount(ctx, "user2")
 	assert.Equal(t, float64(200), tokens, "Update for user2")
 
-	// Test update for empty user (should error)
 	err = tracker.UpdateTokenCount(ctx, "", 5, 5)
 	assert.Error(t, err, "Update with empty user should error")
 }
@@ -139,13 +128,11 @@ func TestSlidingWindowTokenTracker_UpdateTokenCount_WithCustomWeights(t *testing
 	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds)) // 100ms window
 	ctx := context.Background()
 
-	// Test update with custom weights
 	err := tracker.UpdateTokenCount(ctx, "user1", 10, 20)
 	assert.NoError(t, err)
 	tokens, _ := tracker.GetTokenCount(ctx, "user1")
 	assert.Equal(t, float64(30), tokens, "Update with custom weights")
 
-	// Test second update with custom weights
 	err = tracker.UpdateTokenCount(ctx, "user1", 5, 10)
 	assert.NoError(t, err)
 	tokens, _ = tracker.GetTokenCount(ctx, "user1")
@@ -170,13 +157,11 @@ func TestTotalTokenCalculationDuringPruning(t *testing.T) {
 	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds))
 	ctx := context.Background()
 
-	// Add tokens for two users
 	err := tracker.UpdateTokenCount(ctx, "user1", 10, 0)
 	assert.NoError(t, err)
 	err = tracker.UpdateTokenCount(ctx, "user2", 20, 0)
 	assert.NoError(t, err)
 
-	// Check individual counts
 	t1, err := tracker.GetTokenCount(ctx, "user1")
 	assert.NoError(t, err)
 	assert.Equal(t, float64(10), t1, "user1 token count")
@@ -184,14 +169,11 @@ func TestTotalTokenCalculationDuringPruning(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, float64(20), t2, "user2 token count")
 
-	// Sum totals
 	total := t1 + t2
 	assert.Equal(t, float64(30), total, "combined token count")
 
-	// Wait beyond window to expire tokens
 	time.Sleep(110 * time.Millisecond)
 
-	// Tokens should be pruned
 	t1, err = tracker.GetTokenCount(ctx, "user1")
 	assert.NoError(t, err)
 	assert.Equal(t, float64(0), t1, "user1 tokens expired")
@@ -205,7 +187,6 @@ func TestGetMinMaxTokenCount(t *testing.T) {
 	tracker := NewInMemorySlidingWindowTokenTracker(&config, WithWindowSize(100), WithTimeUnit(Milliseconds))
 	ctx := context.Background()
 
-	// No users yet: should return defaults
 	minVal, err := tracker.GetMinTokenCount(ctx)
 	assert.NoError(t, err)
 	assert.Equal(t, defaultTokenTrackerMinTokens, minVal, "default min tokens")
@@ -213,7 +194,6 @@ func TestGetMinMaxTokenCount(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, defaultTokenTrackerMaxTokens, maxVal, "default max tokens")
 
-	// Add user1 with 500 tokens
 	err = tracker.UpdateTokenCount(ctx, "user1", 500, 0)
 	assert.NoError(t, err)
 	minVal, _ = tracker.GetMinTokenCount(ctx)
@@ -221,7 +201,6 @@ func TestGetMinMaxTokenCount(t *testing.T) {
 	assert.Equal(t, float64(500), minVal, "min after user1 update")
 	assert.Equal(t, float64(500), maxVal, "max after user1 update")
 
-	// Add user2 with 1000 tokens
 	err = tracker.UpdateTokenCount(ctx, "user2", 1000, 0)
 	assert.NoError(t, err)
 	minVal, _ = tracker.GetMinTokenCount(ctx)
