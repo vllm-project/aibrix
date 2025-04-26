@@ -40,11 +40,11 @@ import (
 
 const (
 	tokenWindowDuration = 3 * time.Second
-	requestDelay       = 50 * time.Millisecond
-	metricsWaitTime    = 50 * time.Millisecond
-	highLoadValue      = "100"
-	normalLoadValue    = "10"
-	utilTolerance      = 1
+	requestDelay        = 50 * time.Millisecond
+	metricsWaitTime     = 50 * time.Millisecond
+	highLoadValue       = "100"
+	normalLoadValue     = "10"
+	utilTolerance       = 1
 )
 
 var testUsers = []utils.User{
@@ -65,9 +65,9 @@ const (
 
 var distributionQualityStrings = map[DistributionQuality]string{
 	ExcellentDistribution: "EXCELLENT",
-	GoodDistribution:     "GOOD",
-	FairDistribution:     "FAIR",
-	PoorDistribution:     "POOR",
+	GoodDistribution:      "GOOD",
+	FairDistribution:      "FAIR",
+	PoorDistribution:      "POOR",
 }
 
 var redisClient *redis.Client
@@ -164,7 +164,7 @@ func TestVTCFallbackToRandom(t *testing.T) {
 
 func TestVTCBasicRouting(t *testing.T) {
 	setupVTCUsers(t)
-	
+
 	users := []string{"user1", "user2", "user3"}
 	shortMsg := "Short message."
 	mediumMsg := "This is a medium length message with more tokens."
@@ -203,9 +203,9 @@ func TestVTCBasicRouting(t *testing.T) {
 		t.Log("Token accumulation test completed - check logs for routing patterns")
 
 		cv, quality := calculateDistributionStats(t, "Token Accumulation", podHistogram)
-	
-		assert.Less(t, quality, ExcellentDistribution, 
-			"Token accumulation should show some imbalance (not EXCELLENT), got %s distribution with CV=%.2f", 
+
+		assert.Less(t, quality, ExcellentDistribution,
+			"Token accumulation should show some imbalance (not EXCELLENT), got %s distribution with CV=%.2f",
 			quality, cv)
 	})
 
@@ -231,23 +231,22 @@ func TestVTCBasicRouting(t *testing.T) {
 		}
 
 		cv, quality := calculateDistributionStats(t, "Fairness Test", convertToHistogram(podAssignments))
-		
-		assert.Greater(t, len(distinctPods), 1, 
+
+		assert.Greater(t, len(distinctPods), 1,
 			"Expected at least 2 pods for request distribution, but none were used")
-		
-		assert.GreaterOrEqual(t, quality, FairDistribution, 
+
+		assert.GreaterOrEqual(t, quality, FairDistribution,
 			"Distribution should be at least FAIR with CV=%.2f", cv)
 	})
 }
 
-
 func TestVTCUtilizationBalancing(t *testing.T) {
 	setupVTCUsers(t)
 	defer cleanupVTCUsers(t)
-	
+
 	t.Logf("Waiting for token window expiry to ensure clean state")
 	time.Sleep(tokenWindowDuration)
-	
+
 	// Make one small request for each user to trigger pruning of token buckets (bcos of InMemoryTokenTracker)
 	t.Logf("Making pruning-trigger requests for all test users")
 	for _, user := range testUsers {
@@ -256,7 +255,7 @@ func TestVTCUtilizationBalancing(t *testing.T) {
 	}
 
 	ensureSufficientPods(t, 3)
-	
+
 	metrics := getPodMetrics(t)
 	t.Logf("Pod metrics before controlled setup: %v", metrics)
 	highLoadPod := availablePods[0]
@@ -274,38 +273,38 @@ func TestVTCUtilizationBalancing(t *testing.T) {
 			t.Logf("Set normal load (%s) for pod %s", normalLoadValue, pod)
 		}
 	}
-	
+
 	forceMetricsPropagation(t)
 	metrics = getPodMetrics(t)
 	t.Logf("Pod metrics after controlled setup: %v", metrics)
 	ensureSufficientPods(t, 3)
-	
+
 	testRequestCount := 10
 	podDistribution := make(map[string]int)
-	
+
 	t.Logf("Testing utilization balancing with user %s", testUser)
 	for i := 0; i < testRequestCount; i++ {
-		pod := getTargetPodFromChatCompletionWithUser(t, 
+		pod := getTargetPodFromChatCompletionWithUser(t,
 			fmt.Sprintf("Test request %d", i), "vtc-basic", testUser)
 		podDistribution[pod]++
 		t.Logf("Test request %d routed to pod %s", i+1, pod)
 		forceMetricsPropagation(t)
 	}
-	
+
 	t.Logf("Test request distribution:")
 	for pod, count := range podDistribution {
-		t.Logf("  %s: %d requests (%.1f%%)", pod, count, 
+		t.Logf("  %s: %d requests (%.1f%%)", pod, count,
 			float64(count)/float64(testRequestCount)*100)
 	}
-	
+
 	count := podDistribution[highLoadPod]
 	maxAllowed := testRequestCount / 2
-	t.Logf("High-load pod received %d/%d requests (max allowed: %d)", 
+	t.Logf("High-load pod received %d/%d requests (max allowed: %d)",
 		count, testRequestCount, maxAllowed)
 	calculateDistributionStats(t, "Utilization Test", podDistribution)
-	
+
 	if count > maxAllowed {
-		t.Fatalf("High-load pod received %d/%d requests (max %d)", 
+		t.Fatalf("High-load pod received %d/%d requests (max %d)",
 			count, testRequestCount, maxAllowed)
 	}
 }
@@ -346,7 +345,6 @@ func convertToHistogram(podAssignments map[string]string) map[string]int {
 	}
 	return histogram
 }
-
 
 func calculateDistributionStats(t *testing.T, phaseName string, histogram map[string]int) (float64, DistributionQuality) {
 	if len(histogram) == 0 {
@@ -389,7 +387,7 @@ func calculateDistributionStats(t *testing.T, phaseName string, histogram map[st
 		quality = PoorDistribution
 		t.Logf("[Distribution] %s: POOR distribution (CV >= 0.5)", phaseName)
 	}
-	
+
 	return cv, quality
 }
 

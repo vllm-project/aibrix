@@ -29,9 +29,9 @@ import (
 
 // Sliding window configuration
 const (
-	defaultTokenTrackerWindowSize = 5         // Default window size in the configured time units, example: 5 minutes
-	defaultTokenTrackerMinTokens  = 1000.0    // Sensible min default value for adaptive token tracking(see vtc_basic)
-	defaultTokenTrackerMaxTokens  = 8000.0    // Sensible max default value for adaptive token tracking(see vtc_basic)
+	defaultTokenTrackerWindowSize = 5      // Default window size in the configured time units, example: 5 minutes
+	defaultTokenTrackerMinTokens  = 1000.0 // Sensible min default value for adaptive token tracking(see vtc_basic)
+	defaultTokenTrackerMaxTokens  = 8000.0 // Sensible max default value for adaptive token tracking(see vtc_basic)
 	defaultTimeUnit               = "minutes"
 )
 
@@ -44,9 +44,9 @@ const (
 
 var (
 	tokenTrackerWindowSize = utils.LoadEnvInt(VTC_TOKEN_TRACKER_WINDOW_SIZE, defaultTokenTrackerWindowSize)
-	tokenTrackerMinTokens = utils.LoadEnvFloat(VTC_TOKEN_TRACKER_MIN_TOKENS, defaultTokenTrackerMinTokens)
-	tokenTrackerMaxTokens = utils.LoadEnvFloat(VTC_TOKEN_TRACKER_MAX_TOKENS, defaultTokenTrackerMaxTokens)
-	timeUnitStr           = utils.LoadEnv(VTC_TOKEN_TRACKER_TIME_UNIT, defaultTimeUnit)
+	tokenTrackerMinTokens  = utils.LoadEnvFloat(VTC_TOKEN_TRACKER_MIN_TOKENS, defaultTokenTrackerMinTokens)
+	tokenTrackerMaxTokens  = utils.LoadEnvFloat(VTC_TOKEN_TRACKER_MAX_TOKENS, defaultTokenTrackerMaxTokens)
+	timeUnitStr            = utils.LoadEnv(VTC_TOKEN_TRACKER_TIME_UNIT, defaultTimeUnit)
 )
 
 type TimeUnit int

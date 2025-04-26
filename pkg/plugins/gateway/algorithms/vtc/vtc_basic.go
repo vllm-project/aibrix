@@ -108,14 +108,12 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		"inputTokens", inputTokens,
 		"outputTokens", outputTokens)
 
-
 	var targetPod *v1.Pod
 	var minScore float64 = math.MaxFloat64
 
 	// Simple vtc-basic implementation
 	// Using clamped-linear instead of modulo - offers good monotonicity, fairness based routing.
 	// Pod utilization is used as a secondary metric to ensure good utilization.
-
 
 	// Get the min and max token counts for adaptive bucket sizing
 	minTokens, err := r.tokenTracker.GetMinTokenCount(ctx.Context)
@@ -133,7 +131,7 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	// Calculate scores for each pod
 	for i, pod := range readyPods {
 
-		// 1. Dynamically calculate a reasonable "step size" for mapping user tokens onto pod indices, ensuring the mapping is 
+		// 1. Dynamically calculate a reasonable "step size" for mapping user tokens onto pod indices, ensuring the mapping is
 		// relevant to the current system load while maintaining a minimum sensitivity
 		adaptiveBucketSize := math.Max(tokenTrackerMinTokens, (minTokens+maxTokens)/2)
 
