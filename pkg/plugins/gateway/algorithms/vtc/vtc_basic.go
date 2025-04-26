@@ -114,6 +114,7 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	// Simple vtc-basic implementation
 	// Using clamped-linear instead of modulo - offers good monotonicity, fairness based routing.
 	// Pod utilization is used as a secondary metric to ensure good utilization.
+	// By adapting bucket sizes and normalizing scores, the algorithm remains robust as system load and user activity fluctuate.
 
 	// Get the min and max token counts for adaptive bucket sizing
 	minTokens, err := r.tokenTracker.GetMinTokenCount(ctx.Context)
