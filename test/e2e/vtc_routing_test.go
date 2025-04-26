@@ -36,9 +36,9 @@ import (
 
 // Test users for VTC routing tests
 var testUsers = []utils.User{
-	{Name: "user1", Rpm: 1000, Tpm: 1000},
-	{Name: "user2", Rpm: 1000, Tpm: 1000},
-	{Name: "user3", Rpm: 1000, Tpm: 1000},
+	{Name: "user1", Rpm: 1000, Tpm: 10000},
+	{Name: "user2", Rpm: 1000, Tpm: 10000},
+	{Name: "user3", Rpm: 1000, Tpm: 10000},
 }
 
 // Global Redis client for tests
