@@ -57,7 +57,7 @@ if [ -n "$INSTALL_AIBRIX" ]; then
   kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly
 
   kubectl create -k config/dependency
-  kubectl create -k config/default
+  kubectl create -k config/test
 
   cd development/app
   docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
@@ -72,7 +72,7 @@ if [ -n "$INSTALL_AIBRIX" ]; then
   function cleanup {
     echo "Cleaning up..."
     # clean up env at end
-    kubectl delete --ignore-not-found=true -k config/default
+    kubectl delete --ignore-not-found=true -k config/test
     kubectl delete --ignore-not-found=true -k config/dependency
     cd development/app
     kubectl delete -k config/mock

@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-plugin
+spec:
+  template:
+    spec:
+      containers:
+      - name: gateway-plugin
+        env:
+        - name: AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE
+          value: "2"
+        - name: AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT
+          value: "seconds"
+        - name: AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS
+          value: "100"
+        - name: AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS
+          value: "800"
