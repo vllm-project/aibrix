@@ -108,11 +108,14 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		"inputTokens", inputTokens,
 		"outputTokens", outputTokens)
 
-	// Select pod based on hybrid VTC approach that balances fairness and utilization
-	// - Fairness: Users with higher token usage get higher-indexed pods
-	// - Utilization: Consider actual pod load to prevent underutilization
+
 	var targetPod *v1.Pod
 	var minScore float64 = math.MaxFloat64
+
+	// Simple vtc-basic implementation
+	// Using clamped-linear instead of modulo - offers good monotonicity, fairness based routing.
+	// Pod utilization is used as a secondary metric to ensure good utilization.
+
 
 	// Get the min and max token counts for adaptive bucket sizing
 	minTokens, err := r.tokenTracker.GetMinTokenCount(ctx.Context)
@@ -129,18 +132,16 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 
 	// Calculate scores for each pod
 	for i, pod := range readyPods {
-		// 1. Calculate fairness score based on pod index and user tokens
-		// Normalize user tokens to a value between 0 and len(readyPods)-1
-		// Using adaptive bucket size calculation from benchmark analysis
-		// Calculate adaptive bucket size as average of min and max tokens with a minimum threshold
-		// Use default min tokens as the threshold to prevent extremely small bucket sizes
+
+		// 1. Dynamically calculate a reasonable "step size" for mapping user tokens onto pod indices, ensuring the mapping is 
+		// relevant to the current system load while maintaining a minimum sensitivity
 		adaptiveBucketSize := math.Max(tokenTrackerMinTokens, (minTokens+maxTokens)/2)
 
 		// Apply clamped linear mapping: tokens / bucket_size, clamped to [0, npods-1]
 		normalizedTokens := math.Min(float64(userTokens)/adaptiveBucketSize, float64(len(readyPods)-1))
+
 		fairnessScore := math.Abs(float64(i) - normalizedTokens)
 
-		// Enhanced logging for token normalization
 		klog.InfoS("VTC token normalization details",
 			"user", *user,
 			"userTokens", userTokens,

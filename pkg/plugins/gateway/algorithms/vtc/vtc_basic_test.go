@@ -155,7 +155,6 @@ func TestVTCRouterSimple(t *testing.T) {
 		config:         routerConfig,
 	}
 
-	// Create test pods
 	pod1 := &v1.Pod{}
 	pod1.Status.PodIP = "192.168.1.1"
 	pod1.Status.Phase = v1.PodRunning
@@ -315,7 +314,6 @@ func TestVTCBasicRouterStrengths(t *testing.T) {
 
 	t.Run("TokenAccumulation", func(t *testing.T) {
 		tracker := NewInMemorySlidingWindowTokenTracker(trackerConfig)
-		// No router needed for this test, just using the tracker
 
 		// Set initial tokens
 		user := "accumUser"
