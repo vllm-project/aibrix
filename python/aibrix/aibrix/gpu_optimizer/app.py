@@ -35,6 +35,7 @@ MODEL_LABEL = "model.aibrix.ai/name"
 MIN_REPLICAS_LABEL = "model.aibrix.ai/min_replicas"
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
 
 routes = []  # type: ignore
 model_monitors: Dict[str, ModelMonitor] = {}  # Dictionary to store serving threads
@@ -43,7 +44,9 @@ mount_visulizer(
     routes, "/dash/{model_name}", lambda model_name: model_monitors.get(model_name)
 )
 app = Starlette(routes=routes)
-redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)  # Default DB
+redis_client = redis.Redis(
+    host=REDIS_HOST, port=REDIS_PORT, db=0, password=REDIS_PASSWORD
+)  # Default DB
 debug = False
 
 

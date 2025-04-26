@@ -34,9 +34,8 @@ def generate_synthetic(args):
             "session_id": session_id,
             "prompts": flat_prompts_data,
         })
-    filename = f"multiturn-sessions{args.num_sessions_mean}-turns{args.num_turns_mean}-len{args.prompt_length_mean}-dataset.jsonl"
-    save_dataset_jsonl(sessioned_prompts, filename)
-    logging.warn(f"...Finished saving dataset {filename}.")
+    save_dataset_jsonl(sessioned_prompts, args.output)
+    logging.warn(f"...Finished saving dataset {args.output}.")
         
 
 if __name__ == "__main__":
@@ -48,6 +47,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-turns-std", type=int, default=1, help="Number of turns (std).")
     parser.add_argument("--num-sessions-mean", type=int, default=10, help="Number of sessions (mean).")
     parser.add_argument("--num-sessions-std", type=int, default=10, help="Number of sessions (std).")
+    parser.add_argument("--output", type=str, default="output.jsonl", help="Output file name.")
     
     args = parser.parse_args()
     generate_synthetic(args)

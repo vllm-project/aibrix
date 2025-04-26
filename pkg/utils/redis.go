@@ -24,16 +24,15 @@ import (
 	"k8s.io/klog/v2"
 )
 
-var (
-	redis_host = LoadEnv("REDIS_HOST", "localhost")
-	redis_port = LoadEnv("REDIS_PORT", "6379")
-)
-
 func GetRedisClient() *redis.Client {
+	redisHost := LoadEnv("REDIS_HOST", "localhost")
+	redisPort := LoadEnv("REDIS_PORT", "6379")
+	redisPassword := LoadEnv("REDIS_PASSWORD", "")
 	// Connect to Redis
 	client := redis.NewClient(&redis.Options{
-		Addr: redis_host + ":" + redis_port,
-		DB:   0, // Default DB
+		Addr:     redisHost + ":" + redisPort,
+		Password: redisPassword,
+		DB:       0, // Default DB
 	})
 	pong, err := client.Ping(context.Background()).Result()
 	if err != nil {

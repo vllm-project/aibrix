@@ -53,7 +53,15 @@ const (
 	KVCacheAnnotationPodAntiAffinity = "kvcache.orchestration.aibrix.ai/pod-anti-affinity"
 
 	// Vineyard, HPKV, InfiniStore
-	KVCacheAnnotationMode = "kvcache.orchestration.aibrix.ai/mode"
+	KVCacheAnnotationMode              = "kvcache.orchestration.aibrix.ai/mode"
+	KVCacheAnnotationContainerRegistry = "kvcache.orchestration.aibrix.ai/container-registry"
+
+	KVCacheAnnotationRDMAPort         = "hpkv.kvcache.orchestration.aibrix.ai/rdma-port"
+	KVCacheAnnotationAdminPort        = "hpkv.kvcache.orchestration.aibrix.ai/admin-port"
+	KVCacheAnnotationBlockSize        = "hpkv.kvcache.orchestration.aibrix.ai/block-size-bytes"
+	KVCacheAnnotationBlockCount       = "hpkv.kvcache.orchestration.aibrix.ai/block-count"
+	KVCacheAnnotationTotalSlots       = "hpkv.kvcache.orchestration.aibrix.ai/total-slots"
+	KVCacheAnnotationVirtualNodeCount = "hpkv.kvcache.orchestration.aibrix.ai/virtual-node-count"
 
 	KVCacheLabelValueRoleCache     = "cache"
 	KVCacheLabelValueRoleMetadata  = "metadata"

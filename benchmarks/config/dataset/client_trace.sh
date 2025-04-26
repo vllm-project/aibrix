@@ -1,0 +1,1 @@
+export TRACE="${client_trace_path}"

@@ -23,9 +23,8 @@ def process_dataset_trace(
             "prompt": entry['input'][0]['content'],
             "completion": entry['output'],
         })
-    output_filename = f"output/trace-{output}"
-    save_dataset_jsonl(prompts, output_filename)
-    logging.warn(f"...Finished saving dataset to {output_filename}")
+    save_dataset_jsonl(prompts, output)
+    logging.warn(f"...Finished saving dataset to {output}")
     
     
 def process_dataset_sharegpt(
@@ -44,9 +43,8 @@ def process_dataset_sharegpt(
             "session_id": session_id,
             "prompts": flat_prompts_data,
         })
-    output_filename = f"output/sharegpt-{output}"
-    save_dataset_jsonl(sessioned_prompts, output_filename)
-    logging.warn(f"...Finished saving dataset to {output_filename}")
+    save_dataset_jsonl(sessioned_prompts, output)
+    logging.warn(f"...Finished saving dataset to {output}")
     
     
 if __name__ == "__main__":

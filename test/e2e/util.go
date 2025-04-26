@@ -84,9 +84,16 @@ func initializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset,
 }
 
 func createOpenAIClient(baseURL, apiKey string) *openai.Client {
+	// For strict testing, use a custom http.Transport with disabled keep-alives and caching to avoid flaky tests.
+	transport := &http.Transport{
+		DisableKeepAlives: true,
+		MaxIdleConns:      0,
+	}
+
 	return openai.NewClient(
 		option.WithBaseURL(baseURL),
 		option.WithAPIKey(apiKey),
+		option.WithHTTPClient(&http.Client{Transport: transport}),
 		option.WithMiddleware(func(r *http.Request, mn option.MiddlewareNext) (*http.Response, error) {
 			r.URL.Path = "/v1" + r.URL.Path
 			return mn(r)

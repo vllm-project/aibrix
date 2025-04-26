@@ -44,6 +44,7 @@ benchmarks/autoscaling/logs
 benchmarks/autoscaling/output_stats
 benchmarks/autoscaling/workload_plot
 benchmarks/generator/traces/*
+benchmarks/output
 
 # simulator cache and output
 development/simulator/simulator_output

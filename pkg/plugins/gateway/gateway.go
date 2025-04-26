@@ -124,6 +124,11 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID, "")
 			}
 
+			if isRespError && respErrorCode == 401 {
+				// Early return due to unauthorized or canceled context we noticed.
+				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID, `{"error":"unauthorized"}`)
+			}
+
 		case *extProcPb.ProcessingRequest_ResponseBody:
 			if isRespError {
 				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID,
@@ -141,6 +146,11 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			if routerCtx != nil {
 				routerCtx.Delete()
 			}
+
+			// Optional: if it's context or connection-related, don’t retry
+			if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "EOF") {
+				klog.Warning("Stream already closed by client", "requestID", requestID)
+			}
 		}
 	}
 }
@@ -152,17 +162,15 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) 
 	}
 
 	if pods.Len() == 0 {
-		return "", fmt.Errorf("no pods to forward request")
+		return "", fmt.Errorf("no pods for routing")
 	}
 	readyPods := utils.FilterRoutablePods(pods.All())
 	if len(readyPods) == 0 {
-		return "", fmt.Errorf("no ready pods available for fallback")
+		return "", fmt.Errorf("no ready pods for routing")
 	}
 	if len(readyPods) == 1 {
-		for _, pod := range readyPods {
-			ctx.SetTargetPod(pod)
-			return ctx.TargetAddress(), nil
-		}
+		ctx.SetTargetPod(readyPods[0])
+		return ctx.TargetAddress(), nil
 	}
 
 	return router.Route(ctx, &utils.PodArray{Pods: readyPods})

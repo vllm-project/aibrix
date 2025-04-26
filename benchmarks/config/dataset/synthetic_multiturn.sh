@@ -1,0 +1,6 @@
+export PROMPT_LENGTH=100
+export PROMPT_STD=10
+export NUM_TURNS=10
+export NUM_TURNS_STD=1
+export NUM_SESSIONS=10
+export NUM_SESSIONS_STD=1

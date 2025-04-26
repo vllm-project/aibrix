@@ -96,7 +96,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			return extErr, model, routingCtx, stream, term
 		}
 
-		routingCtx = routingAlgorithm.NewContext(ctx, model, message, requestID, user.Name)
+		routingCtx = types.NewRoutingContext(ctx, routingAlgorithm, model, message, requestID, user.Name)
 		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingAlgorithm", routingAlgorithm, "model", model)
