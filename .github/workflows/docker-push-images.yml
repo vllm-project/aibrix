@@ -1,6 +1,7 @@
 name: Docker Push Images
 
 on:
+  workflow_dispatch:  # Allows manual trigger
   push:
     branches: [ "main", "release-*" ]
 
