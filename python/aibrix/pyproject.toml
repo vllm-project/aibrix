@@ -59,6 +59,7 @@ dash = "^2.18.2"
 matplotlib = "^3.9.2"
 filelock = "^3.16.1"
 tiktoken = "^0.7.0"
+transformers = ">=4.38.0"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "1.11.1"
