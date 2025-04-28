@@ -49,7 +49,6 @@ func TestModelAdapter(t *testing.T) {
 				}
 				return false, nil
 			}))
-		validateAllPodsAreReady(t, k8sClient, 3)
 	})
 
 	// create model adapter
@@ -63,6 +62,7 @@ func TestModelAdapter(t *testing.T) {
 	// delete pod and ensure model adapter is rescheduled
 	t.Log("deleting pod instance to force model adapter rescheduling")
 	assert.NoError(t, k8sClient.CoreV1().Pods("default").Delete(context.Background(), oldPod, v1.DeleteOptions{}))
+	validateAllPodsAreReady(t, k8sClient, 3)
 	time.Sleep(3 * time.Second)
 	adapter = validateModelAdapter(t, v1alpha1Client, adapter.Name)
 	newPod := adapter.Status.Instances[0]
