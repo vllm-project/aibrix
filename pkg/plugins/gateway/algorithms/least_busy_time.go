@@ -64,7 +64,7 @@ func (r leastBusyTimeRouter) Route(ctx *types.RoutingContext, pods types.PodList
 			continue
 		}
 
-		busyTimeRatio, err := r.cache.GetMetricValueByPod(pod.Name, "gpu_busy_time_ratio") // todo: replace mock
+		busyTimeRatio, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, "gpu_busy_time_ratio") // todo: replace mock
 		if err != nil {
 			klog.Error(err)
 			continue

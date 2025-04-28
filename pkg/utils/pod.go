@@ -19,6 +19,7 @@ package utils
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"k8s.io/klog/v2"
 
@@ -31,6 +32,22 @@ import (
 const (
 	NAMESPACE = "aibrix-system"
 )
+
+// GeneratePodKey generates a key in the format "namespace/name" for a given pod.
+func GeneratePodKey(podNamespace, podName string) string {
+	return fmt.Sprintf("%s/%s", podNamespace, podName)
+}
+
+// ParsePodKey parses a key in the format "namespace/podName".
+// Returns (namespace, podName, success).
+func ParsePodKey(key string) (string, string, bool) {
+	parts := strings.Split(key, "/")
+	if len(parts) != 2 {
+		klog.V(4).Infof("Invalid key format: %q. Expected format: namespace/name", key)
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
 
 // IsPodTerminating check if pod is in terminating status via whether the deletion timestamp is set
 func IsPodTerminating(pod *v1.Pod) bool {

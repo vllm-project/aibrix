@@ -110,7 +110,7 @@ func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod
 func getRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
 	podRequestCount := map[string]int{}
 	for _, pod := range readyPods {
-		runningReq, err := cache.GetMetricValueByPod(pod.Name, metrics.RealtimeNumRequestsRunning)
+		runningReq, err := cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
 		if err != nil {
 			runningReq = &metrics.SimpleMetricValue{Value: 0}
 		}

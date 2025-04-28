@@ -40,11 +40,12 @@ var dummyPod = &v1.Pod{
 	},
 }
 
-func getReadyPod(podName string, modelName string, id int) *v1.Pod {
+func getReadyPod(podName, podNamespcae string, modelName string, id int) *v1.Pod {
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   podName,
-			Labels: make(map[string]string),
+			Name:      podName,
+			Namespace: podNamespcae,
+			Labels:    make(map[string]string),
 		},
 		Status: v1.PodStatus{
 			PodIP: fmt.Sprintf("10.0.0.%d", id),
@@ -60,16 +61,17 @@ func getReadyPod(podName string, modelName string, id int) *v1.Pod {
 	return pod
 }
 
-func getNewPod(podName string, modelName string, id int) *v1.Pod {
-	pod := getReadyPod(podName, modelName, id)
+func getNewPod(podName, podNamespace string, modelName string, id int) *v1.Pod {
+	pod := getReadyPod(podName, podNamespace, modelName, id)
 	pod.Status.Conditions[0].Type = v1.PodInitialized
 	return pod
 }
 
-func getNewModelAdapter(modelName string, podName string) *modelv1alpha1.ModelAdapter {
+func getNewModelAdapter(modelName, namespace string, podName string) *modelv1alpha1.ModelAdapter {
 	adapter := &modelv1alpha1.ModelAdapter{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: modelName,
+			Name:      modelName,
+			Namespace: namespace,
 		},
 		Status: modelv1alpha1.ModelAdapterStatus{
 			Instances: []string{podName},
@@ -81,10 +83,11 @@ func getNewModelAdapter(modelName string, podName string) *modelv1alpha1.ModelAd
 	return adapter
 }
 
-func getNewModelAdapterWithPods(modelName string, podNames []string) *modelv1alpha1.ModelAdapter {
+func getNewModelAdapterWithPods(modelName, namespace string, podNames []string) *modelv1alpha1.ModelAdapter {
 	adapter := &modelv1alpha1.ModelAdapter{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: modelName,
+			Name:      modelName,
+			Namespace: namespace,
 		},
 		Status: modelv1alpha1.ModelAdapterStatus{
 			Instances: podNames,
@@ -143,24 +146,24 @@ var _ = Describe("Cache", func() {
 		cache := newCache()
 
 		// Ignore pods without model label
-		podWOModel := getReadyPod("p1", "m1", 0)
+		podWOModel := getReadyPod("p1", "default", "m1", 0)
 		podWOModel.ObjectMeta.Labels = nil
 		cache.addPod(podWOModel)
-		_, exist := cache.metaPods.Load("p1")
+		_, exist := cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeFalse())
 
 		// Ignore pods without model label
-		podRayWorker := getReadyPod("p1", "m1", 0)
+		podRayWorker := getReadyPod("p1", "default", "m1", 0)
 		podRayWorker.ObjectMeta.Labels[nodeType] = nodeWorker
 		cache.addPod(podRayWorker)
-		_, exist = cache.metaPods.Load("p1")
+		_, exist = cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeFalse())
 
-		pod := getReadyPod("p1", "m1", 0)
+		pod := getReadyPod("p1", "default", "m1", 0)
 		cache.addPod(pod)
 
 		// Pod meta exists
-		metaPod, exist := cache.metaPods.Load("p1")
+		metaPod, exist := cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeTrue())
 		Expect(metaPod.Pod).To(Equal(pod))
 		Expect(metaPod.Models).ToNot(BeNil())
@@ -174,7 +177,7 @@ var _ = Describe("Cache", func() {
 		Expect(metaModel).ToNot(BeNil())
 		Expect(metaModel.Pods).ToNot(BeNil())
 		// Model -> pod mapping exists
-		modelPod, exist := metaModel.Pods.Load("p1")
+		modelPod, exist := metaModel.Pods.Load("default/p1")
 		Expect(exist).To(BeTrue())
 		Expect(modelPod).To(Equal(pod))
 		pods := metaModel.Pods.Array()
@@ -185,12 +188,12 @@ var _ = Describe("Cache", func() {
 
 	It("should addModelAdapter create metaModels entry", func() {
 		cache := newCache()
-		cache.addPod(getReadyPod("p1", "m1", 0))
+		cache.addPod(getReadyPod("p1", "default", "m1", 0))
 
 		// Success
-		cache.addModelAdapter(getNewModelAdapter("m1adapter", "p1"))
+		cache.addModelAdapter(getNewModelAdapter("m1adapter", "default", "p1"))
 
-		metaPod, exist := cache.metaPods.Load("p1")
+		metaPod, exist := cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeTrue())
 		Expect(metaPod.Models.Len()).To(Equal(2))
 		// Pod -> adapter mapping exists
@@ -203,7 +206,7 @@ var _ = Describe("Cache", func() {
 		Expect(metaModel).ToNot(BeNil())
 		Expect(metaModel.Pods).ToNot(BeNil())
 		// Model adapter -> pod mapping exists
-		modelPod, exist := metaModel.Pods.Load("p1")
+		modelPod, exist := metaModel.Pods.Load("default/p1")
 		Expect(exist).To(BeTrue())
 		Expect(modelPod).To(Equal(metaPod.Pod))
 		pods := metaModel.Pods.Array()
@@ -211,9 +214,9 @@ var _ = Describe("Cache", func() {
 		Expect(pods.Pods[0]).To(Equal(metaPod.Pod))
 
 		// Failure
-		cache.addModelAdapter(getNewModelAdapter("p0", "m0adapter"))
+		cache.addModelAdapter(getNewModelAdapter("p0", "default", "m0adapter"))
 		// No pod meta automatically created
-		_, exist = cache.metaPods.Load("p0")
+		_, exist = cache.metaPods.Load("default/p0")
 		Expect(exist).To(BeFalse())
 		// No model meta cratead on failure
 		_, exist = cache.metaModels.Load("m0adapter")
@@ -222,24 +225,25 @@ var _ = Describe("Cache", func() {
 
 	It("should updatePod clear old mappings with no model adapter inherited", func() {
 		cache := newCache()
-		oldPod := getReadyPod("p1", "m1", 0)
+		oldPod := getReadyPod("p1", "default", "m1", 0)
 		cache.addPod(oldPod)
-		cache.addModelAdapter(getNewModelAdapter("m1adapter", oldPod.Name))
-		oldMetaPod, _ := cache.metaPods.Load(oldPod.Name)
+		cache.addModelAdapter(getNewModelAdapter("m1adapter", "default", oldPod.Name))
+		key := fmt.Sprintf("%s/%s", oldPod.Namespace, oldPod.Name)
+		oldMetaPod, _ := cache.metaPods.Load(key)
 		err := cache.updatePodRecord(oldMetaPod, "", metrics.NumRequestsRunning, metrics.PodMetricScope, &metrics.LabelValueMetricValue{Value: "0"})
 		Expect(err).To(BeNil())
 		Expect(oldMetaPod.Models.Len()).To(Equal(2))
 		Expect(oldMetaPod.Metrics.Len()).To(Equal(1))
 
-		newPod := getReadyPod("p2", "m1", 1) // IP may changed due to migration
+		newPod := getReadyPod("p2", "default", "m1", 1) // IP may changed due to migration
 
 		cache.updatePod(oldPod, newPod)
 
 		// OldPod meta deleted
-		_, exist := cache.metaPods.Load("p1")
+		_, exist := cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeFalse())
 		// NewPod meta created
-		newMetaPod, exist := cache.metaPods.Load("p2")
+		newMetaPod, exist := cache.metaPods.Load("default/p2")
 		Expect(exist).To(BeTrue())
 		Expect(newMetaPod.Pod).To(Equal(newPod))
 		Expect(newMetaPod.Models.Len()).To(Equal(1))
@@ -258,7 +262,7 @@ var _ = Describe("Cache", func() {
 		Expect(metaModel.Pods).ToNot(BeNil())
 		Expect(metaModel.Pods.Len()).To(Equal(1))
 		// Model -> pod mapping exists
-		modelPod, exist := metaModel.Pods.Load("p2")
+		modelPod, exist := metaModel.Pods.Load("default/p2")
 		Expect(exist).To(BeTrue())
 		Expect(modelPod).To(Equal(newPod))
 		// Model adapter meta cleared
@@ -269,14 +273,14 @@ var _ = Describe("Cache", func() {
 	It("should pods returned after updatePod reflect updated pods", func() {
 		cache := newCache()
 
-		oldPod := getNewPod("p1", "m1", 0)
+		oldPod := getNewPod("p1", "default", "m1", 0)
 		cache.addPod(oldPod)
 		pods, err := cache.ListPodsByModel("m1")
 		Expect(err).To(BeNil())
 		Expect(pods.Len()).To(Equal(1))
 		Expect(utils.CountRoutablePods(pods.All())).To(Equal(0))
 
-		newPod := getReadyPod("p1", "m1", 0) // IP may changed due to migration
+		newPod := getReadyPod("p1", "default", "m1", 0) // IP may changed due to migration
 		cache.updatePod(oldPod, newPod)
 
 		pods, err = cache.ListPodsByModel("m1")
@@ -287,14 +291,14 @@ var _ = Describe("Cache", func() {
 
 	It("should deletePod clear pod, model, and modelAdapter entrys", func() {
 		cache := newCache()
-		pod := getReadyPod("p1", "m1", 0)
+		pod := getReadyPod("p1", "default", "m1", 0)
 		cache.addPod(pod)
-		cache.addModelAdapter(getNewModelAdapter("m1adapter", pod.Name))
+		cache.addModelAdapter(getNewModelAdapter("m1adapter", "default", pod.Name))
 
 		cache.deletePod(pod)
 
 		// Pod meta deleted
-		_, exist := cache.metaPods.Load("p1")
+		_, exist := cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeFalse())
 		// Related model meta deleted
 		_, exist = cache.metaModels.Load("m1")
@@ -305,40 +309,40 @@ var _ = Describe("Cache", func() {
 
 		// Abnormal: Pod without model label exists
 		cache.addPod(pod)
-		_, exist = cache.metaPods.Load("p1")
+		_, exist = cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeTrue())
 		pod.ObjectMeta.Labels = nil
 		cache.deletePod(pod)
-		_, exist = cache.metaPods.Load("p1")
+		_, exist = cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeFalse())
 	})
 
 	It("should deleteModelAdapter remove mappings", func() {
 		cache := newCache()
-		cache.addPod(getReadyPod("p1", "m1", 0))
-		cache.addPod(getReadyPod("p2", "m1", 0))
-		cache.addPod(getReadyPod("p3", "m1", 0))
-		oldAdapter := getNewModelAdapterWithPods("m1adapter1", []string{"p1", "p2"})
+		cache.addPod(getReadyPod("p1", "default", "m1", 0))
+		cache.addPod(getReadyPod("p2", "default", "m1", 0))
+		cache.addPod(getReadyPod("p3", "default", "m1", 0))
+		oldAdapter := getNewModelAdapterWithPods("m1adapter1", "default", []string{"p1", "p2"})
 		cache.addModelAdapter(oldAdapter)
 
 		cache.deleteModelAdapter(oldAdapter)
 
 		// Pod1
-		p1MetaPod, exist := cache.metaPods.Load("p1")
+		p1MetaPod, exist := cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeTrue())
 		Expect(p1MetaPod.Models.Len()).To(Equal(1))
 		_, exist = p1MetaPod.Models.Load("m1adapter1")
 		Expect(exist).To(BeFalse())
 
 		// Pod2
-		p2MetaPod, exist := cache.metaPods.Load("p2")
+		p2MetaPod, exist := cache.metaPods.Load("default/p2")
 		Expect(exist).To(BeTrue())
 		Expect(p2MetaPod.Models.Len()).To(Equal(1)) // Include base model
 		_, exist = p2MetaPod.Models.Load("m1adapter1")
 		Expect(exist).To(BeFalse())
 
 		// Pod3
-		p3MetaPod, exist := cache.metaPods.Load("p3")
+		p3MetaPod, exist := cache.metaPods.Load("default/p3")
 		Expect(exist).To(BeTrue())
 		Expect(p3MetaPod.Models.Len()).To(Equal(1)) // Include base model
 
@@ -354,18 +358,18 @@ var _ = Describe("Cache", func() {
 
 	It("should updateModelAdapter reset mappings", func() {
 		cache := newCache()
-		cache.addPod(getReadyPod("p1", "m1", 0))
-		cache.addPod(getReadyPod("p2", "m1", 0))
-		cache.addPod(getReadyPod("p3", "m1", 0))
-		oldAdapter := getNewModelAdapterWithPods("m1adapter1", []string{"p1", "p2"})
+		cache.addPod(getReadyPod("p1", "default", "m1", 0))
+		cache.addPod(getReadyPod("p2", "default", "m1", 0))
+		cache.addPod(getReadyPod("p3", "default", "m1", 0))
+		oldAdapter := getNewModelAdapterWithPods("m1adapter1", "default", []string{"p1", "p2"})
 		cache.addModelAdapter(oldAdapter)
 
-		newAdapter := getNewModelAdapterWithPods("m1adapter2", []string{"p2", "p3"})
+		newAdapter := getNewModelAdapterWithPods("m1adapter2", "default", []string{"p2", "p3"})
 
 		cache.updateModelAdapter(oldAdapter, newAdapter)
 
 		// Pod1
-		p1MetaPod, exist := cache.metaPods.Load("p1")
+		p1MetaPod, exist := cache.metaPods.Load("default/p1")
 		Expect(exist).To(BeTrue())
 		Expect(p1MetaPod.Models.Len()).To(Equal(1))
 		_, exist = p1MetaPod.Models.Load("m1adapter1")
@@ -374,7 +378,7 @@ var _ = Describe("Cache", func() {
 		Expect(exist).To(BeFalse())
 
 		// Pod2
-		p2MetaPod, exist := cache.metaPods.Load("p2")
+		p2MetaPod, exist := cache.metaPods.Load("default/p2")
 		Expect(exist).To(BeTrue())
 		Expect(p2MetaPod.Models.Len()).To(Equal(2)) // Include base model
 		_, exist = p2MetaPod.Models.Load("m1adapter1")
@@ -383,7 +387,7 @@ var _ = Describe("Cache", func() {
 		Expect(exist).To(BeTrue())
 
 		// Pod3
-		p3MetaPod, exist := cache.metaPods.Load("p3")
+		p3MetaPod, exist := cache.metaPods.Load("default/p3")
 		Expect(exist).To(BeTrue())
 		Expect(p3MetaPod.Models.Len()).To(Equal(2)) // Include base model
 		_, exist = p3MetaPod.Models.Load("m1adapter1")
@@ -401,31 +405,31 @@ var _ = Describe("Cache", func() {
 		Expect(metaModel).ToNot(BeNil())
 		Expect(metaModel.Pods).ToNot(BeNil())
 		Expect(metaModel.Pods.Len()).To(Equal(2))
-		_, exist = metaModel.Pods.Load("p1")
+		_, exist = metaModel.Pods.Load("default/p1")
 		Expect(exist).To(BeFalse())
-		_, exist = metaModel.Pods.Load("p2")
+		_, exist = metaModel.Pods.Load("default/p2")
 		Expect(exist).To(BeTrue())
-		_, exist = metaModel.Pods.Load("p3")
+		_, exist = metaModel.Pods.Load("default/p3")
 		Expect(exist).To(BeTrue())
 	})
 
 	It("should GetPod return k8s pod", func() {
 		cache := newCache()
-		pod := getReadyPod("p1", "m1", 0)
+		pod := getReadyPod("p1", "default", "m1", 0)
 		cache.addPod(pod)
 
-		_, err := cache.GetPod("p0")
+		_, err := cache.GetPod("p0", "default")
 		Expect(err).ToNot(BeNil())
 
-		actual, err := cache.GetPod(pod.Name)
+		actual, err := cache.GetPod(pod.Name, pod.Namespace)
 		Expect(err).To(BeNil())
 		Expect(actual).To(BeIdenticalTo(pod))
 	})
 
 	It("should GetPods return k8s pod slice", func() {
 		cache := newCache()
-		pod1 := getReadyPod("p1", "m1", 0)
-		pod2 := getReadyPod("p2", "m2", 0)
+		pod1 := getReadyPod("p1", "default", "m1", 0)
+		pod2 := getReadyPod("p2", "default", "m2", 0)
 		cache.addPod(pod1)
 		cache.addPod(pod2)
 
@@ -437,8 +441,8 @@ var _ = Describe("Cache", func() {
 
 	It("should GetPodsForModel() return a PodArray", func() {
 		cache := newCache()
-		pod1 := getReadyPod("p1", "m1", 0)
-		pod2 := getReadyPod("p2", "m2", 0)
+		pod1 := getReadyPod("p1", "default", "m1", 0)
+		pod2 := getReadyPod("p2", "default", "m2", 0)
 		cache.addPod(pod1)
 		cache.addPod(pod2)
 
@@ -454,8 +458,8 @@ var _ = Describe("Cache", func() {
 
 	It("should ListModels return string slice", func() {
 		cache := newCache()
-		pod1 := getReadyPod("p1", "m1", 0)
-		pod2 := getReadyPod("p2", "m2", 0)
+		pod1 := getReadyPod("p1", "default", "m1", 0)
+		pod2 := getReadyPod("p2", "default", "m2", 0)
 		cache.addPod(pod1)
 		cache.addPod(pod2)
 
@@ -473,15 +477,15 @@ var _ = Describe("Cache", func() {
 
 	It("should GetModelsForPod() return a string slice", func() {
 		cache := newCache()
-		pod1 := getReadyPod("p1", "m1", 0)
-		pod2 := getReadyPod("p2", "m2", 0)
+		pod1 := getReadyPod("p1", "default", "m1", 0)
+		pod2 := getReadyPod("p2", "default", "m2", 0)
 		cache.addPod(pod1)
 		cache.addPod(pod2)
 
-		_, err := cache.ListModelsByPod("p0")
+		_, err := cache.ListModelsByPod("p0", "default")
 		Expect(err).ToNot(BeNil())
 
-		models, err := cache.ListModelsByPod("p1")
+		models, err := cache.ListModelsByPod("p1", "default")
 		Expect(err).To(BeNil())
 		Expect(models).To(HaveLen(1))
 		Expect(models).To(ContainElement("m1"))
@@ -490,7 +494,7 @@ var _ = Describe("Cache", func() {
 	It("should basic add request count, add request trace no err", func() {
 		modelName := "llama-7b"
 		cache := newTraceCache()
-		cache.AddPod(getReadyPod("p1", modelName, 0))
+		cache.AddPod(getReadyPod("p1", "default", modelName, 0))
 
 		term := cache.AddRequestCount(nil, "no use now", modelName)
 		Expect(cache.numRequestsTraces).To(Equal(int32(1)))
@@ -523,7 +527,7 @@ var _ = Describe("Cache", func() {
 	It("should global pending counter return 0.", func() {
 		modelName := "llama-7b"
 		cache := newTraceCache()
-		cache.AddPod(getReadyPod("p1", modelName, 0))
+		cache.AddPod(getReadyPod("p1", "default", modelName, 0))
 
 		total := 100000
 		var wg sync.WaitGroup

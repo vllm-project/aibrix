@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
 
@@ -28,7 +29,11 @@ func (c *Store) debugInfo() {
 		return
 	}
 
-	c.metaPods.Range(func(podName string, pod *Pod) bool {
+	c.metaPods.Range(func(key string, pod *Pod) bool {
+		_, podName, ok := utils.ParsePodKey(key)
+		if !ok {
+			return true
+		}
 		klog.V(4).Infof("pod: %s, podIP: %v, models: %s", podName, pod.Status.PodIP, strings.Join(pod.Models.Array(), " "))
 		pod.Metrics.Range(func(metricName string, metricVal metrics.MetricValue) bool {
 			klog.V(5).Infof("%v_%v_%v", podName, metricName, metricVal)

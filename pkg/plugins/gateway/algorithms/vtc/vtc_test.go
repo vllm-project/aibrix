@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -55,14 +56,15 @@ func (c *SimpleCache) GetPodMetric(ctx context.Context, podIP, model, metricName
 	return 0, nil
 }
 
-func (c *SimpleCache) GetMetricValueByPodModel(podName, modelName, metricName string) (metrics.MetricValue, error) {
-	if _, ok := c.metrics[podName]; !ok {
+func (c *SimpleCache) GetMetricValueByPodModel(podName, podNamespace, modelName, metricName string) (metrics.MetricValue, error) {
+	key := utils.GeneratePodKey(podNamespace, podName)
+	if _, ok := c.metrics[key]; !ok {
 		return &metrics.SimpleMetricValue{Value: 0}, nil
 	}
-	if _, ok := c.metrics[podName][modelName]; !ok {
+	if _, ok := c.metrics[key][modelName]; !ok {
 		return &metrics.SimpleMetricValue{Value: 0}, nil
 	}
-	if value, ok := c.metrics[podName][modelName][metricName]; ok {
+	if value, ok := c.metrics[key][modelName][metricName]; ok {
 		return &metrics.SimpleMetricValue{Value: value}, nil
 	}
 	return &metrics.SimpleMetricValue{Value: 0}, nil
@@ -78,7 +80,7 @@ func (c *SimpleCache) DoneRequestCount(ctx *types.RoutingContext, requestID stri
 func (c *SimpleCache) DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64, inputTokens int64, outputTokens int64) {
 }
 
-func (c *SimpleCache) GetPod(podName string) (*v1.Pod, error) {
+func (c *SimpleCache) GetPod(podName, podNamespace string) (*v1.Pod, error) {
 	return nil, nil
 }
 
@@ -94,11 +96,11 @@ func (c *SimpleCache) ListModels() []string {
 	return []string{}
 }
 
-func (c *SimpleCache) ListModelsByPod(podName string) ([]string, error) {
+func (c *SimpleCache) ListModelsByPod(podName, podNamespace string) ([]string, error) {
 	return []string{}, nil
 }
 
-func (c *SimpleCache) GetMetricValueByPod(podName, metricName string) (metrics.MetricValue, error) {
+func (c *SimpleCache) GetMetricValueByPod(podName, podNamespace, metricName string) (metrics.MetricValue, error) {
 	return nil, nil
 }
 
