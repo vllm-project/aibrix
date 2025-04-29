@@ -4,8 +4,19 @@ metadata:
   name: gateway-plugins
   namespace: aibrix-system
 spec:
+  replicas: 1
   template:
     spec:
+      affinity:
+        nodeAffinity: # prevent gateway pod to be placed on gpu node.
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: vke.node.gpu.schedule
+                  operator: NotIn
+                  values:
+                    - nvidia
       containers:
         - name: gateway-plugin
           resources:

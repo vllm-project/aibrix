@@ -97,6 +97,8 @@ func TestBaseModelInferenceFailures(t *testing.T) {
 			var apiErr *openai.Error
 			if !errors.As(err, &apiErr) {
 				t.Fatalf("Error is not an APIError: %+v", err)
+			} else {
+				t.Logf("API Error code: %d, message: %s", apiErr.StatusCode, apiErr.Message)
 			}
 			if assert.ErrorAs(t, err, &apiErr) {
 				assert.Equal(t, tc.expectErrCode, apiErr.StatusCode, t.Name())

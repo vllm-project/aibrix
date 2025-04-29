@@ -35,10 +35,11 @@ type PodCache interface {
 	// GetPod retrieves a Pod object by name
 	// Parameters:
 	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
 	// Returns:
 	//   *v1.Pod: Found pod object
 	//   error: Error information if operation fails
-	GetPod(podName string) (*v1.Pod, error)
+	GetPod(podName, podNamespace string) (*v1.Pod, error)
 
 	// ListPodsByModel gets pods associated with a model
 	// Parameters:
@@ -66,10 +67,11 @@ type ModelCache interface {
 	// ListModelsByPod gets models associated with a pod
 	// Parameters:
 	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
 	// Returns:
 	//   map[string]struct{}: Set of model names
 	//   error: Error information if operation fails
-	ListModelsByPod(podName string) ([]string, error)
+	ListModelsByPod(podName, podNamespace string) ([]string, error)
 }
 
 // MetricCache defines operations for metric data caching
@@ -77,22 +79,24 @@ type MetricCache interface {
 	// GetMetricValueByPod gets metric value for a pod
 	// Parameters:
 	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
 	//   metricName: Name of the metric
 	// Returns:
 	//   metrics.MetricValue: Retrieved metric value
 	//   error: Error information if operation fails
-	GetMetricValueByPod(podName, metricName string) (metrics.MetricValue, error)
+	GetMetricValueByPod(podName, podNamespace, metricName string) (metrics.MetricValue, error)
 
 	// GetMetricValueByPodModel gets metric value for pod-model pair
 	// Parameters:
 	//   ctx: Routing context
 	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
 	//   modelName: Name of the model
 	//   metricName: Name of the metric
 	// Returns:
 	//   metrics.MetricValue: Retrieved metric value
 	//   error: Error information if operation fails
-	GetMetricValueByPodModel(podName, modelName string, metricName string) (metrics.MetricValue, error)
+	GetMetricValueByPodModel(podName, podNamespace, modelName string, metricName string) (metrics.MetricValue, error)
 
 	// AddSubscriber adds a metric subscriber
 	// Parameters:

@@ -13,6 +13,9 @@ from transformers import (AutoTokenizer, PreTrainedTokenizer,
 from datetime import datetime
 from collections import Counter
 
+def if_sessioned_dataset(df: pd.DataFrame):
+    return "session_id" in df.columns
+    
 def convert_to_stat_df(qps_file: str, 
                        input_file: str, 
                        output_file: str,
@@ -165,17 +168,14 @@ def get_tokenizer(
     return AutoTokenizer.from_pretrained(pretrained_model_name_or_path,
                                          trust_remote_code=trust_remote_code)
 
-
-def plot_workload(workload_name: str, 
-                  workload: list,
+def plot_workload(workload: list,
                   bin_size_sec: int = 1,
                   output_dir: str = None):
     """
     Plots workload statistics: total requests, prompt token count, and output token count binned by time.
-    Also plots session ID frequency ranking.
+    Also plots a session timeline as a scatter plot.
 
     Args:
-        workload_name (str): Name of the workload.
         workload (list of dict): Workload entries with timestamps and request details.
         bin_size_sec (int): Size of each bin in seconds for aggregation.
         output_dir (str, optional): Directory path to save the plot.
@@ -184,79 +184,84 @@ def plot_workload(workload_name: str,
     
     # Convert workload data to a DataFrame
     data = []
-    session_ids = []
+    scatter_data = []
 
     for entry in workload:
         timestamp_sec = int(entry["timestamp"] / 1000)  # Convert ms to sec
         num_requests = len(entry["requests"])
-        total_prompt_tokens = np.mean([req["prompt_length"] if req["prompt_length"] else 0 for req in entry["requests"]]) if entry["requests"] else 0
-        total_output_tokens = np.mean([req["output_length"] if req["output_length"] else 0 for req in entry["requests"]]) if entry["requests"] else 0
-        
+        total_prompt_tokens = np.mean([
+            req["prompt_length"] if req["prompt_length"] else 0 for req in entry["requests"]
+        ]) if entry["requests"] else 0
+        total_output_tokens = np.mean([
+            req["output_length"] if req["output_length"] else 0 for req in entry["requests"]
+        ]) if entry["requests"] else 0
+
         data.append((timestamp_sec, num_requests, total_prompt_tokens, total_output_tokens))
 
-        # Collect session IDs
+        # Add each request's timestamp and session ID for scatter plot
         for req in entry["requests"]:
-            if "session_id" in req:  
-                session_ids.append(req["session_id"])
+            session_id = req.get("session_id")
+            if session_id:
+                scatter_data.append((timestamp_sec, session_id))
 
     df = pd.DataFrame(data, columns=["timestamp", "num_requests", "total_prompt_tokens", "total_output_tokens"])
+    scatter_df = pd.DataFrame(scatter_data, columns=["timestamp", "session_id"])
 
-    # Define bins based on min/max timestamp
+    # Bin the main stats
     if not df.empty:
         min_time, max_time = df["timestamp"].min(), df["timestamp"].max()
         bins = np.arange(min_time, max_time + bin_size_sec, bin_size_sec)
 
-        # Bin the data
         df["time_bin"] = pd.cut(df["timestamp"], bins, labels=bins[:-1])
-
-        # Aggregate within each bin
         binned_df = df.groupby("time_bin").agg({
             "num_requests": "sum", 
             "total_prompt_tokens": "mean", 
             "total_output_tokens": "mean"
         })
-
-        # Convert index back to numeric
         binned_df.index = binned_df.index.astype(float)
         print(binned_df)
 
-    # **NEW: Count session ID frequencies**
-    session_counts = Counter(session_ids)
-    sorted_sessions = sorted(session_counts.items(), key=lambda x: x[1], reverse=True)  # Sort by frequency
-    session_labels, session_frequencies = zip(*sorted_sessions) if sorted_sessions else ([], [])
+    # Map session IDs to numeric values for y-axis
+    if not scatter_df.empty:
+        unique_sessions = sorted(scatter_df["session_id"].unique())
+        session_to_y = {sid: i for i, sid in enumerate(unique_sessions)}
+        scatter_df["y"] = scatter_df["session_id"].map(session_to_y)
 
-    # **Plotting**
-    fig, axes = plt.subplots(4, 1, figsize=(10, 10))  # 4 plots now
+    # Plotting
+    fig, axes = plt.subplots(4, 1, figsize=(12, 10))  # 4 vertically stacked plots
 
-    # Plot request statistics
+    # Top 3 plots: workload stats
     if not df.empty:
         axes[0].plot(binned_df.index, binned_df["num_requests"], label="Total Requests")
         axes[1].plot(binned_df.index, binned_df["total_prompt_tokens"], label="Total Prompt Tokens")
         axes[2].plot(binned_df.index, binned_df["total_output_tokens"], label="Total Output Tokens")
 
         for ax, ylabel, title in zip(axes[:3],
-                                    ["Requests per Second", "Prompt Token Count", "Output Token Count"],
-                                    ["Total Requests Sent per Second", "Total Prompt Tokens per Second", "Total Output Tokens per Second"]):
+                                     ["Requests per Second", "Prompt Token Count", "Output Token Count"],
+                                     ["Total Requests Sent per Second", "Total Prompt Tokens per Second", "Total Output Tokens per Second"]):
             ax.set_xlabel("Time (seconds)")
             ax.set_ylabel(ylabel)
             ax.set_title(title)
             ax.legend()
 
-    # **Plot ranked session ID frequencies**
-    axes[3].bar(range(len(session_frequencies)), session_frequencies)
-    axes[3].set_title("Session ID Frequency (Ranked)")
-    axes[3].set_ylabel("Frequency")
-    axes[3].set_xticks([])  # Remove x-axis labels
+    # Bottom plot: session timeline scatter plot
+    if not scatter_df.empty:
+        axes[3].scatter(scatter_df["timestamp"], scatter_df["y"], alpha=0.6, s=10)
+        axes[3].set_yticks([])  # Hide session ID labels to reduce clutter
+        axes[3].set_title("Session Timeline (Each Dot = One Request)")
+        axes[3].set_xlabel("Time (seconds)")
+        axes[3].set_ylabel("Sessions (hidden)")
 
     plt.tight_layout()
 
     # Save or show the plot
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-        plt.savefig(f"{output_dir}/{workload_name}.pdf")
-        logging.info(f'Saved workload plot to {output_dir}/{workload_name}.pdf')
+        plt.savefig(f"{output_dir}/workload.pdf")
+        logging.info(f'Saved workload plot to {output_dir}/workload.pdf')
     else:
         plt.show()
+
 
 
 def save_workload(load_struct: List[Any],

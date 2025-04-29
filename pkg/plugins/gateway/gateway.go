@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,18 +38,25 @@ import (
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
-	healthPb "google.golang.org/grpc/health/grpc_health_v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayapi "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
+)
+
+const (
+	defaultAIBrixNamespace = "aibrix-system"
 )
 
 type Server struct {
 	redisClient         *redis.Client
 	ratelimiter         ratelimiter.RateLimiter
 	client              kubernetes.Interface
+	gatewayClient       *gatewayapi.Clientset
 	requestCountTracker map[string]int
 	cache               cache.Cache
 }
 
-func NewServer(redisClient *redis.Client, client kubernetes.Interface) *Server {
+func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient *gatewayapi.Clientset) *Server {
 	c, err := cache.Get()
 	if err != nil {
 		panic(err)
@@ -62,6 +70,7 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface) *Server {
 		redisClient:         redisClient,
 		ratelimiter:         r,
 		client:              client,
+		gatewayClient:       gatewayClient,
 		requestCountTracker: map[string]int{},
 		cache:               c,
 	}
@@ -78,6 +87,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	ctx := srv.Context()
 	requestID := uuid.New().String()
 	completed := false
+	resp := &extProcPb.ProcessingResponse{}
 
 	klog.InfoS("processing request", "requestID", requestID)
 
@@ -96,7 +106,6 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			return status.Errorf(codes.Unknown, "cannot receive stream request: %v", err)
 		}
 
-		resp := &extProcPb.ProcessingResponse{}
 		switch v := req.Request.(type) {
 
 		case *extProcPb.ProcessingRequest_RequestHeaders:
@@ -110,12 +119,20 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
 			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, requestID, model, req)
+			if isRespError && respErrorCode == 500 {
+				// for error code 500, ProcessingRequest_ResponseBody is not invoked
+				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID, "")
+			}
+
+			if isRespError && respErrorCode == 401 {
+				// Early return due to unauthorized or canceled context we noticed.
+				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID, `{"error":"unauthorized"}`)
+			}
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
-			respBody := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 			if isRespError {
-				klog.ErrorS(errors.New("request end"), string(respBody.ResponseBody.GetBody()), "requestID", requestID)
-				generateErrorResponse(envoyTypePb.StatusCode(respErrorCode), nil, string(respBody.ResponseBody.GetBody()))
+				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID,
+					string(req.Request.(*extProcPb.ProcessingRequest_ResponseBody).ResponseBody.GetBody()))
 			} else {
 				resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, stream, traceTerm, completed)
 			}
@@ -124,11 +141,16 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		}
 
 		if err := srv.Send(resp); err != nil && len(model) > 0 {
+			klog.ErrorS(nil, err.Error(), "requestID", requestID)
 			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
 			if routerCtx != nil {
 				routerCtx.Delete()
 			}
-			klog.ErrorS(err, "requestID", requestID)
+
+			// Optional: if it's context or connection-related, don’t retry
+			if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "EOF") {
+				klog.Warning("Stream already closed by client", "requestID", requestID)
+			}
 		}
 	}
 }
@@ -140,32 +162,58 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) 
 	}
 
 	if pods.Len() == 0 {
-		return "", fmt.Errorf("no pods to forward request")
+		return "", fmt.Errorf("no pods for routing")
 	}
 	readyPods := utils.FilterRoutablePods(pods.All())
 	if len(readyPods) == 0 {
-		return "", fmt.Errorf("no ready pods available for fallback")
+		return "", fmt.Errorf("no ready pods for routing")
 	}
 	if len(readyPods) == 1 {
-		for _, pod := range readyPods {
-			ctx.SetTargetPod(pod)
-			return ctx.TargetAddress(), nil
-		}
+		ctx.SetTargetPod(readyPods[0])
+		return ctx.TargetAddress(), nil
 	}
 
 	return router.Route(ctx, &utils.PodArray{Pods: readyPods})
 }
 
-func NewHealthCheckServer() *HealthServer {
-	return &HealthServer{}
+// validateHTTPRouteStatus checks if httproute object exists and validates its conditions are true
+func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) error {
+	errMsg := []string{}
+	name := fmt.Sprintf("%s-router", model)
+	httproute, err := s.gatewayClient.GatewayV1().HTTPRoutes(defaultAIBrixNamespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+
+	for _, status := range httproute.Status.Parents {
+		if len(status.Conditions) == 0 {
+			errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, does not have valid status", defaultAIBrixNamespace, name))
+			break
+		}
+		for _, condition := range status.Conditions {
+			if condition.Type == string(gatewayv1.RouteConditionAccepted) &&
+				condition.Reason != string(gatewayv1.RouteReasonAccepted) {
+				errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route is not accepted: %s.", defaultAIBrixNamespace, name, condition.Reason))
+			} else if condition.Type == string(gatewayv1.RouteConditionResolvedRefs) &&
+				condition.Reason != string(gatewayv1.RouteReasonResolvedRefs) {
+				errMsg = append(errMsg, fmt.Sprintf("httproute: %s/%s, route's object references are not resolved: %s.", defaultAIBrixNamespace, name, condition.Reason))
+			}
+		}
+	}
+	return errors.New(strings.Join(errMsg, ", "))
 }
 
-type HealthServer struct{}
-
-func (s *HealthServer) Check(ctx context.Context, in *healthPb.HealthCheckRequest) (*healthPb.HealthCheckResponse, error) {
-	return &healthPb.HealthCheckResponse{Status: healthPb.HealthCheckResponse_SERVING}, nil
-}
-
-func (s *HealthServer) Watch(in *healthPb.HealthCheckRequest, srv healthPb.Health_WatchServer) error {
-	return status.Error(codes.Unimplemented, "watch is not implemented")
+func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.ProcessingResponse, respErrorCode int,
+	model, requestID, errMsg string) *extProcPb.ProcessingResponse {
+	httprouteErr := s.validateHTTPRouteStatus(ctx, model)
+	if errMsg != "" && httprouteErr != nil {
+		errMsg = fmt.Sprintf("%s. %s", errMsg, httprouteErr.Error())
+	} else if errMsg == "" && httprouteErr != nil {
+		errMsg = httprouteErr.Error()
+	}
+	klog.ErrorS(nil, "request end", "requestID", requestID, "errorCode", respErrorCode, "errorMessage", errMsg)
+	return generateErrorResponse(
+		envoyTypePb.StatusCode(respErrorCode),
+		resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders(),
+		errMsg)
 }

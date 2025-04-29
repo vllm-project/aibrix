@@ -40,8 +40,8 @@ type ServiceConfig struct {
 
 // MetadataConfig holds the configuration about the kv cache metadata service
 type MetadataConfig struct {
-	Redis RedisConfig `json:"redis,omitempty"`
-	Etcd  EtcdConfig  `json:"etcd,omitempty"`
+	Redis *RedisConfig `json:"redis,omitempty"`
+	Etcd  *EtcdConfig  `json:"etcd,omitempty"`
 }
 
 // RedisConfig provides the configuration fields for deploying Redis.
@@ -49,7 +49,7 @@ type RedisConfig struct {
 	Image     string                      `json:"image"`
 	Replicas  int32                       `json:"replicas"`
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
-	Storage   MetadataStorage             `json:"storage"`
+	Storage   *MetadataStorage            `json:"storage,omitempty"`
 }
 
 // EtcdConfig provides the configuration fields for deploying etcd.
@@ -59,7 +59,7 @@ type EtcdConfig struct {
 	// +kubebuilder:default:=1
 	Replicas  int32                       `json:"replicas"`
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
-	Storage   MetadataStorage             `json:"storage"`
+	Storage   *MetadataStorage            `json:"storage,omitempty"`
 }
 
 // MetadataStorage configures the persistent storage used by the metadata service.
@@ -83,7 +83,7 @@ type CacheSpec struct {
 	// +kubebuilder:default:="IfNotPresent"
 	ImagePullPolicy string `json:"imagePullPolicy,omitempty"`
 
-	// shared memory size for kvcach
+	// shared memory size for kvcache
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default:=""
 	SharedMemorySize string `json:"sharedMemorySize,omitempty"`
@@ -119,7 +119,7 @@ type KVCacheSpec struct {
 	// Metadata configuration for kv cache service
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default:={etcd: {image: "", replicas: 1, storage: {size: "10Gi"}}}
-	Metadata MetadataConfig `json:"metadata,omitempty"`
+	Metadata *MetadataConfig `json:"metadata,omitempty"`
 
 	// kvcache dataplane container configuration
 	// +kubebuilder:validation:Optional

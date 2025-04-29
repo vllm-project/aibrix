@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.14.0
+    controller-gen.kubebuilder.io/version: v0.16.1
   name: kvcaches.orchestration.aibrix.ai
 spec:
   group: orchestration.aibrix.ai
@@ -108,7 +108,7 @@ spec:
                     default: IfNotPresent
                     type: string
                   memory:
-                    default: "2"
+                    default: 2Gi
                     type: string
                   replicas:
                     default: 3
@@ -144,6 +144,8 @@ spec:
                               properties:
                                 name:
                                   type: string
+                                request:
+                                  type: string
                               required:
                               - name
                               type: object
@@ -177,7 +179,6 @@ spec:
                         type: object
                     required:
                     - image
-                    - storage
                     type: object
                   redis:
                     properties:
@@ -192,6 +193,8 @@ spec:
                             items:
                               properties:
                                 name:
+                                  type: string
+                                request:
                                   type: string
                               required:
                               - name
@@ -227,7 +230,6 @@ spec:
                     required:
                     - image
                     - replicas
-                    - storage
                     type: object
                 type: object
               replicas:
@@ -250,6 +252,8 @@ spec:
                     default: ClusterIP
                     type: string
                 type: object
+            required:
+            - replicas
             type: object
           status:
             properties:

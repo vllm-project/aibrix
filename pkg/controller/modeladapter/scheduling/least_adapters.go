@@ -40,7 +40,7 @@ func (r leastAdapters) SelectPod(ctx context.Context, model string, pods []v1.Po
 	modelAdapterCountMin := math.MaxInt
 
 	for _, pod := range pods {
-		models, err := r.cache.ListModelsByPod(pod.Name)
+		models, err := r.cache.ListModelsByPod(pod.Name, pod.Namespace)
 		if err != nil {
 			return nil, err
 		}

@@ -1,0 +1,35 @@
+# To customize EnvoyProxy
+# https://gateway.envoyproxy.io/docs/tasks/operations/customize-envoyproxy/
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: custom-proxy-config
+  namespace: aibrix-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        replicas: 1
+        container:
+          image: envoyproxy/envoy:v1.33.2
+          resources:
+            requests:
+              cpu: 2
+              memory: 8Gi
+            limits:
+              cpu: 2
+              memory: 8Gi
+        pod:
+          affinity:
+            nodeAffinity: # prevent gateway pod to be placed on gpu node.
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                    - key: nvidia.com/gpu.present
+                      operator: NotIn
+                      values:
+                        - "true"
+      envoyPDB:
+        minAvailable: 1

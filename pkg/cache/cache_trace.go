@@ -49,8 +49,8 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 		return
 	}
 	pod := ctx.TargetPod()
-
-	metaPod, ok := c.metaPods.Load(pod.Name)
+	key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
 		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
 		return
@@ -69,7 +69,8 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 	pod := ctx.TargetPod()
 
 	// Now that pendingLoadProvider must be set.
-	metaPod, ok := c.metaPods.Load(pod.Name)
+	key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
 		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
 		return

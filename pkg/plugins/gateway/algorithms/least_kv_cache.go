@@ -24,8 +24,9 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	metrics "github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog/v2"
+	klog "k8s.io/klog/v2"
 )
 
 var (
@@ -67,12 +68,12 @@ func (r leastKvCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList)
 		// Due to metric refactor (pull/543) to better support lora and multi models,
 		// we change to use PodModelMetrics instead of PodMetrics in some scenarios.
 		// This works but doesn't look very promising, we can revisit this part later.
-		gpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.GPUCacheUsagePerc)
+		gpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.GPUCacheUsagePerc)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		cpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.CPUCacheUsagePerc)
+		cpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.CPUCacheUsagePerc)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -92,7 +93,7 @@ func (r leastKvCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList)
 	if targetPod == nil {
 		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPod, err = selectRandomPod(pods.All(), rand.Intn)
+		targetPod, err = utils.SelectRandomPod(pods.All(), rand.Intn)
 		if err != nil {
 			return "", err
 		}

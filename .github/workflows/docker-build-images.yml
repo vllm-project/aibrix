@@ -1,6 +1,7 @@
 name: Docker Build Images
 
 on:
+  workflow_dispatch:  # Allows manual trigger
   pull_request:
     branches: [ "main", "release-*" ]
 

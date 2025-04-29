@@ -29,7 +29,7 @@ def prepare_prompt(prompt: str,
             user_message = {"role": "user", "content": f"{prompt}"}
             past_history.append(user_message) 
             history[session_id] = past_history
-            return past_history
+            return list(past_history)
     else:    
         user_message = {"role": "user", "content": prompt}
         return [user_message]

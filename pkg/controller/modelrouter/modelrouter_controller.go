@@ -257,7 +257,9 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 		klog.Infof("httproute: %v created for model: %v", httpRoute.Name, modelName)
 	}
 
-	m.createReferenceGrant(namespace)
+	if aibrixEnvoyGatewayNamespace != namespace {
+		m.createReferenceGrant(namespace)
+	}
 }
 
 func (m *ModelRouter) createReferenceGrant(namespace string) {
@@ -270,7 +272,7 @@ func (m *ModelRouter) createReferenceGrant(namespace string) {
 	}
 
 	if err := m.Client.Get(context.Background(), client.ObjectKeyFromObject(&referenceGrant), &referenceGrant); err == nil {
-		klog.V(4).Infof("reference grant already exists in namespace: %s", namespace)
+		klog.InfoS("reference grant already exists", "referencegrant", referenceGrant)
 		return
 	}
 
@@ -296,10 +298,10 @@ func (m *ModelRouter) createReferenceGrant(namespace string) {
 		},
 	}
 	if err := m.Client.Create(context.Background(), &referenceGrant); err != nil {
-		klog.Errorln(err)
+		klog.ErrorS(err, "error on creating referencegrant", "referencegrant", referenceGrant)
 		return
 	}
-	klog.Infof("referencegrant: %s created in namespace: %s", referenceGrantName, namespace)
+	klog.InfoS("referencegrant created", "referencegrant", referenceGrant)
 }
 
 func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string) {
@@ -323,22 +325,40 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string
 		klog.Infof("httproute: %v deleted for model: %v", httpRoute.Name, modelName)
 	}
 
-	m.deleteReferenceGrant(namespace)
+	if aibrixEnvoyGatewayNamespace != namespace {
+		m.deleteReferenceGrant(namespace)
+	}
 }
 
 func (m *ModelRouter) deleteReferenceGrant(namespace string) {
-	referenceGrantName := fmt.Sprintf("%s-reserved-referencegrant-in-%s", aibrixEnvoyGatewayNamespace, namespace)
+	// one reference grant per namespace is shared by all envoy gateway objects
+	// only delete reference grant object if all model deployments are deleted in the namespace
+	deploymentList := &appsv1.DeploymentList{}
+	err := m.Client.List(context.Background(), deploymentList, client.InNamespace(namespace))
+	if err != nil {
+		klog.ErrorS(err, "deleteReferenceGrant: unable to list all deployments")
+		return
+	}
+	for _, deployment := range deploymentList.Items {
+		_, ok := deployment.Labels[modelIdentifier]
+		if !ok {
+			continue
+		}
+		klog.InfoS("ignore delete reference grant, at least one model deployment shares same reference grant in the namesapce",
+			"namespace", namespace, "deployment", deployment.Name)
+		return
+	}
 
+	referenceGrantName := fmt.Sprintf("%s-reserved-referencegrant-in-%s", aibrixEnvoyGatewayNamespace, namespace)
 	referenceGrant := gatewayv1beta1.ReferenceGrant{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      referenceGrantName,
 			Namespace: namespace,
 		},
 	}
-
 	if err := m.Client.Delete(context.Background(), &referenceGrant); err != nil {
-		klog.Errorln(err)
+		klog.ErrorS(err, "fail to delete reference grant", "referencegrant", referenceGrantName)
 		return
 	}
-	klog.Infof("referencegrant: %s deleted in namespace %s", referenceGrantName, namespace)
+	klog.InfoS("delete reference grant", "referencegrant", referenceGrantName)
 }

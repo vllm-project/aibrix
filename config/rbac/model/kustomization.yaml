@@ -1,3 +1,6 @@
 resources:
 - model_modeladapter_editor_role.yaml
 - model_modeladapter_viewer_role.yaml
+
+commonLabels:
+  app.kubernetes.io/component: aibrix-controller-manager

@@ -17,23 +17,8 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"fmt"
 	"math"
-
-	"github.com/vllm-project/aibrix/pkg/utils"
-	v1 "k8s.io/api/core/v1"
 )
-
-// selectRandomPod selects a random pod from the provided pod map.
-// It returns an error if no ready pods are available.
-func selectRandomPod(pods []*v1.Pod, randomFn func(int) int) (*v1.Pod, error) {
-	readyPods := utils.FilterRoutablePods(pods)
-	if len(readyPods) == 0 {
-		return nil, fmt.Errorf("no ready pods available for fallback")
-	}
-	randomPod := readyPods[randomFn(len(readyPods))]
-	return randomPod, nil
-}
 
 // mean calculates the mean of a slice of float64 numbers.
 func mean(numbers []float64) float64 {

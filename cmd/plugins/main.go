@@ -24,7 +24,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"google.golang.org/grpc"
 	"k8s.io/client-go/kubernetes"
@@ -36,7 +35,9 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	"google.golang.org/grpc/health"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
+	"sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
 
 var (
@@ -52,7 +53,6 @@ func main() {
 	// Connect to Redis
 	redisClient := utils.GetRedisClient()
 
-	fmt.Println("starting cache")
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 	var config *rest.Config
@@ -85,11 +85,17 @@ func main() {
 	if err != nil {
 		klog.Fatalf("failed to listen: %v", err)
 	}
+	gatewayK8sClient, err := versioned.NewForConfig(config)
+	if err != nil {
+		klog.Fatalf("Error on creating gateway k8s client: %v", err)
+	}
 
 	s := grpc.NewServer()
+	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(redisClient, k8sClient, gatewayK8sClient))
 
-	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(redisClient, k8sClient))
-	healthPb.RegisterHealthServer(s, gateway.NewHealthCheckServer())
+	healthCheck := health.NewServer()
+	healthPb.RegisterHealthServer(s, healthCheck)
+	healthCheck.SetServingStatus("gateway-plugin", healthPb.HealthCheckResponse_SERVING)
 
 	klog.Info("starting gRPC server on port :50052")
 
@@ -101,13 +107,11 @@ func main() {
 
 	// shutdown
 	var gracefulStop = make(chan os.Signal, 1)
-	signal.Notify(gracefulStop, syscall.SIGTERM)
-	signal.Notify(gracefulStop, syscall.SIGINT)
+	signal.Notify(gracefulStop, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-gracefulStop
-		klog.Infof("caught sig: %+v", sig)
-		klog.Info("Wait for 1 second to finish processing")
-		time.Sleep(1 * time.Second)
+		klog.Warningf("signal received: %v, initiating graceful shutdown...", sig)
+		s.GracefulStop()
 		os.Exit(0)
 	}()
 

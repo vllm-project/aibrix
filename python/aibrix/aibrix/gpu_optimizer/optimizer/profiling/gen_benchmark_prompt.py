@@ -7,17 +7,36 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 import tiktoken
+from transformers import AutoTokenizer
 
 
-def get_tokenizer(pretrained_model_name_or_path: str, trust_remote_code: bool) -> Any:
-    """Get tiktoken tokenizer."""
+def get_tokenizer(
+    pretrained_model_name_or_path: str, trust_remote_code: bool = False
+) -> Any:
+    """Get tokenizer: try Hugging Face first, fallback to tiktoken immediately on failure."""
+    if (
+        not isinstance(pretrained_model_name_or_path, str)
+        or not pretrained_model_name_or_path.strip()
+    ):
+        raise ValueError(
+            "The 'pretrained_model_name_or_path' parameter must be a non-empty string."
+        )
+
     try:
-        # Use cl100k_base for ChatGPT-style models
-        return tiktoken.get_encoding("cl100k_base")
+        return AutoTokenizer.from_pretrained(
+            pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+        )
     except Exception as e:
-        print(f"Error loading cl100k_base tokenizer: {e}")
-        # Fallback to p50k_base (GPT-3 style)
-        return tiktoken.get_encoding("p50k_base")
+        print(f"AutoTokenizer failed for {pretrained_model_name_or_path}: {e}")
+
+        try:
+            # Use cl100k_base for ChatGPT-style models
+            return tiktoken.encoding_for_model("cl100k_base")
+        except Exception as te:
+            print(f"tiktoken fallback also failed for cl100k_base: {te}")
+            raise RuntimeError(
+                f"Failed to load tokenizer for {pretrained_model_name_or_path}"
+            )
 
 
 class RateLimiter:
@@ -43,6 +62,7 @@ class PromptSelector:
         trace_file: str,
         model_endpoint: str = "http://localhost:8888/v1/chat/completions",
         model: str = "deepseek-coder-7b",
+        tokenizer: str = "deepseek-ai/deepseek-coder-6.7b-instruct",
         qps: float = 2.0,
         temperature: float = 0.0,
         api_key: str = "any_key",
@@ -52,7 +72,7 @@ class PromptSelector:
         self.trace_file = trace_file
         self.model_endpoint = model_endpoint
         self.model = model
-        self.tokenizer = get_tokenizer("", False)
+        self.tokenizer = get_tokenizer(tokenizer, True)
         self.rate_limiter = RateLimiter(qps)
         self.temperature = temperature
         self.api_key = api_key
@@ -263,6 +283,12 @@ def parse_args():
         help="Number of prompts to generate (default: 1)",
     )
     parser.add_argument(
+        "--tokenizer",
+        type=str,
+        default="deepseek-ai/deepseek-coder-6.7b-instruct",
+        help="Model name to use for completion",
+    )
+    parser.add_argument(
         "--model",
         type=str,
         default="deepseek-coder-7b",
@@ -299,6 +325,7 @@ def main():
         model_endpoint=model_endpoint,
         qps=args.qps,
         model=args.model,
+        tokenizer=args.tokenizer,
         temperature=args.temperature,
         api_key=args.api_key,
         total_prompts=args.total_prompts,

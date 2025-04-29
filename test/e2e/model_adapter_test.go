@@ -18,7 +18,6 @@ package e2e
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -50,11 +49,10 @@ func TestModelAdapter(t *testing.T) {
 				}
 				return false, nil
 			}))
-
 	})
 
 	// create model adapter
-	fmt.Println("creating model adapter")
+	t.Log("creating model adapter")
 	adapter, err := v1alpha1Client.ModelV1alpha1().ModelAdapters("default").Create(context.Background(),
 		adapter, v1.CreateOptions{})
 	assert.NoError(t, err)
@@ -62,8 +60,9 @@ func TestModelAdapter(t *testing.T) {
 	oldPod := adapter.Status.Instances[0]
 
 	// delete pod and ensure model adapter is rescheduled
-	fmt.Println("deleting pod instance to force model adapter rescheduling")
+	t.Log("deleting pod instance to force model adapter rescheduling")
 	assert.NoError(t, k8sClient.CoreV1().Pods("default").Delete(context.Background(), oldPod, v1.DeleteOptions{}))
+	validateAllPodsAreReady(t, k8sClient, 3)
 	time.Sleep(3 * time.Second)
 	adapter = validateModelAdapter(t, v1alpha1Client, adapter.Name)
 	newPod := adapter.Status.Instances[0]

@@ -6,3 +6,6 @@ resources:
   - role.yaml
   - role_binding.yaml
   - service_account_controller_manager.yaml
+
+commonLabels:
+  app.kubernetes.io/component: aibrix-controller-manager

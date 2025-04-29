@@ -56,7 +56,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	// pre_request_count: [p1: 0, p2: 0, p3: 0, p4: 0]
 	// post_request_count: [p1: 0, p2: 0, p3: 0, p4: 1(abcdefgh)]
 	fmt.Println(input)
-	ctx1 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r1")
+	ctx1 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r1", "")
 	p4, err := prefixCacheRouter.Route(ctx1, podList)
 	assert.NoError(t, err)
 
@@ -68,7 +68,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	// pre_request_count: [p1: 0, p2: 0, p3: 0, p4: 1(abcdefgh)]
 	// post_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 1(abcdefgh)]
 	fmt.Println(input)
-	ctx2 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r2")
+	ctx2 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r2", "")
 	p3, err := prefixCacheRouter.Route(ctx2, podList)
 	assert.NoError(t, err)
 	assert.NotEqual(t, p4, p3)
@@ -81,7 +81,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	// pre_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 1(abcdefgh)]
 	// post_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 2(abcdefgh)]
 	fmt.Println(input)
-	ctx3 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r3")
+	ctx3 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r3", "")
 	targetPod, err := prefixCacheRouter.Route(ctx3, podList)
 	assert.NoError(t, err)
 	assert.Equal(t, p4, targetPod)
@@ -94,7 +94,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	// pre_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 2(abcdefgh)]
 	// post_request_count: [p1: 0, p2: 1 (abcd), p3: 1 (wxyz), p4: 2(abcdefgh)]
 	fmt.Println(input)
-	ctx4 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r4")
+	ctx4 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r4", "")
 	p2, err := prefixCacheRouter.Route(ctx4, podList)
 	assert.NoError(t, err)
 	assert.NotEqual(t, p4, p2)
@@ -107,7 +107,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	// pre_request_count: [p1: 0, p2: 1 (abcd), p3: 1 (wxyz), p4: 2 (abcdefgh)]
 	// post_request_count: [p1: 0, p2: 2 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
 	fmt.Println(input)
-	ctx5 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r5")
+	ctx5 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r5", "")
 	targetPod, err = prefixCacheRouter.Route(ctx5, podList)
 	assert.NoError(t, err)
 	assert.Equal(t, p2, targetPod)
@@ -120,7 +120,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	// pre_request_count: [p1: 0, p2: 2 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
 	// post_request_count: [p1: 0, p2: 3 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
 	fmt.Println(input)
-	ctx6 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r6")
+	ctx6 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r6", "")
 	targetPod, err = prefixCacheRouter.Route(ctx6, podList)
 	assert.NoError(t, err)
 	assert.True(t, slices.Contains([]string{p2, p4}, targetPod))
@@ -135,7 +135,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		c.AddRequestCount(ctx6, ctx6.RequestID, ctx6.Model)
 	}
-	ctx7 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r6")
+	ctx7 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r7", "")
 	p1, err := prefixCacheRouter.Route(ctx7, podList)
 	assert.NoError(t, err)
 	assert.False(t, slices.Contains([]string{p2, p3, p4}, p1))

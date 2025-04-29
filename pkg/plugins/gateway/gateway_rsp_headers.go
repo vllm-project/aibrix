@@ -40,24 +40,26 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, mo
 		}
 	}()
 
-	headers := []*configPb.HeaderValueOption{{
-		Header: &configPb.HeaderValue{
-			Key:      HeaderWentIntoReqHeaders,
-			RawValue: []byte("true"),
+	headers := []*configPb.HeaderValueOption{
+		{
+			Header: &configPb.HeaderValue{
+				Key:      HeaderWentIntoReqHeaders,
+				RawValue: []byte("true"),
+			},
 		},
-	}}
+		{
+			Header: &configPb.HeaderValue{
+				Key:      HeaderRequestID,
+				RawValue: []byte(requestID),
+			},
+		},
+	}
 	if routerCtx != nil {
 		headers = append(headers,
 			&configPb.HeaderValueOption{
 				Header: &configPb.HeaderValue{
 					Key:      HeaderTargetPod,
 					RawValue: []byte(routerCtx.TargetAddress()),
-				},
-			},
-			&configPb.HeaderValueOption{
-				Header: &configPb.HeaderValue{
-					Key:      HeaderRequestID,
-					RawValue: []byte(requestID),
 				},
 			},
 		)

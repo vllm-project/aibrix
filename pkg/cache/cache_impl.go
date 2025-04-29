@@ -22,6 +22,8 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
+
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -30,15 +32,17 @@ import (
 // Parameters:
 //
 //	podName: Name of the pod to retrieve
+//	podNamespace: Namespace of the pod to retrieve
 //
 // Returns:
 //
 //	*v1.Pod: The found Pod object
 //	error: Error if pod doesn't exist
-func (c *Store) GetPod(podName string) (*v1.Pod, error) {
-	metaPod, ok := c.metaPods.Load(podName)
+func (c *Store) GetPod(podName, podNamespace string) (*v1.Pod, error) {
+	key := utils.GeneratePodKey(podNamespace, podName)
+	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
-		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
+		return nil, fmt.Errorf("key does not exist in the cache: %s", key)
 	}
 
 	return metaPod.Pod, nil
@@ -102,15 +106,17 @@ func (c *Store) HasModel(modelName string) bool {
 // Parameters:
 //
 //	podName: Name of the Pod to query
+//	podNamespace: Namespace of the Pod to query
 //
 // Returns:
 //
 //	[]string: Slice of model names
 //	error: Error if Pod doesn't exist
-func (c *Store) ListModelsByPod(podName string) ([]string, error) {
-	metaPod, ok := c.metaPods.Load(podName)
+func (c *Store) ListModelsByPod(podName, podNamespace string) ([]string, error) {
+	key := utils.GeneratePodKey(podNamespace, podName)
+	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
-		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
+		return nil, fmt.Errorf("key does not exist in the cache: %s", key)
 	}
 
 	return metaPod.Models.Array(), nil
@@ -120,16 +126,18 @@ func (c *Store) ListModelsByPod(podName string) ([]string, error) {
 // Parameters:
 //
 //	podName: Name of the Pod
+//	podNamespace: Namespace of the Pod
 //	metricName: Name of the metric
 //
 // Returns:
 //
 //	metrics.MetricValue: The metric value
 //	error: Error if Pod or metric doesn't exist
-func (c *Store) GetMetricValueByPod(podName, metricName string) (metrics.MetricValue, error) {
-	metaPod, ok := c.metaPods.Load(podName)
+func (c *Store) GetMetricValueByPod(podName, podNamespace, metricName string) (metrics.MetricValue, error) {
+	key := utils.GeneratePodKey(podNamespace, podName)
+	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
-		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
+		return nil, fmt.Errorf("key does not exist in the cache: %s", key)
 	}
 
 	return c.getPodMetricImpl(podName, &metaPod.Metrics, metricName)
@@ -139,6 +147,7 @@ func (c *Store) GetMetricValueByPod(podName, metricName string) (metrics.MetricV
 // Parameters:
 //
 //	podName: Name of the Pod
+//	podNamespace: Namespace of the Pod
 //	modelName: Name of the model
 //	metricName: Name of the metric
 //
@@ -146,10 +155,11 @@ func (c *Store) GetMetricValueByPod(podName, metricName string) (metrics.MetricV
 //
 //	metrics.MetricValue: The metric value
 //	error: Error if Pod, model or metric doesn't exist
-func (c *Store) GetMetricValueByPodModel(podName, modelName string, metricName string) (metrics.MetricValue, error) {
-	metaPod, ok := c.metaPods.Load(podName)
+func (c *Store) GetMetricValueByPodModel(podName, podNamespace, modelName string, metricName string) (metrics.MetricValue, error) {
+	key := utils.GeneratePodKey(podNamespace, podName)
+	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
-		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
+		return nil, fmt.Errorf("key does not exist in the cache: %s", key)
 	}
 
 	return c.getPodMetricImpl(podName, &metaPod.ModelMetrics, c.getPodModelMetricName(modelName, metricName))

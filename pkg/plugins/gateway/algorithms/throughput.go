@@ -26,7 +26,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog/v2"
+	klog "k8s.io/klog/v2"
 )
 
 var (
@@ -66,12 +66,12 @@ func (r throughputRouter) Route(ctx *types.RoutingContext, pods types.PodList) (
 	}
 
 	for _, pod := range readyPods {
-		promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgPromptThroughputToksPerS)
+		promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgPromptThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		generationThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
+		generationThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -92,7 +92,7 @@ func (r throughputRouter) Route(ctx *types.RoutingContext, pods types.PodList) (
 	if targetPod == nil {
 		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPod, err = selectRandomPod(pods.All(), rand.Intn)
+		targetPod, err = utils.SelectRandomPod(pods.All(), rand.Intn)
 		if err != nil {
 			return "", err
 		}
