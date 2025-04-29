@@ -39,19 +39,20 @@ func NewSimpleCache() *SimpleCache {
 	}
 }
 
-func (c *SimpleCache) SetPodMetric(podName, modelName, metricName string, value float64) {
-	if _, ok := c.metrics[podName]; !ok {
-		c.metrics[podName] = make(map[string]map[string]float64)
+func (c *SimpleCache) SetPodMetric(podKey, modelName, metricName string, value float64) {
+	if _, ok := c.metrics[podKey]; !ok {
+		c.metrics[podKey] = make(map[string]map[string]float64)
 	}
-	if _, ok := c.metrics[podName][modelName]; !ok {
-		c.metrics[podName][modelName] = make(map[string]float64)
+	if _, ok := c.metrics[podKey][modelName]; !ok {
+		c.metrics[podKey][modelName] = make(map[string]float64)
 	}
-	c.metrics[podName][modelName][metricName] = value
+	c.metrics[podKey][modelName][metricName] = value
 }
 
-func (c *SimpleCache) GetPodMetric(ctx context.Context, podIP, model, metricName string) (float64, error) {
-	// In a real implementation, this would look up metrics by pod IP
-	// For testing, we'll just return the value we set via SetPodMetric
+// GetPodMetric is deprecated, use GetMetricValueByPodModel instead
+func (c *SimpleCache) GetPodMetric(ctx context.Context, podName, podNamespace, model, metricName string) (float64, error) {
+	// In a real implementation, this would look up metrics by pod namespace/name
+	// For testing, we'll just return 0
 	return 0, nil
 }
 
@@ -255,7 +256,8 @@ func TestVTCBasicRouterStrengths(t *testing.T) {
 
 		// All pods have equal load
 		for i := 0; i < 3; i++ {
-			cache.SetPodMetric(fmt.Sprintf("pod%d", i+1), "model1", metrics.NumRequestsRunning, 0)
+			podKey := utils.GeneratePodKey("default", fmt.Sprintf("pod%d", i+1))
+			cache.SetPodMetric(podKey, "model1", metrics.NumRequestsRunning, 0)
 		}
 
 		// Track each user's routing decision
