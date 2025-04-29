@@ -144,13 +144,8 @@ run: manifests generate fmt vet ## Run a controller from your host.
 IS_MAIN_BRANCH ?= true
 
 define build_and_tag
-	# $(CONTAINER_TOOL) build -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} -f ${DOCKERFILE_PATH}/$(2) .
-	# $(CONTAINER_TOOL) buildx build --platform linux/arm64,linux/amd64 -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} -f ${DOCKERFILE_PATH}/$(2) . 
-
 	$(CONTAINER_TOOL) buildx build --platform linux/arm64,linux/amd64 -f ${DOCKERFILE_PATH}/$(2) . 
-	$(CONTAINER_TOOL) buildx build --load --platform linux/arm64 -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} .
-	$(CONTAINER_TOOL) buildx build --load --platform linux/amd64 -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} .
-	
+	$(CONTAINER_TOOL) buildx build --load -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} .
 	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) tag ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):nightly; fi
 endef
 
