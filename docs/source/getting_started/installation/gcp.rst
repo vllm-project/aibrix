@@ -1,16 +1,17 @@
-.. _terraform_gcp:
+.. _gcp:
 
-=============================
-Terraform Module for GCP
-=============================
+===========================
+Google Cloud Platform (GCP)
+===========================
 
 Introduction
 ------------
 
-This module deploys an AIBrix cluster in its entirety onto a Google Container Cluster. It is the quickest way to get up and running with AIBrix. The purpose of this module is to both allow developers to quickly spin up the stack, and allow for the team to test on the GCP cloud environment.
+This module deploys an AIBrix cluster in its entirety onto a Google Container Cluster. It is the quickest way to get up and running with AIBrix. The purpose of this module is to both allow developers to quickly spin up the stack, and allow for the team to test on the Google Cloud Platform.
 
 .. warning::
-   This module was created to allow users to quickly spin up AIBrix on GCP. It is not currently built for production deployments. The user is responsible for any costs incurred by running this module.
+   1. This module was created to allow users to quickly spin up AIBrix on GCP. It is not currently built for production deployments. The user is responsible for any costs incurred by running this module.
+   2. This module use terraform as the infrastructure as code tool. If you are looking for other means, feel free to cut an `issue <https://github.com/vllm-project/aibrix/issues>`_.
 
 Quickstart
 ----------
