@@ -11,7 +11,7 @@ export TOKENIZER="deepseek-ai/deepseek-llm-7b-chat"
 # -------
 # Dataset config
 export DATASET_DIR="./output/dataset/"
-export PROMPT_TYPE="client_trace" #"synthetic_multiturn" #"synthetic_multiturn"  "synthetic_shared", "sharegpt", "client_trace"
+export PROMPT_TYPE="synthetic_multiturn" #"synthetic_multiturn"  "synthetic_shared", "sharegpt", "client_trace"
 export DATASET_FILE="${DATASET_DIR}/${PROMPT_TYPE}.jsonl"
 
 # ---------------
