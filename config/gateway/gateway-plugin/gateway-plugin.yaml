@@ -92,20 +92,6 @@ spec:
               value: "16"
             - name: AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR
               value: "2"
-            - name: AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE
-              value: "5"
-            - name: AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT
-              value: "minutes"
-            - name: AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS
-              value: "1000"
-            - name: AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS
-              value: "8000"
-            - name: AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD
-              value: "100.0"
-            - name: AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT
-              value: "1.0"
-            - name: AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT
-              value: "2.0"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
