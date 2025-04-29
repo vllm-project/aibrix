@@ -156,7 +156,7 @@ endef
 
 .PHONY: docker-build-all
 docker-build-all:
-	make -j $(nproc) docker-build-controller-manager docker-build-gateway-plugins docker-build-runtime docker-build-metadata-service docker-build-kvcache-watcher ## Build all docker images
+	make docker-build-controller-manager docker-build-gateway-plugins docker-build-runtime docker-build-metadata-service docker-build-kvcache-watcher ## Build all docker images
 
 .PHONY: docker-build-controller-manager
 docker-build-controller-manager: ## Build docker image with the manager.
