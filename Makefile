@@ -24,7 +24,7 @@ endif
 # scaffolded by default. However, you might want to replace it to use other
 # tools. (i.e. podman)
 CONTAINER_TOOL ?= docker
-BUILDER := $(shell if ! docker buildx ls | grep -q aibrix-multiarch-builder; then docker buildx create --use --name aibrix-multiarch-builder --driver=docker-container; fi)
+BUILDER := $(shell if ! docker buildx ls | grep -q aibrix-multiarch-builder; then docker buildx create --use --name aibrix-multiarch-builder; fi)
 $(BUILDER):
 
 # Setting SHELL to bash allows bash commands to be executed by recipes.
@@ -144,13 +144,19 @@ run: manifests generate fmt vet ## Run a controller from your host.
 IS_MAIN_BRANCH ?= true
 
 define build_and_tag
-	$(CONTAINER_TOOL) buildx build --platform linux/amd64,linux/arm64 -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} -f ${DOCKERFILE_PATH}/$(2) .
+	# $(CONTAINER_TOOL) build -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} -f ${DOCKERFILE_PATH}/$(2) .
+	# $(CONTAINER_TOOL) buildx build --platform linux/arm64,linux/amd64 -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} -f ${DOCKERFILE_PATH}/$(2) . 
+
+	$(CONTAINER_TOOL) buildx build --platform linux/arm64,linux/amd64 -f ${DOCKERFILE_PATH}/$(2) . 
+	$(CONTAINER_TOOL) buildx build --load --platform linux/arm64 -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} .
+	$(CONTAINER_TOOL) buildx build --load --platform linux/amd64 -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} .
+	
 	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) tag ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):nightly; fi
 endef
 
 define push_image
-	$(CONTAINER_TOOL) push ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH}
-	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) push ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):nightly; fi
+	$(CONTAINER_TOOL) buildx build --push --platform linux/arm64,linux/amd64 -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} .
+	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) buildx build --push --platform linux/arm64,linux/amd64 -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):nightly .; fi
 endef
 
 .PHONY: docker-build-all

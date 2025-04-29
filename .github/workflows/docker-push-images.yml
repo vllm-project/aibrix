@@ -31,7 +31,7 @@ jobs:
 
       - name: Build Container Images
         run: |
-          make docker-build-all
+          BUILD_PLATFORMS=linux/amd64,linux/arm64 make docker-build-all
 
       - name: Push Container Images to DockerHub
         run: |
