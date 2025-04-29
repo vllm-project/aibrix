@@ -35,7 +35,7 @@ export API_KEY="$api_key"
 export TARGET_MODEL="llama-3-8b-instruct" #"deepseek-llm-7b-chat"
 export STREAMING_ENABLED="true" # Options: true, false
 export CLIENT_POOL_SIZE="16"
-export OUTPUT_TOKEN_LIMIT="1"
+export OUTPUT_TOKEN_LIMIT="128"
 
 # ---------------
 # OPTIONAL: ANALYSIS
