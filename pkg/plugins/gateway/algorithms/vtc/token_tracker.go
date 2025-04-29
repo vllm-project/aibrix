@@ -358,27 +358,36 @@ func (t *InMemorySlidingWindowTokenTracker) addToTotals(newTotal float64, user s
 }
 
 // Caller must hold the write lock
+func (t *InMemorySlidingWindowTokenTracker) wasLastUserAtBoundary(value float64, userTotal float64) bool {
+	// Returns true if userTotal matches the boundary value and no users remain at userTotal.
+	return userTotal > 0 && userTotal == value && len(t.totalsToUsers[userTotal]) == 0
+}
+
+// Caller must hold the write lock
 func (t *InMemorySlidingWindowTokenTracker) recalcMin(oldTotal, newTotal float64) {
-	if oldTotal > 0 && oldTotal == t.minTrackedToken && len(t.totalsToUsers[oldTotal]) == 0 {
-		// Find new minimum
-		t.minTrackedToken = math.Inf(1)
+	if t.wasLastUserAtBoundary(t.minTrackedToken, oldTotal) {
+		// Find new minimum.
+		newMin := math.MaxFloat64
 		for total := range t.totalsToUsers {
-			if total < t.minTrackedToken {
-				t.minTrackedToken = total
+			// keys in totalsToUsers are guaranteed > 0 by addToTotals
+			if total < newMin {
+				newMin = total
 			}
 		}
-		// Reset to initialization value if empty
-		if len(t.totalsToUsers) == 0 || t.minTrackedToken == math.Inf(1) {
-			t.minTrackedToken = math.MaxFloat64
-		}
+		t.minTrackedToken = newMin
 	} else if newTotal > 0 && newTotal < t.minTrackedToken {
 		t.minTrackedToken = newTotal
+	}
+
+	// Ensure minTrackedToken is MaxFloat64 if no users have positive totals
+	if len(t.totalsToUsers) == 0 {
+		t.minTrackedToken = math.MaxFloat64
 	}
 }
 
 // Caller must hold the write lock
 func (t *InMemorySlidingWindowTokenTracker) recalcMax(oldTotal, newTotal float64) {
-	if oldTotal > 0 && oldTotal == t.maxTrackedToken && len(t.totalsToUsers[oldTotal]) == 0 {
+	if t.wasLastUserAtBoundary(t.maxTrackedToken, oldTotal) {
 		// Find new maximum
 		t.maxTrackedToken = 0
 		for total := range t.totalsToUsers {
@@ -390,5 +399,3 @@ func (t *InMemorySlidingWindowTokenTracker) recalcMax(oldTotal, newTotal float64
 		t.maxTrackedToken = newTotal
 	}
 }
-
-
