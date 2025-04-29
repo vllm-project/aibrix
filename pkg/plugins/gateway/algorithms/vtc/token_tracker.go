@@ -291,6 +291,11 @@ func (t *InMemorySlidingWindowTokenTracker) UpdateTokenCount(ctx context.Context
 	t.pruneExpiredBucketsAndUpdateState(user, cutoff)
 
 	totalAfterPruning := t.userTotals[user]
+	
+	// Clamp negative tokens to zero
+	inputTokens = max(0, inputTokens)
+	outputTokens = max(0, outputTokens)
+	
 	newTokens := inputTokens*t.config.InputTokenWeight + outputTokens*t.config.OutputTokenWeight
 
 	// Check if a bucket for the current timestamp already exists
@@ -312,13 +317,15 @@ func (t *InMemorySlidingWindowTokenTracker) UpdateTokenCount(ctx context.Context
 	return nil
 }
 
+// Caller must hold the write lock
 func (t *InMemorySlidingWindowTokenTracker) updateUserTotalAndMinMax(user string, oldTotal, newTotal float64) {
 	if oldTotal == newTotal {
 		return
 	}
-	if newTotal < 0 {
-		newTotal = 0
-	}
+
+	// Negative totals should be treated as 0
+	newTotal = max(0, newTotal)
+
 	t.userTotals[user] = newTotal
 	t.removeFromTotals(oldTotal, user)
 	t.addToTotals(newTotal, user)
@@ -326,6 +333,7 @@ func (t *InMemorySlidingWindowTokenTracker) updateUserTotalAndMinMax(user string
 	t.recalcMax(oldTotal, newTotal)
 }
 
+// Caller must hold the write lock
 func (t *InMemorySlidingWindowTokenTracker) removeFromTotals(oldTotal float64, user string) {
 	if oldTotal <= 0 {
 		return
@@ -338,6 +346,7 @@ func (t *InMemorySlidingWindowTokenTracker) removeFromTotals(oldTotal float64, u
 	}
 }
 
+// Caller must hold the write lock
 func (t *InMemorySlidingWindowTokenTracker) addToTotals(newTotal float64, user string) {
 	if newTotal <= 0 {
 		return
@@ -348,15 +357,18 @@ func (t *InMemorySlidingWindowTokenTracker) addToTotals(newTotal float64, user s
 	t.totalsToUsers[newTotal][user] = struct{}{}
 }
 
+// Caller must hold the write lock
 func (t *InMemorySlidingWindowTokenTracker) recalcMin(oldTotal, newTotal float64) {
 	if oldTotal > 0 && oldTotal == t.minTrackedToken && len(t.totalsToUsers[oldTotal]) == 0 {
+		// Find new minimum
 		t.minTrackedToken = math.Inf(1)
 		for total := range t.totalsToUsers {
 			if total < t.minTrackedToken {
 				t.minTrackedToken = total
 			}
 		}
-		if t.minTrackedToken == math.Inf(1) {
+		// Reset to initialization value if empty
+		if len(t.totalsToUsers) == 0 || t.minTrackedToken == math.Inf(1) {
 			t.minTrackedToken = math.MaxFloat64
 		}
 	} else if newTotal > 0 && newTotal < t.minTrackedToken {
@@ -364,8 +376,10 @@ func (t *InMemorySlidingWindowTokenTracker) recalcMin(oldTotal, newTotal float64
 	}
 }
 
+// Caller must hold the write lock
 func (t *InMemorySlidingWindowTokenTracker) recalcMax(oldTotal, newTotal float64) {
 	if oldTotal > 0 && oldTotal == t.maxTrackedToken && len(t.totalsToUsers[oldTotal]) == 0 {
+		// Find new maximum
 		t.maxTrackedToken = 0
 		for total := range t.totalsToUsers {
 			if total > t.maxTrackedToken {
@@ -376,3 +390,5 @@ func (t *InMemorySlidingWindowTokenTracker) recalcMax(oldTotal, newTotal float64
 		t.maxTrackedToken = newTotal
 	}
 }
+
+
