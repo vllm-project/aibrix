@@ -63,8 +63,8 @@ Depending on where you deployed the AIBrix, you can use either of the following 
 
     Some cloud provider like AWS EKS expose the endpoint at hostname field, if that case, you should use ``.status.loadBalancer.ingress[0].hostname`` instead.
 
-
 .. code-block:: bash
+
     # list models
     curl -v http://${ENDPOINT}/v1/models
 
