@@ -128,6 +128,9 @@ End-to-end tests for this algorithm can be found in [vtc_routing_test.go](../../
 | `AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT`     | Weight applied to input tokens in fairness calculations.                   | `1.0`            |
 | `AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT`    | Weight applied to output tokens in fairness calculations.                  | `2.0`            |
 | `AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD`           | Normalization factor for pod load in utilization score calculation.        | `100.0`          |
+| `AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT`        | Weight applied to fairness score in combined score calculation.            | `1.0`            |
+| `AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT`     | Weight applied to utilization score in combined score calculation.         | `1.0`            |
+
 
 
 ### Other VTC variants

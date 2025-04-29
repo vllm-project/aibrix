@@ -21,11 +21,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/vllm-project/aibrix/pkg/metrics"
-	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 // SimpleCache is a simplified implementation of the cache interface for testing
@@ -460,6 +461,69 @@ func TestVTCBasicRouterStrengths(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Contains(t, []string{"192.168.1.1:8000", "192.168.1.2:8000", "192.168.1.3:8000"}, addr)
 	})
+}
+
+func TestWeightCombinations(t *testing.T) {
+	// Use Milliseconds and set weights for testing
+	t.Setenv("AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT", "milliseconds")
+	t.Setenv("AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE", "50")
+	t.Setenv("AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT", "0.5")
+	t.Setenv("AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT", "0.5")
+
+	ctx := context.Background()
+	cache := NewSimpleCache()
+	tokenEstimator := NewSimpleTokenEstimator()
+	podList := NewSimplePodList(createTestPods(3))
+
+	// Set up pod loads - High, Medium, Low
+	podLoads := []float64{80.0, 40.0, 10.0}
+	for i, pod := range podList.All() {
+		podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
+		cache.SetPodMetric(podKey, "model1", metrics.NumRequestsRunning, podLoads[i])
+	}
+
+	// Set up user tokens
+	userTokens := float64(4500)
+	user := "user-balanced-test"
+
+	// Create tracker and router
+	trackerConfig := &VTCConfig{
+		InputTokenWeight:  1.0,
+		OutputTokenWeight: 1.0,
+		Variant:           RouterVTCBasic,
+	}
+	tracker := NewInMemorySlidingWindowTokenTracker(trackerConfig)
+	router := &BasicVTCRouter{
+		cache:          cache,
+		tokenTracker:   tracker,
+		tokenEstimator: tokenEstimator,
+		config:         trackerConfig,
+	}
+
+	// Set up user tokens
+	err := tracker.UpdateTokenCount(ctx, user, userTokens, 0)
+	assert.NoError(t, err)
+
+	// Force min/max token values to make tests deterministic
+	oldMinTokens := tokenTrackerMinTokens
+	oldMaxTokens := tokenTrackerMaxTokens
+	tokenTrackerMinTokens = userTokens
+	tokenTrackerMaxTokens = userTokens
+	defer func() {
+		tokenTrackerMinTokens = oldMinTokens
+		tokenTrackerMaxTokens = oldMaxTokens
+	}()
+
+	// Route the request
+	routingCtx := types.NewRoutingContext(ctx, "vtc-basic", "model1", "test message", "request-weight-test", user)
+	selectedPodAddress, err := router.Route(routingCtx, podList)
+	assert.NoError(t, err)
+
+	// Verify the selected pod matches expectations (pod2)
+	expectedPodIndex := 1
+	expectedPod := podList.All()[expectedPodIndex]
+	expectedAddress := fmt.Sprintf("%s:8000", expectedPod.Status.PodIP)
+	assert.Equal(t, expectedAddress, selectedPodAddress, "With balanced weights (0.5/0.5), expected pod 2 to be selected")
 }
 
 func createTestPods(count int) []*v1.Pod {

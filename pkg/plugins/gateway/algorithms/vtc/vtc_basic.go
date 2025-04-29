@@ -33,18 +33,24 @@ const (
 	defaultMaxPodLoad        = 100.0
 	defaultInputTokenWeight  = 1.0
 	defaultOutputTokenWeight = 2.0
+	defaultFairnessWeight    = 1.0
+	defaultUtilizationWeight = 1.0
 )
 
 const (
 	VTC_MAX_POD_LOAD        = "AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD"
 	VTC_INPUT_TOKEN_WEIGHT  = "AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT"
 	VTC_OUTPUT_TOKEN_WEIGHT = "AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT"
+	VTC_FAIRNESS_WEIGHT     = "AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT"
+	VTC_UTILIZATION_WEIGHT  = "AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT"
 )
 
 var (
 	maxPodLoad        = utils.LoadEnvFloat(VTC_MAX_POD_LOAD, defaultMaxPodLoad)
 	inputTokenWeight  = utils.LoadEnvFloat(VTC_INPUT_TOKEN_WEIGHT, defaultInputTokenWeight)
 	outputTokenWeight = utils.LoadEnvFloat(VTC_OUTPUT_TOKEN_WEIGHT, defaultOutputTokenWeight)
+	fairnessWeight    = utils.LoadEnvFloat(VTC_FAIRNESS_WEIGHT, defaultFairnessWeight)
+	utilizationWeight = utils.LoadEnvFloat(VTC_UTILIZATION_WEIGHT, defaultUtilizationWeight)
 )
 
 // BasicVTCRouter implements the VTC routing algorithm
@@ -172,8 +178,8 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		// 4. Add a small random factor to break ties and improve distribution
 		randomFactor := rand.Float64() * 0.1
 
-		// 5. Calculate combined score (lower is better) - using equal weights (1.0) for fairness and utilization
-		score := fairnessScore + utilizationScore + randomFactor
+		// 5. Calculate combined score (lower is better) - using configurable weights for fairness and utilization
+		score := (fairnessWeight * fairnessScore) + (utilizationWeight * utilizationScore) + randomFactor
 
 		klog.InfoS("VTC hybrid pod selection",
 			"pod", pod.Name,
@@ -181,7 +187,9 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			"userTokens", userTokens,
 			"podLoad", podLoad,
 			"fairnessScore", fairnessScore,
+			"fairnessWeight", fairnessWeight,
 			"utilizationScore", utilizationScore,
+			"utilizationWeight", utilizationWeight,
 			"combinedScore", score)
 
 		if score < minScore {
