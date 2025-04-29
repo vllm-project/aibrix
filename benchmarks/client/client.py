@@ -13,32 +13,33 @@ from queue import Queue
 from typing import List
 from utils import (load_workload, prepare_prompt, update_response)
 
-thread_pool_size = 8
-QUEUE_SIZE = 2
+thread_pool_size = 1
+QUEUE_SIZE = 1
 logging.basicConfig(level=logging.INFO)
 task_queues = []
-for _ in range(thread_pool_size):
-    task_queues.append(Queue(maxsize=QUEUE_SIZE))
+
 session_history = {}
 lock = threading.Lock()
 
-def worker(thread_idx, task_queue, client, model, send_request_func, output_file):
+def worker(thread_idx, task_queue, client, model, max_output, send_request_func, output_file):
     """Worker function to run an asyncio event loop in a separate thread."""
     asyncio.set_event_loop(asyncio.new_event_loop())
     loop = asyncio.get_event_loop()
     while True:
+        logging.debug(f"Worker {thread_idx} waiting for task...")
         task = task_queue.get()
+        logging.debug(f"Worker {thread_idx} receive task...")
         if task is None:  # Stop signal
             logging.warn(f"Worker {thread_idx} exit.")
             break
         else:
-            loop.run_until_complete(send_request_func(client, model, *task))
+            loop.run_until_complete(send_request_func(client, model, max_output, *task))
         task_queue.task_done()
 
 
-def start_worker_threads(thread_idx, task_queue, client, model, send_request_func, output_file):
+def start_worker_threads(thread_idx, task_queue, client, model, max_output, send_request_func, output_file):
     """Start multiple threads, each running an event loop for handling tasks."""
-    thread = threading.Thread(target=worker, args=(thread_idx, task_queue, client, model, send_request_func, output_file), daemon=True)
+    thread = threading.Thread(target=worker, args=(thread_idx, task_queue, client, model, max_output, send_request_func, output_file), daemon=True)
     thread.start()
     return thread
 
@@ -46,6 +47,7 @@ def start_worker_threads(thread_idx, task_queue, client, model, send_request_fun
 
 async def send_request_streaming(client: openai.AsyncOpenAI,
                              model: str,
+                             max_output: int, 
                              prompt: str,
                              output_file: str,
                              request_id: int,
@@ -65,7 +67,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
             model=model,
             messages=prompt,
             temperature=0,
-            max_tokens=2048,
+            max_tokens=max_output,
             stream=True,
             stream_options={"include_usage": True},
         )
@@ -170,6 +172,7 @@ async def benchmark_streaming(api_key: str,
                               load_struct: List,
                               output_file: io.TextIOWrapper,
                               model: str,
+                              max_output=int,
                               ):
     request_id = 0
     base_time = time.time()
@@ -177,7 +180,7 @@ async def benchmark_streaming(api_key: str,
     threads = []
     for thread_idx in range(0, thread_pool_size):
         client = create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
-        threads.append(start_worker_threads(thread_idx, task_queues[thread_idx], client, model, send_request_streaming, output_file))
+        threads.append(start_worker_threads(thread_idx, task_queues[thread_idx], client, model, max_output, send_request_streaming, output_file))
     for requests_dict in load_struct:
         ts = int(requests_dict["timestamp"])
         requests = requests_dict["requests"]
@@ -208,6 +211,7 @@ async def benchmark_streaming(api_key: str,
 # Asynchronous request handler
 async def send_request_batch(client: openai.AsyncOpenAI,
                              model: str,
+                             max_output: int, 
                              prompt: str,
                              output_file: str,
                              request_id: int,
@@ -225,7 +229,7 @@ async def send_request_batch(client: openai.AsyncOpenAI,
             model=model,
             messages=prompt,
             temperature=0,
-            max_tokens=2048
+            max_tokens=max_output,
         )
         if hasattr(response, 'response') and hasattr(response.response, 'headers'):
             target_pod = response.response.headers.get('target-pod')
@@ -301,6 +305,7 @@ async def benchmark_batch(api_key: str,
                           load_struct: List,
                           output_file: io.TextIOWrapper,
                           model: str,
+                          max_output: int,
                           ):
     request_id = 0
     base_time = time.time()
@@ -309,7 +314,7 @@ async def benchmark_batch(api_key: str,
     
     for thread_idx in range(0, thread_pool_size):
         client = create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
-        threads.append(start_worker_threads(thread_idx, task_queues[thread_idx], client, model, send_request_batch, output_file))
+        threads.append(start_worker_threads(thread_idx, task_queues[thread_idx], client, model, max_output, send_request_batch, output_file))
     for requests_dict in load_struct:
         ts = int(requests_dict["timestamp"])
         requests = requests_dict["requests"]
@@ -322,6 +327,7 @@ async def benchmark_batch(api_key: str,
             else:
                 session_id = None
                 task_queue_id = request_id % len(task_queues)
+            logging.debug(f"Sender placing task at queue {task_queue_id}...")
             task_queues[task_queue_id].put((formatted_prompts[i], output_file, request_id, session_id, target_time))
             request_id += 1
         num_requests += len(requests)
@@ -362,7 +368,12 @@ def create_client(api_key: str,
     return client
 
 def main(args):
-    logging.info(f"Starting benchmark on endpoint {args.endpoint}")
+    logging.info(f"Starting benchmark on endpoint {args.endpoint} client_pool_size {args.client_pool_size}")
+    global thread_pool_size
+    thread_pool_size = args.client_pool_size
+    for _ in range(thread_pool_size):
+        task_queues.append(Queue(maxsize=QUEUE_SIZE * 2))
+    
     with open(args.output_file_path, 'w', encoding='utf-8') as output_file:
         load_struct = load_workload(args.workload_path)
         if not args.streaming:
@@ -377,6 +388,7 @@ def main(args):
                 load_struct=load_struct,
                 output_file=output_file,
                 model=args.model,
+                max_output=args.output_token_limit,
             ))
             end_time = time.time()
             logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
@@ -392,6 +404,7 @@ def main(args):
                 load_struct=load_struct,
                 output_file=output_file,
                 model=args.model,
+                max_output=args.output_token_limit,
             ))
             end_time = time.time()
             logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
@@ -406,6 +419,8 @@ if __name__ == "__main__":
     parser.add_argument('--output-file-path', type=str, default="output.jsonl")
     parser.add_argument("--streaming", action="store_true", help="Use streaming client.")
     parser.add_argument("--routing-strategy", type=str, required=False, default="random", help="Routing strategy to use.")
+    parser.add_argument("--client-pool-size", type=int, required=False, default=1, help="Number of parallel clients to use.")
+    parser.add_argument("--output-token-limit", type=int, required=False, default=None, help="Limit the maximum number of output tokens.")
 
     args = parser.parse_args()
     main(args)

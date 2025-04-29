@@ -170,12 +170,18 @@ generate_workload() {
 
 run_client() {
     echo "[INFO] Running client to dispatch workload..."
-    python client/client.py \
-        --workload-path "$WORKLOAD_FILE" \
-        --endpoint "$ENDPOINT" \
-        --model "$TARGET_MODEL" \
-        --api-key "$API_KEY" \
-        --output-file-path "$CLIENT_OUTPUT/output.jsonl"
+
+    CMD="python client/client.py \
+        --workload-path \"$WORKLOAD_FILE\" \
+        --endpoint \"$ENDPOINT\" \
+        --model \"$TARGET_MODEL\" \
+        --api-key \"$API_KEY\" \
+        --output-file-path \"$CLIENT_OUTPUT/output.jsonl\""
+
+    [ "$STREAMING_ENABLED" = "true" ] && CMD+=" --streaming"
+    [ -n "$CLIENT_POOL_SIZE" ] && CMD+=" --client-pool-size \"$CLIENT_POOL_SIZE\""
+    [ -n "$OUTPUT_TOKEN_LIMIT" ] && CMD+=" --output-token-limit \"$OUTPUT_TOKEN_LIMIT\""
+    eval $CMD
 }
 
 # ---------------
