@@ -291,11 +291,11 @@ func (t *InMemorySlidingWindowTokenTracker) UpdateTokenCount(ctx context.Context
 	t.pruneExpiredBucketsAndUpdateState(user, cutoff)
 
 	totalAfterPruning := t.userTotals[user]
-	
+
 	// Clamp negative tokens to zero
 	inputTokens = max(0, inputTokens)
 	outputTokens = max(0, outputTokens)
-	
+
 	newTokens := inputTokens*t.config.InputTokenWeight + outputTokens*t.config.OutputTokenWeight
 
 	// Check if a bucket for the current timestamp already exists

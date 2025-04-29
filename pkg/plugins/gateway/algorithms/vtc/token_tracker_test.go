@@ -230,10 +230,10 @@ func TestTokenTrackerThreadSafety(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			defer wg.Done()
-			
+
 			// Each goroutine uses its own user ID
 			userID := fmt.Sprintf("user-%d", id)
-			
+
 			for j := 0; j < opsPerGoroutine; j++ {
 				// Alternate between read and write operations
 				if j%2 == 0 {
@@ -257,14 +257,14 @@ func TestTokenTrackerThreadSafety(t *testing.T) {
 		userID := fmt.Sprintf("user-%d", i)
 		tokens, err := tracker.GetTokenCount(ctx, userID)
 		assert.NoError(t, err)
-		
+
 		// Calculate expected tokens: sum of all even j values from 0 to opsPerGoroutine-1
 		// Each update adds j input tokens and j output tokens with weights from config
 		expectedTokens := 0.0
 		for j := 0; j < opsPerGoroutine; j += 2 {
-			expectedTokens += float64(j) * config.InputTokenWeight + float64(j) * config.OutputTokenWeight
+			expectedTokens += float64(j)*config.InputTokenWeight + float64(j)*config.OutputTokenWeight
 		}
-		
+
 		assert.Equal(t, expectedTokens, tokens, "Token count for %s should match expected value", userID)
 	}
 
@@ -299,17 +299,17 @@ func TestTokenTrackerThreadSafety_SharedUser(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			defer wg.Done()
-			
+
 			for j := 0; j < opsPerGoroutine; j++ {
 				// Each goroutine adds a fixed amount of tokens
 				inputTokens := float64(id + 1)
 				outputTokens := float64(id + 1)
-				
+
 				err := tracker.UpdateTokenCount(ctx, sharedUserID, inputTokens, outputTokens)
 				assert.NoError(t, err)
-				
+
 				// Track expected total with atomic operations
-				atomic.AddInt64(&expectedTotal, int64(inputTokens*config.InputTokenWeight + outputTokens*config.OutputTokenWeight))
+				atomic.AddInt64(&expectedTotal, int64(inputTokens*config.InputTokenWeight+outputTokens*config.OutputTokenWeight))
 			}
 		}(i)
 	}
@@ -342,19 +342,19 @@ func TestTokenTrackerThreadSafety_Expiration(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			defer wg.Done()
-			
+
 			userID := fmt.Sprintf("exp-user-%d", id)
-			
+
 			for j := 0; j < opsPerGoroutine; j++ {
 				// Add tokens
 				err := tracker.UpdateTokenCount(ctx, userID, 1.0, 1.0)
 				assert.NoError(t, err)
-				
+
 				// Sleep to allow some tokens to expire (stagger the sleeps)
 				if j%5 == 0 {
 					time.Sleep(time.Duration(5+id) * time.Millisecond)
 				}
-				
+
 				// Read token count
 				_, err = tracker.GetTokenCount(ctx, userID)
 				assert.NoError(t, err)
@@ -364,10 +364,10 @@ func TestTokenTrackerThreadSafety_Expiration(t *testing.T) {
 
 	// Wait for all goroutines to complete
 	wg.Wait()
-	
+
 	// Wait for all tokens to expire
 	time.Sleep(30 * time.Millisecond)
-	
+
 	// Verify all tokens expired
 	for i := 0; i < numGoroutines; i++ {
 		userID := fmt.Sprintf("exp-user-%d", i)
@@ -384,7 +384,7 @@ func TestTokenTrackerThreadSafety_MinMaxRecalculation(t *testing.T) {
 
 	// Number of concurrent goroutines
 	const numGoroutines = 10
-	
+
 	// Use a WaitGroup to coordinate goroutines
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
@@ -393,27 +393,27 @@ func TestTokenTrackerThreadSafety_MinMaxRecalculation(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			defer wg.Done()
-			
+
 			// Each goroutine uses a different user
 			userID := fmt.Sprintf("minmax-user-%d", id)
-			
+
 			// Add a specific token count based on the goroutine ID
 			tokenValue := float64(100 * (id + 1))
 			err := tracker.UpdateTokenCount(ctx, userID, tokenValue, 0)
 			assert.NoError(t, err)
-			
+
 			// Get min/max to trigger potential race conditions
 			_, err = tracker.GetMinTokenCount(ctx)
 			assert.NoError(t, err)
 			_, err = tracker.GetMaxTokenCount(ctx)
 			assert.NoError(t, err)
-			
+
 			// Sleep a bit to stagger operations
 			time.Sleep(time.Duration(id) * time.Millisecond)
-			
+
 			// Remove the tokens to trigger min/max recalculation
 			time.Sleep(110 * time.Millisecond) // Wait for tokens to expire
-			
+
 			// Add a different token count
 			newTokenValue := float64(50 * (id + 1))
 			err = tracker.UpdateTokenCount(ctx, userID, newTokenValue, 0)
@@ -430,22 +430,22 @@ func TestTokenTrackerThreadSafety_MinMaxRecalculation(t *testing.T) {
 	max, err := tracker.GetMaxTokenCount(ctx)
 	assert.NoError(t, err)
 	assert.True(t, min <= max, "Min token count should be less than or equal to max token count")
-	
+
 	// The expected min should be 50 (from user-0)
 	expectedMin := 50.0
 	// The expected max should be 500 (from user-9)
 	expectedMax := 50.0 * float64(numGoroutines)
-	
+
 	assert.Equal(t, expectedMin, min, "Min token count should match expected value")
 	assert.Equal(t, expectedMax, max, "Max token count should match expected value")
 }
 
 func TestTokenExpirationScenarios(t *testing.T) {
 	tests := []struct {
-		name          string
-		setupFunc     func(TokenTracker, context.Context) error
-		verifyFunc    func(TokenTracker, context.Context, *testing.T)
-		expiryWaitMs  int
+		name         string
+		setupFunc    func(TokenTracker, context.Context) error
+		verifyFunc   func(TokenTracker, context.Context, *testing.T)
+		expiryWaitMs int
 	}{
 		{
 			name: "MultipleUsersExpiration",
@@ -618,8 +618,6 @@ func TestTokenTrackerEdgeCases(t *testing.T) {
 		})
 	}
 }
-
-
 
 func TestSlidingWindowTokenTracker_SecondsUnitWindow(t *testing.T) {
 	config := DefaultVTCConfig()
