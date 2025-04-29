@@ -3,7 +3,3 @@ kind: Kustomization
 
 resources:
 - ../default
-- gateway
-
-# Optional: Add namespace-specific customizations here if needed
-# namespace: aibrix-system
