@@ -18,6 +18,7 @@ package kvcache
 
 import (
 	"context"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -95,42 +96,42 @@ func Test_getKVCacheBackendFromMetadata(t *testing.T) {
 		{
 			name: "valid backend label - vineyard",
 			labels: map[string]string{
-				KVCacheLabelKeyBackend: backends.KVCacheBackendVineyard,
+				constants.KVCacheLabelKeyBackend: backends.KVCacheBackendVineyard,
 			},
 			expected: backends.KVCacheBackendVineyard,
 		},
 		{
 			name: "valid backend label - infinistore",
 			labels: map[string]string{
-				KVCacheLabelKeyBackend: backends.KVCacheBackendInfinistore,
+				constants.KVCacheLabelKeyBackend: backends.KVCacheBackendInfinistore,
 			},
 			expected: backends.KVCacheBackendInfinistore,
 		},
 		{
 			name: "invalid backend label falls back to default",
 			labels: map[string]string{
-				KVCacheLabelKeyBackend: "unknown-backend",
+				constants.KVCacheLabelKeyBackend: "unknown-backend",
 			},
 			expected: backends.KVCacheBackendDefault,
 		},
 		{
 			name: "no label, distributed mode via annotation",
 			annotations: map[string]string{
-				KVCacheAnnotationMode: "distributed",
+				constants.KVCacheAnnotationMode: "distributed",
 			},
 			expected: backends.KVCacheBackendInfinistore,
 		},
 		{
 			name: "no label, centralized mode via annotation",
 			annotations: map[string]string{
-				KVCacheAnnotationMode: "centralized",
+				constants.KVCacheAnnotationMode: "centralized",
 			},
 			expected: backends.KVCacheBackendVineyard,
 		},
 		{
 			name: "no label, unknown mode falls back to default",
 			annotations: map[string]string{
-				KVCacheAnnotationMode: "invalid-mode",
+				constants.KVCacheAnnotationMode: "invalid-mode",
 			},
 			expected: backends.KVCacheBackendDefault,
 		},

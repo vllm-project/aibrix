@@ -2,13 +2,19 @@ package backends
 
 import (
 	"context"
+	"fmt"
+	"github.com/vllm-project/aibrix/pkg/constants"
+	"reflect"
+
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/klog/v2"
-	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -31,7 +37,7 @@ type BaseReconciler struct {
 func (r *BaseReconciler) ReconcilePodObject(ctx context.Context, desired *corev1.Pod) error {
 	found := &corev1.Pod{}
 	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
+	if err != nil && apierrors.IsNotFound(err) {
 		klog.InfoS("Creating a new Pod", "Pod.Namespace", desired.Namespace, "Pod.Name", desired.Name)
 		return r.Create(ctx, desired)
 	} else if err != nil {
@@ -62,7 +68,7 @@ func (r *BaseReconciler) ReconcilePodObject(ctx context.Context, desired *corev1
 func (r *BaseReconciler) ReconcileDeploymentObject(ctx context.Context, desired *appsv1.Deployment) error {
 	found := &appsv1.Deployment{}
 	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
+	if err != nil && apierrors.IsNotFound(err) {
 		klog.InfoS("Creating Deployment", "Name", desired.Name)
 		return r.Create(ctx, desired)
 	} else if err != nil {
@@ -78,7 +84,7 @@ func (r *BaseReconciler) ReconcileDeploymentObject(ctx context.Context, desired 
 func (r *BaseReconciler) ReconcileServiceObject(ctx context.Context, service *corev1.Service) error {
 	found := &corev1.Service{}
 	err := r.Get(ctx, types.NamespacedName{Name: service.Name, Namespace: service.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
+	if err != nil && apierrors.IsNotFound(err) {
 		klog.InfoS("Creating a new Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
 		return r.Create(ctx, service)
 	} else if err != nil {
@@ -100,7 +106,7 @@ func (r *BaseReconciler) ReconcileServiceObject(ctx context.Context, service *co
 func (r *BaseReconciler) ReconcileStatefulsetObject(ctx context.Context, sts *appsv1.StatefulSet) error {
 	found := &appsv1.StatefulSet{}
 	err := r.Get(ctx, types.NamespacedName{Name: sts.Name, Namespace: sts.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
+	if err != nil && apierrors.IsNotFound(err) {
 		klog.InfoS("Creating a new StatefulSet", "Sts.Namespace", sts.Namespace, "Sts.Name", sts.Name)
 		return r.Create(ctx, sts)
 	} else if err != nil {
@@ -157,4 +163,102 @@ func needsUpdateStatefulset(sts *appsv1.StatefulSet, found *appsv1.StatefulSet) 
 	}
 
 	return !reflect.DeepEqual(sts.Spec.Replicas, found.Spec.Replicas) || imageChanged
+}
+
+func (r *BaseReconciler) reconcileRedisService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
+	// We only support etcd at this moment, redis will be supported later.
+	replicas := int(kvCache.Spec.Metadata.Redis.Replicas)
+	if replicas != 1 {
+		klog.Warningf("replica %d > 1 is not supported at this moment, we will change to single replica", replicas)
+	}
+
+	pod := buildRedisPod(kvCache)
+	if err := r.ReconcilePodObject(ctx, pod); err != nil {
+		return err
+	}
+
+	// Create or update the etcd service for each pod
+	etcdService := buildRedisService(kvCache)
+	if err := r.ReconcileServiceObject(ctx, etcdService); err != nil {
+		return err
+	}
+
+	return nil
+}
+func buildRedisService(kvCache *orchestrationv1alpha1.KVCache) *corev1.Service {
+	redisServiceName := fmt.Sprintf("%s-redis", kvCache.Name)
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      redisServiceName,
+			Namespace: kvCache.Namespace,
+			Labels: map[string]string{
+				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleMetadata,
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(kvCache, orchestrationv1alpha1.GroupVersion.WithKind("KVCache")),
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{
+				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleMetadata,
+			},
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "service",
+					Port:       6379,
+					TargetPort: intstr.FromInt32(6379),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+			Type: corev1.ServiceTypeClusterIP,
+		},
+	}
+
+	return svc
+}
+
+func buildRedisPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
+	image := kvCache.Spec.Cache.Image
+	if kvCache.Spec.Metadata.Redis.Image != "" {
+		image = kvCache.Spec.Metadata.Redis.Image
+	}
+
+	redisPodName := fmt.Sprintf("%s-redis", kvCache.Name)
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      redisPodName,
+			Namespace: kvCache.Namespace,
+			Labels: map[string]string{
+				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleMetadata,
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(kvCache, orchestrationv1alpha1.GroupVersion.WithKind("KVCache")),
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "redis",
+					Image: image,
+					Ports: []corev1.ContainerPort{
+						{
+							Name:          "redis",
+							ContainerPort: 6379,
+							Protocol:      corev1.ProtocolTCP,
+						},
+					},
+					Command: []string{
+						"redis-server",
+					},
+					// You can also add volumeMounts, env vars, etc. if needed.
+				},
+			},
+		},
+	}
+
+	return pod
 }

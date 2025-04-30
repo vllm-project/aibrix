@@ -19,6 +19,7 @@ package kvcache
 import (
 	"context"
 	"fmt"
+	"github.com/vllm-project/aibrix/pkg/constants"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
@@ -38,35 +39,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-)
-
-const (
-	KVCacheLabelKeyIdentifier    = "kvcache.orchestration.aibrix.ai/name"
-	KVCacheLabelKeyRole          = "kvcache.orchestration.aibrix.ai/role"
-	KVCacheLabelKeyMetadataIndex = "kvcache.orchestration.aibrix.ai/etcd-index"
-	KVCacheLabelKeyBackend       = "kvcache.orchestration.aibrix.ai/backend"
-
-	KVCacheAnnotationNodeAffinityKey        = "kvcache.orchestration.aibrix.ai/node-affinity-key"
-	KVCacheAnnotationNodeAffinityDefaultKey = "machine.cluster.vke.volcengine.com/gpu-name"
-	KVCacheAnnotationNodeAffinityGPUType    = "kvcache.orchestration.aibrix.ai/node-affinity-gpu-type"
-	KVCacheAnnotationPodAffinityKey         = "kvcache.orchestration.aibrix.ai/pod-affinity-workload"
-
-	KVCacheAnnotationPodAntiAffinity = "kvcache.orchestration.aibrix.ai/pod-anti-affinity"
-
-	// Vineyard, HPKV, InfiniStore
-	KVCacheAnnotationMode              = "kvcache.orchestration.aibrix.ai/mode"
-	KVCacheAnnotationContainerRegistry = "kvcache.orchestration.aibrix.ai/container-registry"
-
-	KVCacheAnnotationRDMAPort         = "hpkv.kvcache.orchestration.aibrix.ai/rdma-port"
-	KVCacheAnnotationAdminPort        = "hpkv.kvcache.orchestration.aibrix.ai/admin-port"
-	KVCacheAnnotationBlockSize        = "hpkv.kvcache.orchestration.aibrix.ai/block-size-bytes"
-	KVCacheAnnotationBlockCount       = "hpkv.kvcache.orchestration.aibrix.ai/block-count"
-	KVCacheAnnotationTotalSlots       = "hpkv.kvcache.orchestration.aibrix.ai/total-slots"
-	KVCacheAnnotationVirtualNodeCount = "hpkv.kvcache.orchestration.aibrix.ai/virtual-node-count"
-
-	KVCacheLabelValueRoleCache     = "cache"
-	KVCacheLabelValueRoleMetadata  = "metadata"
-	KVCacheLabelValueRoleKVWatcher = "kvwatcher"
 )
 
 var (
@@ -130,7 +102,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		For(&orchestrationv1alpha1.KVCache{}).
 		Owns(&corev1.Service{}).
 		Owns(&appsv1.Deployment{}).
-		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}, builder.WithPredicates(podWithLabelFilter(KVCacheLabelKeyIdentifier))).
+		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}, builder.WithPredicates(podWithLabelFilter(constants.KVCacheLabelKeyIdentifier))).
 		Complete(r)
 	if err != nil {
 		return err
@@ -195,7 +167,7 @@ func (r *KVCacheReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // getKVCacheBackendFromMetadata returns the backend based on labels and annotations with fallback logic.
 func getKVCacheBackendFromMetadata(kv *orchestrationv1alpha1.KVCache) string {
-	backend := kv.Labels[KVCacheLabelKeyBackend]
+	backend := kv.Labels[constants.KVCacheLabelKeyBackend]
 	if backend != "" {
 		if isValidKVCacheBackend(backend) {
 			return backend
@@ -207,7 +179,7 @@ func getKVCacheBackendFromMetadata(kv *orchestrationv1alpha1.KVCache) string {
 	}
 
 	// provide the compatibility for distributed, centralized mode.
-	mode := kv.Annotations[KVCacheAnnotationMode]
+	mode := kv.Annotations[constants.KVCacheAnnotationMode]
 	switch mode {
 	case "distributed":
 		return backends.KVCacheBackendInfinistore
