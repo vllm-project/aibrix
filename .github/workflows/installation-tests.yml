@@ -56,13 +56,46 @@ jobs:
           name: ${{ matrix.image }}-image
           path: ${{ matrix.image }}.tar
           retention-days: 1
+  
+  build-mock-image:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [vllm-mock]
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build vllm-mock
+        run: |
+          cd development/app
+          docker build -t aibrix/vllm-mock:${{ github.sha }} -f Dockerfile .
+
+      - name: Save image
+        run: |
+          docker save aibrix/vllm-mock:${{ github.sha }} > vllm-mock.tar
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vllm-mock-image
+          path: vllm-mock.tar
+          retention-days: 1
 
   installation-test:
-    needs: [build-images]
+    needs: [build-images, build-mock-image]
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.22'
 
       - name: Download all image artifacts
         uses: actions/download-artifact@v4
@@ -106,7 +139,7 @@ jobs:
 
       - name: Load image into Kind
         run: |
-          for image in controller-manager gateway-plugins runtime metadata-service; do
+          for image in controller-manager gateway-plugins runtime metadata-service vllm-mock; do
               docker load < ${image}-image/${image}.tar
 
               # Retag the image
@@ -115,8 +148,8 @@ jobs:
               docker tag aibrix/${image}:${{ github.sha }} aibrix/${image}:nightly
           done
 
-          kind load docker-image aibrix/controller-manager:${{ github.sha }} aibrix/gateway-plugins:${{ github.sha }} aibrix/metadata-service:${{ github.sha }} aibrix/runtime:${{ github.sha }} --name installation-test
-          kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly --name installation-test
+          kind load docker-image aibrix/controller-manager:${{ github.sha }} aibrix/gateway-plugins:${{ github.sha }} aibrix/metadata-service:${{ github.sha }} aibrix/runtime:${{ github.sha }} aibrix/vllm-mock:${{ github.sha }} --name installation-test
+          kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly aibrix/vllm-mock:nightly --name installation-test
 
       - name: Deploy controller with the built image
         run: |
@@ -131,13 +164,11 @@ jobs:
       - name: Deploy Workload
         run: |
           cd development/app
-          docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
-          kind load docker-image aibrix/vllm-mock:nightly --name installation-test
           kubectl create -k config/mock
 
       - name: Check pod status
         run: |
-          sleep 30s
+          sleep 45s
           kubectl get pods --all-namespaces
           kubectl wait pod --all --for=condition=ready --all-namespaces --timeout=300s
 
