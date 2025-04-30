@@ -1,4 +1,3 @@
-# utility.py
 import argparse
 from converter import process_dataset_trace, process_dataset_sharegpt
 
