@@ -6,7 +6,7 @@ on:
     branches: [ "main", "release-*" ]
 
 jobs:
-  build-controller:
+  build:
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -15,119 +15,13 @@ jobs:
       - uses: actions/checkout@v3
         with:
           submodules: 'true'
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
       - name: Login to DockerHub
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Build and push controller
-        uses: docker/build-push-action@v6
-        with:
-          platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile
-          push: true
-          tags: aibrix/controller-manager:${{ github.sha }}
-  
-  build-gateway-plugins:
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          submodules: 'true'
-      - name: Login to DockerHub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}          
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Build and push gateway-plugins
-        uses: docker/build-push-action@v6
-        with:
-          platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile.gateway
-          push: true
-          tags: aibrix/gateway-plugins:${{ github.sha }}
-  
-  build-metadata-service:
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          submodules: 'true'
-      - name: Login to DockerHub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}          
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Build and push metadata-service
-        uses: docker/build-push-action@v6
-        with:
-          platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile.metadata
-          push: true
-          tags: aibrix/metadata-service:${{ github.sha }}
-
-  build-runtime:
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          submodules: 'true'
-      - name: Login to DockerHub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}          
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Build and push runtime
-        uses: docker/build-push-action@v6
-        with:
-          platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile.runtime
-          push: true
-          tags: aibrix/runtime:${{ github.sha }}
-
-  build-kvcache-watcher:
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          submodules: 'true'
-      - name: Login to DockerHub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}          
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Build and push kvcache-watcher
-        uses: docker/build-push-action@v6
-        with:
-          platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile.kvcache
-          push: true
-          tags: aibrix/kvcache-watcher:${{ github.sha }}
-
-
-
 #      - name: Login to the Container registry
 #        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
 #        with:
@@ -135,6 +29,13 @@ jobs:
 #          username: ${{ github.actor }}
 #          password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build Container Images
+        run: |
+          make docker-build-all
+
+      - name: Push Container Images to DockerHub
+        run: |
+          make docker-push-all
 
 # TODO: Disable GHCR at this moment after org transfer, let's enable it later.
 #      - name: Build Container Images with Github Container Registry prefix
