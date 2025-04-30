@@ -18,16 +18,16 @@ package kvcache
 
 import (
 	"context"
-	"reflect"
+	"fmt"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/controller/kvcache/backends"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -44,6 +44,7 @@ const (
 	KVCacheLabelKeyIdentifier    = "kvcache.orchestration.aibrix.ai/name"
 	KVCacheLabelKeyRole          = "kvcache.orchestration.aibrix.ai/role"
 	KVCacheLabelKeyMetadataIndex = "kvcache.orchestration.aibrix.ai/etcd-index"
+	KVCacheLabelKeyBackend       = "kvcache.orchestration.aibrix.ai/backend"
 
 	KVCacheAnnotationNodeAffinityKey        = "kvcache.orchestration.aibrix.ai/node-affinity-key"
 	KVCacheAnnotationNodeAffinityDefaultKey = "machine.cluster.vke.volcengine.com/gpu-name"
@@ -90,6 +91,11 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		Scheme:        mgr.GetScheme(),
 		Recorder:      mgr.GetEventRecorderFor(controllerName),
 		RuntimeConfig: runtimeConfig,
+		Backends: map[string]backends.BackendReconciler{
+			backends.KVCacheBackendVineyard:    backends.NewVineyardReconciler(mgr.GetClient()),
+			backends.KVCacheBackendHPKV:        backends.NewHpKVReconciler(mgr.GetClient()),
+			backends.KVCacheBackendInfinistore: backends.NewInfiniStoreReconciler(mgr.GetClient()),
+		},
 	}
 	return reconciler, nil
 }
@@ -140,6 +146,7 @@ type KVCacheReconciler struct {
 	Scheme        *runtime.Scheme
 	Recorder      record.EventRecorder
 	RuntimeConfig config.RuntimeConfig
+	Backends      map[string]backends.BackendReconciler
 }
 
 // +kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=kvcaches,verbs=get;list;watch;create;update;patch;delete
@@ -168,18 +175,15 @@ func (r *KVCacheReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return reconcile.Result{}, err
 	}
 
-	// Extract the deployment mode for distributed KV Cache
-	// By default it's still centrailized,
-	mode := kvCache.ObjectMeta.Annotations[KVCacheAnnotationMode]
-	switch mode {
-	case "distributed":
-		return r.reconcileDistributedMode(ctx, kvCache)
-	case "centralized":
-	default:
-		return r.reconcileCentralizedMode(ctx, kvCache)
+	backend := getKVCacheBackendFromMetadata(kvCache)
+	handler, ok := r.Backends[backend]
+	if !ok {
+		log := ctrl.LoggerFrom(ctx)
+		log.Error(nil, "unsupported backend", "backend", backend)
+		return ctrl.Result{}, fmt.Errorf("unsupported backend: %s", backend)
 	}
 
-	return ctrl.Result{}, nil
+	return handler.Reconcile(ctx, kvCache)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -189,133 +193,37 @@ func (r *KVCacheReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *KVCacheReconciler) ReconcilePodObject(ctx context.Context, desired *corev1.Pod) error {
-	found := &corev1.Pod{}
-	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
-		klog.InfoS("Creating a new Pod", "Pod.Namespace", desired.Namespace, "Pod.Name", desired.Name)
-		return r.Create(ctx, desired)
-	} else if err != nil {
-		return err
-	}
-
-	// Check if the images need to be updated.
-	// most Pod fields are mutable, so we just compare image here. We can extends to tolerations or other fields later.
-	updateNeeded := false
-	for i, container := range found.Spec.Containers {
-		if len(desired.Spec.Containers) > i {
-			if desired.Spec.Containers[i].Image != container.Image {
-				// update the image
-				found.Spec.Containers[i].Image = desired.Spec.Containers[i].Image
-				updateNeeded = true
-			}
+// getKVCacheBackendFromMetadata returns the backend based on labels and annotations with fallback logic.
+func getKVCacheBackendFromMetadata(kv *orchestrationv1alpha1.KVCache) string {
+	backend := kv.Labels[KVCacheLabelKeyBackend]
+	if backend != "" {
+		if isValidKVCacheBackend(backend) {
+			return backend
 		}
+
+		// TODO: Move validation logic to webhook.
+		// invalid value provided, fall back to default backend
+		return backends.KVCacheBackendDefault
 	}
 
-	if updateNeeded {
-		klog.InfoS("Updating Pod", "Pod.Namespace", found.Namespace, "Pod.Name", found.Name)
-		return r.Update(ctx, found)
+	// provide the compatibility for distributed, centralized mode.
+	mode := kv.Annotations[KVCacheAnnotationMode]
+	switch mode {
+	case "distributed":
+		return backends.KVCacheBackendInfinistore
+	case "centralized":
+		return backends.KVCacheBackendVineyard
+	default:
+		return backends.KVCacheBackendDefault
 	}
-
-	return nil
 }
 
-func (r *KVCacheReconciler) ReconcileDeploymentObject(ctx context.Context, desired *appsv1.Deployment) error {
-	found := &appsv1.Deployment{}
-	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
-		klog.InfoS("Creating Deployment", "Name", desired.Name)
-		return r.Create(ctx, desired)
-	} else if err != nil {
-		return err
-	} else if needsUpdateDeployment(desired, found) {
-		found.Spec = desired.Spec
-		klog.InfoS("Updating Deployment", "Name", desired.Name)
-		return r.Update(ctx, found)
+// isValidKVCacheBackend returns true if the backend is one of the supported backends.
+func isValidKVCacheBackend(b string) bool {
+	switch b {
+	case backends.KVCacheBackendVineyard, backends.KVCacheBackendHPKV, backends.KVCacheBackendInfinistore:
+		return true
+	default:
+		return false
 	}
-	return nil
-}
-
-func (r *KVCacheReconciler) ReconcileServiceObject(ctx context.Context, service *corev1.Service) error {
-	found := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Name: service.Name, Namespace: service.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
-		klog.InfoS("Creating a new Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
-		return r.Create(ctx, service)
-	} else if err != nil {
-		return err
-	}
-
-	// Update the found object and write the result back if there are any changes
-	if needsUpdateService(service, found) {
-		found.Spec.Ports = service.Spec.Ports
-		found.Spec.Selector = service.Spec.Selector
-		found.Spec.Type = service.Spec.Type
-		klog.InfoS("Updating Service", "Service.Namespace", found.Namespace, "Service.Name", found.Name)
-		return r.Update(ctx, found)
-	}
-
-	return nil
-}
-
-func (r *KVCacheReconciler) ReconcileStatefulsetObject(ctx context.Context, sts *appsv1.StatefulSet) error {
-	found := &appsv1.StatefulSet{}
-	err := r.Get(ctx, types.NamespacedName{Name: sts.Name, Namespace: sts.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
-		klog.InfoS("Creating a new StatefulSet", "Sts.Namespace", sts.Namespace, "Sts.Name", sts.Name)
-		return r.Create(ctx, sts)
-	} else if err != nil {
-		return err
-	}
-
-	// Update the found object and write the result back if there are any changes
-	if needsUpdateStatefulset(sts, found) {
-		found.Spec = sts.Spec
-		klog.InfoS("Updating Statefulset", "Sts.Namespace", found.Namespace, "Sts.Name", found.Name)
-		return r.Update(ctx, found)
-	}
-
-	return nil
-}
-
-// needsUpdateService checks if the service spec of the new service differs from the existing one
-func needsUpdateService(service, found *corev1.Service) bool {
-	// Compare relevant spec fields
-	return !reflect.DeepEqual(service.Spec.Ports, found.Spec.Ports) ||
-		!reflect.DeepEqual(service.Spec.Selector, found.Spec.Selector) ||
-		service.Spec.Type != found.Spec.Type
-}
-
-// needsUpdateDeployment checks if the deployment spec of the new deployment differs from the existing one
-// only image and replicas are considered at this moment.
-func needsUpdateDeployment(deployment *appsv1.Deployment, found *appsv1.Deployment) bool {
-	imageChanged := false
-	for i, container := range found.Spec.Template.Spec.Containers {
-		if len(deployment.Spec.Template.Spec.Containers) > i {
-			if deployment.Spec.Template.Spec.Containers[i].Image != container.Image {
-				// update the image
-				found.Spec.Template.Spec.Containers[i].Image = deployment.Spec.Template.Spec.Containers[i].Image
-				imageChanged = true
-			}
-		}
-	}
-
-	return !reflect.DeepEqual(deployment.Spec.Replicas, found.Spec.Replicas) || imageChanged
-}
-
-// needsUpdateStatefulset checks if the StatefulSet spec of the new Statefulset differs from the existing one
-// only image and replicas are considered at this moment.
-func needsUpdateStatefulset(sts *appsv1.StatefulSet, found *appsv1.StatefulSet) bool {
-	imageChanged := false
-	for i, container := range found.Spec.Template.Spec.Containers {
-		if len(sts.Spec.Template.Spec.Containers) > i {
-			if sts.Spec.Template.Spec.Containers[i].Image != container.Image {
-				// update the image
-				found.Spec.Template.Spec.Containers[i].Image = sts.Spec.Template.Spec.Containers[i].Image
-				imageChanged = true
-			}
-		}
-	}
-
-	return !reflect.DeepEqual(sts.Spec.Replicas, found.Spec.Replicas) || imageChanged
 }

@@ -18,16 +18,18 @@ package kvcache
 
 import (
 	"context"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/controller/kvcache/backends"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var _ = Describe("KVCache Controller", func() {
@@ -82,3 +84,113 @@ var _ = Describe("KVCache Controller", func() {
 		})
 	})
 })
+
+func Test_getKVCacheBackendFromMetadata(t *testing.T) {
+	testCases := []struct {
+		name        string
+		labels      map[string]string
+		annotations map[string]string
+		expected    string
+	}{
+		{
+			name: "valid backend label - vineyard",
+			labels: map[string]string{
+				KVCacheLabelKeyBackend: backends.KVCacheBackendVineyard,
+			},
+			expected: backends.KVCacheBackendVineyard,
+		},
+		{
+			name: "valid backend label - infinistore",
+			labels: map[string]string{
+				KVCacheLabelKeyBackend: backends.KVCacheBackendInfinistore,
+			},
+			expected: backends.KVCacheBackendInfinistore,
+		},
+		{
+			name: "invalid backend label falls back to default",
+			labels: map[string]string{
+				KVCacheLabelKeyBackend: "unknown-backend",
+			},
+			expected: backends.KVCacheBackendDefault,
+		},
+		{
+			name: "no label, distributed mode via annotation",
+			annotations: map[string]string{
+				KVCacheAnnotationMode: "distributed",
+			},
+			expected: backends.KVCacheBackendInfinistore,
+		},
+		{
+			name: "no label, centralized mode via annotation",
+			annotations: map[string]string{
+				KVCacheAnnotationMode: "centralized",
+			},
+			expected: backends.KVCacheBackendVineyard,
+		},
+		{
+			name: "no label, unknown mode falls back to default",
+			annotations: map[string]string{
+				KVCacheAnnotationMode: "invalid-mode",
+			},
+			expected: backends.KVCacheBackendDefault,
+		},
+		{
+			name:     "no label or annotation, falls back to default",
+			expected: backends.KVCacheBackendDefault,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			kv := &orchestrationv1alpha1.KVCache{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      tc.labels,
+					Annotations: tc.annotations,
+				},
+			}
+			result := getKVCacheBackendFromMetadata(kv)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func Test_isValidKVCacheBackend(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{
+			name:     "valid vineyard backend",
+			input:    backends.KVCacheBackendVineyard,
+			expected: true,
+		},
+		{
+			name:     "valid infinistore backend",
+			input:    backends.KVCacheBackendInfinistore,
+			expected: true,
+		},
+		{
+			name:     "valid hpkv backend",
+			input:    backends.KVCacheBackendHPKV,
+			expected: true,
+		},
+		{
+			name:     "invalid backend",
+			input:    "not-a-valid-backend",
+			expected: false,
+		},
+		{
+			name:     "empty backend",
+			input:    "",
+			expected: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := isValidKVCacheBackend(tc.input)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
