@@ -188,7 +188,7 @@ func TestVTCBasicRouting(t *testing.T) {
 
 		podHistogram := make(map[string]int)
 
-		for range 5 {
+		for i := 0; i < 5; i++ {
 			for _, user := range users {
 				pod := getTargetPodFromChatCompletionWithUser(t, msgMap[user], "vtc-basic", user)
 				podHistogram[pod]++
