@@ -1,7 +1,6 @@
 package backends
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -12,9 +11,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/klog/v2"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"strconv"
 	"strings"
 )
@@ -37,7 +33,7 @@ const (
 	defaultVirtualNodeCount = 100
 )
 
-type ClusterParams struct {
+type HpKVClusterParams struct {
 	RdmaPort          int
 	AdminPort         int
 	BlockSizeInBytes  int
@@ -47,50 +43,38 @@ type ClusterParams struct {
 	ContainerRegistry string
 }
 
-type HpKVReconciler struct {
-	*BaseReconciler
+type HpKVBackend struct{}
+
+func (b HpKVBackend) BuildMetadataWorkload(cache *orchestrationv1alpha1.KVCache) *appsv1.Deployment {
+	//TODO implement me
+	panic("implement me")
 }
 
-func NewHpKVReconciler(c client.Client) *HpKVReconciler {
-	return &HpKVReconciler{&BaseReconciler{Client: c}}
+func (b HpKVBackend) BuildMetadataService(cache *orchestrationv1alpha1.KVCache) *corev1.Service {
+	//TODO implement me
+	panic("implement me")
 }
 
-func (r HpKVReconciler) Reconcile(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) (reconcile.Result, error) {
-	err := r.reconcileMetadataService(ctx, kvCache)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+func (HpKVBackend) Name() string { return "hpkv" }
 
-	// Handle Hpkv/infinistore kvCache Deployment
-	sts := buildCacheStatefulSet(kvCache)
-	if err := r.ReconcileStatefulsetObject(ctx, sts); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// Handle Hpkv/infinistore Services
-	service := buildHeadlessService(kvCache)
-	if err := r.ReconcileServiceObject(ctx, service); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	kvcacheWatcherPod := buildKVCacheWatcherPod(kvCache)
-	if err := r.ReconcilePodObject(ctx, kvcacheWatcherPod); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, nil
-}
-
-func (r *HpKVReconciler) reconcileMetadataService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
-	if kvCache.Spec.Metadata != nil && kvCache.Spec.Metadata.Etcd == nil && kvCache.Spec.Metadata.Redis == nil {
+func (HpKVBackend) ValidateObject(kv *orchestrationv1alpha1.KVCache) error {
+	if kv.Spec.Metadata != nil && kv.Spec.Metadata.Etcd == nil && kv.Spec.Metadata.Redis == nil {
 		return errors.New("either etcd or redis configuration is required")
 	}
-
-	if kvCache.Spec.Metadata.Redis != nil {
-		return r.reconcileRedisService(ctx, kvCache)
-	}
-
 	return nil
+}
+
+func (HpKVBackend) BuildWatcherPod(kv *orchestrationv1alpha1.KVCache) *corev1.Pod {
+	// you can reuse your existing buildKVCacheWatcherPod() logic
+	return buildKVCacheWatcherPod(kv)
+}
+
+func (HpKVBackend) BuildCacheStatefulSet(kv *orchestrationv1alpha1.KVCache) *appsv1.StatefulSet {
+	return buildCacheStatefulSet(kv)
+}
+
+func (HpKVBackend) BuildService(kv *orchestrationv1alpha1.KVCache) *corev1.Service {
+	return buildHeadlessService(kv)
 }
 
 func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
@@ -158,6 +142,9 @@ func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod 
 					Image: kvCacheWatcherPodImage,
 					Command: []string{
 						"/kvcache-watcher",
+					},
+					Args: []string{
+						"--kv-cache-Backend", KVCacheBackendHPKV,
 					},
 					// You can also add volumeMounts, env vars, etc. if needed.
 					Env:             envs,
@@ -345,8 +332,8 @@ func buildHeadlessService(kvCache *orchestrationv1alpha1.KVCache) *corev1.Servic
 	return service
 }
 
-func getKVCacheParams(annotations map[string]string) *ClusterParams {
-	return &ClusterParams{
+func getKVCacheParams(annotations map[string]string) *HpKVClusterParams {
+	return &HpKVClusterParams{
 		RdmaPort:          getPortAnnotation(annotations, KVCacheAnnotationRDMAPort, defaultRDMAPort),
 		AdminPort:         getPortAnnotation(annotations, KVCacheAnnotationAdminPort, defaultAdminPort),
 		BlockSizeInBytes:  getPositiveIntAnnotation(annotations, KVCacheAnnotationBlockSize, defaultBlockSizeInBytes),

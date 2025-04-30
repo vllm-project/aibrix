@@ -65,8 +65,8 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		RuntimeConfig: runtimeConfig,
 		Backends: map[string]backends.BackendReconciler{
 			backends.KVCacheBackendVineyard:    backends.NewVineyardReconciler(mgr.GetClient()),
-			backends.KVCacheBackendHPKV:        backends.NewHpKVReconciler(mgr.GetClient()),
-			backends.KVCacheBackendInfinistore: backends.NewInfiniStoreReconciler(mgr.GetClient()),
+			backends.KVCacheBackendHPKV:        backends.NewDistributedReconciler(mgr.GetClient(), backends.KVCacheBackendHPKV),
+			backends.KVCacheBackendInfinistore: backends.NewDistributedReconciler(mgr.GetClient(), backends.KVCacheBackendInfinistore),
 		},
 	}
 	return reconciler, nil
