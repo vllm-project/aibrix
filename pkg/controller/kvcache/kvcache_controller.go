@@ -121,11 +121,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// use the builder fashion. If we need more fine grain control later, we can switch to `controller.New()`
 	err := ctrl.NewControllerManagedBy(mgr).
 		Named(controllerName).
-		For(&orchestrationv1alpha1.KVCache{}, builder.WithPredicates(predicate.Or(
-			predicate.GenerationChangedPredicate{},
-			predicate.LabelChangedPredicate{},
-			predicate.AnnotationChangedPredicate{},
-		))).
+		For(&orchestrationv1alpha1.KVCache{}).
 		Owns(&corev1.Service{}).
 		Owns(&appsv1.Deployment{}).
 		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}, builder.WithPredicates(podWithLabelFilter(KVCacheLabelKeyIdentifier))).
