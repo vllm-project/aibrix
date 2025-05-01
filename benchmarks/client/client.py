@@ -54,7 +54,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
                              session_id: str,
                              target_time: int,
                              ):
-    start_time = asyncio.get_event_loop().time()
+    start_time = time.time()
     first_response_time = None
     target_pod = ""
     target_request_id = ""
@@ -218,7 +218,7 @@ async def send_request_batch(client: openai.AsyncOpenAI,
                              session_id: str, 
                              target_time: int,
                              ):
-    start_time = asyncio.get_event_loop().time()
+    start_time = time.time()
     target_pod = ""
     try:
         logging.warning(f"send_request_batch: Prepare to launch task after {target_time - start_time}")
