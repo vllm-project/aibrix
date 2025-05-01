@@ -47,7 +47,7 @@ To run dataset generation, do
 Currently, we support four types of dataset:
 
 **1. Controlled Synthetic Sharing**
-- This type allows users to generate a cache sharing *sessioned-format* dataset with *controlled prompt token length* and *controlled prefix sharing length*, as well as controlled number of prefixes (i.e., sessions). To tune the prompt token length and shared length, set environment variables in [config/dataset/synthetic_shared.sh](./config/dataset/synthetic_shared.sh).
+- This type allows users to generate a cache sharing *plain-format* dataset with *controlled prompt token length* and *controlled prefix sharing length*, as well as controlled number of prefixes (i.e., sessions). To tune the prompt token length and shared length, set environment variables in [config/dataset/synthetic_shared.sh](./config/dataset/synthetic_shared.sh).
 
 **2. Multiturn Synthetic**
 - Multiturn synthetic data generation produces *sessioned-format* dataset. Each session id maps to *controlled number of prompts* per session and *controlled prompt lengths*. These variables could be tuned via [config/dataset/synthetic_multiturn.sh](./config/dataset/synthetic_multiturn.sh). 

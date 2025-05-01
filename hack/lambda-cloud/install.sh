@@ -36,6 +36,25 @@ else
     echo "Unsupported architecture for Kind."
 fi
 
+# Install Minikube
+echo "Installing Minikube..."
+ARCH=$(uname -m)
+
+if [ "$ARCH" = "x86_64" ]; then
+    ARCH_SUFFIX="amd64"
+elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+    ARCH_SUFFIX="arm64"
+else
+    echo "Unsupported architecture for Minikube: $ARCH"
+    exit 1
+fi
+
+curl -LO "https://github.com/kubernetes/minikube/releases/latest/download/minikube-linux-${ARCH_SUFFIX}"
+sudo install "minikube-linux-${ARCH_SUFFIX}" /usr/local/bin/minikube
+rm "minikube-linux-${ARCH_SUFFIX}"
+echo "Minikube installation completed."
+
+
 # Install Helm
 echo "Installing Helm..."
 curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3

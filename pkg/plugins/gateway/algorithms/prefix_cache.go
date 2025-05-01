@@ -81,7 +81,7 @@ func NewPrefixCacheRouter() (types.Router, error) {
 	}, nil
 }
 
-func (p prefixCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+func (p prefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	var prefixHashes []uint64
 	var matchedPods map[string]int
 	var targetPod *v1.Pod
@@ -91,7 +91,7 @@ func (p prefixCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList) 
 		return "", err
 	}
 
-	readyPods := pods.All()
+	readyPods := readyPodList.All()
 	readyPodsMap := map[string]struct{}{}
 	for _, pod := range readyPods {
 		readyPodsMap[pod.Name] = struct{}{}

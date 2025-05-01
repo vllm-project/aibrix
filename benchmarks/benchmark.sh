@@ -30,16 +30,20 @@ generate_dataset() {
     case "$PROMPT_TYPE" in
         synthetic_shared)
             source config/dataset/synthetic_shared.sh
-            python generator/dataset-generator/synthetic_prefix_sharing_dataset.py \
-                --app-name "$PROMPT_TYPE" \
-                --prompt-length "$PROMPT_LENGTH" \
-                --prompt-length-std "$PROMPT_STD" \
-                --shared-proportion "$SHARED_PROP" \
-                --shared-proportion-std "$SHARED_PROP_STD" \
-                --num-samples-per-prefix "$NUM_SAMPLES" \
-                --num-prefix "$NUM_PREFIX" \
-                --output "$DATASET_FILE" \
-                --randomize-order \
+            CMD="python generator/dataset-generator/synthetic_prefix_sharing_dataset.py \
+                --app-name \"$PROMPT_TYPE\" \
+                --prompt-length \"$PROMPT_LENGTH\" \
+                --prompt-length-std \"$PROMPT_STD\" \
+                --shared-proportion \"$SHARED_PROP\" \
+                --shared-proportion-std \"$SHARED_PROP_STD\" \
+                --num-samples-per-prefix \"$NUM_SAMPLES\" \
+                --num-prefix \"$NUM_PREFIX\" \
+                --output \"$DATASET_FILE\" \
+                --randomize-order"
+
+            [ -n "$NUM_DATASET_CONFIGS" ] && CMD+=" --num-configs \"$NUM_DATASET_CONFIGS\""
+            
+            eval $CMD
             ;;
         synthetic_multiturn)
             source config/dataset/synthetic_multiturn.sh
@@ -54,7 +58,7 @@ generate_dataset() {
             ;;
         client_trace)
             source config/dataset/client_trace.sh
-            python generator/dataset-generator/converter.py \
+            python generator/dataset-generator/utility.py convert \
                 --path ${TRACE} \
                 --type trace \
                 --output ${DATASET_FILE} \
@@ -65,7 +69,7 @@ generate_dataset() {
                 echo "[INFO] Downloading ShareGPT dataset..."
                 wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json -O ${TARGET_DATASET}
             fi    
-            python generator/dataset-generator/converter.py  \
+            python generator/dataset-generator/utility.py convert \
                 --path ${TARGET_DATASET} \
                 --type sharegpt \
                 --output ${DATASET_FILE} \
@@ -97,10 +101,8 @@ generate_workload() {
                 --output-dir \"$WORKLOAD_DIR\" \
                 --output-format jsonl"
 
-            # Optional max concurrent sessions
             [ -n "$MAX_CONCURRENT_SESSIONS" ] && CMD+=" --max-concurrent-sessions \"$MAX_CONCURRENT_SESSIONS\""
 
-            # Run the final command
             eval $CMD
             ;;
         synthetic)
@@ -114,12 +116,11 @@ generate_workload() {
                 --output-dir \"$WORKLOAD_DIR\" \
                 --output-format jsonl"
 
-            # Conditionally add optional arguments
             [ -n "$TRAFFIC_FILE" ] && CMD+=" --traffic-pattern-config \"$TRAFFIC_FILE\""
             [ -n "$PROMPT_LEN_FILE" ] && CMD+=" --prompt-len-pattern-config \"$PROMPT_LEN_FILE\""
             [ -n "$COMPLETION_LEN_FILE" ] && CMD+=" --completion-len-pattern-config \"$COMPLETION_LEN_FILE\""
             [ -n "$MAX_CONCURRENT_SESSIONS" ] && CMD+=" --max-concurrent-sessions \"$MAX_CONCURRENT_SESSIONS\""
-            # Run the final command
+
             eval $CMD
             ;;
         stat)            
@@ -170,12 +171,18 @@ generate_workload() {
 
 run_client() {
     echo "[INFO] Running client to dispatch workload..."
-    python client/client.py \
-        --workload-path "$WORKLOAD_FILE" \
-        --endpoint "$ENDPOINT" \
-        --model "$TARGET_MODEL" \
-        --api-key "$API_KEY" \
-        --output-file-path "$CLIENT_OUTPUT/output.jsonl"
+
+    CMD="python client/client.py \
+        --workload-path \"$WORKLOAD_FILE\" \
+        --endpoint \"$ENDPOINT\" \
+        --model \"$TARGET_MODEL\" \
+        --api-key \"$API_KEY\" \
+        --output-file-path \"$CLIENT_OUTPUT/output.jsonl\""
+
+    [ "$STREAMING_ENABLED" = "true" ] && CMD+=" --streaming"
+    [ -n "$CLIENT_POOL_SIZE" ] && CMD+=" --client-pool-size \"$CLIENT_POOL_SIZE\""
+    [ -n "$OUTPUT_TOKEN_LIMIT" ] && CMD+=" --output-token-limit \"$OUTPUT_TOKEN_LIMIT\""
+    eval $CMD
 }
 
 # ---------------

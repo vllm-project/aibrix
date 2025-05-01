@@ -32,6 +32,10 @@ type TokenTracker interface {
 	GetTokenCount(ctx context.Context, user string) (float64, error)
 
 	UpdateTokenCount(ctx context.Context, user string, inputTokens, outputTokens float64) error
+
+	GetMinTokenCount(ctx context.Context) (float64, error)
+
+	GetMaxTokenCount(ctx context.Context) (float64, error)
 }
 
 // TokenEstimator estimates token counts for messages

@@ -17,13 +17,11 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"fmt"
 	"math"
 	"math/rand"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	klog "k8s.io/klog/v2"
 )
@@ -51,19 +49,11 @@ func NewLeastBusyTimeRouter() (types.Router, error) {
 	}, nil
 }
 
-func (r leastBusyTimeRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+func (r leastBusyTimeRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	var targetPod *v1.Pod
 	minBusyTimeRatio := math.MaxFloat64 // <= 1 in general
 
-	if pods.Len() == 0 {
-		return "", fmt.Errorf("no available pods for request routing")
-	}
-
-	for _, pod := range pods.All() {
-		if pod.Status.PodIP == "" {
-			continue
-		}
-
+	for _, pod := range readyPodList.All() {
 		busyTimeRatio, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, "gpu_busy_time_ratio") // todo: replace mock
 		if err != nil {
 			klog.Error(err)
@@ -80,16 +70,11 @@ func (r leastBusyTimeRouter) Route(ctx *types.RoutingContext, pods types.PodList
 
 	// Use fallback if no valid metrics
 	if targetPod == nil {
-		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPod, err = utils.SelectRandomPod(pods.All(), rand.Intn)
+		targetPod, err = SelectRandomPodAsFallback(ctx, readyPodList.All(), rand.Intn)
 		if err != nil {
 			return "", err
 		}
-	}
-
-	if targetPod == nil {
-		return "", fmt.Errorf("no available pods for request routing")
 	}
 
 	ctx.SetTargetPod(targetPod)

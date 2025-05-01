@@ -52,12 +52,12 @@ Install AIBrix in testing Environments
 
    lambda.rst
    mac-for-desktop.rst
-   terraform-gcp.rst
+   aws.rst
+   gcp.rst
 
 
 Install Individual AIBrix Components
 ------------------------------------
-
 
 Autoscaler
 ^^^^^^^^^^
@@ -73,7 +73,6 @@ Distributed Inference
 .. code:: bash
 
     kubectl apply -k config/standalone/distributed-inference-controller/
-
 
 
 Model Adapter(Lora)

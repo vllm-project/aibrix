@@ -3,22 +3,22 @@
 
 # API and model settings
 
-export MODEL_NAME="deepseek-ai/deepseek-llm-7b-chat"
-export TOKENIZER="deepseek-ai/deepseek-llm-7b-chat"
+export MODEL_NAME="deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+export TOKENIZER="deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
 
 # ---------------
 # STEP 1: DATASET GENERATION
 # -------
 # Dataset config
 export DATASET_DIR="./output/dataset/"
-export PROMPT_TYPE="client_trace" #"synthetic_multiturn" #"synthetic_multiturn"  "synthetic_shared", "sharegpt", "client_trace"
+export PROMPT_TYPE="synthetic_shared" #"synthetic_multiturn"  "synthetic_shared", "sharegpt", "client_trace"
 export DATASET_FILE="${DATASET_DIR}/${PROMPT_TYPE}.jsonl"
 
 # ---------------
 # STEP 2: WORKLOAD GENERATION
 # ---------------
 # Workload config
-export WORKLOAD_TYPE="synthetic"  # Options: synthetic, constant, azure
+export WORKLOAD_TYPE="constant"  # Options: synthetic, constant, azure
 export INTERVAL_MS=1000
 export DURATION_MS=300000
 export WORKLOAD_DIR="./output/workload/${WORKLOAD_TYPE}"
@@ -33,6 +33,9 @@ export CLIENT_OUTPUT="./output/client_output"
 export ENDPOINT="http://localhost:8888"
 export API_KEY="$api_key"
 export TARGET_MODEL="llama-3-8b-instruct" #"deepseek-llm-7b-chat"
+export STREAMING_ENABLED="true" # Options: true, false
+export CLIENT_POOL_SIZE="128"
+export OUTPUT_TOKEN_LIMIT="128"
 
 # ---------------
 # OPTIONAL: ANALYSIS

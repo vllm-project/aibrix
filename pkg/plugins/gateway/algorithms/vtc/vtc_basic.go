@@ -30,27 +30,27 @@ import (
 )
 
 const (
-	defaultFairnessWeight    = 0.5
-	defaultUtilizationWeight = 0.5
 	defaultMaxPodLoad        = 100.0
 	defaultInputTokenWeight  = 1.0
 	defaultOutputTokenWeight = 2.0
+	defaultFairnessWeight    = 1.0
+	defaultUtilizationWeight = 1.0
 )
 
 const (
-	VTC_FAIRNESS_WEIGHT     = "AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT"
-	VTC_UTILIZATION_WEIGHT  = "AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT"
 	VTC_MAX_POD_LOAD        = "AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD"
 	VTC_INPUT_TOKEN_WEIGHT  = "AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT"
 	VTC_OUTPUT_TOKEN_WEIGHT = "AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT"
+	VTC_FAIRNESS_WEIGHT     = "AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT"
+	VTC_UTILIZATION_WEIGHT  = "AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT"
 )
 
 var (
-	fairnessWeight    = utils.LoadEnvFloat(VTC_FAIRNESS_WEIGHT, defaultFairnessWeight)
-	utilizationWeight = utils.LoadEnvFloat(VTC_UTILIZATION_WEIGHT, defaultUtilizationWeight)
 	maxPodLoad        = utils.LoadEnvFloat(VTC_MAX_POD_LOAD, defaultMaxPodLoad)
 	inputTokenWeight  = utils.LoadEnvFloat(VTC_INPUT_TOKEN_WEIGHT, defaultInputTokenWeight)
 	outputTokenWeight = utils.LoadEnvFloat(VTC_OUTPUT_TOKEN_WEIGHT, defaultOutputTokenWeight)
+	fairnessWeight    = utils.LoadEnvFloat(VTC_FAIRNESS_WEIGHT, defaultFairnessWeight)
+	utilizationWeight = utils.LoadEnvFloat(VTC_UTILIZATION_WEIGHT, defaultUtilizationWeight)
 )
 
 // BasicVTCRouter implements the VTC routing algorithm
@@ -78,16 +78,8 @@ func NewBasicVTCRouter(tokenTracker TokenTracker, tokenEstimator TokenEstimator,
 }
 
 // Route implements the VTC routing algorithm
-func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	if pods.Len() == 0 {
-		return "", fmt.Errorf("no pods to forward request")
-	}
-
-	readyPods := utils.FilterRoutablePods(pods.All())
-	if len(readyPods) == 0 {
-		return "", fmt.Errorf("no ready pods available for routing")
-	}
-
+func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	readyPods := readyPodList.All()
 	user := ctx.User
 	if user == nil {
 		klog.Warningf("VTC routing not possible: user is nil, falling back to random pod selection")
@@ -114,18 +106,48 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		"inputTokens", inputTokens,
 		"outputTokens", outputTokens)
 
-	// Select pod based on hybrid VTC approach that balances fairness and utilization
-	// - Fairness: Users with higher token usage get higher-indexed pods
-	// - Utilization: Consider actual pod load to prevent underutilization
 	var targetPod *v1.Pod
 	var minScore float64 = math.MaxFloat64
 
+	// Simple vtc-basic implementation
+	// Using clamped-linear instead of modulo - offers good monotonicity, fairness based routing.
+	// Pod utilization is used as a secondary metric to ensure good utilization.
+	// By adapting bucket sizes and normalizing scores, the algorithm remains robust as system load and user activity fluctuate.
+
+	// Get the min and max token counts for adaptive bucket sizing
+	minTokens, err := r.tokenTracker.GetMinTokenCount(ctx.Context)
+	if err != nil {
+		klog.ErrorS(err, "failed to get minimum token count, using default value")
+		minTokens = tokenTrackerMinTokens // Use the configured default minimum token count
+	}
+
+	maxTokens, err := r.tokenTracker.GetMaxTokenCount(ctx.Context)
+	if err != nil {
+		klog.ErrorS(err, "failed to get maximum token count, using default value")
+		maxTokens = tokenTrackerMaxTokens // Use the configured default maximum token count
+	}
+
 	// Calculate scores for each pod
 	for i, pod := range readyPods {
-		// 1. Calculate fairness score based on pod index and user tokens
-		// Normalize user tokens to a value between 0 and len(readyPods)-1
-		normalizedTokens := math.Mod(userTokens, float64(len(readyPods)*100)) / 100.0
+
+		// 1. Dynamically calculate a reasonable "step size" for mapping user tokens onto pod indices, ensuring the mapping is
+		// relevant to the current system load while maintaining a minimum sensitivity
+		adaptiveBucketSize := math.Max(tokenTrackerMinTokens, (minTokens+maxTokens)/2)
+
+		// Apply clamped linear mapping: tokens / bucket_size, clamped to [0, npods-1]
+		normalizedTokens := math.Min(float64(userTokens)/adaptiveBucketSize, float64(len(readyPods)-1))
+
 		fairnessScore := math.Abs(float64(i) - normalizedTokens)
+
+		klog.InfoS("VTC token normalization details",
+			"user", *user,
+			"userTokens", userTokens,
+			"minTokens", minTokens,
+			"maxTokens", maxTokens,
+			"adaptiveBucketSize", adaptiveBucketSize,
+			"normalizedTokens", normalizedTokens,
+			"podIndex", i,
+			"fairnessScore", fairnessScore)
 
 		// 2. Get pod load for utilization score
 		var podLoad float64
@@ -143,15 +165,12 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		}
 
 		// 3. Calculate utilization score (normalized between 0-1)
-		utilizationScore := podLoad / maxPodLoad
-		if utilizationScore > 1.0 {
-			utilizationScore = 1.0
-		}
+		utilizationScore := min(podLoad/maxPodLoad, 1.0)
 
 		// 4. Add a small random factor to break ties and improve distribution
 		randomFactor := rand.Float64() * 0.1
 
-		// 5. Calculate combined score (lower is better)
+		// 5. Calculate combined score (lower is better) - using configurable weights for fairness and utilization
 		score := (fairnessWeight * fairnessScore) + (utilizationWeight * utilizationScore) + randomFactor
 
 		klog.InfoS("VTC hybrid pod selection",
@@ -160,7 +179,9 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 			"userTokens", userTokens,
 			"podLoad", podLoad,
 			"fairnessScore", fairnessScore,
+			"fairnessWeight", fairnessWeight,
 			"utilizationScore", utilizationScore,
+			"utilizationWeight", utilizationWeight,
 			"combinedScore", score)
 
 		if score < minScore {

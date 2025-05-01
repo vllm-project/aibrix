@@ -23,6 +23,8 @@ python3 client.py \
 --endpoint "http://localhost:8000" \
 --model /root/models/deepseek-llm-7b-chat \
 --api-key ${API_KEY} \
+--client-pool-size 16 \
+--output-token-limit 128 \
 --streaming \
 --output-file-path output.jsonl 
 ```

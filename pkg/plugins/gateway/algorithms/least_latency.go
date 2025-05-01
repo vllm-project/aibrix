@@ -17,14 +17,12 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"fmt"
 	"math"
 	"math/rand"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	klog "k8s.io/klog/v2"
 )
@@ -52,19 +50,15 @@ func NewLeastExpectedLatencyRouter() (types.Router, error) {
 	}, nil
 }
 
-func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	var targetPod *v1.Pod
 	minExpectedLatency := math.MaxFloat64
-
-	if pods.Len() == 0 {
-		return "", fmt.Errorf("no pods to forward request")
-	}
 
 	sumPromptTokens := 0.0
 	sumGenerationTokens := 0.0
 	cntPromt := 0
 	cntGeneration := 0
-	for _, pod := range pods.All() {
+	for _, pod := range readyPodList.All() {
 		avgPromptTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgPromptToksPerReq)
 		if err != nil {
 			klog.Error(err)
@@ -93,11 +87,7 @@ func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, pods types.
 		guessGenerationTokens = sumGenerationTokens / float64(cntGeneration)
 	}
 
-	for _, pod := range pods.All() {
-		if pod.Status.PodIP == "" {
-			continue
-		}
-
+	for _, pod := range readyPodList.All() {
 		// expected queuing latency
 		queuingLatency, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.RequestQueueTimeSeconds)
 		if err != nil {
@@ -143,16 +133,11 @@ func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, pods types.
 
 	// Use fallback if no valid metrics
 	if targetPod == nil {
-		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPod, err = utils.SelectRandomPod(pods.All(), rand.Intn)
+		targetPod, err = SelectRandomPodAsFallback(ctx, readyPodList.All(), rand.Intn)
 		if err != nil {
 			return "", err
 		}
-	}
-
-	if targetPod == nil {
-		return "", fmt.Errorf("no pods to forward request")
 	}
 
 	ctx.SetTargetPod(targetPod)

@@ -81,7 +81,7 @@ spec:
             - name: REDIS_HOST
               value: aibrix-redis-master
             - name: REDIS_PORT
-              value: "6379" 
+              value: "6379"
             - name: AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS
               value: "50"
             - name: AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE
@@ -92,8 +92,6 @@ spec:
               value: "16"
             - name: AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR
               value: "2"
-            # - name: AIBRIX_PREFIX_CACHE_EVICTION_DURATION_MINS
-            #   value: "1"
             - name: POD_NAME
               valueFrom:
                 fieldRef:

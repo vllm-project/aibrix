@@ -19,7 +19,6 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"math"
 	"math/rand"
 	"net/http"
 	"testing"
@@ -49,17 +48,33 @@ func TestRandomRouting(t *testing.T) {
 
 	assert.True(t, len(histogram) > 1, "target pod distribution should be more than 1")
 
-	// Calculate the variance of the distribution stored in the histogram using sum and sum of squared values
-	sum := float64(iterration)
-	var sumSquared float64
+	// Collective the occurrence of each pod
+	occurrence := make([]float64, 0, len(histogram))
 	for _, count := range histogram {
-		sumSquared += float64(count) * float64(count)
+		occurrence = append(occurrence, float64(count))
 	}
-	mean := sum / float64(len(histogram))
-	stddev := math.Sqrt(sumSquared/float64(len(histogram)) - mean*mean)
 
-	assert.True(t, stddev/mean < 0.2,
-		"standard deviation of pod distribution should be less than 20%%, but got %f, mean %f", stddev, mean)
+	// Perform the Chi-Squared test
+	chi2Stat, df, err := chiSquaredGoodnessOfFit(occurrence, float64(iterration/len(occurrence)))
+	assert.NoError(t, err, "chi-squared test failed %v", err)
+	assert.Equal(t, 2, df, "degrees of freedom should be 2")
+
+	// Using a lower 1% significance level to make sure the null hypothesis is not rejected incorrectly
+	significanceLevel := 0.01
+
+	// We need to find the critical value for customed degrees of freedom (df)
+	// and significance level (alpha) from a Chi-Squared distribution table
+	// or a statistical calculator.
+	// For df = 2 ,
+	// common critical values are:
+	// Alpha = 0.10, Critical Value ≈ 4.605
+	// Alpha = 0.05, Critical Value ≈ 5.991
+	// Alpha = 0.01, Critical Value ≈ 9.210
+	assert.True(t, chi2Stat < 9.210,
+		`The observed frequencies (chiSquare: %.3f) are significantly different from the expected 
+		frequencies at the %.2f significance level. Suggesting the selection process is likely NOT random according 
+		to the expected distribution.`,
+		chi2Stat, significanceLevel)
 }
 
 func TestPrefixCacheRouting(t *testing.T) {
@@ -103,4 +118,42 @@ func getTargetPodFromChatCompletion(t *testing.T, message string, strategy strin
 	assert.Equal(t, modelName, chatCompletion.Model)
 
 	return dst.Header.Get("target-pod")
+}
+
+// ChiSquaredGoodnessOfFit calculates the chi-squared test statistic and degrees of freedom
+// for a goodness-of-fit test.
+// observed: A slice of observed frequencies for each category.
+// expected: A slice of expected frequencies for each category.
+// Returns the calculated chi-squared statistic and degrees of freedom.
+// Returns an error if the input slices are invalid (e.g., different lengths, negative values).
+func chiSquaredGoodnessOfFit(observed []float64, expected float64) (chi2Stat float64, degreesOfFreedom int, err error) {
+	// Validate inputs
+	if len(observed) == 0 {
+		return 0, 0, fmt.Errorf("input slices cannot be empty")
+	}
+
+	// Calculate the chi-squared statistic
+	chi2Stat = 0.0
+	for i := 0; i < len(observed); i++ {
+		if expected < 0 || observed[i] < 0 {
+			return 0, 0, fmt.Errorf("frequencies cannot be negative")
+		}
+		if expected == 0 {
+			// If expected frequency is 0, the term is typically skipped,
+			// but this can indicate issues with the model or data.
+			// For a strict goodness-of-fit, expected frequencies should ideally be > 0.
+			// We'll return an error here as it often suggests a problem.
+			return 0, 0, fmt.Errorf("expected frequency for category %d is zero, which is not allowed for this test", i)
+		}
+		diff := observed[i] - expected
+		chi2Stat += (diff * diff) / expected
+	}
+
+	// Calculate degrees of freedom
+	// For a goodness-of-fit test comparing observed frequencies to expected
+	// frequencies from a theoretical distribution, the degrees of freedom
+	// are typically the number of categories minus 1.
+	degreesOfFreedom = len(observed) - 1
+
+	return chi2Stat, degreesOfFreedom, nil
 }

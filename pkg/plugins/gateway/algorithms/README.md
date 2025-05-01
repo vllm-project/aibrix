@@ -112,12 +112,7 @@ The Virtual Token Counter (VTC) is a fair scheduling algorithm for LLM serving b
 
 ### vtc-basic
 
-The `vtc-basic` variant implements a simplified version of VTC. It uses a hybrid scoring mechanism that combines:
-
-1.  **Fairness Score:** Based on the user's accumulated weighted token count relative to the maximum count seen.
-2.  **Utilization Score:** Based on the target pod's current load or queue depth.
-
-This approach balances fairness considerations with the practical goal of maximizing resource utilization. It selects the pod with the highest combined score for routing the request.
+The `vtc-basic` variant implements a simplified version of VTC. It routes requests by combining two scores: a fairness score based on the user’s token count (normalized against all users) within a time window, and a utilization score based on the pod’s current load. The pod with the lowest combined score is selected. This approach adapts dynamically to system load and balances fairness with efficient resource use.
 
 End-to-end tests for this algorithm can be found in [vtc_routing_test.go](../../../test/e2e/vtc_routing_test.go).
 
@@ -126,12 +121,16 @@ End-to-end tests for this algorithm can be found in [vtc_routing_test.go](../../
 | Variable                                         | Description                                                                | Default          |
 |--------------------------------------------------|----------------------------------------------------------------------------|------------------|
 | `AIBRIX_ROUTING_ALGORITHM`                       | Set to `vtc-basic` to enable this routing strategy.                        | `prefix-aware`   |
-| `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_MINUTES` | Size of the sliding window (in minutes) for tracking user token usage.     | `60`             |
+| `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_TIME_UNIT`      | Time unit of the sliding window for tracking user token usage.             | `minutes`        |
+| `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE`    | Size of the sliding window for tracking user token usage.                  | `5`              |
+| `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS`     | Sensible min default value for adaptive token tracking (see vtc_basic)     | `1000`           |
+| `AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MAX_TOKENS`     | Sensible max default value for adaptive token tracking (see vtc_basic)     | `8000`           |
 | `AIBRIX_ROUTER_VTC_BASIC_INPUT_TOKEN_WEIGHT`     | Weight applied to input tokens in fairness calculations.                   | `1.0`            |
 | `AIBRIX_ROUTER_VTC_BASIC_OUTPUT_TOKEN_WEIGHT`    | Weight applied to output tokens in fairness calculations.                  | `2.0`            |
-| `AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT`        | Weight for the fairness component in the hybrid scoring formula.           | `0.5`            |
-| `AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT`     | Weight for the utilization component in the hybrid scoring formula.        | `0.5`            |
 | `AIBRIX_ROUTER_VTC_BASIC_MAX_POD_LOAD`           | Normalization factor for pod load in utilization score calculation.        | `100.0`          |
+| `AIBRIX_ROUTER_VTC_BASIC_FAIRNESS_WEIGHT`        | Weight applied to fairness score in combined score calculation.            | `1.0`            |
+| `AIBRIX_ROUTER_VTC_BASIC_UTILIZATION_WEIGHT`     | Weight applied to utilization score in combined score calculation.         | `1.0`            |
+
 
 
 ### Other VTC variants
