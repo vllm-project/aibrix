@@ -64,7 +64,7 @@ func (n *TreeNode) InitAndUpdateModelPod(model string, podName string, timestamp
 		n.modelToPods[model] = make(map[string]time.Time)
 	}
 	n.modelToPods[model][podName] = timestamp
-	klog.Infof("Updated mapping for model %s, pod %s in node(%d)", model, podName, n.id)
+	klog.InfoS("Updated mapping for model %s, pod %s in node(%d)", "model", model, "podName", podName, "nodeID", n.id)
 }
 
 func (n *TreeNode) GetRefCounter() []int {
@@ -139,13 +139,13 @@ func (n *TreeNode) RemovePodsNotInCurrentPodSet(currentPodSet map[string]bool) b
 		for podName := range podMap {
 			if !currentPodSet[podName] {
 				delete(podMap, podName)
-				klog.Infof("Removing pod from modelToPod: %s, %s", podName, model)
+				klog.InfoS("Removing pod: %s", "podName", podName, "model", model)
 				podsChanged = true
 			}
 		}
 		if len(podMap) == 0 {
 			delete(n.modelToPods, model)
-			klog.Infof("Removing model from modelToPod: %s", model)
+			klog.InfoS("Removed model from node(%d): %s", "nodeID", n.id, "model", model)
 		}
 	}
 	return podsChanged
@@ -200,7 +200,7 @@ func (n *TreeNode) AddOrUpdatePodForModel(model string, podName string, timestam
 		n.modelToPods[model] = make(map[string]time.Time)
 	}
 	n.modelToPods[model][podName] = timestamp
-	klog.V(4).Infof("Added/Updated pod %s for model %s in node(%d)", podName, model, n.id)
+	klog.V(4).InfoS("Added/Updated pod %s for model %s in node(%d)", "podName", podName, "model", model, "nodeID", n.id)
 }
 
 func (n *TreeNode) RemovePodsNotInSet(currentPodSet map[string]bool) bool {
@@ -294,6 +294,7 @@ func (c *LPRadixCache) GetAllPodsInNode(node *TreeNode) []string {
 	return allPodsInNode
 }
 
+// This can be used for debugging purpose
 func (c *LPRadixCache) prettyPrintHelper(node *TreeNode, prefix string, isLast bool) {
 	if node == nil {
 		return
@@ -307,7 +308,7 @@ func (c *LPRadixCache) prettyPrintHelper(node *TreeNode, prefix string, isLast b
 		childPrefix = prefix + "│   "
 	}
 	allPodsInNode := c.GetAllPodsInNode(node)
-	klog.V(5).Infof("%s%s[Node: %d, Load: %d, Pods: %v, Depth: %d]", prefix, marker, node.id, node.load, allPodsInNode, node.depth)
+	klog.V(4).Infof("%s%s[Node: %d, Load: %d, Pods: %v, Depth: %d]", prefix, marker, node.id, node.load, allPodsInNode, node.depth)
 	childKeys := make([]int, 0, len(node.children))
 	for k := range node.children {
 		childKeys = append(childKeys, k)
@@ -379,7 +380,7 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 					matchedPods = make([]*v1.Pod, 0, len(pods))
 				}
 				matchedPods = append(matchedPods, pod)
-				klog.Infof("Matched pod for node(%d): %s", node.id, pod.Name)
+				klog.InfoS("Matched pod for node(%d): %s", "nodeID", node.id, "podName", pod.Name)
 			}
 		}
 	}
