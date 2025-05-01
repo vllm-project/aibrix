@@ -184,3 +184,11 @@ jobs:
 
       - name: Clean up
         run: kind delete cluster --name installation-test
+
+  delete-artifacts:
+    needs: [installation-test]
+    runs-on: ubuntu-latest  
+    steps:   
+      - uses: geekyeggo/delete-artifact@v5
+        with:
+          name: vllm-mock-image
