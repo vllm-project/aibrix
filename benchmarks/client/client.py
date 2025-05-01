@@ -59,10 +59,10 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
     target_pod = ""
     target_request_id = ""
     try:
-        cur_time = time.time()
-        logging.warning(f"send_request_streaming: Prepare to launch task after {target_time - cur_time}")
-        if target_time > cur_time:
-            await asyncio.sleep(target_time - cur_time)
+        logging.warning(f"send_request_streaming: Prepare to launch task after {target_time - start_time}")
+        if target_time > start_time:
+            await asyncio.sleep(target_time - start_time)
+        dispatch_time = asyncio.get_event_loop().time()
         response_stream = await client.chat.completions.create(
             model=model,
             messages=prompt,
@@ -103,9 +103,9 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
 
         response_text = "".join(text_chunks)
         response_time = asyncio.get_event_loop().time()
-        latency = response_time - start_time
+        latency = response_time - dispatch_time
         throughput = output_tokens / latency if output_tokens > 0 else 0
-        ttft = first_response_time - start_time if first_response_time else None
+        ttft = first_response_time - dispatch_time if first_response_time else None
         tpot = (response_time - first_response_time) / output_tokens if first_response_time and output_tokens > 0 else None
 
         if session_id is not None:
@@ -121,7 +121,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
             "total_tokens": total_tokens,
             "latency": latency,
             "throughput": throughput,
-            "start_time": start_time,
+            "start_time": dispatch_time,
             "end_time": response_time,
             "ttft": ttft,
             "tpot": tpot,
@@ -151,9 +151,9 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
             "prompt_tokens": 0,
             "output_tokens": 0,
             "total_tokens": 0,
-            "latency": error_time - start_time,
+            "latency": error_time - dispatch_time,
             "throughput": 0,
-            "start_time": start_time,
+            "start_time": dispatch_time,
             "end_time": error_time,
             "target_pod": target_pod,
             "target_request_id": target_request_id,
@@ -221,10 +221,10 @@ async def send_request_batch(client: openai.AsyncOpenAI,
     start_time = asyncio.get_event_loop().time()
     target_pod = ""
     try:
-        cur_time = time.time()
-        logging.warning(f"send_request_batch: Prepare to launch task after {target_time - cur_time}")
-        if target_time > cur_time:
-            await asyncio.sleep(target_time - cur_time)
+        logging.warning(f"send_request_batch: Prepare to launch task after {target_time - start_time}")
+        if target_time > start_time:
+            await asyncio.sleep(target_time - start_time)
+        dispatch_time = asyncio.get_event_loop().time()
         response = await client.chat.completions.create(
             model=model,
             messages=prompt,
@@ -235,7 +235,7 @@ async def send_request_batch(client: openai.AsyncOpenAI,
             target_pod = response.response.headers.get('target-pod')
 
         response_time = asyncio.get_event_loop().time()
-        latency = response_time - start_time
+        latency = response_time - dispatch_time
         prompt_tokens = response.usage.prompt_tokens
         output_tokens = response.usage.completion_tokens
         total_tokens = response.usage.total_tokens
@@ -255,7 +255,7 @@ async def send_request_batch(client: openai.AsyncOpenAI,
             "total_tokens": total_tokens,
             "latency": latency,
             "throughput": throughput,
-            "start_time": start_time,
+            "start_time": dispatch_time,
             "end_time": response_time,
             "ttft": None,
             "tpot": None,
@@ -282,9 +282,9 @@ async def send_request_batch(client: openai.AsyncOpenAI,
             "prompt_tokens": 0,
             "output_tokens": 0,
             "total_tokens": 0,
-            "latency": error_time - start_time,
+            "latency": error_time - dispatch_time,
             "throughput": 0,
-            "start_time": start_time,
+            "start_time": dispatch_time,
             "end_time": error_time,
             "ttft": None,
             "tpot": None,
