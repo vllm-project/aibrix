@@ -103,11 +103,13 @@ def generate_synthetic_from_dist(
         max_concurrent_sessions: int,
     ) -> List[Dict[str, Any]]:
     
-    if not (len(rps_dist) == len(input_token_len_dist) == len(output_token_len_dist)):
-        raise ValueError(f"All distributions must have the same length, len(rps_dist): {len(rps_dist)}, len(input_token_len_dist): {len(input_token_len_dist)}, len(output_token_len_dist): {len(output_token_len_dist)}")
+    if input_token_len_dist is not None and output_token_len_dist is not None: 
+        if not (len(rps_dist) == len(input_token_len_dist) == len(output_token_len_dist)):
+            raise ValueError(f"All distributions must have the same length, len(rps_dist): {len(rps_dist)}, len(input_token_len_dist): {len(input_token_len_dist)}, len(output_token_len_dist): {len(output_token_len_dist)}")
     workload = []
     current_time = 0
     total_seconds = len(rps_dist)
+    logging.info(f"total_seconds {total_seconds} rps_dist {rps_dist}")
     ts = time.time()
     prompt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
     logging.info(f"Load requests took {int(time.time() - ts)}s")
@@ -116,8 +118,12 @@ def generate_synthetic_from_dist(
         if time_idx >= total_seconds:
             time_idx = total_seconds - 1
         current_rate = rps_dist[time_idx] / qps_scale
-        current_input_len = input_token_len_dist[time_idx] / input_scale if input_token_len_dist[time_idx] else None 
-        current_output_len = output_token_len_dist[time_idx] / output_scale if output_token_len_dist[time_idx] else None
+        current_input_len = None
+        current_output_len = None
+        if input_token_len_dist is not None:
+            current_input_len = input_token_len_dist[time_idx] / input_scale if input_token_len_dist[time_idx] else None 
+        if output_token_len_dist is not None: 
+            current_output_len = output_token_len_dist[time_idx] / output_scale if output_token_len_dist[time_idx] else None
         inter_arrival_time = 1000 if current_rate == 0 else np.random.exponential(scale=1000/current_rate) 
         current_time += inter_arrival_time
         if current_time < total_seconds * 1000:
@@ -158,50 +164,33 @@ def generate_constant(prompt_file_path: str,
     workload = []
     ts = 0
     
-    if input_len != None and output_len != None:
-        rps_dist = []
+    # if input_len != None and output_len != None:
+    rps_dist = []
+    input_token_len_dist = None
+    if input_len != None:
         input_token_len_dist = []
+    if output_len != None:
         output_token_len_dist = []
-        while ts < duration_ms:
-            rps_dist.append(qps)
+    output_token_len_dist = None
+    while ts < duration_ms:
+        rps_dist.append(qps)
+        if input_len != None:
             input_token_len_dist.append(input_len)
+        if output_len != None:
             output_token_len_dist.append(output_len)
-            ts += interval_ms
-        workload = generate_synthetic_from_dist(
-            prompt_file_path = prompt_file_path,
-            tokenizer = tokenizer,
-            duration_ms =  duration_ms,
-            rps_dist = rps_dist,
-            input_token_len_dist = input_token_len_dist,
-            output_token_len_dist = output_token_len_dist,
-            qps_scale = 1.0,
-            input_scale = 1.0,
-            output_scale = 1.0,
-            max_concurrent_sessions = max_concurrent_sessions
-        )
-    else:
-        sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
-        while ts < duration_ms:
-            if max_concurrent_sessions and if_sessioned_dataset(sharegpt_df):
-                concurrent_reqs = find_requests_max_session(
-                    df=sharegpt_df,
-                    num_requests = qps,
-                    max_concurrent_session = max_concurrent_sessions,
-                )
-            else:
-                concurrent_reqs = find_requests_len_range(
-                    df=sharegpt_df,
-                    num_requests=qps,
-                    input_lens=[None] * qps, 
-                    output_lens=[None] * qps, 
-                    initial_err_perc=0.1,
-                    err_step=0.05,
-                )
-            if concurrent_reqs:  # Only add non-empty groups
-                workload.append({"timestamp": ts, "requests": concurrent_reqs})  
-            else:
-                logging.error(f"sampled return {concurrent_reqs}")
-            ts += interval_ms
+        ts += interval_ms
+    workload = generate_synthetic_from_dist(
+        prompt_file_path = prompt_file_path,
+        tokenizer = tokenizer,
+        duration_ms =  duration_ms,
+        rps_dist = rps_dist,
+        input_token_len_dist = input_token_len_dist,
+        output_token_len_dist = output_token_len_dist,
+        qps_scale = 1.0,
+        input_scale = 1.0,
+        output_scale = 1.0,
+        max_concurrent_sessions = max_concurrent_sessions
+    )
         
     
     ### Generate constant load for all requests
@@ -499,5 +488,5 @@ if __name__ == '__main__':
         for workload_name, workload in workload_dict.items():
             plot_workload(
                 workload = workload, 
-                bin_size_sec = int(args.interval_ms/1000), 
+                bin_size_sec = 1, 
                 output_dir = f"{args.output_dir}")
