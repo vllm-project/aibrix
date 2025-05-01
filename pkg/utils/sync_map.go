@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package utils
 
 import (
@@ -22,7 +23,7 @@ import (
 
 type SyncMap[K any, V any] struct {
 	m   sync.Map
-	len int32
+	len atomic.Int32
 }
 
 func (sm *SyncMap[K, V]) Delete(key K) {
@@ -41,7 +42,7 @@ func (sm *SyncMap[K, V]) LoadAndDelete(key K) (typedVal V, loaded bool) {
 	value, loaded := sm.m.LoadAndDelete(key)
 	if loaded {
 		typedVal = value.(V)
-		atomic.AddInt32(&sm.len, -1)
+		sm.len.Add(-1)
 	}
 	return
 }
@@ -49,7 +50,7 @@ func (sm *SyncMap[K, V]) LoadAndDelete(key K) (typedVal V, loaded bool) {
 func (sm *SyncMap[K, V]) LoadOrStore(key K, value V) (V, bool) {
 	actual, loaded := sm.m.LoadOrStore(key, value)
 	if !loaded {
-		atomic.AddInt32(&sm.len, 1)
+		sm.len.Add(1)
 	}
 	return actual.(V), loaded
 }
@@ -84,7 +85,7 @@ func (sm *SyncMap[K, V]) Store(key K, value V) {
 
 func (sm *SyncMap[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 	if deleted = sm.m.CompareAndDelete(key, old); deleted {
-		atomic.AddInt32(&sm.len, -1)
+		sm.len.Add(-1)
 	}
 	return
 }
@@ -97,12 +98,12 @@ func (sm *SyncMap[K, V]) Swap(key K, value V) (V, bool) {
 	old, loaded := sm.m.Swap(key, value)
 	if !loaded {
 		var ret V
-		atomic.AddInt32(&sm.len, 1)
+		sm.len.Add(1)
 		return ret, loaded
 	}
 	return old.(V), loaded
 }
 
 func (sm *SyncMap[K, V]) Len() int {
-	return int(atomic.LoadInt32(&sm.len))
+	return int(sm.len.Load())
 }

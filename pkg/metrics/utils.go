@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 
+	"k8s.io/klog/v2"
+
 	"github.com/prometheus/client_golang/api"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	dto "github.com/prometheus/client_model/go"
@@ -206,7 +208,7 @@ func ParseMetricsURL(url string) (map[string]*dto.MetricFamily, error) {
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			fmt.Printf("failed to close response body: %v", err)
+			klog.ErrorS(err, "failed to close response body")
 		}
 	}()
 

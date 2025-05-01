@@ -138,7 +138,6 @@ var _ = Describe("reqeustTrace", func() {
 						oldTrace, trace = trace, NewRequestTrace(time.Now().UnixNano())
 						oldTrace.Lock()
 						requests += atomic.LoadInt32(&oldTrace.numRequests)
-						// fmt.Printf("requests %d,", n)
 						oldTrace.trace.Range(func(_, num any) bool {
 							profiles += atomic.LoadInt32(num.(*int32))
 							return true

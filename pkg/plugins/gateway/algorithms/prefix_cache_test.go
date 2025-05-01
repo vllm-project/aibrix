@@ -18,16 +18,16 @@ package routingalgorithms
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
-	metrics "github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -55,83 +55,83 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	input := "abcdegfh"
 	// pre_request_count: [p1: 0, p2: 0, p3: 0, p4: 0]
 	// post_request_count: [p1: 0, p2: 0, p3: 0, p4: 1(abcdefgh)]
-	fmt.Println(input)
+	t.Log(input)
 	ctx1 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r1", "")
 	p4, err := prefixCacheRouter.Route(ctx1, podList)
 	assert.NoError(t, err)
 
 	c.AddRequestCount(ctx1, ctx1.RequestID, ctx1.Model)
-	fmt.Println(p4)
+	t.Log(p4)
 
 	// no prefix match -> select least request pod
 	input = "wxyz"
 	// pre_request_count: [p1: 0, p2: 0, p3: 0, p4: 1(abcdefgh)]
 	// post_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 1(abcdefgh)]
-	fmt.Println(input)
+	t.Log(input)
 	ctx2 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r2", "")
 	p3, err := prefixCacheRouter.Route(ctx2, podList)
 	assert.NoError(t, err)
 	assert.NotEqual(t, p4, p3)
 
 	c.AddRequestCount(ctx2, ctx2.RequestID, ctx2.Model)
-	fmt.Println(p3)
+	t.Log(p3)
 
 	// prefix match, load balanced -> select cached pod
 	input = "abcdegfh"
 	// pre_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 1(abcdefgh)]
 	// post_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 2(abcdefgh)]
-	fmt.Println(input)
+	t.Log(input)
 	ctx3 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r3", "")
 	targetPod, err := prefixCacheRouter.Route(ctx3, podList)
 	assert.NoError(t, err)
 	assert.Equal(t, p4, targetPod)
 
 	c.AddRequestCount(ctx3, ctx3.RequestID, ctx3.Model)
-	fmt.Println(targetPod)
+	t.Log(targetPod)
 
 	// prefix match, load imbalanced -> select least request pod
 	input = "abcd"
 	// pre_request_count: [p1: 0, p2: 0, p3: 1 (wxyz), p4: 2(abcdefgh)]
 	// post_request_count: [p1: 0, p2: 1 (abcd), p3: 1 (wxyz), p4: 2(abcdefgh)]
-	fmt.Println(input)
+	t.Log(input)
 	ctx4 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r4", "")
 	p2, err := prefixCacheRouter.Route(ctx4, podList)
 	assert.NoError(t, err)
 	assert.NotEqual(t, p4, p2)
 
 	c.AddRequestCount(ctx4, ctx4.RequestID, ctx4.Model)
-	fmt.Println(p2)
+	t.Log(p2)
 
 	// prefix match, load imbalanced -> selects p2 with lower prefix match
 	input = "abcdefghijkl"
 	// pre_request_count: [p1: 0, p2: 1 (abcd), p3: 1 (wxyz), p4: 2 (abcdefgh)]
 	// post_request_count: [p1: 0, p2: 2 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
-	fmt.Println(input)
+	t.Log(input)
 	ctx5 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r5", "")
 	targetPod, err = prefixCacheRouter.Route(ctx5, podList)
 	assert.NoError(t, err)
 	assert.Equal(t, p2, targetPod)
 
 	c.AddRequestCount(ctx5, ctx5.RequestID, ctx5.Model)
-	fmt.Println(targetPod)
+	t.Log(targetPod)
 
 	// prefix match, load balanced -> selects p2 or p3
 	input = "abcdefgh"
 	// pre_request_count: [p1: 0, p2: 2 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
 	// post_request_count: [p1: 0, p2: 3 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
-	fmt.Println(input)
+	t.Log(input)
 	ctx6 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r6", "")
 	targetPod, err = prefixCacheRouter.Route(ctx6, podList)
 	assert.NoError(t, err)
 	assert.True(t, slices.Contains([]string{p2, p4}, targetPod))
 	c.AddRequestCount(ctx6, ctx6.RequestID, ctx6.Model)
-	fmt.Println(targetPod)
+	t.Log(targetPod)
 
 	// pre prefix match, load imbalance -> select least request pod
 	input = "abcdefgh"
 	// pre_request_count: [p1: 0, p2: 9 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
 	// post_request_count: [p1: 1 (abcdefgh), p2: 9 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
-	fmt.Println(input)
+	t.Log(input)
 	for i := 0; i < 6; i++ {
 		c.AddRequestCount(ctx6, ctx6.RequestID, ctx6.Model)
 	}

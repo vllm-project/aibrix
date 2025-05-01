@@ -100,7 +100,6 @@ func (r *ControllerExpectations) GetExpectations(controllerKey string) (*Control
 func (r *ControllerExpectations) DeleteExpectations(controllerKey string) {
 	if exp, exists, err := r.GetByKey(controllerKey); err == nil && exists {
 		if err := r.Delete(exp); err != nil {
-
 			klog.InfoS("Error deleting expectations", "controller", controllerKey, "err", err)
 		}
 	}

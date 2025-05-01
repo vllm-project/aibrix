@@ -19,7 +19,8 @@ package tokenizer
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
+
+	"k8s.io/klog/v2"
 
 	"github.com/pkoukk/tiktoken-go"
 	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader"
@@ -52,7 +53,7 @@ func intToByteArray(intArray []int) []byte {
 	for _, num := range intArray {
 		err := binary.Write(&buf, binary.BigEndian, int32(num))
 		if err != nil {
-			fmt.Println("binary.Write failed:", err)
+			klog.ErrorS(err, "binary.Write failed")
 		}
 	}
 	return buf.Bytes()

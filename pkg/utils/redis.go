@@ -18,9 +18,9 @@ package utils
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/redis/go-redis/v9"
+
 	"k8s.io/klog/v2"
 )
 
@@ -38,7 +38,6 @@ func GetRedisClient() *redis.Client {
 	if err != nil {
 		klog.Fatalf("Error connecting to Redis: %v", err)
 	}
-	fmt.Println("Connected to Redis:", pong)
-
+	klog.Infof("Connected to Redis: %s", pong)
 	return client
 }
