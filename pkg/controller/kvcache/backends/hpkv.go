@@ -19,16 +19,17 @@ package backends
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
+
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/klog/v2"
-	"strconv"
-	"strings"
 )
 
 const (
@@ -41,12 +42,12 @@ const (
 )
 
 const (
-	defaultRDMAPort         = 18512
-	defaultAdminPort        = 9100
-	defaultBlockSizeInBytes = 4096
-	defaultBlockCount       = 1048576
-	defaultTotalSlots       = 4096
-	defaultVirtualNodeCount = 100
+	defaultHPKVRDMAPort         = 18512
+	defaultHPKVAdminPort        = 9100
+	defaultHPKVBlockSizeInBytes = 4096
+	defaultHPKVBlockCount       = 1048576
+	defaultHPKVTotalSlots       = 4096
+	defaultHPKVVirtualNodeCount = 100
 )
 
 type HpKVClusterParams struct {
@@ -61,36 +62,34 @@ type HpKVClusterParams struct {
 
 type HpKVBackend struct{}
 
-func (b HpKVBackend) BuildMetadataPod(cache *orchestrationv1alpha1.KVCache) *corev1.Pod {
-	//TODO implement me
-	panic("implement me")
+func (b HpKVBackend) BuildMetadataPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
+	return buildRedisPod(kvCache)
 }
 
-func (b HpKVBackend) BuildMetadataService(cache *orchestrationv1alpha1.KVCache) *corev1.Service {
-	//TODO implement me
-	panic("implement me")
+func (b HpKVBackend) BuildMetadataService(kvCache *orchestrationv1alpha1.KVCache) *corev1.Service {
+	return buildRedisService(kvCache)
 }
 
-func (HpKVBackend) Name() string { return "hpkv" }
+func (HpKVBackend) Name() string { return constants.KVCacheBackendHPKV }
 
-func (HpKVBackend) ValidateObject(kv *orchestrationv1alpha1.KVCache) error {
-	if kv.Spec.Metadata != nil && kv.Spec.Metadata.Etcd == nil && kv.Spec.Metadata.Redis == nil {
+func (HpKVBackend) ValidateObject(kvCache *orchestrationv1alpha1.KVCache) error {
+	if kvCache.Spec.Metadata != nil && kvCache.Spec.Metadata.Etcd == nil && kvCache.Spec.Metadata.Redis == nil {
 		return errors.New("either etcd or redis configuration is required")
 	}
 	return nil
 }
 
-func (HpKVBackend) BuildWatcherPod(kv *orchestrationv1alpha1.KVCache) *corev1.Pod {
+func (HpKVBackend) BuildWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
 	// you can reuse your existing buildKVCacheWatcherPod() logic
-	return buildKVCacheWatcherPod(kv)
+	return buildKVCacheWatcherPod(kvCache)
 }
 
-func (HpKVBackend) BuildCacheStatefulSet(kv *orchestrationv1alpha1.KVCache) *appsv1.StatefulSet {
-	return buildCacheStatefulSet(kv)
+func (HpKVBackend) BuildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.StatefulSet {
+	return buildCacheStatefulSet(kvCache)
 }
 
-func (HpKVBackend) BuildService(kv *orchestrationv1alpha1.KVCache) *corev1.Service {
-	return buildHeadlessService(kv)
+func (HpKVBackend) BuildService(kvCache *orchestrationv1alpha1.KVCache) *corev1.Service {
+	return buildHeadlessService(kvCache)
 }
 
 func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
@@ -160,7 +159,7 @@ func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod 
 						"/kvcache-watcher",
 					},
 					Args: []string{
-						"--kv-cache-Backend", KVCacheBackendHPKV,
+						"--kv-cache-Backend", constants.KVCacheBackendHPKV,
 					},
 					// You can also add volumeMounts, env vars, etc. if needed.
 					Env:             envs,
@@ -193,6 +192,7 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 	}
 
 	kvCacheServerEnvVars := []corev1.EnvVar{
+		{Name: "AIBRIX_KVCACHE_BACKEND", Value: constants.KVCacheBackendHPKV},
 		{Name: "AIBRIX_KVCACHE_RDMA_PORT", Value: strconv.Itoa(params.RdmaPort)},
 		{Name: "AIBRIX_KVCACHE_ADMIN_PORT", Value: strconv.Itoa(params.AdminPort)},
 		{Name: "AIBRIX_KVCACHE_BLOCK_SIZE_IN_BYTES", Value: strconv.Itoa(params.BlockSizeInBytes)},
@@ -320,7 +320,6 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 }
 
 func buildHeadlessService(kvCache *orchestrationv1alpha1.KVCache) *corev1.Service {
-	// TODO: update
 	port := int32(9600)
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -350,40 +349,12 @@ func buildHeadlessService(kvCache *orchestrationv1alpha1.KVCache) *corev1.Servic
 
 func getKVCacheParams(annotations map[string]string) *HpKVClusterParams {
 	return &HpKVClusterParams{
-		RdmaPort:          getPortAnnotation(annotations, KVCacheAnnotationRDMAPort, defaultRDMAPort),
-		AdminPort:         getPortAnnotation(annotations, KVCacheAnnotationAdminPort, defaultAdminPort),
-		BlockSizeInBytes:  getPositiveIntAnnotation(annotations, KVCacheAnnotationBlockSize, defaultBlockSizeInBytes),
-		BlockCount:        getPositiveIntAnnotation(annotations, KVCacheAnnotationBlockCount, defaultBlockCount),
-		TotalSlots:        getPositiveIntAnnotation(annotations, KVCacheAnnotationTotalSlots, defaultTotalSlots),
-		VirtualNodeCount:  getPositiveIntAnnotation(annotations, KVCacheAnnotationVirtualNodeCount, defaultVirtualNodeCount),
-		ContainerRegistry: getStringAnnotation(annotations, constants.KVCacheAnnotationContainerRegistry, ""),
+		RdmaPort:          utils.GetPortAnnotationOrDefault(annotations, KVCacheAnnotationRDMAPort, defaultHPKVRDMAPort),
+		AdminPort:         utils.GetPortAnnotationOrDefault(annotations, KVCacheAnnotationAdminPort, defaultHPKVAdminPort),
+		BlockSizeInBytes:  utils.GetPositiveIntAnnotationOrDefault(annotations, KVCacheAnnotationBlockSize, defaultHPKVBlockSizeInBytes),
+		BlockCount:        utils.GetPositiveIntAnnotationOrDefault(annotations, KVCacheAnnotationBlockCount, defaultHPKVBlockCount),
+		TotalSlots:        utils.GetPositiveIntAnnotationOrDefault(annotations, KVCacheAnnotationTotalSlots, defaultHPKVTotalSlots),
+		VirtualNodeCount:  utils.GetPositiveIntAnnotationOrDefault(annotations, KVCacheAnnotationVirtualNodeCount, defaultHPKVVirtualNodeCount),
+		ContainerRegistry: utils.GetStringAnnotationOrDefault(annotations, constants.KVCacheAnnotationContainerRegistry, ""),
 	}
-}
-
-func getStringAnnotation(annotations map[string]string, key string, defaultValue string) string {
-	if val, ok := annotations[key]; ok && val != "" {
-		return val
-	}
-	klog.Infof("Annotation %s not set or empty, using default: %s", key, defaultValue)
-	return defaultValue
-}
-
-func getPortAnnotation(annotations map[string]string, key string, defaultValue int) int {
-	if val, ok := annotations[key]; ok {
-		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 && parsed <= 65535 {
-			return parsed
-		}
-		klog.Warningf("Invalid port for annotation %s: %s, using default %d", key, val, defaultValue)
-	}
-	return defaultValue
-}
-
-func getPositiveIntAnnotation(annotations map[string]string, key string, defaultValue int) int {
-	if val, ok := annotations[key]; ok {
-		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
-			return parsed
-		}
-		klog.Warningf("Invalid integer for annotation %s: %s, using default %d", key, val, defaultValue)
-	}
-	return defaultValue
 }

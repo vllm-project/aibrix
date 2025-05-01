@@ -19,6 +19,7 @@ package kvcache
 import (
 	"context"
 	"fmt"
+
 	"github.com/vllm-project/aibrix/pkg/constants"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -64,9 +65,9 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		Recorder:      mgr.GetEventRecorderFor(controllerName),
 		RuntimeConfig: runtimeConfig,
 		Backends: map[string]backends.BackendReconciler{
-			backends.KVCacheBackendVineyard:    backends.NewVineyardReconciler(mgr.GetClient()),
-			backends.KVCacheBackendHPKV:        backends.NewDistributedReconciler(mgr.GetClient(), backends.KVCacheBackendHPKV),
-			backends.KVCacheBackendInfinistore: backends.NewDistributedReconciler(mgr.GetClient(), backends.KVCacheBackendInfinistore),
+			constants.KVCacheBackendVineyard:    backends.NewVineyardReconciler(mgr.GetClient()),
+			constants.KVCacheBackendHPKV:        backends.NewDistributedReconciler(mgr.GetClient(), constants.KVCacheBackendHPKV),
+			constants.KVCacheBackendInfinistore: backends.NewDistributedReconciler(mgr.GetClient(), constants.KVCacheBackendInfinistore),
 		},
 	}
 	return reconciler, nil
@@ -150,8 +151,7 @@ func (r *KVCacheReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	backend := getKVCacheBackendFromMetadata(kvCache)
 	handler, ok := r.Backends[backend]
 	if !ok {
-		log := ctrl.LoggerFrom(ctx)
-		log.Error(nil, "unsupported backend", "backend", backend)
+		klog.Warningf("unsupported backend %s", backend)
 		return ctrl.Result{}, fmt.Errorf("unsupported backend: %s", backend)
 	}
 
@@ -175,25 +175,25 @@ func getKVCacheBackendFromMetadata(kv *orchestrationv1alpha1.KVCache) string {
 
 		// TODO: Move validation logic to webhook.
 		// invalid value provided, fall back to default backend
-		return backends.KVCacheBackendDefault
+		return constants.KVCacheBackendDefault
 	}
 
 	// provide the compatibility for distributed, centralized mode.
 	mode := kv.Annotations[constants.KVCacheAnnotationMode]
 	switch mode {
 	case "distributed":
-		return backends.KVCacheBackendInfinistore
+		return constants.KVCacheBackendInfinistore
 	case "centralized":
-		return backends.KVCacheBackendVineyard
+		return constants.KVCacheBackendVineyard
 	default:
-		return backends.KVCacheBackendDefault
+		return constants.KVCacheBackendDefault
 	}
 }
 
 // isValidKVCacheBackend returns true if the backend is one of the supported backends.
 func isValidKVCacheBackend(b string) bool {
 	switch b {
-	case backends.KVCacheBackendVineyard, backends.KVCacheBackendHPKV, backends.KVCacheBackendInfinistore:
+	case constants.KVCacheBackendVineyard, constants.KVCacheBackendHPKV, constants.KVCacheBackendInfinistore:
 		return true
 	default:
 		return false

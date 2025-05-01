@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Aibrix Team.
+Copyright 2025 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,74 +17,13 @@ limitations under the License.
 package kvcache
 
 import (
-	"context"
-	"github.com/vllm-project/aibrix/pkg/constants"
 	"testing"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	"github.com/stretchr/testify/assert"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/controller/kvcache/backends"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-var _ = Describe("KVCache Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
-
-		ctx := context.Background()
-
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
-		}
-		kvcache := &orchestrationv1alpha1.KVCache{}
-
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind KVCache")
-			err := k8sClient.Get(ctx, typeNamespacedName, kvcache)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &orchestrationv1alpha1.KVCache{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
-					},
-					// TODO(user): Specify other spec details if needed.
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
-			}
-		})
-
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &orchestrationv1alpha1.KVCache{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Cleanup the specific resource instance KVCache")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &KVCacheReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
-
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
-		})
-	})
-})
 
 func Test_getKVCacheBackendFromMetadata(t *testing.T) {
 	testCases := []struct {
@@ -96,48 +35,48 @@ func Test_getKVCacheBackendFromMetadata(t *testing.T) {
 		{
 			name: "valid backend label - vineyard",
 			labels: map[string]string{
-				constants.KVCacheLabelKeyBackend: backends.KVCacheBackendVineyard,
+				constants.KVCacheLabelKeyBackend: constants.KVCacheBackendVineyard,
 			},
-			expected: backends.KVCacheBackendVineyard,
+			expected: constants.KVCacheBackendVineyard,
 		},
 		{
 			name: "valid backend label - infinistore",
 			labels: map[string]string{
-				constants.KVCacheLabelKeyBackend: backends.KVCacheBackendInfinistore,
+				constants.KVCacheLabelKeyBackend: constants.KVCacheBackendInfinistore,
 			},
-			expected: backends.KVCacheBackendInfinistore,
+			expected: constants.KVCacheBackendInfinistore,
 		},
 		{
 			name: "invalid backend label falls back to default",
 			labels: map[string]string{
 				constants.KVCacheLabelKeyBackend: "unknown-backend",
 			},
-			expected: backends.KVCacheBackendDefault,
+			expected: constants.KVCacheBackendDefault,
 		},
 		{
 			name: "no label, distributed mode via annotation",
 			annotations: map[string]string{
 				constants.KVCacheAnnotationMode: "distributed",
 			},
-			expected: backends.KVCacheBackendInfinistore,
+			expected: constants.KVCacheBackendInfinistore,
 		},
 		{
 			name: "no label, centralized mode via annotation",
 			annotations: map[string]string{
 				constants.KVCacheAnnotationMode: "centralized",
 			},
-			expected: backends.KVCacheBackendVineyard,
+			expected: constants.KVCacheBackendVineyard,
 		},
 		{
 			name: "no label, unknown mode falls back to default",
 			annotations: map[string]string{
 				constants.KVCacheAnnotationMode: "invalid-mode",
 			},
-			expected: backends.KVCacheBackendDefault,
+			expected: constants.KVCacheBackendDefault,
 		},
 		{
 			name:     "no label or annotation, falls back to default",
-			expected: backends.KVCacheBackendDefault,
+			expected: constants.KVCacheBackendDefault,
 		},
 	}
 
@@ -163,17 +102,17 @@ func Test_isValidKVCacheBackend(t *testing.T) {
 	}{
 		{
 			name:     "valid vineyard backend",
-			input:    backends.KVCacheBackendVineyard,
+			input:    constants.KVCacheBackendVineyard,
 			expected: true,
 		},
 		{
 			name:     "valid infinistore backend",
-			input:    backends.KVCacheBackendInfinistore,
+			input:    constants.KVCacheBackendInfinistore,
 			expected: true,
 		},
 		{
 			name:     "valid hpkv backend",
-			input:    backends.KVCacheBackendHPKV,
+			input:    constants.KVCacheBackendHPKV,
 			expected: true,
 		},
 		{

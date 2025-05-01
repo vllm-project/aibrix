@@ -31,13 +31,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-const (
-	KVCacheBackendVineyard    = "vineyard"
-	KVCacheBackendHPKV        = "hpkv"
-	KVCacheBackendInfinistore = "infinistore"
-	KVCacheBackendDefault     = KVCacheBackendVineyard
-)
-
 type BackendReconciler interface {
 	Reconcile(ctx context.Context, kv *orchestrationv1alpha1.KVCache) (reconcile.Result, error)
 }

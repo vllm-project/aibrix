@@ -1,16 +1,53 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package backends
 
 import (
+	"errors"
 	"fmt"
+	"strconv"
+	"strings"
+
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"strings"
 )
+
+const (
+	KVCacheAnnotationLinkType = "infinistore.kvcache.orchestration.aibrix.ai/link-type"
+)
+
+const (
+	defaultInfinistoreRDMAPort  = 12345
+	defaultInfinistoreAdminPort = 8888
+	defaultInfinistoreLinkType  = "Ethernet"
+)
+
+type InfiniStoreParams struct {
+	RdmaPort          int
+	AdminPort         int
+	LinkType          string
+	ContainerRegistry string
+}
 
 type InfiniStoreBackend struct{}
 
@@ -22,10 +59,12 @@ func (b InfiniStoreBackend) BuildMetadataService(kvCache *orchestrationv1alpha1.
 	return buildRedisService(kvCache)
 }
 
-func (InfiniStoreBackend) Name() string { return "infinistore" }
+func (InfiniStoreBackend) Name() string { return constants.KVCacheBackendInfinistore }
 
 func (InfiniStoreBackend) ValidateObject(kvCache *orchestrationv1alpha1.KVCache) error {
-	// Always accept, since only Redis used
+	if kvCache.Spec.Metadata != nil && kvCache.Spec.Metadata.Etcd == nil && kvCache.Spec.Metadata.Redis == nil {
+		return errors.New("either etcd or redis configuration is required")
+	}
 	return nil
 }
 
@@ -42,7 +81,7 @@ func (InfiniStoreBackend) BuildService(kvCache *orchestrationv1alpha1.KVCache) *
 }
 
 func buildKVCacheWatcherPodForInfiniStore(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
-	params := getKVCacheParams(kvCache.GetAnnotations())
+	params := getInfiniStoreParams(kvCache.GetAnnotations())
 	kvCacheWatcherPodImage := "aibrix/kvcache-watcher:nightly"
 	if params.ContainerRegistry != "" {
 		kvCacheWatcherPodImage = fmt.Sprintf("%s/%s", params.ContainerRegistry, kvCacheWatcherPodImage)
@@ -62,7 +101,7 @@ func buildKVCacheWatcherPodForInfiniStore(kvCache *orchestrationv1alpha1.KVCache
 			Value: "0",
 		},
 		{
-			Name: "WATCH_KVCACHE_NAMESPACE",
+			Name: "AIBRIX_KVCACHE_WATCH_NAMESPACE",
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{
 					FieldPath: "metadata.namespace",
@@ -70,16 +109,16 @@ func buildKVCacheWatcherPodForInfiniStore(kvCache *orchestrationv1alpha1.KVCache
 			},
 		},
 		{
-			Name:  "WATCH_KVCACHE_CLUSTER",
+			Name:  "AIBRIX_KVCACHE_WATCH_CLUSTER",
 			Value: kvCache.Name,
 		},
 		{
 			Name:  "AIBRIX_KVCACHE_RDMA_PORT",
-			Value: "12345",
+			Value: strconv.Itoa(params.RdmaPort),
 		},
 		{
 			Name:  "AIBRIX_KVCACHE_ADMIN_PORT",
-			Value: "8888",
+			Value: strconv.Itoa(params.AdminPort),
 		},
 	}
 
@@ -103,15 +142,15 @@ func buildKVCacheWatcherPodForInfiniStore(kvCache *orchestrationv1alpha1.KVCache
 					Command: []string{
 						"/kvcache-watcher",
 					},
-					// TODO: add commands to distinguish infinistore and hpkv
 					Args: []string{
-						"--kv-cache-Backend", KVCacheBackendInfinistore,
+						"--kv-cache-Backend", constants.KVCacheBackendInfinistore,
 					},
 					// You can also add volumeMounts, env vars, etc. if needed.
 					Env:             envs,
 					ImagePullPolicy: corev1.PullAlways,
 				},
 			},
+			// TODO: refactor the permission management here.
 			ServiceAccountName: "kvcache-watcher-sa",
 		},
 	}
@@ -136,8 +175,9 @@ func buildCacheStatefulSetForInfiniStore(kvCache *orchestrationv1alpha1.KVCache)
 	}
 
 	kvCacheServerEnvVars := []corev1.EnvVar{
-		{Name: "AIBRIX_KVCACHE_RDMA_PORT", Value: "12345"},
-		{Name: "AIBRIX_KVCACHE_ADMIN_PORT", Value: "8888"},
+		{Name: "AIBRIX_KVCACHE_BACKEND", Value: constants.KVCacheBackendInfinistore},
+		{Name: "AIBRIX_KVCACHE_RDMA_PORT", Value: strconv.Itoa(defaultInfinistoreRDMAPort)},
+		{Name: "AIBRIX_KVCACHE_ADMIN_PORT", Value: strconv.Itoa(defaultInfinistoreAdminPort)},
 	}
 
 	envs := append(metadataEnvVars, fieldRefEnvVars...)
@@ -257,7 +297,7 @@ func buildCacheStatefulSetForInfiniStore(kvCache *orchestrationv1alpha1.KVCache)
 }
 
 func buildHeadlessServiceForInfiniStore(kvCache *orchestrationv1alpha1.KVCache) *corev1.Service {
-	port := int32(12345)
+	port := int32(defaultInfinistoreRDMAPort)
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-headless-service", kvCache.Name),
@@ -282,4 +322,13 @@ func buildHeadlessServiceForInfiniStore(kvCache *orchestrationv1alpha1.KVCache) 
 		},
 	}
 	return service
+}
+
+func getInfiniStoreParams(annotations map[string]string) *InfiniStoreParams {
+	return &InfiniStoreParams{
+		LinkType:          utils.GetStringAnnotationOrDefault(annotations, KVCacheAnnotationLinkType, defaultInfinistoreLinkType),
+		ContainerRegistry: utils.GetStringAnnotationOrDefault(annotations, constants.KVCacheAnnotationContainerRegistry, ""),
+		RdmaPort:          defaultInfinistoreRDMAPort,
+		AdminPort:         defaultInfinistoreAdminPort,
+	}
 }

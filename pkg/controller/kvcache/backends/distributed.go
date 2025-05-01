@@ -20,7 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,9 +41,9 @@ func NewDistributedReconciler(c client.Client, backend string) *DistributedRecon
 		BaseReconciler: &BaseReconciler{Client: c},
 	}
 
-	if backend == KVCacheBackendInfinistore {
+	if backend == constants.KVCacheBackendInfinistore {
 		reconciler.Backend = InfiniStoreBackend{}
-	} else if backend == KVCacheBackendHPKV {
+	} else if backend == constants.KVCacheBackendHPKV {
 		reconciler.Backend = HpKVBackend{}
 	} else {
 		panic(fmt.Sprintf("unsupported backend: %s", backend))
