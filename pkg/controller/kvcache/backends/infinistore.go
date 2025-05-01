@@ -14,33 +14,31 @@ import (
 
 type InfiniStoreBackend struct{}
 
-func (b InfiniStoreBackend) BuildMetadataWorkload(cache *orchestrationv1alpha1.KVCache) *appsv1.Deployment {
-	//TODO implement me
-	panic("implement me")
+func (b InfiniStoreBackend) BuildMetadataPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
+	return buildRedisPod(kvCache)
 }
 
-func (b InfiniStoreBackend) BuildMetadataService(cache *orchestrationv1alpha1.KVCache) *corev1.Service {
-	//TODO implement me
-	panic("implement me")
+func (b InfiniStoreBackend) BuildMetadataService(kvCache *orchestrationv1alpha1.KVCache) *corev1.Service {
+	return buildRedisService(kvCache)
 }
 
 func (InfiniStoreBackend) Name() string { return "infinistore" }
 
-func (InfiniStoreBackend) ValidateObject(kv *orchestrationv1alpha1.KVCache) error {
+func (InfiniStoreBackend) ValidateObject(kvCache *orchestrationv1alpha1.KVCache) error {
 	// Always accept, since only Redis used
 	return nil
 }
 
-func (InfiniStoreBackend) BuildWatcherPod(kv *orchestrationv1alpha1.KVCache) *corev1.Pod {
-	return buildKVCacheWatcherPodForInfiniStore(kv)
+func (InfiniStoreBackend) BuildWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
+	return buildKVCacheWatcherPodForInfiniStore(kvCache)
 }
 
-func (InfiniStoreBackend) BuildCacheStatefulSet(kv *orchestrationv1alpha1.KVCache) *appsv1.StatefulSet {
-	return buildCacheStatefulSetForInfiniStore(kv)
+func (InfiniStoreBackend) BuildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.StatefulSet {
+	return buildCacheStatefulSetForInfiniStore(kvCache)
 }
 
-func (InfiniStoreBackend) BuildService(kv *orchestrationv1alpha1.KVCache) *corev1.Service {
-	return buildHeadlessServiceForInfiniStore(kv)
+func (InfiniStoreBackend) BuildService(kvCache *orchestrationv1alpha1.KVCache) *corev1.Service {
+	return buildHeadlessServiceForInfiniStore(kvCache)
 }
 
 func buildKVCacheWatcherPodForInfiniStore(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {

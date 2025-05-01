@@ -1,3 +1,19 @@
+/*
+Copyright 2025 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package backends
 
 import (
@@ -5,12 +21,6 @@ import (
 	"errors"
 	"fmt"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/constants"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -20,24 +30,12 @@ import (
 type DistributedReconciler struct {
 	client.Client
 	*BaseReconciler
-	Scheme  *runtime.Scheme
 	Backend KVCacheBackend
 }
 
-type KVCacheBackend interface {
-	Name() string
-	ValidateObject(*orchestrationv1alpha1.KVCache) error
-	BuildMetadataWorkload(*orchestrationv1alpha1.KVCache) *appsv1.Deployment
-	BuildMetadataService(*orchestrationv1alpha1.KVCache) *corev1.Service
-	BuildWatcherPod(*orchestrationv1alpha1.KVCache) *corev1.Pod
-	BuildCacheStatefulSet(*orchestrationv1alpha1.KVCache) *appsv1.StatefulSet
-	BuildService(*orchestrationv1alpha1.KVCache) *corev1.Service
-}
-
-func NewDistributedReconciler(c client.Client, scheme *runtime.Scheme, backend string) *DistributedReconciler {
+func NewDistributedReconciler(c client.Client, backend string) *DistributedReconciler {
 	reconciler := &DistributedReconciler{
 		Client:         c,
-		Scheme:         scheme,
 		BaseReconciler: &BaseReconciler{Client: c},
 	}
 
@@ -51,30 +49,27 @@ func NewDistributedReconciler(c client.Client, scheme *runtime.Scheme, backend s
 	return reconciler
 }
 
-func (r *DistributedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var kvCache orchestrationv1alpha1.KVCache
-	if err := r.Get(ctx, req.NamespacedName, &kvCache); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
-
-	if err := r.Backend.ValidateObject(&kvCache); err != nil {
+func (r *DistributedReconciler) Reconcile(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) (ctrl.Result, error) {
+	if err := r.Backend.ValidateObject(kvCache); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileRedisService(ctx, &kvCache); err != nil {
+	if err := r.reconcileRedisService(ctx, kvCache); err != nil {
 		return reconcile.Result{}, err
 	}
 
 	// Handle infinistore kvCache Deployment
-	if err := r.ReconcileStatefulsetObject(ctx, r.Backend.BuildCacheStatefulSet(&kvCache)); err != nil {
+	if err := r.ReconcileStatefulsetObject(ctx, r.Backend.BuildCacheStatefulSet(kvCache)); err != nil {
 		return ctrl.Result{}, err
 	}
+
 	// Handle Hpkv/infinistore Services
-	if err := r.ReconcileServiceObject(ctx, r.Backend.BuildService(&kvCache)); err != nil {
+	if err := r.ReconcileServiceObject(ctx, r.Backend.BuildService(kvCache)); err != nil {
 		return ctrl.Result{}, err
 	}
+
 	// Handle Hpkv/infinistore watcher Pod
-	if err := r.ReconcilePodObject(ctx, r.Backend.BuildWatcherPod(&kvCache)); err != nil {
+	if err := r.ReconcilePodObject(ctx, r.Backend.BuildWatcherPod(kvCache)); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -93,101 +88,23 @@ func (r *DistributedReconciler) reconcileMetadataService(ctx context.Context, kv
 	return nil
 }
 
-func (r *BaseReconciler) reconcileRedisService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
+func (r *DistributedReconciler) reconcileRedisService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
 	// We only support etcd at this moment, redis will be supported later.
 	replicas := int(kvCache.Spec.Metadata.Redis.Replicas)
 	if replicas != 1 {
 		klog.Warningf("replica %d > 1 is not supported at this moment, we will change to single replica", replicas)
 	}
 
-	pod := buildRedisPod(kvCache)
+	pod := r.Backend.BuildMetadataPod(kvCache)
 	if err := r.ReconcilePodObject(ctx, pod); err != nil {
 		return err
 	}
 
 	// Create or update the etcd service for each pod
-	etcdService := buildRedisService(kvCache)
+	etcdService := r.Backend.BuildMetadataService(kvCache)
 	if err := r.ReconcileServiceObject(ctx, etcdService); err != nil {
 		return err
 	}
 
 	return nil
-}
-
-func buildRedisService(kvCache *orchestrationv1alpha1.KVCache) *corev1.Service {
-	redisServiceName := fmt.Sprintf("%s-redis", kvCache.Name)
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      redisServiceName,
-			Namespace: kvCache.Namespace,
-			Labels: map[string]string{
-				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
-				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleMetadata,
-			},
-			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(kvCache, orchestrationv1alpha1.GroupVersion.WithKind("KVCache")),
-			},
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{
-				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
-				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleMetadata,
-			},
-			Ports: []corev1.ServicePort{
-				{
-					Name:       "service",
-					Port:       6379,
-					TargetPort: intstr.FromInt32(6379),
-					Protocol:   corev1.ProtocolTCP,
-				},
-			},
-			Type: corev1.ServiceTypeClusterIP,
-		},
-	}
-
-	return svc
-}
-
-func buildRedisPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
-	image := kvCache.Spec.Cache.Image
-	if kvCache.Spec.Metadata.Redis.Image != "" {
-		image = kvCache.Spec.Metadata.Redis.Image
-	}
-
-	redisPodName := fmt.Sprintf("%s-redis", kvCache.Name)
-
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      redisPodName,
-			Namespace: kvCache.Namespace,
-			Labels: map[string]string{
-				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
-				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleMetadata,
-			},
-			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(kvCache, orchestrationv1alpha1.GroupVersion.WithKind("KVCache")),
-			},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:  "redis",
-					Image: image,
-					Ports: []corev1.ContainerPort{
-						{
-							Name:          "redis",
-							ContainerPort: 6379,
-							Protocol:      corev1.ProtocolTCP,
-						},
-					},
-					Command: []string{
-						"redis-server",
-					},
-					// You can also add volumeMounts, env vars, etc. if needed.
-				},
-			},
-		},
-	}
-
-	return pod
 }
