@@ -1,7 +1,11 @@
 # Using Dataset Generator
 
+The dataset generator supports generating synthetic prompt that follows certain prefix-sharing pattern, or converting existing data sources to format that can be consumed by workload generator. 
 
-## Generate Synthetic Dataset 
+<img src="../../image/aibrix-benchmark-dataset.png" alt="dataset" width="400"/>
+
+
+## Generate Synthetic Prompt
 ### Generate Synthetic Prefix-sharing Dataset
 
 We support generating synthetic prefix-sharing dataset with controlled prompt length (mean and standard deviation) and shared prompt percentages (mean and standard deviation). For example:
@@ -10,25 +14,70 @@ We support generating synthetic prefix-sharing dataset with controlled prompt le
 NUM_PREFIX=10
 NUM_SAMPLES=200
 ## Toolbench Workload
-python synthetic_prefix_sharing_dataset.py --app-name programming --prompt-length 1835 --prompt-length-std 742 --shared-proportion 0.85 --shared-proportion-std 0.13 --num-samples-per-prefix ${NUM_SAMPLES} --num-prefix ${NUM_PREFIX} --randomize-order
+python synthetic_prefix_sharing_dataset.py \
+    --app-name programming \
+    --prompt-length 1835 \
+    --prompt-length-std 742 \
+    --shared-proportion 0.85 \
+    --shared-proportion-std 0.13 \
+    --num-samples-per-prefix ${NUM_SAMPLES} \
+    --num-prefix ${NUM_PREFIX} \
+    --randomize-order \
+    --output output.jsonl
 
 ## Embodied Agent Workload
-python synthetic_prefix_sharing_dataset.py --app-name programming --prompt-length 2285 --prompt-length-std 471 --shared-proportion 0.97 --shared-proportion-std 0.14 --num-samples-per-prefix ${NUM_SAMPLES} --num-prefix ${NUM_PREFIX} --randomize-order
+python synthetic_prefix_sharing_dataset.py \
+    --app-name programming \
+    --prompt-length 2285 \
+    --prompt-length-std 471 \
+    --shared-proportion 0.97 \
+    --shared-proportion-std 0.14 \
+    --num-samples-per-prefix ${NUM_SAMPLES} \
+    --num-prefix ${NUM_PREFIX} \
+    --randomize-order \
+    --output output.jsonl
 
 ## Programming Workload
-python synthetic_prefix_sharing_dataset.py --app-name programming --prompt-length 3871 --prompt-length-std 1656 --shared-proportion 0.97 --shared-proportion-std 0.074 --num-samples-per-prefix ${NUM_SAMPLES} --num-prefix ${NUM_PREFIX} --randomize-order
+python synthetic_prefix_sharing_dataset.py \
+    --app-name programming \
+    --prompt-length 3871 \
+    --prompt-length-std 1656 \
+    --shared-proportion 0.97 \
+    --shared-proportion-std 0.074 \
+    --num-samples-per-prefix ${NUM_SAMPLES} \
+    --num-prefix ${NUM_PREFIX} \
+    --randomize-order \
+    --output output.jsonl
 
 ## Video QA Workload
-python synthetic_prefix_sharing_dataset.py --app-name programming --prompt-length 9865 --prompt-length-std 5976 --shared-proportion 0.88 --shared-proportion-std 0.32 --num-samples-per-prefix ${NUM_SAMPLES} --num-prefix ${NUM_PREFIX} --randomize-order
+python synthetic_prefix_sharing_dataset.py \
+    --app-name programming \
+    --prompt-length 9865 \
+    --prompt-length-std 5976 \
+    --shared-proportion 0.88 \
+    --shared-proportion-std 0.32 \
+    --num-samples-per-prefix ${NUM_SAMPLES} \
+    --num-prefix ${NUM_PREFIX} \
+    --randomize-order \
+    --output output.jsonl
 
 ## LooGLE Workload
-python synthetic_prefix_sharing_dataset.py --app-name programming --prompt-length 23474 --prompt-length-std 6105 --shared-proportion 0.91 --shared-proportion-std 0.24 --num-samples-per-prefix ${NUM_SAMPLES} --num-prefix ${NUM_PREFIX} --randomize-order
+python synthetic_prefix_sharing_dataset.py \
+    --app-name programming \
+    --prompt-length 23474 \
+    --prompt-length-std 6105 \
+    --shared-proportion 0.91 \
+    --shared-proportion-std 0.24 \
+    --num-samples-per-prefix ${NUM_SAMPLES} \
+    --num-prefix ${NUM_PREFIX} \
+    --randomize-order \
+    --output output.jsonl
 ```
 
 This will generate a .jsonl file that contains collection of prompt to serve as input to the workload generator. 
 
 The commands above simulate a cache sharing scheme for programming workload described in [Preble](https://arxiv.org/pdf/2407.00023), as shown below:
-![image](dataset-examples.png)
+![image](image/dataset-examples.png)
 
 In general, the ```synthetic_prefix_sharing_dataset.py ``` creates synthetic dataset that simulate controlled prompt lengths distribution and sharing lengths. Here ```--num-prefix``` is the number of unique shared contexts appeared in the dataset and ```--num-samples-per-prefix``` is the number of prompts sampled on each shared context. 
 
@@ -43,24 +92,27 @@ python multiturn_prefix_sharing_dataset.py \
     --num-turns-mean 10 \
     --num-turns-std 1 \
     --num-sessions-mean 10 \
-    --num-sessions-std 1
+    --num-sessions-std 1 \
+    --output output.jsonl
 ```
 This will generate a .jsonl file that contains collection of sessioned prompts. to serve as input to the workload generator. The prompts within the same session will be played at the same order as appeared in the dataset. 
 
 
-## Convert client traces to dataset
+## Convert Existing Data Sources
+### Convert client traces to dataset
 
 We can convert ```output.jsonl```, which contains both prompt and completion from a previous run, to prompt file like the following:
 ```shell
-export TRACE="output.jsonl"
+export TRACE="trace.jsonl"
 python utility.py convert \
     --path ${TRACE} \
     --type trace \
-    --tokenizer deepseek-ai/deepseek-llm-7b-chat
+    --tokenizer deepseek-ai/deepseek-llm-7b-chat \
+    --output output.jsonl
 ```
 
 
-## Convert ShareGPT dataset
+### Convert ShareGPT dataset
 
 We can convert existing dataset to a sessioned prompt output like the following. For example, download ShareGPT dataset:
 
@@ -75,6 +127,7 @@ wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/r
 python utility.py convert  \
     --path ${TARGET_DATASET} \
     --type sharegpt \
-    --tokenizer deepseek-ai/deepseek-llm-7b-chat
+    --tokenizer deepseek-ai/deepseek-llm-7b-chat \
+    --output output.jsonl
 ```
 We will extend the converter to other dataset beyond ShareGPT. Stay tuned!

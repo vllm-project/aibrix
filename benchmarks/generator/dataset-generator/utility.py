@@ -17,9 +17,9 @@ def main():
     # Subcommand: convert
     parser_convert = subparsers.add_parser("convert", help="Convert a dataset")
     parser_convert.add_argument("--path", required=True, help="Input dataset path")
-    parser_convert.add_argument("--output", required=True, help="Output file name")
     parser_convert.add_argument('--type', type=str, required=True, choices=['trace', 'sharegpt'],
                                 help='Dataset type: trace or sharegpt')
+    parser_convert.add_argument("--output", type=str, default="output.jsonl", help="Output file name.")
     parser_convert.set_defaults(func=convert)
     
     args = parser.parse_args()
