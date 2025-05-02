@@ -4,7 +4,6 @@ on:
   workflow_dispatch:  # Allows manual trigger
   push:
     branches: [ "main", "release-*" ]
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,16 +17,16 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
       - name: Login to DockerHub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
-#      - name: Login to the Container registry
-#        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
-#        with:
-#          registry: ghcr.io
-#          username: ${{ github.actor }}
-#          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Login to the Github Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.AIBRIX_ORG_PACKAGE_UPDATE_GITHUB_TOKEN }}
 
       - name: Build Container Images
         run: |
@@ -37,11 +36,10 @@ jobs:
         run: |
           make docker-push-all
 
-# TODO: Disable GHCR at this moment after org transfer, let's enable it later.
-#      - name: Build Container Images with Github Container Registry prefix
-#        run: |
-#          GIT_COMMIT_HASH=${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build-all
-#
-#      - name: Push Container Images to Github Container Registry
-#        run: |
-#          GIT_COMMIT_HASH=${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-push-all
+      - name: Build Container Images with Github Container Registry prefix
+        run: |
+          GIT_COMMIT_HASH=${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build-all
+
+      - name: Push Container Images to Github Container Registry
+        run: |
+          GIT_COMMIT_HASH=${{ github.sha }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-push-all
