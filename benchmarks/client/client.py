@@ -35,22 +35,9 @@ def worker(thread_idx, task_queue, client, model, max_output, send_request_func,
         if task_args is None:
             logging.warning(f"Worker {thread_idx} exit.")
             break
-
+        print(f"Worker {thread_idx} processing task {task_args}...")
         loop.run_until_complete(handle_task(task_args))
         task_queue.task_done()
-
-# def worker(thread_idx, task_queue, client, model, send_request_func, output_file):
-#     """Worker function to run an asyncio event loop in a separate thread."""
-#     asyncio.set_event_loop(asyncio.new_event_loop())
-#     loop = asyncio.get_event_loop()
-#     while True:
-#         task = task_queue.get()
-#         if task is None:  # Stop signal
-#             logging.warn(f"Worker {thread_idx} exit.")
-#             break
-#         else:
-#             loop.run_until_complete(send_request_func(client, model, *task))
-#         task_queue.task_done()
 
 def start_worker_threads(thread_idx, task_queue, client, model, max_output, send_request_func, output_file):
     """Start multiple threads, each running an event loop for handling tasks."""
@@ -228,24 +215,24 @@ async def benchmark_streaming(api_key: str,
 # Asynchronous request handler
 async def send_request_batch_launch(client: openai.AsyncOpenAI,
                              model: str,
+                             max_output: int,
                              prompt: str,
                              output_file: str,
                              request_id: int,
                              session_id: str, 
                              target_time: int,
                              ):
-    start_time = asyncio.get_event_loop().time()
-    cur_time = time.time()
-    logging.warning(f"send_request_batch: Prepare to launch task after {target_time - cur_time}")
-    if target_time > cur_time:
-        await asyncio.sleep(target_time - cur_time)
+    start_time = time.time()
+    logging.warning(f"send_request_batch_launch: Prepare to launch task after {target_time - start_time}")
+    if target_time > start_time:
+        await asyncio.sleep(target_time - start_time)
     current = time.time()
     print(f"Request {request_id}: Sending session {session_id} request at time {current} with target time {target_time} diff {current - target_time}")
     coroutine = client.chat.completions.create(
         model=model,
         messages=prompt,
         temperature=0,
-        max_tokens=2048
+        max_tokens=max_output,
     )
     task = asyncio.create_task(coroutine)
     task.add_done_callback(lambda fut: send_request_batch_callback(fut.result(), prompt, output_file, request_id, session_id, target_time, start_time))
