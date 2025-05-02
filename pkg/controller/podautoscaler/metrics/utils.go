@@ -27,6 +27,7 @@ import (
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 func ParseMetricFromBody(body []byte, metricName string) (float64, error) {
@@ -110,13 +111,25 @@ func GetPodContainerMetric(ctx context.Context, fetcher MetricFetcher, pod corev
 
 func GetMetricsFromPods(ctx context.Context, fetcher MetricFetcher, pods []corev1.Pod, source autoscalingv1alpha1.MetricSource) ([]float64, error) {
 	metrics := make([]float64, 0, len(pods))
+	var failedPods []string
+	var lastErrorMessage string
 	for _, pod := range pods {
 		// TODO: Let's optimize the performance for multi-metrics later.
 		metric, err := fetcher.FetchPodMetrics(ctx, pod, source)
 		if err != nil {
-			return nil, err
+			lastErrorMessage = err.Error()
+			failedPods = append(failedPods, fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
+			continue
 		}
 		metrics = append(metrics, metric)
+	}
+	// If we fail to get metrics from some pods, we should log a warning message.
+	if len(metrics) < len(pods) {
+		klog.Warningf("failed to get metrics from some pods: got %d/%d metrics. Failed pods: %v, with last error: %v", len(metrics), len(pods), failedPods, lastErrorMessage)
+	}
+	// If we fail to get metrics from all pods, we should return an error.
+	if len(metrics) == 0 && len(pods) > 0 {
+		return nil, fmt.Errorf("failed to get metrics from any of the %d pods", len(pods))
 	}
 	return metrics, nil
 }
