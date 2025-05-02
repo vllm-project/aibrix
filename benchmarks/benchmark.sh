@@ -177,6 +177,7 @@ run_client() {
         --endpoint \"$ENDPOINT\" \
         --model \"$TARGET_MODEL\" \
         --api-key \"$API_KEY\" \
+        --time-scale \"$TIME_SCALE\" \
         --output-file-path \"$CLIENT_OUTPUT/output.jsonl\""
 
     [ "$STREAMING_ENABLED" = "true" ] && CMD+=" --streaming"

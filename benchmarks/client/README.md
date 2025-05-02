@@ -35,3 +35,5 @@ Run analysis on metrics collected. For streaming client, we can specify a goodpu
 ```shell
 python analyze.py --trace output.jsonl --output output --goodput-target tpot:0.5
 ```
+
+By default, client treats timestamp in the workload as timestamp in milliseconds (ms). The timestamp described in the workload generator could be scaled with `--time-scale`, Say that the original workload demands one paralell disptach at time `0, 1000, 2000...`, meaning that the requests will be dispatch every second. You could use `--time-scale` to scale the intervals of timestamps described in the workload, e.g. `--time-scale 0.1` scale the intervals of timetsamps by `0.1` meaning that the requests will be dispatched at time `0, 100, 200...`. 

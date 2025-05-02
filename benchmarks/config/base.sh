@@ -33,6 +33,7 @@ export CLIENT_OUTPUT="./output/client_output"
 export ENDPOINT="http://localhost:8888"
 export API_KEY="$api_key"
 export TARGET_MODEL="llama-3-8b-instruct" #"deepseek-llm-7b-chat"
+export TIME_SCALE="1.0" 
 export STREAMING_ENABLED="true" # Options: true, false
 export CLIENT_POOL_SIZE="128"
 export OUTPUT_TOKEN_LIMIT="128"

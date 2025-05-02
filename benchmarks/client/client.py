@@ -167,6 +167,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
 async def benchmark_streaming(api_key: str,
                               endpoint: str,
                               max_retries: int,
+                              scale_factor: float,
                               timeout: float,
                               routing_strategy: str,
                               load_struct: List,
@@ -182,7 +183,7 @@ async def benchmark_streaming(api_key: str,
         client = create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
         threads.append(start_worker_threads(thread_idx, task_queues[thread_idx], client, model, max_output, send_request_streaming, output_file))
     for requests_dict in load_struct:
-        ts = int(requests_dict["timestamp"])
+        ts = int(requests_dict["timestamp"] * scale_factor)
         requests = requests_dict["requests"]
         target_time = base_time + ts / 1000.0
         formatted_prompts = [prepare_prompt(prompt = request["prompt"], lock = lock, session_id = request.get("session_id", None), history = session_history) for request in requests]
@@ -300,6 +301,7 @@ async def send_request_batch(client: openai.AsyncOpenAI,
 async def benchmark_batch(api_key: str,
                           endpoint: str,
                           max_retries: int,
+                          scale_factor: float,
                           timeout: float,
                           routing_strategy: str,
                           load_struct: List,
@@ -316,7 +318,7 @@ async def benchmark_batch(api_key: str,
         client = create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
         threads.append(start_worker_threads(thread_idx, task_queues[thread_idx], client, model, max_output, send_request_batch, output_file))
     for requests_dict in load_struct:
-        ts = int(requests_dict["timestamp"])
+        ts = int(requests_dict["timestamp"] * scale_factor)
         requests = requests_dict["requests"]
         target_time = base_time + ts / 1000.0
         formatted_prompts = [prepare_prompt(prompt = request["prompt"], lock = lock, session_id = request.get("session_id", None), history = session_history) for request in requests]
@@ -383,6 +385,7 @@ def main(args):
                 api_key = args.api_key,
                 endpoint = args.endpoint,
                 max_retries = 0,
+                scale_factor = args.time_scale,
                 timeout = 60.0,
                 routing_strategy = args.routing_strategy,
                 load_struct=load_struct,
@@ -399,6 +402,7 @@ def main(args):
                 api_key = args.api_key,
                 endpoint = args.endpoint,
                 max_retries = 0,
+                scale_factor = args.time_scale,
                 timeout = 60.0,
                 routing_strategy = args.routing_strategy,
                 load_struct=load_struct,
@@ -421,6 +425,7 @@ if __name__ == "__main__":
     parser.add_argument("--routing-strategy", type=str, required=False, default="random", help="Routing strategy to use.")
     parser.add_argument("--client-pool-size", type=int, required=False, default=1, help="Number of parallel clients to use.")
     parser.add_argument("--output-token-limit", type=int, required=False, default=None, help="Limit the maximum number of output tokens.")
+    parser.add_argument('--time-scale', type=float, default=1.0, help="Scaling factor for workload's logical time.")
 
     args = parser.parse_args()
     main(args)
