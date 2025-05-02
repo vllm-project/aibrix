@@ -107,7 +107,6 @@ export TRACE="trace.jsonl"
 python utility.py convert \
     --path ${TRACE} \
     --type trace \
-    --tokenizer deepseek-ai/deepseek-llm-7b-chat \
     --output output.jsonl
 ```
 
@@ -127,7 +126,6 @@ wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/r
 python utility.py convert  \
     --path ${TARGET_DATASET} \
     --type sharegpt \
-    --tokenizer deepseek-ai/deepseek-llm-7b-chat \
     --output output.jsonl
 ```
 We will extend the converter to other dataset beyond ShareGPT. Stay tuned!
