@@ -81,6 +81,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var rpm, traceTerm int64
 	var respErrorCode int
 	var model string
+	var requestPath string
 	var routingAlgorithm types.RoutingAlgorithm
 	var routerCtx *types.RoutingContext
 	var stream, isRespError bool
@@ -109,10 +110,10 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		switch v := req.Request.(type) {
 
 		case *extProcPb.ProcessingRequest_RequestHeaders:
-			resp, user, rpm, routingAlgorithm = s.HandleRequestHeaders(ctx, requestID, req)
+			resp, user, rpm, routingAlgorithm, requestPath = s.HandleRequestHeaders(ctx, requestID, req)
 
 		case *extProcPb.ProcessingRequest_RequestBody:
-			resp, model, routerCtx, stream, traceTerm = s.HandleRequestBody(ctx, requestID, req, user, routingAlgorithm)
+			resp, model, routerCtx, stream, traceTerm = s.HandleRequestBody(ctx, requestID, requestPath, req, user, routingAlgorithm)
 			if routerCtx != nil {
 				ctx = routerCtx
 			}

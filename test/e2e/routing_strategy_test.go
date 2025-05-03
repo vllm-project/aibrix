@@ -109,10 +109,10 @@ func getTargetPodFromChatCompletion(t *testing.T, message string, strategy strin
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, strategy, option.WithResponseInto(&dst))
 
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
-		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage(message),
-		}),
-		Model: openai.F(modelName),
+		},
+		Model: modelName,
 	})
 	require.NoError(t, err, "chat completitions failed %v", err)
 	assert.Equal(t, modelName, chatCompletion.Model)

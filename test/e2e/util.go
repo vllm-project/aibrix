@@ -86,7 +86,7 @@ func initializeClient(ctx context.Context, t *testing.T) (*kubernetes.Clientset,
 	return k8sClientSet, crdClientSet
 }
 
-func createOpenAIClient(baseURL, apiKey string) *openai.Client {
+func createOpenAIClient(baseURL, apiKey string) openai.Client {
 	// For strict testing, use a custom http.Transport with disabled keep-alives and caching to avoid flaky tests.
 	transport := &http.Transport{
 		DisableKeepAlives: true,
@@ -106,7 +106,7 @@ func createOpenAIClient(baseURL, apiKey string) *openai.Client {
 }
 
 func createOpenAIClientWithRoutingStrategy(baseURL, apiKey, routingStrategy string,
-	respOpt option.RequestOption) *openai.Client {
+	respOpt option.RequestOption) openai.Client {
 	return openai.NewClient(
 		option.WithBaseURL(baseURL),
 		option.WithAPIKey(apiKey),
@@ -125,12 +125,12 @@ func validateInference(t *testing.T, modelName string) {
 	validateInferenceWithClient(t, client, modelName)
 }
 
-func validateInferenceWithClient(t *testing.T, client *openai.Client, modelName string) {
+func validateInferenceWithClient(t *testing.T, client openai.Client, modelName string) {
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
-		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("Say this is a test"),
-		}),
-		Model: openai.F(modelName),
+		},
+		Model: modelName,
 	})
 	if err != nil {
 		t.Fatalf("chat completions failed : %v", err)
