@@ -18,7 +18,6 @@ package gateway
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"k8s.io/klog/v2"
@@ -31,28 +30,15 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingAlgorithm types.RoutingAlgorithm) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
-	var model string
+func (s *Server) HandleRequestBody(ctx context.Context, requestID string, requestPath string, req *extProcPb.ProcessingRequest,
+	user utils.User, routingAlgorithm types.RoutingAlgorithm) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
 	var routingCtx *types.RoutingContext
-	var ok, stream bool
 	var term int64 // Identify the trace window
 
-	var jsonMap map[string]interface{}
 	body := req.Request.(*extProcPb.ProcessingRequest_RequestBody)
-	if err := json.Unmarshal(body.RequestBody.GetBody(), &jsonMap); err != nil {
-		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "requestBody", string(body.RequestBody.GetBody()))
-		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderErrorRequestBodyProcessing, RawValue: []byte("true")}}},
-			"error processing request body"), model, routingCtx, stream, term
-	}
-
-	if model, ok = jsonMap["model"].(string); !ok || model == "" {
-		klog.ErrorS(nil, "model error in request", "requestID", requestID, "jsonMap", jsonMap)
-		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: HeaderErrorNoModelInRequest, RawValue: []byte(model)}}},
-			"no model in request body"), model, routingCtx, stream, term
+	model, message, stream, errRes := validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)
+	if errRes != nil {
+		return errRes, model, routingCtx, stream, term
 	}
 
 	// early reject the request if model doesn't exist.
@@ -74,29 +60,12 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			fmt.Sprintf("error on getting pods for model %s", model)), model, routingCtx, stream, term
 	}
 
-	stream, ok = jsonMap["stream"].(bool)
-	if ok && stream {
-		if errRes := validateStreamOptions(requestID, user, jsonMap); errRes != nil {
-			return errRes, model, routingCtx, stream, term
-		}
-	}
-
+	routingCtx = types.NewRoutingContext(ctx, routingAlgorithm, model, message, requestID, user.Name)
 	headers := []*configPb.HeaderValueOption{}
 	if routingAlgorithm == routing.RouterNotSet {
-		headers = append(headers, &configPb.HeaderValueOption{
-			Header: &configPb.HeaderValue{
-				Key:      "model",
-				RawValue: []byte(model),
-			},
-		})
-		klog.InfoS("request start", "requestID", requestID, "model", model)
+		headers = buildEnvoyProxyHeaders(headers, HeaderModel, model)
+		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream)
 	} else {
-		message, extErr := getRequestMessage(jsonMap)
-		if extErr != nil {
-			return extErr, model, routingCtx, stream, term
-		}
-
-		routingCtx = types.NewRoutingContext(ctx, routingAlgorithm, model, message, requestID, user.Name)
 		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingAlgorithm", routingAlgorithm, "model", model)
@@ -106,21 +75,10 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 					Key: HeaderErrorRouting, RawValue: []byte("true")}}},
 				"error on selecting target pod"), model, routingCtx, stream, term
 		}
-
-		headers = append(headers,
-			&configPb.HeaderValueOption{
-				Header: &configPb.HeaderValue{
-					Key:      HeaderRoutingStrategy,
-					RawValue: []byte(routingAlgorithm),
-				},
-			},
-			&configPb.HeaderValueOption{
-				Header: &configPb.HeaderValue{
-					Key:      HeaderTargetPod,
-					RawValue: []byte(targetPodIP),
-				},
-			})
-		klog.InfoS("request start", "requestID", requestID, "model", model, "routingAlgorithm", routingAlgorithm, "targetPodIP", targetPodIP)
+		headers = buildEnvoyProxyHeaders(headers,
+			HeaderRoutingStrategy, string(routingAlgorithm),
+			HeaderTargetPod, targetPodIP)
+		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream, "routingAlgorithm", routingAlgorithm, "targetPodIP", targetPodIP)
 	}
 
 	term = s.cache.AddRequestCount(routingCtx, requestID, model)
