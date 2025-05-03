@@ -53,6 +53,12 @@ Documentation
 
 .. toctree::
    :maxdepth: 1
+   :caption: Production Readiness
+
+   production/observability.rst
+
+.. toctree::
+   :maxdepth: 1
    :caption: Community
 
    community/community.rst

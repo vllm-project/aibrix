@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/name: aibrix
+    app.kubernetes.io/version: nightly
+    control-plane: controller-manager
+  name: aibrix-controller-manager-metrics-monitor
+  namespace: aibrix-system
+spec:
+  endpoints:
+  - path: /metrics
+    port: http
+    scheme: http
+  selector:
+    matchLabels:
+      control-plane: controller-manager
