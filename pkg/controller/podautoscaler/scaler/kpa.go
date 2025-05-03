@@ -445,15 +445,15 @@ func (k *KpaAutoscaler) UpdateScalingContext(pa autoscalingv1alpha1.PodAutoscale
 }
 
 func (k *KpaAutoscaler) GetScalingContext() scalingcontext.ScalingContext {
-	k.specMux.Lock()
-	defer k.specMux.Unlock()
+	k.specMux.RLock()
+	defer k.specMux.RUnlock()
 
 	return k.scalingContext
 }
 
 func (k *KpaAutoscaler) InPanicMode() bool {
-	k.specMux.Lock()
-	defer k.specMux.Unlock()
+	k.specMux.RLock()
+	defer k.specMux.RUnlock()
 
 	return !k.panicTime.IsZero()
 }

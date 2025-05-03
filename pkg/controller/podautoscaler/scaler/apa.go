@@ -224,8 +224,8 @@ func (a *ApaAutoscaler) UpdateScalingContext(pa autoscalingv1alpha1.PodAutoscale
 }
 
 func (a *ApaAutoscaler) GetScalingContext() common.ScalingContext {
-	a.specMux.Lock()
-	defer a.specMux.Unlock()
+	a.specMux.RLock()
+	defer a.specMux.RUnlock()
 
 	return a.scalingContext
 }
