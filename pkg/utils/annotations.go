@@ -26,7 +26,7 @@ func GetStringAnnotationOrDefault(annotations map[string]string, key string, def
 	if val, ok := annotations[key]; ok && val != "" {
 		return val
 	}
-	klog.Infof("Annotation %s not set or empty, using default: %s. All annotations: %+v", key, defaultValue, annotations)
+	klog.V(4).Infof("Annotation %s not set or empty, using default: %s. All annotations: %+v", key, defaultValue, annotations)
 	return defaultValue
 }
 
@@ -35,7 +35,7 @@ func GetPortAnnotationOrDefault(annotations map[string]string, key string, defau
 		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 && parsed <= 65535 {
 			return parsed
 		}
-		klog.Warningf("Invalid port for annotation %s: %s, using default %d. All annotations: %+v", key, val, defaultValue, annotations)
+		klog.V(4).Infof("Invalid port for annotation %s: %s, using default %d. All annotations: %+v", key, val, defaultValue, annotations)
 	}
 	return defaultValue
 }
@@ -45,7 +45,7 @@ func GetPositiveIntAnnotationOrDefault(annotations map[string]string, key string
 		if parsed, err := strconv.Atoi(val); err == nil && parsed > 0 {
 			return parsed
 		}
-		klog.Warningf("Invalid integer for annotation %s: %s, using default %d. All annotations: %+v", key, val, defaultValue, annotations)
+		klog.V(4).Infof("Invalid integer for annotation %s: %s, using default %d. All annotations: %+v", key, val, defaultValue, annotations)
 	}
 	return defaultValue
 }

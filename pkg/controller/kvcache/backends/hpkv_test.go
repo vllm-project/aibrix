@@ -144,6 +144,6 @@ func TestBuildHeadlessService_HP(t *testing.T) {
 	assert.Equal(t, corev1.ServiceTypeClusterIP, svc.Spec.Type)
 
 	port := svc.Spec.Ports[0]
-	assert.Equal(t, int32(9600), port.Port)
-	assert.Equal(t, intstr.FromInt(9600), port.TargetPort)
+	assert.Equal(t, int32(defaultHPKVRDMAPort), port.Port)
+	assert.Equal(t, intstr.FromInt(defaultHPKVRDMAPort), port.TargetPort)
 }

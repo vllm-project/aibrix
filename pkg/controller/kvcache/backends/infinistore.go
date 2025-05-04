@@ -39,7 +39,7 @@ const (
 
 const (
 	defaultInfinistoreRDMAPort         = 12345
-	defaultInfinistoreAdminPort        = 8888
+	defaultInfinistoreAdminPort        = 8088
 	defaultInfinistoreLinkType         = "Ethernet"
 	defaultInfinistoreTotalSlots       = 4096
 	defaultInfinistoreVirtualNodeCount = 100
@@ -162,6 +162,7 @@ func buildKVCacheWatcherPodForInfiniStore(kvCache *orchestrationv1alpha1.KVCache
 }
 
 func buildCacheStatefulSetForInfiniStore(kvCache *orchestrationv1alpha1.KVCache) *appsv1.StatefulSet {
+	params := getInfiniStoreParams(kvCache.GetAnnotations())
 	metadataEnvVars := []corev1.EnvVar{
 		{Name: "AIBRIX_KVCACHE_UID", Value: string(kvCache.UID)},
 		{Name: "AIBRIX_KVCACHE_NAME", Value: kvCache.Name},
@@ -179,8 +180,8 @@ func buildCacheStatefulSetForInfiniStore(kvCache *orchestrationv1alpha1.KVCache)
 
 	kvCacheServerEnvVars := []corev1.EnvVar{
 		{Name: "AIBRIX_KVCACHE_BACKEND", Value: constants.KVCacheBackendInfinistore},
-		{Name: "AIBRIX_KVCACHE_RDMA_PORT", Value: strconv.Itoa(defaultInfinistoreRDMAPort)},
-		{Name: "AIBRIX_KVCACHE_ADMIN_PORT", Value: strconv.Itoa(defaultInfinistoreAdminPort)},
+		{Name: "AIBRIX_KVCACHE_RDMA_PORT", Value: strconv.Itoa(params.RdmaPort)},
+		{Name: "AIBRIX_KVCACHE_ADMIN_PORT", Value: strconv.Itoa(params.AdminPort)},
 	}
 
 	envs := append(fieldRefEnvVars, metadataEnvVars...)
@@ -190,7 +191,8 @@ func buildCacheStatefulSetForInfiniStore(kvCache *orchestrationv1alpha1.KVCache)
 		"--service-port", "$AIBRIX_KVCACHE_RDMA_IP",
 		"--manage-port", "$AIBRIX_KVCACHE_ADMIN_PORT",
 		"--link-type", "Ethernet",
-		"--hint-gid-index", "7", // this is volcano engine specific. subject to change to more flexible way in future.
+		// this is volcano engine specific. subject to change to more flexible way in future.
+		"--hint-gid-index", strconv.Itoa(params.HintGIDIndex),
 	}
 	kvCacheServerArgsStr := strings.Join(kvCacheServerArgs, " ")
 	privileged := true
@@ -242,9 +244,10 @@ func buildCacheStatefulSetForInfiniStore(kvCache *orchestrationv1alpha1.KVCache)
 						{
 							Name:  "kvcache-server",
 							Image: kvCache.Spec.Cache.Image,
-							//Ports: []corev1.ContainerPort{
-							//	{Name: "service", ContainerPort: 9600, Protocol: corev1.ProtocolTCP},
-							//},
+							Ports: []corev1.ContainerPort{
+								{Name: "service", ContainerPort: int32(params.RdmaPort), Protocol: corev1.ProtocolTCP},
+								{Name: "manage", ContainerPort: int32(params.AdminPort), Protocol: corev1.ProtocolTCP},
+							},
 							Command: []string{
 								"/bin/bash",
 								"-c",
@@ -301,7 +304,9 @@ func buildCacheStatefulSetForInfiniStore(kvCache *orchestrationv1alpha1.KVCache)
 }
 
 func buildHeadlessServiceForInfiniStore(kvCache *orchestrationv1alpha1.KVCache) *corev1.Service {
-	port := int32(defaultInfinistoreRDMAPort)
+	params := getInfiniStoreParams(kvCache.GetAnnotations())
+	rdmaPort := int32(params.RdmaPort)
+	managePort := int32(params.AdminPort)
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-headless-service", kvCache.Name),
@@ -315,7 +320,8 @@ func buildHeadlessServiceForInfiniStore(kvCache *orchestrationv1alpha1.KVCache) 
 		},
 		Spec: corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{
-				{Name: "service", Port: port, TargetPort: intstr.FromInt32(port), Protocol: corev1.ProtocolTCP},
+				{Name: "service", Port: rdmaPort, TargetPort: intstr.FromInt32(rdmaPort), Protocol: corev1.ProtocolTCP},
+				{Name: "manage", Port: managePort, TargetPort: intstr.FromInt32(managePort), Protocol: corev1.ProtocolTCP},
 			},
 			Selector: map[string]string{
 				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
@@ -333,9 +339,10 @@ func getInfiniStoreParams(annotations map[string]string) *InfiniStoreParams {
 		LinkType:          utils.GetStringAnnotationOrDefault(annotations, KVCacheAnnotationLinkType, defaultInfinistoreLinkType),
 		HintGIDIndex:      utils.GetPositiveIntAnnotationOrDefault(annotations, KVCacheAnnotationHintGidIndex, defaultInfinistoreHintGIDIndex),
 		ContainerRegistry: utils.GetStringAnnotationOrDefault(annotations, constants.KVCacheAnnotationContainerRegistry, ""),
-		RdmaPort:          defaultInfinistoreRDMAPort,
-		AdminPort:         defaultInfinistoreAdminPort,
-		TotalSlots:        defaultInfinistoreTotalSlots,
-		VirtualNodeCount:  defaultInfinistoreVirtualNodeCount,
+		// doesn't support specify the annotations yet
+		RdmaPort:         defaultInfinistoreRDMAPort,
+		AdminPort:        defaultInfinistoreAdminPort,
+		TotalSlots:       defaultInfinistoreTotalSlots,
+		VirtualNodeCount: defaultInfinistoreVirtualNodeCount,
 	}
 }
