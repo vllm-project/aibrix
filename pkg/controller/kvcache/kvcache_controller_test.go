@@ -33,49 +33,49 @@ func Test_getKVCacheBackendFromMetadata(t *testing.T) {
 		expected    string
 	}{
 		{
-			name: "valid backend label - vineyard",
-			labels: map[string]string{
+			name: "valid backend annotation - vineyard",
+			annotations: map[string]string{
 				constants.KVCacheLabelKeyBackend: constants.KVCacheBackendVineyard,
 			},
 			expected: constants.KVCacheBackendVineyard,
 		},
 		{
-			name: "valid backend label - infinistore",
-			labels: map[string]string{
+			name: "valid backend annotation - infinistore",
+			annotations: map[string]string{
 				constants.KVCacheLabelKeyBackend: constants.KVCacheBackendInfinistore,
 			},
 			expected: constants.KVCacheBackendInfinistore,
 		},
 		{
-			name: "invalid backend label falls back to default",
-			labels: map[string]string{
+			name: "invalid backend annotation falls back to default",
+			annotations: map[string]string{
 				constants.KVCacheLabelKeyBackend: "unknown-backend",
 			},
 			expected: constants.KVCacheBackendDefault,
 		},
 		{
-			name: "no label, distributed mode via annotation",
+			name: "no annotation, distributed mode via annotation",
 			annotations: map[string]string{
 				constants.KVCacheAnnotationMode: "distributed",
 			},
 			expected: constants.KVCacheBackendInfinistore,
 		},
 		{
-			name: "no label, centralized mode via annotation",
+			name: "no annotation, centralized mode via annotation",
 			annotations: map[string]string{
 				constants.KVCacheAnnotationMode: "centralized",
 			},
 			expected: constants.KVCacheBackendVineyard,
 		},
 		{
-			name: "no label, unknown mode falls back to default",
+			name: "no annotation, unknown mode falls back to default",
 			annotations: map[string]string{
 				constants.KVCacheAnnotationMode: "invalid-mode",
 			},
 			expected: constants.KVCacheBackendDefault,
 		},
 		{
-			name:     "no label or annotation, falls back to default",
+			name:     "no annotation or annotation, falls back to default",
 			expected: constants.KVCacheBackendDefault,
 		},
 	}
@@ -84,7 +84,6 @@ func Test_getKVCacheBackendFromMetadata(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			kv := &orchestrationv1alpha1.KVCache{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      tc.labels,
 					Annotations: tc.annotations,
 				},
 			}

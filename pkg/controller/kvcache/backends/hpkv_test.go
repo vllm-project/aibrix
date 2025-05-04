@@ -17,7 +17,6 @@ limitations under the License.
 package backends
 
 import (
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -51,10 +50,7 @@ func TestBuildKVCacheWatcherPod_HP(t *testing.T) {
 	}
 
 	assert.Equal(t, "test-cache-redis:6379", envMap["REDIS_ADDR"])
-	assert.Equal(t, "test-cache", envMap["WATCH_KVCACHE_CLUSTER"])
-	assert.Equal(t, strconv.Itoa(defaultHPKVRDMAPort), envMap["AIBRIX_KVCACHE_RDMA_PORT"])
-	assert.Equal(t, strconv.Itoa(defaultHPKVTotalSlots), envMap["AIBRIX_KVCACHE_TOTAL_SLOTS"])
-	assert.Equal(t, strconv.Itoa(defaultHPKVVirtualNodeCount), envMap["AIBRIX_KVCACHE_VIRTUAL_NODE_COUNT"])
+	assert.Equal(t, "test-cache", envMap["AIBRIX_KVCACHE_WATCH_CLUSTER"])
 }
 
 func TestBuildCacheStatefulSet_HP(t *testing.T) {

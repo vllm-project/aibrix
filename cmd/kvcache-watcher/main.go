@@ -290,13 +290,55 @@ func main() {
 }
 
 func parseFlags() {
-	flag.StringVar(&kvCacheBackend, "kvcache-backend", "hpkv", "KV backend implementation to use. Supported: 'hpkv', 'infinistore'.")
-	flag.StringVar(&kvCacheWatchNS, "kvcache-watch-namespace", utils.LoadEnv("AIBRIX_KVCACHE_WATCH_NAMESPACE", "default"), "Kubernetes namespace to watch for KVCache pods.")
-	flag.StringVar(&kvCacheWatchClusterId, "kvcache-watch-cluster-id", os.Getenv("AIBRIX_KVCACHE_WATCH_CLUSTER"), "Value of the 'kvcache.orchestration.aibrix.ai/name' label to identify the KV cache cluster.")
-	flag.IntVar(&kvCacheServerRDMAPort, "kvcache-server-rdma-port", utils.LoadEnvInt("AIBRIX_KVCACHE_RDMA_PORT", 18512), "RDMA service port used by the KVCache data servers.")
-	flag.IntVar(&kvCacheServerAdminPort, "kvcache-server-admin-port", utils.LoadEnvInt("AIBRIX_KVCACHE_ADMIN_PORT", 9100), "Admin port used for control kv cache server.")
-	flag.IntVar(&consistentHashingTotalSlots, "consistent-hashing-total-slots", 4096, "Total number of slots in the consistent hashing ring.")
-	flag.IntVar(&consistentHashingVirtualNodeCount, "consistent-hashing-virtual-node-count", 100, "Number of virtual nodes per physical KVCache pod for consistent hashing.")
+	flag.StringVar(
+		&kvCacheBackend,
+		"kvcache-backend",
+		"hpkv",
+		"KV backend implementation to use. Supported: 'hpkv', 'infinistore'.",
+	)
+
+	flag.StringVar(
+		&kvCacheWatchNS,
+		"kvcache-watch-namespace",
+		utils.LoadEnv("AIBRIX_KVCACHE_WATCH_NAMESPACE", "default"),
+		"Kubernetes namespace to watch for KVCache pods.",
+	)
+
+	flag.StringVar(
+		&kvCacheWatchClusterId,
+		"kvcache-watch-cluster-id",
+		os.Getenv("AIBRIX_KVCACHE_WATCH_CLUSTER"),
+		"Value of the 'kvcache.orchestration.aibrix.ai/name' label to identify the KV cache cluster.",
+	)
+
+	flag.IntVar(
+		&kvCacheServerRDMAPort,
+		"kvcache-server-rdma-port",
+		utils.LoadEnvInt("AIBRIX_KVCACHE_RDMA_PORT", 18512),
+		"RDMA service port used by the KVCache data servers.",
+	)
+
+	flag.IntVar(
+		&kvCacheServerAdminPort,
+		"kvcache-server-admin-port",
+		utils.LoadEnvInt("AIBRIX_KVCACHE_ADMIN_PORT", 9100),
+		"Admin port used for control kv cache server.",
+	)
+
+	flag.IntVar(
+		&consistentHashingTotalSlots,
+		"consistent-hashing-total-slots",
+		4096,
+		"Total number of slots in the consistent hashing ring.",
+	)
+
+	flag.IntVar(
+		&consistentHashingVirtualNodeCount,
+		"consistent-hashing-virtual-node-count",
+		100,
+		"Number of virtual nodes per physical KVCache pod for consistent hashing.",
+	)
+
 	flag.Parse()
 
 	klog.Infof("=== Parsed Flags ===")
@@ -305,7 +347,13 @@ func parseFlags() {
 	})
 }
 
-func syncPods(ctx context.Context, rdb *redis.Client, informer cache.SharedIndexInformer, kvClusterId string, kvb KVCacheBackend) error {
+func syncPods(
+	ctx context.Context,
+	rdb *redis.Client,
+	informer cache.SharedIndexInformer,
+	kvClusterId string,
+	kvb KVCacheBackend,
+) error {
 	pods := informer.GetStore().List()
 	klog.Infof("%d pods Found in kvcache cluster %s", len(pods), kvClusterId)
 

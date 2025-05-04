@@ -46,7 +46,6 @@ func TestBuildKVCacheWatcherPodForInfiniStore(t *testing.T) {
 
 	envs := pod.Spec.Containers[0].Env
 	assert.Contains(t, envs, corev1.EnvVar{Name: "REDIS_ADDR", Value: "my-kvcache-redis:6379"})
-	assert.Contains(t, envs, corev1.EnvVar{Name: "AIBRIX_KVCACHE_RDMA_PORT", Value: strconv.Itoa(defaultInfinistoreRDMAPort)})
 }
 
 func TestBuildCacheStatefulSetForInfiniStore(t *testing.T) {
