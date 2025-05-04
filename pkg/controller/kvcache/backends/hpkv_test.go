@@ -117,7 +117,7 @@ func TestBuildCacheStatefulSet_HP(t *testing.T) {
 		}
 	}
 	assert.Equal(t, "test-hpkv", env["AIBRIX_KVCACHE_NAME"])
-	assert.Equal(t, "default", env["AIBRIX_KVCACHE_SERVER_NAMESPACE"])
+	assert.Equal(t, "default", env["AIBRIX_KVCACHE_NAMESPACE"])
 	assert.Equal(t, "8192", env["AIBRIX_KVCACHE_BLOCK_SIZE_IN_BYTES"])
 	assert.Equal(t, "2048", env["AIBRIX_KVCACHE_BLOCK_COUNT"])
 	assert.Equal(t, "18500", env["AIBRIX_KVCACHE_RDMA_PORT"])

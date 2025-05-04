@@ -113,7 +113,7 @@ func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod 
 			Value: "0",
 		},
 		{
-			Name: "WATCH_KVCACHE_NAMESPACE",
+			Name: "AIBRIX_KVCACHE_WATCH_NAMESPACE",
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{
 					FieldPath: "metadata.namespace",
@@ -121,20 +121,8 @@ func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod 
 			},
 		},
 		{
-			Name:  "WATCH_KVCACHE_CLUSTER",
+			Name:  "AIBRIX_KVCACHE_WATCH_CLUSTER",
 			Value: kvCache.Name,
-		},
-		{
-			Name:  "AIBRIX_KVCACHE_RDMA_PORT",
-			Value: strconv.Itoa(params.RdmaPort),
-		},
-		{
-			Name:  "AIBRIX_KVCACHE_TOTAL_SLOTS",
-			Value: strconv.Itoa(params.TotalSlots),
-		},
-		{
-			Name:  "AIBRIX_KVCACHE_VIRTUAL_NODE_COUNT",
-			Value: strconv.Itoa(params.VirtualNodeCount),
 		},
 	}
 
@@ -159,7 +147,11 @@ func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod 
 						"/kvcache-watcher",
 					},
 					Args: []string{
-						"--kv-cache-Backend", constants.KVCacheBackendHPKV,
+						"--kvcache-backend", constants.KVCacheBackendHPKV,
+						"--kvcache-server-rdma-port", strconv.Itoa(params.RdmaPort),
+						"--kvcache-server-admin-port", strconv.Itoa(params.AdminPort),
+						"--consistent-hashing-total-slots", strconv.Itoa(params.TotalSlots),
+						"--consistent-hashing-virtual-node-count", strconv.Itoa(params.VirtualNodeCount),
 					},
 					// You can also add volumeMounts, env vars, etc. if needed.
 					Env:             envs,
@@ -179,7 +171,7 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 	metadataEnvVars := []corev1.EnvVar{
 		{Name: "AIBRIX_KVCACHE_UID", Value: string(kvCache.UID)},
 		{Name: "AIBRIX_KVCACHE_NAME", Value: kvCache.Name},
-		{Name: "AIBRIX_KVCACHE_SERVER_NAMESPACE", Value: kvCache.Namespace},
+		{Name: "AIBRIX_KVCACHE_NAMESPACE", Value: kvCache.Namespace},
 	}
 
 	fieldRefEnvVars := []corev1.EnvVar{
@@ -199,7 +191,7 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 		{Name: "AIBRIX_KVCACHE_BLOCK_COUNT", Value: strconv.Itoa(params.BlockCount)},
 	}
 
-	envs := append(metadataEnvVars, fieldRefEnvVars...)
+	envs := append(fieldRefEnvVars, metadataEnvVars...)
 	envs = append(envs, kvCacheServerEnvVars...)
 
 	kvCacheServerArgs := []string{

@@ -167,7 +167,7 @@ func (r *KVCacheReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // getKVCacheBackendFromMetadata returns the backend based on labels and annotations with fallback logic.
 func getKVCacheBackendFromMetadata(kv *orchestrationv1alpha1.KVCache) string {
-	backend := kv.Labels[constants.KVCacheLabelKeyBackend]
+	backend := kv.Annotations[constants.KVCacheLabelKeyBackend]
 	if backend != "" {
 		if isValidKVCacheBackend(backend) {
 			return backend

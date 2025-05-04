@@ -33,13 +33,17 @@ import (
 )
 
 const (
-	KVCacheAnnotationLinkType = "infinistore.kvcache.orchestration.aibrix.ai/link-type"
+	KVCacheAnnotationLinkType     = "infinistore.kvcache.orchestration.aibrix.ai/link-type"
+	KVCacheAnnotationHintGidIndex = "infinistore.kvcache.orchestration.aibrix.ai/hint-gid-index"
 )
 
 const (
-	defaultInfinistoreRDMAPort  = 12345
-	defaultInfinistoreAdminPort = 8888
-	defaultInfinistoreLinkType  = "Ethernet"
+	defaultInfinistoreRDMAPort         = 12345
+	defaultInfinistoreAdminPort        = 8888
+	defaultInfinistoreLinkType         = "Ethernet"
+	defaultInfinistoreTotalSlots       = 4096
+	defaultInfinistoreVirtualNodeCount = 100
+	defaultInfinistoreHintGIDIndex     = 7
 )
 
 type InfiniStoreParams struct {
@@ -47,6 +51,9 @@ type InfiniStoreParams struct {
 	AdminPort         int
 	LinkType          string
 	ContainerRegistry string
+	TotalSlots        int
+	VirtualNodeCount  int
+	HintGIDIndex      int
 }
 
 type InfiniStoreBackend struct{}
@@ -112,14 +119,6 @@ func buildKVCacheWatcherPodForInfiniStore(kvCache *orchestrationv1alpha1.KVCache
 			Name:  "AIBRIX_KVCACHE_WATCH_CLUSTER",
 			Value: kvCache.Name,
 		},
-		{
-			Name:  "AIBRIX_KVCACHE_RDMA_PORT",
-			Value: strconv.Itoa(params.RdmaPort),
-		},
-		{
-			Name:  "AIBRIX_KVCACHE_ADMIN_PORT",
-			Value: strconv.Itoa(params.AdminPort),
-		},
 	}
 
 	pod := &corev1.Pod{
@@ -143,7 +142,11 @@ func buildKVCacheWatcherPodForInfiniStore(kvCache *orchestrationv1alpha1.KVCache
 						"/kvcache-watcher",
 					},
 					Args: []string{
-						"--kv-cache-Backend", constants.KVCacheBackendInfinistore,
+						"--kvcache-backend", constants.KVCacheBackendInfinistore,
+						"--kvcache-server-rdma-port", strconv.Itoa(params.RdmaPort),
+						"--kvcache-server-admin-port", strconv.Itoa(params.AdminPort),
+						"--consistent-hashing-total-slots", strconv.Itoa(params.TotalSlots),
+						"--consistent-hashing-virtual-node-count", strconv.Itoa(params.VirtualNodeCount),
 					},
 					// You can also add volumeMounts, env vars, etc. if needed.
 					Env:             envs,
@@ -162,7 +165,7 @@ func buildCacheStatefulSetForInfiniStore(kvCache *orchestrationv1alpha1.KVCache)
 	metadataEnvVars := []corev1.EnvVar{
 		{Name: "AIBRIX_KVCACHE_UID", Value: string(kvCache.UID)},
 		{Name: "AIBRIX_KVCACHE_NAME", Value: kvCache.Name},
-		{Name: "AIBRIX_KVCACHE_SERVER_NAMESPACE", Value: kvCache.Namespace},
+		{Name: "AIBRIX_KVCACHE_NAMESPACE", Value: kvCache.Namespace},
 	}
 
 	fieldRefEnvVars := []corev1.EnvVar{
@@ -180,13 +183,14 @@ func buildCacheStatefulSetForInfiniStore(kvCache *orchestrationv1alpha1.KVCache)
 		{Name: "AIBRIX_KVCACHE_ADMIN_PORT", Value: strconv.Itoa(defaultInfinistoreAdminPort)},
 	}
 
-	envs := append(metadataEnvVars, fieldRefEnvVars...)
+	envs := append(fieldRefEnvVars, metadataEnvVars...)
 	envs = append(envs, kvCacheServerEnvVars...)
 
 	kvCacheServerArgs := []string{
 		"--service-port", "$AIBRIX_KVCACHE_RDMA_IP",
-		"--link-type", "Ethernet",
 		"--manage-port", "$AIBRIX_KVCACHE_ADMIN_PORT",
+		"--link-type", "Ethernet",
+		"--hint-gid-index", "7", // this is volcano engine specific. subject to change to more flexible way in future.
 	}
 	kvCacheServerArgsStr := strings.Join(kvCacheServerArgs, " ")
 	privileged := true
@@ -327,8 +331,11 @@ func buildHeadlessServiceForInfiniStore(kvCache *orchestrationv1alpha1.KVCache) 
 func getInfiniStoreParams(annotations map[string]string) *InfiniStoreParams {
 	return &InfiniStoreParams{
 		LinkType:          utils.GetStringAnnotationOrDefault(annotations, KVCacheAnnotationLinkType, defaultInfinistoreLinkType),
+		HintGIDIndex:      utils.GetPositiveIntAnnotationOrDefault(annotations, KVCacheAnnotationHintGidIndex, defaultInfinistoreHintGIDIndex),
 		ContainerRegistry: utils.GetStringAnnotationOrDefault(annotations, constants.KVCacheAnnotationContainerRegistry, ""),
 		RdmaPort:          defaultInfinistoreRDMAPort,
 		AdminPort:         defaultInfinistoreAdminPort,
+		TotalSlots:        defaultInfinistoreTotalSlots,
+		VirtualNodeCount:  defaultInfinistoreVirtualNodeCount,
 	}
 }

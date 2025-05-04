@@ -99,12 +99,12 @@ func TestBuildCacheStatefulSetForInfiniStore(t *testing.T) {
 
 	// env validation
 	expectedEnvVars := map[string]string{
-		"AIBRIX_KVCACHE_UID":              "1234-uid",
-		"AIBRIX_KVCACHE_NAME":             "test-cache",
-		"AIBRIX_KVCACHE_SERVER_NAMESPACE": "default",
-		"AIBRIX_KVCACHE_BACKEND":          constants.KVCacheBackendInfinistore,
-		"AIBRIX_KVCACHE_RDMA_PORT":        strconv.Itoa(defaultInfinistoreRDMAPort),
-		"AIBRIX_KVCACHE_ADMIN_PORT":       strconv.Itoa(defaultInfinistoreAdminPort),
+		"AIBRIX_KVCACHE_UID":        "1234-uid",
+		"AIBRIX_KVCACHE_NAME":       "test-cache",
+		"AIBRIX_KVCACHE_NAMESPACE":  "default",
+		"AIBRIX_KVCACHE_BACKEND":    constants.KVCacheBackendInfinistore,
+		"AIBRIX_KVCACHE_RDMA_PORT":  strconv.Itoa(defaultInfinistoreRDMAPort),
+		"AIBRIX_KVCACHE_ADMIN_PORT": strconv.Itoa(defaultInfinistoreAdminPort),
 	}
 
 	envMap := map[string]string{}
