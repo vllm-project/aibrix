@@ -5,7 +5,6 @@ autoscaler=$2
 aibrix_repo=$3 # root dir of aibrix repo
 api_key=$4 # set your api key
 kube_context=$5
-workload_type=$6
 
 k8s_yaml_dir="deepseek-llm-7b-chat"
 target_deployment="deepseek-llm-7b-chat" # "aibrix-model-deepseek-llm-7b-chat"
@@ -40,7 +39,7 @@ fi
 
 # Setup experiment directory
 workload_name=$(echo $input_workload_path | tr '/' '\n' | grep .jsonl | cut -d '.' -f 1)
-experiment_result_dir="experiment_results/${workload_type}/${workload_name}-${workload_type}-${autoscaler}-$(date +%Y%m%d-%H%M%S)"
+experiment_result_dir="experiment_results/${workload_name}-${autoscaler}-$(date +%Y%m%d-%H%M%S)"
 if [ ! -d ${experiment_result_dir} ]; then
     echo "output directory does not exist. Create the output directory (${experiment_result_dir})"
     mkdir -p ${experiment_result_dir}

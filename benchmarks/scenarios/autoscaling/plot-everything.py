@@ -56,23 +56,23 @@ def parse_experiment_output(lines):
     
     return df, base_time
 
-def get_autoscaler_name(output_dir, workload_type):
+def get_autoscaler_name(output_dir):
     autoscaling = None
     print(f"output_dir: {output_dir}")
     # Extract the last part of the path after the last slash
-    filename = output_dir.split("/")[-1]
-    match = re.search(rf"^[^-]+-{workload_type}-([^-]+(?:-[^-]+)*)-\d{{8}}-\d{{6}}$", filename)
+    # filename = output_dir.split("/")[-1]
+    # match = re.search(rf"^[^-]+-{workload_type}-([^-]+(?:-[^-]+)*)-\d{{8}}-\d{{6}}$", filename)
     
-    if match:
-        print(match)
-        autoscaling = match.group(1)
+    # if match:
+    #     print(match)
+    #     autoscaling = match.group(1)
     
-    # with open(f"{output_dir}/output.txt", 'r', encoding='utf-8') as f_:
-    #     lines = f_.readlines()
-    #     for line in lines:
-    #         if "autoscaler" in line:
-    #             autoscaling = line.split(":")[-1].strip()
-    #             break
+    with open(f"{output_dir}/output.txt", 'r', encoding='utf-8') as f_:
+        lines = f_.readlines()
+        for line in lines:
+            if "autoscaler" in line:
+                autoscaling = line.split(":")[-1].strip()
+                break
     if autoscaling == None:
         print(f"Invalid parsed autoscaling name: {autoscaling}")
         assert False
@@ -176,7 +176,7 @@ def analyze_performance(df):
         raise Exception(f"Error analyzing performance metrics: {e}")
     
 
-def plot_combined_visualization(experiment_home_dir, workload_type):
+def plot_combined_visualization(experiment_home_dir):
     # Create figure
     fig = plt.figure(figsize=(12, 15))
     
@@ -249,7 +249,7 @@ def plot_combined_visualization(experiment_home_dir, workload_type):
         output_dir = os.path.join(experiment_home_dir, subdir)
         if "pod_logs" in output_dir:
             continue
-        autoscaler = get_autoscaler_name(output_dir, workload_type)
+        autoscaler = get_autoscaler_name(output_dir)
         color = colors[autoscaler]
         marker = '.'
         label_name = f'{autoscaler}'
@@ -450,8 +450,7 @@ def main():
         return 1
     
     experiment_home_dir = sys.argv[1]
-    workload_type = sys.argv[2]
-    plot_combined_visualization(experiment_home_dir, workload_type)
+    plot_combined_visualization(experiment_home_dir)
     return 0
 
 if __name__ == "__main__":
