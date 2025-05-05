@@ -19,6 +19,9 @@ package kvcache
 import (
 	"context"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/controller/kvcache/backends"
 
@@ -56,7 +59,65 @@ var _ = Describe("KVCache Controller", func() {
 							constants.KVCacheLabelKeyBackend: constants.KVCacheBackendVineyard,
 						},
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: orchestrationv1alpha1.KVCacheSpec{
+						Metadata: &orchestrationv1alpha1.MetadataSpec{
+							Redis: &orchestrationv1alpha1.MetadataConfig{
+								Runtime: &orchestrationv1alpha1.RuntimeSpec{
+									Replicas: 1,
+									Image:    "redis:7.4.1",
+									Resources: corev1.ResourceRequirements{
+										Limits: corev1.ResourceList{
+											corev1.ResourceCPU:    resource.MustParse("1"),
+											corev1.ResourceMemory: resource.MustParse("1Gi"),
+										},
+										Requests: corev1.ResourceList{
+											corev1.ResourceCPU:    resource.MustParse("1"),
+											corev1.ResourceMemory: resource.MustParse("1Gi"),
+										},
+									},
+								},
+							},
+						},
+						Cache: orchestrationv1alpha1.RuntimeSpec{
+							Replicas: 3,
+							Image:    "aibrix/infinistore:20250502",
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:                             resource.MustParse("8"),
+									corev1.ResourceMemory:                          resource.MustParse("50Gi"),
+									corev1.ResourceName("vke.volcengine.com/rdma"): resource.MustParse("1"),
+								},
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:                             resource.MustParse("8"),
+									corev1.ResourceMemory:                          resource.MustParse("50Gi"),
+									corev1.ResourceName("vke.volcengine.com/rdma"): resource.MustParse("1"),
+								},
+							},
+						},
+						Watcher: &orchestrationv1alpha1.RuntimeSpec{
+							Replicas: 1,
+							Image:    "aibrix/kvcache-watcher:nightly",
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("200m"),
+									corev1.ResourceMemory: resource.MustParse("256"),
+								},
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("200m"),
+									corev1.ResourceMemory: resource.MustParse("256"),
+								},
+							},
+						},
+						Service: orchestrationv1alpha1.ServiceSpec{
+							Type: corev1.ClusterIPNone,
+							Ports: []corev1.ServicePort{
+								{
+									Name: "rdma",
+									Port: 12345,
+								},
+							},
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

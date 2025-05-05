@@ -4,10 +4,21 @@ metadata:
   name: aibrix-deepseek-coder-33b-kvcache
   namespace: aibrix-system
 spec:
-  replicas: 1
+  mode: centralized
   service:
     type: ClusterIP
-    port: 9600
-  cacheSpec:
-    image: aibrix/kvcache:20241120
+    ports:
+      - name: service
+        port: 9600
+        targetPort: 9600
+        protocol: TCP
+  cache:
+    image: aibrix/vineyardd:20241120
     imagePullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: "2000m"
+        memory: "4Gi"
+      limits:
+        cpu: "2000m"
+        memory: "4Gi"

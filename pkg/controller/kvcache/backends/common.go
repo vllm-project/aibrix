@@ -31,12 +31,12 @@ import (
 // service for kvcache backends like HPKV or InfiniStore to store their membership details.
 // TODO: pod needs to be changed to statefulsets or deployment in future.
 func buildRedisPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
-	image := kvCache.Spec.Cache.Image
-	if kvCache.Spec.Metadata.Redis.Image != "" {
-		image = kvCache.Spec.Metadata.Redis.Image
-	}
-
+	image := kvCache.Spec.Metadata.Redis.Runtime.Image
 	redisPodName := fmt.Sprintf("%s-redis", kvCache.Name)
+	envs := []corev1.EnvVar{}
+	if len(kvCache.Spec.Metadata.Redis.Runtime.Env) != 0 {
+		envs = append(envs, kvCache.Spec.Metadata.Redis.Runtime.Env...)
+	}
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -53,8 +53,9 @@ func buildRedisPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
 				{
-					Name:  "redis",
-					Image: image,
+					Name:            "redis",
+					Image:           image,
+					ImagePullPolicy: corev1.PullPolicy(kvCache.Spec.Metadata.Redis.Runtime.ImagePullPolicy),
 					Ports: []corev1.ContainerPort{
 						{
 							Name:          "redis",
@@ -66,6 +67,8 @@ func buildRedisPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
 						"redis-server",
 					},
 					// You can also add volumeMounts, env vars, etc. if needed.
+					Resources: kvCache.Spec.Metadata.Redis.Runtime.Resources,
+					Env:       envs,
 				},
 			},
 		},

@@ -92,7 +92,7 @@ func (r *DistributedReconciler) reconcileMetadataService(ctx context.Context, kv
 
 func (r *DistributedReconciler) reconcileRedisService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
 	// We only support etcd at this moment, redis will be supported later.
-	replicas := int(kvCache.Spec.Metadata.Redis.Replicas)
+	replicas := int(kvCache.Spec.Metadata.Redis.Runtime.Replicas)
 	if replicas != 1 {
 		klog.Warningf("replica %d > 1 is not supported at this moment, we will change to single replica", replicas)
 	}

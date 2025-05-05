@@ -20,6 +20,8 @@ import (
 	"strconv"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -30,10 +32,24 @@ import (
 func TestBuildKVCacheWatcherPodForInfiniStore(t *testing.T) {
 	kv := &v1alpha1.KVCache{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "my-kvcache",
-			Namespace: "default",
-			Annotations: map[string]string{
-				constants.KVCacheAnnotationContainerRegistry: "ghcr.io/aaahhh",
+			Name:        "my-kvcache",
+			Namespace:   "default",
+			Annotations: map[string]string{},
+		},
+		Spec: v1alpha1.KVCacheSpec{
+			Watcher: &v1alpha1.RuntimeSpec{
+				Replicas: 1,
+				Image:    "aibrix/kvcache-watcher:nightly",
+				Resources: corev1.ResourceRequirements{
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("200m"),
+						corev1.ResourceMemory: resource.MustParse("256"),
+					},
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("200m"),
+						corev1.ResourceMemory: resource.MustParse("256"),
+					},
+				},
 			},
 		},
 	}
@@ -42,7 +58,6 @@ func TestBuildKVCacheWatcherPodForInfiniStore(t *testing.T) {
 
 	assert.Equal(t, "my-kvcache-kvcache-watcher-pod", pod.Name)
 	assert.Equal(t, "default", pod.Namespace)
-	assert.Equal(t, "ghcr.io/aaahhh/aibrix/kvcache-watcher:nightly", pod.Spec.Containers[0].Image)
 
 	envs := pod.Spec.Containers[0].Env
 	assert.Contains(t, envs, corev1.EnvVar{Name: "REDIS_ADDR", Value: "my-kvcache-redis:6379"})
@@ -57,12 +72,22 @@ func TestBuildCacheStatefulSetForInfiniStore(t *testing.T) {
 			UID:       "1234-uid",
 		},
 		Spec: v1alpha1.KVCacheSpec{
-			Replicas: replicas,
-			Cache: v1alpha1.CacheSpec{
+			Cache: v1alpha1.RuntimeSpec{
+				Replicas:        replicas,
 				Image:           "aibrix/infinistore:nightly",
-				CPU:             "2",
-				Memory:          "4Gi",
 				ImagePullPolicy: "Always",
+				Resources: corev1.ResourceRequirements{
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:                             resource.MustParse("2"),
+						corev1.ResourceMemory:                          resource.MustParse("4Gi"),
+						corev1.ResourceName("vke.volcengine.com/rdma"): resource.MustParse("1"),
+					},
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:                             resource.MustParse("2"),
+						corev1.ResourceMemory:                          resource.MustParse("4Gi"),
+						corev1.ResourceName("vke.volcengine.com/rdma"): resource.MustParse("1"),
+					},
+				},
 			},
 		},
 	}
@@ -82,7 +107,7 @@ func TestBuildCacheStatefulSetForInfiniStore(t *testing.T) {
 	assert.Equal(t, "aibrix/infinistore:nightly", container.Image)
 	assert.Equal(t, "Always", string(container.ImagePullPolicy))
 	assert.Equal(t, "kvcache-server", container.Name)
-	assert.True(t, *container.SecurityContext.Privileged)
+	assert.False(t, *container.SecurityContext.Privileged)
 	assert.NotEmpty(t, container.Command)
 	assert.NotEmpty(t, container.Env)
 
@@ -141,6 +166,17 @@ func TestBuildHeadlessServiceForInfiniStore(t *testing.T) {
 			Name:      "my-cache",
 			Namespace: "default",
 		},
+		Spec: v1alpha1.KVCacheSpec{
+			Service: v1alpha1.ServiceSpec{
+				Type: corev1.ServiceTypeClusterIP,
+				Ports: []corev1.ServicePort{
+					{
+						Name: "rdma",
+						Port: 12345,
+					},
+				},
+			},
+		},
 	}
 
 	svc := buildHeadlessServiceForInfiniStore(kv)
@@ -152,13 +188,10 @@ func TestBuildHeadlessServiceForInfiniStore(t *testing.T) {
 }
 
 func TestGetInfiniStoreParams(t *testing.T) {
-	annotations := map[string]string{
-		constants.KVCacheAnnotationContainerRegistry: "docker.io/mirror",
-	}
+	annotations := map[string]string{}
 
 	params := getInfiniStoreParams(annotations)
 
-	assert.Equal(t, "docker.io/mirror", params.ContainerRegistry)
 	assert.Equal(t, defaultInfinistoreRDMAPort, params.RdmaPort)
 	assert.Equal(t, defaultInfinistoreLinkType, params.LinkType)
 }

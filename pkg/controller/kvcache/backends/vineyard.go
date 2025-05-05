@@ -25,7 +25,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/constants"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -77,7 +76,7 @@ func (r *VineyardReconciler) reconcileMetadataService(ctx context.Context, kvCac
 
 func (r *VineyardReconciler) reconcileEtcdService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
 	// We only support etcd at this moment, redis will be supported later.
-	replicas := int(kvCache.Spec.Metadata.Etcd.Replicas)
+	replicas := int(kvCache.Spec.Metadata.Etcd.Runtime.Replicas)
 
 	// Reconcile etcd pods and services based on the number of replicas specified
 	for i := 0; i < replicas; i++ {
@@ -108,8 +107,8 @@ func (r *VineyardReconciler) reconcileEtcdService(ctx context.Context, kvCache *
 
 func buildEtcdPod(kvCache *orchestrationv1alpha1.KVCache, etcdPodName string) *corev1.Pod {
 	image := kvCache.Spec.Cache.Image
-	if kvCache.Spec.Metadata.Etcd.Image != "" {
-		image = kvCache.Spec.Metadata.Etcd.Image
+	if kvCache.Spec.Metadata.Etcd.Runtime.Image != "" {
+		image = kvCache.Spec.Metadata.Etcd.Runtime.Image
 	}
 
 	pod := &corev1.Pod{
@@ -305,7 +304,7 @@ func buildVineyardDeployment(kvCache *orchestrationv1alpha1.KVCache) *appsv1.Dep
 			},
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &kvCache.Spec.Replicas,
+			Replicas: &kvCache.Spec.Cache.Replicas,
 			Selector: &metav1.LabelSelector{
 				// TODO: update metadata
 				MatchLabels: map[string]string{
@@ -333,17 +332,8 @@ func buildVineyardDeployment(kvCache *orchestrationv1alpha1.KVCache) *appsv1.Dep
 								"-c",
 								fmt.Sprintf(`/usr/local/bin/vineyardd --sync_crds true --socket /var/run/vineyard.sock --size --stream_threshold 80 --etcd_cmd etcd --etcd_prefix /vineyard --etcd_endpoint http://%s-etcd-service:2379`, kvCache.Name),
 							},
-							Env: append(envs, kvCache.Spec.Cache.Env...),
-							Resources: corev1.ResourceRequirements{
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse(kvCache.Spec.Cache.CPU),
-									corev1.ResourceMemory: resource.MustParse(kvCache.Spec.Cache.Memory),
-								},
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse(kvCache.Spec.Cache.CPU),
-									corev1.ResourceMemory: resource.MustParse(kvCache.Spec.Cache.Memory),
-								},
-							},
+							Env:             append(envs, kvCache.Spec.Cache.Env...),
+							Resources:       kvCache.Spec.Cache.Resources,
 							ImagePullPolicy: corev1.PullPolicy(kvCache.Spec.Cache.ImagePullPolicy),
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{

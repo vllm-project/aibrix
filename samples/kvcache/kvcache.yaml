@@ -6,12 +6,21 @@ metadata:
   annotations:
     kvcache.orchestration.aibrix.ai/pod-affinity-workload: deepseek-coder-7b-instruct
 spec:
-  replicas: 1
+  mode: centralized
   service:
     type: ClusterIP
-    port: 9600
-  cacheSpec:
+    ports:
+      - name: service
+        port: 9600
+        targetPort: 9600
+        protocol: TCP
+  cache:
     image: aibrix/vineyardd:20241120
     imagePullPolicy: IfNotPresent
-    cpu: 2000m
-    memory: 4Gi
+    resources:
+      requests:
+        cpu: "2000m"
+        memory: "4Gi"
+      limits:
+        cpu: "2000m"
+        memory: "4Gi"

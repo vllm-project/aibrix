@@ -379,6 +379,11 @@ func syncPods(
 		}
 	}
 
+	if len(validPods) == 0 {
+		klog.Warningf("No valid KVCache pods found after filtering for cluster %v", kvClusterId)
+		return nil
+	}
+
 	nodeSlots := calculateSlotDistribution(validPods, consistentHashingTotalSlots, consistentHashingVirtualNodeCount)
 	currentNodes := make([]NodeInfo, 0)
 	for _, pod := range validPods {

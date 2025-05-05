@@ -19,6 +19,8 @@ package backends
 import (
 	"testing"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -30,10 +32,67 @@ import (
 func TestBuildKVCacheWatcherPod_HP(t *testing.T) {
 	kv := &v1alpha1.KVCache{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-cache",
-			Namespace: "default",
-			Annotations: map[string]string{
-				constants.KVCacheAnnotationContainerRegistry: "docker.io/custom",
+			Name:        "test-cache",
+			Namespace:   "default",
+			Annotations: map[string]string{},
+		},
+		Spec: v1alpha1.KVCacheSpec{
+			Metadata: &v1alpha1.MetadataSpec{
+				Redis: &v1alpha1.MetadataConfig{
+					Runtime: &v1alpha1.RuntimeSpec{
+						Replicas: 1,
+						Image:    "redis:7.4.1",
+						Resources: corev1.ResourceRequirements{
+							Limits: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("1"),
+								corev1.ResourceMemory: resource.MustParse("1Gi"),
+							},
+							Requests: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("1"),
+								corev1.ResourceMemory: resource.MustParse("1Gi"),
+							},
+						},
+					},
+				},
+			},
+			Cache: v1alpha1.RuntimeSpec{
+				Replicas: 3,
+				Image:    "aibrix/infinistore:20250502",
+				Resources: corev1.ResourceRequirements{
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:                             resource.MustParse("8"),
+						corev1.ResourceMemory:                          resource.MustParse("50Gi"),
+						corev1.ResourceName("vke.volcengine.com/rdma"): resource.MustParse("1"),
+					},
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:                             resource.MustParse("8"),
+						corev1.ResourceMemory:                          resource.MustParse("50Gi"),
+						corev1.ResourceName("vke.volcengine.com/rdma"): resource.MustParse("1"),
+					},
+				},
+			},
+			Watcher: &v1alpha1.RuntimeSpec{
+				Replicas: 1,
+				Image:    "aibrix/kvcache-watcher:nightly",
+				Resources: corev1.ResourceRequirements{
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("200m"),
+						corev1.ResourceMemory: resource.MustParse("256"),
+					},
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("200m"),
+						corev1.ResourceMemory: resource.MustParse("256"),
+					},
+				},
+			},
+			Service: v1alpha1.ServiceSpec{
+				Type: corev1.ClusterIPNone,
+				Ports: []corev1.ServicePort{
+					{
+						Name: "rdma",
+						Port: 12345,
+					},
+				},
 			},
 		},
 	}
@@ -42,7 +101,6 @@ func TestBuildKVCacheWatcherPod_HP(t *testing.T) {
 
 	assert.Equal(t, "test-cache-kvcache-watcher-pod", pod.Name)
 	assert.Equal(t, "default", pod.Namespace)
-	assert.Contains(t, pod.Spec.Containers[0].Image, "docker.io/custom/aibrix/kvcache-watcher:nightly")
 
 	envMap := map[string]string{}
 	for _, env := range pod.Spec.Containers[0].Env {
@@ -70,12 +128,22 @@ func TestBuildCacheStatefulSet_HP(t *testing.T) {
 			},
 		},
 		Spec: v1alpha1.KVCacheSpec{
-			Replicas: replicas,
-			Cache: v1alpha1.CacheSpec{
+			Cache: v1alpha1.RuntimeSpec{
+				Replicas:        replicas,
 				Image:           "aibrix/hpkv-server:nightly",
-				CPU:             "4",
-				Memory:          "8Gi",
 				ImagePullPolicy: "Always",
+				Resources: corev1.ResourceRequirements{
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:                             resource.MustParse("4"),
+						corev1.ResourceMemory:                          resource.MustParse("8Gi"),
+						corev1.ResourceName("vke.volcengine.com/rdma"): resource.MustParse("1"),
+					},
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:                             resource.MustParse("4"),
+						corev1.ResourceMemory:                          resource.MustParse("8Gi"),
+						corev1.ResourceName("vke.volcengine.com/rdma"): resource.MustParse("1"),
+					},
+				},
 			},
 		},
 	}
@@ -93,7 +161,7 @@ func TestBuildCacheStatefulSet_HP(t *testing.T) {
 	assert.Equal(t, "aibrix/hpkv-server:nightly", container.Image)
 	assert.Equal(t, "Always", string(container.ImagePullPolicy))
 	assert.Equal(t, "kvcache-server", container.Name)
-	assert.True(t, *container.SecurityContext.Privileged)
+	assert.False(t, *container.SecurityContext.Privileged)
 
 	// Command check
 	assert.Len(t, container.Command, 3)
@@ -135,6 +203,18 @@ func TestBuildHeadlessService_HP(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-svc",
 			Namespace: "default",
+		},
+		Spec: v1alpha1.KVCacheSpec{
+			Service: v1alpha1.ServiceSpec{
+				Type: corev1.ServiceTypeClusterIP,
+				Ports: []corev1.ServicePort{
+					{
+						Name:       "rdma",
+						Port:       defaultHPKVRDMAPort,
+						TargetPort: intstr.FromInt(defaultHPKVRDMAPort),
+					},
+				},
+			},
 		},
 	}
 

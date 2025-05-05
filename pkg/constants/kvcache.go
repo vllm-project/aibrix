@@ -30,8 +30,7 @@ const (
 	KVCacheAnnotationNodeAffinityDefaultKey = "machine.cluster.vke.volcengine.com/gpu-name"
 
 	// This config will be deprecated in future, users should specify kvcache backend directly.
-	KVCacheAnnotationMode              = "kvcache.orchestration.aibrix.ai/mode"
-	KVCacheAnnotationContainerRegistry = "kvcache.orchestration.aibrix.ai/container-registry"
+	KVCacheAnnotationMode = "kvcache.orchestration.aibrix.ai/mode"
 
 	KVCacheLabelValueRoleCache     = "cache"
 	KVCacheLabelValueRoleMetadata  = "metadata"
