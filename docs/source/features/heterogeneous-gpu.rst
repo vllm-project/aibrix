@@ -20,12 +20,13 @@ There are three main components in Heterogeneous GPU Inference Feature: (1) LLM 
 Example
 -------
 
-Preparation: Enable gpu-optimizer related components, including request tracking at the gateway.
+Preparation: Enable related components, including request tracking at the gateway.
 
 .. code-block:: bash
-    # delete components related to gpu-optimizer with expremental features disabled.
+
+    # delete related components with experimental features disabled by default.
     kubectl delete -k config/experimentals/gpu-optimizer
-    # redeploy components related to gpu-optimizer with expremental features enabled.
+    # redeploy related components with experimental features enabled.
     kubectl apply -k config/experimentals/gpu-optimizer
 
 Step 1: Deploy the heterogeneous deployments.
