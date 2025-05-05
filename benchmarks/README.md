@@ -41,7 +41,7 @@ The dataset generator either generates a prompt dataset, or convert an existing 
 
 To run dataset generation, do
 ```
-./benchmark dataset
+./benchmark.sh dataset
 ```
 
 Currently, we support four types of dataset:
@@ -86,7 +86,7 @@ Workload generator specifies time and requests to be dispatched of a workload. A
 
 Workload generator could be run by:
 ```
-./benchmark workload
+./benchmark.sh workload
 ```
 
 Details of workload generator could be found [here](generator/workload-generator/README.md).
@@ -95,7 +95,7 @@ Details of workload generator could be found [here](generator/workload-generator
 
 ## Run workload using client
 ```
-./benchmark client
+./benchmark.sh client
 ```
 
 The benchmark client supports both batch and streaming mode. Streaming mode  supports intra-request metrics like TTFT/TPOT. Configure endpoint and target model via [config/base.sh](config/base.sh).
@@ -106,7 +106,7 @@ The benchmark client supports both batch and streaming mode. Streaming mode  sup
 
 Run analysis on benchmark result using: 
 ```
-./benchmark analysis
+./benchmark.sh analysis
 ```
 Configure path and performance target via [config/base.sh](config/base.sh).
 
