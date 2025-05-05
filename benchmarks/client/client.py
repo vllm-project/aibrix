@@ -10,16 +10,14 @@ import threading
 from queue import Queue
 
 
-from typing import List
+from typing import List, Dict
 from utils import (load_workload, prepare_prompt, update_response)
 
 thread_pool_size = 1
 QUEUE_SIZE = 1
 logging.basicConfig(level=logging.INFO)
 task_queues = []
-
-session_history = {}
-lock = threading.Lock()
+session_history = []
 
 def worker(thread_idx, task_queue, client, model, max_output, send_request_func, output_file):
     """Worker function to run an asyncio event loop in a separate thread."""
@@ -48,12 +46,13 @@ def start_worker_threads(thread_idx, task_queue, client, model, max_output, send
 async def send_request_streaming(client: openai.AsyncOpenAI,
                              model: str,
                              max_output: int, 
-                             prompt: str,
+                             request: Dict,
                              output_file: str,
                              request_id: int,
-                             session_id: str,
+                             session_id: int,
                              target_time: int,
                              ):
+    prompt = prepare_prompt(prompt = request["prompt"], session_id = request.get("session_id", None), history = None if session_id is None else session_history[session_id % len(task_queues)]) 
     start_time = time.time()
     first_response_time = None
     target_pod = ""
@@ -109,7 +108,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
         tpot = (response_time - first_response_time) / output_tokens if first_response_time and output_tokens > 0 else None
 
         if session_id is not None:
-            update_response(response = response_text, lock = lock, session_id = session_id, history = session_history)
+            update_response(response = response_text, session_id = session_id, history = session_history[int(session_id) % len(task_queues)])
         
         result = {
             "request_id": request_id,
@@ -186,15 +185,14 @@ async def benchmark_streaming(api_key: str,
         ts = int(requests_dict["timestamp"] * scale_factor)
         requests = requests_dict["requests"]
         target_time = base_time + ts / 1000.0
-        formatted_prompts = [prepare_prompt(prompt = request["prompt"], lock = lock, session_id = request.get("session_id", None), history = session_history) for request in requests]
         for i in range(len(requests)):
             if "session_id" in requests[i]:
                 session_id = requests[i].get("session_id", None)
-                task_queue_id = session_id % len(task_queues)
+                task_queue_id = int(session_id) % len(task_queues)
             else:
                 session_id = None
-                task_queue_id = request_id % len(task_queues)
-            task_queues[task_queue_id].put((formatted_prompts[i], output_file, request_id, session_id, target_time))
+                task_queue_id = int(request_id) % len(task_queues)
+            task_queues[task_queue_id].put((requests[i], output_file, request_id, session_id, target_time))
             request_id += 1
         num_requests += len(requests)
     for task_queue in task_queues:
@@ -213,12 +211,13 @@ async def benchmark_streaming(api_key: str,
 async def send_request_batch(client: openai.AsyncOpenAI,
                              model: str,
                              max_output: int, 
-                             prompt: str,
+                             request: Dict,
                              output_file: str,
                              request_id: int,
-                             session_id: str, 
+                             session_id: int, 
                              target_time: int,
                              ):
+    prompt = prepare_prompt(prompt = request["prompt"], session_id = request.get("session_id", None), history = None if session_id is None else session_history[session_id % len(task_queues)]) 
     start_time = time.time()
     target_pod = ""
     try:
@@ -244,7 +243,7 @@ async def send_request_batch(client: openai.AsyncOpenAI,
         output_text = response.choices[0].message.content
 
         if session_id is not None:
-            update_response(response = output_text, lock = lock, session_id = session_id, history = session_history)
+            update_response(response = output_text, session_id = session_id, history = session_history[int(session_id) % len(task_queues)])
         
         result = {
             "request_id": request_id,
@@ -321,7 +320,6 @@ async def benchmark_batch(api_key: str,
         ts = int(requests_dict["timestamp"] * scale_factor)
         requests = requests_dict["requests"]
         target_time = base_time + ts / 1000.0
-        formatted_prompts = [prepare_prompt(prompt = request["prompt"], lock = lock, session_id = request.get("session_id", None), history = session_history) for request in requests]
         for i in range(len(requests)):
             if "session_id" in requests[i]:
                 session_id = requests[i].get("session_id", None)
@@ -330,7 +328,7 @@ async def benchmark_batch(api_key: str,
                 session_id = None
                 task_queue_id = request_id % len(task_queues)
             logging.debug(f"Sender placing task at queue {task_queue_id}...")
-            task_queues[task_queue_id].put((formatted_prompts[i], output_file, request_id, session_id, target_time))
+            task_queues[task_queue_id].put((requests[i], output_file, request_id, session_id, target_time))
             request_id += 1
         num_requests += len(requests)
     for task_queue in task_queues:
@@ -375,7 +373,8 @@ def main(args):
     thread_pool_size = args.client_pool_size
     for _ in range(thread_pool_size):
         task_queues.append(Queue(maxsize=QUEUE_SIZE * 2))
-    
+        session_history.append({})
+        
     with open(args.output_file_path, 'w', encoding='utf-8') as output_file:
         load_struct = load_workload(args.workload_path)
         if not args.streaming:
