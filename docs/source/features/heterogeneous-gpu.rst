@@ -1,7 +1,7 @@
 .. _heterogeneous-gpu:
 
 ============================
-Heterogeneous GPU Inference
+Heterogeneous GPU Inference (Experimental)
 ============================
 
 Heterogeneous GPU Inference is a feature that enables users to utilize different types of GPUs for deploying the same model. This feature addresses two primary challenges associated with Large Language Model (LLM) inference: (1) As the demand for large-scale model inference increases, ensuring consistent GPU availability has become a challenge, particularly within regions where identical GPU types are often unavailable due to capacity constraints. (2) Users may seek to incorporate lower-cost, lower-performance GPUs to reduce overall expenses. 
@@ -19,6 +19,14 @@ There are three main components in Heterogeneous GPU Inference Feature: (1) LLM 
 
 Example
 -------
+
+Preparation: Enable gpu-optimizer related components, including request tracking at the gateway.
+
+.. code-block:: bash
+    # delete components related to gpu-optimizer with expremental features disabled.
+    kubectl delete -k config/experimentals/gpu-optimizer
+    # redeploy components related to gpu-optimizer with expremental features enabled.
+    kubectl apply -k config/experimentals/gpu-optimizer
 
 Step 1: Deploy the heterogeneous deployments.
 
