@@ -28,4 +28,9 @@ patches:
     namespace: aibrix-system
     version: v1
 
+images:
+  - name: gateway-plugins
+    newName: aibrix/gateway-plugins
+    newTag: nightly
+
 apiVersion: kustomize.config.k8s.io/v1beta1

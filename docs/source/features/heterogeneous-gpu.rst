@@ -1,8 +1,8 @@
 .. _heterogeneous-gpu:
 
-============================
+==============================================
 Heterogeneous GPU Inference (Experimental)
-============================
+==============================================
 
 Heterogeneous GPU Inference is a feature that enables users to utilize different types of GPUs for deploying the same model. This feature addresses two primary challenges associated with Large Language Model (LLM) inference: (1) As the demand for large-scale model inference increases, ensuring consistent GPU availability has become a challenge, particularly within regions where identical GPU types are often unavailable due to capacity constraints. (2) Users may seek to incorporate lower-cost, lower-performance GPUs to reduce overall expenses. 
 
@@ -20,7 +20,7 @@ There are three main components in Heterogeneous GPU Inference Feature: (1) LLM 
 Example
 -------
 
-Preparation: Enable related components, including request tracking at the gateway.
+**Preparation: Enable related components, including request tracking at the gateway.**
 
 .. code-block:: bash
 
@@ -29,7 +29,20 @@ Preparation: Enable related components, including request tracking at the gatewa
     # redeploy related components with experimental features enabled.
     kubectl apply -k config/experimentals/gpu-optimizer
 
-Step 1: Deploy the heterogeneous deployments.
+Alternatively, you can enable the feature by editing the gateway plugin deployment using ``kubectl edit deployment aibrix-gateway-plugins -n aibrix-system`` and append env.
+
+.. code-block:: yaml
+
+    # spec:
+    #   template:
+    #     spec:
+    #       containers:
+    #         - name: gateway-plugin
+    #           env:
+                - name: AIBRIX_GPU_OPTIMIZER_TRACING_FLAG
+                  value: "true"
+
+**Step 1: Deploy the heterogeneous deployments.**
 
 One deployment and corresponding PodAutoscaler should be deployed for each GPU type.
 See `sample heterogeneous configuration <https://github.com/vllm-project/aibrix/tree/main/samples/heterogeneous>`_ for an example of heterogeneous configuration composed of two GPU types. The following codes
@@ -57,7 +70,7 @@ Incoming requests are routed through the gateway and directed to the optimal pod
     deepseek-coder-7b-v100-96667667c-6gjql     2/2     Running   0          33s
     deepseek-coder-7b-l20-96667667c-7zj7k      2/2     Running   0          33s
 
-Step 2: Install aibrix python module:
+**Step 2: Install aibrix python module.**
 
 .. code-block:: bash
 
@@ -68,7 +81,9 @@ The GPU Optimizer runs continuously in the background, dynamically adjusting GPU
   
 If local heterogeneous deployments is used, you can find the prepared benchmark data under `python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/ <https://github.com/vllm-project/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/>`_ and skip Step 3. See :ref:`Development` for details on deploying a local heterogeneous deployments.
 
-Step 3: Benchmark model. For each type of GPU, run ``aibrix_benchmark``. See `benchmark.sh <https://github.com/vllm-project/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_ for more options.
+**Step 3: Benchmark model.**
+
+For each type of GPU, run ``aibrix_benchmark``. See `benchmark.sh <https://github.com/vllm-project/aibrix/tree/main/python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/benchmark.sh>`_ for more options.
 
 .. code-block:: bash
 
@@ -76,7 +91,9 @@ Step 3: Benchmark model. For each type of GPU, run ``aibrix_benchmark``. See `be
     # Wait for port-forward taking effect.
     aibrix_benchmark -m deepseek-coder-7b -o [path_to_benchmark_output]
 
-Step 4: Decide SLO and generate profile, run `aibrix_gen_profile -h` for help.
+**Step 4: Decide SLO and generate profile.**
+
+Run ``aibrix_gen_profile -h`` for help.
   
 .. code-block:: bash
 
