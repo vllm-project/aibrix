@@ -61,6 +61,9 @@ def generate_synthetic(args):
         use_fast=True
     )
     sessioned_prompts = []
+    shared_prefix = ""
+    if args.shared_prefix_len > 0:
+        shared_prefix, _ = generate_synthetic_prompt(tokenizer, args.shared_prefix_len)
     for session_id in range(0, num_sessions):
         num_turns = int(turn_sampler.sample())
         if num_turns <= 0:
@@ -74,6 +77,7 @@ def generate_synthetic(args):
             # Process the prompt as needed
             if len(prompt) == 0:
                 print("Prompt is empty, skipping...")
+            prompt = shared_prefix + prompt
             flat_prompts_data.append(prompt)
         sessioned_prompts.append({
             "session_id": session_id,
@@ -87,6 +91,7 @@ def generate_synthetic(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Configure workload parameters.")
     parser.add_argument("--tokenizer", type=str, default="deepseek-ai/deepseek-llm-7b-chat", help="Name of the tokenizer.")
+    parser.add_argument("--shared-prefix-len", type=int, default=0, help="Length of the shared prefix (simluating shared system prompt).")
     parser.add_argument("--prompt-length-mean", type=int, default=100, help="Length of the prompt (mean).")
     parser.add_argument("--prompt-length-std", type=int, default=10, help="Length of the prompt (std).")
     parser.add_argument("--num-turns-mean", type=float, default=10, help="Number of turns (mean).")
