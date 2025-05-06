@@ -17,6 +17,7 @@ limitations under the License.
 package prefixcacheindexer
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -126,4 +127,49 @@ func Test_RadixMatchPrefix(t *testing.T) {
 			assert.Equal(t, tt.matchPods, matchPods)
 		})
 	}
+}
+
+func Test_LPRadixCacheConcurrency(t *testing.T) {
+	cache := NewLPRadixCache(2) // assuming 2 GPUs
+	model := "m1"
+	pods := []*v1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Name: "p1"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "p2"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "p3"}},
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+
+			// Generate different tokens for each goroutine
+			inputTokens := []int{1, 2, 3, i % 10, 5, 6}
+
+			// Match prefix and add to cache
+			_, unMatchedTokens, _ := cache.MatchPrefix(inputTokens, model, pods)
+			if len(unMatchedTokens) > 0 {
+				cache.AddPrefix(unMatchedTokens, model, "p1")
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Verify the cache has been populated by checking a specific token sequence
+	testTokens := []int{1, 2, 3, 5, 5, 6}
+	matchedTokens, _, matchPods := cache.MatchPrefix(testTokens, model, pods)
+
+	// We should have at least a partial match after adding 1000 patterns
+	assert.True(t, len(matchedTokens) > 0, "Expected to find matches in cache after concurrent population")
+
+	// One of our 1000 patterns should have matched this test pattern completely
+	foundMatchingPod := false
+	for _, pod := range matchPods {
+		if pod.Name == "p1" {
+			foundMatchingPod = true
+			break
+		}
+	}
+	assert.True(t, foundMatchingPod, "Expected to find pod p1 in matched pods")
 }
