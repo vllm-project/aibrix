@@ -89,6 +89,27 @@ Workload generator could be run by:
 ./benchmark.sh workload
 ```
 
+Ths workload generator would produce a workload file that looks like the following. The logical timestamp is associated with list of prompts that need to be dispatched at the same time. 
+
+```json
+{
+    "timestamp": 19, 
+    "requests": 
+    [
+        {
+            "prompt": "I need to understand data science for my startup idea. Can you help? Could you also explain how this relates to natural language processing? For context, I have experience with cybersecurity but I'm new to this specific area. I've been trying to understand this concept for months and would appreciate a clear explanation. I'm asking because I need to deploy a machine learning model for a project. For context, I have experience with cryptocurrency but I'm new to this specific area. Could you", 
+            "prompt_length": 101, 
+            "output_length": null,
+            "session_id": 0
+        },
+        {
+            "prompt": "...."
+            ......
+        }
+    ]
+}
+```
+
 Details of workload generator could be found [here](generator/workload-generator/README.md).
 
 

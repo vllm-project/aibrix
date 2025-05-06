@@ -18,6 +18,28 @@ Our workload generator expects prompt collection files that follow one of the tw
 ```
 Please refer to [this](../dataset-generator/README.md) to create synthetic prompts or convert existing dataset to one of these formats before generating workloads. 
 
+
+Ths workload generator would produce a workload file that looks like the following. Each logical timestamp is associated with list of prompts that need to be dispatched at the same time. 
+
+```json
+{
+    "timestamp": 19, 
+    "requests": 
+    [
+        {
+            "prompt": "I need to understand data science for my startup idea. Can you help? Could you also explain how this relates to natural language processing? For context, I have experience with cybersecurity but I'm new to this specific area. I've been trying to understand this concept for months and would appreciate a clear explanation. I'm asking because I need to deploy a machine learning model for a project. For context, I have experience with cryptocurrency but I'm new to this specific area. Could you", 
+            "prompt_length": 101, 
+            "output_length": null,
+            "session_id": 0
+        },
+        {
+            "prompt": "...."
+            ......
+        }
+    ]
+}
+```
+
 ## Generate workload file
 
 The workload generator currently supports the following workload types: static workload that supports static workload (QPS, input/output lengths), synthetic dynamic workload, grafana exported statistics, and actual LLM serving trace (Azure LLM trace). The output workload will be stored as a `workload.jsonl` under the output directory under `--output-dir`. 
@@ -102,15 +124,6 @@ P50,P70,P99
 2000,4000,10000
 ...
 2000,4000,10000(same row size with traffic file)
-```
-
-This generator generate workload file (in .json format) under `output` folder. The file would look like the following:
-```
-[
-    [["Prompt1", prompt_len_1, output_len_1, null],["Prompt2", prompt_len_2, output_len_2, null], ...],
-    [["Prompt3", prompt_len_3, output_len_3, null],["Prompt4", prompt_len_4, output_len_4, null], ...],
-    ...
-]
 ```
 
 And the plot illustrates the workload pattern will be under the `plot` directory. 
