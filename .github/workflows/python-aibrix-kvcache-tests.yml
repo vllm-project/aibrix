@@ -1,0 +1,45 @@
+name: Python AIBrix KVCache Tests
+
+on:
+  push:
+    branches: [ "main", "release-*" ]
+    paths:
+      - 'python/aibrix_kvcache/**'
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'python/aibrix_kvcache/**'
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    name: Lint
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v4
+      - name: Set up Python environment ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          cd python/aibrix_kvcache
+          python -m pip install --upgrade pip
+          pip install -U pip poetry
+          poetry config virtualenvs.create false
+          poetry install --no-root --with dev
+      - name: Run Ruff
+        run: |
+          cd python/aibrix_kvcache
+          python -m ruff check .
+          python -m ruff format --check .
+      - name: Run mypy
+        run: |
+          cd python/aibrix_kvcache
+          python -m mypy .
+      - name: Run Test
+        run: |
+          cd python/aibrix_kvcache/tests
+          python -m pytest .

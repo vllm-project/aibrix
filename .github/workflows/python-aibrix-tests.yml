@@ -1,14 +1,14 @@
-name: Python Tests
+name: Python AIBrix Tests
 
 on:
   push:
     branches: [ "main", "release-*" ]
     paths:
-      - 'python/**'
+      - 'python/aibrix/**'
   pull_request:
     branches: [ "main" ]
     paths:
-      - 'python/**'
+      - 'python/aibrix/**'
 jobs:
   lint:
     runs-on: ubuntu-latest

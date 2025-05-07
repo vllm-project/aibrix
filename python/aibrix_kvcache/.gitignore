@@ -1,0 +1,12 @@
+# python
+__pycache__
+
+# pytest
+.benchmarks
+.pytest_cache
+
+# ruff
+.ruff_cache
+
+# mypy
+.mypy_cache
