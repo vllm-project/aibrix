@@ -13,13 +13,13 @@
 # limitations under the License.
 
 import os
+import sys
 import threading
 from typing import Sequence
 
 import pytest
 import redis
 import torch
-from fakeredis import TcpFakeServer
 
 from aibrix_kvcache.cache_handle import KVCacheHandle
 from aibrix_kvcache.memory import MemoryRegion, TensorPoolAllocator
@@ -109,6 +109,12 @@ def randomize_cache_handle(handle: KVCacheHandle):
 @pytest.fixture
 def redis_server():
     """Fixture that launches a fake Redis server for testing."""
+    if sys.version_info < (3, 11):
+        pytest.skip("This fixture requires Python 3.11+")
+
+    pytest.importorskip("fakeredis")
+    from fakeredis import TcpFakeServer
+
     server_address = ("127.0.0.1", 6379)
     TcpFakeServer.allow_reuse_address = True
     redis_server = TcpFakeServer(
