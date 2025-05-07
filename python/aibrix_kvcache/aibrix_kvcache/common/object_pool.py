@@ -59,7 +59,7 @@ class ObjectPool:
 
     def _initialize_pool(self):
         """Pre-fill the pool with min_pool_size objects."""
-        with self._lock and contextlib.suppress(Exception):
+        with self._lock, contextlib.suppress(Exception):
             for _ in range(self.min_pool_size):
                 self._pool.put(self.object_creator(), block=False)
                 self._current_size += 1
