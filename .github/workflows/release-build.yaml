@@ -81,16 +81,23 @@ jobs:
         run: |
           cd python/aibrix
           poetry publish --build
+          cd python/aibrix_kvcache
+          poetry publish --build
       - name: Add package to release artifact
         run: |
           cd python/aibrix
+          poetry build
+          ls -al dist/*
+          cd python/aibrix_kvcache
           poetry build
           ls -al dist/*
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
           name: aibrix-python-packages
-          path: python/aibrix/dist/*.whl
+          path: |
+            python/aibrix/dist/*.whl
+            python/aibrix_kvcache/dist/*.whl
 
   artifact-release:
     runs-on: ubuntu-latest
