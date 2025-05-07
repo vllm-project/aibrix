@@ -40,6 +40,11 @@ Ths workload generator would produce a workload file that looks like the followi
 }
 ```
 
+And it will also generate figures to illustrate this workload.
+
+![workload-plot](workload-plot-example.png)
+
+
 ## Generate workload file
 
 The workload generator currently supports the following workload types: static workload that supports static workload (QPS, input/output lengths), synthetic dynamic workload, grafana exported statistics, and actual LLM serving trace (Azure LLM trace). The output workload will be stored as a `workload.jsonl` under the output directory under `--output-dir`. 
