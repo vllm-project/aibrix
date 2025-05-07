@@ -231,7 +231,7 @@ def plot_workload(workload: list,
     fig, axes = plt.subplots(4, 1, figsize=(12, 10))  # 4 vertically stacked plots
     
     def calculate_statistics(values):
-        values = [value for value in values if value is not None]
+        values = [value for value in values if pd.notna(value) ]
         if len(values) == 0:
             return 0.0, 0.0, 0.0
         values = sorted(values)
@@ -240,9 +240,9 @@ def plot_workload(workload: list,
         percentile_99 = np.percentile(values, 99)
         return avg, median, percentile_99
     
-    logging.warning("num_requests statistics (mean, median, 99p): ", calculate_statistics(binned_df["num_requests"]))
-    logging.warning("total_prompt_tokens statistics (mean, median, 99p): ", calculate_statistics(binned_df["total_prompt_tokens"]))
-    logging.warning("total_output_tokens statistics (mean, median, 99p): ", calculate_statistics(binned_df["total_output_tokens"]))
+    logging.warning(f"num_requests statistics (mean, median, 99p): {calculate_statistics(binned_df['num_requests'])}")
+    logging.warning(f"total_prompt_tokens statistics (mean, median, 99p): {calculate_statistics(binned_df['total_prompt_tokens'])}")
+    logging.warning(f"total_output_tokens statistics (mean, median, 99p): {calculate_statistics(binned_df['total_output_tokens'])}")
 
     # Top 3 plots: workload stats
     if not df.empty:
