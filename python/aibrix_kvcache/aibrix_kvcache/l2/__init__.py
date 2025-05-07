@@ -19,6 +19,7 @@ from .key_builders import (
     RollingHashKeyBuilder,
     SimpleHashKeyBuilder,
 )
+from .l2_cache import L2Cache
 from .marshallers import StringSerializer, TensorSerializer, ZstdCompressor
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "RawKeyBuilder",
     "RollingHashKeyBuilder",
     "SimpleHashKeyBuilder",
+    "L2Cache",
     "StringSerializer",
     "TensorSerializer",
     "ZstdCompressor",
