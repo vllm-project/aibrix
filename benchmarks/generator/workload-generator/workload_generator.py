@@ -9,9 +9,7 @@ from typing import List, Dict, Any
 from transformers import PreTrainedTokenizerBase
 from datetime import timedelta
 from sample_request import (load_requests,  
-                            find_requests_max_session,
-                            find_requests_len_range, 
-                            sample_requests_all,
+                            RequestFinder,
                         )
 from distribution import (generate_poisson_dist,
                           generate_token_len_from_percentiles,
@@ -109,10 +107,11 @@ def generate_synthetic_from_dist(
     workload = []
     current_time = 0
     total_seconds = len(rps_dist)
-    logging.info(f"total_seconds {total_seconds} rps_dist {rps_dist}")
+    logging.debug(f"total_seconds {total_seconds} rps_dist {rps_dist}")
     ts = time.time()
     prompt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
     logging.info(f"Load requests took {int(time.time() - ts)}s")
+    request_finder = RequestFinder(df=prompt_df)
     while current_time < total_seconds * 1000:
         time_idx = int(current_time / 1000)
         if time_idx >= total_seconds:
@@ -129,14 +128,12 @@ def generate_synthetic_from_dist(
         if current_time < total_seconds * 1000:
             if current_rate != 0:
                 if max_concurrent_sessions and if_sessioned_dataset(prompt_df):
-                    request = find_requests_max_session(
-                        df=prompt_df,
+                    request = request_finder.find_requests_max_session(
                         num_requests=1,
                         max_concurrent_session = max_concurrent_sessions,
                     )
                 else:
-                    request = find_requests_len_range(
-                        df=prompt_df,
+                    request = request_finder.find_requests_len_range(
                         num_requests=1,
                         input_lens=[current_input_len],
                         output_lens=[current_output_len],
@@ -195,8 +192,9 @@ def generate_constant(prompt_file_path: str,
     
     ### Generate constant load for all requests
     # idx = 0
+    # request_finder = RequestFinder(df=sharegpt_df)
     # while idx < len(sharegpt_df):
-    #     concurrent_reqs = sample_requests_all(df=sharegpt_df, start_idx=idx, qps=qps)
+    #     concurrent_reqs = request_finder.sample_requests_all(start_idx=idx, qps=qps)
     #     workload.append({"timestamp": ts, "requests": concurrent_reqs})  
     #     idx += qps
     #     ts += interval_ms
@@ -319,6 +317,7 @@ def generate_from_azure_csv(file_path: str,
     sharegpt_df = load_requests(dataset_path=prompt_file_path, tokenizer=tokenizer)
 
     ts = 0
+    request_finder = RequestFinder(df=sharegpt_df)
     while current_time <= end_time:
         # Select requests within the current time range
         mask = (df.index >= current_time) & (df.index < current_time + time_range)
@@ -328,7 +327,7 @@ def generate_from_azure_csv(file_path: str,
         for _, row in group.iterrows():
             input_lens.append(int(row['ContextTokens']))
             output_lens.append(int(row['GeneratedTokens']))
-        sampled_requests = find_requests_len_range(
+        sampled_requests = request_finder.find_requests_len_range(
             df=sharegpt_df,
             num_requests=len(input_lens),
             input_lens=input_lens,
