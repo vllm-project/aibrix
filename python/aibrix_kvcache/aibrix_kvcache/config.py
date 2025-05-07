@@ -12,25 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .cache_handle import KVCacheHandle, MemoryRegionKVCacheHandle
-from .cache_mgr import (
-    BaseKVCacheManager,
-    GroupAwareKVCacheManager,
-    KVCacheManager,
-)
-from .config import KVCacheConfig
-from .metrics import KVCacheMetrics
-from .spec import *
-from .status import Status, StatusCodes
+from dataclasses import dataclass
 
-__all__ = [
-    "KVCacheHandle",
-    "MemoryRegionKVCacheHandle",
-    "BaseKVCacheManager",
-    "GroupAwareKVCacheManager",
-    "KVCacheManager",
-    "KVCacheConfig",
-    "KVCacheMetrics",
-    "Status",
-    "StatusCodes",
-]
+from .spec import KVCacheBlockSpec
+
+
+@dataclass
+class KVCacheConfig:
+    """Configuration for the KV cache manager.
+
+    Args:
+        block_spec: The specification of the kv cache block.
+    """
+
+    block_spec: KVCacheBlockSpec
