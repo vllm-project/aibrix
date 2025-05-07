@@ -75,3 +75,6 @@ It will generate timeseries plot for the number of requests running in the pod, 
 ### Dependency
 - Client: `aibrix/benchmark/generator/client.py` 
 - Workload trace generator: `aibrix/benchmark/generator/workload_generator.py`. Please check aibrix/benchmark/generator/README.md for more information.
+    - Workload generated using `synthetic` workload types with configurations specified under [this directory](workload-configs).
+
+
