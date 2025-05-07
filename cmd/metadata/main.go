@@ -29,6 +29,11 @@ import (
 
 func main() {
 	redisClient := utils.GetRedisClient()
+	defer func() {
+		if err := redisClient.Close(); err != nil {
+			klog.Warningf("Error closing Redis client: %v", err)
+		}
+	}()
 
 	klog.Info("starting cache")
 	stopCh := make(chan struct{})

@@ -104,6 +104,7 @@ func setupVTCUsers(t *testing.T) {
 
 	t.Cleanup(func() {
 		cleanupVTCUsers(t)
+		redisClient.Close()
 	})
 }
 

@@ -52,6 +52,11 @@ func main() {
 
 	// Connect to Redis
 	redisClient := utils.GetRedisClient()
+	defer func() {
+		if err := redisClient.Close(); err != nil {
+			klog.Warningf("Error closing Redis client: %v", err)
+		}
+	}()
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
