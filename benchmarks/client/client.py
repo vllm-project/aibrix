@@ -348,16 +348,16 @@ def create_client(api_key: str,
                   timeout: float,
                   routing_strategy: str,
                   ):
-    if args.api_key is None:
+    if api_key is None:
         client = openai.AsyncOpenAI(
-            base_url=args.endpoint + "/v1",
+            base_url=endpoint + "/v1",
             max_retries=max_retries,
             timeout=timeout,
         )
     else:
         client = openai.AsyncOpenAI(
-            api_key=args.api_key,
-            base_url=args.endpoint + "/v1",
+            api_key=api_key,
+            base_url=endpoint + "/v1",
             max_retries=max_retries,
             timeout=timeout,
         )
