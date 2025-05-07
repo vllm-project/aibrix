@@ -93,7 +93,7 @@ class MemoryRegion(RefCountedObj):
     def __memoryview__(self):
         """Memoryview protocol support"""
         return memoryview(
-            self.slab[self.addr : self.addr + self.length].numpy()
+            self.slab[self.addr : self.addr + self.length].numpy()  # type: ignore
         )
 
     def fill(self, data: bytes) -> None:
