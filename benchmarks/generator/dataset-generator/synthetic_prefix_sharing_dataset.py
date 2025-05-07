@@ -560,8 +560,8 @@ if __name__ == "__main__":
             stats_file = f"{base_filename}-stats.json"
             save_workload_jsonl(workload_data, args.output)
             save_stats(workload_data, stats_file)
-            logging.info(f"Saving workload statistics to {stats_file}")
-            logging.info(f"Saving workload traces to {args.output}")
+            logging.warning(f"Saving workload statistics to {stats_file}")
+            logging.warning(f"Saving workload traces to {args.output}")
     else: # To dataset
         workload_data = []
         for i, prefix_workload_config in enumerate(prefix_workload_configs):
@@ -571,8 +571,8 @@ if __name__ == "__main__":
             base_filename = f"{app_name}-prefix-share-dataset-p{prefix_estimate}-{suffix_estimate}.jsonl"
             prefix_workload_config["id"] = i
             dataset_dict = generate_dataset_from_config(tokenizer, prefix_workload_config, args.num_configs)
-            logging.info(f"Dataset statistics: {dataset_dict['stats']} total_tokens: {dataset_dict['total_tokens']} overall_sharing_ratio: {dataset_dict['overall_sharing_ratio']} overall_prefix_proportion: {dataset_dict['overall_prefix_proportion']}")
-            logging.info(f"Saving dataset to {args.output}")
+            logging.warning(f"Dataset statistics: {dataset_dict['stats']} total_tokens: {dataset_dict['total_tokens']} overall_sharing_ratio: {dataset_dict['overall_sharing_ratio']} overall_prefix_proportion: {dataset_dict['overall_prefix_proportion']}")
+            logging.warning(f"Saving dataset to {args.output}")
             length = len(dataset_dict["prompts"][0])
             workload_data.extend(dataset_dict["prompts"])
         save_dataset_jsonl(workload_data, args.output)
