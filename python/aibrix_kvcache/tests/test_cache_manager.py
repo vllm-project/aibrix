@@ -20,10 +20,12 @@ import shutil
 import pytest
 import torch
 
-from aibrix_kvcache import BaseKVCacheManager, KVCacheConfig
+from aibrix_kvcache import BaseKVCacheManager, KVCacheConfig, cache_manager
 from aibrix_kvcache.memory import TensorPoolAllocator
 
 from .conftest import TEMP_ROOT, discard_all_aibrix_envs, randomize_cache_handle
+
+cache_manager.TESTING_DISABLE_PIN_MEMORY = True
 
 
 @pytest.fixture(

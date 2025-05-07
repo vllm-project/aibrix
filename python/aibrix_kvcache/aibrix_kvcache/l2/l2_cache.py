@@ -13,12 +13,12 @@
 # limitations under the License.
 
 import asyncio
-import itertools
 import logging
 from concurrent.futures import Executor
 from typing import Any, Iterator, Sequence, Set, Tuple
 
 import torch
+from more_itertools import batched
 
 from ..cache_handle import KVCacheHandle
 from ..common import nvtx_range
@@ -276,9 +276,7 @@ class L2Cache(MeasurableBase):
             )
             return await self._mput_impl(block_batches)
         else:
-            block_batches = tuple(
-                itertools.batched(zip(keys, blocks), self.op_batch)
-            )
+            block_batches = tuple(batched(zip(keys, blocks), self.op_batch))
             return await self._put_impl(block_batches)
 
     async def _mput_impl(
@@ -384,9 +382,7 @@ class L2Cache(MeasurableBase):
             block_batches = self._backend.get_batches(keys, mrs, self.op_batch)
             return await self._mget_impl(block_batches)
         else:
-            block_batches = tuple(
-                itertools.batched(zip(keys, mrs), self.op_batch)
-            )
+            block_batches = tuple(batched(zip(keys, mrs), self.op_batch))
             return await self._get_impl(block_batches)
 
     async def _mget_impl(
@@ -489,7 +485,7 @@ class L2Cache(MeasurableBase):
         Returns:
             The cache block key batchs of the kv tensors.
         """
-        for batch in itertools.batched(
+        for batch in batched(
             self._cache_block_keys(prefix, tokens), self.op_batch
         ):
             yield iter(batch)

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from .cache_handle import KVCacheHandle, MemoryRegionKVCacheHandle
-from .cache_mgr import (
+from .cache_manager import (
     BaseKVCacheManager,
     GroupAwareKVCacheManager,
     KVCacheManager,

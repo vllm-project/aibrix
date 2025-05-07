@@ -8,8 +8,6 @@ license-files = ["LICENSE"]
 readme = "README.md"
 repository = "https://github.com/vllm-project/aibrix/tree/main/python/aibrix_kvcache"
 classifiers = [
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Intended Audience :: Developers",
@@ -24,7 +22,7 @@ packages = [
 exclude = ["tests"]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.13"
+python = ">=3.11,<3.13"
 asyncio = ">=3.4.3,<4.0.0"
 nvtx = ">=0.2.11,<0.3.0"
 torch = ">=2.6.0"
@@ -45,6 +43,7 @@ cityhash = "^0.4.8"
 redis = "^6.0.0"
 fakeredis = "^2.28.1"
 infinistore = "^0.2.35"
+more-itertools = "^10.7.0"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "1.11.1"

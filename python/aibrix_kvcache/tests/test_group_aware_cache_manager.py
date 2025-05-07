@@ -29,7 +29,7 @@ from aibrix_kvcache import (
     GroupAwareKVCacheManager,
     KVCacheBlockLayout,
     KVCacheConfig,
-    cache_mgr,
+    cache_manager,
 )
 
 from .conftest import (
@@ -40,7 +40,7 @@ from .conftest import (
 )
 
 pytest.skip(allow_module_level=True)
-cache_mgr.TESTING_DISABLE_PIN_MEMORY = True
+cache_manager.TESTING_DISABLE_PIN_MEMORY = True
 
 
 @pytest.fixture(
