@@ -15,7 +15,7 @@
 import asyncio
 import logging
 from concurrent.futures import Executor
-from typing import Any, Iterator, Sequence, Set, Tuple
+from typing import Any, Iterator, List, Sequence, Tuple
 
 import torch
 from more_itertools import batched
@@ -106,7 +106,7 @@ class L2Cache(MeasurableBase):
             )
             self._backend = Placement.create(placement_config)
 
-        self._register_descs: Set[ConnectorRegisterDescriptor] = set()
+        self._register_descs: List[ConnectorRegisterDescriptor] = []
 
         logger.info(
             "%s is initialized. Using partition_id=%s.", str(self), partition_id
@@ -141,7 +141,7 @@ class L2Cache(MeasurableBase):
         status = self._backend.register_mr(addr, length)
         if not status.is_ok():
             return status
-        self._register_descs.add(status.get())
+        self._register_descs.append(status.get())
         return status
 
     @nvtx_range("prefetch", "kv_cache_ol.L2Cache")
