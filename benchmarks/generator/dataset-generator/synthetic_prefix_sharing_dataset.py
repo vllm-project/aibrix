@@ -78,7 +78,7 @@ def prepare_prompts(tokenizer, config):
             
             # Count tokens
             token_count = len(tokenizer.encode(prompt))
-            logging.info(f"generate_synthetic_prompt num_prefix {num_prefix} config {config['id']} sampled_prompt_length {sampled_prompt_length} sampled_shared_length {sampled_shared_length} target_prefix_length {target_prefix_length} suffix_length {target_suffix_length} num_samples_per_prefix {num_samples_per_prefix} total token count {token_count}")
+            logging.debug(f"generate_synthetic_prompt num_prefix {num_prefix} config {config['id']} sampled_prompt_length {sampled_prompt_length} sampled_shared_length {sampled_shared_length} target_prefix_length {target_prefix_length} suffix_length {target_suffix_length} num_samples_per_prefix {num_samples_per_prefix} total token count {token_count}")
             
             tot_input_len += token_count
             
@@ -104,6 +104,56 @@ def calculate_prefix_proportion(prefix_length, suffix_length):
         Prefix proportion (float)
     """
     return prefix_length / (prefix_length + suffix_length)
+
+def calculate_average_prefix_sharing_ratio(tokenizer, all_prompts):
+    """
+    Calculate the average prefix sharing ratio across all prompt lists.
+    
+    For each list of prompts:
+        sharing_ratio = (token length of common prefix) / (average token length of prompts in that list)
+
+    The function returns the average of these ratios across all prompt lists.
+    
+    Args:
+        tokenizer: The tokenizer to use
+        all_prompts: List of prompt lists (e.g., List[List[str]])
+
+    Returns:
+        Average prefix sharing ratio (float)
+    """
+    def get_common_prefix(strs):
+        if not strs:
+            return ""
+        shortest = min(strs, key=len)
+        for i in range(len(shortest)):
+            char = shortest[i]
+            for other in strs:
+                if other[i] != char:
+                    return shortest[:i]
+        return shortest
+
+    sharing_ratios = []
+
+    for prompt_list in all_prompts:
+        if not prompt_list:
+            continue
+        
+        common_prefix = get_common_prefix(prompt_list)
+        common_prefix_token_len = len(tokenizer.encode(common_prefix))
+
+        prompt_token_lens = [len(tokenizer.encode(p)) for p in prompt_list]
+        average_prompt_token_len = sum(prompt_token_lens) / len(prompt_token_lens)
+
+        if average_prompt_token_len == 0:
+            continue  # Avoid division by zero
+
+        sharing_ratio = common_prefix_token_len / average_prompt_token_len
+        sharing_ratios.append(sharing_ratio)
+
+    if not sharing_ratios:
+        return 0.0
+
+    return sum(sharing_ratios) / len(sharing_ratios)
 
 def calculate_prefix_sharing_ratio(tokenizer, all_prompts, prompts_token_counts, prefix_length):
     """
@@ -134,7 +184,7 @@ def calculate_prefix_sharing_ratio(tokenizer, all_prompts, prompts_token_counts,
         if prompt_list and len(prompt_list) > 0:
             # Take first prompt from each list to get the unique prefix
             first_prompt = prompt_list[0]
-            logging.debug(f"len(unique_prefixes) {len(unique_prefixes)} len(str(len(unique_prefixes))) {len(str(len(unique_prefixes)))} (len(str(len(unique_prefixes))) + prefix_length) {(len(str(len(unique_prefixes))) + prefix_length)}")
+            logging.warning(f"len(unique_prefixes) {len(unique_prefixes)} len(str(len(unique_prefixes))) {len(str(len(unique_prefixes)))} (len(str(len(unique_prefixes))) + prefix_length) {(len(str(len(unique_prefixes))) + prefix_length)}")
             prefix = first_prompt[:(len(str(len(unique_prefixes))) + prefix_length)]
             unique_prefixes.append(prefix)
     
@@ -341,8 +391,8 @@ def generate_dataset_from_config(tokenizer, config, num_configs):
     total_tokens += tokens
     
     # Calculate prefix sharing ratio for this config
-    sharing_ratio = calculate_prefix_sharing_ratio(
-        tokenizer, prompts, token_counts, prefix_length
+    sharing_ratio = calculate_average_prefix_sharing_ratio(
+        tokenizer, prompts
     )
     
     # Calculate prefix proportion

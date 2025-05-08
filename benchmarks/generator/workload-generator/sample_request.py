@@ -161,7 +161,7 @@ class RequestFinder:
                     filtered = self.df[
                         (self.df["prompt_len"] >= input_range[0]) &
                         (self.df["prompt_len"] <= input_range[1]) &
-                        ((pd.isna(df["completion_len"])) |
+                        ((pd.isna(self.df["completion_len"])) |
                         ((self.df["completion_len"] >= output_range[0]) &
                         (self.df["completion_len"] <= output_range[1])))
                         ]

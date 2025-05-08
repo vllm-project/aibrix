@@ -149,15 +149,16 @@ def generate_synthetic_from_dist(
     return workload
 
 def generate_constant(prompt_file_path: str,
-                       qps: int, 
-                       input_len: int = None,
-                       output_len: int = None,
-                       duration_ms: int = None,
-                       interval_ms: int = None,
-                       max_concurrent_sessions: int = None,
-                       output_file: str = 'output/output',
-                       to_jsonl: bool = False,
-                       ) -> List[List[Any]]:
+                    tokenizer: PreTrainedTokenizerBase,
+                    qps: int, 
+                    input_len: int = None,
+                    output_len: int = None,
+                    duration_ms: int = None,
+                    interval_ms: int = None,
+                    max_concurrent_sessions: int = None,
+                    output_file: str = 'output/output',
+                    to_jsonl: bool = False,
+                    ) -> List[List[Any]]:
     workload = []
     ts = 0
     
@@ -204,6 +205,7 @@ def generate_constant(prompt_file_path: str,
     return workload
 
 def generate_synthetic(prompt_file_path: str,
+                       tokenizer: PreTrainedTokenizerBase,
                        qps_pattern_config: Dict[str, Any],
                        input_pattern_config: Dict[str, Any],
                        output_pattern_config: Dict[str, Any],
@@ -328,7 +330,6 @@ def generate_from_azure_csv(file_path: str,
             input_lens.append(int(row['ContextTokens']))
             output_lens.append(int(row['GeneratedTokens']))
         sampled_requests = request_finder.find_requests_len_range(
-            df=sharegpt_df,
             num_requests=len(input_lens),
             input_lens=input_lens,
             output_lens=output_lens,
@@ -431,6 +432,7 @@ if __name__ == '__main__':
             raise ValueError(f"qps_pattern_config cannot be None")
         
         generated_workload = generate_synthetic(prompt_file_path = args.prompt_file,
+                                                tokenizer=tokenizer,
                                                 qps_pattern_config = qps_pattern_config,
                                                 input_pattern_config = input_pattern_config,
                                                 output_pattern_config = output_pattern_config,
@@ -445,6 +447,7 @@ if __name__ == '__main__':
         # Process for 'stat' and 'azure'
         if args.trace_type == "constant":
             generated_workload = generate_constant(prompt_file_path=args.prompt_file, 
+                                                   tokenizer=tokenizer,
                                                     qps=args.target_qps,
                                                     input_len=args.target_prompt_len,
                                                     output_len=args.target_completion_len,
