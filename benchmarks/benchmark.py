@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 import yaml
+import argparse
 from pathlib import Path
 from client import (client, analyze)
 from generator.dataset_generator import (synthetic_prefix_sharing_dataset, 
@@ -12,11 +13,33 @@ from argparse import Namespace
 
 
 class BenchmarkRunner:
-    def __init__(self, config_base="config/base.yaml"):
+    def __init__(self, config_base="config/base.yaml", overrides=None):
+        self.overrides = overrides or []
         self.load_config(config_base)
         for dir_key in ["DATASET_DIR", "WORKLOAD_DIR", "CLIENT_OUTPUT", "TRACE_OUTPUT"]:
             path_str = self.config[dir_key]
             self.ensure_directories(path_str)
+            
+    def apply_overrides(self, config_dict):
+        for override in self.overrides:
+            if '=' not in override:
+                print(f"[WARNING] Invalid override format: {override}. Use key=value.")
+                continue
+            key, value = override.split("=", 1)
+            try:
+                parsed_value = yaml.safe_load(value)
+            except Exception:
+                parsed_value = value
+            # Handle nested keys like "WORKLOAD_CONFIG.TARGET_QPS"
+            parts = key.split(".")
+            d = config_dict
+            for p in parts[:-1]:
+                if p not in d:
+                    d[p] = {}
+                d = d[p]
+            d[parts[-1]] = parsed_value
+            print(f"[INFO] Overridden {key} = {parsed_value}")
+        return config_dict
 
     def load_config(self, config_path):
         if not Path(config_path).is_file():
@@ -27,11 +50,13 @@ class BenchmarkRunner:
         with open(config_path, 'r') as f:
             content = os.path.expandvars(f.read())
             self.config = yaml.safe_load(content)
+            self.config = self.apply_overrides(self.config)
 
     def load_subconfig(self, subconfig_path):
         with open(subconfig_path, 'r') as f:
             content = os.path.expandvars(f.read())
-            return yaml.safe_load(content)
+            subconfig = yaml.safe_load(content)
+            return self.apply_overrides(subconfig)
 
     def ensure_directories(self, path_str):
         path = Path(path_str)
@@ -278,5 +303,12 @@ class BenchmarkRunner:
 
 
 if __name__ == "__main__":
-    runner = BenchmarkRunner()
-    runner.run(sys.argv[1] if len(sys.argv) > 1 else "")
+    parser = argparse.ArgumentParser(description="Run benchmark pipeline")
+    parser.add_argument("command", nargs="?", default="all", help="One of [dataset, workload, client, analysis, all]")
+    parser.add_argument("--config", default="config/base.yaml", help="Path to base config YAML")
+    parser.add_argument("--override", action="append", default=[], help="Override config values, e.g., --override TIME_SCALE=2.0 or TARGET_QPS=5")
+
+    args = parser.parse_args()
+
+    runner = BenchmarkRunner(config_base=args.config, overrides=args.override)
+    runner.run(args.command)
