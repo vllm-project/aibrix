@@ -8,8 +8,8 @@ import argparse
 from tqdm import tqdm
 from transformers import AutoTokenizer
 from scipy.stats import truncnorm
-from synthetic_prompt import generate_synthetic_prompt, adjust_prompt_length
-from util import save_workload_jsonl, save_dataset_jsonl
+from generator.dataset_generator.synthetic_prompt import generate_synthetic_prompt, adjust_prompt_length
+from generator.dataset_generator.util import save_workload_jsonl, save_dataset_jsonl
 
 
 def generate_unique_prefix(base_text, index):
@@ -559,27 +559,7 @@ def get_configurations(args: argparse.Namespace):
     
     return prefix_workload_configs
     
-if __name__ == "__main__":
-    random.seed(0)
-    np.random.seed(0)
-    parser = argparse.ArgumentParser(description="Configure workload parameters.")
-    parser.add_argument("--tokenizer", type=str, default="deepseek-ai/deepseek-llm-7b-chat", help="Name of the tokenizer.")
-    parser.add_argument("--app-name", type=str, default="app", help="Name of the application.")
-    parser.add_argument("--num-configs", type=int, default=1, help="Number of configurations.")
-    parser.add_argument("--prompt-length", type=str, default="1000", help="Lengths of the prompt. Use \',\' to separate multiple configurations.")
-    parser.add_argument("--prompt-length-std", type=str, default="100", help="Standard deviations of the prompt length. Use \',\' to separate multiple configurations.")
-    parser.add_argument("--shared-proportion", type=str, default="0.9", help="Proportions of shared content. Use \',\' to separate multiple configurations.")
-    parser.add_argument("--shared-proportion-std", type=str, default="0.01", help="Standard deviations of shared proportion. Use \',\' to separate multiple configurations.")
-    parser.add_argument("--num-samples-per-prefix", type=str, default="200", help="Number of samples per prefix. Use \',\' to separate multiple configurations.")
-    parser.add_argument("--num-prefix", type=str, default="10", help="Number of prefixes. Use \',\' to separate multiple configurations.")
-    parser.add_argument("--rps", type=int, default=0, help="Requests per second.")
-    parser.add_argument("--randomize-order", action="store_true", help="Randomize order if flag is set.")
-    parser.add_argument("--to-workload", action="store_true", help="Generate workload if flag is set (needs rps to be set).")
-    parser.add_argument("--output", type=str, default="output.jsonl", help="Output file name.")
-    
-
-    args = parser.parse_args()
-    
+def main(args):
     to_workload = args.to_workload
     app_name = args.app_name
     prefix_workload_configs = get_configurations(args)
@@ -604,7 +584,6 @@ if __name__ == "__main__":
             base_filename = f"{app_name}-prefix-share-workload-p{prefix_estimate}-s{suffix_estimate}-rps{rps}{rand_str}"
             # Add randomization info to filename
             prefix_workload_config["id"] = i
-            print("Generating multi-configuration workload...")
             workload_data = generate_workload_from_config(tokenizer, prefix_workload_config)
             # Save results
             stats_file = f"{base_filename}-stats.json"
@@ -629,3 +608,24 @@ if __name__ == "__main__":
         
         
     
+if __name__ == "__main__":
+    random.seed(0)
+    np.random.seed(0)
+    parser = argparse.ArgumentParser(description="Configure workload parameters.")
+    parser.add_argument("--tokenizer", type=str, default="deepseek-ai/deepseek-llm-7b-chat", help="Name of the tokenizer.")
+    parser.add_argument("--app-name", type=str, default="app", help="Name of the application.")
+    parser.add_argument("--num-configs", type=int, default=1, help="Number of configurations.")
+    parser.add_argument("--prompt-length", type=str, default="1000", help="Lengths of the prompt. Use \',\' to separate multiple configurations.")
+    parser.add_argument("--prompt-length-std", type=str, default="100", help="Standard deviations of the prompt length. Use \',\' to separate multiple configurations.")
+    parser.add_argument("--shared-proportion", type=str, default="0.9", help="Proportions of shared content. Use \',\' to separate multiple configurations.")
+    parser.add_argument("--shared-proportion-std", type=str, default="0.01", help="Standard deviations of shared proportion. Use \',\' to separate multiple configurations.")
+    parser.add_argument("--num-samples-per-prefix", type=str, default="200", help="Number of samples per prefix. Use \',\' to separate multiple configurations.")
+    parser.add_argument("--num-prefix", type=str, default="10", help="Number of prefixes. Use \',\' to separate multiple configurations.")
+    parser.add_argument("--rps", type=int, default=0, help="Requests per second.")
+    parser.add_argument("--randomize-order", action="store_true", help="Randomize order if flag is set.")
+    parser.add_argument("--to-workload", action="store_true", help="Generate workload if flag is set (needs rps to be set).")
+    parser.add_argument("--output", type=str, default="output.jsonl", help="Output file name.")
+    
+
+    args = parser.parse_args()
+    main(args)
