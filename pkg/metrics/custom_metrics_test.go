@@ -36,45 +36,45 @@ const (
 
 func TestSetGaugeMetric(t *testing.T) {
 	prometheus.DefaultRegisterer = prometheus.NewRegistry()
-	
+
 	registry := prometheus.NewRegistry()
 	gauge := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{Name: testMetricName, Help: testMetricHelp},
 		[]string{testLabelName},
 	)
 	registry.MustRegister(gauge)
-	
+
 	originalFn := SetGaugeMetricFnForTest
 	defer func() { SetGaugeMetricFnForTest = originalFn }()
-	
+
 	SetGaugeMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
 		if name == testMetricName {
 			gauge.WithLabelValues(labelValues...).Set(value)
 		}
 	}
-	
+
 	testValue := 42.0
 	SetGaugeMetric(testMetricName, testMetricHelp, testValue, []string{testLabelName}, testLabelValue)
-	
+
 	value := testutil.ToFloat64(gauge.WithLabelValues(testLabelValue))
 	assert.Equal(t, testValue, value, "Metric value should match what was set")
 }
 
 func TestSetupMetricsForTest(t *testing.T) {
 	prometheus.DefaultRegisterer = prometheus.NewRegistry()
-	
+
 	testGauge, cleanup := SetupMetricsForTest(testMetricName, []string{testLabelName})
 	defer cleanup()
-	
+
 	testValue := 42.0
 	SetGaugeMetric(testMetricName, testMetricHelp, testValue, []string{testLabelName}, testLabelValue)
-	
+
 	value := testutil.ToFloat64(testGauge.WithLabelValues(testLabelValue))
 	assert.Equal(t, testValue, value, "Metric value should match what was set")
-	
+
 	cleanup()
 	SetGaugeMetric(testMetricName, testMetricHelp, 99.0, []string{testLabelName}, testLabelValue)
-	
+
 	value = testutil.ToFloat64(testGauge.WithLabelValues(testLabelValue))
 	assert.Equal(t, testValue, value, "Metric value should not change after cleanup")
 }
@@ -82,28 +82,28 @@ func TestSetupMetricsForTest(t *testing.T) {
 func TestMetricRegistrationOnlyOnce(t *testing.T) {
 	prometheus.DefaultRegisterer = prometheus.NewRegistry()
 	customGauges = make(map[string]*prometheus.GaugeVec)
-	
+
 	for i := 0; i < 5; i++ {
 		SetGaugeMetric(testMetricName, testMetricHelp, float64(i), []string{testLabelName}, testLabelValue)
 	}
-	
+
 	customGaugesMu.RLock()
 	count := len(customGauges)
 	customGaugesMu.RUnlock()
-	
+
 	assert.Equal(t, 1, count, "Should only register the metric once")
 }
 
 func TestConcurrentMetricUpdates(t *testing.T) {
 	prometheus.DefaultRegisterer = prometheus.NewRegistry()
 	customGauges = make(map[string]*prometheus.GaugeVec)
-	
+
 	numGoroutines := 10
 	numUpdatesPerGoroutine := 100
-	
+
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
-	
+
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			defer wg.Done()
@@ -113,16 +113,16 @@ func TestConcurrentMetricUpdates(t *testing.T) {
 			}
 		}(i)
 	}
-	
+
 	wg.Wait()
-	
+
 	customGaugesMu.RLock()
 	count := len(customGauges)
 	gauge := customGauges[testMetricName]
 	customGaugesMu.RUnlock()
-	
+
 	assert.Equal(t, 1, count, "Should only register the metric once even with concurrent updates")
-	
+
 	ch := make(chan *prometheus.Desc, 1)
 	gauge.Describe(ch)
 	desc := <-ch
@@ -132,28 +132,28 @@ func TestConcurrentMetricUpdates(t *testing.T) {
 func TestMultipleLabels(t *testing.T) {
 	prometheus.DefaultRegisterer = prometheus.NewRegistry()
 	customGauges = make(map[string]*prometheus.GaugeVec)
-	
+
 	registry := prometheus.NewRegistry()
 	gauge := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{Name: testMetricName, Help: testMetricHelp},
 		[]string{testLabelName, testLabelName2},
 	)
 	registry.MustRegister(gauge)
-	
+
 	originalFn := SetGaugeMetricFnForTest
 	defer func() { SetGaugeMetricFnForTest = originalFn }()
-	
+
 	SetGaugeMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
 		if name == testMetricName {
 			gauge.WithLabelValues(labelValues...).Set(value)
 		}
 	}
-	
+
 	testValue := 42.0
-	SetGaugeMetric(testMetricName, testMetricHelp, testValue, 
-		[]string{testLabelName, testLabelName2}, 
+	SetGaugeMetric(testMetricName, testMetricHelp, testValue,
+		[]string{testLabelName, testLabelName2},
 		testLabelValue, testLabelValue2)
-	
+
 	value := testutil.ToFloat64(gauge.WithLabelValues(testLabelValue, testLabelValue2))
 	assert.Equal(t, testValue, value, "Metric value with multiple labels should match what was set")
 }
