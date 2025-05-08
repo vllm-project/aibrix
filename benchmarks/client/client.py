@@ -11,7 +11,7 @@ from queue import Queue
 
 
 from typing import List, Dict
-from utils import (load_workload, prepare_prompt, update_response)
+from client.utils import (load_workload, prepare_prompt, update_response)
 
 thread_pool_size = 1
 QUEUE_SIZE = 1

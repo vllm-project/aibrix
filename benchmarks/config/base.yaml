@@ -1,0 +1,60 @@
+# config.yaml
+# DO NOT COMMIT this file if it contains sensitive info
+
+# API and model settings
+MODEL_NAME: "deepseek-ai/deepseek-llm-7b-chat"
+TOKENIZER: "deepseek-ai/deepseek-llm-7b-chat"
+
+# ---------------
+# STEP 1: DATASET GENERATION
+# ---------------
+# Dataset config
+DATASET_DIR: "./output/dataset/"
+PROMPT_TYPE: "synthetic_shared"  # Options: synthetic_multiturn, synthetic_shared, sharegpt, client_trace
+DATASET_CONFIG: 
+  - name: "synthetic_multiturn"
+    config: "config/dataset/synthetic_multiturn.yaml"
+  - name: "synthetic_shared"
+    config: "config/dataset/synthetic_shared.yaml"
+  - name: "sharegpt"
+    config: "config/dataset/sharegpt.yaml"
+  - name: "client_trace"
+    config: "config/dataset/client_trace.yaml"
+
+# ---------------
+# STEP 2: WORKLOAD GENERATION
+# ---------------
+# Workload config
+WORKLOAD_TYPE: "constant"  # Options: synthetic, constant, azure
+INTERVAL_MS: 1000
+DURATION_MS: 300000
+WORKLOAD_DIR: "./output/workload"
+WORKLOAD_CONFIG: 
+  - name: "synthetic"
+    config: "config/workload/synthetic.yaml"
+  - name: "constant"
+    config: "config/workload/constant.yaml"
+  - name: "stat"
+    config: "config/workload/stat.yaml"
+  - name: "azure"
+    config: "config/workload/azure.yaml"
+
+# ---------------
+# STEP 3: CLIENT DISPATCH
+# ---------------
+# Client and trace analysis output directories
+CLIENT_OUTPUT: "./output/client_output"
+ENDPOINT: "http://localhost:8888"
+API_KEY: ${api_key}  # You might want to inject this securely via environment variables
+TARGET_MODEL: "llama-3-8b-instruct"  # Or "deepseek-llm-7b-chat"
+TIME_SCALE: 1.0
+ROUTING_STRATEGY: "random" 
+STREAMING_ENABLED: True # Options: true, false
+CLIENT_POOL_SIZE: 1
+OUTPUT_TOKEN_LIMIT: 128
+
+# ---------------
+# OPTIONAL: ANALYSIS
+# ---------------
+TRACE_OUTPUT: "./output/trace_analysis"
+GOODPUT_TARGET: "tpot:0.5"

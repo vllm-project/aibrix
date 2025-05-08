@@ -8,17 +8,17 @@ from pandas import Timedelta
 from typing import List, Dict, Any
 from transformers import PreTrainedTokenizerBase
 from datetime import timedelta
-from sample_request import (load_requests,  
+from generator.workload_generator.sample_request import (load_requests,  
                             RequestFinder,
                         )
-from distribution import (generate_poisson_dist,
+from generator.workload_generator.distribution import (generate_poisson_dist,
                           generate_token_len_from_percentiles,
                           to_fluctuate_pattern_config,
                           user_to_synthetic_config,
                           sine_fluctuation,
                           )
                           
-from utils import (if_sessioned_dataset,
+from generator.workload_generator.utils import (if_sessioned_dataset,
                    convert_to_stat_df,
                    read_distribution_stats,
                    get_tokenizer, 
@@ -351,59 +351,7 @@ def generate_from_azure_csv(file_path: str,
 
     return grouped_requests
 
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Workload Generator')
-    parser.add_argument('--prompt-file', type=str, required=True, help='File containing sampling prompts.')
-    parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'stat', 'azure'],
-                        help='Type of trace consumed. Choose among: synthetic, stat, azure.')
-    parser.add_argument('--model', type=str, required=False, default="Qwen/Qwen2.5-Coder-7B-Instruct",
-                        help='Target model for the workload.')
-    parser.add_argument('--interval-ms', type=int, required=False, default=1000,
-                        help='Granularity of request injection interval in milliseconds.')
-    parser.add_argument('--duration-ms', type=int, default=60000, help='Duration of the trace generated.')
-    parser.add_argument('--group-interval-seconds', type=int, default=1, help='Grouping interval seconds.')
-    parser.add_argument('--stat-trace-type', type=str, choices=['maas', 'cloudide'], default="maas", help='Type of stat traces.')
-    parser.add_argument('--output-dir', type=str, required=False, default="output", help='Output directory to save.'
-                                                                                         'the workload.')
-    parser.add_argument('--output-format', type=str, choices=['json', 'jsonl'], default='json',
-                        help='Set output data format to either .json or .jsonl (default is .json).')
-    
-    ###### Synthetic and constant workload
-    parser.add_argument('--target-qps', type=int, required=False, default=1, help='Target QPS for the workload.')
-    parser.add_argument('--target-prompt-len', type=int, required=False, default=None, help='Target prompt length for the workload.')
-    parser.add_argument('--target-completion-len', type=int, required=False, default=None, help='Target completion length for the workload.')
-    parser.add_argument('--traffic-pattern', type=str, required=False, choices=['quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'], default=None,
-                        help='Traffic patterns used for synthetic workload type.')
-    parser.add_argument('--prompt-len-pattern', type=str, required=False, choices=['quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'], default=None,
-                        help='Prompt lengths patterns used for synthetic workload type.')
-    parser.add_argument('--completion-len-pattern', type=str, required=False, choices=['quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'], default=None,
-                        help='Prompt lengths patterns used for synthetic workload type.')
-    parser.add_argument('--traffic-pattern-config', type=str, required=False, default=None,
-                        help='Traffic configuration file used for synthetic workload type.')
-    parser.add_argument('--prompt-len-pattern-config', type=str, required=False, default=None,
-                        help='Prompt lengths configuration file used for synthetic workload type.')
-    parser.add_argument('--completion-len-pattern-config', type=str, required=False, default=None,
-                        help='Completion lengths configuration file used for synthetic workload type.')
-    
-    ##### Trace and stats-driven workload
-    parser.add_argument('--traffic-file', type=str, required=False, default=None,
-                        help='Traffic file containing times of arrival, which workload generator depends upon to'
-                             'convert to traffic used in workload. This is only needed for for stat and azure trace type.')
-    parser.add_argument('--prompt-len-file', type=str, required=False, default=None,
-                        help='File containing request input lengths varied by time, which workload generator depends upon to '
-                             'select input prompt. This is only needed for for stat trace type. ')
-    parser.add_argument('--completion-len-file', type=str, required=False, default=None,
-                        help='File containing request output lengths varied by time, which workload generator depends upon to '
-                             'select input prompt. This is only needed for for stat trace type. ')
-    parser.add_argument('--qps-scale', type=float, required=False, default=1.0, help='QPS scaling factor.')
-    parser.add_argument('--input-scale', type=float, required=False, default=1.0, help='Input length scaling factor.')
-    parser.add_argument('--output-scale', type=float, required=False, default=1.0, help='Output length scaling factor.')
-    parser.add_argument('--max-concurrent-sessions', type=int, required=False, default=1, help='Maximum number of overlapping sessions.')
-    
-    args = parser.parse_args()
-
+def main(args):
     # Generate workloads and pair with prompts
     workload_dict = {}
     tokenizer = get_tokenizer(pretrained_model_name_or_path=args.model, trust_remote_code=True)
@@ -492,3 +440,56 @@ if __name__ == '__main__':
                 workload = workload, 
                 bin_size_sec = 1, 
                 output_dir = f"{args.output_dir}")
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Workload Generator')
+    parser.add_argument('--prompt-file', type=str, required=True, help='File containing sampling prompts.')
+    parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'stat', 'azure'],
+                        help='Type of trace consumed. Choose among: synthetic, stat, azure.')
+    parser.add_argument('--model', type=str, required=False, default="Qwen/Qwen2.5-Coder-7B-Instruct",
+                        help='Target model for the workload.')
+    parser.add_argument('--interval-ms', type=int, required=False, default=1000,
+                        help='Granularity of request injection interval in milliseconds.')
+    parser.add_argument('--duration-ms', type=int, default=60000, help='Duration of the trace generated.')
+    parser.add_argument('--group-interval-seconds', type=int, default=1, help='Grouping interval seconds.')
+    parser.add_argument('--stat-trace-type', type=str, choices=['maas', 'cloudide'], default="maas", help='Type of stat traces.')
+    parser.add_argument('--output-dir', type=str, required=False, default="output", help='Output directory to save.'
+                                                                                         'the workload.')
+    parser.add_argument('--output-format', type=str, choices=['json', 'jsonl'], default='json',
+                        help='Set output data format to either .json or .jsonl (default is .json).')
+    
+    ###### Synthetic and constant workload
+    parser.add_argument('--target-qps', type=int, required=False, default=1, help='Target QPS for the workload.')
+    parser.add_argument('--target-prompt-len', type=int, required=False, default=None, help='Target prompt length for the workload.')
+    parser.add_argument('--target-completion-len', type=int, required=False, default=None, help='Target completion length for the workload.')
+    parser.add_argument('--traffic-pattern', type=str, required=False, choices=['quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'], default=None,
+                        help='Traffic patterns used for synthetic workload type.')
+    parser.add_argument('--prompt-len-pattern', type=str, required=False, choices=['quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'], default=None,
+                        help='Prompt lengths patterns used for synthetic workload type.')
+    parser.add_argument('--completion-len-pattern', type=str, required=False, choices=['quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'], default=None,
+                        help='Prompt lengths patterns used for synthetic workload type.')
+    parser.add_argument('--traffic-pattern-config', type=str, required=False, default=None,
+                        help='Traffic configuration file used for synthetic workload type.')
+    parser.add_argument('--prompt-len-pattern-config', type=str, required=False, default=None,
+                        help='Prompt lengths configuration file used for synthetic workload type.')
+    parser.add_argument('--completion-len-pattern-config', type=str, required=False, default=None,
+                        help='Completion lengths configuration file used for synthetic workload type.')
+    
+    ##### Trace and stats-driven workload
+    parser.add_argument('--traffic-file', type=str, required=False, default=None,
+                        help='Traffic file containing times of arrival, which workload generator depends upon to'
+                             'convert to traffic used in workload. This is only needed for for stat and azure trace type.')
+    parser.add_argument('--prompt-len-file', type=str, required=False, default=None,
+                        help='File containing request input lengths varied by time, which workload generator depends upon to '
+                             'select input prompt. This is only needed for for stat trace type. ')
+    parser.add_argument('--completion-len-file', type=str, required=False, default=None,
+                        help='File containing request output lengths varied by time, which workload generator depends upon to '
+                             'select input prompt. This is only needed for for stat trace type. ')
+    parser.add_argument('--qps-scale', type=float, required=False, default=1.0, help='QPS scaling factor.')
+    parser.add_argument('--input-scale', type=float, required=False, default=1.0, help='Input length scaling factor.')
+    parser.add_argument('--output-scale', type=float, required=False, default=1.0, help='Output length scaling factor.')
+    parser.add_argument('--max-concurrent-sessions', type=int, required=False, default=1, help='Maximum number of overlapping sessions.')
+    
+    args = parser.parse_args()
+    main(args)
