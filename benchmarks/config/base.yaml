@@ -25,7 +25,7 @@ DATASET_CONFIG:
 # STEP 2: WORKLOAD GENERATION
 # ---------------
 # Workload config
-WORKLOAD_TYPE: "constant"  # Options: synthetic, constant, azure
+WORKLOAD_TYPE: "constant"  # Options: constant, synthetic, constant, azure
 INTERVAL_MS: 1000
 DURATION_MS: 300000
 WORKLOAD_DIR: "./output/workload"
