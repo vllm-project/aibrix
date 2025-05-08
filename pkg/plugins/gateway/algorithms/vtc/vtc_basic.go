@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Aibrix Team.
+Copyright 2025 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,8 +21,6 @@ import (
 	"math"
 	"math/rand"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -53,14 +51,6 @@ var (
 	outputTokenWeight = utils.LoadEnvFloat(VTC_OUTPUT_TOKEN_WEIGHT, defaultOutputTokenWeight)
 	fairnessWeight    = utils.LoadEnvFloat(VTC_FAIRNESS_WEIGHT, defaultFairnessWeight)
 	utilizationWeight = utils.LoadEnvFloat(VTC_UTILIZATION_WEIGHT, defaultUtilizationWeight)
-
-	vtcBucketSizeGauge = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: metrics.VTCBucketSizeActive,
-			Help: "Current adaptive bucket size used by VTC algorithm for token normalization",
-		},
-		[]string{"pod", "model"},
-	)
 )
 
 // BasicVTCRouter implements the VTC routing algorithm
@@ -144,7 +134,13 @@ func (r *BasicVTCRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 		// relevant to the current system load while maintaining a minimum sensitivity
 		adaptiveBucketSize := math.Max(tokenTrackerMinTokens, (minTokens+maxTokens)/2)
 
-		vtcBucketSizeGauge.WithLabelValues(pod.Name, ctx.Model).Set(adaptiveBucketSize)
+		metrics.SetGaugeMetric(
+			metrics.VTCBucketSizeActive,
+			metrics.GetMetricHelp(metrics.VTCBucketSizeActive),
+			adaptiveBucketSize,
+			[]string{"pod", "model"},
+			pod.Name, ctx.Model,
+		)
 
 		// Apply clamped linear mapping: tokens / bucket_size, clamped to [0, npods-1]
 		normalizedTokens := math.Min(float64(userTokens)/adaptiveBucketSize, float64(len(readyPods)-1))
