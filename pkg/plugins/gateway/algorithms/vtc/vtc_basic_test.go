@@ -511,15 +511,14 @@ func createTestPods(count int) []*v1.Pod {
 
 // TestVTCBucketSizePatterns demonstrates key patterns in the vtc_bucket_size_active metric
 // and how to interpret them for configuration adjustments
-//
 // vtc_bucket_size_active - gauge(pod,model): Shows whether adaptive bucket size is stable
 // - Smooth slope → healthy; Saw-tooth jumps → increase min bucket size or window
 func TestVTCBucketSizePatterns(t *testing.T) {
 	prometheus.DefaultRegisterer = prometheus.NewRegistry()
-	
+
 	testGauge, cleanup := metrics.SetupMetricsForTest(metrics.VTCBucketSizeActive, []string{"pod", "model"})
 	defer cleanup()
-	
+
 	trackerConfig := &VTCConfig{
 		InputTokenWeight:  defaultInputTokenWeight,
 		OutputTokenWeight: defaultOutputTokenWeight,
@@ -539,15 +538,15 @@ func TestVTCBucketSizePatterns(t *testing.T) {
 		cache.SetPodMetric(utils.GeneratePodKey("default", pod.Name), "model1", metrics.NumRequestsRunning, 0)
 	}
 	ctx := context.Background()
-	
+
 	patterns := []struct {
-		name        string
-		user        string
-		tokenFunc   func(i int) (float64, float64)
-		iterations  int
-		detectFunc  func(sizes []float64) bool
-		expected    string
-		suggestion  string
+		name       string
+		user       string
+		tokenFunc  func(i int) (float64, float64)
+		iterations int
+		detectFunc func(sizes []float64) bool
+		expected   string
+		suggestion string
 	}{
 		{
 			name:       "Smooth gradual slope (healthy)",
@@ -563,12 +562,12 @@ func TestVTCBucketSizePatterns(t *testing.T) {
 				}
 				return true
 			},
-			expected:   "Smooth, gradual slope in bucket size - VTC adaptation is healthy",
+			expected: "Smooth, gradual slope in bucket size - VTC adaptation is healthy",
 		},
 		{
-			name:       "Saw-tooth jumps (problematic)",
-			user:       "erratic-user",
-			tokenFunc:  func(i int) (float64, float64) { 
+			name: "Saw-tooth jumps (problematic)",
+			user: "erratic-user",
+			tokenFunc: func(i int) (float64, float64) {
 				if i%2 == 0 {
 					return 5000.0, 10000.0 // High spike
 				}
@@ -590,22 +589,30 @@ func TestVTCBucketSizePatterns(t *testing.T) {
 			suggestion: "Increase AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS or WINDOW_SIZE",
 		},
 	}
-	
+
 	for _, pattern := range patterns {
 		sizes := make([]float64, 0, pattern.iterations)
 		for i := 0; i < pattern.iterations; i++ {
 			inTokens, outTokens := pattern.tokenFunc(i)
-			tokenTracker.UpdateTokenCount(ctx, pattern.user, inTokens, outTokens)
-			
-			routingCtx := types.NewRoutingContext(ctx, "vtc-basic", "model1", "test message", 
-				fmt.Sprintf("request-%s-%d", pattern.user, i), pattern.user)
-			_, err := router.Route(routingCtx, podList)
-			assert.NoError(t, err)
-			
+			err := tokenTracker.UpdateTokenCount(ctx, pattern.user, inTokens, outTokens)
+			if err != nil {
+				t.Errorf("Failed to update token count for %s: %v", pattern.user, err)
+				continue
+			}
+
+			requestID := fmt.Sprintf("request-%s-%d", pattern.user, i)
+			routingCtx := types.NewRoutingContext(ctx, "vtc-basic", "model1", "test message", requestID, pattern.user)
+
+			_, err = router.Route(routingCtx, podList)
+			if err != nil {
+				t.Errorf("Failed to route request for %s: %v", pattern.user, err)
+				continue
+			}
+
 			metricValue := testutil.ToFloat64(testGauge.WithLabelValues("pod1", "model1"))
 			sizes = append(sizes, metricValue)
 		}
-		
+
 		t.Logf("%s bucket sizes: %v", pattern.name, sizes)
 		if pattern.detectFunc(sizes) {
 			t.Logf("PATTERN DETECTED: %s", pattern.expected)
@@ -614,7 +621,7 @@ func TestVTCBucketSizePatterns(t *testing.T) {
 			}
 		}
 	}
-	
+
 	t.Log("\nvtc_bucket_size_active metric interpretation guide:")
 	t.Log("1. Smooth changes: VTC adaptation is healthy")
 	t.Log("2. Saw-tooth jumps: Increase min bucket size or window")

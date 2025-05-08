@@ -47,7 +47,7 @@ const (
 	WaitingLoraAdapters                  = "waiting_lora_adapters"
 	RunningLoraAdapters                  = "running_lora_adapters"
 	VTCBucketSizeActive                  = "vtc_bucket_size_active"
-	RealtimeNumRequestsRunning = "realtime_num_requests_running"
+	RealtimeNumRequestsRunning           = "realtime_num_requests_running"
 )
 
 var (
