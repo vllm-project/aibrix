@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Aibrix Team.
+Copyright 2025 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -51,13 +51,6 @@ func (c *SimpleCache) SetPodMetric(podKey, modelName, metricName string, value f
 		c.metrics[podKey][modelName] = make(map[string]float64)
 	}
 	c.metrics[podKey][modelName][metricName] = value
-}
-
-// GetPodMetric is deprecated, use GetMetricValueByPodModel instead
-func (c *SimpleCache) GetPodMetric(ctx context.Context, podName, podNamespace, model, metricName string) (float64, error) {
-	// In a real implementation, this would look up metrics by pod namespace/name
-	// For testing, we'll just return 0
-	return 0, nil
 }
 
 func (c *SimpleCache) GetMetricValueByPodModel(podName, podNamespace, modelName, metricName string) (metrics.MetricValue, error) {
@@ -522,13 +515,10 @@ func createTestPods(count int) []*v1.Pod {
 // vtc_bucket_size_active - gauge(pod,model): Shows whether adaptive bucket size is stable
 // - Smooth slope → healthy; Saw-tooth jumps → increase min bucket size or window
 func TestVTCBucketSizePatterns(t *testing.T) {
-	// Setup test environment
 	prometheus.DefaultRegisterer = prometheus.NewRegistry()
-	vtcBucketSizeGauge = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{Name: metrics.VTCBucketSizeActive},
-		[]string{"pod", "model"},
-	)
-	prometheus.MustRegister(vtcBucketSizeGauge)
+	
+	testGauge, cleanup := metrics.SetupMetricsForTest(metrics.VTCBucketSizeActive, []string{"pod", "model"})
+	defer cleanup()
 	
 	trackerConfig := &VTCConfig{
 		InputTokenWeight:  defaultInputTokenWeight,
@@ -543,7 +533,6 @@ func TestVTCBucketSizePatterns(t *testing.T) {
 		config:         trackerConfig,
 	}
 
-	// Create test pods
 	pods := createTestPodsForMetrics(2)
 	podList := NewSimplePodList(pods)
 	for _, pod := range pods {
@@ -551,11 +540,10 @@ func TestVTCBucketSizePatterns(t *testing.T) {
 	}
 	ctx := context.Background()
 	
-	// Test key patterns
 	patterns := []struct {
 		name        string
 		user        string
-		tokenFunc   func(i int) (float64, float64) // Returns input, output tokens
+		tokenFunc   func(i int) (float64, float64)
 		iterations  int
 		detectFunc  func(sizes []float64) bool
 		expected    string
@@ -603,9 +591,7 @@ func TestVTCBucketSizePatterns(t *testing.T) {
 		},
 	}
 	
-	// Run pattern tests
 	for _, pattern := range patterns {
-		// Execute the pattern
 		sizes := make([]float64, 0, pattern.iterations)
 		for i := 0; i < pattern.iterations; i++ {
 			inTokens, outTokens := pattern.tokenFunc(i)
@@ -616,11 +602,10 @@ func TestVTCBucketSizePatterns(t *testing.T) {
 			_, err := router.Route(routingCtx, podList)
 			assert.NoError(t, err)
 			
-			// Record bucket size
-			sizes = append(sizes, testutil.ToFloat64(vtcBucketSizeGauge.WithLabelValues(pods[0].Name, "model1")))
+			metricValue := testutil.ToFloat64(testGauge.WithLabelValues("pod1", "model1"))
+			sizes = append(sizes, metricValue)
 		}
 		
-		// Detect pattern
 		t.Logf("%s bucket sizes: %v", pattern.name, sizes)
 		if pattern.detectFunc(sizes) {
 			t.Logf("PATTERN DETECTED: %s", pattern.expected)
@@ -630,7 +615,6 @@ func TestVTCBucketSizePatterns(t *testing.T) {
 		}
 	}
 	
-	// Summary guide
 	t.Log("\nvtc_bucket_size_active metric interpretation guide:")
 	t.Log("1. Smooth changes: VTC adaptation is healthy")
 	t.Log("2. Saw-tooth jumps: Increase min bucket size or window")
@@ -638,7 +622,6 @@ func TestVTCBucketSizePatterns(t *testing.T) {
 	t.Log("4. Low values: Consider decreasing min threshold")
 }
 
-// Helper function to create test pods for metrics testing
 func createTestPodsForMetrics(count int) []*v1.Pod {
 	pods := make([]*v1.Pod, count)
 	for i := 0; i < count; i++ {
