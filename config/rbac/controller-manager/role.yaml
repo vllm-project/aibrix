@@ -114,6 +114,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - pods/exec
   - pods/status
   - services
   verbs:
