@@ -24,11 +24,15 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/vllm-project/aibrix/pkg/utils"
 
@@ -70,6 +74,36 @@ var (
 	kvCacheServerAdminPort            int
 	consistentHashingTotalSlots       int
 	consistentHashingVirtualNodeCount int
+)
+
+var (
+	metadataVersionGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "kvcache_cluster_version",
+		Help: "Current version of the KVCache cluster metadata.",
+	}, []string{"name"})
+
+	metadataUpgradeCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "kvcache_metadata_version_upgrade_counter",
+		Help: "Number of times the metadata version has been upgraded.",
+	}, []string{"name"})
+
+	metadataUpdateSkippedCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "kvcache_metadata_update_skipped",
+		Help: "Number of times there's no valid pods and skip the metadata updates.",
+	}, []string{"name"})
+
+	metadataUpdateFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "kvcache_metadata_update_failures_total",
+		Help: "Total number of failures when updating cluster metadata to Redis.",
+	}, []string{"name"})
+
+	podStatusPhaseGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kvcache_pod_status_phase_total",
+			Help: "Number of KVCache pods per status phase.",
+		},
+		[]string{"name", "phase"},
+	)
 )
 
 type SlotRange struct {
@@ -188,6 +222,22 @@ func NewKVCacheBackend(backend string) KVCacheBackend {
 func main() {
 	ctx := context.Background()
 	parseFlags()
+
+	// Register Prometheus metrics
+	prometheus.MustRegister(metadataVersionGauge)
+	prometheus.MustRegister(metadataUpgradeCounter)
+	prometheus.MustRegister(metadataUpdateSkippedCounter)
+	prometheus.MustRegister(metadataUpdateFailures)
+	prometheus.MustRegister(podStatusPhaseGauge)
+
+	// Expose /metrics endpoint
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		klog.Info("Starting Prometheus metrics server on :8000")
+		if err := http.ListenAndServe(":8000", nil); err != nil {
+			klog.Fatalf("Failed to start Prometheus HTTP server: %v", err)
+		}
+	}()
 
 	// read environment variables from env
 	redisAddr := os.Getenv("REDIS_ADDR")
@@ -358,12 +408,15 @@ func syncPods(
 	klog.Infof("%d pods Found in kvcache cluster %s", len(pods), kvClusterId)
 
 	validPods := make([]corev1.Pod, 0)
+	phaseCounts := map[corev1.PodPhase]int{}
 	for _, obj := range pods {
 		pod, ok := obj.(*corev1.Pod)
 		if !ok {
 			klog.Warningf("unexpected object type in informer cache: %T", obj)
 			continue
 		}
+
+		phaseCounts[pod.Status.Phase]++
 
 		// skip pods not belong to current kvcache cluster and kvcache server
 		if _, ok := pod.Labels[KVCacheLabelKeyIdentifier]; !ok {
@@ -379,8 +432,15 @@ func syncPods(
 		}
 	}
 
+	// export pod phase counts
+	podStatusPhaseGauge.Reset()
+	for phase, count := range phaseCounts {
+		podStatusPhaseGauge.WithLabelValues(kvClusterId, string(phase)).Set(float64(count))
+	}
+
 	if len(validPods) == 0 {
 		klog.Warningf("No valid KVCache pods found after filtering for cluster %v", kvClusterId)
+		metadataUpdateSkippedCounter.WithLabelValues(kvClusterId).Inc()
 		return nil
 	}
 
@@ -415,12 +475,14 @@ func syncPods(
 	needUpdate := !isNodeListEqual(currentNodes, existingClusterNodes.Nodes)
 	if !needUpdate {
 		klog.Infof("Node list unchanged, skipping update, current version: %d", existingClusterNodes.Version)
+		metadataVersionGauge.WithLabelValues(kvClusterId).Set(float64(existingClusterNodes.Version))
 		return nil
 	}
 
 	newVersion := int64(1)
 	if val != "" {
 		newVersion = existingClusterNodes.Version + 1
+		metadataUpgradeCounter.WithLabelValues(kvClusterId).Inc()
 	}
 
 	newData := ClusterNodes{
@@ -437,9 +499,11 @@ func syncPods(
 	pipe := rdb.TxPipeline()
 	pipe.Set(ctx, redisKey, jsonData, 0)
 	if _, err := pipe.Exec(ctx); err != nil {
+		metadataUpdateFailures.WithLabelValues(kvClusterId).Inc()
 		return fmt.Errorf("redis transaction failed: %v", err)
 	}
 
+	metadataVersionGauge.WithLabelValues(kvClusterId).Set(float64(newVersion))
 	klog.InfoS("Successfully updated cluster nodes", "version", newVersion, "nodeCount", len(currentNodes))
 	return nil
 }

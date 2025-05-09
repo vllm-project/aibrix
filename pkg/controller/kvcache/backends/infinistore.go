@@ -146,7 +146,14 @@ func buildKVCacheWatcherPodForInfiniStore(kvCache *orchestrationv1alpha1.KVCache
 						"--consistent-hashing-virtual-node-count", strconv.Itoa(params.VirtualNodeCount),
 					},
 					// You can also add volumeMounts, env vars, etc. if needed.
-					Env:       envs,
+					Env: envs,
+					Ports: []corev1.ContainerPort{
+						{
+							Name:          "metrics",
+							ContainerPort: int32(8000),
+							Protocol:      corev1.ProtocolTCP,
+						},
+					},
 					Resources: kvCache.Spec.Watcher.Resources,
 				},
 			},
