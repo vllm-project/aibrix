@@ -12,6 +12,6 @@ spec:
             - --leader-elect
             - --leader-election-id=aibrix-kv-cache-controller
             - --health-probe-bind-address=:8081
-            - --metrics-bind-address=0
+            - --metrics-bind-address=:8080
             - --controllers=kv-cache-controller
             - --disable-webhook

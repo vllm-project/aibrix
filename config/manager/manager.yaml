@@ -67,6 +67,10 @@ metadata:
     control-plane: controller-manager
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
   name: controller-manager-metrics-service
   namespace: system
 spec:

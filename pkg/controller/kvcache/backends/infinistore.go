@@ -138,6 +138,11 @@ func buildKVCacheWatcherPodForInfiniStore(kvCache *orchestrationv1alpha1.KVCache
 				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
 				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleKVWatcher,
 			},
+			Annotations: map[string]string{
+				"prometheus.io/scrape": "true",
+				"prometheus.io/port":   "8000",
+				"prometheus.io/path":   "/metrics",
+			},
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(kvCache, orchestrationv1alpha1.GroupVersion.WithKind("KVCache")),
 			},
@@ -206,7 +211,11 @@ func buildCacheStatefulSetForInfiniStore(kvCache *orchestrationv1alpha1.KVCache)
 		envs = append(envs, kvCache.Spec.Cache.Env...)
 	}
 
-	annotations := map[string]string{}
+	annotations := map[string]string{
+		"prometheus.io/scrape": "true",
+		"prometheus.io/port":   strconv.Itoa(params.AdminPort),
+		"prometheus.io/path":   "/metrics",
+	}
 	rdmaKey := corev1.ResourceName("vke.volcengine.com/rdma")
 	if _, ok := kvCache.Spec.Cache.Resources.Limits[rdmaKey]; ok {
 		annotations["k8s.volcengine.com/pod-networks"] = `
