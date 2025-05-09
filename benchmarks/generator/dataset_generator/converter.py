@@ -2,7 +2,7 @@ import logging
 import pandas as pd
 import json
 import logging
-from util import save_dataset_jsonl
+from generator.dataset_generator.util import save_dataset_jsonl
 
     
 def process_dataset_trace(dataset_path: str, output: str) -> pd.DataFrame:

@@ -3,8 +3,8 @@ import numpy as np
 import logging
 from transformers import AutoTokenizer
 from typing import Dict, Any
-from synthetic_prompt import generate_synthetic_prompt
-from util import save_dataset_jsonl
+from generator.dataset_generator.synthetic_prompt import generate_synthetic_prompt
+from generator.dataset_generator.util import save_dataset_jsonl
 
 class NormalSampler:
     def __init__(self, mean: float, std: float) -> None:
@@ -46,7 +46,7 @@ def analyze_dataset(dataset: Dict[str, Any], tokenizer: AutoTokenizer):
     for p, v in zip(percentiles, values):
         logging.warning(f"  {p}th percentile: {v:.2f} rounds")
     
-def generate_synthetic(args):
+def main(args):
     session_sampler = NormalSampler(args.num_sessions_mean, args.num_sessions_std)
     turn_sampler = NormalSampler(args.num_turns_mean, args.num_turns_std)
     prompt_len_sampler = ParetoSampler(args.prompt_length_mean, args.prompt_length_std)
@@ -101,5 +101,5 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default="output.jsonl", help="Output file name.")
     
     args = parser.parse_args()
-    generate_synthetic(args)
+    main(args)
     

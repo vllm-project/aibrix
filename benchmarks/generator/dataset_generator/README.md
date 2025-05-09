@@ -6,6 +6,8 @@ The dataset generator supports generating synthetic prompt that follows certain 
 
 
 ## Generate Synthetic Prompt
+> **Note** All generator invocation should be done under the benchmark home (i.e., `/aibrix/benchmarks/`)
+
 ### Generate Synthetic Prefix-sharing Dataset
 
 We support generating synthetic prefix-sharing dataset with controlled prompt length (mean and standard deviation) and shared prompt percentages (mean and standard deviation). For example:
@@ -14,7 +16,7 @@ We support generating synthetic prefix-sharing dataset with controlled prompt le
 NUM_PREFIX=10
 NUM_SAMPLES=200
 ## Toolbench Workload
-python synthetic_prefix_sharing_dataset.py \
+python -m generator.dataset_generator.synthetic_prefix_sharing_dataset \
     --app-name programming \
     --prompt-length 1835 \
     --prompt-length-std 742 \
@@ -26,7 +28,7 @@ python synthetic_prefix_sharing_dataset.py \
     --output output.jsonl
 
 ## Embodied Agent Workload
-python synthetic_prefix_sharing_dataset.py \
+python -m generator.dataset_generator.synthetic_prefix_sharing_dataset \
     --app-name programming \
     --prompt-length 2285 \
     --prompt-length-std 471 \
@@ -38,7 +40,7 @@ python synthetic_prefix_sharing_dataset.py \
     --output output.jsonl
 
 ## Programming Workload
-python synthetic_prefix_sharing_dataset.py \
+python -m generator.dataset_generator.synthetic_prefix_sharing_dataset \
     --app-name programming \
     --prompt-length 3871 \
     --prompt-length-std 1656 \
@@ -50,7 +52,7 @@ python synthetic_prefix_sharing_dataset.py \
     --output output.jsonl
 
 ## Video QA Workload
-python synthetic_prefix_sharing_dataset.py \
+python -m generator.dataset_generator.synthetic_prefix_sharing_dataset \
     --app-name programming \
     --prompt-length 9865 \
     --prompt-length-std 5976 \
@@ -62,7 +64,7 @@ python synthetic_prefix_sharing_dataset.py \
     --output output.jsonl
 
 ## LooGLE Workload
-python synthetic_prefix_sharing_dataset.py \
+python -m generator.dataset_generator.synthetic_prefix_sharing_dataset \
     --app-name programming \
     --prompt-length 23474 \
     --prompt-length-std 6105 \
@@ -77,7 +79,7 @@ python synthetic_prefix_sharing_dataset.py \
 This will generate a .jsonl file that contains collection of prompt to serve as input to the workload generator. 
 
 The commands above simulate a cache sharing scheme for programming workload described in [Preble](https://arxiv.org/pdf/2407.00023), as shown below:
-![image](image/dataset-examples.png)
+![image](dataset-examples.png)
 
 In general, the ```synthetic_prefix_sharing_dataset.py ``` creates synthetic dataset that simulate controlled prompt lengths distribution and sharing lengths. Here ```--num-prefix``` is the number of unique shared contexts appeared in the dataset and ```--num-samples-per-prefix``` is the number of prompts sampled on each shared context. 
 
@@ -86,7 +88,7 @@ In general, the ```synthetic_prefix_sharing_dataset.py ``` creates synthetic dat
 We also support generating synthetic multi-turn conversation. Here you can control the prompt length (mean and standard deviation), number of turns (mean and standard deviation) and prompt length (mean and standard deviation). For example:
 
 ```shell
-python multiturn_prefix_sharing_dataset.py \
+python -m generator.dataset_generator.multiturn_prefix_sharing_dataset \
     --prompt-length-mean 100 \
     --prompt-length-std 10 \
     --num-turns-mean 10 \
@@ -104,7 +106,7 @@ This will generate a .jsonl file that contains collection of sessioned prompts. 
 We can convert ```output.jsonl```, which contains both prompt and completion from a previous run, to prompt file like the following:
 ```shell
 export TRACE="trace.jsonl"
-python utility.py convert \
+python -m generator.dataset_generator.utility convert \
     --path ${TRACE} \
     --type trace \
     --output output.jsonl
@@ -123,7 +125,7 @@ wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/r
 ... convert dataset like 
 
 ```shell
-python utility.py convert  \
+python -m generator.dataset_generator.utility convert  \
     --path ${TARGET_DATASET} \
     --type sharegpt \
     --output output.jsonl
