@@ -22,6 +22,7 @@ import (
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -112,4 +113,76 @@ func buildRedisService(kvCache *orchestrationv1alpha1.KVCache) *corev1.Service {
 	}
 
 	return svc
+}
+
+// buildServiceAccount creates a new ServiceAccount for Distributed kv cache solution.
+func buildServiceAccount(kvCache *orchestrationv1alpha1.KVCache) *corev1.ServiceAccount {
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      kvCache.Name,
+			Namespace: kvCache.Namespace,
+			Labels: map[string]string{
+				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
+			},
+		},
+	}
+
+	return sa
+}
+
+// buildRole creates a new Role for a KVCache resource.
+func buildRole(kvCache *orchestrationv1alpha1.KVCache) *rbacv1.Role {
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      kvCache.Name,
+			Namespace: kvCache.Namespace,
+			Labels: map[string]string{
+				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
+			},
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods/exec"},
+				Verbs:     []string{"create"},
+			},
+		},
+	}
+
+	return role
+}
+
+// buildRoleBinding creates rolebinding for a kvCache object
+func buildRoleBinding(kvCache *orchestrationv1alpha1.KVCache) *rbacv1.RoleBinding {
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      kvCache.Name,
+			Namespace: kvCache.Namespace,
+			Labels: map[string]string{
+				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
+			},
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      kvCache.Name,
+				Namespace: kvCache.Namespace,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "Role",
+			Name:     kvCache.Name,
+		},
+	}
+
+	return rb
 }

@@ -22,6 +22,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -181,6 +182,9 @@ type mockBackend struct {
 	watcher *corev1.Pod
 	svc     *corev1.Service
 	sts     *appsv1.StatefulSet
+	sa      *corev1.ServiceAccount
+	role    *rbacv1.Role
+	rb      *rbacv1.RoleBinding
 }
 
 func (m mockBackend) Name() string {
@@ -197,6 +201,18 @@ func (m mockBackend) BuildMetadataPod(*v1alpha1.KVCache) *corev1.Pod {
 
 func (m mockBackend) BuildMetadataService(*v1alpha1.KVCache) *corev1.Service {
 	return m.svc
+}
+
+func (m mockBackend) BuildWatcherPodServiceAccount(*v1alpha1.KVCache) *corev1.ServiceAccount {
+	return m.sa
+}
+
+func (m mockBackend) BuildWatcherPodRole(*v1alpha1.KVCache) *rbacv1.Role {
+	return m.role
+}
+
+func (m mockBackend) BuildWatcherPodRoleBinding(*v1alpha1.KVCache) *rbacv1.RoleBinding {
+	return m.rb
 }
 
 func (m mockBackend) BuildWatcherPod(*v1alpha1.KVCache) *corev1.Pod {

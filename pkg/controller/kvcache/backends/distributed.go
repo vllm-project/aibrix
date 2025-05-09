@@ -60,6 +60,18 @@ func (r *DistributedReconciler) Reconcile(ctx context.Context, kvCache *orchestr
 		return reconcile.Result{}, err
 	}
 
+	if err := r.reconcileWatcherPodServiceAccount(ctx, r.Backend.BuildWatcherPodServiceAccount(kvCache)); err != nil {
+		return reconcile.Result{}, err
+	}
+
+	if err := r.reconcileWatcherPodRole(ctx, r.Backend.BuildWatcherPodRole(kvCache)); err != nil {
+		return reconcile.Result{}, err
+	}
+
+	if err := r.reconcileWatcherPodRoleBinding(ctx, r.Backend.BuildWatcherPodRoleBinding(kvCache)); err != nil {
+		return reconcile.Result{}, err
+	}
+
 	// Handle infinistore kvCache Deployment
 	if err := r.ReconcileStatefulsetObject(ctx, r.Backend.BuildCacheStatefulSet(kvCache)); err != nil {
 		return ctrl.Result{}, err

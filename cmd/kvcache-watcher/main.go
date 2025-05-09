@@ -56,7 +56,7 @@ import (
 const KVCacheLabelKeyIdentifier = "kvcache.orchestration.aibrix.ai/name"
 const KVCacheLabelKeyRole = "kvcache.orchestration.aibrix.ai/role"
 const KVCacheLabelValueRoleCache = "cache"
-const HPKVRedisNodeMemberKey = "hpkv_nodes"
+const HPKVRedisNodeMemberKey = "hpkv_cluster_metadata"
 const InfiniStoreRedisNodeMemberKey = "kvcache_nodes"
 
 const networkStatusAnnotation = "k8s.volcengine.com/network-status"

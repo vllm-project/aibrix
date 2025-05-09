@@ -26,6 +26,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -70,6 +71,18 @@ func (InfiniStoreBackend) ValidateObject(kvCache *orchestrationv1alpha1.KVCache)
 		return errors.New("either etcd or redis configuration is required")
 	}
 	return nil
+}
+
+func (b InfiniStoreBackend) BuildWatcherPodServiceAccount(kvCache *orchestrationv1alpha1.KVCache) *corev1.ServiceAccount {
+	return buildServiceAccount(kvCache)
+}
+
+func (b InfiniStoreBackend) BuildWatcherPodRole(kvCache *orchestrationv1alpha1.KVCache) *rbacv1.Role {
+	return buildRole(kvCache)
+}
+
+func (b InfiniStoreBackend) BuildWatcherPodRoleBinding(kvCache *orchestrationv1alpha1.KVCache) *rbacv1.RoleBinding {
+	return buildRoleBinding(kvCache)
 }
 
 func (InfiniStoreBackend) BuildWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
@@ -157,8 +170,7 @@ func buildKVCacheWatcherPodForInfiniStore(kvCache *orchestrationv1alpha1.KVCache
 					Resources: kvCache.Spec.Watcher.Resources,
 				},
 			},
-			// TODO: refactor the permission management here.
-			ServiceAccountName: "kvcache-watcher-sa",
+			ServiceAccountName: kvCache.Name,
 		},
 	}
 
@@ -192,6 +204,20 @@ func buildCacheStatefulSetForInfiniStore(kvCache *orchestrationv1alpha1.KVCache)
 	envs = append(envs, kvCacheServerEnvVars...)
 	if len(kvCache.Spec.Cache.Env) == 0 {
 		envs = append(envs, kvCache.Spec.Cache.Env...)
+	}
+
+	annotations := map[string]string{}
+	rdmaKey := corev1.ResourceName("vke.volcengine.com/rdma")
+	if _, ok := kvCache.Spec.Cache.Resources.Limits[rdmaKey]; ok {
+		annotations["k8s.volcengine.com/pod-networks"] = `
+[
+  {
+    "cniConf": {
+      "name": "rdma"
+    }
+  }
+]
+`
 	}
 
 	kvCacheServerArgs := []string{
@@ -230,19 +256,7 @@ func buildCacheStatefulSetForInfiniStore(kvCache *orchestrationv1alpha1.KVCache)
 						constants.KVCacheLabelKeyIdentifier: kvCache.Name,
 						constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
 					},
-					// TODO: if there's rdma enabled, then we should attach resources.
-					// use an annotation to control it? enable RDMA
-					Annotations: map[string]string{
-						"k8s.volcengine.com/pod-networks": `
-[
-  {
-    "cniConf": {
-      "name": "rdma"
-    }
-  }
-]
-`,
-					},
+					Annotations: annotations,
 				},
 				Spec: corev1.PodSpec{
 					//HostNetwork: true, // CNI doesn't need hostNetwork:true. in that case, RDMA ip won't be injected.

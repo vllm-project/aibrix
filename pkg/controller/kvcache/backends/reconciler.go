@@ -21,6 +21,7 @@ import (
 	"reflect"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -128,6 +129,42 @@ func (r *BaseReconciler) ReconcileStatefulsetObject(ctx context.Context, sts *ap
 	return nil
 }
 
+func (r *BaseReconciler) reconcileWatcherPodServiceAccount(ctx context.Context, sa *corev1.ServiceAccount) error {
+	found := &corev1.ServiceAccount{}
+	err := r.Get(ctx, types.NamespacedName{Name: sa.Name, Namespace: sa.Namespace}, found)
+	if err != nil && apierrors.IsNotFound(err) {
+		klog.InfoS("Creating a new ServiceAccount", "SA.Namespace", sa.Namespace, "SA.Name", sa.Name)
+		return r.Create(ctx, sa)
+	} else if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *BaseReconciler) reconcileWatcherPodRole(ctx context.Context, role *rbacv1.Role) error {
+	found := &rbacv1.Role{}
+	err := r.Get(ctx, types.NamespacedName{Name: role.Name, Namespace: role.Namespace}, found)
+	if err != nil && apierrors.IsNotFound(err) {
+		klog.InfoS("Creating a new Role", "Role.Namespace", role.Namespace, "Role.Name", role.Name)
+		return r.Create(ctx, role)
+	} else if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *BaseReconciler) reconcileWatcherPodRoleBinding(ctx context.Context, rolebinding *rbacv1.RoleBinding) error {
+	found := &rbacv1.RoleBinding{}
+	err := r.Get(ctx, types.NamespacedName{Name: rolebinding.Name, Namespace: rolebinding.Namespace}, found)
+	if err != nil && apierrors.IsNotFound(err) {
+		klog.InfoS("Creating a new RoleBinding", "RoleBinding.Namespace", rolebinding.Namespace, "RoleBinding.Name", rolebinding.Name)
+		return r.Create(ctx, rolebinding)
+	} else if err != nil {
+		return err
+	}
+	return nil
+}
+
 // needsUpdateService checks if the service spec of the new service differs from the existing one
 func needsUpdateService(service, found *corev1.Service) bool {
 	// Compare relevant spec fields
@@ -175,6 +212,9 @@ type KVCacheBackend interface {
 	ValidateObject(*orchestrationv1alpha1.KVCache) error
 	BuildMetadataPod(*orchestrationv1alpha1.KVCache) *corev1.Pod
 	BuildMetadataService(*orchestrationv1alpha1.KVCache) *corev1.Service
+	BuildWatcherPodServiceAccount(*orchestrationv1alpha1.KVCache) *corev1.ServiceAccount
+	BuildWatcherPodRole(*orchestrationv1alpha1.KVCache) *rbacv1.Role
+	BuildWatcherPodRoleBinding(*orchestrationv1alpha1.KVCache) *rbacv1.RoleBinding
 	BuildWatcherPod(*orchestrationv1alpha1.KVCache) *corev1.Pod
 	BuildCacheStatefulSet(*orchestrationv1alpha1.KVCache) *appsv1.StatefulSet
 	BuildService(*orchestrationv1alpha1.KVCache) *corev1.Service
