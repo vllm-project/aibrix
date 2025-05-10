@@ -35,13 +35,13 @@ func NewBinPackScheduler(c cache.Cache) Scheduler {
 	}
 }
 
-func (r binPackScheduler) SelectPod(ctx context.Context, model string, pods []v1.Pod) (*v1.Pod, error) {
+func (r binPackScheduler) SelectPod(ctx context.Context, model string, readyPods []v1.Pod) (*v1.Pod, error) {
 	// Binpack algorithm: choose the pod (1) can place the adapter, (2) with the least remaining space
 
 	selectedPod := v1.Pod{}
 	podRemainCapMin := math.MaxInt
 
-	for _, pod := range pods {
+	for _, pod := range readyPods {
 		models, err := r.cache.ListModelsByPod(pod.Name, pod.Namespace)
 		if err != nil {
 			return nil, err

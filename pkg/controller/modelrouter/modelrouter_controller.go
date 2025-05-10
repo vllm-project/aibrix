@@ -248,12 +248,14 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 		},
 	}
 	err = m.Client.Create(context.Background(), &httpRoute)
-	if err != nil && !apierrors.IsAlreadyExists(err) {
-		klog.Errorln(err)
-		return
-	}
-
-	if err == nil {
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			klog.V(4).Infof("httproute: %v already exists in namespace: %v", httpRoute.Name, namespace)
+		} else {
+			klog.ErrorS(err, "Failed to create httproute", "namespace", namespace, "name", httpRoute.Name)
+			return
+		}
+	} else {
 		klog.Infof("httproute: %v created for model: %v", httpRoute.Name, modelName)
 	}
 

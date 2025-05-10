@@ -35,9 +35,9 @@ func NewRandomScheduler(c cache.Cache) Scheduler {
 	}
 }
 
-func (r randomScheduler) SelectPod(ctx context.Context, model string, pods []v1.Pod) (*v1.Pod, error) {
-	idx := rand.Intn(len(pods))
-	selectedPod := pods[idx]
+func (r randomScheduler) SelectPod(ctx context.Context, model string, readyPods []v1.Pod) (*v1.Pod, error) {
+	idx := rand.Intn(len(readyPods))
+	selectedPod := readyPods[idx]
 
 	klog.InfoS("pod selected with random scheduler", "pod", klog.KObj(&selectedPod))
 	return &selectedPod, nil

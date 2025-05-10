@@ -58,6 +58,7 @@ import (
 
 const (
 	ModelIdentifierKey                = "model.aibrix.ai/name"
+	ModelAdapterKey                   = "adapter.model.aibrix.ai/name"
 	ModelAdapterFinalizer             = "adapter.model.aibrix.ai/finalizer"
 	ModelAdapterPodTemplateLabelKey   = "adapter.model.aibrix.ai/enabled"
 	ModelAdapterPodTemplateLabelValue = "true"

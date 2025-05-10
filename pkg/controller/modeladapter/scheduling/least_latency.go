@@ -36,11 +36,11 @@ func NewLeastLatencyScheduler(c cache.Cache) Scheduler {
 	}
 }
 
-func (r leastLatencyScheduler) SelectPod(ctx context.Context, model string, pods []v1.Pod) (*v1.Pod, error) {
+func (r leastLatencyScheduler) SelectPod(ctx context.Context, model string, readyPods []v1.Pod) (*v1.Pod, error) {
 	selectedPod := v1.Pod{}
 	podLatencyMin := math.MaxFloat64
 
-	for _, pod := range pods {
+	for _, pod := range readyPods {
 		queueTime, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, model, metrics.RequestQueueTimeSeconds)
 		if err != nil {
 			return nil, err

@@ -35,11 +35,11 @@ func NewLeastAdapters(c cache.Cache) Scheduler {
 	}
 }
 
-func (r leastAdapters) SelectPod(ctx context.Context, model string, pods []v1.Pod) (*v1.Pod, error) {
+func (r leastAdapters) SelectPod(ctx context.Context, model string, readyPods []v1.Pod) (*v1.Pod, error) {
 	selectedPod := v1.Pod{}
 	modelAdapterCountMin := math.MaxInt
 
-	for _, pod := range pods {
+	for _, pod := range readyPods {
 		models, err := r.cache.ListModelsByPod(pod.Name, pod.Namespace)
 		if err != nil {
 			return nil, err

@@ -26,8 +26,9 @@ import (
 )
 
 type Scheduler interface {
-	// SelectPod returns the pod to schedule model adapter
-	SelectPod(ctx context.Context, model string, pods []v1.Pod) (*v1.Pod, error)
+	// SelectPod selects a suitable Pod to schedule the model adapter based on the given model and available pods.
+	// The input pods is guaranteed to be non-empty and contain only routable pods.
+	SelectPod(ctx context.Context, model string, readyPods []v1.Pod) (*v1.Pod, error)
 }
 
 // NewScheduler leverages the factory method to choose the right scheduler
