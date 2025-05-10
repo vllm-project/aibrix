@@ -46,8 +46,8 @@ const (
 	MaxLora                              = "max_lora"
 	WaitingLoraAdapters                  = "waiting_lora_adapters"
 	RunningLoraAdapters                  = "running_lora_adapters"
-	// Realtime metrics
-	RealtimeNumRequestsRunning = "realtime_num_requests_running"
+	VTCBucketSizeActive                  = "vtc_bucket_size_active"
+	RealtimeNumRequestsRunning           = "realtime_num_requests_running"
 )
 
 var (
@@ -302,6 +302,14 @@ var (
 			},
 			RawMetricName: "lora_requests_info",
 			Description:   "Count of waiting Lora Adapters",
+		},
+		VTCBucketSizeActive: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			Description: "Current adaptive bucket size used by VTC algorithm for token normalization",
 		},
 	}
 )
