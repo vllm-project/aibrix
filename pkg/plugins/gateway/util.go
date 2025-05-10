@@ -23,28 +23,76 @@ import (
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/openai/openai-go"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
 
-// validateStreamOptions validates whether stream options to include usage is set for user request
-func validateStreamOptions(requestID string, user utils.User, jsonMap map[string]interface{}) *extProcPb.ProcessingResponse {
-	if user.Tpm != 0 {
-		streamOptions, ok := jsonMap["stream_options"].(map[string]interface{})
-		if !ok {
-			klog.ErrorS(nil, "no stream option available", "requestID", requestID, "jsonMap", jsonMap)
-			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderErrorNoStreamOptions, RawValue: []byte("stream options not set")}}},
-				"no stream option available")
+func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+	var streamOptions openai.ChatCompletionStreamOptionsParam
+	if requestPath == "/v1/chat/completions" {
+		var jsonMap map[string]json.RawMessage
+		if err := json.Unmarshal(requestBody, &jsonMap); err != nil {
+			klog.ErrorS(err, "error to unmarshal request body", "requestID", requestID, "requestBody", string(requestBody))
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			return
 		}
-		includeUsage, ok := streamOptions["include_usage"].(bool)
-		if !includeUsage || !ok {
-			klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID, "jsonMap", jsonMap)
-			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderErrorStreamOptionsIncludeUsage, RawValue: []byte("include usage for stream options not set")}}},
-				"no stream with usage option available")
+
+		chatCompletionObj := openai.ChatCompletionNewParams{}
+		if err := json.Unmarshal(requestBody, &chatCompletionObj); err != nil {
+			klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		model, streamOptions = chatCompletionObj.Model, chatCompletionObj.StreamOptions
+		if message, errRes = getChatCompletionsMessage(jsonMap); errRes != nil {
+			return
+		}
+		if errRes = validateStreamOptions(requestID, user, &stream, streamOptions, jsonMap); errRes != nil {
+			return
+		}
+	} else if requestPath == "/v1/completions" {
+		// openai.CompletionsNewParams does not support json unmarshal for CompletionNewParamsPromptUnion in release v0.1.0-beta.10
+		// once supported, input request will be directly unmarshal into openai.CompletionsNewParams
+		type Completion struct {
+			Prompt string `json:"prompt"`
+			Model  string `json:"model"`
+		}
+		completionObj := Completion{}
+		err := json.Unmarshal(requestBody, &completionObj)
+		if err != nil {
+			klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_InternalServerError, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		model = completionObj.Model
+		message = completionObj.Prompt
+	} else {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	klog.InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "message", message, "stream", stream, "streamOptions", streamOptions)
+	return
+}
+
+// validateStreamOptions validates whether stream options to include usage is set for user request
+func validateStreamOptions(requestID string, user utils.User, stream *bool, streamOptions openai.ChatCompletionStreamOptionsParam, jsonMap map[string]json.RawMessage) *extProcPb.ProcessingResponse {
+	streamData, ok := jsonMap["stream"]
+	if !ok {
+		return nil
+	}
+
+	if err := json.Unmarshal(streamData, stream); err != nil {
+		klog.ErrorS(nil, "no stream option available", "requestID", requestID)
+		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream incorrectly set", HeaderErrorStream, "stream incorrectly set")
+	}
+
+	if *stream && user.Tpm > 0 {
+		if !streamOptions.IncludeUsage.Value {
+			klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID, "streamOption", streamOptions)
+			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "include usage for stream options not set",
+				HeaderErrorStreamOptionsIncludeUsage, "include usage for stream options not set")
 		}
 	}
 	return nil
@@ -66,28 +114,37 @@ func getRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
 	return defaultRoutingStrategy, defaultRoutingStrategyEnabled
 }
 
-// getRequestMessage returns input request message field which has user prompt
-func getRequestMessage(jsonMap map[string]interface{}) (string, *extProcPb.ProcessingResponse) {
-	messages, ok := jsonMap["messages"]
-	if !ok || messages == "" {
-		messages, ok = jsonMap["prompt"]
+// getChatCompletionsMessage returns message for chat completions object
+func getChatCompletionsMessage(jsonMap map[string]json.RawMessage) (string, *extProcPb.ProcessingResponse) {
+	// openai golang lib does not support unmarshal for ChatCompletionsNewParams.Messages object (https://github.com/openai/openai-go/issues/247)
+	// Once supported, remove the short term fix
+	type Message struct {
+		Content string `json:"content"`
+		Role    string `json:"role"`
 	}
 
+	messages, ok := jsonMap["messages"]
 	if !ok {
-		return "", generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: HeaderErrorRequestBodyProcessing, RawValue: []byte("true")}}},
-			"no messages/prompt in the request body")
+		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", HeaderErrorRequestBodyProcessing, "true")
 	}
-	messagesJSON, err := json.Marshal(messages)
-	if err != nil {
-		return "", generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: HeaderErrorRequestBodyProcessing, RawValue: []byte("true")}}},
-			"unable to marshal messages from request body")
+
+	var output []Message
+	if err := json.Unmarshal(messages, &output); err != nil {
+		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "unable to marshal messages from request body", HeaderErrorRequestBodyProcessing, "true")
 	}
-	return string(messagesJSON), nil
+
+	var builder strings.Builder
+	for i, m := range output {
+		if i > 0 {
+			builder.WriteString(" ")
+		}
+		builder.WriteString(m.Content)
+	}
+	return builder.String(), nil
 }
 
 // generateErrorResponse construct envoy proxy error response
+// deprecated: use buildErrorResponse
 func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, body string) *extProcPb.ProcessingResponse {
 	// Set the Content-Type header to application/json
 	headers = append(headers, &configPb.HeaderValueOption{
@@ -122,4 +179,40 @@ func generateErrorMessage(message string, code int) string {
 	}
 	jsonData, _ := json.Marshal(errorStruct)
 	return string(jsonData)
+}
+
+func buildErrorResponse(statusCode envoyTypePb.StatusCode, errBody string, headers ...string) *extProcPb.ProcessingResponse {
+	return &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+			ImmediateResponse: &extProcPb.ImmediateResponse{
+				Status: &envoyTypePb.HttpStatus{
+					Code: statusCode,
+				},
+				Headers: &extProcPb.HeaderMutation{
+					SetHeaders: buildEnvoyProxyHeaders([]*configPb.HeaderValueOption{}, headers...),
+				},
+				Body: errBody,
+			},
+		},
+	}
+}
+
+func buildEnvoyProxyHeaders(headers []*configPb.HeaderValueOption, keyValues ...string) []*configPb.HeaderValueOption {
+	if len(keyValues)%2 != 0 {
+		return headers
+	}
+
+	for i := 0; i < len(keyValues); {
+		headers = append(headers,
+			&configPb.HeaderValueOption{
+				Header: &configPb.HeaderValue{
+					Key:      keyValues[i],
+					RawValue: []byte(keyValues[i+1]),
+				},
+			},
+		)
+		i += 2
+	}
+
+	return headers
 }

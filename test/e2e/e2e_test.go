@@ -32,10 +32,10 @@ func TestBaseModelInference(t *testing.T) {
 
 	client := createOpenAIClient(gatewayURL, apiKey)
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
-		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("Say this is a test"),
-		}),
-		Model: openai.F(modelName),
+		},
+		Model: modelName,
 	})
 	if err != nil {
 		t.Fatalf("chat completions failed: %v", err)
@@ -77,7 +77,7 @@ func TestBaseModelInferenceFailures(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			var client *openai.Client
+			var client openai.Client
 			if tc.routingStrategy != "" {
 				var dst *http.Response
 				client = createOpenAIClientWithRoutingStrategy(gatewayURL, tc.apiKey,
@@ -87,10 +87,10 @@ func TestBaseModelInferenceFailures(t *testing.T) {
 			}
 
 			_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
-				Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+				Messages: []openai.ChatCompletionMessageParamUnion{
 					openai.UserMessage("Say this is a test"),
-				}),
-				Model: openai.F(tc.modelName),
+				},
+				Model: tc.modelName,
 			})
 
 			assert.Error(t, err)
