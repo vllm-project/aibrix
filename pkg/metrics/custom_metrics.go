@@ -29,8 +29,9 @@ var (
 	customCounters   = make(map[string]*prometheus.CounterVec)
 	customCountersMu sync.RWMutex
 
-	// Function variable that can be overridden for testing
-	SetGaugeMetricFnForTest = defaultSetGaugeMetric
+	// Function variables that can be overridden for testing
+	SetGaugeMetricFnForTest         = defaultSetGaugeMetric
+	IncrementCounterMetricFnForTest = defaultIncrementCounterMetric
 )
 
 func SetGaugeMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
@@ -59,6 +60,10 @@ func defaultSetGaugeMetric(name string, help string, value float64, labelNames [
 }
 
 func IncrementCounterMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
+	IncrementCounterMetricFnForTest(name, help, value, labelNames, labelValues...)
+}
+
+func defaultIncrementCounterMetric(name string, help string, value float64, labelNames []string, labelValues ...string) {
 	customCountersMu.RLock()
 	counter, ok := customCounters[name]
 	customCountersMu.RUnlock()
@@ -110,4 +115,22 @@ func SetupMetricsForTest(metricName string, labelNames []string) (*prometheus.Ga
 	}
 
 	return testGauge, func() { SetGaugeMetricFnForTest = originalFn }
+}
+
+func SetupCounterMetricsForTest(metricName string, labelNames []string) (*prometheus.CounterVec, func()) {
+	testRegistry := prometheus.NewRegistry()
+	testCounter := prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: metricName},
+		labelNames,
+	)
+	testRegistry.MustRegister(testCounter)
+
+	originalFn := IncrementCounterMetricFnForTest
+	IncrementCounterMetricFnForTest = func(name string, help string, value float64, labels []string, labelValues ...string) {
+		if name == metricName {
+			testCounter.WithLabelValues(labelValues...).Add(value)
+		}
+	}
+
+	return testCounter, func() { IncrementCounterMetricFnForTest = originalFn }
 }

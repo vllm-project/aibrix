@@ -609,7 +609,8 @@ func TestVTCBucketSizePatterns(t *testing.T) {
 				continue
 			}
 
-			metricValue := testutil.ToFloat64(testGauge.WithLabelValues("pod1", "model1"))
+			podName := fmt.Sprintf("pod-metrics-%c", 'a'+i)
+			metricValue := testutil.ToFloat64(testGauge.WithLabelValues(podName, "model1"))
 			sizes = append(sizes, metricValue)
 		}
 

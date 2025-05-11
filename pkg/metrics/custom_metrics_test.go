@@ -157,3 +157,29 @@ func TestMultipleLabels(t *testing.T) {
 	value := testutil.ToFloat64(gauge.WithLabelValues(testLabelValue, testLabelValue2))
 	assert.Equal(t, testValue, value, "Metric value with multiple labels should match what was set")
 }
+
+func TestSetupCounterMetricsForTest(t *testing.T) {
+	prometheus.DefaultRegisterer = prometheus.NewRegistry()
+	customCounters = make(map[string]*prometheus.CounterVec)
+
+	testCounter, cleanup := SetupCounterMetricsForTest("test_counter", []string{"pod", "model"})
+	defer cleanup()
+
+	IncrementCounterMetric("test_counter", "Test counter metric", 5.0, []string{"pod", "model"}, "pod-1", "model-1")
+
+	metricValue := testutil.ToFloat64(testCounter.WithLabelValues("pod-1", "model-1"))
+	assert.Equal(t, 5.0, metricValue, "Counter metric value should match the incremented value")
+
+	IncrementCounterMetric("test_counter", "Test counter metric", 3.0, []string{"pod", "model"}, "pod-1", "model-1")
+
+	metricValue = testutil.ToFloat64(testCounter.WithLabelValues("pod-1", "model-1"))
+	assert.Equal(t, 8.0, metricValue, "Counter metric value should accumulate")
+
+	IncrementCounterMetric("test_counter", "Test counter metric", 10.0, []string{"pod", "model"}, "pod-2", "model-1")
+
+	metricValue = testutil.ToFloat64(testCounter.WithLabelValues("pod-1", "model-1"))
+	assert.Equal(t, 8.0, metricValue, "Original counter metric should be unchanged")
+
+	metricValue = testutil.ToFloat64(testCounter.WithLabelValues("pod-2", "model-1"))
+	assert.Equal(t, 10.0, metricValue, "Counter metric with different labels should have correct value")
+}
