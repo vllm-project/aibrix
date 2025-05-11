@@ -44,6 +44,9 @@ func IsRayClusterAvailable(cluster *rayclusterv1.RayCluster, minReadySeconds int
 
 	headPodReadyCond := meta.FindStatusCondition(cluster.Status.Conditions, string(rayclusterv1.HeadPodReady))
 	provisionedCond := meta.FindStatusCondition(cluster.Status.Conditions, string(rayclusterv1.RayClusterProvisioned))
+	if headPodReadyCond == nil || provisionedCond == nil {
+		return false
+	}
 
 	lastTransitionTime := provisionedCond.LastTransitionTime
 	if headPodReadyCond.LastTransitionTime.Time.After(provisionedCond.LastTransitionTime.Time) {
