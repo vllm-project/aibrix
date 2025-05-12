@@ -11,14 +11,10 @@ spec:
         patch:
           type: StrategicMerge
           value:
-            metadata:
-              annotations:
-                service.beta.kubernetes.io/volcengine-loadbalancer-address-type: "PRIVATE"
             spec:
               ipFamilies:
                 - IPv4
-                - IPv6
-              ipFamilyPolicy: PreferDualStack
+              ipFamilyPolicy: SingleStack
       envoyDeployment:
         replicas: 1
         container:
@@ -31,8 +27,6 @@ spec:
               cpu: 2
               memory: 8Gi
         pod:
-          annotations:
-            vci.vke.volcengine.com/pod-ip-family: dualstack
           affinity:
             nodeAffinity: # prevent gateway pod to be placed on gpu node.
               preferredDuringSchedulingIgnoredDuringExecution:
