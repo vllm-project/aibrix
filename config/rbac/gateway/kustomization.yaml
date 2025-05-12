@@ -4,5 +4,6 @@ resources:
 - role_gateway.yaml
 - role_binding_gateway.yaml
 
-commonLabels:
-  app.kubernetes.io/component: aibrix-gateway-plugins
+labels:
+  - pairs:
+      app.kubernetes.io/component: aibrix-gateway-plugins

@@ -3,5 +3,6 @@ resources:
 - service.yaml
 - rbac.yaml
 
-commonLabels:
-  app.kubernetes.io/component: aibrix-gpu-optimizer
+labels:
+  - pairs:
+      app.kubernetes.io/component: aibrix-gpu-optimizer

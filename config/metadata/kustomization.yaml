@@ -2,5 +2,6 @@ resources:
 - metadata.yaml
 - redis.yaml
 
-commonLabels:
-  app.kubernetes.io/component: aibrix-metadata-service
+labels:
+  - pairs:
+      app.kubernetes.io/component: aibrix-metadata-service

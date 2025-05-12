@@ -17,5 +17,6 @@ resources:
 
 # TODO: technically, we should split above rbac yamls to separate components and then
 # attach component labels. We
-# commonLabels:
-#  app.kubernetes.io/component: aibrix-controller-manager
+#labels:
+#  - pairs:
+#     app.kubernetes.io/component: aibrix-controller-manager

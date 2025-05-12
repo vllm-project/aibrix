@@ -4,5 +4,6 @@ resources:
 - orchestration_rayclusterreplicaset_editor_role.yaml
 - orchestration_rayclusterreplicaset_viewer_role.yaml
 
-commonLabels:
-  app.kubernetes.io/component: aibrix-controller-manager
+labels:
+  - pairs:
+      app.kubernetes.io/component: aibrix-controller-manager

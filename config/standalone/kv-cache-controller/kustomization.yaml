@@ -30,8 +30,9 @@ patches:
       kind: Deployment
       name: controller-manager
 
-commonLabels:
-  app.kubernetes.io/name: aibrix
-  app.kubernetes.io/component: aibrix-kvcache-controller
-  app.kubernetes.io/version: nightly
-  app.kubernetes.io/managed-by: kubectl
+labels:
+  - pairs:
+      app.kubernetes.io/name: aibrix
+      app.kubernetes.io/component: aibrix-kvcache-controller
+      app.kubernetes.io/version: nightly
+      app.kubernetes.io/managed-by: kubectl
