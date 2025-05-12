@@ -9,5 +9,5 @@ patches:
 
 images:
 - name: envoyproxy/gateway
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/gateway
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway
   newTag: v1.2.8

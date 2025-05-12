@@ -30,6 +30,3 @@ images:
 - name: aibrix/runtime
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
   newTag: v0.2.1
-- name: aibrix/kvcache-watcher
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/kvcache-watcher
-  newTag: v0.2.1
