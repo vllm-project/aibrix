@@ -5371,31 +5371,6 @@ index 33c4c3219..fe343b5ca 100644
  opentelemetry-exporter-otlp>=1.26.0,<1.27.0  # vllm.tracing
  opentelemetry-semantic-conventions-ai>=0.4.1,<0.5.0  # vllm.tracing
 +aibrix-kvcache # Required for kv cache offloading
-diff --git a/requirements/test.in b/requirements/test.in
-index c5d2c4cd4..665ed4a92 100644
---- a/requirements/test.in
-+++ b/requirements/test.in
-@@ -6,6 +6,7 @@ pytest-asyncio
- pytest-rerunfailures
- pytest-shard
- pytest-timeout
-+pytest-benchmark
- 
- # testing utils
- awscli
-diff --git a/requirements/test.txt b/requirements/test.txt
-index 9642a5bfe..c60e6ea90 100644
---- a/requirements/test.txt
-+++ b/requirements/test.txt
-@@ -518,6 +518,8 @@ pytest-subtests==0.14.1
-     # via schemathesis
- pytest-timeout==2.3.1
-     # via -r requirements/test.in
-+pytest-benchmark==5.0.0
-+    # via -r requirements/test.in
- python-dateutil==2.9.0.post0
-     # via
-     #   arrow
 diff --git a/tests/kernels/attention/test_cache.py b/tests/kernels/attention/test_cache.py
 index 2f2212dd2..9cf51f3e6 100644
 --- a/tests/kernels/attention/test_cache.py
@@ -5762,10 +5737,10 @@ index 4c577c1c4..92dc1d8e9 100644
      k_pe: torch.Tensor,
 diff --git a/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py b/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py
 new file mode 100644
-index 000000000..c5419d8a6
+index 000000000..2f8230a95
 --- /dev/null
 +++ b/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py
-@@ -0,0 +1,1108 @@
+@@ -0,0 +1,1117 @@
 +# SPDX-License-Identifier: Apache-2.0
 +import copy
 +import dataclasses
@@ -6190,6 +6165,10 @@ index 000000000..c5419d8a6
 +        self.context_tokens[offset:offset + length] = tokens
 +        self.context_tokens_offset += length
 +
++    def clear_context_tokens(self) -> None:
++        self.context_tokens.clear()
++        self.context_tokens_offset = 0
++
 +
 +class AIBrixOffloadingConnector(KVConnectorBase):
 +    """AIBrixOffloadingConnector is a KVConnector that offloads KV caches
@@ -6338,6 +6317,11 @@ index 000000000..c5419d8a6
 +            self._connector_cache[
 +                seq_request_id] = AIBrixOffloadingConnectorCachedMeta(seq_len)
 +        seq_request_cache = self._connector_cache[seq_request_id]
++        if seq_len != len(seq_request_cache.get_context_tokens()) + len(
++                kv_transfer_context_tokens or []) + len(seq_input_tokens):
++            # this is a preempted request to be recomputed, let's drop
++            # the context tokens
++            seq_request_cache.clear_context_tokens()
 +        if kv_transfer_context_tokens is not None:
 +            assert seq_request_cache.context_tokens_offset == 0
 +            seq_request_cache.extend_context_tokens(kv_transfer_context_tokens)
