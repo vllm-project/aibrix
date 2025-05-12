@@ -1,3 +1,4 @@
+import logging
 import json
 import argparse
 import os
@@ -35,9 +36,11 @@ def main(args):
     tpot = []
     total_errors = []
     timestamps = []
+    end_times = []
     for i, item in enumerate(data):
         total_errors.append(1 if item["status"] == "error" else 0)
         timestamps.append(item.get("start_time", f"Entry {i}"))
+        end_times.append(item.get("end_time", f"Entry {i}"))
         prompt_tokens.append(item["prompt_tokens"]) # Prompt tokens
         output_tokens.append(item["output_tokens"]) 
         total_tokens.append(item["total_tokens"]) 
@@ -72,6 +75,8 @@ def main(args):
     tokens_per_second = [tokens_per_second[i] for i in sorted_indices]
     ttft = [ttft[i] for i in sorted_indices]
     tpot = [tpot[i] for i in sorted_indices]
+    start_times = timestamps
+    
 
     # Convert timestamps to pandas datetime (if timestamps are actual time values)
     try:
@@ -93,11 +98,11 @@ def main(args):
     # Calculate statistics for each metric
     stats = {
         "End-to-End Latency (s)": calculate_statistics(latencies),
-        "Throughput": calculate_statistics(throughputs),
+        "Throughput (per request, toks/s)": calculate_statistics(throughputs),
         "Tokens per Second": calculate_statistics(tokens_per_second),
-        "Prompt Tokens": calculate_statistics(prompt_tokens),
-        "Output Tokens": calculate_statistics(output_tokens),
-        "Total Tokens": calculate_statistics(total_tokens),
+        "Request Prompt Tokens": calculate_statistics(prompt_tokens),
+        "Request Output Tokens": calculate_statistics(output_tokens),
+        "Request Total Tokens": calculate_statistics(total_tokens),
         "Time to First Token (TTFT)": calculate_statistics(ttft),
         "Time per Output Token (TPOT)": calculate_statistics(tpot),
         "Errors": calculate_statistics(total_errors),
@@ -105,10 +110,13 @@ def main(args):
 
     # Print statistics
     for metric, (avg, median, p99) in stats.items():
-        print(f"{metric} Statistics: Average = {avg:.4f}, Median = {median:.4f}, 99th Percentile = {p99:.4f}")
+        logging.warning(f"{metric} Statistics: Average = {avg:.4f}, Median = {median:.4f}, 99th Percentile = {p99:.4f}")
     if goodput != None:
-        print(f"Goodput (reqs/s) {goodput:.4f}")
-    # print(f"Failure Rate (%) {(total_errors / len(data)) * 100 if len(data) > 0 else 0}")
+        logging.warning(f"Goodput (reqs/s) {goodput:.4f}")
+    logging.warning(f"Total Duration (s): {np.max(end_times) - np.min(start_times)}")
+    logging.warning(f"Total tokens generated (toks): {np.sum(total_tokens)}")
+    logging.warning(f"Throughput (end-to-end, toks/s): {np.sum(total_tokens)/(np.max(end_times) - np.min(start_times))}")
+    # logging.warning(f"Failure Rate (%) {(total_errors / len(data)) * 100 if len(data) > 0 else 0}")
 
     # Create a DataFrame for plotting
     df = pd.DataFrame({
