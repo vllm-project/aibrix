@@ -28,6 +28,8 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
+// nolint:nakedret
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	var streamOptions openai.ChatCompletionStreamOptionsParam
 	if requestPath == "/v1/chat/completions" {
@@ -72,7 +74,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		return
 	}
 
-	klog.InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "message", message, "stream", stream, "streamOptions", streamOptions)
+	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "message", message, "stream", stream, "streamOptions", streamOptions)
 	return
 }
 
