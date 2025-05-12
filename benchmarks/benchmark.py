@@ -266,6 +266,8 @@ class BenchmarkRunner:
             "client_pool_size": self.config.get("CLIENT_POOL_SIZE", 128),
             "output_token_limit": self.config.get("OUTPUT_TOKEN_LIMIT", 128),
             "time_scale": self.config.get("TIME_SCALE", 1.0),
+            "timeout_second": self.config.get("TIMEOUT_SECOND", 60.0),
+            "max_retries": self.config.get("MAX_RETRIES", 0),
         }
         args = Namespace(**args_dict)
         print(f"[INFO] Running client with args: {args}")

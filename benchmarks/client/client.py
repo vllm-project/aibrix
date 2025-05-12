@@ -383,9 +383,9 @@ def main(args):
             asyncio.run(benchmark_batch(
                 api_key = args.api_key,
                 endpoint = args.endpoint,
-                max_retries = 0,
+                max_retries = args.max_retries,
                 scale_factor = args.time_scale,
-                timeout = 60.0,
+                timeout = args.timeout_second,
                 routing_strategy = args.routing_strategy,
                 load_struct=load_struct,
                 output_file=output_file,
@@ -400,9 +400,9 @@ def main(args):
             asyncio.run(benchmark_streaming(
                 api_key = args.api_key,
                 endpoint = args.endpoint,
-                max_retries = 0,
+                max_retries = args.max_retries,
                 scale_factor = args.time_scale,
-                timeout = 60.0,
+                timeout = args.timeout_second,
                 routing_strategy = args.routing_strategy,
                 load_struct=load_struct,
                 output_file=output_file,
@@ -425,6 +425,8 @@ if __name__ == "__main__":
     parser.add_argument("--client-pool-size", type=int, required=False, default=1, help="Number of parallel clients to use.")
     parser.add_argument("--output-token-limit", type=int, required=False, default=None, help="Limit the maximum number of output tokens.")
     parser.add_argument('--time-scale', type=float, default=1.0, help="Scaling factor for workload's logical time.")
+    parser.add_argument('--timeout-second', type=float, default=60.0, help="Timeout for each request in seconds.")
+    parser.add_argument('--max-retries', type=int, default=0, help="Number of maximum retries for each request.")
 
     args = parser.parse_args()
     main(args)
