@@ -15,6 +15,7 @@ spec:
               ipFamilies:
                 - IPv4
               ipFamilyPolicy: SingleStack
+              type: LoadBalancer
       envoyDeployment:
         replicas: 1
         container:
