@@ -28,6 +28,7 @@ type RayClusterFleetStatusApplyConfiguration struct {
 	UnavailableReplicas *int32                                       `json:"unavailableReplicas,omitempty"`
 	Conditions          []RayClusterFleetConditionApplyConfiguration `json:"conditions,omitempty"`
 	CollisionCount      *int32                                       `json:"collisionCount,omitempty"`
+	HPAPodSelector      *string                                      `json:"hpaPodSelector,omitempty"`
 }
 
 // RayClusterFleetStatusApplyConfiguration constructs a declarative configuration of the RayClusterFleetStatus type for use with
@@ -102,5 +103,13 @@ func (b *RayClusterFleetStatusApplyConfiguration) WithConditions(values ...*RayC
 // If called multiple times, the CollisionCount field is set to the value of the last call.
 func (b *RayClusterFleetStatusApplyConfiguration) WithCollisionCount(value int32) *RayClusterFleetStatusApplyConfiguration {
 	b.CollisionCount = &value
+	return b
+}
+
+// WithHPAPodSelector sets the HPAPodSelector field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the HPAPodSelector field is set to the value of the last call.
+func (b *RayClusterFleetStatusApplyConfiguration) WithHPAPodSelector(value string) *RayClusterFleetStatusApplyConfiguration {
+	b.HPAPodSelector = &value
 	return b
 }
