@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11"]
+        python-version: ["3.11", "3.12"]
     name: publish
     steps:
       - name: Check out source repository
@@ -79,18 +79,24 @@ jobs:
         env:
           POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_TOKEN }}
         run: |
-          cd python/aibrix
+          pushd python/aibrix
           poetry publish --build
-          cd python/aibrix_kvcache
+          popd
+
+          pushd python/aibrix_kvcache
           poetry publish --build
+          popd
       - name: Add package to release artifact
         run: |
-          cd python/aibrix
+          pushd python/aibrix
           poetry build
           ls -al dist/*
-          cd python/aibrix_kvcache
+          popd
+
+          pushd python/aibrix_kvcache
           poetry build
           ls -al dist/*
+          popd
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
