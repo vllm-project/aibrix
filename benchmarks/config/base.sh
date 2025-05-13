@@ -11,16 +11,16 @@ export TOKENIZER="deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
 # -------
 # Dataset config
 export DATASET_DIR="./output/dataset/"
-export PROMPT_TYPE="synthetic_multiturn" #"synthetic_multiturn"  "synthetic_shared", "sharegpt", "client_trace"
+export PROMPT_TYPE="synthetic_multiturn" #"synthetic_multiturn", "synthetic_shared", "sharegpt", "client_trace"
 export DATASET_FILE="${DATASET_DIR}/${PROMPT_TYPE}.jsonl"
 
 # ---------------
 # STEP 2: WORKLOAD GENERATION
 # ---------------
 # Workload config
-export WORKLOAD_TYPE="constant"  # Options: synthetic, constant, azure
+export WORKLOAD_TYPE="constant"  # Options: constant, synthetic, constant, azure
 export INTERVAL_MS=1000
-export DURATION_MS=300000
+export DURATION_MS=10000
 export WORKLOAD_DIR="./output/workload/${WORKLOAD_TYPE}"
 
 
@@ -38,6 +38,7 @@ export ROUTING_STRATEGY="random"
 export STREAMING_ENABLED="true" # Options: true, false
 export CLIENT_POOL_SIZE="128"
 export OUTPUT_TOKEN_LIMIT="128"
+
 
 # ---------------
 # OPTIONAL: ANALYSIS
