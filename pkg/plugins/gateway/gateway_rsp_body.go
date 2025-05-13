@@ -167,7 +167,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			requestEnd = fmt.Sprintf(requestEnd+"rpm: %d, tpm: %d, ", rpm, tpm)
 		}
 
-		if routerCtx != nil {
+		if routerCtx != nil && routerCtx.HasRouted() {
 			targetPodIP := routerCtx.TargetAddress()
 			headers = append(headers,
 				&configPb.HeaderValueOption{

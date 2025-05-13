@@ -40,29 +40,10 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, mo
 		}
 	}()
 
-	headers := []*configPb.HeaderValueOption{
-		{
-			Header: &configPb.HeaderValue{
-				Key:      HeaderWentIntoReqHeaders,
-				RawValue: []byte("true"),
-			},
-		},
-		{
-			Header: &configPb.HeaderValue{
-				Key:      HeaderRequestID,
-				RawValue: []byte(requestID),
-			},
-		},
-	}
-	if routerCtx != nil {
-		headers = append(headers,
-			&configPb.HeaderValueOption{
-				Header: &configPb.HeaderValue{
-					Key:      HeaderTargetPod,
-					RawValue: []byte(routerCtx.TargetAddress()),
-				},
-			},
-		)
+	headers := []*configPb.HeaderValueOption{}
+	headers = buildEnvoyProxyHeaders(headers, HeaderWentIntoReqHeaders, "true", HeaderRequestID, requestID)
+	if routerCtx != nil && routerCtx.HasRouted() {
+		headers = buildEnvoyProxyHeaders(headers, HeaderTargetPod, routerCtx.TargetAddress())
 	}
 
 	for _, headerValue := range b.ResponseHeaders.Headers.Headers {
@@ -72,13 +53,9 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, mo
 				isProcessingError = true
 				processingErrorCode = code
 			}
+			headers = buildEnvoyProxyHeaders(headers, headerValue.Key, string(headerValue.RawValue))
+			break
 		}
-		headers = append(headers, &configPb.HeaderValueOption{
-			Header: &configPb.HeaderValue{
-				Key:      headerValue.Key,
-				RawValue: headerValue.RawValue,
-			},
-		})
 	}
 
 	return &extProcPb.ProcessingResponse{

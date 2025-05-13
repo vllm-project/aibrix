@@ -77,10 +77,10 @@ func TestRandomRouting(t *testing.T) {
 		chi2Stat, significanceLevel)
 }
 
+// nolint:lll
 func TestPrefixCacheRouting(t *testing.T) {
 	// #1 request - cache first time request
-	req := "prefix-cache routing algorithm test message, ensure test message is longer than 128 bytes!! " +
-		"this is first message! 这是测试消息！"
+	req := "prefix-cache routing algorithm test message, ensure test message is longer than 128 bytes!! this is first message! 这是测试消息！"
 	targetPod := getTargetPodFromChatCompletion(t, req, "prefix-cache")
 	t.Logf("req: %s, target pod: %v\n", req, targetPod)
 
@@ -92,9 +92,7 @@ func TestPrefixCacheRouting(t *testing.T) {
 	// #3 request - new request, match to random pod
 	var count int
 	for count < 5 {
-		generateMessage := fmt.Sprintf("prefix-cache routing algorithm test message, "+
-			"ensure test message is longer than 128 bytes!! this is %v message! 这是测试消息！",
-			rand.Intn(1000))
+		generateMessage := fmt.Sprintf("prefix-cache routing algorithm test message, ensure test message is longer than 128 bytes!! this is %v message! 这是测试消息！", rand.Intn(1000))
 		targetPod3 := getTargetPodFromChatCompletion(t, generateMessage, "prefix-cache")
 		t.Logf("req: %s, target pod from #3 request: %v\n", generateMessage, targetPod3)
 		if targetPod != targetPod3 {
@@ -104,6 +102,34 @@ func TestPrefixCacheRouting(t *testing.T) {
 	}
 
 	assert.NotEqual(t, 5, count)
+}
+
+// nolint:lll
+func TestMultiTurnConversation(t *testing.T) {
+	var dst *http.Response
+	var targetPod string
+	messages := []openai.ChatCompletionMessageParamUnion{}
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "prefix-cache", option.WithResponseInto(&dst))
+
+	for i := 1; i <= 5; i++ {
+		input := fmt.Sprintf("Ensure test message is longer than 128 bytes!! This is test %d for multiturn conversation!! 这是多轮对话测试!! Have a good day!!", i)
+		messages = append(messages, openai.UserMessage(input))
+
+		chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+			Messages: messages,
+			Model:    modelName,
+		})
+		require.NoError(t, err, "chat completitions failed %v", err)
+		assert.Greater(t, chatCompletion.Usage.CompletionTokens, int64(0), "chat completions usage tokens greater than 0")
+		assert.NotEmpty(t, chatCompletion.Choices[0].Message.Content)
+
+		messages = append(messages, openai.AssistantMessage(chatCompletion.Choices[0].Message.Content))
+		if i == 1 {
+			targetPod = dst.Header.Get("target-pod")
+		}
+
+		assert.Equal(t, targetPod, dst.Header.Get("target-pod"), "each multiturn conversation must route to same target pod")
+	}
 }
 
 func getTargetPodFromChatCompletion(t *testing.T, message string, strategy string) string {

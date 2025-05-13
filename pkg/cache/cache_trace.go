@@ -45,7 +45,6 @@ func (c *Store) getRequestTrace(modelName string) *RequestTrace {
 
 func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 	if !ctx.HasRouted() {
-		klog.Warningf("request has not been routed, please route request first, requestID: %s", requestID)
 		return
 	}
 	pod := ctx.TargetPod()
@@ -63,7 +62,6 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 
 func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 	if !ctx.HasRouted() {
-		klog.Warningf("request has not been routed, please route request first, requestID: %s", requestID)
 		return
 	}
 	pod := ctx.TargetPod()
