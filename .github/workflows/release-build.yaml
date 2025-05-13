@@ -100,7 +100,7 @@ jobs:
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: aibrix-python-packages
+          name: aibrix-python-packages-${{ matrix.python-version }}
           path: |
             python/aibrix/dist/*.whl
             python/aibrix_kvcache/dist/*.whl
@@ -157,11 +157,6 @@ jobs:
         with:
           name: aibrix-core-${{ github.ref_name }}.yaml
 
-      - name: Download PYTHON wheels
-        uses: actions/download-artifact@v4
-        with:
-          name: aibrix-python-packages
-
       # Determine if this is a prerelease based on the tag name
       # if it contains
       - name: Set prerelease flag
@@ -189,5 +184,3 @@ jobs:
           files: |
             aibrix-dependency-${{ github.ref_name }}.yaml
             aibrix-core-${{ github.ref_name }}.yaml
-            aibrix-*.whl
-            aibrix-python-packages/aibrix-*.whl
