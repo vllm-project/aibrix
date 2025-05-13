@@ -39,8 +39,8 @@ Nightly Version
     cd aibrix
 
     # Install component dependencies
-    kubectl create -k config/dependency
-    kubectl create -k config/default
+    kubectl apply -k config/dependency --server-side
+    kubectl apply -k config/default
 
 
 Install AIBrix in testing Environments

@@ -153,18 +153,18 @@ jobs:
 
       - name: Deploy controller with the built image
         run: |
-          kubectl create -k config/dependency
+          kubectl apply -k config/dependency --server-side
           cd config/default
           kustomize edit set image controller=aibrix/controller-manager:${{ github.sha }}
           kustomize edit set image gateway-plugins=aibrix/gateway-plugins:${{ github.sha }}
           kustomize edit set image metadata-service=aibrix/metadata-service:${{ github.sha }}
           cd ${{ github.workspace }}
-          kubectl create -k config/default
+          kubectl apply -k config/default
 
       - name: Deploy Workload
         run: |
           cd development/app
-          kubectl create -k config/mock
+          kubectl apply -k config/mock
 
       - name: Check pod status
         run: |

@@ -5,8 +5,8 @@
 1. Make sure Aibrix components are up-to-date. In particular, debugged version of GPU Optimizer can be updated independently by:
 ```shell
 cd ../../../../ && make docker-build-runtime
-kubectl create -k config/dependency
-kubectl create -k config/default
+kubectl apply -k config/dependency --server-side
+kubectl apply -k config/default
 kubectl delete -k config/overlays/dev/gpu-optimizer
 kubectl apply -k config/overlays/dev/gpu-optimizer
 ```

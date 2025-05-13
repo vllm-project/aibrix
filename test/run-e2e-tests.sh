@@ -56,13 +56,13 @@ if [ -n "$INSTALL_AIBRIX" ]; then
   make docker-build-all
   kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly
 
-  kubectl create -k config/dependency
-  kubectl create -k config/test
+  kubectl apply -k config/dependency --server-side
+  kubectl apply -k config/test
 
   cd development/app
   docker build -t aibrix/vllm-mock:nightly -f Dockerfile .
   kind load docker-image aibrix/vllm-mock:nightly
-  kubectl create -k config/mock
+  kubectl apply -k config/mock
   cd ../..
 
   kubectl port-forward svc/llama2-7b 8000:8000 &

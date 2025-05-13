@@ -40,10 +40,10 @@ git clone https://github.com/vllm-project/aibrix.git
 cd aibrix
 
 # Install nightly aibrix dependencies
-kubectl create -k config/dependency
+kubectl apply -k config/dependency --server-side
 
 # Install nightly aibrix components
-kubectl create -k config/default
+kubectl apply -k config/default
 ```
 
 Install stable distribution
