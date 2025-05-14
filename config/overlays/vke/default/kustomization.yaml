@@ -10,23 +10,23 @@ patches:
 
 images:
 - name: quay.io/kuberay/operator
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/kuberay-operator
+  newName: aibrix-cn-beijing.cr.volces.com/aibrix/kuberay-operator
   newTag: v1.2.1-patch
 - name: busybox
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/busybox
+  newName: aibrix-cn-beijing.cr.volces.com/aibrix/busybox
   newTag: stable
 - name: redis
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/redis
+  newName: aibrix-cn-beijing.cr.volces.com/aibrix/redis
   newTag: latest
 - name: aibrix/gateway-plugins
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+  newName: aibrix-cn-beijing.cr.volces.com/aibrix/gateway-plugins
   newTag: v0.3.0-rc.1
 - name: aibrix/metadata-service
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/metadata-service
+  newName: aibrix-cn-beijing.cr.volces.com/aibrix/metadata-service
   newTag: v0.3.0-rc.1
 - name: aibrix/controller-manager
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
+  newName: aibrix-cn-beijing.cr.volces.com/aibrix/controller-manager
   newTag: v0.3.0-rc.1
 - name: aibrix/runtime
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
+  newName: aibrix-cn-beijing.cr.volces.com/aibrix/runtime
   newTag: v0.3.0-rc.1

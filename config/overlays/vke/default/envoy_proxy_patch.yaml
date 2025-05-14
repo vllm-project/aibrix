@@ -19,7 +19,7 @@ spec:
       envoyDeployment:
         replicas: 1
         container:
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/envoy:v1.33.2
+          image: aibrix-cn-beijing.cr.volces.com/aibrix/envoy:v1.33.2
           resources:
             limits:
               cpu: 2
