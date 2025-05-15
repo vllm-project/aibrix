@@ -73,6 +73,14 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
         gpu_idx = torch.cuda.current_device()
         rnic_idx = gpu_idx // factor
         dev_name = dev_list[rnic_idx]
+        hint_gid_index_str = ""
+
+        # If dev_name is in the format of "mlx5_i:xxx", then we need to
+        # extract the dev_name and hint_gid_index from the dev_name.
+        if ":" in dev_name:
+            splits = dev_name.split(":")
+            dev_name = splits[0]
+            hint_gid_index_str = splits[1]
 
         config = infinistore.ClientConfig(
             host_addr=host_addr,
@@ -82,6 +90,15 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
             link_type=envs.AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE,
             dev_name=dev_name,
         )
+
+        if hasattr(config, "hint_gid_index") and hint_gid_index_str != "":
+            try:
+                config.hint_gid_index = int(hint_gid_index_str)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid hint_gid_index: {hint_gid_index_str}"
+                )
+
         return cls(config, conn_id, executor)
 
     @property

@@ -318,7 +318,8 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         ms_backend: str = envs.AIBRIX_KV_CACHE_OL_META_SERVICE_BACKEND
         if len(ms_backend) > 0:
             self._ms = MetaService.create(ms_backend)
-            self._ms.open()
+            status = self._ms.open()
+            status.raise_if_not_ok()
             logger.info(f"Using meta service backend: {self._ms.name}")
 
         # init MeasurableBase
@@ -408,7 +409,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
             # launch L2Cache
             status = self._l2_cache.open()
-            status.raise_if_has_exception()
+            status.raise_if_not_ok()
 
             if self._l2_cache._backend.feature.rdma:
                 status = self._allocator.register(self._l2_cache.register_mr)

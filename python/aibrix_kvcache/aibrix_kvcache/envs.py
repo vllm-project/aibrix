@@ -98,6 +98,9 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_INFINISTORE_CONNECTION_TYPE: str = "RDMA"
     AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT: int = 1
     AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE: str = "Ethernet"
+    # Since 0.2.42, InfiniStore supports RDMA GID index in client config,
+    # users can specify the GID index of each device in this format:
+    # "mlx5_0:gid0,mlx5_1:gid1,mlx5_2:gid2"
     AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST: List[str] = ["mlx5_0"]
     AIBRIX_KV_CACHE_OL_INFINISTORE_USE_GDR: bool = True
 
