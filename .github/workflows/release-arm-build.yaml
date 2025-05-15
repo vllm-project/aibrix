@@ -1,10 +1,10 @@
 name: Release ARM64-based Build and Push
 
 on:
-    workflow_dispatch:  # Allows manual trigger
-    push:
-      tags:
-        - "v*.*.*"  # This triggers the workflow on any new tag
+  workflow_dispatch:  # Allows manual trigger
+  push:
+    tags:
+      - "v*.*.*"  # This triggers the workflow on any new tag
 
 jobs:
   build-controller:
@@ -29,7 +29,7 @@ jobs:
           platforms: linux/arm64
           file: build/container/Dockerfile
           push: true
-          tags: aibrix/controller-manager:${{ github.sha }}
+          tags: aibrix/controller-manager:${{ github.ref_name }}
   
   build-gateway-plugins:
     runs-on: ubuntu-latest
@@ -53,7 +53,7 @@ jobs:
           platforms: linux/arm64
           file: build/container/Dockerfile.gateway
           push: true
-          tags: aibrix/gateway-plugins:${{ github.sha }}
+          tags: aibrix/gateway-plugins:${{ github.ref_name }}
   
   build-metadata-service:
     runs-on: ubuntu-latest
@@ -77,7 +77,7 @@ jobs:
           platforms: linux/arm64
           file: build/container/Dockerfile.metadata
           push: true
-          tags: aibrix/metadata-service:${{ github.sha }}
+          tags: aibrix/metadata-service:${{ github.ref_name }}
 
   build-runtime:
     runs-on: ubuntu-latest
@@ -101,7 +101,7 @@ jobs:
           platforms: linux/arm64
           file: build/container/Dockerfile.runtime
           push: true
-          tags: aibrix/runtime:${{ github.sha }}
+          tags: aibrix/runtime:${{ github.ref_name }}
 
   build-kvcache-watcher:
     runs-on: ubuntu-latest
@@ -125,4 +125,4 @@ jobs:
           platforms: linux/arm64
           file: build/container/Dockerfile.kvcache
           push: true
-          tags: aibrix/kvcache-watcher:${{ github.sha }}
+          tags: aibrix/kvcache-watcher:${{ github.ref_name }}
