@@ -43,8 +43,20 @@ class Member(ABC):
     slots: SortedList[int]
     conn: Connector
 
+    def __post_init__(self):
+        self.hashable_meta = tuple(self.meta.items())
+
+    def __hash__(self):
+        return self.hashable_meta.__hash__()
+
+    def __eq__(self, other):
+        if not isinstance(other, Member):
+            return False
+        return self.hashable_meta.__eq__(other.hashable_meta)
+
     def __str__(self) -> str:
-        return f"Member(meta={self.meta}, conn={self.conn.name if self.conn is not None else None})"
+        conn_name = self.conn.name if self.conn is not None else None
+        return f"Member(meta={self.meta}, conn={conn_name})"
 
     def __repr__(self) -> str:
         return self.__str__()
@@ -88,6 +100,7 @@ class BasePlacement(Placement[K, V]):
         self.members: List[Member] = []  # List of Member objects
         self.slots = SortedList()  # All slots in the cluster
         self.total_slots = 0
+        self.first_member: Member | None = None
 
         self._name = config.placement_policy
         self.conn_config = config.conn_config
@@ -102,7 +115,10 @@ class BasePlacement(Placement[K, V]):
 
     @property
     def feature(self) -> ConnectorFeature:
-        feat = self.members[0].conn.feature
+        if self.first_member is None:
+            return ConnectorFeature()
+
+        feat = self.first_member.conn.feature
         # TODO: support mput_mget
         feat.mput_mget = False
         return feat
@@ -178,7 +194,7 @@ class BasePlacement(Placement[K, V]):
         """
         try:
             data = json.loads(json_str)
-            temp_members = []
+            temp_members: List[Member] = []
             temp_slots = SortedList(key=lambda x: x[0])
 
             for node in data["nodes"]:
@@ -186,16 +202,9 @@ class BasePlacement(Placement[K, V]):
                 member = Member(
                     meta=node,
                     slots=SortedList(),
-                    conn=Connector.create(self.conn_config, **node),
+                    # Delay conn establishment
+                    conn=None,  # type: ignore
                 )
-                status = member.conn.open()
-                if not status.is_ok():
-                    logger.warning(
-                        "Failed to open connection to %s, status: %s",
-                        member.meta,
-                        status,
-                    )
-                    continue
 
                 for slot_range in slots:
                     start = slot_range["start"]
@@ -214,11 +223,46 @@ class BasePlacement(Placement[K, V]):
             temp_total_slots = len(temp_slots)
 
             if self.slots != temp_slots:
-                logger.info("New cluster members: %s", temp_members)
+                if self.first_member is not None:
+                    logger.info("Cluster members changed, updating...")
+
+                established_members = []
+                members = {m.hashable_meta: m for m in self.members}
+                for mem in temp_members:
+                    if mem.hashable_meta in members:
+                        # reuse existing connection
+                        mem.conn = members[mem.hashable_meta].conn
+                    else:
+                        mem.conn = Connector.create(
+                            self.conn_config, **mem.meta
+                        )
+                        status = mem.conn.open()
+                        if not status.is_ok():
+                            logger.warning(
+                                "Failed to open connection to %s, status: %s",
+                                mem.meta,
+                                status,
+                            )
+                            continue
+                    established_members.append(mem)
+
+                logger.info("New cluster members: %s", established_members)
+                members_to_close = set(self.members) - set(established_members)
                 with self.lock:
-                    self.members = temp_members
+                    self.members = established_members
                     self.slots = temp_slots
                     self.total_slots = temp_total_slots
+                    self.first_member = self.members[0]
+
+                for member in members_to_close:
+                    logger.info("Closing connection to %s", member.meta)
+                    status = member.conn.close()
+                    if not status.is_ok():
+                        logger.warning(
+                            "Failed to close connection to %s, status: %s",
+                            member.meta,
+                            status,
+                        )
 
         except json.JSONDecodeError as e:
             return Status(StatusCodes.INVALID, f"Invalid JSON: {e}")
@@ -282,7 +326,11 @@ class BasePlacement(Placement[K, V]):
             Status of the register operation.
             The register descriptor.
         """
-        return self.members[0].conn.register_mr(addr, length)
+        if self.first_member is None:
+            return Status(
+                StatusCodes.INVALID, "No valid members in the cluster"
+            )
+        return self.first_member.conn.register_mr(addr, length)
 
     def deregister_mr(self, desc: ConnectorRegisterDescriptor) -> Status:
         """Deregister an memory region.
@@ -291,7 +339,11 @@ class BasePlacement(Placement[K, V]):
         Returns:
             Status of the deregister operation.
         """
-        return self.members[0].conn.deregister_mr(desc)
+        if self.first_member is None:
+            return Status(
+                StatusCodes.INVALID, "No valid members in the cluster"
+            )
+        return self.first_member.conn.deregister_mr(desc)
 
     def get_batches(
         self,
