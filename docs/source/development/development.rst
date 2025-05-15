@@ -20,16 +20,16 @@ Run following command to quickly deploy the latest code changes to your dev kube
 
 .. code-block:: bash
 
-    kubectl create -f config/dependency
-    kubectl create -f config/default
+    kubectl apply -k config/dependency --server-side
+    kubectl apply -k config/default
 
 
 If you want to clean up everything and reinstall the latest code
 
 .. code-block:: bash
 
-    kubectl delete -f config/default
-    kubectl delete -f config/dependency
+    kubectl delete -k config/default
+    kubectl delete -k config/dependency
 
 Mocked CPU App
 --------------

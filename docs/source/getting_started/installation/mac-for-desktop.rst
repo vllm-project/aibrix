@@ -32,8 +32,8 @@ Install AIBrix
 
 .. code-block:: bash
 
-    kubectl create -f config/dependencies/
-    kubectl create -f config/default/
+    kubectl apply -k config/dependency --server-side
+    kubectl apply -k config/default
 
 Expose Gateway
 --------------

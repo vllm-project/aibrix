@@ -5,6 +5,11 @@ metadata:
   namespace: aibrix-system
 spec:
   controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: aibrix-custom-proxy-config
+    namespace: aibrix-system
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -17,11 +22,6 @@ spec:
     - name: http
       protocol: HTTP
       port: 80   
-  infrastructure:
-    parametersRef:
-      group: gateway.envoyproxy.io
-      kind: EnvoyProxy
-      name: aibrix-custom-proxy-config
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
@@ -39,15 +39,6 @@ spec:
           rollingUpdate:
             maxUnavailable: 1
             maxSurge: 1
-        container:
-          image: envoyproxy/envoy:v1.33.2
-          resources:
-            requests:
-              cpu: 1
-              memory: 1Gi
-            limits:
-              cpu: 1
-              memory: 1Gi
         pod:
           affinity:
             podAntiAffinity: # pods are placed on different nodes
@@ -70,6 +61,28 @@ spec:
                       operator: NotIn
                       values:
                         - "true"
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: envoy
+                      image: envoyproxy/envoy:v1.33.2
+                      resources:
+                        requests:
+                          cpu: 1
+                          memory: 1Gi
+                        limits:
+                          cpu: 1
+                          memory: 1Gi
+                    - name: shutdown-manager
+                      image: envoyproxy/gateway:v1.2.8
+                      resources:
+                        requests:
+                          cpu: 10m
+                          memory: 32Mi
       envoyPDB:
         minAvailable: 1
 ---

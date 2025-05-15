@@ -14,8 +14,8 @@ Get your kubernetes cluster ready, run following commands to install aibrix comp
 
 .. code-block:: bash
 
-    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.2.1/aibrix-dependency-v0.2.1.yaml
-    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.2.1/aibrix-core-v0.2.1.yaml
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.2.1/aibrix-dependency-v0.2.1.yaml --server-side
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.2.1/aibrix-core-v0.2.1.yaml
 
 Wait for few minutes and run `kubectl get pods -n aibrix-system` to check pod status util they are ready.
 
@@ -88,6 +88,62 @@ Depending on where you deployed the AIBrix, you can use either of the following 
             {"role": "user", "content": "help me write a random generator in python"}
         ]
     }'
+
+.. code-block:: python
+
+    from openai import OpenAI
+    
+    client = OpenAI(base_url="http://${ENDPOINT}/v1", api_key="OPENAI_API_KEY",
+                    default_headers={'routing-strategy': 'least-request'})
+
+    completion = client.chat.completions.create(
+        model="deepseek-r1-distill-llama-8b",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "What is the capital of California?"}
+        ]
+    )
+    print(completion.choices[0].message.content)
+
+.. code-block:: go
+
+    # multiturn conversation
+    package main
+
+    import (
+        "context"
+
+        "github.com/openai/openai-go"
+        "github.com/openai/openai-go/option"
+    )
+
+    func main() {
+        client := openai.NewClient(
+            option.WithBaseURL("http://${ENDPOINT}:8888/v1"),
+            option.WithAPIKey("OPENAI_API_KEY"),
+            option.WithHeader("routing-strategy", "prefix-cache"),
+        )
+        chatCompletion, _ := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+            Messages: []openai.ChatCompletionMessageParamUnion{
+                openai.SystemMessage("You are a helpful assistant."),
+                openai.UserMessage("What is the capital of California?"),
+            },
+            Model: "deepseek-r1-distill-llama-8b",
+        })
+        println(chatCompletion.Choices[0].Message.Content)
+
+        chatCompletion, _ = client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+            Messages: []openai.ChatCompletionMessageParamUnion{
+                openai.SystemMessage("You are a helpful assistant."),
+                openai.UserMessage("What is the capital of California?"),
+                openai.AssistantMessage(chatCompletion.Choices[0].Message.Content),
+                openai.UserMessage("What is the largest county of california?"),
+            },
+            Model: "deepseek-r1-distill-llama-8b",
+        })
+        println(chatCompletion.Choices[0].Message.Content)
+    }
+
 
 If you meet problems exposing external IPs, feel free to debug with following commands. `101.18.0.4` is the ip of the gateway service.
 
