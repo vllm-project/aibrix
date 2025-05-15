@@ -83,8 +83,6 @@ spec:
                         requests:
                           cpu: 10m
                           memory: 32Mi
-      envoyPDB:
-        minAvailable: 1
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: ClientTrafficPolicy

@@ -33,18 +33,7 @@ Please follow the [installation guidance](https://aibrix.readthedocs.io/latest/g
 
 You can make the resource changes in following way:
 ```bash
-# update envoy gateway              
-kubectl edit deployment envoy-aibrix-system-aibrix-eg-903790dc -n envoy-gateway-system
-# update gateway plugin
-kubectl edit deployment aibrix-gateway-plugins -n aibrix-system
-
-# update code
-            requests:
-              cpu: 2
-              memory: 8Gi
-            limits:
-              cpu: 2
-              memory: 8Gi
+kubectl apply -k config/overlays/release
 ```
 
 ### Generate All YAML Files from Scratch

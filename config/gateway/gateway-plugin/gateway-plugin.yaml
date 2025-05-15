@@ -115,17 +115,6 @@ spec:
             periodSeconds: 10
       serviceAccountName: aibrix-gateway-plugins
 ---
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: gateway-plugin-pdb
-  namespace: aibrix-system
-spec:
-  minAvailable: 1
-  selector:
-    matchLabels:
-      app: gateway-plugins
----
 # this is a dummy route for incoming request to list models registered to aibrix-control-plane
 # TODO (varun): check if this dummy route can be removed in future
 apiVersion: gateway.networking.k8s.io/v1
