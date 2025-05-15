@@ -143,7 +143,7 @@ Below are routing strategies gateway supports:
 * ``random``: routes request to a random pod.
 * ``least-request``: routes request to a pod with the fewest ongoing requests.
 * ``throughput``: routes request to a pod which has processed the lowest total weighted tokens.
-* ``prefix-cache``: routes request to a pod which already has a KV cache matching the request's prompt prefix.
+* ``prefix-cache``: routes request to a pod which already has a KV cache matching the request's prompt prefix, and also supports multiturn conversation.
 * ``least-busy-time``: routes request to the pod with the least cumulative busy processing time.
 * ``least-kv-cache``: routes request to the pod with the smallest current KV cache size (least VRAM used).
 * ``least-latency``: routes request to the pod with the lowest average processing latency.
@@ -201,6 +201,8 @@ Target Headers & General Error Headers
 
    * - Header Name
      - Description
+   * - ``request-id``
+     - Unique request-id associated with client request, helpful for debugging.   
    * - ``x-went-into-req-headers``
      - Indicates whether the request headers were processed correctly. Used for debugging header parsing issues.
    * - ``target-pod``
@@ -246,9 +248,9 @@ Streaming Headers
    * - Header Name
      - Description
    * - ``x-error-streaming``
-     - Signals an error during a streaming request, helping to diagnose streaming-related failures.
-   * - ``x-error-no-stream-options``
-     - Lists enabled streaming options for the request. Used to debug streaming feature behavior.
+     - Signals an error during response streaming, helping to diagnose streaming-related failures.
+   * - ``x-error-stream``
+     - Incorrect stream value set in the request body.
    * - ``x-error-no-stream-options-include-usage``
      - Indicates whether usage statistics were included in the streaming response.
 
@@ -279,6 +281,8 @@ Rate Limiting Headers
 Debugging Guidelines
 ^^^^^^^^^^^^^^^^^^^^
 
+By following these steps, you can efficiently debug request processing, routing, streaming, and rate-limiting behavior in the system.
+
 1. **Identify error headers**
 
    - If an issue occurs, inspect ``x-error-user``, ``x-error-routing``, ``x-error-response-unmarshal``, and ``x-error-response-unknown`` to determine the root cause.
@@ -293,7 +297,7 @@ Debugging Guidelines
 3. **Diagnose streaming issues**
 
    - If encountering problems with streamed responses, check ``x-error-streaming`` for any reported errors.
-   - Ensure that ``x-error-no-stream-options`` provides the expected streaming options.
+   - Ensure that ``x-error-stream`` is set correctly for streaming.
    - If usage statistics are missing from the streaming response, verify ``x-error-no-stream-options-include-usage``.
 
 4. **Investigate rate limiting issues**
@@ -302,4 +306,45 @@ Debugging Guidelines
    - If rate limit updates failed, look for ``x-error-incr-rpm`` or ``x-error-incr-tpm``.
    - Successful rate limit updates will be indicated by ``x-update-rpm`` and ``x-update-tpm``.
 
-By following these steps, you can efficiently debug request processing, routing, streaming, and rate-limiting behavior in the system.
+
+Below are starting pointers to help debug.
+
+1. Ensure that status.conditions == Accepted for below objects.
+
+.. code-block:: bash
+
+    kubectl describe gatewayclass -n aibrix-system
+    
+    kubectl describe gateway -n aibrix-system
+
+    kubectl describe envoypatchpolicy -n aibrix-system
+
+    # check for all objects
+    kubectl describe envoyextensionpolicy -n aibrix-system 
+
+    # check for all objects
+    kubectl describe httproute -n aibrix-system  
+
+2. Check the logs for envoy proxy and aibrix-gateway-plugins. Copy the logs, if a github issue is created.
+
+.. code-block:: bash
+    kubectl get pods -n envoy-gateway-system
+
+    NAME                                                      READY   STATUS    RESTARTS   AGE
+    envoy-aibrix-system-aibrix-eg-903790dc-84ccfcbc6b-hw2lq   2/2     Running   0          13m
+    envoy-gateway-7c7659ffc9-rvm5s                            1/1     Running   0          16m
+
+    kubectl logs envoy-aibrix-system-aibrix-eg-903790dc-84ccfcbc6b-hw2lq -n envoy-gateway-system
+
+.. code-block:: bash
+    kubectl get pods -n aibrix-system
+
+    NAME                                        READY   STATUS             RESTARTS   AGE
+    aibrix-controller-manager-fb4495448-j9k6g   1/1     Running            0          22m
+    aibrix-gateway-plugins-6bd9fcd5b9-2bwpr     1/1     Running            0          22m
+    aibrix-gpu-optimizer-df9db96c8-2fctd        1/1     Running            0          22m
+    aibrix-kuberay-operator-5bf4985d86-7g4tz    1/1     Running            0          22m
+    aibrix-metadata-service-9d4cd7f77-mq7tr     1/1     Running            0          22m
+    aibrix-redis-master-7d6b77c794-bcqxc        1/1     Running            0          22m
+
+    kubectl logs aibrix-gateway-plugins-6bd9fcd5b9-2bwpr -n aibrix-system

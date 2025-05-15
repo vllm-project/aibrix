@@ -38,7 +38,6 @@ const (
 	// Streaming Headers
 	HeaderErrorStream                    = "x-error-stream"
 	HeaderErrorStreaming                 = "x-error-streaming"
-	HeaderErrorNoStreamOptions           = "x-error-no-stream-options"
 	HeaderErrorStreamOptionsIncludeUsage = "x-error-no-stream-options-include-usage"
 
 	// Request & Target Headers

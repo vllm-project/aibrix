@@ -14,8 +14,8 @@ Get your kubernetes cluster ready, run following commands to install aibrix comp
 
 .. code-block:: bash
 
-    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.2.1/aibrix-dependency-v0.2.1.yaml --server-side
-    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.2.1/aibrix-core-v0.2.1.yaml
+    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.2.1/aibrix-dependency-v0.2.1.yaml
+    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.2.1/aibrix-core-v0.2.1.yaml
 
 Wait for few minutes and run `kubectl get pods -n aibrix-system` to check pod status util they are ready.
 
@@ -154,44 +154,4 @@ If you meet problems exposing external IPs, feel free to debug with following co
     envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   10.96.239.246   101.18.0.4    80:32079/TCP                              10d
     envoy-gateway                            ClusterIP      10.96.166.226   <none>        18000/TCP,18001/TCP,18002/TCP,19001/TCP   10d
 
-If you encounter issues when running inference request, below are helpful starting pointers.
-
-1. Ensure that status.conditions == Accepted for below objects.
-
-.. code-block:: bash
-
-    kubectl describe gatewayclass -n aibrix-system
-    
-    kubectl describe gateway -n aibrix-system
-
-    kubectl describe envoypatchpolicy -n aibrix-system
-
-    # check for all objects
-    kubectl describe envoyextensionpolicy -n aibrix-system 
-
-    # check for all objects
-    kubectl describe httproute -n aibrix-system  
-
-2. Check the logs for envoy proxy and aibrix-gateway-plugins. Copy the logs, if a github issue is created.
-
-.. code-block:: bash
-    kubectl get pods -n envoy-gateway-system
-
-    NAME                                                      READY   STATUS    RESTARTS   AGE
-    envoy-aibrix-system-aibrix-eg-903790dc-84ccfcbc6b-hw2lq   2/2     Running   0          13m
-    envoy-gateway-7c7659ffc9-rvm5s                            1/1     Running   0          16m
-
-    kubectl logs envoy-aibrix-system-aibrix-eg-903790dc-84ccfcbc6b-hw2lq -n envoy-gateway-system
-
-.. code-block:: bash
-    kubectl get pods -n aibrix-system
-
-    NAME                                        READY   STATUS             RESTARTS   AGE
-    aibrix-controller-manager-fb4495448-j9k6g   1/1     Running            0          22m
-    aibrix-gateway-plugins-6bd9fcd5b9-2bwpr     1/1     Running            0          22m
-    aibrix-gpu-optimizer-df9db96c8-2fctd        1/1     Running            0          22m
-    aibrix-kuberay-operator-5bf4985d86-7g4tz    1/1     Running            0          22m
-    aibrix-metadata-service-9d4cd7f77-mq7tr     1/1     Running            0          22m
-    aibrix-redis-master-7d6b77c794-bcqxc        1/1     Running            0          22m
-
-    kubectl logs aibrix-gateway-plugins-6bd9fcd5b9-2bwpr -n aibrix-system
+Please also follow `debugging guidelines <https://aibrix.readthedocs.io/latest/features/gateway-plugins.html#debugging-guidelines>`_.
