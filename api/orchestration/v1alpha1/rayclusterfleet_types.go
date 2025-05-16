@@ -113,6 +113,10 @@ type RayClusterFleetStatus struct {
 	// newest ReplicaSet.
 	// +optional
 	CollisionCount *int32 `json:"collisionCount,omitempty" protobuf:"varint,8,opt,name=collisionCount"`
+
+	// HPAPodSelector for pods that belong to the RayClusterFleet object, this is
+	// needed for HPA to know what pods belong to the RayClusterFleet object.
+	HPAPodSelector string `json:"hpaPodSelector,omitempty"`
 }
 
 // DeploymentCondition describes the state of a deployment at a certain point.
@@ -151,6 +155,7 @@ const (
 // +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.hpaPodSelector
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // RayClusterFleet is the Schema for the rayclusterfleets API
