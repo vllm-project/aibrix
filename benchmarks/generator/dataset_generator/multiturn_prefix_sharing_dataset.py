@@ -69,7 +69,7 @@ def main(args):
         if num_turns <= 0:
             num_turns = 1
         flat_prompts_data = []
-        for _ in range(0, num_turns):
+        for i in range(0, num_turns):
             prompt_length = prompt_len_sampler.sample()
             if prompt_length <= 0:
                 print(f"sampled prompt length: {prompt_length}")
@@ -77,7 +77,8 @@ def main(args):
             # Process the prompt as needed
             if len(prompt) == 0:
                 print("Prompt is empty, skipping...")
-            prompt = shared_prefix + prompt
+            if i == 0:
+                prompt = shared_prefix + prompt
             flat_prompts_data.append(prompt)
         sessioned_prompts.append({
             "session_id": session_id,
