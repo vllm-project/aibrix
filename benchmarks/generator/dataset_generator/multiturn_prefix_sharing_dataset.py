@@ -3,8 +3,8 @@ import numpy as np
 import logging
 from transformers import AutoTokenizer
 from typing import Dict, Any
-from synthetic_prompt import generate_synthetic_prompt
-from util import save_dataset_jsonl
+from generator.dataset_generator.synthetic_prompt import generate_synthetic_prompt
+from generator.dataset_generator.util import save_dataset_jsonl
 
 class NormalSampler:
     def __init__(self, mean: float, std: float) -> None:
@@ -46,7 +46,7 @@ def analyze_dataset(dataset: Dict[str, Any], tokenizer: AutoTokenizer):
     for p, v in zip(percentiles, values):
         logging.warning(f"  {p}th percentile: {v:.2f} rounds")
     
-def generate_synthetic(args):
+def main(args):
     session_sampler = NormalSampler(args.num_sessions_mean, args.num_sessions_std)
     turn_sampler = NormalSampler(args.num_turns_mean, args.num_turns_std)
     prompt_len_sampler = ParetoSampler(args.prompt_length_mean, args.prompt_length_std)
@@ -69,7 +69,7 @@ def generate_synthetic(args):
         if num_turns <= 0:
             num_turns = 1
         flat_prompts_data = []
-        for _ in range(0, num_turns):
+        for i in range(0, num_turns):
             prompt_length = prompt_len_sampler.sample()
             if prompt_length <= 0:
                 print(f"sampled prompt length: {prompt_length}")
@@ -77,7 +77,8 @@ def generate_synthetic(args):
             # Process the prompt as needed
             if len(prompt) == 0:
                 print("Prompt is empty, skipping...")
-            prompt = shared_prefix + prompt
+            if i == 0:
+                prompt = shared_prefix + prompt
             flat_prompts_data.append(prompt)
         sessioned_prompts.append({
             "session_id": session_id,
@@ -101,5 +102,5 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default="output.jsonl", help="Output file name.")
     
     args = parser.parse_args()
-    generate_synthetic(args)
+    main(args)
     
