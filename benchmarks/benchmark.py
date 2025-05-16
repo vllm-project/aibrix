@@ -245,7 +245,7 @@ class BenchmarkRunner:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run benchmark pipeline")
     parser.add_argument("command", nargs="?", default="all", help="One of [dataset, workload, client, analysis, all]")
-    parser.add_argument("--config", default="config/base.yaml", help="Path to base config YAML")
+    parser.add_argument("--config", required=True, help="Path to base config YAML")
     parser.add_argument("--override", action="append", default=[], help="Override config values, e.g., --override time_scale=2.0 or target_qps=5")
 
     args = parser.parse_args()
