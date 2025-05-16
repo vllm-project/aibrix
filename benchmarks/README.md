@@ -29,14 +29,14 @@ export api_key="${your_api_key}"
 To run all steps using the default setting, try
 
 ```bash
-python benchmark.py all
+python benchmark.py all --config config.yaml
 ```
 
 Each steps can also be run separately. All configurations are stored under [config](./config) directory. To override any configuration parameter from the command line, do something like
 
 
 ```bash
-python benchmark.py all --override ENDPOINT="http://localhost:8000"
+python benchmark.py all --config config.yaml --override ENDPOINT="http://localhost:8000"
 ```
 
 
@@ -60,7 +60,7 @@ The dataset generator either generates a prompt dataset, or convert an existing 
 
 To run dataset generation, do
 ```bash
-python benchmark.py dataset
+python benchmark.py dataset --config config.yaml
 ```
 
 Currently, we support four types of dataset:
@@ -105,7 +105,7 @@ Workload generator specifies time and requests to be dispatched of a workload. A
 
 Workload generator could be run by:
 ```bash
-python benchmark.py workload
+python benchmark.py workload --config config.yaml
 ```
 
 Ths workload generator would produce a workload file that looks like the following. The logical timestamp is associated with list of prompts that need to be dispatched at the same time. 

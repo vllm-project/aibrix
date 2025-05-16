@@ -155,6 +155,8 @@ class BenchmarkRunner:
         if workload_type == "constant":
             args_dict.update({
                 "target_qps": subconfig["target_qps"],
+                "target_prompt_len": subconfig["target_prompt_len"],
+                "target_completion_len": subconfig["target_completion_len"],
                 "max_concurrent_sessions": subconfig.get("max_concurrent_sessions", 1),
             })
             
