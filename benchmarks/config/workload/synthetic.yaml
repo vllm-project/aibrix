@@ -1,4 +1,0 @@
-TRAFFIC_FILE: "scenarios/autoscaling/workload-configs/predefined/traffic-configs//HighSlow.json"
-PROMPT_LEN_FILE: "scenarios/autoscaling/workload-configs/predefined/prompt-len-configs/HighSlow.json"
-COMPLETION_LEN_FILE: "scenarios/autoscaling/workload-configs/predefined/completion-len-configs/HighSlow.json"
-MAX_CONCURRENT_SESSIONS: 2

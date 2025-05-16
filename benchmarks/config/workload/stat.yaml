@@ -1,7 +1,0 @@
-TRAFFIC_FILE: ${stat_describe_traffic}
-PROMPT_LEN_FILE: ${stat_describe_prompt_len}
-COMPLETION_LEN_FILE: ${stat_describe_completion_len}
-STAT_TRACE_TYPE: "cloudide" 
-QPS_SCALE: 1.0
-OUTPUT_SCALE: 1.0
-INPUT_SCALE: 1.0
