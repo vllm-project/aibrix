@@ -89,7 +89,7 @@ spec:
               name: model-hostpath
       containers:
         - name: "vllm"
-          image: "aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5"
+          image: "aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.7.0"
           command:
           - "vllm"
           - "serve"

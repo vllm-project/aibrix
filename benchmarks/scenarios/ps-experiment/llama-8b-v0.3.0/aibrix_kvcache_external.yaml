@@ -75,7 +75,6 @@ spec:
               name: model-hostpath
       containers:
         - name: vllm-openai
-          image: aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-20250515
           image: aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-20250516
           imagePullPolicy: IfNotPresent
           command:
