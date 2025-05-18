@@ -110,37 +110,48 @@ func (c *Store) getPodModelMetricName(modelName string, metricName string) strin
 	return fmt.Sprintf("%s/%s", modelName, metricName)
 }
 
+const defaultPodMetricsWorkerCount = 10
+
 func (c *Store) updatePodMetrics() {
 	c.metaPods.Range(func(key string, metaPod *Pod) bool {
 		if !utils.FilterReadyPod(metaPod.Pod) {
 			// Skip unready pod
 			return true
 		}
+		c.podMetricsJobs <- metaPod // Send the job to the worker pool
+		return true
+	})
+}
 
+func (c *Store) worker(jobs <-chan *Pod) {
+	for pod := range jobs {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		// We should use the primary container port. In the future, we can decide whether to use sidecar container's port
-		url := fmt.Sprintf("http://%s:%d/metrics", metaPod.Status.PodIP, podPort)
-		allMetrics, err := metrics.ParseMetricsURL(url)
+		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, podPort)
+		allMetrics, err := metrics.ParseMetricsURLWithContext(ctx, url)
 		if err != nil {
 			klog.V(4).Infof("Error parsing metric families: %v\n", err)
+			cancel()
+			continue
 		}
 
 		// parse counterGaugeMetricsNames
-		c.updateSimpleMetricFromRawMetrics(metaPod, allMetrics)
+		c.updateSimpleMetricFromRawMetrics(pod, allMetrics)
 
 		// parse histogramMetrics
-		c.updateHistogramMetricFromRawMetrics(metaPod, allMetrics)
+		c.updateHistogramMetricFromRawMetrics(pod, allMetrics)
 
 		// parse QueryLabel metrics
-		c.updateQueryLabelMetricFromRawMetrics(metaPod, allMetrics)
+		c.updateQueryLabelMetricFromRawMetrics(pod, allMetrics)
 
 		if c.prometheusApi == nil {
 			klog.V(4).InfoS("Prometheus api is not initialized, PROMETHEUS_ENDPOINT is not configured, skip fetching prometheus metrics")
-			return true
+		} else {
+			// parse prometheus metrics
+			c.updateMetricFromPromQL(ctx, pod)
 		}
-		// parse prometheus metrics
-		c.updateMetricFromPromQL(metaPod)
-		return true
-	})
+		cancel()
+	}
 }
 
 func (c *Store) updateSimpleMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
@@ -247,7 +258,7 @@ func (c *Store) updateQueryLabelMetricFromRawMetrics(pod *Pod, allMetrics map[st
 	}
 }
 
-func (c *Store) updateMetricFromPromQL(pod *Pod) {
+func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 	podName := pod.Name
 
 	for _, metricName := range prometheusMetricNames {
@@ -261,7 +272,7 @@ func (c *Store) updateMetricFromPromQL(pod *Pod) {
 		}
 		scope := metric.MetricScope
 		if scope == metrics.PodMetricScope {
-			err := c.queryUpdatePromQLMetrics(metric, queryLabels, pod, "", metricName)
+			err := c.queryUpdatePromQLMetrics(ctx, metric, queryLabels, pod, "", metricName)
 			if err != nil {
 				klog.V(4).Infof("Failed to query and update PromQL metrics: %v", err)
 				continue
@@ -270,7 +281,7 @@ func (c *Store) updateMetricFromPromQL(pod *Pod) {
 			if pod.Models.Len() > 0 {
 				for _, modelName := range pod.Models.Array() {
 					queryLabels["model_name"] = modelName
-					err := c.queryUpdatePromQLMetrics(metric, queryLabels, pod, modelName, metricName)
+					err := c.queryUpdatePromQLMetrics(ctx, metric, queryLabels, pod, modelName, metricName)
 					if err != nil {
 						klog.V(4).Infof("Failed to query and update PromQL metrics: %v", err)
 						continue
@@ -285,11 +296,11 @@ func (c *Store) updateMetricFromPromQL(pod *Pod) {
 	}
 }
 
-func (c *Store) queryUpdatePromQLMetrics(metric metrics.Metric, queryLabels map[string]string, pod *Pod, modelName string, metricName string) error {
+func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Metric, queryLabels map[string]string, pod *Pod, modelName string, metricName string) error {
 	scope := metric.MetricScope
 	query := metrics.BuildQuery(metric.PromQL, queryLabels)
 	// Querying metrics
-	result, warnings, err := c.prometheusApi.Query(context.Background(), query, time.Now())
+	result, warnings, err := c.prometheusApi.Query(ctx, query, time.Now())
 	if err != nil {
 		// Skip this model fetching if an error is thrown
 		return fmt.Errorf("error executing query: %v", err)
