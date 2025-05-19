@@ -143,11 +143,11 @@ Below are routing strategies gateway supports:
 * ``random``: routes request to a random pod.
 * ``least-request``: routes request to a pod with the fewest ongoing requests.
 * ``throughput``: routes request to a pod which has processed the lowest total weighted tokens.
-* ``prefix-cache``: routes request to a pod which already has a KV cache matching the request's prompt prefix, and also supports multiturn conversation.
+* ``prefix-cache``: routes request to a pod which already has a KV cache matching the request's prompt prefix, includes load balancing and multiturn conversation.
 * ``least-busy-time``: routes request to the pod with the least cumulative busy processing time.
 * ``least-kv-cache``: routes request to the pod with the smallest current KV cache size (least VRAM used).
 * ``least-latency``: routes request to the pod with the lowest average processing latency.
-* ``prefix-cache-preble``: routes request considering both prefix cache hits and pod load.
+* ``prefix-cache-preble``: routes request considering both prefix cache hits and pod load, implementation is based of Preble: Efficient Distributed Prompt Scheduling for LLM Serving: https://arxiv.org/abs/2407.00023.
 * ``vtc-basic``: routes request using a hybrid score balancing fairness (user token count) and pod utilization. It is a simple variant of Virtual Token Counter (VTC) algorithm.  See more details at https://github.com/Ying1123/VTC-artifact
 
 .. code-block:: bash
