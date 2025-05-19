@@ -326,18 +326,50 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         assert self._metrics is not None
         MeasurableBase.__init__(self, self._metrics.mgr)
 
+        # init allocator
+        allocator_capacity: int = 0
+
+        if enable_l1:
+            allocator_capacity += capacity * self.block_nbytes
+
+        if enable_l2:
+            self._l2_inflight_quota = (
+                envs.AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_MAX_INFLIGHT_TOKENS
+                // self.block_ntokens
+            )
+
+            # more capacity for async/sync load
+            if self._l2_inflight_quota > 0:
+                more_capacity = (
+                    self._l2_inflight_quota
+                    * self.block_nbytes
+                    // self.block_ntokens
+                )
+            else:
+                more_capacity = (
+                    self._chunk_size * self.block_nbytes // self.block_ntokens
+                )
+
+            # more capacity for get
+            more_capacity += (
+                2 * self._chunk_size * self.block_nbytes // self.block_ntokens
+            )
+
+            allocator_capacity += more_capacity
+
         self._allocator = TensorPoolAllocator(
             self.block_nbytes,
+            capacity_nbytes=allocator_capacity,
             device=device,
             pin_memory=pin_memory,
         )
 
+        # init caches
         if enable_l1:
             eviction_policy: str = (
                 envs.AIBRIX_KV_CACHE_OL_L1_CACHE_EVICTION_POLICY
             )
             evict_size: int = envs.AIBRIX_KV_CACHE_OL_L1_CACHE_EVICT_SIZE
-            self._allocator.increase(capacity * self.block_nbytes)
 
             self._l1_cache = L1Cache(
                 eviction_policy,
@@ -360,10 +392,6 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 envs.AIBRIX_KV_CACHE_OL_L2_CACHE_NUM_ASYNC_WORKERS,
                 thread_name_prefix="l2_cache_",
             )
-            self._l2_inflight_quota = (
-                envs.AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_MAX_INFLIGHT_TOKENS
-                // self.block_ntokens
-            )
 
             placement_policy = envs.AIBRIX_KV_CACHE_OL_L2_CACHE_PLACEMENT_POLICY
             refresh_interval_s = (
@@ -381,25 +409,6 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 meta_service=self._ms,
             )
 
-            # more capacity for async/sync load
-            if self._l2_inflight_quota > 0:
-                more_capacity = (
-                    self._l2_inflight_quota
-                    * self.block_nbytes
-                    // self.block_ntokens
-                )
-            else:
-                more_capacity = (
-                    self._chunk_size * self.block_nbytes // self.block_ntokens
-                )
-
-            # more capacity for get
-            more_capacity += (
-                2 * self._chunk_size * self.block_nbytes // self.block_ntokens
-            )
-
-            self._allocator.increase(more_capacity)
-
             # new an event loop to carry out L2Cache ops
             self._event_loop = asyncio.new_event_loop()
             self._thread = threading.Thread(
@@ -412,13 +421,16 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             status.raise_if_not_ok()
 
             if self._l2_cache._backend.feature.rdma:
-                status = self._allocator.register(self._l2_cache.register_mr)
-                if not status.is_ok():
+                reg_status = self._l2_cache.register_slabs(
+                    self._allocator.slabs
+                )
+                if not reg_status.is_ok():
                     logger.fatal(
-                        f"Failed to register slab with "
+                        f"Failed to register slabs with "
                         f"{self._l2_cache._backend.name}'s register func, "
-                        f"error={status}"
+                        f"error={reg_status}"
                     )
+                    reg_status.raise_if_not_ok()
 
             # register l1 cache callback
             if self._l1_cache is not None:

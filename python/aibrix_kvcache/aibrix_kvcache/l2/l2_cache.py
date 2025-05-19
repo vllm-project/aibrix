@@ -28,7 +28,7 @@ from ..meta_service import MetaService
 from ..metrics import L2CacheMetrics, MeasurableBase, MetricRecorder
 from ..spec import KVCacheBlockLayout, KVCacheBlockSpec
 from ..status import Status, StatusCodes
-from .connectors import Connector, ConnectorConfig, ConnectorRegisterDescriptor
+from .connectors import Connector, ConnectorConfig
 from .key_builders import KeyBuilder, RawKeyBuilder
 from .placement import Placement, PlacementConfig
 
@@ -106,8 +106,6 @@ class L2Cache(MeasurableBase):
             )
             self._backend = Placement.create(placement_config)
 
-        self._register_descs: List[ConnectorRegisterDescriptor] = []
-
         logger.info(
             "%s is initialized. Using partition_id=%s.", str(self), partition_id
         )
@@ -130,18 +128,15 @@ class L2Cache(MeasurableBase):
     def close(self) -> Status:
         """Close the cache."""
         if self._backend is not None:
-            for desc in self._register_descs:
-                self._backend.deregister_mr(desc)
             return self._backend.close()
         return Status.ok()
 
-    def register_mr(self, addr: int, length: int) -> Status[Any]:
+    def register_slabs(self, slabs: List[torch.Tensor]) -> Status:
         if not self._backend.feature.rdma:
             raise NotImplementedError
-        status = self._backend.register_mr(addr, length)
+        status = self._backend.register_slabs(slabs)
         if not status.is_ok():
             return status
-        self._register_descs.append(status.get())
         return status
 
     @nvtx_range("prefetch", "kv_cache_ol.L2Cache")

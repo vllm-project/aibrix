@@ -23,7 +23,7 @@ from ... import envs
 from ...common import AsyncBase
 from ...memory import MemoryRegion
 from ...status import Status, StatusCodes
-from . import Connector, ConnectorFeature, ConnectorRegisterDescriptor
+from . import Connector, ConnectorFeature
 
 
 @AsyncBase.async_wrap(delete="_delete")
@@ -140,18 +140,14 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
         return Status.ok()
 
     @Status.capture_exception
-    def register_mr(
-        self, addr: int, length: int
-    ) -> Status[ConnectorRegisterDescriptor]:
+    def register_slabs(self, slabs: List[torch.Tensor]) -> Status:
         assert self.conn is not None
-        ret = self.conn.register_mr(addr, length)
-        if ret != 0:
-            return Status(StatusCodes.INVALID)
-        return Status.ok(ConnectorRegisterDescriptor())
-
-    @Status.capture_exception
-    def deregister_mr(self, desc: ConnectorRegisterDescriptor) -> Status:
-        # InfiniStore does not expose deregister function
+        for slab in slabs:
+            addr = slab.data_ptr()
+            length = slab.numel()
+            ret = self.conn.register_mr(addr, length)
+            if ret != 0:
+                return Status(StatusCodes.INVALID)
         return Status.ok()
 
     @Status.capture_exception
