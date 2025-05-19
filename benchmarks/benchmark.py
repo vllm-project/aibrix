@@ -3,6 +3,7 @@ import sys
 import subprocess
 import yaml
 import argparse
+import logging 
 from pathlib import Path
 from client import (client, analyze)
 from generator.dataset_generator import (synthetic_prefix_sharing_dataset, 
@@ -10,12 +11,14 @@ from generator.dataset_generator import (synthetic_prefix_sharing_dataset,
                                          utility)
 from generator.workload_generator import workload_generator
 from argparse import Namespace
+from string import Template
 
 
 class BenchmarkRunner:
     def __init__(self, config_base="config/base.yaml", overrides=None):
         self.overrides = overrides or []
         self.load_config(config_base)
+        logging.warning(f"Loaded Config: {self.config}")
         for dir_key in ["dataset_dir", "workload_dir", "client_output", "trace_output"]:
             path_str = self.config[dir_key]
             self.ensure_directories(path_str)
@@ -23,7 +26,7 @@ class BenchmarkRunner:
     def apply_overrides(self, config_dict):
         for override in self.overrides:
             if '=' not in override:
-                print(f"[WARNING] Invalid override format: {override}. Use key=value.")
+                logging.warning(f"Invalid override format: {override}. Use key=value.")
                 continue
             key, value = override.split("=", 1)
             try:
@@ -38,19 +41,27 @@ class BenchmarkRunner:
                     d[p] = {}
                 d = d[p]
             d[parts[-1]] = parsed_value
-            print(f"[INFO] Overridden {key} = {parsed_value}")
+            logging.info(f"Overridden {key} = {parsed_value}")
         return config_dict
 
     def load_config(self, config_path):
         if not Path(config_path).is_file():
-            print(f"[ERROR] {config_path} not found.")
+            logging.error(f"{config_path} not found.")
             sys.exit(1)
 
-        print(f"[INFO] Loading configuration from {config_path}")
+        logging.info(f"Loading configuration from {config_path}")
         with open(config_path, 'r') as f:
             content = os.path.expandvars(f.read())
-            self.config = yaml.safe_load(content)
-            self.config = self.apply_overrides(self.config)
+            raw_config = yaml.safe_load(content)
+            raw_config = self.apply_overrides(raw_config)
+        
+        resolved_config = {}
+        for key, value in raw_config.items():
+            if isinstance(value, str):
+                template = Template(value)
+                value = template.safe_substitute(raw_config)
+            resolved_config[key] = value
+        self.config = resolved_config
 
     def ensure_directories(self, path_str):
         path = Path(path_str)
@@ -58,15 +69,14 @@ class BenchmarkRunner:
 
     def generate_dataset(self):
         dataset_type = self.config["prompt_type"]
-        print(f"[INFO] Generating synthetic dataset {dataset_type}...")
-        print(self.config)
+        logging.info(f"Generating synthetic dataset {dataset_type}...")
 
         if dataset_type not in self.config["dataset_configs"]:
-            print(f"[ERROR] Unknown prompt type: {dataset_type}")
+            logging.error(f"Unknown prompt type: {dataset_type}")
             sys.exit(1)
 
         subconfig = self.config["dataset_configs"][dataset_type]
-        dataset_file = f'{self.config["dataset_dir"].rstrip("/")}/{self.config["prompt_type"]}.jsonl'
+        dataset_file = self.config["dataset_file"]  # Use the pre-defined dataset_file
 
         if dataset_type == "synthetic_shared":
             args_dict = {
@@ -137,11 +147,10 @@ class BenchmarkRunner:
             sys.exit(1)
 
         subconfig = self.config["workload_configs"][workload_type]
-        workload_dir = self.config["workload_dir"]
-        workload_type_dir = f"{workload_dir}/{workload_type}"
+        workload_type_dir = self.config["workload_dir"]
         self.ensure_directories(workload_type_dir)
         
-        dataset_file = f'{self.config["dataset_dir"].rstrip("/")}/{self.config["prompt_type"]}.jsonl'
+        dataset_file = self.config["dataset_file"]  # Use the pre-defined dataset_file
         args_dict = {
             "prompt_file": dataset_file,
             "interval_ms": self.config["interval_ms"],
@@ -181,7 +190,7 @@ class BenchmarkRunner:
             
         elif workload_type == "azure":
             if not Path(subconfig["azure_trace"]).is_file():
-                print("[INFO] Downloading Azure dataset...")
+                logging.info("Downloading Azure dataset...")
                 subprocess.run([
                     "wget", "https://raw.githubusercontent.com/Azure/AzurePublicDataset/refs/heads/master/data/AzureLLMInferenceTrace_conv.csv",
                     "-O", subconfig["azure_trace"]
@@ -192,14 +201,12 @@ class BenchmarkRunner:
             })
 
         args = Namespace(**args_dict)
-        print(f"[INFO] Running workload generator with args: {args}")
+        logging.info(f"Running workload generator with args: {args}")
         workload_generator.main(args)
 
     def run_client(self):
-        print("[INFO] Running client to dispatch workload...")
-        workload_dir = self.config["workload_dir"]
-        workload_type = self.config["workload_type"]
-        workload_file =f"{workload_dir}/{workload_type}/workload.jsonl"
+        logging.info("Running client to dispatch workload...")
+        workload_file = self.config["workload_file"]  # Use the pre-defined workload_file
         
         args_dict = {
             "workload_path": workload_file,
@@ -216,22 +223,22 @@ class BenchmarkRunner:
             "max_retries": self.config.get("max_retries", 0),
         }
         args = Namespace(**args_dict)
-        print(f"[INFO] Running client with args: {args}")
+        logging.info(f"Running client with args: {args}")
         client.main(args)
 
     def run_analysis(self):
-        print("[INFO] Analyzing trace output...")
+        logging.info("Analyzing trace output...")
         args_dict = {
             "trace": f"{self.config['client_output']}/output.jsonl",
             "output": self.config["trace_output"],
             "goodput_target": self.config["goodput_target"],
         }
         args = Namespace(**args_dict)
-        print(f"[INFO] Running analysis with args: {args}")
+        logging.info(f"Running analysis with args: {args}")
         analyze.main(args)
 
     def run(self, command):
-        print("========== Starting Benchmark ==========")
+        logging.info("========== Starting Benchmark ==========")
         actions = {
             "dataset": self.generate_dataset,
             "workload": self.generate_workload,
@@ -241,13 +248,13 @@ class BenchmarkRunner:
             "": lambda: [self.generate_dataset(), self.generate_workload(), self.run_client(), self.run_analysis()]
         }
         if command not in actions:
-            print(f"[ERROR] Unknown command: {command}")
-            print("Usage: script.py [dataset|workload|client|analysis|all]")
+            logging.error(f"Unknown command: {command}")
+            logging.error("Usage: script.py [dataset|workload|client|analysis|all]")
             sys.exit(1)
         result = actions[command]
         if callable(result):
             result()
-        print("========== Benchmark Completed ==========")
+        logging.info("========== Benchmark Completed ==========")
 
 
 if __name__ == "__main__":

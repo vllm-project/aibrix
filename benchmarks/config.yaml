@@ -9,9 +9,8 @@ tokenizer: "deepseek-ai/deepseek-llm-7b-chat"
 # STEP 1: DATASET GENERATION
 # ---------------
 # Dataset config
-dataset_dir: "./output/dataset/"
+dataset_dir: "./output/dataset"
 prompt_type: "synthetic_multiturn"  # Options: synthetic_multiturn, synthetic_shared, sharegpt, client_trace
-
 dataset_configs:
   synthetic_multiturn:
     shared_prefix_length: 0
@@ -41,10 +40,11 @@ dataset_configs:
 # STEP 2: WORKLOAD GENERATION
 # ---------------
 # Workload config
+dataset_file: ${dataset_dir}/${prompt_type}.jsonl
 workload_type: "constant"  # Options: constant, synthetic, constant, azure
 interval_ms: 1000
-duration_ms: 300000
-workload_dir: "./output/workload"
+duration_ms: 10000
+workload_dir: "./output/workload/${workload_type}"
 
 workload_configs:
   synthetic:
@@ -75,6 +75,7 @@ workload_configs:
 # STEP 3: CLIENT DISPATCH
 # ---------------
 # Client and trace analysis output directories
+workload_file: "./output/workload/${workload_type}/workload.jsonl"
 client_output: "./output/client_output"
 endpoint: "http://localhost:8888"
 api_key: ${api_key}  # You might want to inject this securely via environment variables
