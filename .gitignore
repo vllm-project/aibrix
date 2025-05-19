@@ -45,6 +45,9 @@ benchmarks/autoscaling/output_stats
 benchmarks/autoscaling/workload_plot
 benchmarks/generator/traces/*
 benchmarks/output
+benchmarks/config/*.sh
+benchmarks/config/*/*.sh
+benchmarks/*.sh
 
 # simulator cache and output
 development/simulator/simulator_output

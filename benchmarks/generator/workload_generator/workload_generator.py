@@ -8,17 +8,17 @@ from pandas import Timedelta
 from typing import List, Dict, Any
 from transformers import PreTrainedTokenizerBase
 from datetime import timedelta
-from sample_request import (load_requests,  
+from generator.workload_generator.sample_request import (load_requests,  
                             RequestFinder,
                         )
-from distribution import (generate_poisson_dist,
+from generator.workload_generator.distribution import (generate_poisson_dist,
                           generate_token_len_from_percentiles,
                           to_fluctuate_pattern_config,
                           user_to_synthetic_config,
                           sine_fluctuation,
                           )
                           
-from utils import (if_sessioned_dataset,
+from generator.workload_generator.utils import (if_sessioned_dataset,
                    convert_to_stat_df,
                    read_distribution_stats,
                    get_tokenizer, 
@@ -149,15 +149,16 @@ def generate_synthetic_from_dist(
     return workload
 
 def generate_constant(prompt_file_path: str,
-                       qps: int, 
-                       input_len: int = None,
-                       output_len: int = None,
-                       duration_ms: int = None,
-                       interval_ms: int = None,
-                       max_concurrent_sessions: int = None,
-                       output_file: str = 'output/output',
-                       to_jsonl: bool = False,
-                       ) -> List[List[Any]]:
+                    tokenizer: PreTrainedTokenizerBase,
+                    qps: int, 
+                    input_len: int = None,
+                    output_len: int = None,
+                    duration_ms: int = None,
+                    interval_ms: int = None,
+                    max_concurrent_sessions: int = None,
+                    output_file: str = 'output/output',
+                    to_jsonl: bool = False,
+                    ) -> List[List[Any]]:
     workload = []
     ts = 0
     
@@ -204,6 +205,7 @@ def generate_constant(prompt_file_path: str,
     return workload
 
 def generate_synthetic(prompt_file_path: str,
+                       tokenizer: PreTrainedTokenizerBase,
                        qps_pattern_config: Dict[str, Any],
                        input_pattern_config: Dict[str, Any],
                        output_pattern_config: Dict[str, Any],
@@ -328,7 +330,6 @@ def generate_from_azure_csv(file_path: str,
             input_lens.append(int(row['ContextTokens']))
             output_lens.append(int(row['GeneratedTokens']))
         sampled_requests = request_finder.find_requests_len_range(
-            df=sharegpt_df,
             num_requests=len(input_lens),
             input_lens=input_lens,
             output_lens=output_lens,
@@ -350,6 +351,95 @@ def generate_from_azure_csv(file_path: str,
 
     return grouped_requests
 
+def main(args):
+    # Generate workloads and pair with prompts
+    workload_dict = {}
+    tokenizer = get_tokenizer(pretrained_model_name_or_path=args.model, trust_remote_code=True)
+
+    if args.trace_type == "synthetic":
+        qps_pattern_config = None
+        input_pattern_config = None
+        output_pattern_config = None
+        comp_pattern_type = f"synthetic_manual_config"
+        if args.traffic_pattern:
+            qps_pattern_config = to_fluctuate_pattern_config(config_type = args.traffic_pattern, mean = 6)
+        elif args.traffic_pattern_config:
+            qps_pattern_config = user_to_synthetic_config(user_config = load_config(args.traffic_pattern_config), duration_ms = args.duration_ms)
+            
+        if args.prompt_len_pattern:
+            input_pattern_config = to_fluctuate_pattern_config(config_type = args.prompt_len_pattern, mean = 1024)
+        elif args.prompt_len_pattern_config:
+            input_pattern_config = user_to_synthetic_config(user_config = load_config(args.prompt_len_pattern_config), duration_ms = args.duration_ms)
+            
+        if args.completion_len_pattern:
+            output_pattern_config = to_fluctuate_pattern_config(config_type = args.completion_len_pattern, mean = 1024)
+        elif args.completion_len_pattern_config:
+            output_pattern_config = user_to_synthetic_config(user_config = load_config(args.completion_len_pattern_config), duration_ms = args.duration_ms)
+        
+        if qps_pattern_config is None:
+            raise ValueError(f"qps_pattern_config cannot be None")
+        
+        generated_workload = generate_synthetic(prompt_file_path = args.prompt_file,
+                                                tokenizer=tokenizer,
+                                                qps_pattern_config = qps_pattern_config,
+                                                input_pattern_config = input_pattern_config,
+                                                output_pattern_config = output_pattern_config,
+                                                duration_ms=args.duration_ms,
+                                                interval_ms=args.interval_ms,
+                                                max_concurrent_sessions=args.max_concurrent_sessions,
+                                                output_file=f"{args.output_dir}/workload",
+                                                to_jsonl=(args.output_format == "jsonl"),
+                                            )
+        workload_dict[comp_pattern_type] = generated_workload
+    else:
+        # Process for 'stat' and 'azure'
+        if args.trace_type == "constant":
+            generated_workload = generate_constant(prompt_file_path=args.prompt_file, 
+                                                   tokenizer=tokenizer,
+                                                    qps=args.target_qps,
+                                                    input_len=args.target_prompt_len,
+                                                    output_len=args.target_completion_len,
+                                                    duration_ms=args.duration_ms, 
+                                                    interval_ms=args.interval_ms,
+                                                    max_concurrent_sessions=args.max_concurrent_sessions,
+                                                    output_file=f"{args.output_dir}/workload",
+                                                    to_jsonl=(args.output_format == "jsonl"),
+                                                )
+        elif args.trace_type == "stat":
+            generated_workload = generate_from_stat_csv(prompt_file_path=args.prompt_file, 
+                                                            duration_ms=args.duration_ms, 
+                                                            tokenizer=tokenizer,
+                                                            qps_stat=args.traffic_file, 
+                                                            input_stat=args.prompt_len_file, 
+                                                            output_stat=args.completion_len_file,
+                                                            qps_scale=args.qps_scale,
+                                                            input_scale=args.input_scale,
+                                                            output_scale=args.output_scale,
+                                                            stat_trace_type=args.stat_trace_type,
+                                                            max_concurrent_sessions=args.max_concurrent_sessions,
+                                                            output_file=f"{args.output_dir}/workload",
+                                                            to_jsonl=(args.output_format == "jsonl"),
+                                                            )
+
+        elif args.trace_type == "azure":
+            generated_workload = generate_from_azure_csv(file_path=args.traffic_file, 
+                                                         prompt_file_path=args.prompt_file,
+                                                         duration_ms=args.duration_ms, 
+                                                         tokenizer=tokenizer,
+                                                         interval_ms=args.interval_ms, 
+                                                         output_file=f"{args.output_dir}/workload",
+                                                         to_jsonl=(args.output_format == "jsonl"),
+                                                         )
+
+        workload_dict[args.trace_type] = generated_workload
+
+    if workload_dict:
+        # Plot the workloads
+        for workload_name, workload in workload_dict.items():
+            plot_workload(
+                workload = workload, 
+                bin_size_sec = 1, 
+                output_dir = f"{args.output_dir}")
 
 
 if __name__ == '__main__':
@@ -402,90 +492,4 @@ if __name__ == '__main__':
     parser.add_argument('--max-concurrent-sessions', type=int, required=False, default=1, help='Maximum number of overlapping sessions.')
     
     args = parser.parse_args()
-
-    # Generate workloads and pair with prompts
-    workload_dict = {}
-    tokenizer = get_tokenizer(pretrained_model_name_or_path=args.model, trust_remote_code=True)
-
-    if args.trace_type == "synthetic":
-        qps_pattern_config = None
-        input_pattern_config = None
-        output_pattern_config = None
-        comp_pattern_type = f"synthetic_manual_config"
-        if args.traffic_pattern:
-            qps_pattern_config = to_fluctuate_pattern_config(config_type = args.traffic_pattern, mean = 6)
-        elif args.traffic_pattern_config:
-            qps_pattern_config = user_to_synthetic_config(user_config = load_config(args.traffic_pattern_config), duration_ms = args.duration_ms)
-            
-        if args.prompt_len_pattern:
-            input_pattern_config = to_fluctuate_pattern_config(config_type = args.prompt_len_pattern, mean = 1024)
-        elif args.prompt_len_pattern_config:
-            input_pattern_config = user_to_synthetic_config(user_config = load_config(args.prompt_len_pattern_config), duration_ms = args.duration_ms)
-            
-        if args.completion_len_pattern:
-            output_pattern_config = to_fluctuate_pattern_config(config_type = args.completion_len_pattern, mean = 1024)
-        elif args.completion_len_pattern_config:
-            output_pattern_config = user_to_synthetic_config(user_config = load_config(args.completion_len_pattern_config), duration_ms = args.duration_ms)
-        
-        if qps_pattern_config is None:
-            raise ValueError(f"qps_pattern_config cannot be None")
-        
-        generated_workload = generate_synthetic(prompt_file_path = args.prompt_file,
-                                                qps_pattern_config = qps_pattern_config,
-                                                input_pattern_config = input_pattern_config,
-                                                output_pattern_config = output_pattern_config,
-                                                duration_ms=args.duration_ms,
-                                                interval_ms=args.interval_ms,
-                                                max_concurrent_sessions=args.max_concurrent_sessions,
-                                                output_file=f"{args.output_dir}/workload",
-                                                to_jsonl=(args.output_format == "jsonl"),
-                                            )
-        workload_dict[comp_pattern_type] = generated_workload
-    else:
-        # Process for 'stat' and 'azure'
-        if args.trace_type == "constant":
-            generated_workload = generate_constant(prompt_file_path=args.prompt_file, 
-                                                    qps=args.target_qps,
-                                                    input_len=args.target_prompt_len,
-                                                    output_len=args.target_completion_len,
-                                                    duration_ms=args.duration_ms, 
-                                                    interval_ms=args.interval_ms,
-                                                    max_concurrent_sessions=args.max_concurrent_sessions,
-                                                    output_file=f"{args.output_dir}/workload",
-                                                    to_jsonl=(args.output_format == "jsonl"),
-                                                )
-        elif args.trace_type == "stat":
-            generated_workload = generate_from_stat_csv(prompt_file_path=args.prompt_file, 
-                                                            duration_ms=args.duration_ms, 
-                                                            tokenizer=tokenizer,
-                                                            qps_stat=args.traffic_file, 
-                                                            input_stat=args.prompt_len_file, 
-                                                            output_stat=args.completion_len_file,
-                                                            qps_scale=args.qps_scale,
-                                                            input_scale=args.input_scale,
-                                                            output_scale=args.output_scale,
-                                                            stat_trace_type=args.stat_trace_type,
-                                                            max_concurrent_sessions=args.max_concurrent_sessions,
-                                                            output_file=f"{args.output_dir}/workload",
-                                                            to_jsonl=(args.output_format == "jsonl"),
-                                                            )
-
-        elif args.trace_type == "azure":
-            generated_workload = generate_from_azure_csv(file_path=args.traffic_file, 
-                                                         prompt_file_path=args.prompt_file,
-                                                         duration_ms=args.duration_ms, 
-                                                         tokenizer=tokenizer,
-                                                         interval_ms=args.interval_ms, 
-                                                         output_file=f"{args.output_dir}/workload",
-                                                         to_jsonl=(args.output_format == "jsonl"),
-                                                         )
-
-        workload_dict[args.trace_type] = generated_workload
-
-    if workload_dict:
-        # Plot the workloads
-        for workload_name, workload in workload_dict.items():
-            plot_workload(
-                workload = workload, 
-                bin_size_sec = 1, 
-                output_dir = f"{args.output_dir}")
+    main(args)

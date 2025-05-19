@@ -1,5 +1,5 @@
 import argparse
-from converter import process_dataset_trace, process_dataset_sharegpt
+from generator.dataset_generator.converter import process_dataset_trace, process_dataset_sharegpt
 
 def convert(args):
     if args.type == 'trace':
@@ -10,7 +10,11 @@ def convert(args):
         raise ValueError(f"Unknown type: {args.type}")
 
     
-def main():
+def main(args):
+    convert(args)
+    
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="utility", description="Multi-tool utility")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -23,7 +27,5 @@ def main():
     parser_convert.set_defaults(func=convert)
     
     args = parser.parse_args()
-    args.func(args)
-
-if __name__ == "__main__":
-    main()
+    print(f"Arguments: {args}")
+    main(args)

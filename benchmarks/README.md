@@ -10,7 +10,7 @@ AIBrix Benchmark contains the following components:
 The diagram below shows the end-to-end steps of AIBrix benchmakrs. Our components are highlighted as green rectangles in this diagram. 
 ![overview](./image/aibrix-benchmark-component.png)
 
-Currently, the benchmark scenarios are still under construction and the current benchmark script ```benchmark.sh``` performs all steps up to the AIBrix workload format and trigger benchmark client without extra steps setting up benchmark environment for different scenarios. 
+Currently, the benchmark scenarios are still under construction and the current benchmark script ```benchmark.py``` performs all steps up to the AIBrix workload format and trigger benchmark client without extra steps setting up benchmark environment for different scenarios. 
 All default shared environment variables can be found in ```config```. 
 
 
@@ -29,10 +29,16 @@ export api_key="${your_api_key}"
 To run all steps using the default setting, try
 
 ```bash
-./benchmark.sh all
+python benchmark.py all --config config.yaml
 ```
 
-Each steps can also be run separately. 
+Each steps can also be run separately. All configurations are stored in [config.yaml](config.yaml) file. To override any configuration parameter from the command line, do something like
+
+
+```bash
+python benchmark.py all --config config.yaml --override endpoint="http://localhost:8000"
+```
+
 
 ## Run dataset generator
 
@@ -54,22 +60,22 @@ The dataset generator either generates a prompt dataset, or convert an existing 
 
 To run dataset generation, do
 ```bash
-./benchmark.sh dataset
+python benchmark.py dataset --config config.yaml
 ```
 
 Currently, we support four types of dataset:
 
 **1. Controlled Synthetic Sharing**
-- This type allows users to generate a cache sharing *plain-format* dataset with *controlled prompt token length* and *controlled prefix sharing length*, as well as controlled number of prefixes (i.e., sessions). To tune the prompt token length and shared length, set environment variables in [config/dataset/synthetic_shared.sh](./config/dataset/synthetic_shared.sh).
+- This type allows users to generate a cache sharing *plain-format* dataset with *controlled prompt token length* and *controlled prefix sharing length*, as well as controlled number of prefixes (i.e., sessions). To tune the prompt token length and shared length, set variables in [config.yaml](config.yaml).
 
 **2. Multiturn Synthetic**
-- Multiturn synthetic data generation produces *sessioned-format* dataset. Each session id maps to *controlled number of prompts* per session and *controlled prompt lengths*. These variables could be tuned via [config/dataset/synthetic_multiturn.sh](./config/dataset/synthetic_multiturn.sh). 
+- Multiturn synthetic data generation produces *sessioned-format* dataset. Each session id maps to *controlled number of prompts* per session and *controlled prompt lengths*. These variables could be tuned via [config.yaml](config.yaml). 
 
 **3. ShareGPT**
-- This generation type converts ShareGPT dataset to *sessioned-format* dataset that has session_id, prompts and completions. Configure via [config/dataset/sharegpt.sh](./config/dataset/sharegpt.sh).
+- This generation type converts ShareGPT dataset to *sessioned-format* dataset that has session_id, prompts and completions. Configure via [config.yaml](config.yaml).
 
 **4. Client trace**
-- This generation type converts client output into a *plain-format* dataset. Configure via [config/dataset/client_trace.sh](./config/dataset/client_trace.sh).
+- This generation type converts client output into a *plain-format* dataset. Configure via [config.yaml](config.yaml).
 
 The first two types generate synthetic prompts and the second two types convert external data sources/benchmark data. 
 
@@ -86,20 +92,20 @@ Workload generator specifies time and requests to be dispatched of a workload. A
 
 **1. The "constant" and "synthetic" workload type**
 - Workload generator could generate two types of *synthetic load patterns*. Where multiple workload configurations can be hand-tuned (e.g., traffic/QPS distribution, input request token lengths distribution, ouput token lengths distribution, maximum concurrent sessions, etc.):
-    - Constant load (**constant**): The mean load (QPS/input length/output length) stays constant with controallable fluctuation. Configure this type via [config/workload/constant.sh](config/workload/constant.sh).
-    - Synthetic fluctuation load (**synthetic**): The loads (QPS/input length/output length) flucatuate based on configurable parameters. Configure this type via [config/workload/synthetic.sh](config/workload/synthetic.sh).
+    - Constant load (**constant**): The mean load (QPS/input length/output length) stays constant with controallable fluctuation. Configure this type via [config.yaml](config.yaml).
+    - Synthetic fluctuation load (**synthetic**): The loads (QPS/input length/output length) flucatuate based on configurable parameters. Configure this type via [config.yaml](config.yaml).
 
 **2. The "stat" workload type**
 - For *metrics file (e.g., .csv file exported from Grafana dashboard)*, the workload generator will generate the QPS/input length/output length distribution that follows the collected time-series metrics specified in the file. The actual prompt used in the workload, will be based on one of the synthetic dataset generated by the [dataset generator](#run-dataset-generator). 
 
 
 **3. The "azure" workload type**
-- For a trace (e.g., Azure LLM trace), both the requests and timestamp associated with the requests are provided, and the workload generator will generate a workload that simply replay requests based on the timestamp. Configure this type via [config/workload/azure.sh](config/workload/azure.sh).
+- For a trace (e.g., Azure LLM trace), both the requests and timestamp associated with the requests are provided, and the workload generator will generate a workload that simply replay requests based on the timestamp. Configure this type via [config.yaml](config.yaml).
 
 
 Workload generator could be run by:
 ```bash
-./benchmark.sh workload
+python benchmark.py workload --config config.yaml
 ```
 
 Ths workload generator would produce a workload file that looks like the following. The logical timestamp is associated with list of prompts that need to be dispatched at the same time. 
@@ -129,10 +135,10 @@ Details of workload generator could be found [here](generator/workload-generator
 
 ## Run workload using client
 ```bash
-./benchmark.sh client
+python benchmark.py client --config config.yaml
 ```
 
-The benchmark client supports both batch and streaming mode. Streaming mode  supports intra-request metrics like TTFT/TPOT. Configure endpoint and target model via [config/base.sh](config/base.sh).
+The benchmark client supports both batch and streaming mode. Streaming mode  supports intra-request metrics like TTFT/TPOT. Configure endpoint and target model via [config.yaml](config.yaml).
 
 ![dataset](./image/aibrix-benchmark-client.png)
 
@@ -140,9 +146,9 @@ The benchmark client supports both batch and streaming mode. Streaming mode  sup
 
 Run analysis on benchmark result using: 
 ```bash
-./benchmark.sh analysis
+python benchmark.py analysis --config config.yaml
 ```
-Configure path and performance target via [config/base.sh](config/base.sh).
+Configure path and performance target via [config.yaml](config.yaml).
 
 
 
