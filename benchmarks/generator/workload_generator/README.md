@@ -16,7 +16,7 @@ Our workload generator expects prompt collection files that follow one of the tw
 {"session_id": 1, "prompts": ["prompt 3", "prompt 4"], "completions": ["completion 3", "completion 4"]}
 ...
 ```
-Please refer to [this](../dataset-generator/README.md) to create synthetic prompts or convert existing dataset to one of these formats before generating workloads. 
+Please refer to [this](../dataset_generator/README.md) to create synthetic prompts or convert existing dataset to one of these formats before generating workloads. 
 
 
 Ths workload generator would produce a workload file that looks like the following. Each logical timestamp is associated with list of prompts that need to be dispatched at the same time. 
@@ -47,27 +47,58 @@ And it will also generate figures to illustrate this workload.
 
 ## Generate workload file
 
-The workload generator currently supports the following workload types: static workload that supports static workload (QPS, input/output lengths), synthetic dynamic workload, grafana exported statistics, and actual LLM serving trace (Azure LLM trace). The output workload will be stored as a `workload.jsonl` under the output directory under `--output-dir`. 
+The workload generator currently supports the following workload types: static workload that supports static workload (QPS, input/output lengths), synthetic dynamic workload, grafana exported statistics, and actual LLM serving trace (Azure LLM trace). The output workload will be stored as a `workload.jsonl` under the output directory under `--output-dir`. Refer to the previous step to generate a `$PROMPT_FILE`.
 
 > **Note** All generator invocation should be done under the benchmark home (i.e., `/aibrix/benchmarks/`)
 ### Generate a workload file based with constant target QPS (synthetic patterns)
 
 ```shell
 export TARGET_QPS=1
+export PROMPT_FILE="output/dataset/synthetic_shared.jsonl"
 
-python workload_generator.py --prompt-file $PROMPT_FILE --interval-ms 1000 --duration-ms 300000 --target-qps $TARGET_QPS --trace-type constant --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "output" --output-format jsonl 
+python -m generator.workload_generator.workload_generator \
+    --prompt-file $PROMPT_FILE \
+    --interval-ms 1000 \
+    --duration-ms 300000 \
+    --target-qps $TARGET_QPS \
+    --trace-type constant \
+    --model "Qwen/Qwen2.5-Coder-7B-Instruct" \
+    --output-dir "output" \
+    --output-format jsonl 
 ```
 
 ### Generate a workload file based on workload patterns (synthetic patterns)
 
 The can generate workload file based on synthetic traffic (qps), input lengths (prompt lengths) and output lengths (completion lengths) patterns. Currently we support 4 patterns (`'quick_rising`, `'slow_rising'`, `'slight_fluctuation'`, `'severe_fluctuation'`), described [here](https://github.com/vllm-project/aibrix/blob/main/benchmarks/autoscaling/bench_workload_generator.py).:
 ```shell
-python workload_generator.py --prompt-file $PROMPT_FILE --interval-ms 1000 --duration-ms 300000 --trace-type synthetic --traffic-pattern "slight_fluctuation" --prompt-len-pattern "slight_fluctuation" --completion-len-pattern "slight_fluctuation" --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl 
+python -m generator.workload_generator.workload_generator \
+    --prompt-file $PROMPT_FILE \
+    --interval-ms 1000 \
+    --duration-ms 300000 \
+    --trace-type synthetic \
+    --traffic-pattern "slight_fluctuation" \
+    --prompt-len-pattern "slight_fluctuation" \
+    --completion-len-pattern "slight_fluctuation" \
+    --model "Qwen/Qwen2.5-Coder-7B-Instruct" \
+    --output-dir "./output" --output-format jsonl 
 ```
 
 Alternatively, you could specify fluctuation patterns in .json file and pass to the generator like the following. Example configuration files are under `config` directory.
 ```shell
-python workload_generator.py --prompt-file $PROMPT_FILE --interval-ms 1000 --duration-ms 1400000 --trace-type synthetic --traffic-pattern-config config/traffic-config.json --prompt-len-pattern-config config/prompt-len-config.json --completion-len-pattern-config config/completion-len-config.json --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl 
+export TRAFFIC_PATTERN_FILE="generator/workload_generator/config/examples/traffic-config.json"
+export PROMPT_LEN_FILE="generator/workload_generator/config/examples/prompt-len-config.json"
+export COMPLETION_LEN_FILE="generator/workload_generator/config/examples/completion-len-config.json"
+python -m generator.workload_generator.workload_generator \
+    --prompt-file $PROMPT_FILE \
+    --interval-ms 1000 \
+    --duration-ms 1400000 \
+    --trace-type synthetic \
+    --traffic-pattern-config $TRAFFIC_PATTERN_FILE \
+    --prompt-len-pattern-config $PROMPT_LEN_FILE \
+    --completion-len-pattern-config $COMPLETION_LEN_FILE \
+    --model "Qwen/Qwen2.5-Coder-7B-Instruct" \
+    --output-dir "./output" \
+    --output-format jsonl 
 ```
 
 
@@ -82,7 +113,21 @@ export TRAFFIC_FILE=${PATH_TO_TRAFFIC_FILE}
 export PROMPT_LEN_FILE=${PATH_TO_PROMPT_LEN_FILE}
 export COMPLETION_LEN_FILE=${PATH_TO_COMPLETION_LEN_FILE}
 
-python workload_generator.py --prompt-file $PROMPT_FILE --interval-ms 1000 --duration-ms 1800000 --trace-type stat --traffic-file "$TRAFFIC_FILE" --prompt-len-file "$PROMPT_LEN_FILE" --completion-len-file "$COMPLETION_LEN_FILE"  --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl --qps-scale 1.0 --output-scale 1.0 --input-scale 1.0 --stat-trace-type "maas" 
+python -m generator.workload_generator.workload_generator \
+    --prompt-file $PROMPT_FILE \
+    --interval-ms 1000 \
+    --duration-ms 1800000 \
+    --trace-type stat \
+    --traffic-file "$TRAFFIC_FILE" \
+    --prompt-len-file "$PROMPT_LEN_FILE" \
+    --completion-len-file "$COMPLETION_LEN_FILE"  \
+    --model "Qwen/Qwen2.5-Coder-7B-Instruct" \
+    --output-dir "./output" \
+    --output-format jsonl \
+    --qps-scale 1.0 \
+    --output-scale 1.0 \
+    --input-scale 1.0 \
+    --stat-trace-type "maas" 
 ```
 
 The scaling factor here (e.g., `qps-scale`) scale down rate from the original trace to the desired rate, i.e., if the peak rate in the original file is 80 and the desired peak rate is 8, the scale is set to 10.0. 
@@ -139,10 +184,19 @@ And the plot illustrates the workload pattern will be under the `plot` directory
 
 To produce a workload based on [Azure LLM Trace](https://github.com/Azure/AzurePublicDataset/tree/master/data), use the following commands:
 
-```
+```bash
 wget https://raw.githubusercontent.com/Azure/AzurePublicDataset/refs/heads/master/data/AzureLLMInferenceTrace_conv.csv -O /tmp/AzureLLMInferenceTrace_conv.csv
+
 export AZURE_TRACE_NAME=/tmp/AzureLLMInferenceTrace_conv.csv
-python workload_generator.py --prompt-file $SHAREGPT_FILE_PATH --num-prompts 100 --interval-ms 1000 --duration-ms 600000 --trace-type azure --trace-file "$AZURE_TRACE_NAME" --group-interval-seconds 1 --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "output"
+python -m generator.workload_generator.workload_generator \
+    --trace-file $AZURE_TRACE_NAME \
+    --prompt-file $PROMPT_FILE \
+    --interval-ms 1000 \
+    --duration-ms 600000 \
+    --trace-type azure \
+    --group-interval-seconds 1 \
+    --model "Qwen/Qwen2.5-Coder-7B-Instruct" \
+    --output-dir "output"
 ```
 
 Note that the trace file contains both input and output lengths. And therefore dataset in `$SHAREGPT_FILE_PATH` needs to be tokenized to be able to sampled based on their input/output token lengths. Therefore it is required to specify tokenizer to generate based on this trace. Use `--group-interval-seconds` to specify grouping interval from the original trace. The file would be stored under `output` folder and the plot illustrates the workload pattern will be under the `plot` directory.

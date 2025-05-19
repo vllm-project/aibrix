@@ -180,6 +180,12 @@ class BenchmarkRunner:
             })
             
         elif workload_type == "azure":
+            if not Path(subconfig["azure_trace"]).is_file():
+                print("[INFO] Downloading Azure dataset...")
+                subprocess.run([
+                    "wget", "https://raw.githubusercontent.com/Azure/AzurePublicDataset/refs/heads/master/data/AzureLLMInferenceTrace_conv.csv",
+                    "-O", subconfig["azure_trace"]
+                ], check=True)
             args_dict.update({
                 "traffic_file": subconfig["azure_trace"],
                 "group_interval_seconds": 1,

@@ -183,7 +183,11 @@ class RequestFinder:
                     err_perc += err_step
 
                 if err_perc >= 1: 
-                    self.df["distance"] = np.sqrt((self.df["prompt_len"] - input_len) ** 2 + (self.df["completion_len"] - output_len) ** 2)
+                    # Convert None to NaN using the recommended approach
+                    completion_len = self.df["completion_len"].replace({None: np.nan}).infer_objects(copy=False)
+                    completion_diff_square = np.power((completion_len - output_len), 2)
+                    completion_diff_square = np.nan_to_num(completion_diff_square, nan=0.0)
+                    self.df["distance"] = np.sqrt(np.power((self.df["prompt_len"] - input_len), 2) + completion_diff_square)
                     closest_sample = self.df.nsmallest(1, "distance").iloc[0]
                     closest_input, closest_output = closest_sample["prompt_len"], closest_sample["completion_len"]
                     sample_idx = closest_sample.name
@@ -252,7 +256,7 @@ class RequestFinder:
                     (self.df["completion_lens"].apply(lambda x: output_len if pd.isna(x[0]) else x[0]) - output_len) ** 2
                 )
                 closest_session = self.df.nsmallest(1, "distance").iloc[0]
-                closest_input, closest_output = closest_session["prompt_len"][0], closest_session["completion_len"][0]
+                closest_input, closest_output = closest_session["prompt_len"][0], closest_session["completion_lens"][0]
                 sample_idx = closest_session.name
                 filtered_results.append({"prompt": sample_session["prompts"].pop(0),
                                         "prompt_length": sample_session["prompt_lens"].pop(0),

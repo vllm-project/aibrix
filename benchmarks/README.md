@@ -36,7 +36,7 @@ Each steps can also be run separately. All configurations are stored under [conf
 
 
 ```bash
-python benchmark.py all --config config.yaml --override ENDPOINT="http://localhost:8000"
+python benchmark.py all --config config.yaml --override endpoint="http://localhost:8000"
 ```
 
 
@@ -135,7 +135,7 @@ Details of workload generator could be found [here](generator/workload-generator
 
 ## Run workload using client
 ```bash
-python benchmark.py client
+python benchmark.py client --config config.yaml
 ```
 
 The benchmark client supports both batch and streaming mode. Streaming mode  supports intra-request metrics like TTFT/TPOT. Configure endpoint and target model via [config/base.yaml](config/base.yaml).
@@ -146,7 +146,7 @@ The benchmark client supports both batch and streaming mode. Streaming mode  sup
 
 Run analysis on benchmark result using: 
 ```bash
-python benchmark.py analysis
+python benchmark.py analysis --config config.yaml
 ```
 Configure path and performance target via [config/base.yaml](config/base.yaml).
 
