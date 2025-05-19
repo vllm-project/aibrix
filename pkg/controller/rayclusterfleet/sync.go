@@ -515,6 +515,7 @@ func calculateStatus(allRSs []*orchestrationv1alpha1.RayClusterReplicaSet, newRS
 	labelSelector := &metav1.LabelSelector{
 		MatchLabels: map[string]string{
 			util.SetNameLabelKey: deployment.Name,
+			"ray.io/node-type":   "head",
 		},
 	}
 	selector, _ := metav1.LabelSelectorAsSelector(labelSelector)

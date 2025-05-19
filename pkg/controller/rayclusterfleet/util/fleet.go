@@ -105,7 +105,7 @@ const (
 	MinimumReplicasUnavailable = "MinimumReplicasUnavailable"
 
 	// Set name label will record the rayclusterfleet name that those Pods belong to.
-	SetNameLabelKey string = "aibrix.ai/raycluster-fleet-name"
+	SetNameLabelKey string = "orchestration.aibrix.ai/raycluster-fleet-name"
 )
 
 // NewDeploymentCondition creates a new deployment condition.
