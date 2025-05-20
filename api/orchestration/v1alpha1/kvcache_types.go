@@ -76,6 +76,10 @@ type RuntimeSpec struct {
 	// the resources of kvcache container
 	// +kubebuilder:validation:Optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Optional: full control over the pod template and this is for advanced users.
+	// If set, it overrides other runtime fields like Image, Resources, etc.
+	Template *corev1.PodTemplateSpec `json:"template,omitempty"`
 }
 
 // KVCacheSpec defines the desired state of KVCache

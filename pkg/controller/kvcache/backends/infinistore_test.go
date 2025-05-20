@@ -160,6 +160,98 @@ func TestBuildCacheStatefulSetForInfiniStore(t *testing.T) {
 	}
 }
 
+func TestBuildCacheStatefulSetForInfiniStoreWithCustomPodTemplateSpec(t *testing.T) {
+	replicas := int32(2)
+	kv := &v1alpha1.KVCache{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cache",
+			Namespace: "default",
+			UID:       "1234-uid",
+		},
+		Spec: v1alpha1.KVCacheSpec{
+			Cache: v1alpha1.RuntimeSpec{
+				Replicas: replicas,
+				// even we specify them here, but they will not take effect
+				Image:           "aibrix/infinistore:nightly",
+				ImagePullPolicy: "Always",
+				// podTemplateSpec will be used instead
+				Template: &corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod",
+						Namespace: "default",
+						Labels: map[string]string{
+							"test-label": "test-value",
+						},
+						Annotations: map[string]string{
+							"test-annotation": "test-value",
+						},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  "test-container",
+								Image: "test-image",
+								Env: []corev1.EnvVar{
+									{
+										Name:  "TEST_ENV",
+										Value: "test-value",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	sts := buildCacheStatefulSetForInfiniStore(kv)
+
+	assert.Equal(t, kv.Name, sts.Name)
+	assert.Equal(t, &replicas, sts.Spec.Replicas)
+
+	// label validation
+	labels := sts.Spec.Template.Labels
+	assert.Contains(t, labels, "test-label")
+	assert.Equal(t, labels["test-label"], "test-value")
+	// it has to contains the override labels
+	assert.Contains(t, labels, constants.KVCacheLabelKeyIdentifier)
+	assert.Equal(t, labels[constants.KVCacheLabelKeyIdentifier], kv.Name)
+	assert.Contains(t, labels, constants.KVCacheLabelKeyRole)
+	assert.Equal(t, labels[constants.KVCacheLabelKeyRole], constants.KVCacheLabelValueRoleCache)
+
+	// annotation validation
+	annotations := sts.Spec.Template.Annotations
+	assert.Contains(t, annotations, "test-annotation")
+	assert.Equal(t, annotations["test-annotation"], "test-value")
+
+	// container validation
+	container := sts.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, "test-image", container.Image)
+	assert.Equal(t, "test-container", container.Name)
+	assert.Empty(t, container.Command)
+	assert.NotEmpty(t, container.Env)
+
+	// resource validation
+	assert.Empty(t, container.Resources)
+
+	// env validation
+	expectedEnvVars := map[string]string{
+		"TEST_ENV": "test-value",
+	}
+
+	envMap := map[string]string{}
+	for _, env := range container.Env {
+		if env.Value != "" {
+			envMap[env.Name] = env.Value
+		}
+	}
+
+	for k, v := range expectedEnvVars {
+		assert.Equal(t, v, envMap[k], "env var %s should equal %s", k, v)
+	}
+}
+
 func TestBuildHeadlessServiceForInfiniStore(t *testing.T) {
 	kv := &v1alpha1.KVCache{
 		ObjectMeta: metav1.ObjectMeta{
@@ -194,4 +286,65 @@ func TestGetInfiniStoreParams(t *testing.T) {
 
 	assert.Equal(t, defaultInfinistoreRDMAPort, params.RdmaPort)
 	assert.Equal(t, defaultInfinistoreLinkType, params.LinkType)
+}
+
+func TestGetPreallocSizeFromResources(t *testing.T) {
+	tests := []struct {
+		name      string
+		limits    string
+		expectVal int
+	}{
+		{
+			name:      "10Gi limit",
+			limits:    "10Gi",
+			expectVal: 9, // 10 * 0.9 = 9
+		},
+		{
+			name:      "1Gi limit",
+			limits:    "1Gi",
+			expectVal: 1, // 1 * 0.9 = 0.9 => floor = 0 => return 1
+		},
+		{
+			name:      "2Gi limit",
+			limits:    "2Gi",
+			expectVal: 1, // 2 * 0.9 = 1.8 => floor = 1
+		},
+		{
+			name:      "512Mi limit",
+			limits:    "512Mi",
+			expectVal: 1, // ~0.5Gi * 0.9 = ~0.45 => floor = 0 => return 1
+		},
+		{
+			name:      "4096Mi limit (4Gi)",
+			limits:    "4096Mi",
+			expectVal: 3, // 4 * 0.9 = 3.6 => floor = 3
+		},
+		{
+			name:      "8192Mi limit (8Gi)",
+			limits:    "8192Mi",
+			expectVal: 7, // 8 * 0.9 = 7.2 => floor = 7
+		},
+		{
+			name:      "empty limit uses default",
+			limits:    "",
+			expectVal: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := corev1.ResourceRequirements{}
+			if tt.limits != "" {
+				qty := resource.MustParse(tt.limits)
+				res.Limits = corev1.ResourceList{
+					corev1.ResourceMemory: qty,
+				}
+			}
+
+			val := getPreallocSizeFromResources(res)
+			if val != tt.expectVal {
+				t.Errorf("expected %d, got %d", tt.expectVal, val)
+			}
+		})
+	}
 }
