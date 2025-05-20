@@ -20,15 +20,15 @@ package v1alpha1
 // RayClusterFleetStatusApplyConfiguration represents a declarative configuration of the RayClusterFleetStatus type for use
 // with apply.
 type RayClusterFleetStatusApplyConfiguration struct {
-	ObservedGeneration  *int64                                       `json:"observedGeneration,omitempty"`
-	Replicas            *int32                                       `json:"replicas,omitempty"`
-	UpdatedReplicas     *int32                                       `json:"updatedReplicas,omitempty"`
-	ReadyReplicas       *int32                                       `json:"readyReplicas,omitempty"`
-	AvailableReplicas   *int32                                       `json:"availableReplicas,omitempty"`
-	UnavailableReplicas *int32                                       `json:"unavailableReplicas,omitempty"`
-	Conditions          []RayClusterFleetConditionApplyConfiguration `json:"conditions,omitempty"`
-	CollisionCount      *int32                                       `json:"collisionCount,omitempty"`
-	HPAPodSelector      *string                                      `json:"hpaPodSelector,omitempty"`
+	ObservedGeneration    *int64                                       `json:"observedGeneration,omitempty"`
+	Replicas              *int32                                       `json:"replicas,omitempty"`
+	UpdatedReplicas       *int32                                       `json:"updatedReplicas,omitempty"`
+	ReadyReplicas         *int32                                       `json:"readyReplicas,omitempty"`
+	AvailableReplicas     *int32                                       `json:"availableReplicas,omitempty"`
+	UnavailableReplicas   *int32                                       `json:"unavailableReplicas,omitempty"`
+	Conditions            []RayClusterFleetConditionApplyConfiguration `json:"conditions,omitempty"`
+	CollisionCount        *int32                                       `json:"collisionCount,omitempty"`
+	ScalingTargetSelector *string                                      `json:"scalingTargetSelector,omitempty"`
 }
 
 // RayClusterFleetStatusApplyConfiguration constructs a declarative configuration of the RayClusterFleetStatus type for use with
@@ -106,10 +106,10 @@ func (b *RayClusterFleetStatusApplyConfiguration) WithCollisionCount(value int32
 	return b
 }
 
-// WithHPAPodSelector sets the HPAPodSelector field in the declarative configuration to the given value
+// WithScalingTargetSelector sets the ScalingTargetSelector field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the HPAPodSelector field is set to the value of the last call.
-func (b *RayClusterFleetStatusApplyConfiguration) WithHPAPodSelector(value string) *RayClusterFleetStatusApplyConfiguration {
-	b.HPAPodSelector = &value
+// If called multiple times, the ScalingTargetSelector field is set to the value of the last call.
+func (b *RayClusterFleetStatusApplyConfiguration) WithScalingTargetSelector(value string) *RayClusterFleetStatusApplyConfiguration {
+	b.ScalingTargetSelector = &value
 	return b
 }

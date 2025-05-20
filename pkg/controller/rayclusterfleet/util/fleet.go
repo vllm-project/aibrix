@@ -605,15 +605,15 @@ func ListPods(deployment *orchestrationv1alpha1.RayClusterFleet, rsList []*orche
 	return owned, nil
 }
 
-// EqualIgnoreLabels returns true if two given podTemplateSpec are equal, ignoring the diff in value of Labels[pod-template-hash]
-// We ignore pod-template-hash and aibrix.ai/raycluster-fleet-name, because:
+// EqualIgnoreLabels returns true if two given podTemplateSpec are equal, ignoring the diff in value of Labels[pod-template-hash] and Labels[orchestration.aibrix.ai/raycluster-fleet-name].
+// We ignore pod-template-hash and orchestration.aibrix.ai/raycluster-fleet-name, because:
 //  1. The hash result would be different upon podTemplateSpec API changes
 //     (e.g. the addition of a new field will cause the hash code to change)
-//  2. The deployment template won't have hash and aibrix.ai/raycluster-fleet-name labels
+//  2. The deployment template won't have hash and fleet name labels
 func EqualIgnoreLabels(template1, template2 *orchestrationv1alpha1.RayClusterTemplateSpec) bool {
 	t1Copy := template1.DeepCopy()
 	t2Copy := template2.DeepCopy()
-	// Remove hash and aibrix.ai/raycluster-fleet-name labels from template.Labels before comparing
+	// Remove hash and fleet name labels from template.Labels before comparing
 	// Note: only head and worker templates has the pod templates.
 	for _, key := range []string{appsv1.DefaultDeploymentUniqueLabelKey, SetNameLabelKey} {
 		delete(t1Copy.Labels, key)

@@ -522,14 +522,14 @@ func calculateStatus(allRSs []*orchestrationv1alpha1.RayClusterReplicaSet, newRS
 
 	status := orchestrationv1alpha1.RayClusterFleetStatus{
 		// TODO: Ensure that if we start retrying status updates, we won't pick up a new Generation value.
-		ObservedGeneration:  deployment.Generation,
-		Replicas:            util.GetActualReplicaCountForReplicaSets(allRSs),
-		UpdatedReplicas:     util.GetActualReplicaCountForReplicaSets([]*orchestrationv1alpha1.RayClusterReplicaSet{newRS}),
-		ReadyReplicas:       util.GetReadyReplicaCountForReplicaSets(allRSs),
-		AvailableReplicas:   availableReplicas,
-		UnavailableReplicas: unavailableReplicas,
-		CollisionCount:      deployment.Status.CollisionCount,
-		HPAPodSelector:      selector.String(),
+		ObservedGeneration:    deployment.Generation,
+		Replicas:              util.GetActualReplicaCountForReplicaSets(allRSs),
+		UpdatedReplicas:       util.GetActualReplicaCountForReplicaSets([]*orchestrationv1alpha1.RayClusterReplicaSet{newRS}),
+		ReadyReplicas:         util.GetReadyReplicaCountForReplicaSets(allRSs),
+		AvailableReplicas:     availableReplicas,
+		UnavailableReplicas:   unavailableReplicas,
+		CollisionCount:        deployment.Status.CollisionCount,
+		ScalingTargetSelector: selector.String(),
 	}
 
 	// Copy conditions one by one so we won't mutate the original object.
