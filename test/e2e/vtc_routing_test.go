@@ -931,7 +931,7 @@ func ensureSufficientPods(t testing.TB, minPods int) {
 	if len(availablePods) < minPods {
 		t.Skipf("Need at least %d pods for utilization test, found %d", minPods, len(availablePods))
 	}
-	t.Logf("Found %d available pods, proceeding with test", len(availablePods))
+	t.Logf("Found %d available pods, proceeding with test ", len(availablePods))
 }
 
 func getTargetPodFromChatCompletionWithUser(t testing.TB, message, strategy, user string) string {
