@@ -43,7 +43,7 @@ spec:
         memory: "256Mi"
   cache:
     replicas: 3
-    image: aibrix-cn-beijing.cr.volces.com/aibrix/infinistore:20250506
+    image: aibrix-cn-beijing.cr.volces.com/aibrix/infinistore:v0.2.42-20250506
     imagePullPolicy: IfNotPresent
     resources:
       requests:
