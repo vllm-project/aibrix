@@ -17,6 +17,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Tuple, TypeVar
 
+import torch
 from sortedcontainers import SortedList
 
 from ...common.absl_logging import getLogger
@@ -27,7 +28,6 @@ from ..connectors import (
     Connector,
     ConnectorConfig,
     ConnectorFeature,
-    ConnectorRegisterDescriptor,
 )
 
 K = TypeVar("K")
@@ -43,8 +43,20 @@ class Member(ABC):
     slots: SortedList[int]
     conn: Connector
 
+    def __post_init__(self):
+        self.hashable_meta = tuple(self.meta.items())
+
+    def __hash__(self):
+        return self.hashable_meta.__hash__()
+
+    def __eq__(self, other):
+        if not isinstance(other, Member):
+            return False
+        return self.hashable_meta.__eq__(other.hashable_meta)
+
     def __str__(self) -> str:
-        return f"Member(meta={self.meta}, conn={self.conn.name if self.conn is not None else None})"
+        conn_name = self.conn.name if self.conn is not None else None
+        return f"Member(meta={self.meta}, conn={conn_name})"
 
     def __repr__(self) -> str:
         return self.__str__()
@@ -88,6 +100,7 @@ class BasePlacement(Placement[K, V]):
         self.members: List[Member] = []  # List of Member objects
         self.slots = SortedList()  # All slots in the cluster
         self.total_slots = 0
+        self.conn_feature: ConnectorFeature | None = None
 
         self._name = config.placement_policy
         self.conn_config = config.conn_config
@@ -95,6 +108,7 @@ class BasePlacement(Placement[K, V]):
         self.refresh_interval_s = config.refresh_interval_s
         self._refresh_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._slabs: List[torch.Tensor] | None = None
 
     @property
     def name(self) -> str:
@@ -102,7 +116,10 @@ class BasePlacement(Placement[K, V]):
 
     @property
     def feature(self) -> ConnectorFeature:
-        feat = self.members[0].conn.feature
+        if self.conn_feature is None:
+            return ConnectorFeature()
+
+        feat = self.conn_feature
         # TODO: support mput_mget
         feat.mput_mget = False
         return feat
@@ -178,7 +195,7 @@ class BasePlacement(Placement[K, V]):
         """
         try:
             data = json.loads(json_str)
-            temp_members = []
+            temp_members: List[Member] = []
             temp_slots = SortedList(key=lambda x: x[0])
 
             for node in data["nodes"]:
@@ -186,16 +203,9 @@ class BasePlacement(Placement[K, V]):
                 member = Member(
                     meta=node,
                     slots=SortedList(),
-                    conn=Connector.create(self.conn_config, **node),
+                    # Delay conn establishment
+                    conn=None,  # type: ignore
                 )
-                status = member.conn.open()
-                if not status.is_ok():
-                    logger.warning(
-                        "Failed to open connection to %s, status: %s",
-                        member.meta,
-                        status,
-                    )
-                    continue
 
                 for slot_range in slots:
                     start = slot_range["start"]
@@ -214,11 +224,69 @@ class BasePlacement(Placement[K, V]):
             temp_total_slots = len(temp_slots)
 
             if self.slots != temp_slots:
+                if self.conn_feature is not None:
+                    logger.info("Cluster members changed, updating...")
+
+                members = {m.hashable_meta: m for m in self.members}
+                num_established_members = 0
+                for mem in temp_members:
+                    if mem.hashable_meta in members:
+                        # reuse existing connection
+                        mem.conn = members[mem.hashable_meta].conn
+                    else:
+                        mem.conn = Connector.create(
+                            self.conn_config, **mem.meta
+                        )
+                        # open
+                        status = mem.conn.open()
+                        if not status.is_ok():
+                            mem.conn = None  # type: ignore
+                            logger.warning(
+                                "Failed to open connection to %s, status: %s",
+                                mem.meta,
+                                status,
+                            )
+                            continue
+                        # register
+                        if self._slabs is not None:
+                            reg_status = mem.conn.register_slabs(self._slabs)
+                            if not reg_status.is_ok():
+                                mem.conn.close()
+                                mem.conn = None  # type: ignore
+                                logger.warning(
+                                    "Failed to register slabs w/ connection %s"
+                                    ", status: %s",
+                                    mem.meta,
+                                    status,
+                                )
+                                continue
+
+                    num_established_members += 1
+
+                if num_established_members == 0:
+                    return Status(
+                        StatusCodes.INVALID, "No valid members in the cluster"
+                    )
+
                 logger.info("New cluster members: %s", temp_members)
+                members_to_close = set(self.members) - set(temp_members)
                 with self.lock:
                     self.members = temp_members
                     self.slots = temp_slots
                     self.total_slots = temp_total_slots
+                    self.conn_feature = [
+                        m.conn for m in temp_members if m.conn
+                    ][0].feature
+
+                for member in members_to_close:
+                    logger.info("Closing connection to %s", member.meta)
+                    status = member.conn.close()
+                    if not status.is_ok():
+                        logger.warning(
+                            "Failed to close connection to %s, status: %s",
+                            member.meta,
+                            status,
+                        )
 
         except json.JSONDecodeError as e:
             return Status(StatusCodes.INVALID, f"Invalid JSON: {e}")
@@ -241,6 +309,8 @@ class BasePlacement(Placement[K, V]):
         if not status.is_ok():
             return Status(status)
         member = status.get()
+        if member.conn is None:
+            return Status(StatusCodes.ERROR, "Connection not established")
         return await member.conn.exists(key)
 
     async def get(self, key: K, mr: MemoryRegion) -> Status:
@@ -255,6 +325,8 @@ class BasePlacement(Placement[K, V]):
         if not status.is_ok():
             return Status(status)
         member = status.get()
+        if member.conn is None:
+            return Status(StatusCodes.ERROR, "Connection not established")
         return await member.conn.get(key, mr)
 
     async def put(self, key: K, mr: MemoryRegion) -> Status:
@@ -269,29 +341,33 @@ class BasePlacement(Placement[K, V]):
         if not status.is_ok():
             return Status(status)
         member = status.get()
+        if member.conn is None:
+            return Status(StatusCodes.ERROR, "Connection not established")
         return await member.conn.put(key, mr)
 
-    def register_mr(
-        self, addr: int, length: int
-    ) -> Status[ConnectorRegisterDescriptor]:
-        """Register an memory region with backend-specific register function.
+    def register_slabs(self, slabs: List[torch.Tensor]) -> Status:
+        """Register slabs with backend-specific register function.
         Args:
-            addr: memory region's address
-            length: memory region's length
+            slabs: slabs to be registered.
         Returns:
             Status of the register operation.
-            The register descriptor.
         """
-        return self.members[0].conn.register_mr(addr, length)
-
-    def deregister_mr(self, desc: ConnectorRegisterDescriptor) -> Status:
-        """Deregister an memory region.
-        Args:
-            desc: the register descriptor returned by `register_mr`.
-        Returns:
-            Status of the deregister operation.
-        """
-        return self.members[0].conn.deregister_mr(desc)
+        if self._slabs is None:
+            self._slabs = slabs
+        first_error_status: Status | None = None
+        if len(self.members) > 0:
+            for m in self.members:
+                if m.conn is None:
+                    continue
+                status = m.conn.register_slabs(slabs)
+                if status.is_ok():
+                    logger.info(
+                        "Conn[%s] successfully registered slabs", m.meta
+                    )
+                else:
+                    logger.error("Conn[%s] failed to register slabs", m.meta)
+                    first_error_status = status
+        return first_error_status or Status.ok()
 
     def get_batches(
         self,
@@ -348,4 +424,6 @@ class BasePlacement(Placement[K, V]):
         if not status.is_ok():
             return Status(status)
         member = status.get()
+        if member.conn is None:
+            return Status(StatusCodes.ERROR, "Connection not established")
         return await member.conn.delete(key)

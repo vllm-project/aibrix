@@ -52,7 +52,7 @@ class MockConnector(Connector[bytes, torch.Tensor], AsyncBase):
         self.config = config
         self.lock = Lock()
         self.store: Dict[bytes, bytes] | None = None
-        self.register_cache: Dict[int, int] = {}
+        self._register_cache: Dict[int, int] = {}
 
     @classmethod
     def from_envs(
@@ -97,19 +97,19 @@ class MockConnector(Connector[bytes, torch.Tensor], AsyncBase):
         return Status.ok()
 
     @Status.capture_exception
-    def register_mr(
-        self, addr: int, length: int
-    ) -> Status[ConnectorRegisterDescriptor]:
-        self.register_cache[addr] = length
-        desc = MockRegisterDescriptor(addr=addr)
-        return Status.ok(desc)
-
-    @Status.capture_exception
-    def deregister_mr(self, desc: ConnectorRegisterDescriptor) -> Status:
-        assert isinstance(desc, MockRegisterDescriptor)
-        assert desc.addr in self.register_cache
-        del self.register_cache[desc.addr]
+    def register_slabs(self, slabs: List[torch.Tensor]) -> Status:
+        for slab in slabs:
+            addr = slab.data_ptr()
+            length = slab.numel()
+            self._register_cache[addr] = length
         return Status.ok()
+
+    def _check_mr_registered(self, mr: MemoryRegion) -> None:
+        slab = mr.slab
+        addr = slab.data_ptr()
+        length = slab.numel()
+        assert addr in self._register_cache
+        assert length <= self._register_cache[addr]
 
     def get_batches(
         self,
@@ -132,6 +132,8 @@ class MockConnector(Connector[bytes, torch.Tensor], AsyncBase):
         assert self.store is not None
         statuses = []
         for i, mr in enumerate(mrs):
+            if self.feature.rdma:
+                self._check_mr_registered(mr)
             statuses.append(self._get(keys[i], mr))
         return statuses
 
@@ -142,6 +144,8 @@ class MockConnector(Connector[bytes, torch.Tensor], AsyncBase):
         assert self.store is not None
         statuses = []
         for i, mr in enumerate(mrs):
+            if self.feature.rdma:
+                self._check_mr_registered(mr)
             statuses.append(self._put(keys[i], mr))
         return statuses
 
@@ -162,6 +166,8 @@ class MockConnector(Connector[bytes, torch.Tensor], AsyncBase):
             val = self.store.get(key, None)
         if val is None:
             return Status(StatusCodes.NOT_FOUND)
+        if self.feature.rdma:
+            self._check_mr_registered(mr)
         mr.fill(val)
         return Status.ok()
 
@@ -169,6 +175,8 @@ class MockConnector(Connector[bytes, torch.Tensor], AsyncBase):
     def _put(self, key: bytes, mr: MemoryRegion) -> Status:
         """Put a key value pair"""
         assert self.store is not None
+        if self.feature.rdma:
+            self._check_mr_registered(mr)
         with self.lock:
             self.store[key] = mr.tobytes()
         return Status.ok()

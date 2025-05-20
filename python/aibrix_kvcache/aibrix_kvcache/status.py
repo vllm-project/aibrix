@@ -121,6 +121,11 @@ class Status(Generic[T]):
         if self.value is not None and isinstance(self.value, Exception):
             raise self.value
 
+    def raise_if_not_ok(self) -> None:
+        self.raise_if_has_exception()
+        if not self.is_ok():
+            raise RuntimeError(f"{self}")
+
     @staticmethod
     def capture_exception(func):
         """A decorator that converts exceptions raised by the decorated
