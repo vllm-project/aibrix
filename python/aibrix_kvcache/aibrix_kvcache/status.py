@@ -36,8 +36,9 @@ class StatusCodes(Enum):
 
 @dataclass
 class Status(Generic[T]):
-    """A generic status container that can represent either success (with a value)
-    or failure (with an error code and optional message/exception)."""
+    """A generic status container that can represent either success (with a
+    value) or failure (with an error code and optional message/exception).
+    """
 
     error_code: StatusCodes
     value: T | str | Exception | None
