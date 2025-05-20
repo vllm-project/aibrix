@@ -192,6 +192,13 @@ func (r *RayClusterFleetReconciler) getNewReplicaSet(ctx context.Context, d *orc
 
 	// new ReplicaSet does not exist, create one.
 	newRSTemplate := *d.Spec.Template.DeepCopy()
+
+	// Add rayclusterfleet name to all pod label
+	newRSTemplate.Spec.HeadGroupSpec.Template.Labels = labelsutil.CloneAndAddLabel(d.Spec.Template.Spec.HeadGroupSpec.Template.Labels, util.SetNameLabelKey, d.Name)
+	for i := range d.Spec.Template.Spec.WorkerGroupSpecs {
+		newRSTemplate.Spec.WorkerGroupSpecs[i].Template.Labels = labelsutil.CloneAndAddLabel(d.Spec.Template.Spec.WorkerGroupSpecs[i].Template.Labels, util.SetNameLabelKey, d.Name)
+	}
+
 	podTemplateSpecHash := util.ComputeHash(&newRSTemplate, d.Status.CollisionCount)
 	newRSTemplate.Labels = labelsutil.CloneAndAddLabel(d.Spec.Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey, podTemplateSpecHash)
 	// Add podTemplateHash label to selector.
@@ -245,7 +252,7 @@ func (r *RayClusterFleetReconciler) getNewReplicaSet(ctx context.Context, d *orc
 		// Otherwise, this is a hash collision and we need to increment the collisionCount field in
 		// the status of the Deployment and requeue to try the creation in the next sync.
 		controllerRef := metav1.GetControllerOf(rs)
-		if controllerRef != nil && controllerRef.UID == d.UID && util.EqualIgnoreHash(&d.Spec.Template, &rs.Spec.Template) {
+		if controllerRef != nil && controllerRef.UID == d.UID && util.EqualIgnoreLabels(&d.Spec.Template, &rs.Spec.Template) {
 			createdRS = rs
 			err = nil
 			break
@@ -505,15 +512,24 @@ func calculateStatus(allRSs []*orchestrationv1alpha1.RayClusterReplicaSet, newRS
 		unavailableReplicas = 0
 	}
 
+	labelSelector := &metav1.LabelSelector{
+		MatchLabels: map[string]string{
+			util.SetNameLabelKey: deployment.Name,
+			"ray.io/node-type":   "head",
+		},
+	}
+	selector, _ := metav1.LabelSelectorAsSelector(labelSelector)
+
 	status := orchestrationv1alpha1.RayClusterFleetStatus{
 		// TODO: Ensure that if we start retrying status updates, we won't pick up a new Generation value.
-		ObservedGeneration:  deployment.Generation,
-		Replicas:            util.GetActualReplicaCountForReplicaSets(allRSs),
-		UpdatedReplicas:     util.GetActualReplicaCountForReplicaSets([]*orchestrationv1alpha1.RayClusterReplicaSet{newRS}),
-		ReadyReplicas:       util.GetReadyReplicaCountForReplicaSets(allRSs),
-		AvailableReplicas:   availableReplicas,
-		UnavailableReplicas: unavailableReplicas,
-		CollisionCount:      deployment.Status.CollisionCount,
+		ObservedGeneration:    deployment.Generation,
+		Replicas:              util.GetActualReplicaCountForReplicaSets(allRSs),
+		UpdatedReplicas:       util.GetActualReplicaCountForReplicaSets([]*orchestrationv1alpha1.RayClusterReplicaSet{newRS}),
+		ReadyReplicas:         util.GetReadyReplicaCountForReplicaSets(allRSs),
+		AvailableReplicas:     availableReplicas,
+		UnavailableReplicas:   unavailableReplicas,
+		CollisionCount:        deployment.Status.CollisionCount,
+		ScalingTargetSelector: selector.String(),
 	}
 
 	// Copy conditions one by one so we won't mutate the original object.
