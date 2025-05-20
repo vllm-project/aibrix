@@ -9,7 +9,7 @@ spec:
   hostNetwork: true
   containers:
   - name: infinistore
-    image: aibrix-cn-beijing.cr.volces.com/aibrix/infinistore:20250506
+    image: aibrix-cn-beijing.cr.volces.com/aibrix/infinistore:v0.2.42-20250506
     command: ["infinistore"]
     args:
       - "--manage-port=8088"
@@ -18,7 +18,7 @@ spec:
       - "--link-type=Ethernet"
 #      - "--hint-gid-index=7"
       - "--log-level=debug"
-      - "--prealloc-size=950"
+      - "--prealloc-size=960"
     ports:
       - containerPort: 8088
       - containerPort: 12345
@@ -27,10 +27,10 @@ spec:
     resources:
       requests:
         cpu: "10"
-        memory: "960Gi"
+        memory: "1050Gi"
       limits:
         cpu: "10"
-        memory: "960Gi"
+        memory: "1050Gi"
   restartPolicy: Never
 
 ---

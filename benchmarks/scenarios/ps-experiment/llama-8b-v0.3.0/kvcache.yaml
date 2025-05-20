@@ -1,5 +1,3 @@
-
-
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: KVCache
 metadata:
@@ -45,14 +43,14 @@ spec:
         memory: "256Mi"
   cache:
     replicas: 1
-    image: aibrix-cn-beijing.cr.volces.com/aibrix/infinistore:20250506
+    image: aibrix-cn-beijing.cr.volces.com/aibrix/infinistore:v0.2.42-20250506
     imagePullPolicy: IfNotPresent
     resources:
       requests:
         cpu: "10000m"
-        memory: "960Gi"
+        memory: "100Gi"
         vke.volcengine.com/rdma: "1"
       limits:
         cpu: "10000m"
-        memory: "960Gi"
+        memory: "100Gi"
         vke.volcengine.com/rdma: "1"

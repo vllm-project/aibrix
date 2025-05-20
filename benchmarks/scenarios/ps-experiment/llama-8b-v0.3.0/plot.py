@@ -11,6 +11,7 @@ experiments = [
     {"prefix": "aibrix_naive_output", "label": "AIBrix w/o routing + w/o kvcache", "color": "orange", "marker": "v"},
     {"prefix": "aibrix_naive_prefix_routing_output", "label": "AIBrix w/ prefix-cache routing + w/o kvcache", "color": "black", "marker": "d"},
     {"prefix": "aibrix_kvcache_dram_output", "label": "AIBrix w/ prefix-cache routing + w/ L1 kvcache", "color": "green", "marker": "<"},
+    {"prefix": "aibrix_kvcache_external_output", "label": "AIBrix w/ prefix-cache routing + w/ L2 kvcache(infinistore)", "color": "cyan", "marker": "+"},
 ]
 
 
