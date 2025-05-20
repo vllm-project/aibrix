@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Aibrix Team.
+Copyright 2025 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,8 +15,6 @@ limitations under the License.
 */
 
 package e2e
-
-// standalone test file runs pass, a bit tricky to run with other e2e tests. We have good unit tests though.
 
 import (
 	"context"
@@ -62,9 +60,10 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	// Clean up resources after all tests are done
 	if redisClient != nil {
-		redisClient.Close()
+		if err := redisClient.Close(); err != nil {
+			fmt.Printf("Warning: Failed to close Redis client: %v\n", err)
+		}
 	}
 
 	os.Exit(code)
@@ -141,7 +140,7 @@ func getAvailablePods(t *testing.T) {
 	availablePods = []string{}
 
 	allPodsMap := make(map[string]bool)
-	for i := 0; i < 30; i++ { // Make multiple requests to discover all pods
+	for i := 0; i < 30; i++ {
 		pod := getTargetPodFromChatCompletion(t, fmt.Sprintf("Pod discovery request %d", i), "random")
 		if pod != "" {
 			allPodsMap[pod] = true
@@ -171,341 +170,81 @@ func TestVTCFallbackToRandom(t *testing.T) {
 	assert.NotEmpty(t, targetPod, "vtc-basic target pod is empty") //what is this
 }
 
-func TestVTCBasicRouting(t *testing.T) {
+func TestVTCTokenAccumulation(t *testing.T) {
 	setupVTCUsers(t)
 
 	users := []string{"user1", "user2", "user3"}
-
 	ensureSufficientPods(t, 3)
 
-	// Sub-test 1: Verify that users accumulate tokens based on message size
-	t.Run("TokenAccumulation", func(t *testing.T) {
-		// Reset user token history and set high TPM limits
-		ctx := context.Background()
+	// Reset user token history and set high TPM limits
+	setupTestUsersWithHighTPM(t, users)
+
+	// Create messages with different token counts
+	// With AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS=100 and MAX_TOKENS=800,
+	// we need to create messages that will show the difference
+	veryShortMsg := "Hi." // ~1 token
+	mediumTokenMsg := "This is a medium-sized message with about 15 tokens or so."
+	highTokenMsg := strings.Repeat("This is a longer message with more tokens. ", 8) // ~120 tokens
+
+	msgMap := map[string]string{
+		users[0]: veryShortMsg,
+		users[1]: mediumTokenMsg,
+		users[2]: highTokenMsg,
+	}
+
+	userPods := make(map[string]map[string]int)
+	for _, user := range users {
+		userPods[user] = make(map[string]int)
+	}
+
+	podHistogram := make(map[string]int)
+
+	// Make more requests to create significant token disparity
+	// With WINDOW_SIZE=2 seconds, we need to make requests quickly
+	for i := 0; i < 10; i++ {
 		for _, user := range users {
-			// Reset user with high TPM limit
-			utils.DelUser(ctx, utils.User{Name: user}, redisClient)
-			utils.SetUser(ctx, utils.User{Name: user, Rpm: 1000, Tpm: 100000}, redisClient)
-
-			var delErr error
-			_, delErr = redisClient.Del(ctx, fmt.Sprintf("user_tokens:%s", user)).Result()
-			if delErr != nil {
-				t.Logf("Warning: Failed to delete token history for %s: %v", user, delErr)
-			}
-
-			var setErr error
-			key := fmt.Sprintf("rate_limit:tpm:%s", user)
-			_, setErr = redisClient.Set(ctx, key, "100000", 10*time.Minute).Result()
-			if setErr != nil {
-				t.Logf("Warning: Failed to set TPM limit for %s: %v", user, setErr)
-			} else {
-				t.Logf("Increased TPM limit for user %s to 100,000", user)
-			}
-			t.Logf("Starting with clean state for user %s", user)
-		}
-
-		// Create messages with different token counts
-		// With AIBRIX_ROUTER_VTC_TOKEN_TRACKER_MIN_TOKENS=100 and MAX_TOKENS=800,
-		// we need to create messages that will show the difference
-		veryShortMsg := "Hi." // ~1 token
-		mediumTokenMsg := "This is a medium-sized message with about 15 tokens or so."
-		highTokenMsg := strings.Repeat("This is a longer message with more tokens. ", 8) // ~120 tokens
-
-		msgMap := map[string]string{
-			users[0]: veryShortMsg,   // Low token user
-			users[1]: mediumTokenMsg, // Medium token user
-			users[2]: highTokenMsg,   // High token user
-		}
-
-		// Track which pods each user gets routed to
-		userPods := make(map[string]map[string]int)
-		for _, user := range users {
-			userPods[user] = make(map[string]int)
-		}
-
-		podHistogram := make(map[string]int)
-
-		// Make more requests to create significant token disparity
-		// With WINDOW_SIZE=2 seconds, we need to make requests quickly
-		for i := 0; i < 10; i++ {
-			for _, user := range users {
-				pod := getTargetPodFromChatCompletionWithUser(t, msgMap[user], "vtc-basic", user)
-				podHistogram[pod]++
-				userPods[user][pod]++
-				t.Logf("Request %d: User %s with message size %d routed to pod %s",
-					i+1, user, len(msgMap[user]), pod)
-				forceMetricsPropagation(t)
-			}
-		}
-
-		t.Log("Token accumulation results:")
-		for user, pods := range userPods {
-			t.Logf("User %s pod distribution:", user)
-			for pod, count := range pods {
-				t.Logf("  Pod %s: %d requests (%.1f%%)", pod, count, float64(count)*10.0)
-			}
-		}
-
-		cv, quality := calculateDistributionStats(t, "Token Accumulation", podHistogram)
-		t.Logf("Distribution quality: %s (CV=%.2f)", quality, cv)
-
-		// Check if high token user uses more pods than low token user
-		highTokenUserPods := len(userPods[users[2]])
-		lowTokenUserPods := len(userPods[users[0]])
-
-		assert.Less(t, quality, ExcellentDistribution,
-			"Token accumulation should show some imbalance (not EXCELLENT), got %s distribution with CV=%.2f",
-			quality, cv)
-
-		assert.GreaterOrEqual(t, highTokenUserPods, lowTokenUserPods,
-			"High token user (%s) should use at least as many pods (%d) as low token user (%s, %d pods)",
-			users[2], highTokenUserPods, users[0], lowTokenUserPods)
-	})
-
-	// Sub-test 2: Verify that the algorithm considers token counts
-	t.Run("FairnessComponent", func(t *testing.T) {
-		t.Log("Clearing existing token history and increasing TPM limits")
-		ctx := context.Background()
-		for _, user := range users {
-			utils.DelUser(ctx, utils.User{Name: user}, redisClient)
-			utils.SetUser(ctx, utils.User{Name: user, Rpm: 1000, Tpm: 100000}, redisClient)
-
-			var delErr error
-			_, delErr = redisClient.Del(ctx, fmt.Sprintf("user_tokens:%s", user)).Result()
-			if delErr != nil {
-				t.Logf("Warning: Failed to delete token history for %s: %v", user, delErr)
-			}
-
-			var setErr error
-			key := fmt.Sprintf("rate_limit:tpm:%s", user)
-			_, setErr = redisClient.Set(ctx, key, "100000", 10*time.Minute).Result()
-			if setErr != nil {
-				t.Logf("Warning: Failed to set TPM limit for %s: %v", user, setErr)
-			} else {
-				t.Logf("Increased TPM limit for user %s to 100,000", user)
-			}
-		}
-
-		t.Log("Generating token history with disparity")
-
-		shortMsg := "Small message."                                                       // ~2 tokens
-		mediumMsg := "This is a medium-sized message with more tokens than the small one." // ~15 tokens
-		extremeMsg := strings.Repeat("This is a longer message with more tokens. ", 10)    // ~150 tokens
-
-		userMsgs := map[string]string{
-			"user1": shortMsg,
-			"user2": mediumMsg,
-			"user3": extremeMsg,
-		}
-
-		var err error
-		ctxBg := context.Background()
-		_, err = redisClient.Del(ctxBg, "pod_metrics").Result()
-		if err != nil {
-			t.Logf("Warning: Failed to delete pod_metrics: %v", err)
-		}
-		forceMetricsPropagation(t)
-
-		t.Log("Balancing pod loads before token history generation")
-		getAvailablePods(t) // This populates the global availablePods slice
-		for _, pod := range availablePods {
-			_, err = redisClient.HSet(ctxBg, "pod_metrics", pod, "10").Result() // Set all pods to same load
-			if err != nil {
-				t.Logf("Warning: Failed to set pod metrics for %s: %v", pod, err)
-			}
-		}
-		forceMetricsPropagation(t)
-
-		t.Log("Generating token history with extreme disparity")
-
-		t.Log("Generating history for user1 (low token user)")
-		for i := 0; i < 5; i++ {
-			pod := getTargetPodFromChatCompletionWithUser(t, userMsgs["user1"], "vtc-basic", "user1")
-			t.Logf("History generation: User user1 with message size %d routed to pod %s",
-				len(userMsgs["user1"]), pod)
+			pod := getTargetPodFromChatCompletionWithUser(t, msgMap[user], "vtc-basic", user)
+			podHistogram[pod]++
+			userPods[user][pod]++
+			t.Logf("Request %d: User %s with message size %d routed to pod %s",
+				i+1, user, len(msgMap[user]), pod)
 			forceMetricsPropagation(t)
-			time.Sleep(100 * time.Millisecond)
 		}
+	}
 
-		t.Log("Generating history for user2 (medium token user)")
-		for i := 0; i < 5; i++ {
-			pod := getTargetPodFromChatCompletionWithUser(t, userMsgs["user2"], "vtc-basic", "user2")
-			t.Logf("History generation: User user2 with message size %d routed to pod %s",
-				len(userMsgs["user2"]), pod)
-			forceMetricsPropagation(t)
-			time.Sleep(100 * time.Millisecond)
+	t.Log("Token accumulation results:")
+	for user, pods := range userPods {
+		t.Logf("User %s pod distribution:", user)
+		for pod, count := range pods {
+			t.Logf("  Pod %s: %d requests (%.1f%%)", pod, count, float64(count)*10.0)
 		}
+	}
 
-		t.Log("Generating history for user3 (very high token user)")
-		for i := 0; i < 15; i++ { // More requests for high token user
-			pod := getTargetPodFromChatCompletionWithUser(t, userMsgs["user3"], "vtc-basic", "user3")
-			t.Logf("History generation: User user3 with message size %d routed to pod %s",
-				len(userMsgs["user3"]), pod)
-			forceMetricsPropagation(t)
-			time.Sleep(100 * time.Millisecond)
-		}
+	cv, quality := calculateDistributionStats(t, "Token Accumulation", podHistogram)
+	t.Logf("Distribution quality: %s (CV=%.2f)", quality, cv)
 
-		t.Log("Waiting for token history to be fully processed")
-		time.Sleep(500 * time.Millisecond)
+	// Check if high token user uses more pods than low token user
+	highTokenUserPods := len(userPods[users[2]])
+	lowTokenUserPods := len(userPods[users[0]])
 
-		t.Log("Testing fairness with varying message sizes after history generation")
+	assert.Less(t, quality, ExcellentDistribution,
+		"Token accumulation should show some imbalance (not EXCELLENT), got %s distribution with CV=%.2f",
+		quality, cv)
 
-		// Make multiple requests per user to better demonstrate routing patterns
-		podAssignments := make(map[string]string)
-		podHistogram := make(map[string]int)
-		userRoutingMap := make(map[string]map[string]int) // Track pod assignments per user
-
-		for _, user := range users {
-			userRoutingMap[user] = make(map[string]int)
-		}
-
-		// Make 5 requests per user (15 total) to better observe routing patterns
-		for i := 0; i < 5; i++ {
-			pod1 := getTargetPodFromChatCompletionWithUser(t, userMsgs["user1"], "vtc-basic", "user1")
-			podAssignments["user1"+strconv.Itoa(i)] = pod1
-			podHistogram[pod1]++
-			userRoutingMap["user1"][pod1]++
-			t.Logf("Test request %d: User user1 (low tokens) routed to pod %s", i+1, pod1)
-			forceMetricsPropagation(t)
-			time.Sleep(50 * time.Millisecond)
-
-			pod2 := getTargetPodFromChatCompletionWithUser(t, userMsgs["user2"], "vtc-basic", "user2")
-			podAssignments["user2"+strconv.Itoa(i)] = pod2
-			podHistogram[pod2]++
-			userRoutingMap["user2"][pod2]++
-			t.Logf("Test request %d: User user2 (medium tokens) routed to pod %s", i+1, pod2)
-			forceMetricsPropagation(t)
-			time.Sleep(50 * time.Millisecond)
-
-			pod3 := getTargetPodFromChatCompletionWithUser(t, userMsgs["user3"], "vtc-basic", "user3")
-			podAssignments["user3"+strconv.Itoa(i)] = pod3
-			podHistogram[pod3]++
-			userRoutingMap["user3"][pod3]++
-			t.Logf("Test request %d: User user3 (high tokens) routed to pod %s", i+1, pod3)
-			forceMetricsPropagation(t)
-			time.Sleep(50 * time.Millisecond)
-
-			time.Sleep(100 * time.Millisecond)
-		}
-
-		t.Log("Overall pod distribution:")
-		for pod, count := range podHistogram {
-			t.Logf("Pod %s received %d requests (%.1f%%)",
-				pod, count, float64(count)*100/float64(len(podAssignments)))
-		}
-
-		t.Log("Checking user consistency and token-based routing:")
-
-		for user, podCounts := range userRoutingMap {
-			totalRequests := 0
-			for _, count := range podCounts {
-				totalRequests += count
-			}
-
-			for pod, count := range podCounts {
-				percentage := float64(count) / float64(totalRequests) * 100.0
-				t.Logf("User %s routed to pod %s for %.1f%% of requests", user, pod, percentage)
-			}
-
-			// Different expectations based on token usage:
-			// - Low/medium token users (user1, user2) should be routed consistently to one pod
-			// - High token user (user3) might be routed to multiple pods due to fairness component
-			if user == "user1" || user == "user2" {
-				// For low/medium token users, expect consistent routing (one dominant pod)
-				dominantPod := ""
-				highestCount := 0
-				for pod, count := range podCounts {
-					if count > highestCount {
-						highestCount = count
-						dominantPod = pod
-					}
-				}
-
-				dominantPercentage := float64(highestCount) / float64(totalRequests) * 100.0
-				t.Logf("User %s has dominant pod %s (%.1f%%)", user, dominantPod, dominantPercentage)
-
-				// Low token users should be routed consistently
-				assert.GreaterOrEqual(t, dominantPercentage, 80.0,
-					"Low/medium token user %s should be routed consistently to one pod", user)
-			}
-		}
-
-		// Count distinct pods used for each user type
-		userPods := make(map[string][]string)
-		for user, podCounts := range userRoutingMap {
-			for pod := range podCounts {
-				userPods[user] = append(userPods[user], pod)
-			}
-		}
-
-		// Check if we have at least 2 distinct pods used across all users
-		allPods := make(map[string]bool)
-		for _, pods := range userPods {
-			for _, pod := range pods {
-				allPods[pod] = true
-			}
-		}
-
-		t.Log("Distinct pods used by each user:")
-		for user, pods := range userPods {
-			t.Logf("User %s used %d distinct pods: %v", user, len(pods), pods)
-		}
-
-		podHistogramStr := make(map[string]string)
-		for pod, count := range podHistogram {
-			podHistogramStr[pod] = strconv.Itoa(count)
-		}
-
-		cv, quality := calculateDistributionStats(t, "Fairness Test", convertToHistogram(podHistogramStr))
-
-		distinctPodCount := len(allPods)
-		t.Logf("Total distinct pods used across all users: %d", distinctPodCount)
-
-		assert.GreaterOrEqual(t, distinctPodCount, 2,
-			"Expected at least 2 distinct pods across all users to validate token-based routing")
-
-		user1DominantPod := ""
-		user1HighestCount := 0
-		for pod, count := range userRoutingMap["user1"] {
-			if count > user1HighestCount {
-				user1HighestCount = count
-				user1DominantPod = pod
-			}
-		}
-
-		user3PodCount := len(userRoutingMap["user3"])
-		t.Logf("Low token user (user1) dominant pod: %s (%.1f%%)",
-			user1DominantPod, float64(user1HighestCount)*100/5.0)
-		t.Logf("High token user (user3) is using %d distinct pods", user3PodCount)
-
-		t.Logf("VTC algorithm is using %d distinct pods with CV=%.2f (%s distribution)",
-			len(podHistogram), cv, quality)
-
-		if distinctPodCount >= 2 {
-			assert.GreaterOrEqual(t, user3PodCount, 2,
-				"High token user (user3) should be routed to multiple pods due to fairness component")
-
-			assert.Equal(t, len(userRoutingMap["user1"]), 1,
-				"Low token user (user1) should be routed consistently to a single pod")
-		} else {
-			t.Log("Only one pod is available, can't fully test fairness component")
-		}
-		assert.GreaterOrEqual(t, quality, FairDistribution,
-			"Distribution should be at least FAIR with CV=%.2f", cv)
-	})
+	assert.GreaterOrEqual(t, highTokenUserPods, lowTokenUserPods,
+		"High token user (%s) should use at least as many pods (%d) as low token user (%s, %d pods)",
+		users[2], highTokenUserPods, users[0], lowTokenUserPods)
 }
 
-func TestVTCHighUtilizationFairness(t *testing.T) {
-	// This test verifies that when all pods have high utilization,
-	// the fairness component still works correctly
-	setupVTCUsers(t)
-	defer cleanupVTCUsers(t)
-
+func setupTestUsersWithHighTPM(t *testing.T, users []string) {
 	ctx := context.Background()
-	users := []string{"user1", "user2", "user3"}
 	for _, user := range users {
-		utils.DelUser(ctx, utils.User{Name: user}, redisClient)
-		utils.SetUser(ctx, utils.User{Name: user, Rpm: 1000, Tpm: 100000}, redisClient)
+		if err := utils.DelUser(ctx, utils.User{Name: user}, redisClient); err != nil {
+			t.Logf("Warning: Failed to delete user %s: %v", user, err)
+		}
+		if err := utils.SetUser(ctx, utils.User{Name: user, Rpm: 1000, Tpm: 100000}, redisClient); err != nil {
+			t.Logf("Warning: Failed to set user %s: %v", user, err)
+		}
 
 		var delErr error
 		_, delErr = redisClient.Del(ctx, fmt.Sprintf("user_tokens:%s", user)).Result()
@@ -522,6 +261,225 @@ func TestVTCHighUtilizationFairness(t *testing.T) {
 			t.Logf("Increased TPM limit for user %s to 100,000", user)
 		}
 	}
+}
+
+// Helper function to generate token history
+func generateTokenHistory(t *testing.T, userMsgs map[string]string) {
+	t.Log("Generating token history with extreme disparity")
+
+	for user, msg := range userMsgs {
+		requestCount := 5
+		if user == "user3" {
+			requestCount = 15 // More requests for high token user
+		}
+
+		t.Logf("Generating history for %s (%s token user)", user, getTokenUserType(user))
+		for i := 0; i < requestCount; i++ {
+			pod := getTargetPodFromChatCompletionWithUser(t, msg, "vtc-basic", user)
+			t.Logf("History generation: User %s with message size %d routed to pod %s",
+				user, len(msg), pod)
+			forceMetricsPropagation(t)
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+}
+
+// Helper function to get token user type
+func getTokenUserType(user string) string {
+	switch user {
+	case "user1":
+		return "low"
+	case "user2":
+		return "medium"
+	case "user3":
+		return "high"
+	default:
+		return "unknown"
+	}
+}
+
+// Helper function to make test requests
+func makeTestRequests(t *testing.T, userMsgs map[string]string, users []string) (
+	map[string]string,
+	map[string]int,
+	map[string]map[string]int,
+) {
+	podAssignments := make(map[string]string)
+	podHistogram := make(map[string]int)
+	userRoutingMap := make(map[string]map[string]int)
+
+	for _, user := range users {
+		userRoutingMap[user] = make(map[string]int)
+	}
+
+	for i := 0; i < 5; i++ {
+		for _, user := range users {
+			pod := getTargetPodFromChatCompletionWithUser(t, userMsgs[user], "vtc-basic", user)
+			podAssignments[user+strconv.Itoa(i)] = pod
+			podHistogram[pod]++
+			userRoutingMap[user][pod]++
+			t.Logf("Test request %d: User %s (%s tokens) routed to pod %s",
+				i+1, user, getTokenUserType(user), pod)
+			forceMetricsPropagation(t)
+			time.Sleep(50 * time.Millisecond)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return podAssignments, podHistogram, userRoutingMap
+}
+
+// Helper function to analyze routing patterns
+func analyzeRoutingPatterns(t *testing.T, userRoutingMap map[string]map[string]int) {
+	for user, podCounts := range userRoutingMap {
+		totalRequests := 0
+		for _, count := range podCounts {
+			totalRequests += count
+		}
+
+		for pod, count := range podCounts {
+			percentage := float64(count) / float64(totalRequests) * 100.0
+			t.Logf("User %s routed to pod %s for %.1f%% of requests", user, pod, percentage)
+		}
+
+		if user == "user1" || user == "user2" {
+			dominantPod := ""
+			highestCount := 0
+			for pod, count := range podCounts {
+				if count > highestCount {
+					highestCount = count
+					dominantPod = pod
+				}
+			}
+
+			dominantPercentage := float64(highestCount) / float64(totalRequests) * 100.0
+			t.Logf("User %s has dominant pod %s (%.1f%%)", user, dominantPod, dominantPercentage)
+
+			assert.GreaterOrEqual(t, dominantPercentage, 80.0,
+				"Low/medium token user %s should be routed consistently to one pod", user)
+		}
+	}
+}
+
+func TestVTCFairnessComponent(t *testing.T) {
+	setupVTCUsers(t)
+
+	users := []string{"user1", "user2", "user3"}
+	ensureSufficientPods(t, 3)
+
+	t.Log("Clearing existing token history and increasing TPM limits")
+	setupTestUsersWithHighTPM(t, users)
+
+	shortMsg := "Small message."                                                       // ~2 tokens
+	mediumMsg := "This is a medium-sized message with more tokens than the small one." // ~15 tokens
+	extremeMsg := strings.Repeat("This is a longer message with more tokens. ", 10)    // ~150 tokens
+
+	userMsgs := map[string]string{
+		"user1": shortMsg,
+		"user2": mediumMsg,
+		"user3": extremeMsg,
+	}
+
+	ctxBg := context.Background()
+	if _, err := redisClient.Del(ctxBg, "pod_metrics").Result(); err != nil {
+		t.Logf("Warning: Failed to delete pod_metrics: %v", err)
+	}
+	forceMetricsPropagation(t)
+
+	t.Log("Balancing pod loads before token history generation")
+	getAvailablePods(t)
+	for _, pod := range availablePods {
+		if _, err := redisClient.HSet(ctxBg, "pod_metrics", pod, "10").Result(); err != nil {
+			t.Logf("Warning: Failed to set pod metrics for %s: %v", pod, err)
+		}
+	}
+	forceMetricsPropagation(t)
+
+	generateTokenHistory(t, userMsgs)
+
+	t.Log("Waiting for token history to be fully processed")
+	time.Sleep(500 * time.Millisecond)
+
+	t.Log("Testing fairness with varying message sizes after history generation")
+	podAssignments, podHistogram, userRoutingMap := makeTestRequests(t, userMsgs, users)
+
+	t.Log("Overall pod distribution:")
+	for pod, count := range podHistogram {
+		t.Logf("Pod %s received %d requests (%.1f%%)",
+			pod, count, float64(count)*100/float64(len(podAssignments)))
+	}
+
+	t.Log("Checking user consistency and token-based routing:")
+	analyzeRoutingPatterns(t, userRoutingMap)
+
+	userPods := make(map[string][]string)
+	for user, podCounts := range userRoutingMap {
+		for pod := range podCounts {
+			userPods[user] = append(userPods[user], pod)
+		}
+	}
+
+	allPods := make(map[string]bool)
+	for _, pods := range userPods {
+		for _, pod := range pods {
+			allPods[pod] = true
+		}
+	}
+
+	t.Log("Distinct pods used by each user:")
+	for user, pods := range userPods {
+		t.Logf("User %s used %d distinct pods: %v", user, len(pods), pods)
+	}
+
+	podHistogramStr := make(map[string]string)
+	for pod, count := range podHistogram {
+		podHistogramStr[pod] = strconv.Itoa(count)
+	}
+
+	cv, quality := calculateDistributionStats(t, "Fairness Test", convertToHistogram(podHistogramStr))
+	distinctPodCount := len(allPods)
+	t.Logf("Total distinct pods used across all users: %d", distinctPodCount)
+
+	assert.GreaterOrEqual(t, distinctPodCount, 2,
+		"Expected at least 2 distinct pods across all users to validate token-based routing")
+
+	user1DominantPod := ""
+	user1HighestCount := 0
+	for pod, count := range userRoutingMap["user1"] {
+		if count > user1HighestCount {
+			user1HighestCount = count
+			user1DominantPod = pod
+		}
+	}
+
+	user3PodCount := len(userRoutingMap["user3"])
+	t.Logf("Low token user (user1) dominant pod: %s (%.1f%%)",
+		user1DominantPod, float64(user1HighestCount)*100/5.0)
+	t.Logf("High token user (user3) is using %d distinct pods", user3PodCount)
+
+	t.Logf("VTC algorithm is using %d distinct pods with CV=%.2f (%s distribution)",
+		len(podHistogram), cv, quality)
+
+	if distinctPodCount >= 2 {
+		assert.GreaterOrEqual(t, user3PodCount, 2,
+			"High token user (user3) should be routed to multiple pods due to fairness component")
+		assert.Equal(t, len(userRoutingMap["user1"]), 1,
+			"Low token user (user1) should be routed consistently to a single pod")
+	} else {
+		t.Log("Only one pod is available, can't fully test fairness component")
+	}
+	assert.GreaterOrEqual(t, quality, FairDistribution,
+		"Distribution should be at least FAIR with CV=%.2f", cv)
+}
+
+func TestVTCHighUtilizationFairness(t *testing.T) {
+	// This test verifies that when all pods have high utilization,
+	// the fairness component still works correctly
+	setupVTCUsers(t)
+	defer cleanupVTCUsers(t)
+
+	users := []string{"user1", "user2", "user3"}
+	setupTestUsersWithHighTPM(t, users)
 
 	t.Logf("Waiting for token window expiry to ensure clean state")
 	time.Sleep(3 * time.Second)
@@ -538,6 +496,7 @@ func TestVTCHighUtilizationFairness(t *testing.T) {
 	t.Logf("Pod metrics before controlled setup: %v", metrics)
 
 	t.Logf("Setting ALL pods to high utilization")
+	ctx := context.Background()
 	redisClient.Del(ctx, "pod_metrics")
 
 	highLoadValue := "90" // High load for all pods
@@ -556,9 +515,9 @@ func TestVTCHighUtilizationFairness(t *testing.T) {
 	highTokenMsg := strings.Repeat("This is a longer message with more tokens. ", 8)
 
 	msgMap := map[string]string{
-		"user1": veryShortMsg,   // Low token user
-		"user2": mediumTokenMsg, // Medium token user
-		"user3": highTokenMsg,   // High token user
+		"user1": veryShortMsg,
+		"user2": mediumTokenMsg,
+		"user3": highTokenMsg,
 	}
 
 	t.Logf("Generating token history with different message sizes")
@@ -606,7 +565,8 @@ func TestVTCHighUtilizationFairness(t *testing.T) {
 	lowTokenUserPods := distinctPodsPerUser["user1"]
 
 	assert.Greater(t, highTokenUserPods, lowTokenUserPods,
-		"With high utilization across all pods, high token user (user3) should use more pods (%d) than low token user (user1, %d pods)",
+		"With high utilization across all pods, high token user (user3) should use more pods "+
+			"(%d) than low token user (user1, %d pods)",
 		highTokenUserPods, lowTokenUserPods)
 
 	assert.LessOrEqual(t, lowTokenUserPods, 2,
@@ -626,26 +586,11 @@ func TestVTCUtilizationBalancing(t *testing.T) {
 	setupVTCUsers(t)
 	defer cleanupVTCUsers(t)
 
-	ctx := context.Background()
-	for _, user := range testUsers {
-		utils.DelUser(ctx, utils.User{Name: user.Name}, redisClient)
-		utils.SetUser(ctx, utils.User{Name: user.Name, Rpm: 1000, Tpm: 100000}, redisClient)
-
-		var delErr error
-		_, delErr = redisClient.Del(ctx, fmt.Sprintf("user_tokens:%s", user.Name)).Result()
-		if delErr != nil {
-			t.Logf("Warning: Failed to delete token history for %s: %v", user.Name, delErr)
-		}
-
-		var setErr error
-		key := fmt.Sprintf("rate_limit:tpm:%s", user.Name)
-		_, setErr = redisClient.Set(ctx, key, "100000", 10*time.Minute).Result()
-		if setErr != nil {
-			t.Logf("Warning: Failed to set TPM limit for %s: %v", user.Name, setErr)
-		} else {
-			t.Logf("Increased TPM limit for user %s to 100,000", user.Name)
-		}
+	users := make([]string, len(testUsers))
+	for i, user := range testUsers {
+		users[i] = user.Name
 	}
+	setupTestUsersWithHighTPM(t, users)
 
 	t.Logf("Waiting for token window expiry to ensure clean state")
 	// With AIBRIX_ROUTER_VTC_TOKEN_TRACKER_WINDOW_SIZE=2 and TIME_UNIT=seconds
@@ -653,9 +598,9 @@ func TestVTCUtilizationBalancing(t *testing.T) {
 	time.Sleep(3 * time.Second)
 
 	t.Logf("Making pruning-trigger requests for all test users")
-	for _, user := range testUsers {
-		pod := getTargetPodFromChatCompletionWithUser(t, "Pruning trigger", "vtc-basic", user.Name)
-		t.Logf("User %s routed to pod %s (pruning trigger)", user.Name, pod)
+	for _, user := range users {
+		pod := getTargetPodFromChatCompletionWithUser(t, "Pruning trigger", "vtc-basic", user)
+		t.Logf("User %s routed to pod %s (pruning trigger)", user, pod)
 	}
 
 	ensureSufficientPods(t, 3)
@@ -668,6 +613,7 @@ func TestVTCUtilizationBalancing(t *testing.T) {
 	testUser := testUsers[1].Name
 	t.Logf("Creating controlled load imbalance in Redis for pod %s", highLoadPod)
 
+	ctx := context.Background()
 	redisClient.Del(ctx, "pod_metrics")
 
 	highLoadValue := "100"  // Max load
@@ -771,7 +717,11 @@ func convertToHistogram(podAssignments map[string]string) map[string]int {
 	return histogram
 }
 
-func calculateDistributionStats(t *testing.T, phaseName string, histogram map[string]int) (float64, DistributionQuality) {
+func calculateDistributionStats(
+	t *testing.T,
+	phaseName string,
+	histogram map[string]int,
+) (float64, DistributionQuality) {
 	if len(histogram) == 0 {
 		t.Logf("[Distribution] %s: No data available", phaseName)
 		return 0, PoorDistribution
