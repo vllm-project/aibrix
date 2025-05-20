@@ -19,6 +19,7 @@ package backends
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -183,6 +184,46 @@ func buildKVCacheWatcherPodForInfiniStore(kvCache *orchestrationv1alpha1.KVCache
 }
 
 func buildCacheStatefulSetForInfiniStore(kvCache *orchestrationv1alpha1.KVCache) *appsv1.StatefulSet {
+	if kvCache.Spec.Cache.PodTemplate != nil {
+		// It will override all the configurations and we should use user given spec to build objects
+		ss := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      kvCache.Name,
+				Namespace: kvCache.Namespace,
+				Labels: map[string]string{
+					constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+					constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					*metav1.NewControllerRef(kvCache, orchestrationv1alpha1.GroupVersion.WithKind("KVCache")),
+				},
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: &kvCache.Spec.Cache.Replicas,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+						constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
+					},
+				},
+				Template: *kvCache.Spec.Cache.PodTemplate,
+			},
+		}
+
+		// override the selector labels
+		if ss.Spec.Template.Labels == nil {
+			ss.Spec.Template.Labels = map[string]string{
+				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
+			}
+		} else {
+			ss.Spec.Template.Labels[constants.KVCacheLabelKeyIdentifier] = kvCache.Name
+			ss.Spec.Template.Labels[constants.KVCacheLabelKeyRole] = constants.KVCacheLabelValueRoleCache
+		}
+
+		return ss
+	}
+
 	params := getInfiniStoreParams(kvCache.GetAnnotations())
 	metadataEnvVars := []corev1.EnvVar{
 		{Name: "AIBRIX_KVCACHE_UID", Value: string(kvCache.UID)},
@@ -229,13 +270,14 @@ func buildCacheStatefulSetForInfiniStore(kvCache *orchestrationv1alpha1.KVCache)
 `
 	}
 
+	preallocSize := getPreallocSizeFromResources(kvCache.Spec.Cache.Resources)
 	kvCacheServerArgs := []string{
 		fmt.Sprintf("--service-port=%s", strconv.Itoa(params.RdmaPort)),
 		fmt.Sprintf("--manage-port=%s", strconv.Itoa(params.AdminPort)),
 		fmt.Sprintf("--link-type=%s", params.LinkType),
 		// this is volcano engine specific. subject to change to more flexible way in future.
 		fmt.Sprintf("--hint-gid-index=%s", strconv.Itoa(params.HintGIDIndex)),
-		"--log-level=debug",
+		fmt.Sprintf("--prealloc-size=%s", strconv.Itoa(preallocSize)),
 	}
 	privileged := false
 
@@ -367,4 +409,29 @@ func getInfiniStoreParams(annotations map[string]string) *InfiniStoreParams {
 		TotalSlots:       defaultInfinistoreTotalSlots,
 		VirtualNodeCount: defaultInfinistoreVirtualNodeCount,
 	}
+}
+
+// getPreallocSizeFromResources infers the preallocated memory size (in GiB) from container memory limits.
+// It multiplies the limit by 0.9 and floors the result. If the computed value is less than 1, it returns 1 GiB.
+// If limits are not specified, it falls back to requests. If neither is specified, it defaults to 1 GiB.
+func getPreallocSizeFromResources(resources corev1.ResourceRequirements) int {
+	memQty, ok := resources.Limits[corev1.ResourceMemory]
+	if !ok {
+		// fallback to requests if limits not set
+		memQty, ok = resources.Requests[corev1.ResourceMemory]
+		if !ok {
+			return 1 // default to 1 GiB if neither is set
+		}
+	}
+
+	// Convert to GiB (1 GiB = 1024^3 bytes)
+	memBytes := memQty.Value()
+	memGiB := float64(memBytes) / float64(1<<30)
+
+	// Multiply by 0.9 and round down
+	prealloc := int(math.Floor(memGiB * 0.9))
+	if prealloc < 1 {
+		return 1
+	}
+	return prealloc
 }

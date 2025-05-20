@@ -189,6 +189,46 @@ func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod 
 }
 
 func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.StatefulSet {
+	if kvCache.Spec.Cache.PodTemplate != nil {
+		// It will override all the configurations and we should use user given spec to build objects
+		ss := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      kvCache.Name,
+				Namespace: kvCache.Namespace,
+				Labels: map[string]string{
+					constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+					constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					*metav1.NewControllerRef(kvCache, orchestrationv1alpha1.GroupVersion.WithKind("KVCache")),
+				},
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: &kvCache.Spec.Cache.Replicas,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+						constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
+					},
+				},
+				Template: *kvCache.Spec.Cache.PodTemplate,
+			},
+		}
+
+		// override the selector labels
+		if ss.Spec.Template.Labels == nil {
+			ss.Spec.Template.Labels = map[string]string{
+				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
+			}
+		} else {
+			ss.Spec.Template.Labels[constants.KVCacheLabelKeyIdentifier] = kvCache.Name
+			ss.Spec.Template.Labels[constants.KVCacheLabelKeyRole] = constants.KVCacheLabelValueRoleCache
+		}
+
+		return ss
+	}
+
 	params := getKVCacheParams(kvCache.GetAnnotations())
 
 	metadataEnvVars := []corev1.EnvVar{
