@@ -175,7 +175,7 @@ func TestBuildCacheStatefulSetForInfiniStoreWithCustomPodTemplateSpec(t *testing
 				Image:           "aibrix/infinistore:nightly",
 				ImagePullPolicy: "Always",
 				// podTemplateSpec will be used instead
-				PodTemplate: &corev1.PodTemplateSpec{
+				Template: &corev1.PodTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-pod",
 						Namespace: "default",

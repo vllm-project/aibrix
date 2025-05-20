@@ -189,7 +189,7 @@ func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod 
 }
 
 func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.StatefulSet {
-	if kvCache.Spec.Cache.PodTemplate != nil {
+	if kvCache.Spec.Cache.Template != nil {
 		// It will override all the configurations and we should use user given spec to build objects
 		ss := &appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{
@@ -211,7 +211,7 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 						constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
 					},
 				},
-				Template: *kvCache.Spec.Cache.PodTemplate,
+				Template: *kvCache.Spec.Cache.Template,
 			},
 		}
 

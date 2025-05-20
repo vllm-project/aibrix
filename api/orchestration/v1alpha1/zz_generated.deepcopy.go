@@ -474,8 +474,8 @@ func (in *RuntimeSpec) DeepCopyInto(out *RuntimeSpec) {
 		}
 	}
 	in.Resources.DeepCopyInto(&out.Resources)
-	if in.PodTemplate != nil {
-		in, out := &in.PodTemplate, &out.PodTemplate
+	if in.Template != nil {
+		in, out := &in.Template, &out.Template
 		*out = new(v1.PodTemplateSpec)
 		(*in).DeepCopyInto(*out)
 	}

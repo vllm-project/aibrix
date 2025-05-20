@@ -79,7 +79,7 @@ type RuntimeSpec struct {
 
 	// Optional: full control over the pod template and this is for advanced users.
 	// If set, it overrides other runtime fields like Image, Resources, etc.
-	PodTemplate *corev1.PodTemplateSpec `json:"podTemplate,omitempty"`
+	Template *corev1.PodTemplateSpec `json:"template,omitempty"`
 }
 
 // KVCacheSpec defines the desired state of KVCache
