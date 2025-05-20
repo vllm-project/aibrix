@@ -27,14 +27,16 @@ Ths workload generator would produce a workload file that looks like the followi
     "requests": 
     [
         {
-            "prompt": "I need to understand data science for my startup idea. Can you help? Could you also explain how this relates to natural language processing? For context, I have experience with cybersecurity but I'm new to this specific area. I've been trying to understand this concept for months and would appreciate a clear explanation. I'm asking because I need to deploy a machine learning model for a project. For context, I have experience with cryptocurrency but I'm new to this specific area. Could you", 
+            "prompt": "I need to understand data science...", 
             "prompt_length": 101, 
             "output_length": null,
             "session_id": 0
         },
         {
-            "prompt": "...."
-            ......
+            "prompt": "...",
+            "prompt_length": "...", 
+            "output_length": "...",
+            "session_id": "..."
         }
     ]
 }

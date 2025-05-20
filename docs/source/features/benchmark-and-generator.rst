@@ -18,11 +18,13 @@ The diagram below shows the end-to-end steps of AIBrix benchmarks. Our component
   :align: center
 
 
+At its core, the AIBrix benchmark framework is built around a cleanly decoupled architecture: dataset generation, workload shaping, and benchmark execution. Each component can be customized independently, making it easy to plug in your own prompt logs, traffic traces, or experimental workloads—whether you're working on a new model deployment, scaling policy, or runtime optimization.
+
 Run AIBrix Benchmark End-to-End
 --------------------------------------
 
 .. note::
-    The benchmark script benchmark.sh `benchmark.sh <https://github.com/vllm-project/aibrix/blob/main/benchmarks/benchmark.sh>`_ performs all steps up to the AIBrix workload format and trigger benchmark client without setting up benchmark environment for different scenarios. It assumes that AIBrix is already set up and expects a fully responsive endpoint.
+    The benchmark script `benchmark.py <https://github.com/vllm-project/aibrix/blob/main/benchmarks/benchmark.py>`_ performs all steps up to the AIBrix workload format and trigger benchmark client without setting up benchmark environment for different scenarios. It assumes that AIBrix is already set up and expects a fully responsive endpoint.
  
 
 
@@ -38,30 +40,43 @@ To run all steps using the default setting, try
 
 .. code-block:: bash
 
-    ./benchmark.sh all
+    python benchmark.py all --config config.yaml
 
 
 If the script completes successfully, you should see something similar to the following output:
 
 .. code-block:: bash
 
-    INFO:root:Benchmark completed in 35.26 seconds
-    [INFO] Analyzing trace output...
-    End-to-End Latency (s) Statistics: Average = 15.4749, Median = 13.4021, 99th Percentile = 34.8283
-    Throughput Statistics: Average = 34.3082, Median = 37.1284, 99th Percentile = 49.6834
-    Tokens per Second Statistics: Average = 53.2558, Median = 50.5690, 99th Percentile = 83.0661
-    Prompt Tokens Statistics: Average = 288.1000, Median = 148.5000, 99th Percentile = 805.6400
-    Output Tokens Statistics: Average = 580.5000, Median = 461.5000, 99th Percentile = 1462.6000
-    Total Tokens Statistics: Average = 868.6000, Median = 656.0000, 99th Percentile = 2268.2400
-    Time to First Token (TTFT) Statistics: Average = 4.0021, Median = 4.0541, 99th Percentile = 7.5454
-    Time per Output Token (TPOT) Statistics: Average = 0.0195, Median = 0.0196, 99th Percentile = 0.0200
-    Errors Statistics: Average = 0.0000, Median = 0.0000, 99th Percentile = 0.0000
-    Goodput (reqs/s) 1.0000
-    ========== Benchmrk Completed ==========
+    INFO:root:Running analysis with args: Namespace(trace='./output/client_output/output.jsonl', output='./output/trace_analysis', goodput_target='tpot:0.5')
+    WARNING:root:End-to-End Latency (s) Statistics: Average = 2.9710, Median = 3.0138, 99th Percentile = 3.3668
+    WARNING:root:Throughput (per request, toks/s) Statistics: Average = 43.2928, Median = 42.4732, 99th Percentile = 47.2407
+    WARNING:root:Tokens per Second Statistics: Average = 169.2524, Median = 165.2006, 99th Percentile = 259.2597
+    WARNING:root:Request Prompt Tokens Statistics: Average = 372.7500, Median = 371.0000, 99th Percentile = 670.6400
+    WARNING:root:Request Output Tokens Statistics: Average = 128.0000, Median = 128.0000, 99th Percentile = 128.0000
+    WARNING:root:Request Total Tokens Statistics: Average = 500.7500, Median = 499.0000, 99th Percentile = 798.6400
+    WARNING:root:Time to First Token (TTFT) Statistics: Average = 0.3053, Median = 0.2678, 99th Percentile = 0.5994
+    WARNING:root:Time per Output Token (TPOT) Statistics: Average = 0.0208, Median = 0.0216, 99th Percentile = 0.0217
+    WARNING:root:Errors Statistics: Average = 0.0000, Median = 0.0000, 99th Percentile = 0.0000
+    WARNING:root:Goodput (reqs/s) 1.0000
+    WARNING:root:Total Duration (s): 23.778891624999233
+    WARNING:root:Total tokens generated (toks): 4006
+    WARNING:root:Throughput (end-to-end, toks/s): 168.46874375710644
+    INFO:root:========== Benchmark Completed ==========
     
     
+.. note::
+    All configuration files should be specified in a .yaml file. You can find an example configuration file `here <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
-All default shared environment variables can be found in  `config <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config/>`_ directory.
+    To override the default configuration, use the `--override` flag. For example, to override the target model and the number of sessions in the dataset generation phase, use:
+
+    .. code-block:: bash
+
+        python benchmark.py all \
+            --config config.yaml \
+            --override target_model="deepseek-llm-7b-chat" \
+            --override dataset_configs.synthetic_multiturn.num_sessions=10
+
+
 
 
 
@@ -73,7 +88,7 @@ Run Dataset Generator
   :width: 70%
   :align: center
 
-The AIBrix workload generator accepts either time-series traces (e.g., Open-source LLM trace, Grafana exported time-series metrics, see this for more details) or synthetic prompt file which could be hand-tuned by users (i.e., synthetic dataset format). 
+The goal of AIBrix's dataset generator is to generate a prompt dataset, or convert an existing dataset to a format that can be sampled from by the workload generator. The AIBrix dataset generator generates synthetic prompts that follow certain application patterns (i.e., cache sharing) or convert time-series traces (e.g., Open-source LLM trace like ShareGPT) to standard dataset format. 
 A synthetic dataset needs to be in one of the two formats:
 
 - Plain format (no sessions)
@@ -99,30 +114,29 @@ To run dataset generation, do
 
 .. code-block:: bash
 
-    ./benchmark dataset
-
+    python benchmark.py dataset --config config.yaml
 
 
 Currently, we support four types of dataset. 
 
 **1. Controlled Synthetic Sharing**
-- This type allows users to generate a cache sharing *sessioned-format* dataset with *controlled prompt token length* and *controlled prefix sharing length*, as well as controlled number of prefixes (i.e., sessions). To tune the prompt token length and shared length, set environment variables in `config/dataset/synthetic_shared.sh <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config/dataset/synthetic_shared.sh>`_.
+- This type allows users to generate a cache sharing *plain-format* dataset with *controlled prompt token length* and *controlled prefix sharing length*, as well as controlled number of prefixes (i.e., sessions). To tune the prompt token length and shared length, set configuration variables under ```dataset_configs.synthetic_shared``` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
 **2. Multiturn Synthetic**
-- Multiturn synthetic data generation produces *sessioned-format* dataset. Each session ID maps to a *controlled number of prompts* per session and *controlled prompt lengths*. These variables could be tuned via `config/dataset/synthetic_multiturn.sh <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config/dataset/synthetic_multiturn.sh>`_. 
+- Multiturn synthetic data generation produces *sessioned-format* dataset. Each session ID maps to a *controlled number of prompts* per session and *controlled prompt lengths*. These variables are under the ```dataset_configs.synthetic_multiturn``` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
 **3. ShareGPT**
-- This generation type converts ShareGPT dataset to *sessioned-format* dataset that has session_id, prompts and completions. Configure via `config/dataset/sharegpt.sh <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config/dataset/sharegpt.sh>`_.
+- This generation type converts ShareGPT dataset to *sessioned-format* dataset that has session_id, prompts and completions. Configuration variables are under `dataset_configs.sharegpt` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
 **4. Client trace**
-- This generation type converts client output into a *plain-format* dataset. Configure via `config/dataset/client_trace.sh <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config/dataset/client_trace.sh>`_.
+- This generation type converts client output into a *plain-format* dataset. Configuration variables are under the `dataset_configs.client_trace` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
 The first two types generate synthetic prompts, while the latter two convert external data sources or benchmark data.
 
 
-To set the type of dataset to be generated, set the environment variable `PROMPT_TYPE` in `config/base.sh <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config/base.sh>`_ to one of the following values: ```synthetic_multiturn```, ```synthetic_shared```, ```sharegpt```, ```client_trace```.
+To set the type of dataset to be generated, set the environment variable `prompt_type` in the configuration file to one of the following values: ```synthetic_multiturn```, ```synthetic_shared```, ```sharegpt```, ```client_trace```.
 
-For details of dataset generator, check out `dataset-generator <https://github.com/vllm-project/aibrix/blob/main/benchmarks/generator/dataset-generator>`_ directory. All tunable parameters are set under `config/dataset <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config/dataset>`_.
+For details of dataset generator, check out `dataset_generator <https://github.com/vllm-project/aibrix/blob/main/benchmarks/generator/dataset_generator>`_ directory. 
 
 
 Run Workload Generator
@@ -133,36 +147,61 @@ Run Workload Generator
   :width: 70%
   :align: center
 
-The workload generator specifies the timing and requests to be dispatched in a workload. A workload generator accepts either a trace/metrics files (where either time and requests are specified, or QPS/input/output volume are specified) or a synthetic dataset format that contains prompts and possibly session. There are three types of workload the generator currently supports. 
+
+The goal of AIBrix's workload generator is to perform workload shaping. The workload generator specifies the timing and requests to be dispatched in by the benchmark client. A workload generator accepts either a trace/metrics files (where either time and requests are specified, or QPS/input/output volume are specified) or user-specified static or dynamic load patterns. The workload generator will sample the workload based on a dataset in one of the two formats discussed in [dataset generator](#run-dataset-generator). There are three types of workload the generator currently supports. 
 
 **1. The "constant" and "synthetic" workload type**
 
 - The workload generator can produce two types of *synthetic load pattern*, with multiple workload configurations that can be manually tuned (e.g., traffic/QPS distribution, input request token length distribution, output token length distribution, maximum concurrent sessions, etc.):
-    - Constant load (**constant**): The mean load (QPS/input length/output length) stays constant with controallable fluctuation. Configure this type via `config/workload/constant.sh <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config/workload/constant.sh>`_.
-    - Synthetic fluctuation load (**synthetic**): The loads (QPS/input length/output length) fluctuate based on configurable parameters. Configure this type via `config/workload/synthetic.sh <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config/workload/synthetic.sh>`_.
+    - Constant load (**constant**): The mean load (QPS/input length/output length) stays constant with controallable fluctuation. Configuration variables are under the `workload_configs.constant` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
+    - Synthetic fluctuation load (**synthetic**): The loads (QPS/input length/output length) fluctuate based on configurable parameters. Configuration variables are under the `workload_configs.synthetic` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
 **2. The "stat" workload type**
 
-- For *metrics file (e.g., .csv file exported from Grafana dashboard)*, the workload generator will generate the QPS/input length/output length distribution that follows the collected time-series metrics specified in the file. The actual prompt used in the workload, will be based on one of the synthetic dataset generated by the [dataset generator](#run-dataset-generator). Configure this workload type via `config/workload/stat.sh <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config/workload/stat.sh>`_.
+- For *metrics file (e.g., .csv file exported from Grafana dashboard)*, the workload generator will generate the QPS/input length/output length distribution that follows the collected time-series metrics specified in the file. The actual prompt used in the workload, will be based on one of the synthetic dataset generated by the previous section. Configuration variables are under the `workload_configs.stat` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
+
 
 
 **3. The "azure" workload type**
 
-- For a trace (e.g., Azure LLM trace), both the requests and timestamp associated with the requests are provided, and the workload generator will generate a workload that simply replay requests based on the timestamp. Configure this type via `config/workload/azure.sh <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config/workload/azure.sh>`_.
-
+- For a trace (e.g., Azure LLM trace), both the requests and timestamp associated with the requests are provided, and the workload generator will generate a workload that simply replay requests based on the timestamp. Configuration variables are under the `workload_configs.azure` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
 Workload generator could be run by:
 
 .. code-block:: bash
 
-    ./benchmark workload
+    python benchmark.py workload --config config.yaml
+
+The workload generator will generate a workload file in the `output/workload` directory. The file will be look like this:
+
+.. code-block:: bash
+
+    {
+        "timestamp": 19, 
+        "requests": 
+        [
+            {
+                "prompt": "I need to understand data science ...", 
+                "prompt_length": 101, 
+                "output_length": null,
+                "session_id": 0
+            },
+            {
+                "prompt": "...",
+                "prompt_length": "...", 
+                "output_length": "...",
+                "session_id": "..."
+            }
+        ]
+    }
 
 
 
-To choose different workload type, set the environment variable `WORKLOAD_TYPE` in `config/base.sh <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config/base.sh>`_ to one of the following values: ```constant```, ```synthetic```, ```stat```, ```azure```.
+
+To choose different workload type, set the environment variable `workload_type` in the configuration file to one of the following values: ```constant```, ```synthetic```, ```stat```, ```azure```.
 
 
-For details of workload generator, check out `workload-generator <https://github.com/vllm-project/aibrix/blob/main/benchmarks/generator/workload-generator>`_. All tunable parameters are set under `config/workload <https://github.com/vllm-project/aibrix/tree/main/benchmarks/config/workload>`_.
+For details of workload generator, check out `workload_generator <https://github.com/vllm-project/aibrix/blob/main/benchmarks/generator/workload_generator>`_. 
 
 
 Run Benchmark Client
@@ -173,13 +212,13 @@ Run Benchmark Client
   :width: 30%
   :align: center
 
-The benchmark client supports both batch and streaming mode. Streaming mode supports intra-request metrics like TTFT/TPOT. Configure endpoint and target model via `config/base.sh <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config/base.sh>`_.
+The benchmark client supports both batch and streaming mode. Streaming mode supports intra-request metrics like TTFT/TPOT. Configure endpoint and target model via `config.yaml <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_ or command line arguments.
 
 The benchmark client can be run using:
 
 .. code-block:: bash
 
-    ./benchmark client
+    python benchmark.py client --config config.yaml
 
 
 
@@ -190,6 +229,6 @@ Run analysis on the benchmark results using:
 
 .. code-block:: bash
 
-    ./benchmark analysis
+    python benchmark.py analysis --config config.yaml
 
-Configure path and performance target via `config/base.sh <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config/base.sh>`_.
+Configure path and performance target via `config.yaml <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_ or command line arguments.
