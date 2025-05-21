@@ -9,6 +9,7 @@ Welcome to AIBrix, an open-source initiative designed to provide essential build
 
 ## Latest News
 
+- **[2025-05-21]** AIBrix v0.3.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.3.0) for more details.
 - **[2025-03-09]** AIBrix v0.2.1 is released. DeepSeek-R1 full weights deployment is supported and gateway stability has been improved! Check [Blog Post](https://aibrix.github.io/posts/2025-03-10-deepseek-r1/) for more details.
 - **[2025-02-19]** AIBrix v0.2.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.2.0) for more details.
 
@@ -49,10 +50,10 @@ kubectl apply -k config/default
 Install stable distribution
 ```shell
 # Install component dependencies
-kubectl create -f "github.com/vllm-project/aibrix/config/dependency?ref=v0.2.1"
+kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.3.0/aibrix-dependency-v0.3.0.yaml"
 
 # Install aibrix components
-kubectl create -f "github.com/vllm-project/aibrix/config/overlays/release?ref=v0.2.1"
+kubectl app -f "https://github.com/vllm-project/aibrix/releases/download/v0.3.0/aibrix-core-v0.3.0.yaml"
 ```
 
 ## Documentation

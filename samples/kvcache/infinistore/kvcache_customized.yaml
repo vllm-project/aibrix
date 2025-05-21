@@ -30,7 +30,7 @@ spec:
         targetPort: 8088
         protocol: TCP
   watcher:
-    image: aibrix-cn-beijing.cr.volces.com/aibrix/kvcache-watcher:v0.3.0-rc.1
+    image: aibrix-cn-beijing.cr.volces.com/aibrix/kvcache-watcher:v0.3.0
     imagePullPolicy: Always
     resources:
       requests:
@@ -41,6 +41,7 @@ spec:
         memory: "256Mi"
   cache:
     # if template is specified, it will be used to build the cache engine pod.
+    replicas: 3
     template:
       metadata:
         annotations:
@@ -86,4 +87,3 @@ spec:
                 cpu: "10"
                 memory: "120Gi"
                 vke.volcengine.com/rdma: "1"
-        restartPolicy: Never

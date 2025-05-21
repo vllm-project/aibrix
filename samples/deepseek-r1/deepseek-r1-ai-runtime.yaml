@@ -82,7 +82,7 @@ spec:
           spec:
             initContainers:
             - name: init-model
-              image: aibrix/runtime:v0.2.1
+              image: aibrix/runtime:v0.3.0
               command:
                 - aibrix_download
                 - --model-uri
@@ -227,7 +227,7 @@ spec:
           spec:
             initContainers:
             - name: init-model
-              image: aibrix/runtime:v0.2.1
+              image: aibrix/runtime:v0.3.0
               command:
                 - aibrix_download
                 - --model-uri

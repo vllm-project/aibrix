@@ -60,7 +60,7 @@ type RuntimeSpec struct {
 	Replicas int32 `json:"replicas,omitempty"`
 
 	// represent the kvcache's image
-	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Optional
 	Image string `json:"image,omitempty"`
 
 	// the policy about pulling image

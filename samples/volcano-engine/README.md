@@ -4,14 +4,14 @@
 
 Install:
 ```
-kubectl apply -f aibrix-dependency-v0.3.0-rc.2.yaml --server-side
-kubectl apply -f aibrix-core-v0.3.0-rc.2.yaml
+kubectl apply -f aibrix-dependency-v0.3.0.yaml --server-side
+kubectl apply -f aibrix-core-v0.3.0.yaml
 ```
 
 Uninstall:
 ```
-kubectl delete -f aibrix-core-v0.3.0-rc.2.yaml
-kubectl delete -f aibrix-dependency-v0.3.0-rc.2.yaml
+kubectl delete -f aibrix-core-v0.3.0.yaml
+kubectl delete -f aibrix-dependency-v0.3.0.yaml
 ```
 
 Expose the endpoint
@@ -148,12 +148,12 @@ python benchmark_serving.py \
 
 ## Demo 5 - kv cache scenarios
 
-1. Fetch aibrix-cn-shanghai.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-20250510
+1. Fetch aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-20250510
 
 Dockerfile, reinstall infinistore changes.
 
 ```
-FROM aibrix-cn-shanghai.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-20250510
+FROM aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-20250510
 
 # required
 ENV PIP_PROGRESS_BAR=off

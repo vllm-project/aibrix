@@ -20,10 +20,10 @@ images:
 - name: redis
   newTag: latest
 - name: aibrix/gateway-plugins
-  newTag: v0.3.0-rc.2
+  newTag: v0.3.0
 - name: aibrix/metadata-service
-  newTag: v0.3.0-rc.2
+  newTag: v0.3.0
 - name: aibrix/controller-manager
-  newTag: v0.3.0-rc.2
+  newTag: v0.3.0
 - name: aibrix/runtime
-  newTag: v0.3.0-rc.2
+  newTag: v0.3.0
