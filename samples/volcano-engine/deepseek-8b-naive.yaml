@@ -49,17 +49,17 @@ spec:
                   key: TOS_SECRET_KEY
                   name: tos-credential
             - name: TOS_ENDPOINT
-              value: https://tos-s3-cn-shanghai.ivolces.com
+              value: https://tos-s3-cn-beijing.ivolces.com
             - name: TOS_REGION
-              value: cn-shanghai
-          image: aibrix-cn-shanghai.cr.volces.com/aibrix/runtime:v0.3.0-rc.2
+              value: cn-beijing
+          image: aibrix-cn-beijing.cr.volces.com/aibrix/runtime:v0.3.0-rc.2
           name: init-model
           volumeMounts:
             - mountPath: /models
               name: model-hostpath
       containers:
         - name: vllm-openai
-          image: aibrix-cn-shanghai.cr.volces.com/aibrix/vllm-openai:v0.8.5
+          image: aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5
           imagePullPolicy: IfNotPresent
           command:
             - python3

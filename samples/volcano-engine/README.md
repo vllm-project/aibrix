@@ -148,12 +148,12 @@ python benchmark_serving.py \
 
 ## Demo 5 - kv cache scenarios
 
-1. Fetch aibrix-cn-shanghai.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-20250510
+1. Fetch aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-20250510
 
 Dockerfile, reinstall infinistore changes.
 
 ```
-FROM aibrix-cn-shanghai.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-20250510
+FROM aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-20250510
 
 # required
 ENV PIP_PROGRESS_BAR=off
