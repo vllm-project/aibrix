@@ -19,7 +19,7 @@ Key features:
 - **Heterogeneous-GPU Inference**: Cost-effective SLO-driven LLM inference using heterogeneous GPUs.
 - **GPU Hardware Failure Detection**: Proactive detection of GPU hardware issues.
 - **KVCache Offloading and Cross-Engine KV Reuse**: High-Performance KVCache offloading framework supporting both naive KV offloading and cross-engine KV reuse.
-- **Benchmark Tool (TBD)**: A tool for measuring inference performance and resource efficiency.
+- **Benchmark Tool**: A tool for measuring inference performance and resource efficiency.
 
 Documentation
 =============
@@ -46,6 +46,7 @@ Documentation
    features/kvcache-offloading-framework.rst
    features/kvcache-offloading.rst
    features/distributed-kvcache-and-cross-engine-kv-reuse.rst
+   features/benchmark-and-generator.rst
 
 .. toctree::
    :maxdepth: 1
