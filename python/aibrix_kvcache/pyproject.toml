@@ -1,6 +1,6 @@
 [project]
 name = "aibrix-kvcache"
-version = "0.1.0.post2"
+version = "0.3.0rc2"
 description = "AIBrix KV Cache offloading framework for cross-engine KV reuse"
 authors = [{name = "AIBrix Team"}]
 license = "Apache-2.0"
