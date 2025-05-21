@@ -21,7 +21,7 @@ Make sure you set these environment variables before you start.
 ```bash
 export KUBECONFIG=${kube_config_path}
 kubectl -n envoy-gateway-system port-forward ${service_name} 8888:80 &
-export api_key="${your_api_key}"
+export API_KEY="${your_api_key}"
 ```
 
 
@@ -29,14 +29,14 @@ export api_key="${your_api_key}"
 To run all steps using the default setting, try
 
 ```bash
-python benchmark.py all --config config.yaml
+python benchmark.py --stage all --config config.yaml
 ```
 
 Each steps can also be run separately. All configurations are stored in [config.yaml](config.yaml) file. To override any configuration parameter from the command line, do something like
 
 
 ```bash
-python benchmark.py all --config config.yaml --override endpoint="http://localhost:8000"
+python benchmark.py --stage all --config config.yaml --override endpoint="http://localhost:8000"
 ```
 
 
@@ -60,7 +60,7 @@ The dataset generator either generates a prompt dataset, or convert an existing 
 
 To run dataset generation, do
 ```bash
-python benchmark.py dataset --config config.yaml
+python benchmark.py --stage dataset --config config.yaml
 ```
 
 Currently, we support four types of dataset:
@@ -105,7 +105,7 @@ Workload generator specifies time and requests to be dispatched of a workload. A
 
 Workload generator could be run by:
 ```bash
-python benchmark.py workload --config config.yaml
+python benchmark.py --stage workload --config config.yaml
 ```
 
 Ths workload generator would produce a workload file that looks like the following. The logical timestamp is associated with list of prompts that need to be dispatched at the same time. 
@@ -122,8 +122,10 @@ Ths workload generator would produce a workload file that looks like the followi
             "session_id": 0
         },
         {
-            "prompt": "...."
-            ......
+            "prompt": "...",
+            "prompt_length": "...", 
+            "output_length": "...",
+            "session_id": "..."
         }
     ]
 }
@@ -135,7 +137,7 @@ Details of workload generator could be found [here](generator/workload-generator
 
 ## Run workload using client
 ```bash
-python benchmark.py client --config config.yaml
+python benchmark.py --stage client --config config.yaml
 ```
 
 The benchmark client supports both batch and streaming mode. Streaming mode  supports intra-request metrics like TTFT/TPOT. Configure endpoint and target model via [config.yaml](config.yaml).
@@ -146,7 +148,7 @@ The benchmark client supports both batch and streaming mode. Streaming mode  sup
 
 Run analysis on benchmark result using: 
 ```bash
-python benchmark.py analysis --config config.yaml
+python benchmark.py --stage analysis --config config.yaml
 ```
 Configure path and performance target via [config.yaml](config.yaml).
 

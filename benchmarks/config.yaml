@@ -78,7 +78,7 @@ workload_configs:
 workload_file: "./output/workload/${workload_type}/workload.jsonl"
 client_output: "./output/client_output"
 endpoint: "http://localhost:8888"
-api_key: ${api_key}  # You might want to inject this securely via environment variables
+api_key: ${API_KEY}  # You might want to inject this securely via environment variables
 target_model: "llama-3-8b-instruct"  # Or "deepseek-llm-7b-chat"
 time_scale: 1.0
 routing_strategy: "random" 
