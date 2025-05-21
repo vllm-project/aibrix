@@ -5,6 +5,7 @@ kind: Kustomization
 
 resources:
 - ../../default
+- pdb.yaml
 
 patches:
   - path: envoy_proxy_patch.yaml
