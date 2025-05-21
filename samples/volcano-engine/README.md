@@ -4,14 +4,14 @@
 
 Install:
 ```
-kubectl apply -f aibrix-dependency-v0.3.0-rc.1.yaml --server-side
-kubectl apply -f aibrix-core-v0.3.0-rc.1.yaml
+kubectl apply -f aibrix-dependency-v0.3.0-rc.2.yaml --server-side
+kubectl apply -f aibrix-core-v0.3.0-rc.2.yaml
 ```
 
 Uninstall:
 ```
-kubectl delete -f aibrix-core-v0.3.0-rc.1.yaml
-kubectl delete -f aibrix-dependency-v0.3.0-rc.1.yaml
+kubectl delete -f aibrix-core-v0.3.0-rc.2.yaml
+kubectl delete -f aibrix-dependency-v0.3.0-rc.2.yaml
 ```
 
 Expose the endpoint
