@@ -33,7 +33,7 @@ First, make sure you have configured your API key as well as your endpoint like
 .. code-block:: bash
 
     export api_key="<your_api_key>"
-    kubectl -n envoy-gateway-system port-forward service/<gateway_service> 8888:80 &
+    kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 &
 
 
 To run all steps using the default setting, try
