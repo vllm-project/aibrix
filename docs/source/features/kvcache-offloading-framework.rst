@@ -1,8 +1,8 @@
 .. _kvcache-offloading-framework:
 
-====================
+============================
 KVCache Offloading Framework
-====================
+============================
 
 The rising demand for large language models has intensified the need for efficient memory management and caching to optimize inference performance and reduce costs. In multi-round use cases like chatbots and agent-based systems, overlapping token sequences lead to redundant computations during the prefill phase, wasting resources and limiting throughput.
 
@@ -20,7 +20,7 @@ With AIBrix v0.3.0, we introduce a **production-ready KVCache Offloading Framewo
 As shown in Figure 1, on the data plane, it integrates tightly with inference engines (e.g., vLLM) via *AIBrix Offloading Connector*, which employs optimized CUDA kernels to significantly accelerate data movement between GPU and CPU. For memory scalability, its multi-tiered cache manager dynamically balances workloads across storage layers, alleviating GPU memory capacity limits while minimizing latency penalties. The framework supports pluggable eviction policies (e.g., LRU, `S3FIFO <https://blog.jasony.me/system/cache/2023/08/01/s3fifo>`_) and diverse backend storage options (e.g., `InfiniStore <https://github.com/bytedance/InfiniStore>`_), enabling selective KV cache offloading to reduce network and PCIe contention. Crucially, its cache placement module can coordinate with the centralized distributed KV cache cluster manager to maximize global KV cache utilization. This enables cross-engine KV reuse and ensures cluster-wide resource efficiency, transforming isolated KV cache instances into a scalable, shared KV cache infrastructure.
 
 Adding New KVCache Backends
------------------
+---------------------------
 
 New KVCache backends can be easily added by implementing the ``Connector`` interface:
 
