@@ -40,7 +40,7 @@ To run all steps using the default setting, try
 
 .. code-block:: bash
 
-    python benchmark.py all --config config.yaml
+    python benchmark.py --stage all --config config.yaml
 
 
 If the script completes successfully, you should see something similar to the following output:
@@ -71,7 +71,7 @@ If the script completes successfully, you should see something similar to the fo
 
     .. code-block:: bash
 
-        python benchmark.py all \
+        python benchmark.py --stage all \
             --config config.yaml \
             --override target_model="deepseek-llm-7b-chat" \
             --override dataset_configs.synthetic_multiturn.num_sessions=10
@@ -110,7 +110,7 @@ To run dataset generation, do
 
 .. code-block:: bash
 
-    python benchmark.py dataset --config config.yaml
+    python benchmark.py --stage dataset --config config.yaml
 
 
 Currently, we support four types of dataset. 
@@ -166,7 +166,7 @@ Workload generator could be run by:
 
 .. code-block:: bash
 
-    python benchmark.py workload --config config.yaml
+    python benchmark.py --stage workload --config config.yaml
 
 The workload generator will generate a workload file in the `output/workload` directory. The file will be look like this:
 
@@ -214,7 +214,7 @@ The benchmark client can be run using:
 
 .. code-block:: bash
 
-    python benchmark.py client --config config.yaml
+    python benchmark.py --stage client --config config.yaml
 
 
 
@@ -225,6 +225,6 @@ Run analysis on the benchmark results using:
 
 .. code-block:: bash
 
-    python benchmark.py analysis --config config.yaml
+    python benchmark.py --stage analysis --config config.yaml
 
 Configure path and performance target via `config.yaml <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_ or command line arguments.
