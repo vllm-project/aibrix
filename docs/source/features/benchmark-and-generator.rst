@@ -21,7 +21,7 @@ The diagram below shows the end-to-end steps of AIBrix benchmarks. Our component
 At its core, the AIBrix benchmark framework is built around a cleanly decoupled architecture: dataset generation, workload shaping, and benchmark execution. Each component can be customized independently, making it easy to plug in your own prompt logs, traffic traces, or experimental workloads—whether you're working on a new model deployment, scaling policy, or runtime optimization.
 
 Run AIBrix Benchmark End-to-End
---------------------------------------
+-------------------------------
 
 .. note::
     The benchmark script `benchmark.py <https://github.com/vllm-project/aibrix/blob/main/benchmarks/benchmark.py>`_ performs all steps up to the AIBrix workload format and trigger benchmark client without setting up benchmark environment for different scenarios. It assumes that AIBrix is already set up and expects a fully responsive endpoint.
@@ -76,12 +76,8 @@ If the script completes successfully, you should see something similar to the fo
             --override target_model="deepseek-llm-7b-chat" \
             --override dataset_configs.synthetic_multiturn.num_sessions=10
 
-
-
-
-
 Run Dataset Generator
------------------------
+---------------------
 
 .. figure:: ../../../benchmarks/image/aibrix-benchmark-dataset.png
   :alt: benchmark-component-dataset-generator
@@ -140,7 +136,7 @@ For details of dataset generator, check out `dataset_generator <https://github.c
 
 
 Run Workload Generator
------------------------
+----------------------
 
 .. figure:: ../../../benchmarks/image/aibrix-benchmark-workload.png
   :alt: benchmark-component-workload-generator
@@ -205,7 +201,7 @@ For details of workload generator, check out `workload_generator <https://github
 
 
 Run Benchmark Client
------------------------
+--------------------
 
 .. figure:: ../../../benchmarks/image/aibrix-benchmark-client.png
   :alt: benchmark-component-workload-generator
@@ -223,7 +219,7 @@ The benchmark client can be run using:
 
 
 Run Analysis
------------------------
+------------
 
 Run analysis on the benchmark results using:
 
