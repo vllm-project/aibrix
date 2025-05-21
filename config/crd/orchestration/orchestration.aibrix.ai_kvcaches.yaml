@@ -3767,8 +3767,6 @@ spec:
                         - containers
                         type: object
                     type: object
-                required:
-                - image
                 type: object
               metadata:
                 properties:
@@ -7519,8 +7517,6 @@ spec:
                                 - containers
                                 type: object
                             type: object
-                        required:
-                        - image
                         type: object
                     type: object
                   redis:
@@ -11270,8 +11266,6 @@ spec:
                                 - containers
                                 type: object
                             type: object
-                        required:
-                        - image
                         type: object
                     type: object
                 type: object
@@ -15050,8 +15044,6 @@ spec:
                         - containers
                         type: object
                     type: object
-                required:
-                - image
                 type: object
             type: object
           status:
