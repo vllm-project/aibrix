@@ -32,7 +32,7 @@ spec:
         targetPort: 8088
         protocol: TCP
   watcher:
-    image: aibrix-cn-beijing.cr.volces.com/aibrix/kvcache-watcher:v0.3.0-rc.1
+    image: aibrix-cn-beijing.cr.volces.com/aibrix/kvcache-watcher:v0.3.0
     imagePullPolicy: Always
     resources:
       requests:
