@@ -48,9 +48,9 @@ spec:
     resources:
       requests:
         cpu: "10000m"
-        memory: "100Gi"
+        memory: "120Gi"
         vke.volcengine.com/rdma: "1"
       limits:
         cpu: "10000m"
-        memory: "100Gi"
+        memory: "120Gi"
         vke.volcengine.com/rdma: "1"

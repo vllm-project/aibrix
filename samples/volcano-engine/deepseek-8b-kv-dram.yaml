@@ -60,14 +60,14 @@ spec:
               value: https://tos-s3-cn-beijing.ivolces.com
             - name: TOS_REGION
               value: cn-beijing
-          image: aibrix-cn-beijing.cr.volces.com/aibrix/runtime:v0.3.0-rc.1
+          image: aibrix-cn-beijing.cr.volces.com/aibrix/runtime:v0.3.0-rc.2
           name: init-model
           volumeMounts:
             - mountPath: /models
               name: model-hostpath
       containers:
         - name: vllm-openai
-          image: aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-20250515
+          image: aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-20250520
           imagePullPolicy: Always
           command:
             - python3

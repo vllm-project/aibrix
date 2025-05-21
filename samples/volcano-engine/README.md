@@ -4,14 +4,14 @@
 
 Install:
 ```
-kubectl apply -f aibrix-dependency-v0.3.0-rc.1.yaml --server-side
-kubectl apply -f aibrix-core-v0.3.0-rc.1.yaml
+kubectl apply -f aibrix-dependency-v0.3.0-rc.2.yaml --server-side
+kubectl apply -f aibrix-core-v0.3.0-rc.2.yaml
 ```
 
 Uninstall:
 ```
-kubectl delete -f aibrix-core-v0.3.0-rc.1.yaml
-kubectl delete -f aibrix-dependency-v0.3.0-rc.1.yaml
+kubectl delete -f aibrix-core-v0.3.0-rc.2.yaml
+kubectl delete -f aibrix-dependency-v0.3.0-rc.2.yaml
 ```
 
 Expose the endpoint
@@ -158,13 +158,13 @@ FROM aibrix-cn-shanghai.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-2
 # required
 ENV PIP_PROGRESS_BAR=off
 RUN wget https://test-files.pythonhosted.org/packages/f9/31/f9dbdfc77eadafaff9e882b501d0490625c113e3834891cd59d3223b747d/infinistore-0.2.42-cp312-cp312-manylinux_2_28_x86_64.whl
+
 RUN pip3 install infinistore-0.2.42-cp312-cp312-manylinux_2_28_x86_64.whl --index-url=https://mirrors.ivolces.com/pypi/simple/
+```
 
-COPY status.py /usr/local/lib/python3.12/dist-packages/aibrix_kvcache/status.py
-COPY cache_mgr.py /usr/local/lib/python3.12/dist-packages/aibrix_kvcache/cache_mgr.py
-COPY placement.py /usr/local/lib/python3.12/dist-packages/aibrix_kvcache/l2/placement/placement.py
-COPY infinistore.py /usr/local/lib/python3.12/dist-packages/aibrix_kvcache/l2/connectors/infinistore.py
-
+consider to download from TOS
+```
+./tosutil cp tos://aibrix-artifact-testing/artifacts/infinistore-0.2.42-cp312-cp312-manylinux_2_28_x86_64.whl .
 ```
 
 Launch the kv cache service.

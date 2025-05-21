@@ -103,6 +103,9 @@ const (
 	// MinimumReplicasUnavailable is added in a deployment when it doesn't have the minimum required replicas
 	// available.
 	MinimumReplicasUnavailable = "MinimumReplicasUnavailable"
+
+	// Set name label will record the rayclusterfleet name that those Pods belong to.
+	SetNameLabelKey string = "orchestration.aibrix.ai/raycluster-fleet-name"
 )
 
 // NewDeploymentCondition creates a new deployment condition.
@@ -602,26 +605,28 @@ func ListPods(deployment *orchestrationv1alpha1.RayClusterFleet, rsList []*orche
 	return owned, nil
 }
 
-// EqualIgnoreHash returns true if two given podTemplateSpec are equal, ignoring the diff in value of Labels[pod-template-hash]
-// We ignore pod-template-hash because:
+// EqualIgnoreLabels returns true if two given podTemplateSpec are equal, ignoring the diff in value of Labels[pod-template-hash] and Labels[orchestration.aibrix.ai/raycluster-fleet-name].
+// We ignore pod-template-hash and orchestration.aibrix.ai/raycluster-fleet-name, because:
 //  1. The hash result would be different upon podTemplateSpec API changes
 //     (e.g. the addition of a new field will cause the hash code to change)
-//  2. The deployment template won't have hash labels
-func EqualIgnoreHash(template1, template2 *orchestrationv1alpha1.RayClusterTemplateSpec) bool {
+//  2. The deployment template won't have hash and fleet name labels
+func EqualIgnoreLabels(template1, template2 *orchestrationv1alpha1.RayClusterTemplateSpec) bool {
 	t1Copy := template1.DeepCopy()
 	t2Copy := template2.DeepCopy()
-	// Remove hash labels from template.Labels before comparing
+	// Remove hash and fleet name labels from template.Labels before comparing
 	// Note: only head and worker templates has the pod templates.
-	delete(t1Copy.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
-	delete(t2Copy.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+	for _, key := range []string{appsv1.DefaultDeploymentUniqueLabelKey, SetNameLabelKey} {
+		delete(t1Copy.Labels, key)
+		delete(t2Copy.Labels, key)
+		delete(t1Copy.Spec.HeadGroupSpec.Template.Labels, key)
+		delete(t2Copy.Spec.HeadGroupSpec.Template.Labels, key)
+		for i := range t1Copy.Spec.WorkerGroupSpecs {
+			delete(t1Copy.Spec.WorkerGroupSpecs[i].Template.Labels, key)
 
-	delete(t1Copy.Spec.HeadGroupSpec.Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
-	delete(t2Copy.Spec.HeadGroupSpec.Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
-	for i := range t1Copy.Spec.WorkerGroupSpecs {
-		delete(t1Copy.Spec.WorkerGroupSpecs[i].Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
-	}
-	for i := range t2Copy.Spec.WorkerGroupSpecs {
-		delete(t2Copy.Spec.WorkerGroupSpecs[i].Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+		}
+		for i := range t2Copy.Spec.WorkerGroupSpecs {
+			delete(t2Copy.Spec.WorkerGroupSpecs[i].Template.Labels, key)
+		}
 	}
 	return apiequality.Semantic.DeepEqual(t1Copy, t2Copy)
 }
@@ -630,7 +635,7 @@ func EqualIgnoreHash(template1, template2 *orchestrationv1alpha1.RayClusterTempl
 func FindNewReplicaSet(fleet *orchestrationv1alpha1.RayClusterFleet, rsList []*orchestrationv1alpha1.RayClusterReplicaSet) *orchestrationv1alpha1.RayClusterReplicaSet {
 	sort.Sort(ReplicaSetsByCreationTimestamp(rsList))
 	for i := range rsList {
-		if EqualIgnoreHash(&rsList[i].Spec.Template, &fleet.Spec.Template) {
+		if EqualIgnoreLabels(&rsList[i].Spec.Template, &fleet.Spec.Template) {
 			// In rare cases, such as after cluster upgrades, Deployment may end up with
 			// having more than one new ReplicaSets that have the same template as its template,
 			// see https://github.com/kubernetes/kubernetes/issues/40415

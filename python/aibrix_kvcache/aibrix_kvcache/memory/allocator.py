@@ -12,18 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import weakref
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Callable, List, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 import torch
 from sortedcontainers import SortedDict, SortedList
 
 from ..status import Status, StatusCodes
 from .ref_counted_obj import RefCountedObj
-
-REGISTER_DESCRIPTOR_ATTR_NAME = "___register_descriptor___"
 
 
 @dataclass
@@ -79,7 +76,6 @@ class MemoryRegion(RefCountedObj):
         self.slab = slab
         self.addr = addr
         self.length = len
-        self._use_finalizer = True
 
     def __repr__(self) -> str:
         return (
@@ -111,37 +107,8 @@ class MemoryRegion(RefCountedObj):
     def data_ptr(self) -> int:
         return self.slab.data_ptr() + self.addr
 
-    def register_descriptor(self) -> Any:
-        return getattr(self.slab, REGISTER_DESCRIPTOR_ATTR_NAME, None)
-
-    @staticmethod
-    def split(
-        mr: "MemoryRegion", split_size: int
-    ) -> Tuple["MemoryRegion", ...]:
-        """Split the MR into sub MRs.
-        Note:
-            Need to delete mr after split to ensure the same memory
-            buffer has no more than two MRs referencing it.
-        Args:
-            split_size (int): size of a single sub MR
-        Returns:
-            The chunks.
-        """
-        if mr is None:
-            return mr
-
-        with mr._lock:
-            mr._use_finalizer = False
-            return tuple(
-                MemoryRegion(
-                    mr.allocator, mr.slab, mr.addr + offset, split_size
-                )
-                for offset in range(0, mr.length, split_size)
-            )
-
     def destroy_unsafe(self):
-        if self._use_finalizer:
-            self.allocator._finalize_mr(self.slab, self.addr, self.length)
+        self.allocator._finalize_mr(self.slab, self.addr, self.length)
 
     def to_tensor(
         self,
@@ -177,7 +144,7 @@ class TensorPoolAllocator:
     def __init__(
         self,
         mr_nbytes: int,
-        capacity_nbytes: int = 0,
+        capacity_nbytes: int,
         device: str = "cpu",
         pin_memory: bool = False,
     ) -> None:
@@ -205,8 +172,7 @@ class TensorPoolAllocator:
 
         # Fill slabs
         self._slabs: List[torch.Tensor] = []
-        if capacity_nbytes > 0:
-            self.increase(capacity_nbytes)
+        self._grow(capacity_nbytes)
 
     def __len__(self) -> int:
         """Return nbytes allocated by the allocator."""
@@ -223,22 +189,11 @@ class TensorPoolAllocator:
     def __str__(self) -> str:
         return self.__repr__()
 
-    def register(
-        self, register_fn: Callable[[int, int], Status[Any]]
-    ) -> Status[Any]:
-        for slab in self._slabs:
-            status = register_fn(slab.data_ptr(), slab.numel())
-            if not status.is_ok():
-                return status
-            else:
-                setattr(
-                    slab,
-                    REGISTER_DESCRIPTOR_ATTR_NAME,
-                    weakref.ref(status.value),
-                )
-        return Status.ok()
+    @property
+    def slabs(self) -> List[torch.Tensor]:
+        return self._slabs
 
-    def increase(self, size_nbytes: int) -> None:
+    def _grow(self, size_nbytes: int) -> None:
         assert size_nbytes > 0, "size_nbytes must be greater than 0"
         assert (
             size_nbytes % self.mr_nbytes == 0

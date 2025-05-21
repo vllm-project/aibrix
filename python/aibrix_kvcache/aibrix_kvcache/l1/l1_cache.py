@@ -234,8 +234,8 @@ class L1Cache(MeasurableBase):
                 return Status(
                     StatusCodes.INVALID,
                     (
-                        f"Key tensors shape {kv_tensors[0].shape} is not equal to "
-                        f"block shape {self.block_shape}."
+                        f"Key tensors shape {kv_tensors[0].shape} is not equal "
+                        f"to block shape {self.block_shape}."
                     ),
                 )
             if len(tokens) != len(kv_tensors) * self.block_ntokens:

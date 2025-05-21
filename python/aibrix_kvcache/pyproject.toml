@@ -1,6 +1,6 @@
 [project]
 name = "aibrix-kvcache"
-version = "0.1.0.post2"
+version = "0.3.0rc2.post1"
 description = "AIBrix KV Cache offloading framework for cross-engine KV reuse"
 authors = [{name = "AIBrix Team"}]
 license = "Apache-2.0"
@@ -25,7 +25,7 @@ exclude = ["tests"]
 python = ">=3.11,<3.13"
 asyncio = ">=3.4.3,<4.0.0"
 nvtx = ">=0.2.11,<0.3.0"
-torch = ">=2.6.0"
+torch = { version = ">=2.6.0", optional = true }
 rocksdict = ">=0.3.26,<0.4.0"
 msgspec = ">=0.19.0,<0.20.0"
 zstandard = ">=0.23.0,<0.24.0"
@@ -42,8 +42,13 @@ tqdm = ">=4.67.1,<5.0.0"
 cityhash = "^0.4.8"
 redis = "^6.0.0"
 fakeredis = "^2.28.1"
-infinistore = "^0.2.35"
+infinistore = { version = "^0.2.35", optional = true }
 more-itertools = "^10.7.0"
+numpy = "*"
+
+[tool.poetry.extras]
+torch = ["torch"]
+infinistore = ["infinistore"]
 
 [tool.poetry.group.dev.dependencies]
 mypy = "1.11.1"
@@ -74,6 +79,7 @@ docstring-code-format = true
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
+extend-select = ["E501"]
 ignore = [
     # star imports
     "F405", "F403",
