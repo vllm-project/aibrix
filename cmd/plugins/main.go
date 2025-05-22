@@ -42,10 +42,12 @@ import (
 
 var (
 	grpc_port int
+	metrics_port int
 )
 
 func main() {
 	flag.IntVar(&grpc_port, "port", 50052, "gRPC port")
+	flag.IntVar(&metrics_port, "metrics-port", 8080, "Metrics port")
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
 	flag.Parse()
@@ -95,15 +97,27 @@ func main() {
 		klog.Fatalf("Error on creating gateway k8s client: %v", err)
 	}
 
-	s := grpc.NewServer()
-	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(redisClient, k8sClient, gatewayK8sClient))
+	// Create a single instance of the gateway server
+	gatewayServer := gateway.NewServer(redisClient, k8sClient, gatewayK8sClient)
 
+	// Start the metrics server
+	if err := gatewayServer.StartMetricsServer(metrics_port); err != nil {
+		klog.Fatalf("Failed to start metrics server: %v", err)
+	}
+	klog.Infof("Started metrics server on port :%d", metrics_port)
+
+	// Set up the gRPC server
+	s := grpc.NewServer()
+	extProcPb.RegisterExternalProcessorServer(s, gatewayServer)
+
+	// Set up health check
 	healthCheck := health.NewServer()
 	healthPb.RegisterHealthServer(s, healthCheck)
 	healthCheck.SetServingStatus("gateway-plugin", healthPb.HealthCheckResponse_SERVING)
 
 	klog.Info("starting gRPC server on port :50052")
 
+	// Start profiling server
 	go func() {
 		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
 			klog.Fatalf("failed to setup profiling: %v", err)
