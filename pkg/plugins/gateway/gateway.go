@@ -21,10 +21,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -34,6 +36,7 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -54,6 +57,7 @@ type Server struct {
 	gatewayClient       *gatewayapi.Clientset
 	requestCountTracker map[string]int
 	cache               cache.Cache
+	metricsServer       *http.Server
 }
 
 func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient *gatewayapi.Clientset) *Server {
@@ -73,6 +77,7 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		gatewayClient:       gatewayClient,
 		requestCountTracker: map[string]int{},
 		cache:               c,
+		metricsServer:       nil,
 	}
 }
 
@@ -202,6 +207,37 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		}
 	}
 	return errors.New(strings.Join(errMsg, ", "))
+}
+
+// StartMetricsServer starts an HTTP server to expose Prometheus metrics
+func (s *Server) StartMetricsServer(port int) error {
+	// Create a new HTTP server for metrics
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+
+	// Configure the server to listen on all interfaces
+	s.metricsServer = &http.Server{
+		Addr:    fmt.Sprintf("0.0.0.0:%d", port),
+		Handler: mux,
+	}
+
+	// Start the server in a goroutine
+	go func() {
+		klog.InfoS("Starting metrics server", "port", port)
+		if err := s.metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			klog.ErrorS(err, "Failed to start metrics server")
+		}
+	}()
+
+	// Log information about available metrics
+	go func() {
+		// Log that metrics are available
+		klog.InfoS("VTC metrics are available at /metrics endpoint", 
+			"metric_name", metrics.VTCBucketSizeActive,
+			"description", metrics.GetMetricHelp(metrics.VTCBucketSizeActive))
+	}()
+
+	return nil
 }
 
 func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.ProcessingResponse, respErrorCode int,
