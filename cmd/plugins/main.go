@@ -120,9 +120,7 @@ func main() {
 	go func() {
 		sig := <-gracefulStop
 		klog.Warningf("signal received: %v, initiating graceful shutdown...", sig)
-		// Shutdown the gateway server first
 		gatewayServer.Shutdown()
-		// Then gracefully stop the gRPC server
 		s.GracefulStop()
 		os.Exit(0)
 	}()
