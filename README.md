@@ -53,7 +53,7 @@ Install stable distribution
 kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.3.0/aibrix-dependency-v0.3.0.yaml"
 
 # Install aibrix components
-kubectl app -f "https://github.com/vllm-project/aibrix/releases/download/v0.3.0/aibrix-core-v0.3.0.yaml"
+kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.3.0/aibrix-core-v0.3.0.yaml"
 ```
 
 ## Documentation
