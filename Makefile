@@ -240,23 +240,59 @@ ifndef ignore-not-found
   ignore-not-found = true
 endif
 
+# Define image variables for easier maintenance
+AIBRIX_IMAGES := aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly
+
+.PHONY: install-in-kind
 install-in-kind:
-	make docker-build-all
-	kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly
+	@echo "Building and loading AIBrix images into Kind cluster..."
+	@make docker-build-all || { echo "Error: Failed to build images"; exit 1; }
+	
+	@echo "Loading images into Kind cluster..."
+	@for img in $(AIBRIX_IMAGES); do \
+		echo "Loading $$img..."; \
+		kind load docker-image $$img || { echo "Error: Failed to load $$img"; exit 1; }; \
+	done
 
-	# Apply base configurations first
-	kubectl apply -k config/dependency --server-side
+	@echo "Applying base configurations..."
+	@kubectl apply -k config/dependency --server-side || { echo "Error: Failed to apply base configurations"; exit 1; }
+	
+	@echo "Waiting for core components to be ready..."
+	@kubectl wait --for=condition=available --timeout=120s deployment -l app=envoy-gateway -n envoy-gateway-system || echo "Warning: Timeout waiting for Envoy Gateway"
+	
+	@echo "Applying monitoring configurations..."
+	@echo "  - Applying core Prometheus configurations..."
+	@kubectl apply -k config/prometheus || { echo "Warning: Failed to apply Prometheus configurations"; }
+	@echo "  - Applying additional ServiceMonitor configurations..."
+	@kubectl apply -f observability/monitor/service_monitor_vllm.yaml || echo "Warning: Failed to apply vLLM ServiceMonitor"
+	@kubectl apply -f observability/monitor/service_monitor_gateway.yaml || echo "Warning: Failed to apply Gateway ServiceMonitor"
+	@kubectl apply -f observability/monitor/envoy_metrics_service.yaml || echo "Warning: Failed to apply Envoy metrics service"
 
-	# Apply monitoring configurations
-	kubectl apply -k config/prometheus
-	kubectl apply -f observability/monitor/service_monitor_controller_manager.yaml
-	kubectl apply -f observability/monitor/envoy_metrics_service.yaml
-	kubectl apply -f observability/monitor/service_monitor_gateway_plugin.yaml
-	kubectl apply -f observability/monitor/service_monitor_vllm.yaml
+	@echo "Applying test configurations..."
+	@kubectl apply -k config/test || { echo "Warning: Failed to apply test configurations"; }
+	
+	@echo "AIBrix installation in Kind complete!"
 
-	# Apply test configurations last
-	kubectl apply -k config/test
+.PHONY: uninstall-from-kind
+uninstall-from-kind:
+	@echo "Uninstalling AIBrix from Kind cluster..."
+	
+	@echo "Removing test configurations..."
+	@kubectl delete -k config/test --ignore-not-found=true || echo "Warning: Issue removing test configurations"
 
+	@echo "Removing monitoring configurations..."
+	@echo "  - Removing additional ServiceMonitor configurations..."
+	@kubectl delete -f observability/monitor/service_monitor_vllm.yaml --ignore-not-found=true || echo "Warning: Issue removing vLLM ServiceMonitor"
+	@kubectl delete -f observability/monitor/service_monitor_gateway.yaml --ignore-not-found=true || echo "Warning: Issue removing Gateway ServiceMonitor"
+	@kubectl delete -f observability/monitor/envoy_metrics_service.yaml --ignore-not-found=true || echo "Warning: Issue removing Envoy metrics service"
+	@echo "  - Removing core Prometheus configurations..."
+	@kubectl delete -k config/prometheus --ignore-not-found=true || echo "Warning: Issue removing Prometheus configurations"
+
+	@echo "Removing base configurations..."
+	@kubectl delete -k config/dependency --ignore-not-found=true --server-side || echo "Warning: Issue removing base configurations"
+	
+	@echo "AIBrix uninstallation from Kind complete!"
+	
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
     ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization
