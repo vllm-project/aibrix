@@ -37,15 +37,16 @@ func TestBuildModelAdapterEndpointSlice(t *testing.T) {
 		},
 	}
 
-	// Mock input for Pod
-	pod := &corev1.Pod{
+	// Mock input for Pods
+	pod := corev1.Pod{
 		Status: corev1.PodStatus{
 			PodIP: "192.168.1.1",
 		},
 	}
+	pods := []corev1.Pod{pod}
 
 	// Call the function to test
-	endpointSlice := buildModelAdapterEndpointSlice(instance, pod)
+	endpointSlice := buildModelAdapterEndpointSlice(instance, pods)
 
 	// Check EndpointSlice metadata
 	assert.Equal(t, "test-instance", endpointSlice.Name)
