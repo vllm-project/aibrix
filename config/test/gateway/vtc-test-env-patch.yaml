@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: aibrix-gateway-plugins
+  namespace: aibrix-system
 spec:
   template:
     spec:

@@ -236,6 +236,65 @@ ifndef ignore-not-found
   ignore-not-found = true
 endif
 
+# Define image variables for easier maintenance
+AIBRIX_IMAGES := aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly
+
+.PHONY: dev-install-in-kind
+dev-install-in-kind: docker-build-all install
+	@echo "Loading images into Kind cluster..."
+	@for img in $(AIBRIX_IMAGES); do \
+		echo "Loading $$img..."; \
+		kind load docker-image $$img || { echo "Error: Failed to load $$img"; exit 1; }; \
+	done
+	
+	@echo "Waiting for core components to be ready..."
+	@$(KUBECTL) wait --for=condition=available --timeout=120s deployment -l app=envoy-gateway -n envoy-gateway-system || echo "Warning: Timeout waiting for Envoy Gateway"
+	
+	@echo "Applying monitoring configurations..."
+	@echo "  - Applying core Prometheus configurations..."
+	@$(KUBECTL) apply -k config/prometheus || { echo "Warning: Failed to apply Prometheus configurations"; }
+	@echo "  - Applying additional ServiceMonitor configurations..."
+	@$(KUBECTL) apply -f observability/monitor/service_monitor_vllm.yaml || echo "Warning: Failed to apply vLLM ServiceMonitor"
+	@$(KUBECTL) apply -f observability/monitor/service_monitor_gateway.yaml || echo "Warning: Failed to apply Gateway ServiceMonitor"
+	@$(KUBECTL) apply -f observability/monitor/envoy_metrics_service.yaml || echo "Warning: Failed to apply Envoy metrics service"
+
+	@echo "Applying test configurations..."
+	@$(KUBECTL) apply -k config/test || { echo "Warning: Failed to apply test configurations"; }
+	
+	@echo "Building and loading vLLM mock..."
+	@cd development/app && \
+	docker build -t aibrix/vllm-mock:nightly -f Dockerfile . && \
+	kind load docker-image aibrix/vllm-mock:nightly && \
+	$(KUBECTL) apply -k config/mock && \
+	cd ../..
+	
+	@echo "AIBrix installation in Kind complete!"
+
+.PHONY: dev-uninstall-from-kind
+dev-uninstall-from-kind:
+	@echo "Uninstalling AIBrix from Kind cluster..."
+	
+	@echo "Removing test configurations..."
+	@$(KUBECTL) delete -k config/test --ignore-not-found=true || echo "Warning: Issue removing test configurations"
+	
+	@echo "Removing vLLM mock..."
+	@cd development/app && \
+	$(KUBECTL) delete -k config/mock --ignore-not-found=true || echo "Warning: Issue removing vLLM mock" && \
+	cd ../..
+
+	@echo "Removing monitoring configurations..."
+	@echo "  - Removing additional ServiceMonitor configurations..."
+	@$(KUBECTL) delete -f observability/monitor/service_monitor_vllm.yaml --ignore-not-found=true || echo "Warning: Issue removing vLLM ServiceMonitor"
+	@$(KUBECTL) delete -f observability/monitor/service_monitor_gateway.yaml --ignore-not-found=true || echo "Warning: Issue removing Gateway ServiceMonitor"
+	@$(KUBECTL) delete -f observability/monitor/envoy_metrics_service.yaml --ignore-not-found=true || echo "Warning: Issue removing Envoy metrics service"
+	@echo "  - Removing core Prometheus configurations..."
+	@$(KUBECTL) delete -k config/prometheus --ignore-not-found=true || echo "Warning: Issue removing Prometheus configurations"
+
+	@echo "Removing base configurations with uninstall target..."
+	@$(MAKE) uninstall ignore-not-found=true
+	
+	@echo "AIBrix uninstallation from Kind complete!"
+	
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
     ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization
