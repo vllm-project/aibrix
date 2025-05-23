@@ -217,13 +217,6 @@ func (s *Server) StartMetricsServer(addr string) error {
 		return fmt.Errorf("failed to start metrics server: %v", err)
 	}
 
-	// Log information about available VTC metrics
-	go func() {
-		klog.InfoS("VTC metrics are available at /metrics endpoint",
-			"metric_name", metrics.VTCBucketSizeActive,
-			"description", metrics.GetMetricHelp(metrics.VTCBucketSizeActive))
-	}()
-
 	return nil
 }
 
