@@ -16,6 +16,7 @@ spec:
     metadata:
       labels:
         model.aibrix.ai/name: qwen-coder-1-5b-instruct
+        adapter.model.aibrix.ai/enabled: "true"
     spec:
       containers:
         - command:
