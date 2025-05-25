@@ -65,11 +65,37 @@ if [ -n "$INSTALL_AIBRIX" ]; then
   kubectl apply -k config/mock
   cd ../..
 
-  kubectl port-forward svc/llama2-7b 8000:8000 &
-  kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 &
-  kubectl -n aibrix-system port-forward service/aibrix-redis-master 6379:6379 &
+  trap cleanup EXIT
+fi
 
-  function cleanup {
+# Function to kill existing port-forward processes
+kill_existing_port_forwards() {
+  if [ -f /tmp/aibrix-port-forwards.pid ]; then
+    echo "Killing existing port-forward processes..."
+    while read pid; do
+      if ps -p $pid > /dev/null; then
+        kill $pid 2>/dev/null || true
+      fi
+    done < /tmp/aibrix-port-forwards.pid
+    rm -f /tmp/aibrix-port-forwards.pid
+  fi
+}
+
+# Start port forwarding and store PIDs
+start_port_forwards() {
+  # Kill any existing port-forwards first
+  kill_existing_port_forwards
+
+  # Start new port-forwards and store PIDs
+  echo "Starting port-forwarding..."
+  kubectl port-forward svc/llama2-7b 8000:8000 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
+  kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
+  kubectl -n aibrix-system port-forward service/aibrix-redis-master 6379:6379 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
+}
+
+# Update cleanup function to handle port-forward processes
+function cleanup {
+  if [ -n "$INSTALL_AIBRIX" ]; then
     echo "Cleaning up..."
     # clean up env at end
     kubectl delete --ignore-not-found=true -k config/test
@@ -77,10 +103,13 @@ if [ -n "$INSTALL_AIBRIX" ]; then
     cd development/app
     kubectl delete -k config/mock
     cd ../..
-  }
+  else
+    echo "Skipping cleanup as INSTALL_AIBRIX is not set"
+  fi
+}
 
-  trap cleanup EXIT
-fi
+# Set up trap to run cleanup on script exit
+trap 'cleanup' EXIT
 
 collect_logs() {
   echo "Collecting pods and logs"
@@ -92,6 +121,39 @@ collect_logs() {
   done
 }
 
-trap "collect_logs" ERR
+# Function to ensure gotestsum is available
+ensure_gotestsum() {
+  if ! command -v gotestsum &> /dev/null; then
+    echo "Installing gotestsum..."
+    go install gotest.tools/gotestsum@latest
+    # Add GOPATH/bin to PATH if it's not already there
+    if [[ ":$PATH:" != *":$HOME/go/bin:"* ]]; then
+      export PATH="$HOME/go/bin:$PATH"
+    fi
+    # Verify installation
+    if ! command -v gotestsum &> /dev/null; then
+      echo "Error: gotestsum installation failed or not found in PATH"
+      exit 1
+    fi
+  fi
+}
 
-go test ./test/e2e/ -v -timeout 0
+# Start port forwarding before running tests
+start_port_forwards
+
+# Ensure gotestsum is available
+ensure_gotestsum
+
+# Run tests using gotestsum
+echo "Running e2e tests..."
+gotestsum --format testname -- ./test/e2e/...
+TEST_EXIT_CODE=$?
+
+# Set up trap to collect logs and then print test report
+collect_logs ERR
+
+# Kill port-forward processes
+kill_existing_port_forwards
+
+# Exit with the test's exit code
+exit $TEST_EXIT_CODE
