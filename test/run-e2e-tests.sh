@@ -150,7 +150,7 @@ gotestsum --format testname -- ./test/e2e/...
 TEST_EXIT_CODE=$?
 
 # Set up trap to collect logs and then print test report
-collect_logs ERR
+trap 'collect_logs' ERR
 
 # Kill port-forward processes
 kill_existing_port_forwards
