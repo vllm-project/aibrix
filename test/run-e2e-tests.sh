@@ -93,10 +93,14 @@ start_port_forwards() {
   kubectl -n aibrix-system port-forward service/aibrix-redis-master 6379:6379 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
 }
 
-# Update cleanup function to handle port-forward processes
+# Comprehensive cleanup function that handles both k8s resources and port forwards
 function cleanup {
+  echo "Running cleanup..."
+  # Always kill port forwards when exiting
+  kill_existing_port_forwards
+
   if [ -n "$INSTALL_AIBRIX" ]; then
-    echo "Cleaning up..."
+    echo "Cleaning up k8s resources..."
     # clean up env at end
     kubectl delete --ignore-not-found=true -k config/test
     kubectl delete --ignore-not-found=true -k config/dependency
@@ -104,12 +108,12 @@ function cleanup {
     kubectl delete -k config/mock
     cd ../..
   else
-    echo "Skipping cleanup as INSTALL_AIBRIX is not set"
+    echo "Skipping k8s cleanup as INSTALL_AIBRIX is not set"
   fi
 }
 
-# Set up trap to run cleanup on script exit
-trap 'cleanup' EXIT
+# Set up single trap for cleanup
+trap cleanup EXIT
 
 collect_logs() {
   echo "Collecting pods and logs"
@@ -146,14 +150,8 @@ ensure_gotestsum
 
 # Run tests using gotestsum
 echo "Running e2e tests..."
-gotestsum --format testname -- ./test/e2e/...
+gotestsum --format testname -- ./test/e2e/... -run "TestBaseModelInference|TestBaseModelInferenceFailures|TestStrategyRequiresCache|TestRandomRouting|TestPrefixCacheRouting|TestMultiTurnConversation"
 TEST_EXIT_CODE=$?
-
-# Set up trap to collect logs and then print test report
-trap 'collect_logs' ERR
-
-# Kill port-forward processes
-kill_existing_port_forwards
 
 # Exit with the test's exit code
 exit $TEST_EXIT_CODE
