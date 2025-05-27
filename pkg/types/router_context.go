@@ -23,10 +23,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
-
-const podMetricPort = "8000"
 
 var nilPod = &v1.Pod{}
 
@@ -93,7 +92,7 @@ func (r *RoutingContext) HasRouted() bool {
 }
 
 func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
-	return fmt.Sprintf("%v:%v", pod.Status.PodIP, podMetricPort)
+	return fmt.Sprintf("%v:%v", pod.Status.PodIP, utils.GetModelPortForPod(pod))
 }
 
 func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model string, message string, requestID string, user *string) {
