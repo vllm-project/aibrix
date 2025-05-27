@@ -103,7 +103,7 @@ func TestModePortForPod(t *testing.T) {
 			expectedPort: 9000,
 		},
 		{
-			message: "read port from pod labels",
+			message: "return default port if not configured in pod labels",
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "p1",
