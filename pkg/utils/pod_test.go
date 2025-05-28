@@ -103,11 +103,32 @@ func TestModePortForPod(t *testing.T) {
 			expectedPort: 9000,
 		},
 		{
+			message: "incorrect model port label value",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "p1",
+					Labels: map[string]string{
+						"model.aibrix.ai/port": "port",
+					},
+				},
+			},
+			expectedPort: 8000,
+		},
+		{
 			message: "return default port if not configured in pod labels",
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "p1",
 					Labels: map[string]string{},
+				},
+			},
+			expectedPort: 8000,
+		},
+		{
+			message: "return default port if no label is present",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "p1",
 				},
 			},
 			expectedPort: 8000,
