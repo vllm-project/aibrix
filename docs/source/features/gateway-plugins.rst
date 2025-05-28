@@ -166,7 +166,7 @@ Rate Limiting
 -------------
 
 The gateway supports rate limiting based on the `user` header. You can specify a unique identifier for each `user` to apply rate limits such as requests per minute (RPM) or tokens per minute (TPM).
-This `user` header is essential for enabling rate limit support for each client.
+This `user` header is essential for enabling rate limit support for each client. How to manage users in aibrix? Please refer to [UserManagement](https://github.com/vllm-project/aibrix/blob/main/pkg/metadata/README.md)
 
 To set up rate limiting, add the user header in the request, like this:
 
