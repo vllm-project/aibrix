@@ -86,6 +86,10 @@ func (r *RoutingContext) Delete() {
 	requestPool.Put(r)
 }
 
+func (r *RoutingContext) Elapsed(currentTime time.Time) time.Duration {
+	return currentTime.Sub(r.RequestTime)
+}
+
 func (r *RoutingContext) PromptTokens() ([]int, error) {
 	if r.tokens == nil {
 		var err error

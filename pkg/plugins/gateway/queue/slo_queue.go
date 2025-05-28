@@ -33,20 +33,48 @@ import (
 )
 
 const (
-	monogenousGPURouting  bool = false
-	initialTotalSubQueues int  = 8  // Expect no more than 8 subqueues
-	initialSubQueueSize   int  = 64 // Support maximum 128 pending request per sub-queue within one expansion.
+	fifoOnNonSLOViolation    bool = false
+	queueOverallSLO          bool = false
+	monogenousGPURouting     bool = true
+	monogenousGPURoutingOnly bool = monogenousGPURouting && false
+	initialTotalSubQueues    int  = 8  // Expect no more than 8 subqueues
+	initialSubQueueSize      int  = 64 // Support maximum 128 pending request per sub-queue within one expansion.
 )
 
 var (
 	errNoSLO = errors.New("no SLO available")
 )
 
+type candidateProfiles struct {
+	Rank float64 // Rank of this profile
+	Key  string  // Key of this profile
+}
+
 type candidateRouterRequest struct {
 	*types.RoutingContext
-	SubKey     string
-	ProfileKey string
-	Rank       float64
+	SubKey   string
+	Profiles []*candidateProfiles
+}
+
+func (crr *candidateRouterRequest) resetProfiles() {
+	crr.Profiles = crr.Profiles[:0]
+}
+
+func (crr *candidateRouterRequest) nextProfile() *candidateProfiles {
+	if len(crr.Profiles) < cap(crr.Profiles) {
+		crr.Profiles = crr.Profiles[:len(crr.Profiles)+1]
+	} else {
+		crr.Profiles = append(crr.Profiles, &candidateProfiles{})
+	}
+
+	ret := crr.Profiles[len(crr.Profiles)-1]
+	if ret == nil {
+		ret = &candidateProfiles{}
+		crr.Profiles[len(crr.Profiles)-1] = ret
+	}
+	ret.Rank = 0.0
+	ret.Key = ""
+	return ret
 }
 
 type SLOQueue struct {
@@ -146,7 +174,6 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		// Update ealiest candidate
 		q.dequeueCandidates[0].RoutingContext = subReq
 		q.dequeueCandidates[0].SubKey = key
-		q.dequeueCandidates[0].ProfileKey = ""
 		return true
 	}
 	q.subs.Range(func(key string, sub types.RouterQueue[*types.RoutingContext]) bool {
@@ -165,30 +192,43 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 			q.validateDequeueCandidatesLocked(idx + 1)
 			q.dequeueCandidates = q.dequeueCandidates[:idx+1]
 			// Reset values
-			q.dequeueCandidates[idx].RoutingContext = r
-			q.dequeueCandidates[idx].SubKey = key
-			q.dequeueCandidates[idx].ProfileKey = ""
+			candidate := q.dequeueCandidates[idx]
+			candidate.RoutingContext = r
+			candidate.SubKey = key
+			candidate.resetProfiles()
 			// Use a relaxer SLO
-			for i, profile := range deploymentProfiles {
+			var rank float64
+			var rankErr error
+			for _, profile := range deploymentProfiles {
 				// Skip deployments with no profile
 				if profile == nil {
 					continue
 				}
-				rank, rankErr := q.rank(currentTime, r, profile)
-				// Fallback case 2: Profile does not provide SLO info.
+				// Calculate rank
+				if queueOverallSLO {
+					rank, rankErr = q.queueRank(currentTime, r, sub, profile)
+				} else {
+					rank, rankErr = q.rank(currentTime, r, profile)
+				}
 				if rankErr != nil {
 					err = rankErr
-					klog.Warningf("SLOQueue failed to get SLO info for request %s with profile %s: %v, fallback to FIFO queue", r.RequestID, profile.Deployment, rankErr)
-					return fbRet
+					klog.Warningf("SLOQueue failed to get SLO info for request %s with profile %s: %v, skip.", r.RequestID, profile.Deployment, rankErr)
+					continue
 				}
-				// if q.queueOverallSLO {
-				// 	rank = q.queueRank(currentTime, &q.Subs[i], j)
-				// }
-				if len(q.dequeueCandidates[idx].ProfileKey) == 0 || q.higherRank(rank, q.dequeueCandidates[idx].Rank) < 0 {
-					q.dequeueCandidates[idx].ProfileKey = deployments[i]
-					q.dequeueCandidates[idx].Rank = rank
-				}
+				cp := candidate.nextProfile()
+				cp.Rank = rank
+				cp.Key = profile.Deployment
 			}
+			// Fallback case 2: Profile does not provide SLO info.
+			if len(candidate.Profiles) == 0 {
+				// No available profiles, skip this subqueue.
+				klog.Warningf("SLOQueue failed to get SLO info for request %s in all profiles, fallback to FIFO queue.", r.RequestID)
+				return fbRet
+			}
+			// Sort by rank ascendingly, so the first one contains lowest rank.
+			sort.Slice(candidate.Profiles, func(i, j int) bool {
+				return q.higherRank(candidate.Profiles[i].Rank, candidate.Profiles[j].Rank) < 0
+			})
 		}
 		return true
 	})
@@ -210,11 +250,11 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 
 	// Sort by rank
 	sort.Slice(dequeueCandidates, func(i, j int) bool {
-		// Keep original order for no slo violation
-		if dequeueCandidates[i].Rank < 0 && dequeueCandidates[j].Rank < 0 {
+		// Keep original order for no slo violation if fifoOnNonSLOViolation enabled.
+		if fifoOnNonSLOViolation && dequeueCandidates[i].Profiles[0].Rank < 0 && dequeueCandidates[j].Profiles[0].Rank < 0 {
 			return dequeueCandidates[i].RoutingContext.RequestTime.Before(dequeueCandidates[j].RoutingContext.RequestTime)
 		} else {
-			return q.higherRank(dequeueCandidates[i].Rank, dequeueCandidates[j].Rank) > 0
+			return q.higherRank(dequeueCandidates[i].Profiles[0].Rank, dequeueCandidates[j].Profiles[0].Rank) > 0
 		}
 	})
 
@@ -222,7 +262,18 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 	for _, candidate := range dequeueCandidates {
 		if monogenousGPURouting {
 			//nolint:errcheck
-			q.Router.Route(candidate.RoutingContext, &utils.PodArray{Pods: pods.ListByIndex(candidate.ProfileKey)})
+			for i, profile := range candidate.Profiles {
+				// Always route the most relaxing profile (the first) and stop if the profile can lead to SLO violation.
+				if i > 0 && profile.Rank > 0 {
+					break
+				}
+				// Try routing.
+				q.Router.Route(candidate.RoutingContext, &utils.PodArray{Pods: pods.ListByIndex(profile.Key)})
+				// If monogenousGPURoutingOnly is enabled, only the most relaxing profile is considered.
+				if monogenousGPURoutingOnly || candidate.RoutingContext.HasRouted() {
+					break
+				}
+			}
 		} else {
 			//nolint:errcheck
 			q.Router.Route(candidate.RoutingContext, pods)
@@ -284,7 +335,11 @@ func (q *SLOQueue) expandDequeueCandidatesLocked(limit int) {
 		copy(candidates, dequeueCandidates)
 	}
 	for i := len(dequeueCandidates); i < len(candidates); i++ {
-		candidates[i] = &candidateRouterRequest{}
+		profiles := make([]*candidateProfiles, 10)
+		for j := 0; j < len(profiles); j++ {
+			profiles[j] = &candidateProfiles{}
+		}
+		candidates[i] = &candidateRouterRequest{Profiles: profiles} // Arbitrarily initialize capacity to 10.
 	}
 	q.dequeueCandidates = candidates[:len(q.dequeueCandidates)]
 }
@@ -297,90 +352,95 @@ func (q *SLOQueue) featuresKey(features types.RequestFeatures) string {
 }
 
 func (q *SLOQueue) rank(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile) (rank float64, err error) {
+	_, expected, target, err := q.rankImpl(currentTime, req, profile)
+	if err != nil {
+		return 0.0, err
+	}
+	// Expecting SLO violation if waited + expected - target > 0.
+	return req.Elapsed(currentTime).Seconds() + expected - target, nil
+}
+
+func (q *SLOQueue) queueRank(currentTime time.Time, headReq *types.RoutingContext, sub types.RouterQueue[*types.RoutingContext], profile *cache.ModelGPUProfile) (rank float64, err error) {
+	signature, headServingTime, target, err := q.rankImpl(currentTime, headReq, profile)
+	if err != nil {
+		return 0.0, err
+	}
+
+	throughput, err := profile.ThroughputRPS(signature...)
+	if err != nil {
+		return 0.0, err
+	}
+
+	queueServiceTime := float64(sub.Len()-1) / throughput
+	// Expecting SLO violation if waited + head serving time + queue serving time(excluding the head) - target > 0.
+	return headReq.Elapsed(currentTime).Seconds() + headServingTime + queueServiceTime - target, nil
+}
+
+func (q *SLOQueue) rankImpl(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile) (signature []int, expected float64, target float64, err error) {
 	features, err := req.Features() // Since req are in the queue, Features() must be called before without an error.
 	if err != nil {
-		return 0.0, err
+		return nil, 0.0, 0.0, err
 	}
-	signature, err := profile.GetSignature(features...)
+	signature, err = profile.GetSignature(features...)
 	if err != nil {
-		return 0.0, err
+		return
 	}
+
 	if profile.SLOs.TPOT > 0.0 {
-		return q.rankTPOT(currentTime, req, profile, signature)
+		expected, target, err = q.rankImplTPOT(currentTime, req, profile, signature)
 	} else if profile.SLOs.TTFT > 0.0 {
-		return q.rankTTFT(currentTime, req, profile, signature)
+		expected, target, err = q.rankImplTTFT(currentTime, req, profile, signature)
 	} else if profile.SLOs.TPAT > 0.0 {
-		return q.rankTPAT(currentTime, req, profile, signature)
+		expected, target, err = q.rankImplTPAT(currentTime, req, profile, signature)
 	} else if profile.SLOs.E2E > 0.0 {
-		return q.rankE2E(currentTime, req, profile, signature)
+		expected, target, err = q.rankImplE2E(currentTime, req, profile, signature)
 	} else {
-		return 0.0, errNoSLO
+		err = errNoSLO
 	}
+	return
 }
 
-func (q *SLOQueue) rankE2E(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
-	target := profile.SLOs.E2E // TODO: We should make SLO.E2E always available
-	expected, err := profile.LatencySeconds(signature...)
-	if err != nil {
-		return 0.0, err
-	}
-	return float64(currentTime.Sub(req.RequestTime))/float64(time.Second) + expected - target, nil
+func (q *SLOQueue) rankImplE2E(_ time.Time, _ *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (expected float64, target float64, err error) {
+	target = profile.SLOs.E2E // TODO: We should make SLO.E2E always available
+	expected, err = profile.LatencySeconds(signature...)
+	return
 }
 
-func (q *SLOQueue) rankTPAT(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
+// TPAT is simply the normalized E2E latency with regard of the total number of tokens.
+func (q *SLOQueue) rankImplTPAT(_ time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (expected float64, target float64, err error) {
 	prompts, err := req.PromptLength()
 	if err != nil {
 		// unlikely, we should not reach here.
-		return 0.0, err
+		return 0.0, 0.0, err
 	}
 	tokens, err := req.TokenLength()
 	if err != nil {
 		// unlikely, we should not reach here.
-		return 0.0, err
+		return 0.0, 0.0, err
 	}
-	target := profile.SLOs.TPAT * float64(prompts+tokens)
-	expected, err := profile.LatencySeconds(signature...)
-	if err != nil {
-		return 0.0, err
-	}
-	return float64(currentTime.Sub(req.RequestTime))/float64(time.Second) + expected - target, nil
+	target = profile.SLOs.TPAT * float64(prompts+tokens)
+	expected, err = profile.LatencySeconds(signature...)
+	return
 }
 
-func (q *SLOQueue) rankTTFT(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
-	target := profile.SLOs.TTFT
-	expected, err := profile.TTFTSeconds(signature...)
-	if err != nil {
-		return 0.0, err
-	}
-	return float64(currentTime.Sub(req.RequestTime))/float64(time.Second) + expected - target, nil
+func (q *SLOQueue) rankImplTTFT(_ time.Time, _ *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (expected float64, target float64, err error) {
+	target = profile.SLOs.TTFT
+	expected, err = profile.TTFTSeconds(signature...)
+	return
 }
 
-func (q *SLOQueue) rankTPOT(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
+func (q *SLOQueue) rankImplTPOT(_ time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (expected float64, target float64, err error) {
 	tokens, err := req.TokenLength()
 	if err != nil {
 		// unlikely, we should not reach here.
-		return 0.0, err
+		return 0.0, 0.0, err
 	}
-	target := profile.SLOs.TPOT*float64(tokens) + profile.SLOs.TTFT // TTFT is optional if the workload is decoding dominant.
+	target = profile.SLOs.TPOT*float64(tokens) + profile.SLOs.TTFT // TTFT is optional if the workload is decoding dominant.
 	// Since profile metrics only include mean values, the assumption here is mean(e2e) = mean(ttft) + mean(tpot) * tokens
 	// In the case that the workload is decoding dominant, mean(e2e) = mean(tpot) * tokens, while mean(ttft) is ignorable.
-	expected, err := profile.LatencySeconds(signature...)
-	if err != nil {
-		return 0.0, err
-	}
-	return float64(currentTime.Sub(req.RequestTime))/float64(time.Second) + expected - target, nil
+	expected, err = profile.LatencySeconds(signature...)
+	return
 }
-
-// func (q *SLOQueue) queueRank(currentTime float64, sub *SimpleQueue, profileIdx int) float64 {
-// 	firstRouterRequest := sub.Queue[0]
-// 	waitTime := currentTime - firstRouterRequest.ArrivalTime
-// 	serviceTime := firstRouterRequest.ServiceTime(profileIdx)
-// 	if q.useProfileServiceTime {
-// 		serviceTime = fixed(q.providers[firstRouterRequest.ProducerID].Profiles[profileIdx].Mu) // Simulate that accurate service time is unknown.
-// 	}
-// 	queueServiceTime := float64(len(sub.Queue)) / q.providers[firstRouterRequest.ProducerID].Profiles[profileIdx].ULambda
-// 	return waitTime + math.Max(serviceTime, queueServiceTime) - q.providers[firstRouterRequest.ProducerID].SLO
-// }
 
 func (q *SLOQueue) higherRank(rank1 float64, rank2 float64) float64 {
 	return rank1 - rank2
