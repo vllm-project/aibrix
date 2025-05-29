@@ -53,6 +53,5 @@ benchmarks/*.sh
 development/simulator/simulator_output
 development/simulator/cache
 
-.VTC-artifact/
-benchmarks/scenarios/.venkat-vtc-bench/
+
 .*.pid
