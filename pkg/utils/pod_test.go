@@ -136,7 +136,6 @@ func TestModePortForPod(t *testing.T) {
 	}
 
 	for _, tt := range testcases {
-
-		assert.Equal(t, tt.expectedPort, GetModelPortForPod(tt.pod), tt.message)
+		assert.Equal(t, tt.expectedPort, GetModelPortForPod("1", tt.pod), tt.message)
 	}
 }

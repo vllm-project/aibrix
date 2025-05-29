@@ -242,9 +242,18 @@ func SelectRandomPod(pods []*v1.Pod, randomFn func(int) int) (*v1.Pod, error) {
 	return randomPod, nil
 }
 
-func GetModelPortForPod(pod *v1.Pod) int64 {
-	modelPort, err := strconv.ParseInt(pod.Labels[modelPortIdentifier], 10, 32)
+func GetModelPortForPod(requestID string, pod *v1.Pod) int64 {
+	value, ok := pod.Labels[modelPortIdentifier]
+	if !ok {
+		klog.Warningf("requestID: %v, pod: %v is missing port identifier label: %v, hence default to port: %v",
+			requestID, pod.Name, modelPortIdentifier, defaultPodMetricPort)
+		return defaultPodMetricPort
+	}
+
+	modelPort, err := strconv.ParseInt(value, 10, 32)
 	if err != nil {
+		klog.Warningf("requestID: %v, pod: %v has incorrect value: %v for port identifier label: %v, hence default to port: %v",
+			requestID, pod.Name, value, modelPortIdentifier, defaultPodMetricPort)
 		modelPort = defaultPodMetricPort
 	}
 	return modelPort
