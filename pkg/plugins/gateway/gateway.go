@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
+	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/vllm-project/aibrix/pkg/cache"
@@ -213,8 +214,17 @@ func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.Pr
 		errMsg = httprouteErr.Error()
 	}
 	klog.ErrorS(nil, "request end", "requestID", requestID, "errorCode", respErrorCode, "errorMessage", errMsg)
+	
+	// Safely extract headers from response if available
+	var headers []*configPb.HeaderValueOption
+	if resp != nil && resp.GetResponseHeaders() != nil && 
+		resp.GetResponseHeaders().GetResponse() != nil && 
+		resp.GetResponseHeaders().GetResponse().GetHeaderMutation() != nil {
+		headers = resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
+	}
+	
 	return generateErrorResponse(
 		envoyTypePb.StatusCode(respErrorCode),
-		resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders(),
+		headers,
 		errMsg)
 }
