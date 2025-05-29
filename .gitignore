@@ -55,3 +55,4 @@ development/simulator/cache
 
 .VTC-artifact/
 benchmarks/scenarios/.venkat-vtc-bench/
+.*.pid
