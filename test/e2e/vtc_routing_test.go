@@ -50,7 +50,9 @@ const (
 
 var (
 	largeMessage = strings.Repeat("This is a large message with many tokens. ", 15)
-	hugeMessage  = strings.Repeat("This is a very large message with lots of tokens for testing the VTC algorithm behavior with high token counts. ", 8)
+	hugeMessage  = strings.Repeat(
+		"This is a very large message with lots of tokens for testing the VTC algorithm behavior with high token counts. ",
+		8)
 )
 
 var testUsers = []utils.User{
@@ -75,7 +77,9 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	if redisClient != nil {
-		redisClient.Close()
+		if err := redisClient.Close(); err != nil {
+			fmt.Printf("Error closing Redis client: %v\n", err)
+		}
 	}
 
 	os.Exit(code)
@@ -457,7 +461,11 @@ func convertToHistogram(podAssignments map[string]string) map[string]int {
 	return histogram
 }
 
-func calculateDistributionStats(t *testing.T, phaseName string, histogram map[string]int) (float64, DistributionQuality) {
+func calculateDistributionStats(
+	t *testing.T,
+	phaseName string,
+	histogram map[string]int,
+) (float64, DistributionQuality) {
 	if len(histogram) == 0 {
 		t.Logf("[Distribution] %s: No data available", phaseName)
 		return 0, PoorDistribution
