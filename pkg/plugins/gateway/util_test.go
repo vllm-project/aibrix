@@ -103,6 +103,30 @@ func Test_ValidateRequestBody(t *testing.T) {
 			messages:    "this is system say this is test",
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
+		{
+			message:     "/v1/chat/completions with array content format",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}, {"type": "text", "text": "world"}]}]}`),
+			model:       "llama2-7b",
+			messages:    "Hello world",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions with mixed content formats",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "You are helpful"}, {"role": "user", "content": [{"type": "text", "text": "Hello"}]}]}`),
+			model:       "llama2-7b",
+			messages:    "You are helpful Hello",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions with mixed content types (text and image)",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "user", "content": [{"type": "text", "text": "What is this?"}, {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}}]}]}`),
+			model:       "llama2-7b",
+			messages:    "What is this?", // Only text content is extracted
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
 	}
 
 	for _, tt := range testCases {
