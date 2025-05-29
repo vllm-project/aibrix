@@ -81,9 +81,12 @@ def new_deployment(deployment):
             min_replicas = int(label)
 
     return DeploymentStates(
-        deployment.metadata.name,
-        deployment.spec.replicas if deployment.spec.replicas is not None else 0,
-        min_replicas,
+        name=deployment.metadata.name,
+        namespace=deployment.metadate.namespace,
+        replicas=deployment.spec.replicas
+        if deployment.spec.replicas is not None
+        else 0,
+        min_replicas=min_replicas,
     )
 
 
@@ -101,7 +104,7 @@ def start_serving_thread(watch_ver, deployment, watch_event: bool) -> bool:
             watch_ver, deployment_name, namespace, lambda: new_deployment(deployment)
         )
         logger.info(
-            f'Deployment "{deployment_name}" found in watch version {watch_ver}, added to the model monitor for "{model_name}"'
+            f'Deployment "{namespace}/{deployment_name}" found in watch version {watch_ver}, added to the model monitor for "{model_name}"'
         )
         return False
 
@@ -120,11 +123,11 @@ def start_serving_thread(watch_ver, deployment, watch_event: bool) -> bool:
     model_monitors[model_name] = model_monitor
     if watch_event:
         logger.info(
-            f'New model monitor started for "{model_name}". Deployment "{deployment_name}" added.'
+            f'New model monitor started for "{model_name}". Deployment "{namespace}/{deployment_name}" added.'
         )
     else:
         logger.info(
-            f'Model monitor started for existed "{model_name}". Deployment "{deployment_name}" added.'
+            f'Model monitor started for existed "{model_name}". Deployment "{namespace}/{deployment_name}" added.'
         )
     return True
 
@@ -137,7 +140,7 @@ def update_deployment(watch_ver, deployment):
     namespace = deployment.metadata.namespace
     if model_monitor is None:
         logger.warning(
-            f'Updating "{deployment_name}" in the model monitor, but "{model_name}" has not monitored.'
+            f'Updating "{namespace}/{deployment_name}" in the model monitor, but "{model_name}" has not monitored.'
         )
         return
 
@@ -145,7 +148,7 @@ def update_deployment(watch_ver, deployment):
         watch_ver, deployment_name, namespace, lambda: new_deployment(deployment)
     ):
         logger.info(
-            f'Updated "{deployment_name}" in the model monitor for "{model_name}".'
+            f'Updated "{namespace}/{deployment_name}" in the model monitor for "{model_name}".'
         )
 
 
@@ -157,7 +160,7 @@ def remove_deployment(deployment):
     namespace = deployment.metadata.namespace
     if model_monitor is None:
         logger.warning(
-            f'Removing "{deployment_name}" from the model monitor, but "{model_name}" has not monitored.'
+            f'Removing "{namespace}/{deployment_name}" from the model monitor, but "{model_name}" has not monitored.'
         )
         return
 
@@ -165,12 +168,12 @@ def remove_deployment(deployment):
         model_monitor.stop()
         del model_monitors[model_name]
         logger.info(
-            f'Removing "{deployment_name}" from the model monitor, no deployment left in "{model_name}", stopping the model monitor.'
+            f'Removing "{namespace}/{deployment_name}" from the model monitor, no deployment left in "{model_name}", stopping the model monitor.'
         )
         return
 
     logger.info(
-        f'Removing "{deployment_name}" from the model monitor for "{model_name}".'
+        f'Removing "{namespace}/{deployment_name}" from the model monitor for "{model_name}".'
     )
 
 
@@ -316,7 +319,7 @@ def main(signal, timeout):
                     start_serving_thread(watch_version, deployment, False)
                 except Exception as e:
                     logger.warning(
-                        f"Error on handle existing deployment {deployment.metadata.name}: {e}"
+                        f"Error on handle existing deployment {deployment.metadata.namepsace}/{deployment.metadata.name}: {e} "
                     )
         except client.rest.ApiException as ae:
             logger.error(
