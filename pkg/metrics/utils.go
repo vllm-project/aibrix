@@ -17,6 +17,7 @@ limitations under the License.
 package metrics
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -201,16 +202,25 @@ func GetHistogramValue(metric *dto.Metric) (*HistogramMetricValue, error) {
 	return histogram, nil
 }
 
-func ParseMetricsURL(url string) (map[string]*dto.MetricFamily, error) {
-	resp, err := http.Get(url)
+func ParseMetricsURLWithContext(ctx context.Context, url string) (map[string]*dto.MetricFamily, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return make(map[string]*dto.MetricFamily), fmt.Errorf("Failed to fetch metrics from %s: %v", url, err)
+		return nil, fmt.Errorf("Failed to create request for %s: %v\n", url, err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return make(map[string]*dto.MetricFamily), fmt.Errorf("Failed to fetch metrics from %s: %v\n", url, err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			klog.ErrorS(err, "failed to close response body")
 		}
 	}()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Bad status code while fetching metrics from %s: %d\n", url, resp.StatusCode)
+	}
 
 	var parser expfmt.TextParser
 	allMetrics, err := parser.TextToMetricFamilies(resp.Body)
