@@ -637,8 +637,7 @@ func TestSlidingWindowTokenTracker_SecondsUnitWindow(t *testing.T) {
 	assert.Equal(t, float64(0), toks, "token expired after seconds window")
 }
 
-func TestTokenTrackerWindowSizeBugReproduction(t *testing.T) {
-
+func TestTokenTrackerWindowSizeThroughConstructor(t *testing.T) {
 	config := &VTCConfig{
 		InputTokenWeight:  1.0,
 		OutputTokenWeight: 1.0,
@@ -646,33 +645,13 @@ func TestTokenTrackerWindowSizeBugReproduction(t *testing.T) {
 
 	// Create tracker using constructor
 	tracker := NewInMemorySlidingWindowTokenTracker(config)
-
-	// Get tracker fields
 	vtcTracker := tracker.(*InMemorySlidingWindowTokenTracker)
 	windowSize := vtcTracker.windowSize
 	bucketUnit := vtcTracker.bucketUnit
 
-	// Log the values to help debug
 	t.Logf("Initial state - windowSize: %v, bucketUnit: %v", windowSize, bucketUnit)
 
-	// updateWindowSize() is never called during init. In this test, we are not using options.
-	expectedWindowSize := 0 * time.Second
-	if windowSize != expectedWindowSize {
-		t.Errorf("Bug not reproduced: window size is %v when it should be 0s (bucketUnit=%v)", windowSize, bucketUnit)
-	}
-
-	// Make a request that should trigger window size update
-	err := tracker.UpdateTokenCount(context.Background(), "test-user", 10, 10)
-	if err != nil {
-		t.Fatalf("UpdateTokenCount failed: %v", err)
-	}
-
-	// Get window size after request
-	finalWindowSize := vtcTracker.windowSize
-	t.Logf("After request - windowSize: %v, bucketUnit: %v", finalWindowSize, bucketUnit)
-
-	// Verify the bug persists: window size should still be 0s
-	if finalWindowSize != expectedWindowSize {
-		t.Errorf("Bug not reproduced: window size changed to %v when it should stay 0s (bucketUnit=%v)", finalWindowSize, bucketUnit)
+	if windowSize == 0 {
+		t.Errorf("Window size should not be 0, got %v", windowSize)
 	}
 }
