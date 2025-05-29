@@ -36,8 +36,9 @@ class StatusCodes(Enum):
 
 @dataclass
 class Status(Generic[T]):
-    """A generic status container that can represent either success (with a value)
-    or failure (with an error code and optional message/exception)."""
+    """A generic status container that can represent either success (with a
+    value) or failure (with an error code and optional message/exception).
+    """
 
     error_code: StatusCodes
     value: T | str | Exception | None
@@ -120,6 +121,11 @@ class Status(Generic[T]):
     def raise_if_has_exception(self) -> None:
         if self.value is not None and isinstance(self.value, Exception):
             raise self.value
+
+    def raise_if_not_ok(self) -> None:
+        self.raise_if_has_exception()
+        if not self.is_ok():
+            raise RuntimeError(f"{self}")
 
     @staticmethod
     def capture_exception(func):

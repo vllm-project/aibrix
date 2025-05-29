@@ -14,6 +14,7 @@
 
 from concurrent.futures import Executor
 from dataclasses import dataclass
+from typing import Dict, List
 
 import torch
 from hpkv.hpkv_client import HPKVClient
@@ -66,6 +67,7 @@ class HPKVConnector(Connector[bytes, torch.Tensor], AsyncBase):
         self.config = config
         self.key_suffix = key_suffix
         self.conn: HPKVClient | None = None
+        self._register_cache: Dict[int, HPKVRegisterDescriptor] = {}
 
     @classmethod
     def from_envs(
@@ -121,29 +123,43 @@ class HPKVConnector(Connector[bytes, torch.Tensor], AsyncBase):
     def close(self) -> Status:
         """Close a connection."""
         if self.conn is not None:
+            for _, desc in self._register_cache.items():
+                self._deregister_mr(desc)
+            self._register_cache.clear()
+
             self.conn.close()
             self.conn = None
         return Status.ok()
 
     @Status.capture_exception
-    def register_mr(
-        self, addr: int, length: int
-    ) -> Status[ConnectorRegisterDescriptor]:
+    def register_slabs(self, slabs: List[torch.Tensor]) -> Status:
         assert self.conn is not None
-        reg_buf = self.conn.reg_memory(addr, length)
-        if reg_buf == 0:
-            return Status(StatusCodes.INVALID)
-        desc = HPKVRegisterDescriptor(reg_buf)
+        for slab in slabs:
+            addr = slab.data_ptr()
+            length = slab.numel()
+            reg_buf = self.conn.reg_memory(addr, length)
+            if reg_buf == 0:
+                return Status(StatusCodes.INVALID)
+            desc = HPKVRegisterDescriptor(reg_buf)
+            self._register_cache[addr] = desc
         return Status.ok(desc)
 
-    @Status.capture_exception
-    def deregister_mr(self, desc: ConnectorRegisterDescriptor) -> Status:
+    def _get_register_descriptor(
+        self, mr: MemoryRegion
+    ) -> Status[HPKVRegisterDescriptor]:
+        slab = mr.slab
+        addr = slab.data_ptr()
+        if addr not in self._register_cache:
+            return Status(
+                StatusCodes.INVALID, f"Slab(addr={addr}) hasn't been registered"
+            )
+        return Status.ok(self._register_cache[addr])
+
+    def _deregister_mr(self, desc: HPKVRegisterDescriptor) -> None:
         assert self.conn is not None
-        assert isinstance(desc, HPKVRegisterDescriptor)
         if desc.reg_buf != 0:
             self.conn.dereg_memory(desc.reg_buf)
         desc.reg_buf = 0
-        return Status.ok()
 
     @Status.capture_exception
     def _exists(self, key: bytes) -> Status:
@@ -154,12 +170,13 @@ class HPKVConnector(Connector[bytes, torch.Tensor], AsyncBase):
         return Status(StatusCodes.NOT_FOUND)
 
     @Status.capture_exception
-    def _get(self, key: bytes, mr: MemoryRegion) -> Status[torch.Tensor]:
+    def _get(self, key: bytes, mr: MemoryRegion) -> Status:
         """Get a value."""
         assert self.conn is not None
-        desc = mr.register_descriptor()
-        if desc is None:
-            return Status(StatusCodes.INVALID)
+        desc_status = self._get_register_descriptor(mr)
+        if not desc_status.is_ok():
+            return Status(desc_status)
+        desc = desc_status.get()
         sgl = self.conn.SGL(mr.data_ptr(), mr.length, desc)
         if self.conn.get(self._key(key), sgl, mr.length) != 0:
             return Status(StatusCodes.ERROR)
@@ -169,9 +186,10 @@ class HPKVConnector(Connector[bytes, torch.Tensor], AsyncBase):
     def _put(self, key: bytes, mr: MemoryRegion) -> Status:
         """Put a key value pair"""
         assert self.conn is not None
-        desc = mr.register_descriptor()
-        if desc is None:
-            return Status(StatusCodes.INVALID)
+        desc_status = self._get_register_descriptor(mr)
+        if not desc_status.is_ok():
+            return Status(desc_status)
+        desc = desc_status.get()
         sgl = self.conn.SGL(mr.data_ptr(), mr.length, desc)
         if self.conn.set(self._key(key), sgl) != 0:
             return Status(StatusCodes.ERROR)

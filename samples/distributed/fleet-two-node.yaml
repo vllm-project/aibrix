@@ -72,7 +72,7 @@ spec:
                     cpu: "4"
                     nvidia.com/gpu: 1
               - name: aibrix-runtime
-                image: aibrix/runtime:v0.2.1
+                image: aibrix/runtime:v0.3.0
                 command:
                   - aibrix_runtime
                   - --port

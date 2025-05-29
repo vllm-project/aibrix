@@ -77,7 +77,7 @@ func (r *RayClusterFleetReconciler) rollback(ctx context.Context, d *orchestrati
 func (r *RayClusterFleetReconciler) rollbackToTemplate(ctx context.Context, d *orchestrationv1alpha1.RayClusterFleet, rs *orchestrationv1alpha1.RayClusterReplicaSet) (bool, error) {
 	logger := klog.FromContext(ctx)
 	performedRollback := false
-	if !util.EqualIgnoreHash(&d.Spec.Template, &rs.Spec.Template) {
+	if !util.EqualIgnoreLabels(&d.Spec.Template, &rs.Spec.Template) {
 		logger.V(4).Info("Rolling back deployment to old template spec", "deployment", klog.KObj(d), "templateSpec", rs.Spec.Template)
 		util.SetFromReplicaSetTemplate(d, rs.Spec.Template)
 		// set RS (the old RS we'll rolling back to) annotations back to the deployment;

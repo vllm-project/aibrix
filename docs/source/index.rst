@@ -18,7 +18,8 @@ Key features:
 - **Unified AI Runtime**: A versatile sidecar enabling metric standardization, model downloading, and management.
 - **Heterogeneous-GPU Inference**: Cost-effective SLO-driven LLM inference using heterogeneous GPUs.
 - **GPU Hardware Failure Detection**: Proactive detection of GPU hardware issues.
-- **Benchmark Tool (TBD)**: A tool for measuring inference performance and resource efficiency.
+- **KVCache Offloading and Cross-Engine KV Reuse**: High-Performance KVCache offloading framework supporting both naive KV offloading and cross-engine KV reuse.
+- **Benchmark Tool**: A tool for measuring inference performance and resource efficiency.
 
 Documentation
 =============
@@ -42,7 +43,10 @@ Documentation
    features/heterogeneous-gpu.rst
    features/autoscaling/autoscaling.rst
    features/runtime.rst
-   features/distributed-kv-cache.rst
+   features/kvcache-offloading-framework.rst
+   features/kvcache-offloading.rst
+   features/distributed-kvcache-and-cross-engine-kv-reuse.rst
+   features/benchmark-and-generator.rst
 
 .. toctree::
    :maxdepth: 1

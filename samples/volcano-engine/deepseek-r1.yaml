@@ -1,0 +1,312 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: RayClusterFleet
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    model.aibrix.ai/name: deepseek-r1-671b
+    model.aibrix.ai/port: "8000"
+  name: deepseek-r1-671b
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: deepseek-r1-671b
+      model.aibrix.ai/port: "8000"
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: deepseek-r1-671b
+        model.aibrix.ai/port: "8000"
+      annotations:
+        ray.io/overwrite-container-cmd: "true"
+    spec:
+      rayVersion: '2.40.0'
+      headGroupSpec:
+        rayStartParams:
+          dashboard-host: '0.0.0.0'
+          block: 'false'
+        template:
+          metadata:
+            labels:
+              model.aibrix.ai/name: deepseek-r1-671b
+              model.aibrix.ai/port: "8000"
+            annotations:
+              k8s.volcengine.com/pod-networks: |
+                [
+                  {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  },
+                  {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  },
+                  {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  },
+                  {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  },
+                                    {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  },
+                  {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  },
+                  {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  },
+                  {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  }
+                ]
+          spec:
+            initContainers:
+            - name: init-model
+              image: aibrix-cn-beijing.cr.volces.com/aibrix/runtime:v0.3.0
+              command:
+                - aibrix_download
+                - --model-uri
+                - tos://aibrix-artifact-testing/models/DeepSeek-R1/
+                - --local-dir
+                - /models/
+              env:
+                - name: DOWNLOADER_MODEL_NAME
+                  value: deepseek-r1
+                - name: DOWNLOADER_NUM_THREADS
+                  value: "16"
+                - name: DOWNLOADER_ALLOW_FILE_SUFFIX
+                  value: json, safetensors, py
+                - name: TOS_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: tos-credential
+                      key: TOS_ACCESS_KEY
+                - name: TOS_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: tos-credential
+                      key: TOS_SECRET_KEY
+                - name: TOS_ENDPOINT
+                  value: https://tos-s3-cn-beijing.ivolces.com
+                - name: TOS_REGION
+                  value: cn-beijing
+              volumeMounts:
+                - mountPath: /models
+                  name: models
+            containers:
+            - name: ray-head
+              image: aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.7.3.self.post1
+              ports:
+              - containerPort: 6379
+                name: gcs-server
+              - containerPort: 8265
+                name: dashboard
+              - containerPort: 10001
+                name: client
+              - containerPort: 8000
+                name: service
+              command: ["/bin/bash", "-lc", "--"]
+              args: ["ulimit -n 65536; echo head; $KUBERAY_GEN_RAY_START_CMD; vllm serve /models/DeepSeek-R1 --trust-remote-code --served-model-name deepseek-r1-671b --tensor-parallel-size 16 --distributed-executor-backend ray --uvicorn-log-level warning"]
+              env:
+              - name: GLOO_SOCKET_IFNAME
+                value: eth0
+              - name: NCCL_SOCKET_IFNAME
+                value: eth0
+              - name: NCCL_IB_DISABLE
+                value: "0"
+              - name: NCCL_DEBUG
+                value: INFO
+              - name: NCCL_IB_HCA
+                value: mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1
+              - name: NCCL_IB_GID_INDEX
+                value: "7"
+              resources:
+                limits:
+                  nvidia.com/gpu: 8
+                  vke.volcengine.com/rdma: "8"
+                requests:
+                  nvidia.com/gpu: 8
+                  vke.volcengine.com/rdma: "8"
+              securityContext:
+                capabilities:
+                  add:
+                  - IPC_LOCK
+              startupProbe:
+                httpGet:
+                  path: /metrics
+                  port: service
+                initialDelaySeconds: 180
+                failureThreshold: 150
+                periodSeconds: 10
+              terminationMessagePath: /dev/termination-log
+              terminationMessagePolicy: File
+              volumeMounts:
+                - mountPath: /dev/shm
+                  name: shared-mem
+                - mountPath: /models
+                  name: models
+            volumes:
+              - name: shared-mem
+                emptyDir:
+                  medium: Memory
+              - name: models
+                hostPath:
+                  path: /mnt/nvme0/models
+                  type: DirectoryOrCreate
+      workerGroupSpecs:
+      - replicas: 1
+        minReplicas: 1
+        maxReplicas: 1
+        groupName: worker-group
+        rayStartParams: {}
+        template:
+          metadata:
+            labels:
+              model.aibrix.ai/name: deepseek-r1-671b
+              model.aibrix.ai/port: "8000"
+            annotations:
+              k8s.volcengine.com/pod-networks: |
+                [
+                  {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  },
+                  {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  },
+                  {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  },
+                  {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  },
+                                    {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  },
+                  {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  },
+                  {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  },
+                  {
+                    "cniConf":{
+                        "name":"rdma"
+                    }
+                  }
+                ]
+          spec:
+            initContainers:
+            - name: init-model
+              image: aibrix-cn-beijing.cr.volces.com/aibrix/runtime:v0.3.0
+              command:
+                - aibrix_download
+                - --model-uri
+                - tos://aibrix-artifact-testing/models/DeepSeek-R1/
+                - --local-dir
+                - /models/
+              env:
+                - name: DOWNLOADER_MODEL_NAME
+                  value: deepseek-r1
+                - name: DOWNLOADER_NUM_THREADS
+                  value: "16"
+                - name: DOWNLOADER_ALLOW_FILE_SUFFIX
+                  value: json, safetensors, py
+                - name: TOS_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: tos-credential
+                      key: TOS_ACCESS_KEY
+                - name: TOS_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: tos-credential
+                      key: TOS_SECRET_KEY
+                - name: TOS_ENDPOINT
+                  value: https://tos-s3-cn-beijing.ivolces.com
+                - name: TOS_REGION
+                  value: cn-beijing
+              volumeMounts:
+                - mountPath: /models
+                  name: models
+            containers:
+            - name: ray-worker
+              image: aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.7.3.self.post1
+              command: ["/bin/bash", "-lc", "--"]
+              args: ["ulimit -n 65536; echo head; $KUBERAY_GEN_RAY_START_CMD;"]
+              env:
+              - name: GLOO_SOCKET_IFNAME
+                value: eth0
+              - name: NCCL_SOCKET_IFNAME
+                value: eth0
+              - name: NCCL_IB_DISABLE
+                value: "0"
+              - name: NCCL_DEBUG
+                value: INFO
+              - name: NCCL_IB_HCA
+                value: mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1
+              - name: NCCL_IB_GID_INDEX
+                value: "7"
+              lifecycle:
+                preStop:
+                  exec:
+                    command: [ "/bin/sh","-c","ray stop" ]
+              resources:
+                limits:
+                  nvidia.com/gpu: 8
+                  vke.volcengine.com/rdma: "8"
+                requests:
+                  nvidia.com/gpu: 8
+                  vke.volcengine.com/rdma: "8"
+              securityContext:
+                capabilities:
+                  add:
+                    - IPC_LOCK
+              terminationMessagePath: /dev/termination-log
+              terminationMessagePolicy: File
+              volumeMounts:
+                - mountPath: /dev/shm
+                  name: shared-mem
+                - mountPath: /models
+                  name: models
+            volumes:
+              - name: shared-mem
+                emptyDir:
+                  medium: Memory
+              - name: models
+                hostPath:
+                  path: /mnt/nvme0/models
+                  type: DirectoryOrCreate

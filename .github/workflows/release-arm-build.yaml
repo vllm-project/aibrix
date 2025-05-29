@@ -26,7 +26,7 @@ jobs:
       - name: Build and push controller
         uses: docker/build-push-action@v6
         with:
-          platforms: linux/arm64
+          platforms: linux/amd64,linux/arm64
           file: build/container/Dockerfile
           push: true
           tags: aibrix/controller-manager:${{ github.ref_name }}
@@ -50,7 +50,7 @@ jobs:
       - name: Build and push gateway-plugins
         uses: docker/build-push-action@v6
         with:
-          platforms: linux/arm64
+          platforms: linux/amd64,linux/arm64
           file: build/container/Dockerfile.gateway
           push: true
           tags: aibrix/gateway-plugins:${{ github.ref_name }}
@@ -74,7 +74,7 @@ jobs:
       - name: Build and push metadata-service
         uses: docker/build-push-action@v6
         with:
-          platforms: linux/arm64
+          platforms: linux/amd64,linux/arm64
           file: build/container/Dockerfile.metadata
           push: true
           tags: aibrix/metadata-service:${{ github.ref_name }}
@@ -98,7 +98,7 @@ jobs:
       - name: Build and push runtime
         uses: docker/build-push-action@v6
         with:
-          platforms: linux/arm64
+          platforms: linux/amd64,linux/arm64
           file: build/container/Dockerfile.runtime
           push: true
           tags: aibrix/runtime:${{ github.ref_name }}
@@ -122,7 +122,7 @@ jobs:
       - name: Build and push kvcache-watcher
         uses: docker/build-push-action@v6
         with:
-          platforms: linux/arm64
+          platforms: linux/amd64,linux/arm64
           file: build/container/Dockerfile.kvcache
           push: true
           tags: aibrix/kvcache-watcher:${{ github.ref_name }}

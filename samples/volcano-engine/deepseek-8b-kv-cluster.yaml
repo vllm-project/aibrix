@@ -1,0 +1,169 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deepseek-r1-distill-llama-8b
+  labels:
+    model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+    model.aibrix.ai/port: "8000"
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+      annotations:
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8000"
+        prometheus.io/scrape: "true"
+        k8s.volcengine.com/pod-networks: |
+          [
+            {
+              "cniConf":{
+                  "name":"rdma"
+              }
+            }
+          ]
+    spec:
+      initContainers:
+        - command:
+            - aibrix_download
+            - --model-uri
+            - tos://aibrix-artifact-testing/models/DeepSeek-R1-Distill-Llama-8B/
+            - --local-dir
+            - /models/
+          env:
+            - name: DOWNLOADER_NUM_CONNECTIONS
+              value: "16"
+            - name: DOWNLOADER_NUM_THREADS
+              value: "16"
+            - name: DOWNLOADER_ALLOW_FILE_SUFFIX
+              value: json, safetensors
+            - name: TOS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: TOS_ACCESS_KEY
+                  name: tos-credential
+            - name: TOS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: TOS_SECRET_KEY
+                  name: tos-credential
+            - name: TOS_ENDPOINT
+              value: https://tos-s3-cn-beijing.ivolces.com
+            - name: TOS_REGION
+              value: cn-beijing
+          image: aibrix-cn-beijing.cr.volces.com/aibrix/runtime:v0.3.0
+          name: init-model
+          volumeMounts:
+            - mountPath: /models
+              name: model-hostpath
+      containers:
+        - name: vllm-openai
+          image: aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:aibrix-kvcache-v0.8.5-20250520
+          imagePullPolicy: Always
+          command:
+            - python3
+            - -m
+            - vllm.entrypoints.openai.api_server
+            - --port
+            - "8000"
+            - --uvicorn-log-level
+            - warning
+            - --model
+            - /models/DeepSeek-R1-Distill-Llama-8B/
+            - --trust-remote-code
+            - --served-model-name
+            - deepseek-r1-distill-llama-8b
+            - --max-model-len
+            - "32000" # please modify this field if your gpu has more room
+            # - --enable-chunked-prefill
+            - --disable-log-requests
+            - --disable-fastapi-docs
+            - --swap-space
+            - "0"
+            - --api-key
+            - "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"
+            - --no-enable-chunked-prefill
+            - --kv-transfer-config
+            - '{"kv_connector":"AIBrixOffloadingConnector", "kv_role":"kv_both"}'
+          env:
+            - name: VLLM_USE_V1
+              value: "0"
+            - name: AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED
+              value: "0"
+            - name: AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND
+              value: "infinistore"
+            - name: AIBRIX_KV_CACHE_OL_INFINISTORE_CONNECTION_TYPE
+              value: "RDMA"
+            - name: AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT
+              value: "1"
+            - name: AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE
+              value: "Ethernet"
+            - name: AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST
+              value: "mlx5_1:7,mlx5_2:7,mlx5_3:7,mlx5_4:7"
+            - name: AIBRIX_KV_CACHE_OL_META_SERVICE_BACKEND
+              value: "redis"
+            - name: AIBRIX_KV_CACHE_OL_META_SERVICE_URL
+              value: "redis://kvcache-cluster-redis:6379"
+            - name: AIBRIX_KV_CACHE_OL_META_SERVICE_CLUSTER_META_KEY
+              value: "kvcache_nodes"
+            - name: VLLM_RPC_TIMEOUT
+              value: "1000000"
+          volumeMounts:
+            - mountPath: /models
+              name: model-hostpath
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+              vke.volcengine.com/rdma: "1"
+              cpu: "10"
+              memory: "120G"
+            requests:
+              nvidia.com/gpu: "1"
+              vke.volcengine.com/rdma: "1"
+              cpu: "10"
+              memory: "120G"
+          securityContext:
+            capabilities:
+              add:
+              - IPC_LOCK
+      volumes:
+        - name: model-hostpath
+          hostPath:
+            path: /root/models
+            type: DirectoryOrCreate
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+    prometheus-discovery: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+  name: deepseek-r1-distill-llama-8b # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
+  namespace: default
+spec:
+  ports:
+    - name: serve
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+  type: ClusterIP

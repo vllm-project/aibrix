@@ -348,6 +348,9 @@ func (h *SlidingWindowHistogram) getNodeCost(node *prefixcacheindexer.TreeNode, 
 }
 
 func (h *SlidingWindowHistogram) getCurrentAllocationCostPerPod() map[string]float64 {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
 	costs := make(map[string]float64)
 	for node := range h.histogram {
 		// Iterate through all models and their pods for this node

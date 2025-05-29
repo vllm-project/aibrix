@@ -35,7 +35,7 @@ ENTRYPOINT [""]
 ```
 
 > Note: For users in China, you may prefix the image name with `aibrix-container-registry-cn-beijing.cr.volces.com/` when pulling the image from our registry.
-> For instance, instead of just `aibrix/vllm-openai:v0.7.3.self.post1`, you should use `aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.7.3.self.post1`. The same rule applies to `aibrix/runtime:v0.2.1`.
+> For instance, instead of just `aibrix/vllm-openai:v0.7.3.self.post1`, you should use `aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.7.3.self.post1`. The same rule applies to `aibrix/runtime:v0.3.0`.
 
 ### Model weights
 
@@ -97,8 +97,8 @@ While we can provide some general recommendations, due to limited resources, we 
 We encourage the community to contribute by submitting a Pull Request (PR) to help improve our support for different clouds.
 
 ```
-kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.2.1/aibrix-dependency-v0.2.1.yaml
-kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.2.1/aibrix-core-v0.2.1.yaml
+kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.3.0/aibrix-dependency-v0.3.0.yaml
+kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.3.0/aibrix-core-v0.3.0.yaml
 ```
 
 ## How AIBrix support deepseek-r1

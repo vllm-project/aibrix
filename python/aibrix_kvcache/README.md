@@ -33,8 +33,14 @@ pip install -e .
 Before contribute your code, please run the following commands to ensure that your code passes the tests and linting checks.
 
 ```bash
-# install dependencies
+# install basic dependencies
 poetry install --no-root --with dev
+# or, install basic dependencies + torch
+poetry install --no-root --with dev --extras "torch"
+# or, install basic dependencies + infinistore (which will also install torch since infinistore depends on torch)
+poetry install --no-root --with dev --extras "infinistore"
+# or, install basic dependencies + all extras
+poetry install --no-root --with dev --all-extras
 
 # linting, formatting and type checking
 bash ./scripts/format.sh

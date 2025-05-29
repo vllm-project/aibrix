@@ -10,7 +10,7 @@ data:
     provider:
       kubernetes:
         shutdownManager:
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/gateway:v1.2.8
+          image: aibrix-cn-beijing.cr.volces.com/aibrix/gateway:v1.2.8
       type: Kubernetes
     gateway:
       controllerName: gateway.envoyproxy.io/gatewayclass-controller

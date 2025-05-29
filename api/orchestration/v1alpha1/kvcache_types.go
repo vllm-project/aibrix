@@ -60,7 +60,7 @@ type RuntimeSpec struct {
 	Replicas int32 `json:"replicas,omitempty"`
 
 	// represent the kvcache's image
-	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Optional
 	Image string `json:"image,omitempty"`
 
 	// the policy about pulling image
@@ -76,6 +76,10 @@ type RuntimeSpec struct {
 	// the resources of kvcache container
 	// +kubebuilder:validation:Optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Optional: full control over the pod template and this is for advanced users.
+	// If set, it overrides other runtime fields like Image, Resources, etc.
+	Template *corev1.PodTemplateSpec `json:"template,omitempty"`
 }
 
 // KVCacheSpec defines the desired state of KVCache

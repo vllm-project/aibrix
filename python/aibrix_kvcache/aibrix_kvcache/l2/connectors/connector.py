@@ -15,7 +15,9 @@
 from abc import abstractmethod
 from concurrent.futures import Executor
 from dataclasses import dataclass
-from typing import Generic, Sequence, Tuple, TypeVar
+from typing import Generic, List, Sequence, Tuple, TypeVar
+
+import torch
 
 from ...memory import MemoryRegion
 from ...status import Status
@@ -153,25 +155,12 @@ class Connector(Generic[K, V]):
         """
         raise NotImplementedError
 
-    def register_mr(
-        self, addr: int, length: int
-    ) -> Status[ConnectorRegisterDescriptor]:
-        """Register an memory region with backend-specific register function.
+    def register_slabs(self, slabs: List[torch.Tensor]) -> Status:
+        """Register slabs with backend-specific register function.
         Args:
-            addr: memory region's address
-            length: memory region's length
+            slabs: slabs to be registered.
         Returns:
             Status of the register operation.
-            The register descriptor.
-        """
-        raise NotImplementedError
-
-    def deregister_mr(self, desc: ConnectorRegisterDescriptor) -> Status:
-        """Deregister an memory region.
-        Args:
-            desc: the register descriptor returned by `register_mr`.
-        Returns:
-            Status of the deregister operation.
         """
         raise NotImplementedError
 

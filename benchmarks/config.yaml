@@ -1,0 +1,95 @@
+# config.yaml
+# DO NOT COMMIT this file if it contains sensitive info
+
+# API and model settings
+model_name: "deepseek-ai/deepseek-llm-7b-chat"
+tokenizer: "deepseek-ai/deepseek-llm-7b-chat"
+
+# ---------------
+# STEP 1: DATASET GENERATION
+# ---------------
+# Dataset config
+dataset_dir: "./output/dataset"
+prompt_type: "synthetic_multiturn"  # Options: synthetic_multiturn, synthetic_shared, sharegpt, client_trace
+dataset_configs:
+  synthetic_multiturn:
+    shared_prefix_length: 0
+    prompt_length: 80
+    prompt_std: 472
+    num_turns: 3.55
+    num_turns_std: 2.89
+    num_sessions: 1000
+    num_sessions_std: 1
+
+  synthetic_shared:
+    prompt_length: "3997,5868,2617"
+    prompt_std: "17,28,1338"
+    shared_prop: "0.95,0.97,0.03"
+    shared_prop_std: "0.00001,0.00001,0.00001"
+    num_samples: "12,8,79"
+    num_prefix: "1,1,1"
+    num_dataset_configs: 3
+
+  sharegpt:
+    target_dataset: "/tmp/ShareGPT_V3_unfiltered_cleaned_split.json"
+
+  client_trace:
+    trace: ${client_trace_path}
+
+# ---------------
+# STEP 2: WORKLOAD GENERATION
+# ---------------
+# Workload config
+dataset_file: ${dataset_dir}/${prompt_type}.jsonl
+workload_type: "constant"  # Options: constant, synthetic, constant, azure
+interval_ms: 1000
+duration_ms: 10000
+workload_dir: "./output/workload/${workload_type}"
+
+workload_configs:
+  synthetic:
+    traffic_file: "scenarios/autoscaling/workload-configs/predefined/traffic-configs//HighSlow.json"
+    prompt_len_file: "scenarios/autoscaling/workload-configs/predefined/prompt-len-configs/HighSlow.json"
+    completion_len_file: "scenarios/autoscaling/workload-configs/predefined/completion-len-configs/HighSlow.json"
+    max_concurrent_sessions: 2
+
+  constant:
+    target_qps: 1
+    target_prompt_len: null
+    target_completion_len: null
+    max_concurrent_sessions: 2
+
+  stat:
+    traffic_file: ${stat_describe_traffic}
+    prompt_len_file: ${stat_describe_prompt_len}
+    completion_len_file: ${stat_describe_completion_len}
+    stat_trace_type: "cloudide" 
+    qps_scale: 1.0
+    output_scale: 1.0
+    input_scale: 1.0
+
+  azure:
+    azure_trace: "/tmp/AzureLLMInferenceTrace_conv.csv"
+
+# ---------------
+# STEP 3: CLIENT DISPATCH
+# ---------------
+# Client and trace analysis output directories
+workload_file: "./output/workload/${workload_type}/workload.jsonl"
+client_output: "./output/client_output"
+endpoint: "http://localhost:8888"
+api_key: ${API_KEY}  # You might want to inject this securely via environment variables
+target_model: "llama-3-8b-instruct"  # Or "deepseek-llm-7b-chat"
+time_scale: 1.0
+routing_strategy: "random" 
+streaming_enabled: true # Options: true, false
+client_pool_size: 1
+output_token_limit: 128
+timeout_second: 60.0
+max_retries: 0
+
+# ---------------
+# OPTIONAL: ANALYSIS
+# ---------------
+trace_output: "./output/trace_analysis"
+goodput_target: "tpot:0.5"

@@ -113,6 +113,9 @@ type RayClusterFleetStatus struct {
 	// newest ReplicaSet.
 	// +optional
 	CollisionCount *int32 `json:"collisionCount,omitempty" protobuf:"varint,8,opt,name=collisionCount"`
+
+	// The label selector information of the pods belonging to the RayClusterFleet object.
+	ScalingTargetSelector string `json:"scalingTargetSelector,omitempty"`
 }
 
 // DeploymentCondition describes the state of a deployment at a certain point.
@@ -151,6 +154,7 @@ const (
 // +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.scalingTargetSelector
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // RayClusterFleet is the Schema for the rayclusterfleets API

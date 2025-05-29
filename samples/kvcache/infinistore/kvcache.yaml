@@ -1,0 +1,56 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: KVCache
+metadata:
+  name: kvcache-cluster
+  namespace: default
+  annotations:
+    kvcache.orchestration.aibrix.ai/backend: infinistore
+    infinistore.kvcache.orchestration.aibrix.ai/link-type: "Ethernet"
+    infinistore.kvcache.orchestration.aibrix.ai/hint-gid-index: "7"
+spec:
+  metadata:
+    redis:
+      runtime:
+        image: aibrix-cn-beijing.cr.volces.com/aibrix/redis:7.4.2
+        replicas: 1
+        resources:
+          requests:
+            cpu: 1000m
+            memory: 1Gi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+  service:
+    type: ClusterIP
+    ports:
+      - name: service
+        port: 12345
+        targetPort: 12345
+        protocol: TCP
+      - name: admin
+        port: 8088
+        targetPort: 8088
+        protocol: TCP
+  watcher:
+    image: aibrix-cn-beijing.cr.volces.com/aibrix/kvcache-watcher:v0.3.0
+    imagePullPolicy: Always
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "256Mi"
+  cache:
+    replicas: 1
+    image: aibrix-cn-beijing.cr.volces.com/aibrix/infinistore:v0.2.42-20250506
+    imagePullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: "10000m"
+        memory: "120Gi"
+        vke.volcengine.com/rdma: "1"
+      limits:
+        cpu: "10000m"
+        memory: "120Gi"
+        vke.volcengine.com/rdma: "1"

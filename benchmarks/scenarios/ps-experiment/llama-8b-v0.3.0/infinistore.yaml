@@ -17,7 +17,7 @@ metadata:
 spec:
   containers:
   - name: infinistore
-    image: aibrix-cn-beijing.cr.volces.com/aibrix/infinistore:20250506
+    image: aibrix-cn-beijing.cr.volces.com/aibrix/infinistore:v0.2.42-20250506
     command: ["infinistore"]
     args:
       - "--manage-port=8088"

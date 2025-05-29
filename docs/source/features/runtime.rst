@@ -36,7 +36,7 @@ runtime by adding the following to your deployment yaml. In future, we will prov
 .. code-block:: yaml
 
       - name: aibrix-runtime
-        image: aibrix/runtime:v0.1.0
+        image: aibrix/runtime:v0.3.0
         command:
         - aibrix_runtime
         - --port

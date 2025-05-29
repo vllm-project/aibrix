@@ -29,7 +29,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -U pip poetry
           poetry config virtualenvs.create false
-          poetry install --no-root --with dev
+          poetry install --no-root --with dev --extras "torch"
       - name: Run Ruff
         run: |
           cd python/aibrix_kvcache
