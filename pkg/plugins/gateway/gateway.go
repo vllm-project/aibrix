@@ -214,15 +214,15 @@ func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.Pr
 		errMsg = httprouteErr.Error()
 	}
 	klog.ErrorS(nil, "request end", "requestID", requestID, "errorCode", respErrorCode, "errorMessage", errMsg)
-	
+
 	// Safely extract headers from response if available
 	var headers []*configPb.HeaderValueOption
-	if resp != nil && resp.GetResponseHeaders() != nil && 
-		resp.GetResponseHeaders().GetResponse() != nil && 
+	if resp != nil && resp.GetResponseHeaders() != nil &&
+		resp.GetResponseHeaders().GetResponse() != nil &&
 		resp.GetResponseHeaders().GetResponse().GetHeaderMutation() != nil {
 		headers = resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()
 	}
-	
+
 	return generateErrorResponse(
 		envoyTypePb.StatusCode(respErrorCode),
 		headers,
