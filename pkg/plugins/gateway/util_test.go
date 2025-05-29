@@ -68,6 +68,22 @@ func Test_ValidateRequestBody(t *testing.T) {
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 		{
+			message:     "/v1/chat/completions json unmarhsal valid messages with stop string param",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}], "stop": "stop"}`),
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/chat/completions json unmarhsal valid messages with stop array param",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}], "stop": ["stop"]}`),
+			model:       "llama2-7b",
+			messages:    "this is system say this is test",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
 			message:     "/v1/chat/completions json unmarshal invalid stream bool",
 			requestPath: "/v1/chat/completions",
 			requestBody: []byte(`{"model": "llama2-7b", "stream": "true", "messages": [{"role": "system", "content": "this is system"}]}`),
