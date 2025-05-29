@@ -298,6 +298,19 @@ dev-uninstall-from-kind:
 	@$(MAKE) uninstall ignore-not-found=true
 	
 	@echo "AIBrix uninstallation from Kind complete!"
+
+.PHONY: dev-port-forward
+dev-port-forward:
+	@KUBECTL=$(KUBECTL) ./scripts/port-forward.sh
+
+.PHONY: dev-stop-port-forward
+dev-stop-port-forward:
+	@echo "Stopping all port forwarding sessions..."
+	@-kill $$(cat .envoy-pf.pid 2>/dev/null) 2>/dev/null && rm .envoy-pf.pid 2>/dev/null || true
+	@-kill $$(cat .redis-pf.pid 2>/dev/null) 2>/dev/null && rm .redis-pf.pid 2>/dev/null || true
+	@-kill $$(cat .prometheus-pf.pid 2>/dev/null) 2>/dev/null && rm .prometheus-pf.pid 2>/dev/null || true
+	@-kill $$(cat .grafana-pf.pid 2>/dev/null) 2>/dev/null && rm .grafana-pf.pid 2>/dev/null || true
+	@echo "All port forwarding sessions stopped"
 	
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
