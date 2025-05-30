@@ -28,31 +28,7 @@ on:
       - '.golangci.yml'
 
 jobs:
-  # lint:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Check out code
-  #       uses: actions/checkout@v4
-  #     - name: Set up Go
-  #       uses: actions/setup-go@v4
-  #       with:
-  #         go-version: '1.22'
-  #     - name: Lint
-  #       run: make lint-all
-
-  # verify:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Check out code
-  #       uses: actions/checkout@v4
-  #     - name: Set up Go
-  #       uses: actions/setup-go@v4
-  #       with:
-  #         go-version: '1.22'
-  #     - name: Verify Codegen
-  #       run: bash ${GITHUB_WORKSPACE}/hack/verify-codegen.sh
-
-  test:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -61,15 +37,46 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version: '1.22'
-      - name: Cache Go modules
-        uses: actions/cache@v3
+      - name: Lint
+        run: make lint-all
+
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v4
         with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+          go-version: '1.22'
+      - name: Verify Codegen
+        run: bash ${GITHUB_WORKSPACE}/hack/verify-codegen.sh
+
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.22'
+
+      # github action has errors, requires debugging
+      # - name: Cache Go modules
+      #   uses: actions/cache@v3
+      #   with:
+      #     path: |
+      #       ~/.cache/go-build
+      #       ~/go/pkg/mod
+      #     key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+      #     restore-keys: |
+      #       ${{ runner.os }}-go-
+
       - name: Run Unit Tests
         run: make test
 
@@ -88,6 +95,10 @@ jobs:
   check-coverage:
     runs-on: ubuntu-latest
     needs: test
+    permissions:
+      packages: write
+      contents: read
+      pull-requests: write
 
     steps:
       - name: checkout
@@ -131,34 +142,20 @@ jobs:
           path: main.breakdown # as specified via `breakdown-file-name`
           if-no-files-found: error
 
-      # # Post coverage report as comment (in 2 steps)
-      # - name: find pull request ID
-      #   run: |
-      #       PR_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-      #         "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.ref_name }}")
-      #       echo "$PR_DATA"
-      #       PR_ID=$(echo "$PR_DATA" | jq -r '.[0].number')
-            
-      #       if [ "$PR_ID" != "null" ]; then
-      #         echo "pull_request_id=$PR_ID" >> $GITHUB_ENV
-      #       else
-      #         echo "No open pull request found for this branch."
-      #       fi
-
-      - name: post coverage report
-        if: ${{ github.event.number }}
-        uses: thollander/actions-comment-pull-request@v3
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          comment-tag: coverage-report
-          pr-number: ${{ github.event.number }}
-          message: |
-            go-test-coverage report:
-            ```
-            ${{ fromJSON(steps.coverage.outputs.report) }}```
-
       - name: "finally check coverage"
         if: steps.coverage.outcome == 'failure'
         shell: bash
         run: echo "coverage check failed" && exit 1
+
+      # getting error: https://github.com/thollander/actions-comment-pull-request?tab=readme-ov-file#permissions
+      # requires a change from pull_request to pull_request_target.
+      # - name: post coverage report
+      #   uses: thollander/actions-comment-pull-request@v3
+      #   with:
+      #     # github-token: ${{ secrets.GITHUB_TOKEN }}
+      #     comment-tag: coverage-report
+      #     message: |
+      #       go-test-coverage report:
+      #       ```
+      #       ${{ fromJSON(steps.coverage.outputs.report) }}```
       
