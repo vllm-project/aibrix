@@ -5,22 +5,26 @@ on:
   push:
     branches: [ "main", "release-*" ]
     paths:
+      - '.github/workflows/**'
       - 'pkg/**'
       - 'test/**'
       - 'cmd/**'
       - 'api/**'
       - 'go.mod'
       - 'go.sum'
+      - 'Makefile'
       - '.golangci.yml'
   pull_request:
     branches: [ "main" ]
     paths:
+      - '.github/workflows/**'
       - 'pkg/**'
       - 'test/**'
       - 'cmd/**'
       - 'api/**'
       - 'go.mod'
       - 'go.sum'
+      - 'Makefile'
       - '.golangci.yml'
 
 jobs:
