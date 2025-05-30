@@ -56,8 +56,30 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	}()
 
 	if stream {
+		// Use request ID as a key to store per-request buffer for streaming
+		buf, _ := requestBuffers.LoadOrStore(requestID+"_stream", &bytes.Buffer{})
+		buffer := buf.(*bytes.Buffer)
+		// Append data to per-request buffer
+		buffer.Write(b.ResponseBody.Body)
+
+		if !b.ResponseBody.EndOfStream {
+			// Partial data received, wait for more chunks
+			return &extProcPb.ProcessingResponse{
+				Response: &extProcPb.ProcessingResponse_ResponseBody{
+					ResponseBody: &extProcPb.BodyResponse{
+						Response: &extProcPb.CommonResponse{},
+					},
+				},
+			}, complete
+		}
+
+		// Last part received, process the full streaming response
+		finalBody := buffer.Bytes()
+		// Clean up the buffer after final processing
+		requestBuffers.Delete(requestID + "_stream")
+
 		t := &http.Response{
-			Body: io.NopCloser(bytes.NewReader(b.ResponseBody.GetBody())),
+			Body: io.NopCloser(bytes.NewReader(finalBody)),
 		}
 		streaming := ssestream.NewStream[openai.ChatCompletionChunk](ssestream.NewDecoder(t), nil)
 		defer func() {
@@ -71,7 +93,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			}
 		}
 		if err := streaming.Err(); err != nil {
-			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(finalBody))
 			complete = true
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
