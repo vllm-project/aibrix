@@ -47,7 +47,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 			return
 		}
 		model, streamOptions = chatCompletionObj.Model, chatCompletionObj.StreamOptions
-		if message, errRes = getChatCompletionsMessage(jsonMap); errRes != nil {
+		if message, errRes = getChatCompletionsMessage(requestID, chatCompletionObj); errRes != nil {
 			return
 		}
 		if errRes = validateStreamOptions(requestID, user, &stream, streamOptions, jsonMap); errRes != nil {
@@ -117,30 +117,26 @@ func getRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
 }
 
 // getChatCompletionsMessage returns message for chat completions object
-func getChatCompletionsMessage(jsonMap map[string]json.RawMessage) (string, *extProcPb.ProcessingResponse) {
-	// openai golang lib does not support unmarshal for ChatCompletionsNewParams.Messages object (https://github.com/openai/openai-go/issues/247)
-	// Once supported, remove the short term fix
-	type Message struct {
-		Content string `json:"content"`
-		Role    string `json:"role"`
-	}
-
-	messages, ok := jsonMap["messages"]
-	if !ok {
+func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCompletionNewParams) (string, *extProcPb.ProcessingResponse) {
+	if len(chatCompletionObj.Messages) == 0 {
+		klog.ErrorS(nil, "no messages in the request body", "requestID", requestID)
 		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", HeaderErrorRequestBodyProcessing, "true")
 	}
-
-	var output []Message
-	if err := json.Unmarshal(messages, &output); err != nil {
-		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "unable to marshal messages from request body", HeaderErrorRequestBodyProcessing, "true")
-	}
-
 	var builder strings.Builder
-	for i, m := range output {
+	for i, m := range chatCompletionObj.Messages {
 		if i > 0 {
 			builder.WriteString(" ")
 		}
-		builder.WriteString(m.Content)
+		switch content := m.GetContent().AsAny().(type) {
+		case *string:
+			builder.WriteString(*content)
+		default:
+			if jsonBytes, err := json.Marshal(content); err == nil {
+				builder.Write(jsonBytes)
+			} else {
+				klog.ErrorS(err, "error marshalling message content", "requestID", requestID, "message", m)
+			}
+		}
 	}
 	return builder.String(), nil
 }
