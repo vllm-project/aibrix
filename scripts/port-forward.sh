@@ -48,16 +48,19 @@ port_forward() {
     for i in 1 2 3; do
         echo "  - Attempt $i: Starting port-forward for $service_name..."
         error_log=$(mktemp)
-        if $KUBECTL -n "$namespace" port-forward "$service" "$local_port:$remote_port" 2>"$error_log" & kubectl_pid=$!; echo $kubectl_pid > "$pid_file"; then
-            sleep 2
-            if kill -0 $kubectl_pid 2>/dev/null; then
-                success=true
-                rm -f "$error_log"
-                break
-            else
-                echo "    ❌ Port-forward process died immediately"
-                if [ -s "$error_log" ]; then
-                    echo "    Error details: $(cat "$error_log")"
+        
+        $KUBECTL -n "$namespace" port-forward "$service" "$local_port:$remote_port" 2>"$error_log" &
+        kubectl_pid=$!
+        echo $kubectl_pid > "$pid_file"
+        sleep 2
+        if kill -0 $kubectl_pid 2>/dev/null; then
+            success=true
+            rm -f "$error_log"
+            break
+        else
+            echo "    ❌ Port-forward process died immediately"
+            if [ -s "$error_log" ]; then
+                echo "    Error details: $(cat "$error_log")"
                 fi
                 rm -f "$error_log"
             fi

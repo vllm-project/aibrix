@@ -258,9 +258,12 @@ dev-install-in-kind: docker-build-all install
 	@echo "  - Applying core Prometheus configurations..."
 	@$(KUBECTL) apply -k config/prometheus || { echo "Warning: Failed to apply Prometheus configurations"; }
 	@echo "  - Applying additional ServiceMonitor configurations..."
-	@$(KUBECTL) apply -f observability/monitor/service_monitor_vllm.yaml || echo "Warning: Failed to apply vLLM ServiceMonitor"
-	@$(KUBECTL) apply -f observability/monitor/service_monitor_gateway.yaml || echo "Warning: Failed to apply Gateway ServiceMonitor"
 	@$(KUBECTL) apply -f observability/monitor/envoy_metrics_service.yaml || echo "Warning: Failed to apply Envoy metrics service"
+	@$(KUBECTL) apply -f observability/monitor/service_monitor_controller_manager.yaml || echo "Warning: Failed to apply Controller Manager ServiceMonitor"
+	@$(KUBECTL) apply -f observability/monitor/service_monitor_gateway_plugin.yaml || echo "Warning: Failed to apply Gateway Plugin ServiceMonitor"
+	@$(KUBECTL) apply -f observability/monitor/service_monitor_gateway.yaml || echo "Warning: Failed to apply Gateway ServiceMonitor"
+	@$(KUBECTL) apply -f observability/monitor/service_monitor_vllm.yaml || echo "Warning: Failed to apply vLLM ServiceMonitor"
+
 
 	@echo "Applying test configurations..."
 	@$(KUBECTL) apply -k config/test || { echo "Warning: Failed to apply test configurations"; }
@@ -288,9 +291,12 @@ dev-uninstall-from-kind:
 
 	@echo "Removing monitoring configurations..."
 	@echo "  - Removing additional ServiceMonitor configurations..."
-	@$(KUBECTL) delete -f observability/monitor/service_monitor_vllm.yaml --ignore-not-found=true || echo "Warning: Issue removing vLLM ServiceMonitor"
-	@$(KUBECTL) delete -f observability/monitor/service_monitor_gateway.yaml --ignore-not-found=true || echo "Warning: Issue removing Gateway ServiceMonitor"
 	@$(KUBECTL) delete -f observability/monitor/envoy_metrics_service.yaml --ignore-not-found=true || echo "Warning: Issue removing Envoy metrics service"
+	@$(KUBECTL) delete -f observability/monitor/service_monitor_controller_manager.yaml --ignore-not-found=true || echo "Warning: Issue removing Controller Manager ServiceMonitor"
+	@$(KUBECTL) delete -f observability/monitor/service_monitor_gateway_plugin.yaml --ignore-not-found=true || echo "Warning: Issue removing Gateway Plugin ServiceMonitor"
+	@$(KUBECTL) delete -f observability/monitor/service_monitor_gateway.yaml --ignore-not-found=true || echo "Warning: Issue removing Gateway ServiceMonitor"
+	@$(KUBECTL) delete -f observability/monitor/service_monitor_vllm.yaml --ignore-not-found=true || echo "Warning: Issue removing vLLM ServiceMonitor"
+
 	@echo "  - Removing core Prometheus configurations..."
 	@$(KUBECTL) delete -k config/prometheus --ignore-not-found=true || echo "Warning: Issue removing Prometheus configurations"
 
