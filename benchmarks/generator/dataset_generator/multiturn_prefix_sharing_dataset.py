@@ -86,7 +86,7 @@ def main(args):
         })
     save_dataset_jsonl(sessioned_prompts, args.output)
     analyze_dataset(sessioned_prompts, tokenizer)
-    logging.warn(f"...Finished saving dataset {args.output}.")
+    logging.warning(f"...Finished saving dataset {args.output}.")
         
 
 if __name__ == "__main__":
