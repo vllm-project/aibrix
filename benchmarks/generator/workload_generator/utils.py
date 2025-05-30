@@ -289,11 +289,11 @@ def save_workload(load_struct: List[Any],
             for row in load_struct:
                 json_line = json.dumps(row)  # Convert list to JSON string
                 file.write(json_line + "\n")
-            logging.warn(f'Saved workload file to {output_path + ".jsonl"}')
+            logging.warning(f'Saved workload file to {output_path + ".jsonl"}')
     else:
         with open(output_path + ".json", 'w') as file:
             json.dump(load_struct, file, indent=4)
-        logging.warn(f'Saved workload file to {output_path + ".json"}')
+        logging.warning(f'Saved workload file to {output_path + ".json"}')
 
 def load_config(config_path: str) -> Dict[str, Any]:
     with open(config_path, "r") as file:
