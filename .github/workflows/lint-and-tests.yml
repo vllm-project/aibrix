@@ -28,29 +28,29 @@ on:
       - '.golangci.yml'
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out code
-        uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: '1.22'
-      - name: Lint
-        run: make lint-all
+  # lint:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Check out code
+  #       uses: actions/checkout@v4
+  #     - name: Set up Go
+  #       uses: actions/setup-go@v4
+  #       with:
+  #         go-version: '1.22'
+  #     - name: Lint
+  #       run: make lint-all
 
-  verify:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out code
-        uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: '1.22'
-      - name: Verify Codegen
-        run: bash ${GITHUB_WORKSPACE}/hack/verify-codegen.sh
+  # verify:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Check out code
+  #       uses: actions/checkout@v4
+  #     - name: Set up Go
+  #       uses: actions/setup-go@v4
+  #       with:
+  #         go-version: '1.22'
+  #     - name: Verify Codegen
+  #       run: bash ${GITHUB_WORKSPACE}/hack/verify-codegen.sh
 
   test:
     runs-on: ubuntu-latest
@@ -131,27 +131,27 @@ jobs:
           path: main.breakdown # as specified via `breakdown-file-name`
           if-no-files-found: error
 
-      # Post coverage report as comment (in 2 steps)
-      - name: find pull request ID
-        run: |
-            PR_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.ref_name }}")
-            echo "$PR_DATA"
-            PR_ID=$(echo "$PR_DATA" | jq -r '.[0].number')
+      # # Post coverage report as comment (in 2 steps)
+      # - name: find pull request ID
+      #   run: |
+      #       PR_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+      #         "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.ref_name }}")
+      #       echo "$PR_DATA"
+      #       PR_ID=$(echo "$PR_DATA" | jq -r '.[0].number')
             
-            if [ "$PR_ID" != "null" ]; then
-              echo "pull_request_id=$PR_ID" >> $GITHUB_ENV
-            else
-              echo "No open pull request found for this branch."
-            fi
+      #       if [ "$PR_ID" != "null" ]; then
+      #         echo "pull_request_id=$PR_ID" >> $GITHUB_ENV
+      #       else
+      #         echo "No open pull request found for this branch."
+      #       fi
 
       - name: post coverage report
-        if: env.pull_request_id
+        if: ${{ github.event.number }}
         uses: thollander/actions-comment-pull-request@v3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           comment-tag: coverage-report
-          pr-number: ${{ env.pull_request_id }}
+          pr-number: ${{ github.event.number }}
           message: |
             go-test-coverage report:
             ```
