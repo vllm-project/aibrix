@@ -135,7 +135,7 @@ jobs:
       - name: find pull request ID
         run: |
             PR_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/pulls?head=${{ github.repository_owner }}:${{ github.ref_name }}&state=open")
+              "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.ref_name }}")
             echo "$PR_DATA"
             PR_ID=$(echo "$PR_DATA" | jq -r '.[0].number')
             
