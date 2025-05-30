@@ -104,6 +104,10 @@ type KVCacheSpec struct {
 	// cache's service
 	// +kubebuilder:validation:Optional
 	Service ServiceSpec `json:"service,omitempty"`
+
+	// kvcache hpkv monitor agent for member registration
+	// +kubebuilder:validation:Optional
+	HpkvMonitorAgent *RuntimeSpec `json:"hpkvmonitoragent,omitempty"`
 }
 
 // KVCacheStatus defines the observed state of KVCache
