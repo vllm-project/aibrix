@@ -68,5 +68,92 @@ jobs:
             ${{ runner.os }}-go-
       - name: Run Unit Tests
         run: make test
+
+      - name: upload cover profile artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cover.out
+          path: cover.out
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Run Integration Tests
         run: make test-integration
+
+
+  check-coverage:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: download cover.out
+        uses: actions/download-artifact@v4
+        with:
+          name: cover.out
+  
+      - name: download artifact (main.breakdown)
+        id: download-main-breakdown
+        uses: dawidd6/action-download-artifact@v9
+        with:
+          branch: main
+          workflow_conclusion: success
+          name: main.breakdown
+          if_no_artifact_found: warn
+
+      - name: check test coverage
+        id: coverage
+        uses: vladopajic/go-test-coverage@v2
+        continue-on-error: true # Should fail after coverage comment is posted
+        with:
+          config: ./.github/.testcoverage.yml
+          profile: cover.out
+
+          # temporary overrides until we reach our goal of 90%
+          threshold-file: 0
+          threshold-package: 0
+          threshold-total: 25
+
+          breakdown-file-name: ${{ github.ref_name == 'main' && 'main.breakdown' || '' }}
+          diff-base-breakdown-file-name: ${{ steps.download-main-breakdown.outputs.found_artifact == 'true' && 'main.breakdown' || '' }}
+      
+      - name: upload artifact (main.breakdown)
+        uses: actions/upload-artifact@v4
+        if: github.ref_name == 'main'
+        with:
+          name: main.breakdown
+          path: main.breakdown # as specified via `breakdown-file-name`
+          if-no-files-found: error
+
+      # Post coverage report as comment (in 2 steps)
+      - name: find pull request ID
+        run: |
+            PR_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/pulls?head=${{ github.repository_owner }}:${{ github.ref_name }}&state=open")
+            PR_ID=$(echo "$PR_DATA" | jq -r '.[0].number')
+            
+            if [ "$PR_ID" != "null" ]; then
+              echo "pull_request_id=$PR_ID" >> $GITHUB_ENV
+            else
+              echo "No open pull request found for this branch."
+            fi
+
+      - name: post coverage report
+        if: env.pull_request_id
+        uses: thollander/actions-comment-pull-request@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          comment-tag: coverage-report
+          pr-number: ${{ env.pull_request_id }}
+          message: |
+            go-test-coverage report:
+            ```
+            ${{ fromJSON(steps.coverage.outputs.report) }}```
+
+      - name: "finally check coverage"
+        if: steps.coverage.outcome == 'failure'
+        shell: bash
+        run: echo "coverage check failed" && exit 1
+      
