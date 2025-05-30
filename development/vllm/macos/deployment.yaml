@@ -19,6 +19,7 @@ spec:
       labels:
         adapter.model.aibrix.ai/enabled: "true"
         model.aibrix.ai/name: "facebook-opt-125m"
+        model.aibrix.ai/port: "8000"
         app: "mock-facebook-opt-125m"
     spec:
       serviceAccountName: mocked-app-sa

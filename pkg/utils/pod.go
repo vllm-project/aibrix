@@ -19,6 +19,7 @@ package utils
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"k8s.io/klog/v2"
@@ -30,7 +31,9 @@ import (
 )
 
 const (
-	NAMESPACE = "aibrix-system"
+	NAMESPACE            = "aibrix-system"
+	modelPortIdentifier  = "model.aibrix.ai/port"
+	defaultPodMetricPort = 8000
 )
 
 // GeneratePodKey generates a key in the format "namespace/name" for a given pod.
@@ -237,4 +240,21 @@ func SelectRandomPod(pods []*v1.Pod, randomFn func(int) int) (*v1.Pod, error) {
 	}
 	randomPod := readyPods[randomFn(len(readyPods))]
 	return randomPod, nil
+}
+
+func GetModelPortForPod(requestID string, pod *v1.Pod) int64 {
+	value, ok := pod.Labels[modelPortIdentifier]
+	if !ok {
+		klog.Warningf("requestID: %v, pod: %v is missing port identifier label: %v, hence default to port: %v",
+			requestID, pod.Name, modelPortIdentifier, defaultPodMetricPort)
+		return defaultPodMetricPort
+	}
+
+	modelPort, err := strconv.ParseInt(value, 10, 32)
+	if err != nil {
+		klog.Warningf("requestID: %v, pod: %v has incorrect value: %v for port identifier label: %v, hence default to port: %v",
+			requestID, pod.Name, value, modelPortIdentifier, defaultPodMetricPort)
+		modelPort = defaultPodMetricPort
+	}
+	return modelPort
 }
