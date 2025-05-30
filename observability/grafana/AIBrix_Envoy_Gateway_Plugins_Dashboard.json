@@ -250,7 +250,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Time-to-First-Token latency by tier, showing impact of router changes on user experience",
+      "description": "Time-to-First-Token latency by model, showing impact of router changes on user experience",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -328,8 +328,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by(le, tier) (rate(llm_ttft_seconds_bucket{job=\"aibrix-gateway-plugins\"}[$__rate_interval])))",
-          "legendFormat": "P99 - {{tier}}",
+          "expr": "histogram_quantile(0.99, sum by(le, model_name) (rate(vllm:time_to_first_token_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "P99 - {{model_name}}",
           "range": true,
           "refId": "A"
         },
@@ -339,13 +339,13 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by(le, tier) (rate(llm_ttft_seconds_bucket{job=\"aibrix-gateway-plugins\"}[$__rate_interval])))",
-          "legendFormat": "P50 - {{tier}}",
+          "expr": "histogram_quantile(0.50, sum by(le, model_name) (rate(vllm:time_to_first_token_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "P50 - {{model_name}}",
           "range": true,
           "refId": "B"
         }
       ],
-      "title": "Time to First Token by Tier",
+      "title": "Time to First Token by Model",
       "type": "timeseries"
     },
     {
@@ -367,7 +367,7 @@
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "## TTFT Monitoring Guide\n\n**What to look for**:\n- **Healthy Pattern**: P99 close to P50\n- **Warning Sign**: P99 widens significantly\n\n**Correlation with Router**:\n- If P99 spikes when bucket size changes → router needs tuning\n- If P99 stays stable during changes → router is working well\n\n**Tier Differences**:\n- Normal tier should show consistent latency\n- High tier may show more variation\n\n**Action Items**:\n- If P99 widens: Check bucket size changes\n- If tier differences grow: Review fairness settings",
+        "content": "## TTFT Monitoring Guide\n\n**What to look for**:\n- **Healthy Pattern**: P99 close to P50\n- **Warning Sign**: P99 widens significantly\n\n**Correlation with Router**:\n- If P99 spikes when bucket size changes → router needs tuning\n- If P99 stays stable during changes → router is working well\n\n**Model Differences**:\n- Different models may show different latency characteristics\n- Compare models to identify performance differences\n\n**Action Items**:\n- If P99 widens: Check bucket size changes\n- If model differences grow: Review routing fairness",
         "mode": "markdown"
       },
       "pluginVersion": "10.0.3",
