@@ -61,12 +61,6 @@ port_forward() {
             echo "    ❌ Port-forward process died immediately"
             if [ -s "$error_log" ]; then
                 echo "    Error details: $(cat "$error_log")"
-                fi
-                rm -f "$error_log"
-            fi
-        else
-            if [ -s "$error_log" ]; then
-                echo "    ❌ Failed to start port-forward: $(cat "$error_log")"
             fi
             rm -f "$error_log"
         fi
