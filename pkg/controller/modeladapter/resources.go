@@ -25,15 +25,16 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-func buildModelAdapterEndpointSlice(instance *modelv1alpha1.ModelAdapter, pod *corev1.Pod) *discoveryv1.EndpointSlice {
+func buildModelAdapterEndpointSlice(instance *modelv1alpha1.ModelAdapter, pods []corev1.Pod) *discoveryv1.EndpointSlice {
 	serviceLabels := map[string]string{
 		"kubernetes.io/service-name": instance.Name,
 	}
 
-	addresses := []discoveryv1.Endpoint{
-		{
+	addresses := make([]discoveryv1.Endpoint, 0, len(pods))
+	for _, pod := range pods {
+		addresses = append(addresses, discoveryv1.Endpoint{
 			Addresses: []string{pod.Status.PodIP},
-		},
+		})
 	}
 
 	ports := []discoveryv1.EndpointPort{
