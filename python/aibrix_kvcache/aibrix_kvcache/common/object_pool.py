@@ -44,6 +44,10 @@ class ObjectPool:
     ):
         if klass is None and object_creator is None:
             raise ValueError("Must provide either klass or object_creator")
+        if min_pool_size < 0 or max_pool_size < 0:
+            raise ValueError("Pool sizes must be non-negative")
+        if min_pool_size > max_pool_size:
+            raise ValueError("min_pool_size cannot exceed max_pool_size")
 
         self.object_creator = object_creator or klass
         self.min_pool_size = min_pool_size
@@ -108,9 +112,12 @@ class ObjectPool:
         if not isinstance(objs, list):
             objs = [objs]
 
-        with self._lock and contextlib.suppress(Exception):
+        with self._lock, contextlib.suppress(Exception):
             for o in objs:
-                if self._current_size < self._current_capacity:
+                if (
+                    not self._pool.full()
+                    and self._current_size < self._current_capacity
+                ):
                     self._pool.put_nowait(o)
                     self._current_size += 1
 
