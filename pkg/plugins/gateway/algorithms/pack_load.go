@@ -44,7 +44,7 @@ func (r *packLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	capUtil := r.provider.Cap()
 	maxUtil := 0.0
 
-	lastErr := ErrorNoAvailablePod
+	lastErr := ErrorNoAvailablePod // The default error keeps if all pods are not ready.
 	for _, pod := range pods.All() {
 		if pod.Status.PodIP == "" {
 			// Pod not ready.
@@ -53,15 +53,17 @@ func (r *packLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 
 		util, err := r.provider.GetUtilization(ctx, pod)
 		if err != nil {
+			lastErr = r.updateError(lastErr, err)
 			klog.ErrorS(err, "Skipped pod due to fail to get utilization in packLoadRouter", "pod", pod.Name)
 			continue
 		}
 
 		consumption, err := r.provider.GetConsumption(ctx, pod)
 		if err == cache.ErrorSLOFailureRequest {
-			lastErr = err
+			lastErr = r.updateError(lastErr, err)
 			klog.V(4).InfoS("Skipped pod due to SLOFailureRequest in packLoadRouter", "pod", pod.Name, "request", ctx.RequestID)
 		} else if err != nil {
+			lastErr = r.updateError(lastErr, err)
 			klog.ErrorS(err, "Skipped pod due to fail to get consumption in packLoadRouter", "pod", pod.Name)
 			continue
 		}
@@ -69,7 +71,9 @@ func (r *packLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 		klog.V(5).Infof("pod: %v, podIP: %v, consumption: %.2f, util: %.2f", pod.Name, pod.Status.PodIP, consumption, util)
 
 		util += consumption
-		if util > maxUtil && util <= capUtil {
+		if util > capUtil {
+			lastErr = r.updateError(lastErr, cache.ErrorLoadCapacityReached)
+		} else if util > maxUtil {
 			maxUtil = util
 			targetPod = pod
 		}
@@ -83,4 +87,13 @@ func (r *packLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	klog.V(4).Infof("targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
+}
+
+func (r *packLoadRouter) updateError(last error, err error) error {
+	// ErrorLoadCapacityReached is a temporary error.
+	if last == cache.ErrorLoadCapacityReached {
+		return last
+	}
+
+	return err
 }

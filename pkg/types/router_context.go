@@ -63,33 +63,39 @@ var requestPool = sync.Pool{
 	New: func() any { return &RoutingContext{} },
 }
 
+// NewContext gets a RoutingContext with current RoutingAlgorithm.
 func (alg RoutingAlgorithm) NewContext(ctx context.Context, model, message, requestID, user string) *RoutingContext {
 	request := requestPool.Get().(*RoutingContext)
 	request.reset(ctx, alg, model, message, requestID, user)
 	return request
 }
 
+// NewRoutingContext gets a RoutingContext from a context pool.
 func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID, user string) *RoutingContext {
 	request := requestPool.Get().(*RoutingContext)
 	request.reset(ctx, algorithms, model, message, requestID, user)
 	return request
 }
 
+// SetOutputPreditor enables RoutingContext to use existing OutputPredictor to predict output length.
 func (r *RoutingContext) SetOutputPreditor(predictor OutputPredictor) (old OutputPredictor) {
 	old = r.predictor
 	r.predictor = predictor
 	return
 }
 
+// Delete resolves all waiting TargetPod() calls and releases the RoutingContext to the pool.
 func (r *RoutingContext) Delete() {
 	r.SetTargetPod(nil) // Unblock waiting TargetPod() call
 	requestPool.Put(r)
 }
 
+// Elapsed returns the elapsed time since the request was created.
 func (r *RoutingContext) Elapsed(currentTime time.Time) time.Duration {
 	return currentTime.Sub(r.RequestTime)
 }
 
+// PromptTokens returns the tokenized prompt of the request.
 func (r *RoutingContext) PromptTokens() ([]int, error) {
 	if r.tokens == nil {
 		var err error
@@ -101,6 +107,7 @@ func (r *RoutingContext) PromptTokens() ([]int, error) {
 	return r.tokens, nil
 }
 
+// PromptLength returns the length of the prompt of the request.
 func (r *RoutingContext) PromptLength() (int, error) {
 	tokens, err := r.PromptTokens()
 	if err != nil {
@@ -109,6 +116,7 @@ func (r *RoutingContext) PromptLength() (int, error) {
 	return len(tokens), nil
 }
 
+// TokenLength returns the predicted output token length.
 func (r *RoutingContext) TokenLength() (int, error) {
 	promptLen, err := r.PromptLength()
 	if err != nil {
@@ -122,6 +130,8 @@ func (r *RoutingContext) TokenLength() (int, error) {
 	return r.predictor.Predict(promptLen), nil
 }
 
+// Features returns the features corresponding to the request.
+// The feature of a request is defined by the output length and prompt length.
 func (r *RoutingContext) Features() (RequestFeatures, error) {
 	promptLen, err := r.PromptLength()
 	if err != nil {
@@ -136,6 +146,7 @@ func (r *RoutingContext) Features() (RequestFeatures, error) {
 	return RequestFeatures{float64(outputLen), float64(promptLen)}, nil
 }
 
+// SetTargetPod sets the target pod of the routing context. All routers call this to set the target pod.
 func (r *RoutingContext) SetTargetPod(pod *v1.Pod) {
 	if r.targetPod.CompareAndSwap(nilPod, pod) { // Use CompareAndSwap to ensure close channel only once
 		r.RoutedTime = time.Now()
@@ -143,11 +154,15 @@ func (r *RoutingContext) SetTargetPod(pod *v1.Pod) {
 	}
 }
 
+// SetError sets the error of the routing context asynchronously.
+// Do not call this function from synchronize routers. Asynchronize routers call this to set an error.
 func (r *RoutingContext) SetError(err error) {
 	r.lastError = err
 	r.SetTargetPod(nil)
 }
 
+// TargetPod returns the routing target pod of the request.
+// TargetPod blocks until the target pod is set or an error is set.
 func (r *RoutingContext) TargetPod() *v1.Pod {
 	targetPod := r.targetPod.Load()
 	if targetPod == nilPod {
@@ -163,6 +178,7 @@ func (r *RoutingContext) TargetPod() *v1.Pod {
 	return targetPod
 }
 
+// GetError returns the error of the routing context.
 func (r *RoutingContext) GetError() error {
 	if r.TargetPod() == nil {
 		return r.lastError
@@ -170,6 +186,7 @@ func (r *RoutingContext) GetError() error {
 	return nil
 }
 
+// TargetAddress returns the routing target address of the request.
 func (r *RoutingContext) TargetAddress() string {
 	pod := r.TargetPod()
 	if pod == nil {
@@ -178,20 +195,24 @@ func (r *RoutingContext) TargetAddress() string {
 	return r.targetAddress(r.TargetPod())
 }
 
+// HasRouted returns true if the request has been routed or an error has been set.
 func (r *RoutingContext) HasRouted() bool {
 	pod := r.targetPod.Load()
 	return pod != nilPod && pod != nil
 }
 
+// HasError returns true if the request has an error.
 func (r *RoutingContext) HasError() bool {
 	pod := r.targetPod.Load()
 	return pod == nil && r.lastError != nil
 }
 
+// CanUpdateStats returns true if the first time trying update in-memory realtime statistics.
 func (r *RoutingContext) CanUpdateStats() bool {
 	return atomic.CompareAndSwapInt32(&r.statsUpdated, 0, 1)
 }
 
+// GetRoutingDelay returns the time duration used for routing the request.
 func (r *RoutingContext) GetRoutingDelay() time.Duration {
 	return r.RoutedTime.Sub(r.RequestTime)
 }

@@ -23,8 +23,9 @@ import (
 )
 
 var (
-	ErrorNotSupport        = fmt.Errorf("not support")
-	ErrorSLOFailureRequest = fmt.Errorf("slo failure request")
+	ErrorNotSupport          = fmt.Errorf("not support")
+	ErrorSLOFailureRequest   = fmt.Errorf("slo failure request")
+	ErrorLoadCapacityReached = fmt.Errorf("load capacity reached")
 )
 
 // LoadProvider provides an abstraction to get the utilizatin in terms of specified metrics

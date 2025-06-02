@@ -282,12 +282,12 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		if candidate.RoutingContext.HasRouted() {
 			q.lastCandidateSubKey = candidate.SubKey
 			return candidate.RoutingContext, nil
-		} else if lastErr == cache.ErrorSLOFailureRequest {
+		} else if lastErr != cache.ErrorLoadCapacityReached {
 			// We have route dicision concluded as SLO violation. Track the conclusion.
 			q.lastCandidateSubKey = candidate.SubKey
 			q.lastCandidateError = lastErr
 			return candidate.RoutingContext, nil
-		}
+		} // temporary errors are ignored
 	}
 
 	return nil, nil
