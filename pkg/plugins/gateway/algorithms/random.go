@@ -29,7 +29,7 @@ var (
 )
 
 func init() {
-	RegisterDelayedConstructor(RouterRandom, NewRandomRouter)
+	Register(RouterRandom, NewRandomRouter)
 }
 
 type randomRouter struct {
