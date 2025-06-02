@@ -72,6 +72,15 @@ images:
   - name: metadata-service
     newName: aibrix/metadata-service
     newTag: nightly
+  - name: aibrix/runtime
+    newName: aibrix/runtime
+    newTag: nightly
+  - name: redis
+    newName: redis
+    newTag: latest
+  - name: busybox
+    newName: busybox
+    newTag: stable
 
 labels:
   - pairs:
