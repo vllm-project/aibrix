@@ -21,8 +21,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-const DefaultConsumption float64 = 100.0
-
 type PendingLoadProvider struct {
 	*CachedLoadProvider
 }
@@ -59,7 +57,7 @@ func (p *PendingLoadProvider) GetUtilization(ctx *types.RoutingContext, pod *v1.
 func (p *PendingLoadProvider) GetConsumption(ctx *types.RoutingContext, pod *v1.Pod) (float64, error) {
 	profile, err := p.Cache().GetModelProfileByPod(pod, ctx.Model)
 	if err != nil {
-		return 0.01, err
+		return 0.0, err
 	}
 
 	features, err := ctx.Features()
@@ -77,7 +75,7 @@ func (p *PendingLoadProvider) GetConsumption(ctx *types.RoutingContext, pod *v1.
 	if err1 != nil || err2 != nil {
 		return 0.0, err1
 	} else if lambda == 0.0 {
-		return DefaultConsumption, nil
+		return 0.0, ErrorSLOFailureRequest
 	} else {
 		return 1.0 / lambda / meanLatency, nil
 	}

@@ -52,7 +52,7 @@ func NewLeastLoadPullingRouter(provider cache.CappedLoadProvider) (types.Router,
 
 func (r *leastLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
 	if pods.Len() == 0 {
-		return "", fmt.Errorf("no pods to forward request")
+		return "", ErrorNoAvailablePod
 	}
 
 	var targetPod *v1.Pod
@@ -61,6 +61,7 @@ func (r *leastLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (
 		minUtil = r.cappedProvider.Cap()
 	}
 
+	lastErr := ErrorNoAvailablePod
 	for _, pod := range pods.All() {
 		if pod.Status.PodIP == "" {
 			// Pod not ready.
@@ -69,18 +70,21 @@ func (r *leastLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (
 
 		util, err := r.provider.GetUtilization(ctx, pod)
 		if err != nil {
-			klog.Error(err)
+			klog.ErrorS(err, "Skipped pod due to fail to get utilization in leastLoadRouter", "pod", pod.Name)
 			continue
 		}
 
-		klog.V(4).Infof("pod: %v, podIP: %v, util: %.2f",
+		klog.V(5).Infof("pod: %v, podIP: %v, util: %.2f",
 			pod.Name, pod.Status.PodIP, util)
 
 		var consumption float64
 		if r.pulling {
 			consumption, err = r.provider.GetConsumption(ctx, pod)
-			if err != nil {
-				klog.Error(err)
+			if err == cache.ErrorSLOFailureRequest {
+				lastErr = err
+				klog.V(4).InfoS("Skipped pod due to SLOFailureRequest in leastLoadRouter", "pod", pod.Name, "request", ctx.RequestID)
+			} else if err != nil {
+				klog.ErrorS(err, "Skipped pod due to fail to get consumption in leastLoadRouter", "pod", pod.Name)
 				continue
 			}
 		}
@@ -94,7 +98,7 @@ func (r *leastLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (
 
 	// No fallback
 	if targetPod == nil {
-		return "", ErrorNoAvailablePod
+		return "", lastErr
 	}
 
 	klog.V(4).Infof("targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)

@@ -131,14 +131,24 @@ def gen(args):
         percentile_field = f"P{args.percentile}"
 
     # Iterate slo_tputs and fill in the matrix with the throughput values that matches the SLO
+    def setMetrics(conclusion_df, i, j): 
+        e2es[i, j] = conclusion_df.loc[
+            conclusion_df["metric"] == "E2E", "mean"
+        ].iloc[0]
+        if slos["TTFT"].is_set():
+            ttfts[i, j] = conclusion_df.loc[
+                conclusion_df["metric"] == "TTFT", "mean"
+            ].iloc[0]
+
     for i in range(len(output_tokens)):
         for j in range(len(input_tokens)):
-            filtered_df = benchmark_df.loc[
+            feature_df = benchmark_df.loc[
                 (benchmark_df["input_tokens"] == input_tokens[j])
                 & (benchmark_df["output_tokens"] == output_tokens[i])
             ]
 
             # Filter the bencmarks by slos:
+            filtered_df = feature_df
             for slo in slos.values():
                 if slo.default == DEFAULT_TIME_SLO:
                     df = filtered_df.loc[
@@ -160,6 +170,7 @@ def gen(args):
                 ]
 
             if len(filtered_df) == 0:
+                setMetrics(feature_df, i, j)
                 continue
 
             # Concluding
@@ -167,11 +178,17 @@ def gen(args):
             # Since all SLO target passed, minimum request_rate is qualified.
             # We keep the smallest request_rate to maximize profile completeness.
             max_request_rate = np.min(filtered_df["request_rate"])
+            logger.debug(
+                f"Candidate request rates for {input_tokens[j]}:{output_tokens[i]}:\n{filtered_df["request_rate"].unique(), filtered_df.loc[(filtered_df["metric"] == "TPUT"), "mean"].tolist()}"
+            )
             # Filter out request_rates that can cause pending requests accumulate: TPUT < request_rate * TPUT_TOLERANCE
             shortlist = filtered_df.loc[
                 (filtered_df["metric"] == "TPUT")
                 & (filtered_df["mean"] >= filtered_df["request_rate"] * TPUT_TOLERANCE)
             ]
+            logger.debug(
+                f"Candidate request rates for {input_tokens[j]}:{output_tokens[i]}:\n{shortlist["request_rate"].unique()}"
+            )
             # Test max request rate
             if len(shortlist) > 0:
                 max_request_rate = np.max(shortlist["request_rate"])
@@ -182,13 +199,7 @@ def gen(args):
             slo_tputs[i, j] = conclusion_df.loc[
                 conclusion_df["metric"] == "TPUT", "mean"
             ].iloc[0]
-            e2es[i, j] = conclusion_df.loc[
-                conclusion_df["metric"] == "E2E", "mean"
-            ].iloc[0]
-            if slos["TTFT"].is_set():
-                ttfts[i, j] = conclusion_df.loc[
-                    conclusion_df["metric"] == "TTFT", "mean"
-                ].iloc[0]
+            setMetrics(conclusion_df, i, j)
 
             msg = conclusion_df.loc[
                 conclusion_df["metric"] == "TPUT", ["request_rate", "mean"]
@@ -280,24 +291,6 @@ def main():
         parser.add_argument(
             f"--{slo.arg_name()}", type=float, default=slo.default, help=slo.arg_help
         )
-    # parser.add_argument(
-    #     "--tput", type=float, default=DEFAULT_THROUGHPUT_SLO, help="Throughput SLO target as RPS."
-    # )
-    # parser.add_argument(
-    #     "--tt", type=float, default=DEFAULT_THROUGHPUT_SLO, help="Token Throughput SLO target."
-    # )
-    # parser.add_argument(
-    #     "--e2e", type=float, default=DEFAULT_TIME_SLO, help="E2E latency SLO target."
-    # )
-    # parser.add_argument(
-    #     "--ttft", type=float, default=DEFAULT_TIME_SLO, help="Time To First Token SLO target."
-    # )
-    # parser.add_argument(
-    #     "--tpat", type=float, default=DEFAULT_TIME_SLO, help="Time Per All Token SLO target."
-    # )
-    # parser.add_argument(
-    #     "--tpot", type=float, default=DEFAULT_TIME_SLO, help="Time Per Output Token SLO target."
-    # )
     parser.add_argument(
         "--percentile",
         type=int,

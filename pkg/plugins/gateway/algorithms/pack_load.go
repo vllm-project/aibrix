@@ -17,8 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"fmt"
-
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
@@ -39,33 +37,36 @@ func (r *packLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	klog.V(4).Info("Routing using packLoadRouter", "candidates", pods.Len())
 
 	if pods.Len() == 0 {
-		return "", fmt.Errorf("no pods to forward request")
+		return "", ErrorNoAvailablePod
 	}
 
 	var targetPod *v1.Pod
 	capUtil := r.provider.Cap()
 	maxUtil := 0.0
 
+	lastErr := ErrorNoAvailablePod
 	for _, pod := range pods.All() {
 		if pod.Status.PodIP == "" {
 			// Pod not ready.
-			klog.V(4).InfoS("Skipped pod due to missing PodIP in packLoadRouter", "pod", pod.Name, "PodIP", pod.Status.PodIP)
 			continue
 		}
 
 		util, err := r.provider.GetUtilization(ctx, pod)
 		if err != nil {
-			klog.V(4).InfoS("Skipped pod due to fail to get utilization in packLoadRouter", "pod", pod.Name, "error", err)
+			klog.ErrorS(err, "Skipped pod due to fail to get utilization in packLoadRouter", "pod", pod.Name)
 			continue
 		}
 
 		consumption, err := r.provider.GetConsumption(ctx, pod)
-		if err != nil {
-			klog.V(4).InfoS("Skipped pod due to fail to get consumption in packLoadRouter", "pod", pod.Name, "error", err)
+		if err == cache.ErrorSLOFailureRequest {
+			lastErr = err
+			klog.V(4).InfoS("Skipped pod due to SLOFailureRequest in packLoadRouter", "pod", pod.Name, "request", ctx.RequestID)
+		} else if err != nil {
+			klog.ErrorS(err, "Skipped pod due to fail to get consumption in packLoadRouter", "pod", pod.Name)
 			continue
 		}
 
-		klog.V(4).Infof("pod: %v, podIP: %v, consumption: %.2f, util: %.2f", pod.Name, pod.Status.PodIP, consumption, util)
+		klog.V(5).Infof("pod: %v, podIP: %v, consumption: %.2f, util: %.2f", pod.Name, pod.Status.PodIP, consumption, util)
 
 		util += consumption
 		if util > maxUtil && util <= capUtil {
@@ -76,7 +77,7 @@ func (r *packLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 
 	// Use fallback if no valid metrics
 	if targetPod == nil {
-		return "", ErrorNoAvailablePod
+		return "", lastErr
 	}
 
 	klog.V(4).Infof("targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)

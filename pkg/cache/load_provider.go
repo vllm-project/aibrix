@@ -22,7 +22,10 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-var ErrorNotSupport = fmt.Errorf("not support")
+var (
+	ErrorNotSupport        = fmt.Errorf("not support")
+	ErrorSLOFailureRequest = fmt.Errorf("slo failure request")
+)
 
 // LoadProvider provides an abstraction to get the utilizatin in terms of specified metrics
 type LoadProvider interface {
@@ -30,6 +33,8 @@ type LoadProvider interface {
 	GetUtilization(ctx *types.RoutingContext, pod *v1.Pod) (float64, error)
 
 	// GetConsumption reads load consumption of the request on specified pod)
+	// If ErrorSLOFailureRequest is returned, the request is considered as failed to meet server capacity,
+	// so SLO is expected to violate and can be early rejected.
 	GetConsumption(ctx *types.RoutingContext, pod *v1.Pod) (float64, error)
 }
 

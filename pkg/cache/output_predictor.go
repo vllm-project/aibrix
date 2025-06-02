@@ -27,7 +27,25 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const MovingInterval = 10 * time.Second
+const (
+	MovingInterval        = 10 * time.Second
+	MaxOutputLen          = 4096 // TODO: override this value if profile is provided.
+	DefaultColdPrediction = OptimisticColdPrediction
+)
+
+const (
+	// OptimisticColdPrediction predicts the output to be minimum 1 to be profile friendly. (most profiles should best result if output length is minimum)
+	OptimisticColdPrediction ColdPredictionStrategy = iota
+	// RandomColdPredition randomly predicts the output between 0 and maxOutputTokens.
+	RandomColdPredition
+	// InputColdPrediction predicts the output to be the same as the input.
+	InputColdPrediction
+	// PessimiticColdPrediction predicts the output to be maximum maxOutputTokens.
+	PessimiticColdPrediction
+)
+
+// ColdPredictionStrategy defines the strategy when there is no history for the predictor.
+type ColdPredictionStrategy int
 
 type SimmpleOutputPredictor struct {
 	history       rotatingHistory
@@ -166,7 +184,7 @@ func (p *SimmpleOutputPredictor) Predict(inputTokens int) int {
 	inputBucket := p.token2bucket(inputTokens, p.inputBuckets)
 	randRange := atomic.LoadInt32(&p.inputsSums[inputBucket])
 	if randRange == int32(0) {
-		return inputTokens // No history, return input tokens
+		return p.coldPredict(inputTokens) // No history, return input tokens
 	}
 	// Do weighted random
 	cursor := p.rand(randRange)
@@ -179,6 +197,20 @@ func (p *SimmpleOutputPredictor) Predict(inputTokens int) int {
 		}
 	}
 	return int(math.Pow(2, float64(p.outputBuckets-1)))
+}
+
+func (p *SimmpleOutputPredictor) coldPredict(inputTokens int) int {
+	switch DefaultColdPrediction {
+	case RandomColdPredition:
+		return rand.Intn(MaxOutputLen) + 1
+	case InputColdPrediction:
+		return inputTokens
+	case PessimiticColdPrediction:
+		return MaxOutputLen
+	default:
+		// Default to optimistic
+		return 1
+	}
 }
 
 func (p *SimmpleOutputPredictor) bucket2idx(inputBucket, outputBucket int) int {

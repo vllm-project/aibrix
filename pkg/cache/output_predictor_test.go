@@ -160,7 +160,7 @@ var _ = Describe("SimmpleOutputPredictor", func() {
 				output = p.Predict(16)
 			}).ShouldNot(Panic())
 
-			Expect(output).To(Equal(16)) // Default to input tokens
+			Expect(output).To(Equal(1)) // Default to optimistic result
 		})
 
 		It("should predict the only output", func() {

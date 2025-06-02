@@ -17,9 +17,9 @@ package routingalgorithms
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo"
@@ -39,7 +39,7 @@ func readExampleProfile(filePath string) (*cache.ModelGPUProfile, error) {
 	}
 
 	var profile cache.ModelGPUProfile
-	err = json.Unmarshal(jsonDataBytes, &profile)
+	err = profile.Unmarshal(jsonDataBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -178,6 +178,29 @@ var _ = Describe("SLOQueue", func() {
 			Expect(err).To(BeNil())
 			Expect(req.HasRouted()).To(BeTrue())
 			Expect(req.Algorithm).To(Equal(RouterLeastRequest))
+		})
+
+		It("Should report cache.ErrorSLOFailureRequest if profile predicts SLO violation", func() {
+			pods, _ := store.ListPodsByModel(model)
+
+			// Provide prediction history
+			predictor, _ := store.GetOutputPredictor(model)
+			predictor.AddTrace(2048, 512, 1)
+
+			// Build dummy input messages of 2048 tokens.
+			builder := &strings.Builder{}
+			for i := 0; i < 2048; i++ {
+				builder.WriteString("ho ")
+			}
+			req, cancel := newReqWithTimeout(model, builder.String(), "request_slo_failure", 10*time.Millisecond)
+			defer cancel()
+			promptLen, _ := req.PromptLength()
+			Expect(promptLen > 2000).To(BeTrue())
+
+			_, err = route(store, req, pods)
+			Expect(err).To(BeIdenticalTo(cache.ErrorSLOFailureRequest))
+			Expect(req.HasRouted()).To(BeFalse())
+			Expect(req.Algorithm).To(Equal(RouterSLO))
 		})
 	})
 

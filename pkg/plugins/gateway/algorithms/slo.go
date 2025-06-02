@@ -29,7 +29,7 @@ type SLORouter struct {
 
 func (r *SLORouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
 	// Ctx is not routed if no profiles is found during Peek.
-	if !ctx.HasRouted() {
+	if !ctx.HasRouted() && r.LastError() == nil {
 		return r.FallbackRouter.Route(ctx, pods)
 	}
 	return r.SLOQueue.Route(ctx, pods)

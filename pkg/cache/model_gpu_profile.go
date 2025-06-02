@@ -117,7 +117,7 @@ func (pf *ModelGPUProfile) GetSignature(features ...float64) ([]int, error) {
 		}
 
 		// Assuming indexes are ascending ordered.
-		size := len(indexes[i]) - 1
+		size := len(indexes[i])
 		if value < indexes[i][0] {
 			ret[i] = 0
 		} else if value > indexes[i][size-1] {

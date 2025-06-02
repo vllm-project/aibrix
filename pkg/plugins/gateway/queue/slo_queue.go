@@ -87,7 +87,8 @@ type SLOQueue struct {
 	subpool sync.Pool
 
 	dequeueCandidates   []*candidateRouterRequest
-	lastCandidateSubKey string
+	lastCandidateSubKey string // Clear in Dequeue()
+	lastCandidateError  error  // Clear in Dequeue()
 }
 
 func NewSLOQueue(base types.Router, modelName string) (router *SLOQueue, err error) {
@@ -260,6 +261,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 
 	// Start from ealiest
 	for _, candidate := range dequeueCandidates {
+		var lastErr error
 		if monogenousGPURouting {
 			//nolint:errcheck
 			for i, profile := range candidate.Profiles {
@@ -268,18 +270,22 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 					break
 				}
 				// Try routing.
-				q.Router.Route(candidate.RoutingContext, &utils.PodArray{Pods: pods.ListByIndex(profile.Key)})
+				_, lastErr = q.Router.Route(candidate.RoutingContext, &utils.PodArray{Pods: pods.ListByIndex(profile.Key)})
 				// If monogenousGPURoutingOnly is enabled, only the most relaxing profile is considered.
 				if monogenousGPURoutingOnly || candidate.RoutingContext.HasRouted() {
 					break
 				}
 			}
 		} else {
-			//nolint:errcheck
-			q.Router.Route(candidate.RoutingContext, pods)
+			_, lastErr = q.Router.Route(candidate.RoutingContext, pods)
 		}
 		if candidate.RoutingContext.HasRouted() {
 			q.lastCandidateSubKey = candidate.SubKey
+			return candidate.RoutingContext, nil
+		} else if lastErr == cache.ErrorSLOFailureRequest {
+			// We have route dicision concluded as SLO violation. Track the conclusion.
+			q.lastCandidateSubKey = candidate.SubKey
+			q.lastCandidateError = lastErr
 			return candidate.RoutingContext, nil
 		}
 	}
@@ -293,6 +299,7 @@ func (q *SLOQueue) Dequeue(ts time.Time) (*types.RoutingContext, error) {
 	}
 	sub, _ := q.subs.Load(q.lastCandidateSubKey)
 	q.lastCandidateSubKey = ""
+	q.lastCandidateError = nil
 	defer q.debugSub(fmt.Sprintf("%s request dequeued from sub %s", q.modelName, q.lastCandidateSubKey))
 	return sub.Dequeue(ts)
 }
@@ -307,10 +314,17 @@ func (q *SLOQueue) Len() (total int) {
 
 func (q *SLOQueue) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
 	// Ctx is not routed if no profiles is found during Peek.
-	if !ctx.HasRouted() {
+	if !ctx.HasRouted() && q.lastCandidateError == nil {
 		return q.Router.Route(ctx, pods)
 	}
+	if q.lastCandidateError != nil {
+		return "", q.lastCandidateError
+	}
 	return ctx.TargetAddress(), nil
+}
+
+func (q *SLOQueue) LastError() error {
+	return q.lastCandidateError
 }
 
 func (q *SLOQueue) validateDequeueCandidatesLocked(size int) {
