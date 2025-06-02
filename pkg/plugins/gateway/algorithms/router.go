@@ -26,9 +26,12 @@ const (
 	RouterNotSet = ""
 )
 
+var routerFactory = map[types.RoutingAlgorithm]types.RouterProviderFunc{}
+var routerConstructor = map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc{}
+
 // Validate validates if user provided routing routers is supported by gateway
 func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
-	if _, ok := routerRegistry[types.RoutingAlgorithm(algorithms)]; ok {
+	if _, ok := routerFactory[types.RoutingAlgorithm(algorithms)]; ok {
 		return types.RoutingAlgorithm(algorithms), ok
 	} else {
 		return RouterNotSet, false
@@ -38,26 +41,17 @@ func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
 // Select the user provided router provider supported by gateway, no error reported and fallback to random router
 // Call Validate before this function to ensure expected behavior.
 func Select(algorithms types.RoutingAlgorithm) types.RouterProviderFunc {
-	if provider, ok := routerRegistry[algorithms]; ok {
+	if provider, ok := routerFactory[algorithms]; ok {
 		return provider
 	} else {
 		klog.Warningf("Unsupported router strategy: %s, use %s instead.", algorithms, RouterRandom)
-		return routerRegistry[RouterRandom]
+		return routerFactory[RouterRandom]
 	}
 }
 
-func Register(algorithm types.RoutingAlgorithm, provider types.RouterProviderFunc) {
-	routerRegistry[algorithm] = provider
-	klog.Infof("Registered router for %s", algorithm)
-}
-
-func RegisterDelayed(algorithm types.RoutingAlgorithm, delayedProvider types.RouterProviderRegistrationFunc) {
-	routerDelayedRegistry[algorithm] = delayedProvider
-}
-
-func RegisterDelayedConstructor(algorithm types.RoutingAlgorithm, routerConstructor types.RouterConstructor) {
-	routerDelayedRegistry[algorithm] = func() types.RouterProviderFunc {
-		router, err := routerConstructor()
+func Register(algorithm types.RoutingAlgorithm, constructor types.RouterConstructor) {
+	routerConstructor[algorithm] = func() types.RouterProviderFunc {
+		router, err := constructor()
 		if err != nil {
 			klog.Errorf("Failed to construct router for %s: %v", algorithm, err)
 			return nil
@@ -69,10 +63,8 @@ func RegisterDelayedConstructor(algorithm types.RoutingAlgorithm, routerConstruc
 }
 
 func Init() {
-	for key, delayed := range routerDelayedRegistry {
-		Register(key, delayed())
+	for algorithm, constructor := range routerConstructor {
+		routerFactory[algorithm] = constructor()
+		klog.Infof("Registered router for %s", algorithm)
 	}
 }
-
-var routerRegistry = map[types.RoutingAlgorithm]types.RouterProviderFunc{}
-var routerDelayedRegistry = map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc{}

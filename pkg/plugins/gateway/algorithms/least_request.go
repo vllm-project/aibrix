@@ -32,7 +32,7 @@ var (
 )
 
 func init() {
-	RegisterDelayedConstructor(RouterLeastRequest, NewLeastRequestRouter)
+	Register(RouterLeastRequest, NewLeastRequestRouter)
 }
 
 type leastRequestRouter struct {
