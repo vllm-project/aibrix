@@ -135,6 +135,7 @@ func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCo
 				builder.Write(jsonBytes)
 			} else {
 				klog.ErrorS(err, "error marshalling message content", "requestID", requestID, "message", m)
+				return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error marshalling message content", HeaderErrorRequestBodyProcessing, "true")
 			}
 		}
 	}
