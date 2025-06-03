@@ -22,7 +22,7 @@ import redis
 import torch
 
 from aibrix_kvcache.cache_handle import KVCacheHandle
-from aibrix_kvcache.memory import MemoryRegion, TensorPoolAllocator
+from aibrix_kvcache.memory import MemoryRegion
 from aibrix_kvcache.spec import (
     KVCacheBlockLayout,
     KVCacheBlockSpec,
@@ -78,17 +78,6 @@ def get_cache_conf(layout):
 def cache_conf_fixture(request):
     layout = request.param
     return get_cache_conf(layout)
-
-
-def get_allocator(capacity, shape, dtype):
-    mr_nbytes = torch.Size(shape).numel() * dtype.itemsize
-    # use a small slab size for testing
-    TensorPoolAllocator.SLAB_MAX_NBYTES = mr_nbytes * 8
-    capacity_nbytes = capacity * mr_nbytes
-    allocator = TensorPoolAllocator(
-        capacity_nbytes=capacity_nbytes, mr_nbytes=mr_nbytes
-    )
-    return allocator
 
 
 def release_mrs(mrs: Sequence[MemoryRegion]):
