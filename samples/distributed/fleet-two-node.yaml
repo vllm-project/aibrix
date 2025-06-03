@@ -185,7 +185,7 @@ spec:
           kind: Service
           name: qwen-coder-7b-instruct
           namespace: default
-          port: 8000  # or 8000 if you're not using the runtime sidecar
+          port: 8080  # or 8000 if you're not using the runtime sidecar
           weight: 1
       matches:
         - headers:
