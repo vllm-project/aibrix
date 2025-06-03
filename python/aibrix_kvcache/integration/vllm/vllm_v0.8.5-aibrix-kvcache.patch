@@ -5737,10 +5737,10 @@ index 4c577c1c4..92dc1d8e9 100644
      k_pe: torch.Tensor,
 diff --git a/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py b/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py
 new file mode 100644
-index 000000000..6301f3a95
+index 000000000..57fe9deb4
 --- /dev/null
 +++ b/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py
-@@ -0,0 +1,1123 @@
+@@ -0,0 +1,1133 @@
 +# SPDX-License-Identifier: Apache-2.0
 +import copy
 +import dataclasses
@@ -5753,7 +5753,8 @@ index 000000000..6301f3a95
 +import torch
 +from aibrix_kvcache import (BaseKVCacheManager, GroupAwareKVCacheManager,
 +                            KVCacheBlockLayout, KVCacheBlockSpec,
-+                            KVCacheConfig, KVCacheMetrics, KVCacheTensorSpec)
++                            KVCacheConfig, KVCacheMetrics, KVCacheTensorSpec,
++                            ModelSpec, TokenCacheKey)
 +from aibrix_kvcache.common.absl_logging import (getLogger, log_every_n_seconds,
 +                                                log_if)
 +from aibrix_kvcache.metrics import (MS_BUCKETS, TOKEN_BUCKETS,
@@ -6224,7 +6225,9 @@ index 000000000..6301f3a95
 +            ),
 +        )
 +
-+        config = KVCacheConfig(block_spec=block_spec)
++        config = KVCacheConfig(block_spec=block_spec,
++                               model_spec=ModelSpec(
++                                   model_config.max_model_len))
 +
 +        if parallel_config.tensor_parallel_size == 1:
 +            self.cache = BaseKVCacheManager(config=config)
@@ -6447,21 +6450,24 @@ index 000000000..6301f3a95
 +
 +            total_sent = 0
 +            for (
-+                    chunk_prefix,
-+                    chunk_tokens,
++                    chunk_cache_key,
 +                    _,
-+                    all,
++                    all_cache_key,
 +            ) in self.cache.cache_chunk_keys(prefix, tokens):
 +                # |----------- seq_context_len ---------|- offset -|
 +                # |- aligned_context_len -|- shift_len -|
 +                #                         |--- n * chunk_size -----|
 +                # |----------------- chunk_prefix -----------------|- tokens -|
 +                #                         |-------- (n + 1) * chunk_size -----|
++                chunk_prefix = chunk_cache_key.prefix
++                chunk_tokens = chunk_cache_key.tokens
 +                chunk_size = len(chunk_tokens)
 +                offset = len(chunk_prefix) - seq_context_len
 +                length = chunk_size
 +
-+                exists_status = self.cache.exists(chunk_prefix, chunk_tokens)
++                cache_key = TokenCacheKey(prefix=chunk_prefix,
++                                          tokens=chunk_tokens)
++                exists_status = self.cache.exists(cache_key)
 +                if exists_status.is_ok():
 +                    num_existing_tokens = exists_status.value
 +                    logger.info(
@@ -6475,12 +6481,15 @@ index 000000000..6301f3a95
 +                        length -= num_existing_tokens
 +                        new_chunk_prefix_len = (len(chunk_prefix) +
 +                                                num_existing_tokens)
++                        all = all_cache_key.all_tokens()
 +                        chunk_prefix = all[:new_chunk_prefix_len]
 +                        chunk_tokens = all[
 +                            new_chunk_prefix_len:new_chunk_prefix_len + length]
 +
++                cache_key = TokenCacheKey(prefix=chunk_prefix,
++                                          tokens=chunk_tokens)
 +                # allocate space for KV caches
-+                status = self.cache.allocate(length // self.block_ntokens)
++                status = self.cache.allocate_for(cache_key)
 +                if not status.is_ok():
 +                    log_every_n_seconds(logger, logging.ERROR,
 +                                        "Failed to allocate : %s", 3,
@@ -6514,8 +6523,9 @@ index 000000000..6301f3a95
 +                            get_kernel_offload_dur_ms())
 +
 +                # put KV caches to offloading service
-+                status = self.cache.put(chunk_prefix, chunk_tokens[:length],
-+                                        handle)
++                cache_key = TokenCacheKey(prefix=chunk_prefix,
++                                          tokens=chunk_tokens[:length])
++                status = self.cache.put(cache_key, handle)
 +                if not status.is_ok():
 +                    # TODO: notify other ranks in the group to stop sending
 +                    # if this is a fatal error
@@ -6670,18 +6680,18 @@ index 000000000..6301f3a95
 +
 +            seq_recv_len = 0
 +            for (
-+                    chunk_prefix,
-+                    chunk_tokens,
-+                    next_tokens,
++                    chunk_cache_key,
++                    next_cache_key,
 +                    _,
 +            ) in self.cache.cache_chunk_keys(prefix, tokens):
-+                if next_tokens and len(next_tokens) > 0:
++                if next_cache_key and len(next_cache_key) > 0:
 +                    # prefetch
-+                    self.cache.prefetch(chunk_prefix + chunk_tokens,
-+                                        next_tokens)
++                    self.cache.prefetch(next_cache_key)
 +
++                chunk_prefix = chunk_cache_key.prefix
++                chunk_tokens = chunk_cache_key.tokens
 +                # get KV caches from offloading service
-+                status = self.cache.acquire(chunk_prefix, chunk_tokens)
++                status = self.cache.acquire(chunk_cache_key)
 +
 +                if not status.is_ok():
 +                    if not status.is_not_found():
