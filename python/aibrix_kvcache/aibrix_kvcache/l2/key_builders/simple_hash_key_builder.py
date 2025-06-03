@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import array
-from typing import Sequence, Tuple
+from typing import Tuple
 
+import numpy as np
+
+from ...utils import np_array_concat
 from .hasher import Hasher
 from .key_builder import KeyBuilder
 
@@ -26,8 +28,8 @@ class SimpleHashKeyBuilder(KeyBuilder):
         self.block_size = block_size
 
     def build(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Tuple[Tuple[Sequence[int], str], ...]:
+        self, prefix: np.ndarray | None, tokens: np.ndarray
+    ) -> Tuple[Tuple[np.ndarray, bytes], ...]:
         assert prefix is None or len(prefix) % self.block_size == 0
 
         token_size = len(tokens) - len(tokens) % self.block_size
@@ -36,19 +38,15 @@ class SimpleHashKeyBuilder(KeyBuilder):
 
         results = []
 
-        not_none_prefix = tuple() if prefix is None else tuple(prefix)
-        prefix_len = len(not_none_prefix)
-        all = tuple(not_none_prefix + tuple(tokens[:token_size]))
-        all_bytes = array.array("I", all).tobytes()
-        itemsize = array.array("I").itemsize
+        prefix_len = len(prefix) if prefix is not None else 0
+        all = np_array_concat(prefix, tokens)
+        all_bytes = memoryview(all)
         for i in range(0, token_size, self.block_size):
             keys = all[: prefix_len + i + self.block_size]
 
-            data = all_bytes[: (prefix_len + i + self.block_size) * itemsize]
+            data = all_bytes[: prefix_len + i + self.block_size]
             curr_hash = self.hasher.hash(data)
 
-            # Format hash as a 32-character hexadecimal string
-            hash_hex = f"{curr_hash:032x}"
-            results.append((keys, hash_hex))
+            results.append((keys, curr_hash.to_bytes(16)))
 
         return tuple(results)

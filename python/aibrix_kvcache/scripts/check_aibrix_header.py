@@ -16,6 +16,7 @@
 
 # Adapted from vLLM
 
+import os
 import sys
 
 AIBRIX_HEADER = """# Copyright 2024 The Aibrix Team.
@@ -63,6 +64,8 @@ def add_header(file_path):
 def main():
     files_with_missing_header = []
     for file_path in sys.argv[1:]:
+        if not os.path.exists(file_path):
+            continue
         if not check_aibrix_header(file_path):
             files_with_missing_header.append(file_path)
 
