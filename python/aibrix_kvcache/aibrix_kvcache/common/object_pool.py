@@ -44,16 +44,23 @@ class ObjectPool:
     ):
         if klass is None and object_creator is None:
             raise ValueError("Must provide either klass or object_creator")
+        if min_pool_size < 0 or max_pool_size < 0:
+            raise ValueError("Pool sizes must be non-negative")
+        if min_pool_size > max_pool_size:
+            raise ValueError("min_pool_size cannot exceed max_pool_size")
 
         self.object_creator = object_creator or klass
         self.min_pool_size = min_pool_size
         self.max_pool_size = max_pool_size
         self._pool: Queue = Queue(maxsize=max_pool_size)
         self._lock = threading.Lock()
-        # Tracks available objects in pool
-        self._current_size = 0
-        # Tracks total objects (in pool + checked out)
-        self._current_capacity = 0
+        # Initialize the counter for objects currently
+        # checked out from the pool.
+        # This tracks how many objects are currently
+        # in use by clients and have not been returned.
+        # It is used to enforce the max_pool_size limit
+        # on total concurrent usage.
+        self._num_checked_out = 0
 
         self._initialize_pool()
 
@@ -62,8 +69,6 @@ class ObjectPool:
         with self._lock, contextlib.suppress(Exception):
             for _ in range(self.min_pool_size):
                 self._pool.put(self.object_creator(), block=False)
-                self._current_size += 1
-                self._current_capacity += 1
 
     def get(self, n: int = 1) -> Optional[List[T]]:
         """
@@ -77,22 +82,19 @@ class ObjectPool:
         """
         objs = []
         with self._lock:
-            num_checked_out = self._current_capacity - self._current_size
-            if num_checked_out + n > self.max_pool_size:
+            borrowed = self._num_checked_out
+            if borrowed + n > self.max_pool_size:
                 return None  # Capacity limit reached
 
             # Prefer to get objects from pool
-            num_from_pool = min(n, self._current_size)
-            objs.extend([self._pool.get_nowait() for _ in range(num_from_pool)])
-            self._current_size -= num_from_pool
+            available = self._pool.qsize()
+            to_get = min(n, available)
+            objs.extend([self._pool.get_nowait() for _ in range(to_get)])
 
             # If not enough objects in pool, create new ones
-            if num_from_pool < n:
-                objs.extend(
-                    [self.object_creator() for _ in range(n - num_from_pool)]
-                )
-                self._current_capacity += n - num_from_pool
-
+            if to_get < n:
+                objs.extend([self.object_creator() for _ in range(n - to_get)])
+            self._num_checked_out += len(objs)
             return objs
 
     def put(self, objs: T | List[T]) -> None:
@@ -108,18 +110,19 @@ class ObjectPool:
         if not isinstance(objs, list):
             objs = [objs]
 
-        with self._lock and contextlib.suppress(Exception):
+        with self._lock, contextlib.suppress(Exception):
             for o in objs:
-                if self._current_size < self._current_capacity:
+                if not self._pool.full():
                     self._pool.put_nowait(o)
-                    self._current_size += 1
+                    # Decrement checked-out count for every returned object
+                    self._num_checked_out -= 1
 
     def size(self) -> int:
         """Get current number of available objects in pool."""
         with self._lock:
-            return self._current_size
+            return self._pool.qsize()
 
     def capacity(self) -> int:
         """Get total number of objects (checked out + in pool)."""
         with self._lock:
-            return self._current_capacity
+            return self._pool.qsize() + self._num_checked_out
