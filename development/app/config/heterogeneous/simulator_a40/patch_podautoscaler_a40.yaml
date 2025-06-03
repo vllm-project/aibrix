@@ -3,7 +3,7 @@ apiVersion: autoscaling.aibrix.ai/v1alpha1
 kind: PodAutoscaler
 metadata:
   name: podautoscaler-simulator-llama2-7b-a40
-  labels:
+  annotations:
     kpa.autoscaling.aibrix.ai/scale-down-delay: 0s
 spec:
   scaleTargetRef:
