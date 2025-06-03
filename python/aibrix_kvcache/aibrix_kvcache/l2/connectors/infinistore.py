@@ -14,7 +14,7 @@
 
 import functools
 from concurrent.futures import Executor
-from typing import List, Sequence, Tuple
+from typing import Any, List, Sequence, Tuple
 
 import infinistore
 import torch
@@ -222,7 +222,7 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
 
     def get_batches(
         self,
-        keys: Sequence[bytes],
+        keys: Sequence[Any],
         mrs: Sequence[MemoryRegion],
         batch_size: int,
     ) -> Sequence[Sequence[Tuple[bytes, MemoryRegion]]]:

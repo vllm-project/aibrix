@@ -13,7 +13,9 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from typing import Sequence, Tuple
+from typing import Tuple
+
+import numpy as np
 
 
 class KeyBuilder(ABC):
@@ -21,12 +23,12 @@ class KeyBuilder(ABC):
 
     @abstractmethod
     def build(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Tuple[Tuple[Sequence[int], str | bytes], ...]:
+        self, prefix: np.ndarray | None, tokens: np.ndarray
+    ) -> Tuple[Tuple[np.ndarray, bytes], ...]:
         """Build a sequence of keys from given tokens.
         Args:
-            prefix (Sequence[int] | None): prefix tokens
-            tokens (Sequence[int]): tokens
+            prefix (np.ndarray | None): prefix tokens
+            tokens (np.ndarray): tokens
         Returns:
             A sequence of keys.
         """

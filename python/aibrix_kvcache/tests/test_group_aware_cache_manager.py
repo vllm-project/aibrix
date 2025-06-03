@@ -15,10 +15,10 @@
 import copy
 import os
 import random
-import shutil
 from contextlib import contextmanager
 from typing import Any, List
 
+import numpy as np
 import pytest
 import torch
 import torch.distributed as dist
@@ -29,11 +29,13 @@ from aibrix_kvcache import (
     GroupAwareKVCacheManager,
     KVCacheBlockLayout,
     KVCacheConfig,
+    ModelSpec,
+    TokenCacheKey,
     cache_manager,
 )
+from aibrix_kvcache.utils import np_array_concat
 
 from .conftest import (
-    TEMP_ROOT,
     discard_all_aibrix_envs,
     get_cache_conf,
     randomize_cache_handle,
@@ -62,25 +64,18 @@ def envs(request):
     elif request.param == "l2_sync":
         # enable l2 and disable l1
         os.environ["AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED"] = "0"
-        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "ROCKSDB"
+        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "MOCK"
         os.environ[
             "AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_MAX_INFLIGHT_TOKENS"
         ] = "0"
-
-        # rocksdb envs
-        os.environ["AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT"] = TEMP_ROOT
     elif request.param == "l2_async":
         # enable l2 and disable l1
         os.environ["AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED"] = "0"
-        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "ROCKSDB"
-
-        # rocksdb envs
-        os.environ["AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT"] = TEMP_ROOT
-
+        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "MOCK"
     elif request.param == "l1_l2_sync":
         # enable both l1 and l2
         os.environ["AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED"] = "1"
-        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "ROCKSDB"
+        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "MOCK"
 
         # let allocator use host memory
         os.environ["AIBRIX_KV_CACHE_OL_L1_CACHE_DEVICE"] = "cpu"
@@ -94,16 +89,7 @@ def envs(request):
         # always use double get
         os.environ["AIBRIX_KV_CACHE_OL_DOUBLE_GET_THRESHOLD"] = "0"
 
-        # rocksdb envs
-        os.environ["AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT"] = TEMP_ROOT
-
-    if os.path.exists(TEMP_ROOT):
-        shutil.rmtree(TEMP_ROOT, ignore_errors=True)
-
     yield request.param
-
-    if os.path.exists(TEMP_ROOT):
-        shutil.rmtree(TEMP_ROOT, ignore_errors=True)
 
 
 # dist utils
@@ -126,9 +112,6 @@ def dist_run(func, envs_name, world_size, layout):
 @contextmanager
 def process_group(rank: int, world_size: int):
     dist.init_process_group("gloo", rank=rank, world_size=world_size)
-    # each process use a different root for rocksdb
-    if "AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT" in os.environ:
-        os.environ["AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT"] += f"/{rank}"
     dist.barrier()
     yield
     dist.barrier()
@@ -149,7 +132,7 @@ def cache_conf(rank: int, world_size: int, layout: KVCacheBlockLayout):
     cache = None
     try:
         shape, spec = my_get_cache_conf(rank, world_size, layout)
-        config = KVCacheConfig(block_spec=spec)
+        config = KVCacheConfig(block_spec=spec, model_spec=ModelSpec(1024))
         cache = GroupAwareKVCacheManager(
             config=config, process_group=dist.group.WORLD
         )
@@ -166,17 +149,18 @@ def _test_put_and_get_aligned(
         rank, world_size, layout
     ) as cache_config:
         shape, spec, cache = cache_config
-        tokens = [i for i in range(32)]
+        tokens = np.array([i for i in range(32)], dtype=np.int32)
         origin_tokens = copy.deepcopy(tokens)
-        status = cache.allocate(2)
+        cache_key = TokenCacheKey(tokens=tokens)
+        status = cache.allocate_for(cache_key)
         assert status.is_ok()
         put_handle = status.value
         randomize_cache_handle(put_handle)
         put_tensors = put_handle.to_tensors()
         put_tensors = [t.clone() for t in put_tensors]
 
-        put_status = cache.put(None, tokens, put_handle)
-        assert tokens == origin_tokens, f"{tokens}!= {origin_tokens}"
+        put_status = cache.put(cache_key, put_handle)
+        assert all(tokens == origin_tokens), f"{tokens}!= {origin_tokens}"
         assert put_status.is_ok(), f"{put_status}"
         assert put_status.value == len(
             tokens
@@ -185,8 +169,8 @@ def _test_put_and_get_aligned(
         if envs_name.endswith("async"):
             cache.flush()
 
-        get_status = cache.acquire(None, tokens)
-        assert tokens == origin_tokens, f"{tokens}!= {origin_tokens}"
+        get_status = cache.acquire(cache_key)
+        assert all(tokens == origin_tokens), f"{tokens}!= {origin_tokens}"
         assert get_status.is_ok(), f"{get_status}"
         assert get_status.value[0] == 32, f"{get_status.value[0]}!= 32"
         get_handle = get_status.value[1]
@@ -226,11 +210,13 @@ def _test_stress_cache(
             if num_prefix_blocks > 0:
                 prefix_tokens = [j for j in range(num_prefix_blocks * 16)]
                 prefix_tokens = _bcast_object(prefix_tokens)
-                status = cache.allocate(num_prefix_blocks)
+                prefix_tokens = np.array(prefix_tokens, dtype=np.int32)
+                prefix_cache_key = TokenCacheKey(tokens=prefix_tokens)
+                status = cache.allocate_for(prefix_cache_key)
                 assert status.is_ok()
                 put_handle = status.value
                 randomize_cache_handle(put_handle)
-                cache.put(None, prefix_tokens, put_handle)
+                cache.put(prefix_cache_key, put_handle)
 
             else:
                 prefix_tokens = None
@@ -241,14 +227,17 @@ def _test_stress_cache(
             tokens = [j for j in range(ntokens)]
             random.shuffle(tokens)
             tokens = _bcast_object(tokens)
-            status = cache.allocate(2)
+            tokens = np.array(tokens, dtype=np.int32)
+            cache_key = TokenCacheKey(prefix=prefix_tokens, tokens=tokens)
+            status = cache.allocate_for(cache_key)
             assert status.is_ok()
             token_handle = status.value
             randomize_cache_handle(token_handle)
             token_tensors = token_handle.to_tensors()
             token_tensors = [t.clone() for t in token_tensors]
             tokens = tokens[: len(token_handle) * 16]
-            cache.put(prefix_tokens, tokens, token_handle)
+            cache_key = TokenCacheKey(prefix=prefix_tokens, tokens=tokens)
+            cache.put(cache_key, token_handle)
             query[i] = (prefix_tokens, tokens, token_tensors)
 
         if envs_name.endswith("async"):
@@ -263,14 +252,19 @@ def _test_stress_cache(
                 ntokens_left = (len(tokens) - ntokens_to_del) // 16 * 16
                 # we delete some portion of tokens on different ranks to mimic
                 # the scenario of different ranks have different cache hits
-                del_status = cache.delete(
-                    prefix_tokens + tokens[:ntokens_left], tokens[ntokens_left:]
+                delete_key = TokenCacheKey(
+                    prefix=np_array_concat(
+                        prefix_tokens, tokens[:ntokens_left]
+                    ),
+                    tokens=tokens[ntokens_left:],
                 )
+                del_status = cache.delete(delete_key)
                 assert del_status.is_ok(), f"{del_status}"
             else:
                 ntokens_left = len(tokens)
 
-            get_status = cache.acquire(prefix_tokens, tokens)
+            get_key = TokenCacheKey(prefix=prefix_tokens, tokens=tokens)
+            get_status = cache.acquire(get_key)
             if get_status.is_ok():
                 assert get_status.value[0] > 0, f"{get_status.value[0]}<=0"
                 assert (

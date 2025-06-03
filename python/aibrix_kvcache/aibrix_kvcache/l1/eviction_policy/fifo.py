@@ -12,40 +12,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Hashable
+from typing import cast
 
-from ...memory import RefCountedObj
+from ...cache_hashable import KVCacheHashable, MemoryRegionCacheEntry
+from ...memory import MemoryRegion
 from ...status import Status, StatusCodes
 from .base_eviction_policy import (
     BaseEvictionPolicy,
     BaseEvictionPolicyNode,
     Functor,
-    V,
 )
 
 
-class FIFONode(BaseEvictionPolicyNode[V]):
+class FIFONode(BaseEvictionPolicyNode):
     __slots__ = ("next", "prev")
 
-    def __init__(self, key: Hashable, value: V):
-        super().__init__(key, value)
+    def __init__(self, payload: KVCacheHashable):
+        super().__init__(payload)
         self.next: FIFONode | None = None
         self.prev: FIFONode | None = None
 
 
-class FIFO(BaseEvictionPolicy[FIFONode, V]):
+class FIFO(BaseEvictionPolicy[FIFONode]):
     def __init__(
         self,
-        capacity: int,
-        evict_size: int = 1,
+        capacity_nbytes: int,
         on_put: Functor | None = None,
         on_evict: Functor | None = None,
         on_hot_access: Functor | None = None,
     ) -> None:
         super().__init__(
             name="FIFO",
-            capacity=capacity,
-            evict_size=evict_size,
+            capacity_nbytes=capacity_nbytes,
             on_put=on_put,
             on_evict=on_evict,
             on_hot_access=on_hot_access,
@@ -55,73 +53,69 @@ class FIFO(BaseEvictionPolicy[FIFONode, V]):
 
     def put(
         self,
-        key: Hashable,
-        value: V,
+        entry: MemoryRegionCacheEntry,
     ) -> Status:
-        if key in self._hashmap:
-            node = self._hashmap[key]
-            if node.value is not None:
-                if isinstance(node.value, RefCountedObj):
-                    node.value.ref_down()
-                node.value = None
+        node = self._hashmap.pop(entry, None)
+        if node is not None:
+            node.payload.ref_down()  # type: ignore
+            usage = len(entry) - len(node.payload)
 
-            node.value = value
+            node.payload = entry
             node.hotness = 0
         else:
-            node = FIFONode(key, value)
-            self._hashmap[key] = node
+            node = FIFONode(entry)
             self._prepend_to_head(node)
+            usage = len(entry)
             if self._on_put is not None:
-                if isinstance(node.value, RefCountedObj):
-                    node.value.ref_up()
-                self._on_put(node.key, node.value)
+                entry.ref_up()
+                self._on_put(node.payload)  # type: ignore
 
-        if len(self) > self._capacity:
-            self.evict(self.evict_size)
+        self._hashmap[entry] = node
+        self._used_nbytes += usage
+
+        if len(self) > self._capacity_nbytes:
+            self.evict()
 
         return Status.ok()
 
     def get(
         self,
-        key: Hashable,
-    ) -> Status[V]:
+        key: KVCacheHashable,
+    ) -> Status[MemoryRegion]:
         if key not in self._hashmap:
             return Status(StatusCodes.NOT_FOUND)
 
         node = self._hashmap[key]
+        entry = cast(MemoryRegionCacheEntry, node.payload)
         # The item becomes hot after the first access
         if node.hotness == 0 and self._on_hot_access:
-            if isinstance(node.value, RefCountedObj):
-                node.value.ref_up()
-            self._on_hot_access(node.key, node.value)
+            entry.ref_up()
+            self._on_hot_access(entry)
 
         node.hotness = 1
-        if isinstance(node.value, RefCountedObj):
-            node.value.ref_up()
-        return Status.ok(node.value)
+        entry.ref_up()
+        return Status.ok(entry._mr)
 
-    def delete(self, key: Hashable) -> Status:
+    def delete(self, key: KVCacheHashable) -> Status:
         node = self._hashmap.pop(key, None)
         if node:
+            self._used_nbytes -= len(node.payload)
             self._remove_from_list(node)
-
-            if node.value is not None:
-                if isinstance(node.value, RefCountedObj):
-                    node.value.ref_down()
-                node.value = None
+            node.payload.ref_down()  # type: ignore
 
         return Status.ok()
 
-    def evict(self, size: int = 1) -> Status:
-        for _ in range(size):
+    def evict(self, nbytes: int = 1) -> Status:
+        target_usage = max(0, min(len(self), self.capacity_nbytes) - nbytes)
+        while len(self) > target_usage:
             if not self._tail:
                 break
             if self._on_evict:
-                if isinstance(self._tail.value, RefCountedObj):
-                    self._tail.value.ref_up()
-                self._on_evict(self._tail.key, self._tail.value)
+                entry = cast(MemoryRegionCacheEntry, self._tail.payload)
+                entry.ref_up()
+                self._on_evict(entry)
             evicted_node = self._tail
-            self.delete(evicted_node.key)
+            self.delete(evicted_node.payload)
         return Status.ok()
 
     def assert_consistency(self) -> None:
@@ -129,7 +123,7 @@ class FIFO(BaseEvictionPolicy[FIFONode, V]):
         curr = self._head
         while curr is not None and curr.next != self._head:
             total_in_list += 1
-            assert self._hashmap.get(curr.key, None) == curr
+            assert self._hashmap.get(curr.payload, None) == curr
             curr = curr.next
         assert total_in_list == len(
             self._hashmap

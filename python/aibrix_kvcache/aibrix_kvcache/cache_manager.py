@@ -22,12 +22,14 @@ from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Iterator, List, Sequence, Tuple
 
+import numpy as np
 import torch
 import torch.distributed as dist
 import uvloop
 
 from . import envs
 from .cache_handle import KVCacheHandle, MemoryRegionKVCacheHandle
+from .cache_hashable import MemoryRegionCacheEntry, TokenCacheKey
 from .common import nvtx_range
 from .common.absl_logging import getLogger, log_every_n_seconds
 from .config import KVCacheConfig
@@ -92,26 +94,27 @@ class KVCacheManager(ABC):
         """
         raise NotImplementedError
 
-    def prefetch(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> None:
+    def prefetch(self, cache_key: TokenCacheKey) -> None:
         """(Optional) Prefetch the kv cache for the given prefix and tokens.
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
         """
         pass
 
     @abstractmethod
-    def allocate(
+    def allocate_for(
         self,
-        nblocks: int,
+        cache_key: TokenCacheKey,
     ) -> Status[KVCacheHandle]:
         """Allocate a cache handle that points to buffers owned
         by the kv cache service.
 
         Args:
-            nblocks: The number of blocks to allocate.
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
         Returns:
             The cache handle.
         """
@@ -120,8 +123,7 @@ class KVCacheManager(ABC):
     @abstractmethod
     def acquire(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        cache_key: TokenCacheKey,
     ) -> Status[Tuple[int, KVCacheHandle]]:
         """Acquire cache handle of the kv tensors for the given prefix and
         tokens.
@@ -133,8 +135,9 @@ class KVCacheManager(ABC):
         these buffers are not referenced anymore.
 
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
         Returns:
             Number of tokens have been fetched from the kv cache service.
             The cache handles corresponding to the given tokens.
@@ -143,14 +146,16 @@ class KVCacheManager(ABC):
 
     @abstractmethod
     def exists(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
+        self,
+        cache_key: TokenCacheKey,
     ) -> Status[int]:
         """Check if the kv cache corresponding to given prefix and
         tokens exists.
 
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
         Returns:
             Number of tokens existing in the kv cache service.
         """
@@ -159,15 +164,15 @@ class KVCacheManager(ABC):
     @abstractmethod
     def put(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        cache_key: TokenCacheKey,
         kv_tensors: KVCacheHandle,
     ) -> Status[int]:
         """Put kv tensors to the kv cache service.
 
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
             kv_tensors:
                 Cache handle of the kv tensors to put into the kv cache.
 
@@ -187,13 +192,13 @@ class KVCacheManager(ABC):
     @abstractmethod
     def delete(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        cache_key: TokenCacheKey,
     ) -> Status:
         """Delete kv tensors from the kv cache service.
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
         Returns:
             The status of the delete operation.
         """
@@ -209,16 +214,18 @@ class KVCacheManager(ABC):
 
     @abstractmethod
     def cache_chunk_keys(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Iterator[
-        Tuple[Sequence[int], Sequence[int], Sequence[int], Sequence[int]]
-    ]:
+        self,
+        prefix: Sequence[int] | np.ndarray | None,
+        tokens: Sequence[int] | np.ndarray,
+    ) -> Iterator[Tuple[TokenCacheKey, TokenCacheKey | None, TokenCacheKey]]:
         """Get the cache chunk keys.
         Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
-            tokens (Sequence[int]): The tokens of the kv tensors.
+            prefix (Sequence[int] | np.ndarray | None): The prefix tokens of
+                                                        the kv tensors.
+            tokens (Sequence[int] | np.ndarray): The tokens of the kv tensors.
         Returns:
-            chunk prefix tokens, chunk tokens, next chunk tokens, and all tokens
+            current chunk cache key, next chunk cache key, and cache key for
+            all tokens.
         """
         raise NotImplementedError
 
@@ -299,7 +306,6 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         capacity_nbytes: int = int(
             envs.AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB * 1024**3
         )
-        capacity: int = capacity_nbytes // self.block_nbytes
         enable_time_measurement = (
             envs.AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED
         )
@@ -308,7 +314,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         )
         self._metrics = KVCacheMetrics(
             block_ntokens=self.block_ntokens,
-            capacity=capacity,
+            capacity_nbytes=capacity_nbytes,
             enable_l1=enable_l1,
             enable_l2=enable_l2,
             enable_time_measurement=enable_time_measurement,
@@ -327,10 +333,10 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         MeasurableBase.__init__(self, self._metrics.mgr)
 
         # init allocator
-        allocator_capacity: int = 0
+        allocator_capacity_nbytes: int = 0
 
         if enable_l1:
-            allocator_capacity += capacity * self.block_nbytes
+            allocator_capacity_nbytes += capacity_nbytes
 
         if enable_l2:
             self._l2_inflight_quota = (
@@ -338,28 +344,22 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 // self.block_ntokens
             )
 
+            max_mr_nbytes = MemoryRegion.calculate_size(
+                self.block_nbytes, self.config.model_spec.max_model_len
+            )
             # more capacity for async/sync load
             if self._l2_inflight_quota > 0:
-                more_capacity = (
-                    self._l2_inflight_quota
-                    * self.block_nbytes
-                    // self.block_ntokens
-                )
+                more_capacity_nbytes = self._l2_inflight_quota * max_mr_nbytes
             else:
-                more_capacity = (
-                    self._chunk_size * self.block_nbytes // self.block_ntokens
-                )
+                more_capacity_nbytes = self._chunk_size * max_mr_nbytes
 
             # more capacity for get
-            more_capacity += (
-                2 * self._chunk_size * self.block_nbytes // self.block_ntokens
-            )
+            more_capacity_nbytes += 2 * self._chunk_size * max_mr_nbytes
 
-            allocator_capacity += more_capacity
+            allocator_capacity_nbytes += more_capacity_nbytes
 
         self._allocator = TensorPoolAllocator(
-            self.block_nbytes,
-            capacity_nbytes=allocator_capacity,
+            capacity_nbytes=allocator_capacity_nbytes,
             device=device,
             pin_memory=pin_memory,
         )
@@ -369,14 +369,12 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             eviction_policy: str = (
                 envs.AIBRIX_KV_CACHE_OL_L1_CACHE_EVICTION_POLICY
             )
-            evict_size: int = envs.AIBRIX_KV_CACHE_OL_L1_CACHE_EVICT_SIZE
 
             self._l1_cache = L1Cache(
                 eviction_policy,
-                capacity,
+                capacity_nbytes,
                 self._allocator,
                 self.block_spec,
-                evict_size,
                 metrics=self._metrics.l1,
             )
 
@@ -508,40 +506,54 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
     def _l2_ingestion_callback(
         self,
-        key_pair: Tuple[Sequence[int], Sequence[int]],
-        value: MemoryRegion | KVCacheHandle,
+        entry: MemoryRegionCacheEntry,
     ) -> Status:
-        """Ingest the kv tensors to the L2Cache.
+        """Ingestion callback for L2Cache.
         Args:
-            key_pair: E.g., (prefix, tokens)
-            value: The kv tensors.
+            entry: The entry to be ingested.
         Returns:
             The status of the ingestion operation and the number of tokens have
             been ingested or scheduled.
+        """
+        cache_key = entry.cache_key()
+        assert len(cache_key.tokens) == self.block_ntokens
+        mr = entry._mr
+        return self._l2_put(cache_key, mr)  # type: ignore
+
+    def _l2_put(
+        self, cache_key: TokenCacheKey, value: MemoryRegion | KVCacheHandle
+    ) -> Status:
+        """Put the kv tensors to the L2Cache.
+        Args:
+            cache_key: The cache key.
+            value: The kv tensors.
+        Returns:
+            The status of the put operation and the number of tokens have
+            been put or scheduled.
         """
         assert self._l2_cache is not None, "l2_cache is not initialized."
 
         status = None
         if self._l2_inflight_quota == 0:
             # sync write
-            status = self._l2_ingestion_sync_callback(key_pair, value)
+            status = self._l2_put_sync(cache_key, value)
         else:
             # async write
-            status = self._l2_ingestion_async_callback(key_pair, value)
+            status = self._l2_put_async(cache_key, value)
 
         return status
 
-    def _l2_ingestion_async_callback(
+    def _l2_put_async(
         self,
-        key_pair: Tuple[Sequence[int], Sequence[int]],
+        cache_key: TokenCacheKey,
         value: (MemoryRegion | KVCacheHandle),
     ) -> Status:
-        """Ingest the kv tensors to the L2Cache.
+        """Put the kv tensors to the L2Cache asynchrously.
         Args:
-            key_pair: E.g., (prefix, tokens)
+            cache_key: The cache key.
             value: The kv tensors.
         Returns:
-            The status of the ingestion operation and the number of tokens have
+            The status of the put operation and the number of tokens have
             been scheduled.
         """
         assert self._l2_cache is not None, "l2_cache is not initialized."
@@ -569,8 +581,6 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 return Status(StatusCodes.DENIED)
             self._l2_inflight_writes += 1
 
-        prefix, tokens = key_pair
-
         def _done_callback(
             future: asyncio.Future,
             value: (MemoryRegion | KVCacheHandle),
@@ -592,29 +602,28 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         # Async write to L2Cache
         assert self._event_loop is not None
         future = asyncio.run_coroutine_threadsafe(
-            self._l2_cache.put(prefix, tokens, value), self._event_loop
+            self._l2_cache.put(cache_key, value), self._event_loop
         )
         future.add_done_callback(functools.partial(_done_callback, value=value))
-        return Status.ok(len(tokens))
+        return Status.ok(len(cache_key.tokens))
 
-    def _l2_ingestion_sync_callback(
+    def _l2_put_sync(
         self,
-        key_pair: Tuple[Sequence[int], Sequence[int]],
+        cache_key: TokenCacheKey,
         value: (MemoryRegion | KVCacheHandle),
     ) -> Status:
-        """Ingest the kv tensors to the L2Cache.
+        """Put the kv tensors to the L2Cache blockingly.
         Args:
-            key_pair: E.g., (prefix, tokens)
+            cache_key: The cache key.
             value: The kv tensors.
         Returns:
-            The status of the ingestion operation and the number of tokens have
-            been ingested.
+            The status of the put operation and the number of tokens have
+            been put.
         """
         assert self._l2_cache is not None, "l2_cache is not initialized."
         assert self._event_loop is not None
-        prefix, tokens = key_pair
         future = asyncio.run_coroutine_threadsafe(
-            self._l2_cache.put(prefix, tokens, value), self._event_loop
+            self._l2_cache.put(cache_key, value), self._event_loop
         )
         # wait until the write is done
         status = future.result()
@@ -625,13 +634,12 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             return status
         return Status.ok(status.get() * self.block_ntokens)
 
-    def prefetch(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> None:
+    def prefetch(self, cache_key: TokenCacheKey) -> None:
         """(Optional) Prefetch the kv cache for the given prefix and tokens.
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
         """
         # TODO: implement background prefetching that loads kv cache
         # from L2Cache to L1Cache.
@@ -641,8 +649,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
     @MeasurableBase.measure(MetricRecorder.OP.ACQUIRE)
     def acquire(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        cache_key: TokenCacheKey,
     ) -> Status[Tuple[int, KVCacheHandle]]:
         """Acquire cache handle of the kv tensors for the given prefix and
         tokens.
@@ -654,13 +661,14 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         these buffers are not referenced anymore.
 
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
         Returns:
             Number of tokens have been fetched from the kv cache service.
             The cache handle corresponding to the given tokens.
         """
-        status = self._get_impl(prefix, tokens)
+        status = self._get_impl(cache_key)
         if not status.is_ok():
             return Status(status)
 
@@ -675,36 +683,40 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         )
 
     @MeasurableBase.measure(MetricRecorder.OP.EXISTS)
-    def exists(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Status[int]:
+    def exists(self, cache_key: TokenCacheKey) -> Status[int]:
         """Check if the kv cache corresponding to given prefix and
         tokens exists.
 
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
         Returns:
             Number of tokens existing in the kv cache service.
         """
-        status = self._exists_impl(prefix, tokens)
+        status = self._exists_impl(cache_key)
         if not status.is_ok():
             return status
 
         return Status.ok(status.get() * self.block_ntokens)
 
     def _exists_impl(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
+        self,
+        cache_key: TokenCacheKey,
     ) -> Status[int]:
         """Check if the kv cache corresponding to given prefix and
         tokens exists.
 
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
         Returns:
             Number of tokens existing in the kv cache service.
         """
+        prefix = cache_key.prefix
+        tokens = cache_key.tokens
+
         if prefix is not None and len(prefix) % self.block_ntokens != 0:
             return Status(StatusCodes.INVALID)
 
@@ -718,7 +730,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         num_missing_blocks = num_blocks
         l1_status: Status[int] = Status(StatusCodes.NOT_FOUND)
         if self._l1_cache is not None:
-            l1_status = self._l1_cache.exists(prefix, tokens)
+            l1_status = self._l1_cache.exists(cache_key)
 
             num_existing_blocks = l1_status.get(default=0)
             num_missing_blocks -= num_existing_blocks
@@ -735,9 +747,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         assert self._l2_cache is not None
         num_existing_tokens = num_existing_blocks * self.block_ntokens
         # check if missing kv tensors are in L2Cache
-        prefix_curr = [t for t in prefix] if prefix is not None else []
-        prefix_curr.extend(tokens[:num_existing_tokens])
-        tokens_curr = tokens[num_existing_tokens:]
+        new_cache_key = cache_key.shift(num_existing_tokens)
         timeout_s = (
             num_missing_blocks
             * self.block_ntokens
@@ -746,7 +756,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
         assert self._event_loop is not None
         future = asyncio.run_coroutine_threadsafe(
-            self._l2_cache.exists(prefix_curr, tokens_curr), self._event_loop
+            self._l2_cache.exists(new_cache_key), self._event_loop
         )
         try:
             status = future.result(timeout=timeout_s)
@@ -781,17 +791,20 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
     def _get_impl(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        cache_key: TokenCacheKey,
     ) -> Status[Sequence[MemoryRegion]]:
         """Get kv tensors from the kv cache service.
 
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
         Returns:
             The memory regions corresponding to the tokens.
         """
+        prefix = cache_key.tokens
+        tokens = cache_key.tokens
+
         if prefix is not None and len(prefix) % self.block_ntokens != 0:
             return Status(StatusCodes.INVALID)
 
@@ -808,7 +821,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             StatusCodes.NOT_FOUND
         )
         if self._l1_cache is not None:
-            l1_status = self._l1_cache.acquire(prefix, tokens)
+            l1_status = self._l1_cache.acquire(cache_key)
 
             fetched_mrs = list(l1_status.get()) if l1_status.is_ok() else []
             num_fetched_blocks = len(fetched_mrs)
@@ -825,9 +838,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
         assert self._l2_cache is not None
         # fetch missing kv tensors from L2Cache
-        prefix_curr = [t for t in prefix] if prefix is not None else []
-        prefix_curr.extend(tokens[: num_fetched_blocks * self.block_ntokens])
-        tokens_curr = tokens[num_fetched_blocks * self.block_ntokens :]
+        new_cache_key = cache_key.shift(num_fetched_blocks * self.block_ntokens)
         timeout_s = (
             num_missing_blocks
             * self.block_ntokens
@@ -835,17 +846,20 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         ) / 1000
 
         # allocate MRs to hold fetched tensors
-        nblocks_curr = len(tokens_curr) // self.block_ntokens
-        assert self._allocator is not None
-        status = self._allocator.alloc(nblocks_curr * self.block_nbytes)
+        status = self.allocate_for(new_cache_key)
         if not status.is_ok():
             return status if num_fetched_blocks == 0 else l1_status
-        mrs: List[MemoryRegion] = list(status.get())
-        tokens_curr = tokens_curr[: len(mrs) * self.block_ntokens]
+
+        mrs = list(status.get().memory_regions)
+        ntokens_to_get = len(mrs) * self.block_ntokens
+        new_cache_key = TokenCacheKey(
+            prefix=new_cache_key.prefix,
+            tokens=new_cache_key.tokens[:ntokens_to_get],
+        )
 
         assert self._event_loop is not None
         future = asyncio.run_coroutine_threadsafe(
-            self._l2_cache.get(prefix_curr, tokens_curr, mrs), self._event_loop
+            self._l2_cache.get(new_cache_key, mrs), self._event_loop
         )
         try:
             get_status = future.result(timeout=timeout_s)
@@ -855,18 +869,18 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             value = get_status.get()
             l2_fetched_mrs = mrs[:value]
             mrs = mrs[value:]
+            ntokens_fetched = len(l2_fetched_mrs) * self.block_ntokens
 
             # put the fetched kv tensors to L1Cache
             if self._l1_cache is not None:
                 for mr in l2_fetched_mrs:
                     mr.ref_up()
                 mrs_to_release = l2_fetched_mrs
-                put_tokens_curr = tokens_curr[
-                    : len(l2_fetched_mrs) * self.block_ntokens
-                ]
-                put_status = self._l1_cache.put(
-                    prefix_curr, put_tokens_curr, l2_fetched_mrs
+                put_cache_key = TokenCacheKey(
+                    prefix=new_cache_key.prefix,
+                    tokens=new_cache_key.tokens[:ntokens_fetched],
                 )
+                put_status = self._l1_cache.put(put_cache_key, l2_fetched_mrs)
                 if put_status.is_ok():
                     mrs_to_release = l2_fetched_mrs[put_status.get() :]
                 self._release(mrs_to_release)
@@ -936,60 +950,56 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             elif isinstance(x, KVCacheHandle):
                 x.release()
 
-    @nvtx_range("allocate", "KVCacheManager")
-    def allocate(
+    @nvtx_range("allocate_for", "KVCacheManager")
+    def allocate_for(
         self,
-        nblocks: int,
+        cache_key: TokenCacheKey,
     ) -> Status[KVCacheHandle]:
         """Allocate a cache handle that points to buffers owned by the kv
         cache service.
 
         Args:
-            nblocks: The number of blocks to allocate.
+            cache_key: The cache key.
         Returns:
             The cache handle.
         """
-        if self._l1_cache is not None:
-            status = self._l1_cache.allocate(nblocks)
-        elif self._l2_inflight_quota > 0:
-            # l2 cache only, async put: returns OOM if no inflight quota
-            status = None
-            with self._lock:
-                nblocks = min(
-                    nblocks, self._l2_inflight_quota - self._l2_inflight_writes
-                )
-                if nblocks <= 0:
-                    status = Status(StatusCodes.OUT_OF_MEMORY)
-            if status is None:
-                assert self._allocator is not None
-                status = self._allocator.alloc(self.block_nbytes * nblocks)
-        else:
-            # l2 cache only, sync put
-            assert self._allocator is not None
-            status = self._allocator.alloc(self.block_nbytes * nblocks)
+        key_batch = tuple(cache_key.batched(self.block_ntokens))
+        sizes = [
+            MemoryRegion.calculate_size(self.block_nbytes, len(k.all_tokens()))
+            for k in key_batch
+        ]
 
-        assert status is not None
+        if self._l1_cache is not None:
+            status = self._l1_cache.allocate(sizes)  # type: ignore
+        else:
+            status = self._allocator.alloc(sizes)  # type: ignore
         if not status.is_ok():
             return Status(status)
+
+        mrs = status.get()
+        for i, mr in enumerate(mrs):
+            key = key_batch[i]
+            mr.block_nbytes = self.block_nbytes
+            mr.pack_tokens(prefix=key.prefix, tokens=key.tokens)
+            mr.seal()
+
         return Status.ok(
-            MemoryRegionKVCacheHandle(
-                self.block_dtype, self.block_shape, status.get()
-            )
+            MemoryRegionKVCacheHandle(self.block_dtype, self.block_shape, mrs)
         )
 
     @nvtx_range("put", "KVCacheManager")
     @MeasurableBase.measure(MetricRecorder.OP.PUT)
     def put(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        cache_key: TokenCacheKey,
         kv_tensors: KVCacheHandle,
     ) -> Status[int]:
         """Put kv tensors to the kv cache service.
 
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
             kv_tensors:
                 Cache handle of the kv tensors to put into the kv cache.
 
@@ -1009,7 +1019,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         # Otherwise, we ingest kv tensors to L2Cache directly.
         if self._l1_cache is not None:
             mrs = kv_tensors.memory_regions
-            status = self._l1_cache.put(prefix, tokens, mrs)
+            status = self._l1_cache.put(cache_key, mrs)
             # release mrs that are not put to L1Cache
             self._release(mrs[status.get() :])
 
@@ -1017,32 +1027,30 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 return status
             return Status.ok(status.get() * self.block_ntokens)
         else:
-            return self._l2_ingestion_callback(
-                (prefix or [], tokens), kv_tensors
-            )
+            return self._l2_put(cache_key, kv_tensors)
 
     @nvtx_range("delete", "KVCacheManager")
     def delete(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        cache_key: TokenCacheKey,
     ) -> Status:
         """Delete kv tensors from the kv cache service.
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
         Returns:
             The status of the delete operation.
         """
         if self._l1_cache is not None:
-            status = self._l1_cache.delete(prefix, tokens)
+            status = self._l1_cache.delete(cache_key)
             if not status.is_ok():
                 return status
 
         if self._l2_cache is not None:
             assert self._event_loop is not None
             future = asyncio.run_coroutine_threadsafe(
-                self._l2_cache.delete(prefix, tokens), self._event_loop
+                self._l2_cache.delete(cache_key), self._event_loop
             )
             status = future.result()
             if not status.is_ok():
@@ -1073,23 +1081,28 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         return Status.ok()
 
     def cache_chunk_keys(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Iterator[
-        Tuple[
-            Tuple[int, ...], Tuple[int, ...], Tuple[int, ...], Tuple[int, ...]
-        ]
-    ]:
+        self,
+        prefix: Sequence[int] | np.ndarray | None,
+        tokens: Sequence[int] | np.ndarray,
+    ) -> Iterator[Tuple[TokenCacheKey, TokenCacheKey | None, TokenCacheKey]]:
         """Get the cache chunk keys.
         Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
-            tokens (Sequence[int]): The tokens of the kv tensors.
+            prefix (Sequence[int] | np.ndarray | None): The prefix tokens of
+                                                        the kv tensors.
+            tokens (Sequence[int] | np.ndarray): The tokens of the kv tensors.
         Returns:
-            chunk prefix tokens, chunk tokens, next chunk tokens, and all tokens
+            current chunk cache key, next chunk cache key, and cache key for
+            all tokens.
         """
-        not_none_prefix = tuple(prefix or [])
-        all = tuple(not_none_prefix + tuple(tokens))
+        if prefix is not None and not isinstance(prefix, np.ndarray):
+            prefix = np.array(prefix, dtype=np.int32)
+        if not isinstance(tokens, np.ndarray):
+            tokens = np.array(tokens, dtype=np.int32)
 
-        cache_key_len = len(not_none_prefix)
+        all_cache_key = TokenCacheKey(prefix=prefix, tokens=tokens)
+        all = all_cache_key._storage
+
+        cache_key_len = len(prefix) if prefix is not None else 0
         num_tokens = len(tokens)
         aligned_num_tokens = num_tokens - num_tokens % self.block_ntokens
         num_chunks = -(-aligned_num_tokens // self._chunk_size)
@@ -1097,12 +1110,19 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             chunk_end = cache_key_len + self._chunk_size
             next_chunk_end = chunk_end + self._chunk_size
             yield (
-                all[:cache_key_len],
-                all[cache_key_len:chunk_end],
-                all[chunk_end:next_chunk_end]
-                if next_chunk_end < len(all)
-                else tuple(),
-                all,
+                TokenCacheKey(
+                    prefix=all[:cache_key_len],
+                    tokens=all[cache_key_len:chunk_end],
+                ),
+                (
+                    TokenCacheKey(
+                        prefix=all[:chunk_end],
+                        tokens=all[chunk_end:next_chunk_end],
+                    )
+                    if next_chunk_end < len(all)
+                    else None
+                ),
+                all_cache_key,
             )
             cache_key_len += self._chunk_size
 
@@ -1148,8 +1168,7 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
     @MeasurableBase.measure(MetricRecorder.OP.ACQUIRE)
     def acquire(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        cache_key: TokenCacheKey,
     ) -> Status[Tuple[int, KVCacheHandle]]:
         """Acquire cache handle of the kv tensors for the given prefix and
         tokens.
@@ -1161,13 +1180,14 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
         these buffers are not referenced anymore.
 
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
         Returns:
             Number of tokens have been fetched from the kv cache service.
             The cache handle corresponding to the given tokens.
         """
-        status = self._acquire_impl(prefix, tokens)
+        status = self._acquire_impl(cache_key)
         if not status.is_ok():
             return Status(status)
         value = status.get()
@@ -1178,19 +1198,21 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
 
     def _acquire_impl(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        cache_key: TokenCacheKey,
     ) -> Status[Tuple[int, Sequence[MemoryRegion]]]:
         """Get kv tensors / cache handles.
 
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
-            zero_copy: Whether to use zero-copy.
+            cache_key: The cache key composed of prefix and tokens.
+                prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+                tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
         Returns:
             Number of tokens have been fetched from the kv cache service.
             The memory regions corresponding to the given tokens.
         """
+        prefix = cache_key.prefix
+        tokens = cache_key.tokens
+
         if prefix is not None and len(prefix) % self.block_ntokens != 0:
             return Status(StatusCodes.INVALID)
 
@@ -1200,13 +1222,14 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
 
         start = 0
         results: List[MemoryRegion] = []
-        for chunk_prefix, chunk_tokens, next_tokens, _ in self.cache_chunk_keys(
-            prefix, tokens
-        ):
-            if next_tokens and len(next_tokens) >= 0:
+        for chunk_key, next_key, _ in self.cache_chunk_keys(prefix, tokens):
+            if next_key and len(next_key.all_tokens()) >= 0:
                 # prefetch
-                super().prefetch(chunk_prefix + next_tokens, next_tokens)
-            status = super()._get_impl(chunk_prefix, chunk_tokens)
+                super().prefetch(next_key)
+
+            chunk_tokens = chunk_key.tokens
+
+            status = super()._get_impl(chunk_key)
             value = status.get()
             # we only care about the error code and num of blocks
             coll_status = Status.ok(len(value)) if status.is_ok() else status

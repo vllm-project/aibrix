@@ -39,7 +39,6 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_L1_CACHE_EVICTION_POLICY: str = "S3FIFO"
     AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB: float = 10
     AIBRIX_KV_CACHE_OL_DEVICE: str = "cpu"
-    AIBRIX_KV_CACHE_OL_L1_CACHE_EVICT_SIZE: int = 16
 
     # S3FIFO Env Vars
     AIBRIX_KV_CACHE_OL_S3FIFO_SMALL_TO_MAIN_PROMO_THRESHOLD: int = 1
@@ -164,9 +163,6 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     ),
     "AIBRIX_KV_CACHE_OL_DEVICE": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_DEVICE", "cpu").strip().lower()
-    ),
-    "AIBRIX_KV_CACHE_OL_L1_CACHE_EVICT_SIZE": lambda: int(
-        os.getenv("AIBRIX_KV_CACHE_OL_L1_CACHE_EVICT_SIZE", "16")
     ),
     # ================== S3FIFO Env Vars ==================
     # Promotion threshold of small fifo to main fifo

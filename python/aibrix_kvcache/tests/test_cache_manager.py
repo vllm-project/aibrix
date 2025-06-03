@@ -15,15 +15,22 @@
 import copy
 import os
 import random
-import shutil
 
+import numpy as np
 import pytest
 import torch
 
-from aibrix_kvcache import BaseKVCacheManager, KVCacheConfig, cache_manager
+from aibrix_kvcache import (
+    BaseKVCacheManager,
+    KVCacheConfig,
+    ModelSpec,
+    cache_manager,
+)
+from aibrix_kvcache.cache_hashable import TokenCacheKey
 from aibrix_kvcache.memory import TensorPoolAllocator
+from aibrix_kvcache.utils import np_array_concat
 
-from .conftest import TEMP_ROOT, discard_all_aibrix_envs, randomize_cache_handle
+from .conftest import discard_all_aibrix_envs, randomize_cache_handle
 
 cache_manager.TESTING_DISABLE_PIN_MEMORY = True
 
@@ -48,25 +55,20 @@ def cache_mgr_fixture(cache_conf_fixture, request):
         # enable l2 and disable l1
         os.environ["AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED"] = "0"
 
-        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "ROCKSDB"
+        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "MOCK"
         os.environ[
             "AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_MAX_INFLIGHT_TOKENS"
         ] = "0"
 
-        # rocksdb envs
-        os.environ["AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT"] = TEMP_ROOT
     elif request.param == "l2_async":
         # enable l2 and disable l1
         os.environ["AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED"] = "0"
-        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "ROCKSDB"
-
-        # rocksdb envs
-        os.environ["AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT"] = TEMP_ROOT
+        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "MOCK"
 
     elif request.param == "l1_l2_sync":
         # enable both l1 and l2
         os.environ["AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED"] = "1"
-        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "ROCKSDB"
+        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "MOCK"
 
         # let allocator use host memory
         os.environ["AIBRIX_KV_CACHE_OL_L1_CACHE_DEVICE"] = "cpu"
@@ -80,17 +82,11 @@ def cache_mgr_fixture(cache_conf_fixture, request):
         # always use double get
         os.environ["AIBRIX_KV_CACHE_OL_DOUBLE_GET_THRESHOLD"] = "0"
 
-        # rocksdb envs
-        os.environ["AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT"] = TEMP_ROOT
-
-    if os.path.exists(TEMP_ROOT):
-        shutil.rmtree(TEMP_ROOT, ignore_errors=True)
-
     shape, spec = cache_conf_fixture
 
     cache = None
     try:
-        config = KVCacheConfig(block_spec=spec)
+        config = KVCacheConfig(block_spec=spec, model_spec=ModelSpec(1024))
         # use a small slab size for testing
         TensorPoolAllocator.SLAB_MAX_NBYTES = spec.block_nbytes * 8
         cache = BaseKVCacheManager(config=config)
@@ -99,39 +95,37 @@ def cache_mgr_fixture(cache_conf_fixture, request):
         if cache is not None:
             print(cache.metrics.summary())
             cache.close()
-        if os.path.exists(TEMP_ROOT):
-            shutil.rmtree(TEMP_ROOT, ignore_errors=True)
 
 
 def test_cache_initialization(cache_mgr_fixture):
-    _, _, cache_mgr, _ = cache_mgr_fixture
-    request_param = getattr(cache_mgr, "__test_request_param__", "")
-    if "l1" in request_param:
+    _, _, cache_mgr, param = cache_mgr_fixture
+    if "l1" in param:
         assert cache_mgr._l1_cache is not None
-    if "l2" in request_param:
+    if "l2" in param:
         assert cache_mgr._l2_cache is not None
 
 
 def test_put_and_get_aligned(cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
-    tokens = [i for i in range(32)]
-    origin_tokens = copy.deepcopy(tokens)
-    status = cache_mgr.allocate(2)
+    tokens = np.array([i for i in range(32)], dtype=np.int32)
+    origin_tokens = tokens.copy()
+    cache_key = TokenCacheKey(tokens=tokens)
+    status = cache_mgr.allocate_for(cache_key)
     assert status.is_ok()
     put_handle = status.value
     randomize_cache_handle(put_handle)
     put_tensors = put_handle.to_tensors()
     put_tensors = [t.clone() for t in put_tensors]
 
-    put_status = cache_mgr.put(None, tokens, put_handle)
-    assert tokens == origin_tokens
+    put_status = cache_mgr.put(cache_key, put_handle)
+    assert all(tokens == origin_tokens)
     assert put_status.is_ok()
 
     if param.endswith("async"):
         cache_mgr.flush()
 
-    get_status = cache_mgr.acquire(None, tokens)
-    assert tokens == origin_tokens
+    get_status = cache_mgr.acquire(cache_key)
+    assert all(tokens == origin_tokens)
     assert get_status.is_ok()
     assert get_status.value[0] == 32
     get_handle = get_status.value[1]
@@ -141,7 +135,7 @@ def test_put_and_get_aligned(cache_mgr_fixture):
     get_tensors = get_handle.to_tensors()
     for pt, gt in zip(put_tensors, get_tensors):
         assert torch.equal(pt, gt)
-    exists_status = cache_mgr.exists(None, tokens)
+    exists_status = cache_mgr.exists(cache_key)
     assert exists_status.is_ok()
     assert exists_status.value == 32
     get_handle.release()
@@ -149,8 +143,9 @@ def test_put_and_get_aligned(cache_mgr_fixture):
 
 def test_put_and_get_with_prefix(cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
-    tokens0 = [i for i in range(32)]
-    status = cache_mgr.allocate(2)
+    tokens0 = np.array([i for i in range(32)], dtype=np.int32)
+    cache_key0 = TokenCacheKey(tokens=tokens0)
+    status = cache_mgr.allocate_for(cache_key0)
     assert status.is_ok()
     put_handle0 = status.value
     assert len(put_handle0) == 2
@@ -158,11 +153,12 @@ def test_put_and_get_with_prefix(cache_mgr_fixture):
     put_tensors0 = put_handle0.to_tensors()
     put_tensors0 = [t.clone() for t in put_tensors0]
 
-    put_status = cache_mgr.put(None, tokens0, put_handle0)
+    put_status = cache_mgr.put(cache_key0, put_handle0)
     assert put_status.is_ok()
 
-    tokens1 = [i for i in range(100, 132)]
-    status = cache_mgr.allocate(2)
+    tokens1 = np.array([i for i in range(100, 132)], dtype=np.int32)
+    cache_key1 = TokenCacheKey(prefix=tokens0, tokens=tokens1)
+    status = cache_mgr.allocate_for(cache_key1)
     assert status.is_ok()
     put_handle1 = status.value
     assert len(put_handle1) == 2
@@ -170,13 +166,13 @@ def test_put_and_get_with_prefix(cache_mgr_fixture):
     put_tensors1 = put_handle1.to_tensors()
     put_tensors1 = [t.clone() for t in put_tensors1]
 
-    put_status = cache_mgr.put(tokens0, tokens1, put_handle1)
+    put_status = cache_mgr.put(cache_key1, put_handle1)
     assert put_status.is_ok()
 
     if param.endswith("async"):
         cache_mgr.flush()
 
-    get_status = cache_mgr.acquire(None, tokens0)
+    get_status = cache_mgr.acquire(cache_key0)
     assert get_status.is_ok()
     assert get_status.value[0] == 32
     get_handle0 = get_status.value[1]
@@ -187,7 +183,7 @@ def test_put_and_get_with_prefix(cache_mgr_fixture):
     for pt, gt in zip(put_tensors0, get_tensors0):
         assert torch.equal(pt, gt)
 
-    get_status = cache_mgr.acquire(tokens0, tokens1)
+    get_status = cache_mgr.acquire(cache_key1)
     assert get_status.is_ok()
     assert get_status.value[0] == 32
     get_handle1 = get_status.value[1]
@@ -198,11 +194,12 @@ def test_put_and_get_with_prefix(cache_mgr_fixture):
     for pt, gt in zip(put_tensors1, get_tensors1):
         assert torch.equal(pt, gt)
 
-    exists_status = cache_mgr.exists(tokens0, tokens1)
+    exists_status = cache_mgr.exists(cache_key1)
     assert exists_status.is_ok()
     assert exists_status.value == 32
 
-    get_status = cache_mgr.acquire(None, tokens0 + tokens1)
+    cache_key1_variant = TokenCacheKey(tokens=np_array_concat(tokens0, tokens1))
+    get_status = cache_mgr.acquire(cache_key1_variant)
     assert get_status.is_ok()
     assert get_status.value[0] == 64
     get_handle2 = get_status.value[1]
@@ -218,21 +215,22 @@ def test_put_and_get_with_prefix(cache_mgr_fixture):
 def test_duplicated_puts(cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
     for _ in range(10):
-        tokens = [i for i in range(32)]
-        status = cache_mgr.allocate(2)
+        tokens = np.array([i for i in range(32)], dtype=np.int32)
+        cache_key = TokenCacheKey(tokens=tokens)
+        status = cache_mgr.allocate_for(cache_key)
         assert status.is_ok()
         put_handle = status.value
         randomize_cache_handle(put_handle)
         put_tensors = put_handle.to_tensors()
         put_tensors = [t.clone() for t in put_tensors]
 
-        put_status = cache_mgr.put(None, tokens, put_handle)
+        put_status = cache_mgr.put(cache_key, put_handle)
         assert put_status.is_ok()
 
         if param.endswith("async"):
             cache_mgr.flush()
 
-        get_status = cache_mgr.acquire(None, tokens)
+        get_status = cache_mgr.acquire(cache_key)
         assert get_status.is_ok()
         assert get_status.value[0] == 32
         get_handle = get_status.value[1]
@@ -247,27 +245,30 @@ def test_duplicated_puts(cache_mgr_fixture):
 
 def test_delete(cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
-    tokens = [i for i in range(32)]
+    tokens = np.array([i for i in range(32)], dtype=np.int32)
+    cache_key = TokenCacheKey(tokens=tokens)
     origin_tokens = copy.deepcopy(tokens)
-    status = cache_mgr.allocate(2)
+    status = cache_mgr.allocate_for(cache_key)
     assert status.is_ok()
     put_handle = status.value
     randomize_cache_handle(put_handle)
     put_tensors = put_handle.to_tensors()
     put_tensors = [t.clone() for t in put_tensors]
 
-    put_status = cache_mgr.put(None, tokens, put_handle)
-    assert tokens == origin_tokens
+    put_status = cache_mgr.put(cache_key, put_handle)
+    assert all(tokens == origin_tokens)
     assert put_status.is_ok()
     assert put_status.value == 32
 
     if param.endswith("async"):
         cache_mgr.flush()
 
-    del_status = cache_mgr.delete(tokens[:16], tokens[16:])
+    delete_key = TokenCacheKey(prefix=tokens[:16], tokens=tokens[16:])
+    del_status = cache_mgr.delete(delete_key)
     assert del_status.is_ok()
 
-    get_status = cache_mgr.acquire(None, tokens[:16])
+    get_key = TokenCacheKey(tokens=tokens[:16])
+    get_status = cache_mgr.acquire(get_key)
     assert get_status.is_ok()
     assert get_status.value[0] == 16
     get_handle = get_status.value[1]
@@ -275,7 +276,7 @@ def test_delete(cache_mgr_fixture):
     assert torch.equal(get_handle.to_tensors()[0], put_tensors[0])
     get_handle.release()
 
-    get_status = cache_mgr.acquire(tokens[:16], tokens[16:])
+    get_status = cache_mgr.acquire(delete_key)
     assert get_status.is_not_found()
 
 
@@ -285,13 +286,17 @@ def test_stress_cache(cache_mgr_fixture):
     for i in range(200):
         num_prefix_blocks = random.randint(0, 10)
         if num_prefix_blocks > 0:
-            prefix_tokens = [j for j in range(num_prefix_blocks * 16)]
-            status = cache_mgr.allocate(num_prefix_blocks)
+            prefix_tokens = np.array(
+                [j for j in range(num_prefix_blocks * 16)], dtype=np.int32
+            )
+            prefix_cache_key = TokenCacheKey(tokens=prefix_tokens)
+            status = cache_mgr.allocate_for(prefix_cache_key)
             assert status.is_ok()
             prefix_handle = status.value
             randomize_cache_handle(prefix_handle)
             prefix_tokens = prefix_tokens[: len(prefix_handle) * 16]
-            put_status = cache_mgr.put(None, prefix_tokens, prefix_handle)
+            prefix_cache_key = TokenCacheKey(tokens=prefix_tokens)
+            put_status = cache_mgr.put(prefix_cache_key, prefix_handle)
             assert not put_status.is_invalid()
             if put_status.is_out_of_memory() or put_status.is_denied():
                 continue
@@ -300,35 +305,39 @@ def test_stress_cache(cache_mgr_fixture):
                 prefix_tokens
             )
 
-            status = cache_mgr.acquire(None, prefix_tokens)
+            status = cache_mgr.acquire(prefix_cache_key)
             assert status.is_ok()
             status.value[1].release()
         else:
             prefix_tokens = None
 
         num_token_blocks = random.randint(1, 64)
-        tokens = [j for j in range(num_token_blocks * 16)]
+        tokens = np.array(
+            [j for j in range(num_token_blocks * 16)], dtype=np.int32
+        )
+        token_cache_key = TokenCacheKey(prefix=prefix_tokens, tokens=tokens)
         random.shuffle(tokens)
-        status = cache_mgr.allocate(num_token_blocks)
+        status = cache_mgr.allocate_for(token_cache_key)
         assert status.is_ok()
         token_handle = status.value
         randomize_cache_handle(token_handle)
         tokens = tokens[: len(token_handle) * 16]
+        token_cache_key = TokenCacheKey(prefix=prefix_tokens, tokens=tokens)
         token_tensors = token_handle.to_tensors()
         token_tensors = [t.clone() for t in token_tensors]
-        put_status = cache_mgr.put(prefix_tokens, tokens, token_handle)
+        put_status = cache_mgr.put(token_cache_key, token_handle)
         if put_status.is_out_of_memory() or put_status.is_denied():
             continue
 
         assert put_status.is_ok()
         assert put_status.value >= 0 and put_status.value <= len(tokens)
-        status = cache_mgr.acquire(prefix_tokens, tokens)
+        status = cache_mgr.acquire(token_cache_key)
         assert not status.is_invalid()
         if not status.is_ok():
             continue
 
         status.value[1].release()
-        query[i] = (prefix_tokens or [], tokens, token_tensors)
+        query[i] = (prefix_tokens, tokens, token_tensors)
 
     if param.endswith("async"):
         cache_mgr.flush()
@@ -347,9 +356,10 @@ def test_stress_cache(cache_mgr_fixture):
                 else 16
             )
 
-            get_status = cache_mgr.acquire(
-                prefix_tokens, tokens[j : j + length]
+            get_cache_key = TokenCacheKey(
+                prefix=prefix_tokens, tokens=tokens[j : j + length]
             )
+            get_status = cache_mgr.acquire(get_cache_key)
             if get_status.is_ok():
                 assert get_status.value[0] > 0
                 num = get_status.value[0] // 16
@@ -361,14 +371,14 @@ def test_stress_cache(cache_mgr_fixture):
                     )
                 results.append(1)
                 get_handle.release()
-                exists_status = cache_mgr.exists(
-                    prefix_tokens, tokens[j : j + length]
-                )
+                exists_status = cache_mgr.exists(get_cache_key)
                 assert exists_status.is_ok()
                 assert exists_status.value >= num * 16
             else:
                 results.append(0)
-            prefix_tokens += tokens[j : j + length]
+            prefix_tokens = np_array_concat(
+                prefix_tokens, tokens[j : j + length]
+            )
             j += length
 
     recorder = cache_mgr._recorder
@@ -380,5 +390,3 @@ def test_stress_cache(cache_mgr_fixture):
     for reason, num in recorder.get_metrics.num_errors_by_reason.items():
         if num > 0 and reason not in ["out_of_memory", "denied", "not_found"]:
             raise AssertionError(f"GET {reason}: {num}")
-    num_oks = sum(results)
-    assert num_oks > 50

@@ -13,17 +13,18 @@
 # limitations under the License.
 
 import logging
-from typing import Iterator, Sequence, Tuple
+from typing import Sequence, Tuple
 
 import torch
 
+from ..cache_hashable import MemoryRegionCacheEntry, TokenCacheKey
 from ..common import nvtx_range
 from ..common.absl_logging import getLogger, log_every_n_seconds
 from ..memory import MemoryRegion, TensorPoolAllocator
 from ..metrics import L1CacheMetrics, MeasurableBase, MetricRecorder
 from ..spec import KVCacheBlockSpec
 from ..status import Status, StatusCodes
-from ..utils import cpu_perf_timer
+from ..utils import cpu_perf_timer, human_readable_bytes
 from .eviction_policy import BaseEvictionPolicy, Functor
 
 logger = getLogger(__name__)
@@ -33,10 +34,9 @@ class L1Cache(MeasurableBase):
     def __init__(
         self,
         eviction_policy: str,
-        capacity: int,
+        capacity_nbytes: int,
         allocator: TensorPoolAllocator,
         block_spec: KVCacheBlockSpec,
-        evict_size: int = 1,
         on_put: Functor | None = None,
         on_evict: Functor | None = None,
         on_hot_access: Functor | None = None,
@@ -45,12 +45,9 @@ class L1Cache(MeasurableBase):
         """Create a cache object.
         Args:
             eviction_policy (str): The name of the eviction policy.
-            capacity (int): The capacity of the cache in terms of
-                            number of blocks.
+            capacity_nbytes (int): The capacity of the cache in bytes.
             allocator (TensorPoolAllocator): The allocator to allocate
                                              cache block.
-            evict_size (int): The number of items to evict at a time.
-                              Defaults to 1.
             on_put(Functor): The callback function to call when putting
                              new items. Defaults to None.
             on_evict(Functor): The evict function to call when evicting
@@ -60,7 +57,7 @@ class L1Cache(MeasurableBase):
             metrics (L1CacheMetrics): The metrics of the cache.
         """
         super().__init__(metrics)
-        self.capacity: int = capacity
+        self.capacity_nbytes: int = capacity_nbytes
         self.allocator: TensorPoolAllocator = allocator
         self.block_spec: KVCacheBlockSpec = block_spec
         self.block_shape: Tuple[int, ...] = self.block_spec.block_shape
@@ -71,30 +68,28 @@ class L1Cache(MeasurableBase):
 
         self._eviction_policy: BaseEvictionPolicy = BaseEvictionPolicy.create(
             eviction_policy,
-            capacity,
-            evict_size,
+            capacity_nbytes,
             on_put=on_put,
             on_evict=on_evict,
             on_hot_access=on_hot_access,
         )
 
-        assert (
-            self.allocator.capacity_nbytes >= self.capacity * self.block_nbytes
-        ), (
+        assert self.allocator.capacity_nbytes >= self.capacity_nbytes, (
             f"Allocator capacity {self.allocator.capacity_nbytes} should not "
-            f"be less than cache capacity {self.capacity * self.block_nbytes}."
+            f"be less than cache capacity {self.capacity_nbytes}."
         )
 
         logger.info("%s is initialized.", str(self))
 
     def __len__(self) -> int:
-        """Return the number of cache blocks in the cache."""
+        """Return the usage of the cache in bytes."""
         return len(self._eviction_policy)
 
     def __repr__(self) -> str:
         return (
-            f"L1Cache(policy={self._eviction_policy.name}, "
-            f"capacity={self.capacity}, size={len(self)})"
+            f"L1Cache(policy={self._eviction_policy.name}"
+            f", capacity_nbytes={human_readable_bytes(self.capacity_nbytes)}"
+            f", size={human_readable_bytes(len(self))})"
         )
 
     def __str__(self) -> str:
@@ -114,57 +109,62 @@ class L1Cache(MeasurableBase):
 
     def allocate(
         self,
-        num_blocks: int,
+        sizes: Sequence[int],
     ) -> Status[Sequence[MemoryRegion]]:
         """Allocate a set of memory regions that have the capacity to
         hold `nblocks`.
 
         Args:
-            num_blocks: The number of blocks to allocate.
+            sizes: The sizes of the memory regions.
         Returns:
             The memory regions.
         """
         if self._recorder:
             self._recorder.trace_usage(  # type: ignore[attr-defined]
                 MetricRecorder.Resource.L1_ALLOCATOR,
-                self.allocator._used_nbytes // self.block_nbytes,
+                self.allocator._used_nbytes,
             )
             self._recorder.trace_usage(  # type: ignore[attr-defined]
                 MetricRecorder.Resource.L1_EVICTION_POLICY,
                 len(self._eviction_policy),
             )
 
-        if self.capacity - len(self) < num_blocks:
-            self._eviction_policy.evict(num_blocks)
+        total = sum(sizes)
 
-        num_blocks = min(num_blocks, self.capacity - len(self))
+        status = self.allocator.alloc(sizes)
+        while status.is_out_of_memory() and len(self) > 0:
+            self._eviction_policy.evict(total)
+            status = self.allocator.alloc(sizes)
 
-        if num_blocks == 0:
-            return Status(StatusCodes.OUT_OF_MEMORY)
+        if not status.is_ok():
+            return status
 
-        return self.allocator.alloc(self.block_nbytes * num_blocks)
+        mrs = status.get()
+        for mr in mrs:
+            mr.block_nbytes = self.block_nbytes
+
+        return Status.ok(mrs)
 
     @nvtx_range("exists", "kv_cache_ol.L1Cache")
     @MeasurableBase.measure(MetricRecorder.OP.EXISTS)
     def exists(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        cache_key: TokenCacheKey,
     ) -> Status[int]:
         """Check if the kv cache corresponding to given prefix and
         tokens exists.
 
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            cache_key (TokenCacheKey): The cache key.
         Returns:
             Number of blocks existing in the kv cache service.
         """
+        prefix = cache_key.prefix
         if prefix is not None and len(prefix) % self.block_ntokens != 0:
             return Status(StatusCodes.INVALID)
 
         total = 0
-        for key in self._cache_block_keys(prefix, tokens):
+        for key in cache_key.batched(self.block_ntokens):
             if key in self._eviction_policy:
                 total += 1
             else:
@@ -175,16 +175,14 @@ class L1Cache(MeasurableBase):
     @MeasurableBase.measure(MetricRecorder.OP.PUT)
     def put(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        cache_key: TokenCacheKey,
         kv_tensors: torch.Tensor
         | Sequence[torch.Tensor]
         | Sequence[MemoryRegion],
     ) -> Status[int]:
         """Put kv tensors to the cache.
         Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
-            tokens (Sequence[int]): The tokens of the kv tensors.
+            cache_key (TokenCacheKey): The cache key.
             kv_tensors: The kv tensors.
         Returns:
             The status of the put operation and the number of blocks.
@@ -192,24 +190,24 @@ class L1Cache(MeasurableBase):
         if isinstance(kv_tensors, torch.Tensor) or isinstance(
             kv_tensors[0], torch.Tensor
         ):
-            return self._put_tensors_impl(prefix, tokens, kv_tensors)  # type: ignore[arg-type]
+            return self._put_tensors_impl(cache_key, kv_tensors)  # type: ignore[arg-type]
         else:
-            return self._put_mrs_impl(prefix, tokens, kv_tensors)  # type: ignore[arg-type]
+            return self._put_mrs_impl(cache_key, kv_tensors)  # type: ignore[arg-type]
 
     def _put_tensors_impl(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        cache_key: TokenCacheKey,
         kv_tensors: torch.Tensor | Sequence[torch.Tensor],
     ) -> Status[int]:
         """Put kv tensors to the cache.
         Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
-            tokens (Sequence[int]): The tokens of the kv tensors.
+            cache_key (TokenCacheKey): The cache key.
             kv_tensors (torch.Tensor | Sequence[torch.Tensor]): The kv tensors.
         Returns:
             The status of the put operation and the number of blocks.
         """
+        prefix = cache_key.prefix
+        tokens = cache_key.tokens
         if prefix is not None and len(prefix) % self.block_ntokens != 0:
             return Status(
                 StatusCodes.INVALID,
@@ -255,7 +253,12 @@ class L1Cache(MeasurableBase):
         num_tokens = len(tokens)
         num_blocks = num_tokens // self.block_ntokens
 
-        status = self.allocate(num_blocks)
+        sizes = [
+            MemoryRegion.calculate_size(self.block_nbytes, len(k.all_tokens()))
+            for k in cache_key.batched(self.block_ntokens)
+        ]
+
+        status = self.allocate(sizes)
         if not status.is_ok():
             return Status(status)
 
@@ -288,9 +291,7 @@ class L1Cache(MeasurableBase):
             n_seconds=10,
         )
 
-        put_status = self._put_mrs_impl(
-            prefix, tokens, block_mrs, with_check=False
-        )
+        put_status = self._put_mrs_impl(cache_key, block_mrs, with_check=False)
         if not put_status.is_ok():
             # failed to put all the blocks, release the allocated MRs
             [mr.ref_down() for mr in block_mrs]
@@ -301,20 +302,21 @@ class L1Cache(MeasurableBase):
 
     def _put_mrs_impl(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        cache_key: TokenCacheKey,
         kv_mrs: Sequence[MemoryRegion],
         with_check: bool = True,
     ) -> Status[int]:
         """Put kv mrs to the cache.
         Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv mrs.
-            tokens (Sequence[int]): The tokens of the kv mrs.
+            cache_key (TokenCacheKey): The cache key.
             kv_mrs (Sequence[MemoryRegion]): The kv memory regions.
             with_check (bool): Whether to check the validity of the kv mrs.
         Returns:
             The status of the put operation and the number of blocks.
         """
+        prefix = cache_key.prefix
+        tokens = cache_key.tokens
+
         num_tokens = len(tokens)
         num_blocks = len(kv_mrs)
 
@@ -345,13 +347,14 @@ class L1Cache(MeasurableBase):
         assert len(kv_mrs) == num_blocks
 
         bi = 0
-        for cache_key in self._cache_block_keys(
-            prefix, tokens[: num_blocks * self.block_ntokens]
-        ):
+        for k in cache_key.batched(self.block_ntokens):
             if bi >= len(kv_mrs):
                 break
             block_mr = kv_mrs[bi]
-            if not self._eviction_policy.put(cache_key, block_mr).is_ok():
+            block_mr.pack_tokens(prefix=k.prefix, tokens=k.tokens)
+            block_mr.seal()
+            entry = MemoryRegionCacheEntry(block_mr)
+            if not self._eviction_policy.put(entry).is_ok():
                 break
             bi += 1
 
@@ -361,23 +364,22 @@ class L1Cache(MeasurableBase):
     @MeasurableBase.measure(MetricRecorder.OP.ACQUIRE)
     def acquire(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        cache_key: TokenCacheKey,
     ) -> Status[Sequence[MemoryRegion]]:
         """Acquire cache handle pointing to the kv tensors such that the
         upper layer can access these tensors in a zero-copy way.
 
         Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
-            tokens (Sequence[int]): The tokens of the kv tensors.
+            cache_key (TokenCacheKey): The key of the kv tensors.
         Returns:
             The memory regions corresponding to the tokens.
         """
+        prefix = cache_key.prefix
         if prefix is not None and len(prefix) % self.block_ntokens != 0:
             return Status(StatusCodes.INVALID)
 
         mrs = []
-        for key in self._cache_block_keys(prefix, tokens):
+        for key in cache_key.batched(self.block_ntokens):
             status = self._eviction_policy.get(key)
             if status.is_ok():
                 mrs.append(status.value)
@@ -390,39 +392,15 @@ class L1Cache(MeasurableBase):
         return Status.ok(mrs)  # type: ignore
 
     @nvtx_range("delete", "kv_cache_ol.L1Cache")
-    def delete(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Status:
+    def delete(self, cache_key: TokenCacheKey) -> Status:
         """Delete kv tensors from the cache.
         Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
-            tokens (Sequence[int]): The tokens of the kv tensors.
+            cache_key (TokenCacheKey): The key of the kv tensors.
         """
+        prefix = cache_key.prefix
         if prefix is not None and len(prefix) % self.block_ntokens != 0:
             return Status(StatusCodes.INVALID)
 
-        for key in self._cache_block_keys(prefix, tokens):
+        for key in cache_key.batched(self.block_ntokens):
             self._eviction_policy.delete(key)
         return Status.ok()
-
-    def _cache_block_keys(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Iterator[Tuple[Sequence[int], Sequence[int]]]:
-        """Get the cache block keys of the kv tensors.
-        Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
-            tokens (Sequence[int]): The tokens of the kv tensors.
-        Returns:
-            The cache block keys of the kv tensors.
-        """
-        not_none_prefix = tuple(prefix or [])
-        all = tuple(not_none_prefix + tuple(tokens))
-
-        cache_key_len = len(not_none_prefix)
-        num_blocks = len(tokens) // self.block_ntokens
-        for _ in range(num_blocks):
-            yield (
-                all[:cache_key_len],
-                all[cache_key_len : cache_key_len + self.block_ntokens],
-            )
-            cache_key_len += self.block_ntokens

@@ -14,7 +14,7 @@
 
 from dataclasses import dataclass
 
-from .spec import KVCacheBlockSpec
+from .spec import KVCacheBlockSpec, ModelSpec
 
 
 @dataclass
@@ -26,3 +26,4 @@ class KVCacheConfig:
     """
 
     block_spec: KVCacheBlockSpec
+    model_spec: ModelSpec
