@@ -49,7 +49,7 @@ class RollingHashKeyBuilder(KeyBuilder):
                     start = 1
                 candidates[1:] = prefix[i : i + self.block_size]
 
-                prev_hash = self.hasher.hash(memoryview(candidates[start:]))
+                prev_hash = self.hasher.hash(memoryview(candidates[start:]))  # type: ignore
 
         all = np_array_concat(prefix, tokens)
         prefix_len = len(prefix) if prefix is not None else 0
@@ -62,7 +62,7 @@ class RollingHashKeyBuilder(KeyBuilder):
             candidates[1:] = tokens[i : i + self.block_size]
             keys = all[: prefix_len + i + self.block_size]
 
-            curr_hash = self.hasher.hash(memoryview(candidates[start:]))
+            curr_hash = self.hasher.hash(memoryview(candidates[start:]))  # type: ignore
 
             results.append((keys, curr_hash.to_bytes(16)))
             prev_hash = curr_hash
