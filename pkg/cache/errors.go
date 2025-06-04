@@ -19,6 +19,7 @@ import "errors"
 
 var (
 	ErrorTypeMetricNotFound = &CacheError{error: errors.New("metric not found")}
+	ErrorMissingProfile     = &CacheError{error: errors.New("missing profile")}
 )
 
 // Error support error type detection and structured error info.
@@ -48,4 +49,9 @@ type MetricNotFoundError struct {
 	*CacheError
 	PodName    string
 	MetricName string
+}
+
+type MissingProfileError struct {
+	*CacheError
+	ProfileKey string
 }

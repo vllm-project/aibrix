@@ -15,3 +15,8 @@ resources:
 - templates/rolebinding.yaml
 - templates/service.yaml
 - templates/serviceaccount.yaml
+
+images:
+  - name: quay.io/kuberay/operator
+    newName: quay.io/kuberay/operator
+    newTag: v1.2.1

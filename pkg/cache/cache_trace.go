@@ -67,13 +67,13 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 	if c.pendingLoadProvider != nil {
 		var err error
 		ctx.PendingLoad, err = c.pendingLoadProvider.GetConsumption(ctx, pod)
-		if err != nil {
-			klog.Errorf("error on track request load consumption: %v", err)
-		} else {
+		if err == nil {
 			utilization = metaPod.pendingLoadUtilization.Add(ctx.PendingLoad)
 			if c.updatePodRecord(metaPod, "", metrics.RealtimeNormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization}) != nil {
 				klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s, err: %v", metrics.RealtimeNormalizedPendings, metaPod.Name, requestID, err)
 			}
+		} else if !IsError(err, ErrorMissingProfile) { // ErrorMissingProfile is not considered as an error here and should be reported where the profile is essential.
+			klog.Errorf("error on track request load consumption: %v", err)
 		}
 	}
 

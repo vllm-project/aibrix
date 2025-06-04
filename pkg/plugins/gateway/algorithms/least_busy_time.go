@@ -31,7 +31,7 @@ var (
 )
 
 func init() {
-	RegisterDelayedConstructor(RouterLeastBusyTime, NewLeastBusyTimeRouter)
+	Register(RouterLeastBusyTime, NewLeastBusyTimeRouter)
 }
 
 type leastBusyTimeRouter struct {

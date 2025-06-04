@@ -5,6 +5,7 @@ metadata:
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
+  annotations:
     autoscaling.aibrix.ai/max-scale-up-rate: "2"
     autoscaling.aibrix.ai/max-scale-down-rate: "2"
     kpa.autoscaling.aibrix.ai/stable-window: "60s"

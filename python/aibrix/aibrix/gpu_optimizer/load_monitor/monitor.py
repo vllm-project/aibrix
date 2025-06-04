@@ -44,8 +44,11 @@ DeploymentStates_Replicas_No_Overriden = -1
 class DeploymentStates:
     """States of a deployment with resource version."""
 
-    def __init__(self, name: str, replicas: int = 1, min_replicas: int = 0):
+    def __init__(
+        self, name: str, namespace: str = "", replicas: int = 1, min_replicas: int = 0
+    ):
         self.name = name
+        self.namespace = namespace
 
         # _replicas stores optimized value
         self._replicas = replicas
@@ -226,7 +229,7 @@ class ModelMonitor:
         key = self._deployment_entry_point(deployment_name, namespace)
         if key not in self.deployments:
             raise Exception(
-                f"Deployment {namespace}:{deployment_name} of model {self.model_name} is not monitored"
+                f"Deployment {namespace}/{deployment_name} of model {self.model_name} is not monitored"
             )
         return self.deployments[key].replicas
 
@@ -240,7 +243,7 @@ class ModelMonitor:
         key = self._deployment_entry_point(deployment_name, namespace)
         if key not in self.deployments:
             raise Exception(
-                f"Deployment {namespace}:{deployment_name} of model {self.model_name} is not monitored"
+                f"Deployment {namespace}/{deployment_name} of model {self.model_name} is not monitored"
             )
 
         if overriding:

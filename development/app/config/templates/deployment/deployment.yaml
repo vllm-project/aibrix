@@ -19,6 +19,7 @@ spec:
       labels:
         adapter.model.aibrix.ai/enabled: "true"
         model.aibrix.ai/name: "llama2-7b"
+        model.aibrix.ai/port: "8000"
         app: "mock-llama2-7b"
     spec:
       serviceAccountName: mocked-app-sa

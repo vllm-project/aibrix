@@ -30,7 +30,7 @@ var (
 )
 
 func init() {
-	Register(RouterSLO, func(ctx *types.RoutingContext) (types.Router, error) {
+	RegisterProvider(RouterSLO, func(ctx *types.RoutingContext) (types.Router, error) {
 		c, err := cache.Get()
 		if err != nil {
 			return nil, err

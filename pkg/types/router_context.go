@@ -27,8 +27,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-const podMetricPort = "8000"
-
 var nilPod = &v1.Pod{}
 
 type RequestFeatures []float64
@@ -218,7 +216,7 @@ func (r *RoutingContext) GetRoutingDelay() time.Duration {
 }
 
 func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
-	return fmt.Sprintf("%v:%v", pod.Status.PodIP, podMetricPort)
+	return fmt.Sprintf("%v:%v", pod.Status.PodIP, utils.GetModelPortForPod(r.RequestID, pod))
 }
 
 func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID, user string) {

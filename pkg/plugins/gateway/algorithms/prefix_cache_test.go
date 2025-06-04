@@ -26,6 +26,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 
@@ -149,7 +150,9 @@ func Test_PrefixCacheE2E(t *testing.T) {
 func getReadyPods() []*v1.Pod {
 	return []*v1.Pod{
 		{
-			ObjectMeta: metav1.ObjectMeta{Name: "p1"},
+			ObjectMeta: metav1.ObjectMeta{Name: "p1", Labels: map[string]string{
+				utils.DeploymentIdentifier: "deployment",
+			}},
 			Status: v1.PodStatus{
 				PodIP: "1.1.1.1",
 				Conditions: []v1.PodCondition{
@@ -160,7 +163,9 @@ func getReadyPods() []*v1.Pod {
 				},
 			}},
 		{
-			ObjectMeta: metav1.ObjectMeta{Name: "p2"},
+			ObjectMeta: metav1.ObjectMeta{Name: "p2", Labels: map[string]string{
+				utils.DeploymentIdentifier: "deployment",
+			}},
 			Status: v1.PodStatus{
 				PodIP: "2.2.2.2",
 				Conditions: []v1.PodCondition{
@@ -171,7 +176,9 @@ func getReadyPods() []*v1.Pod {
 				},
 			}},
 		{
-			ObjectMeta: metav1.ObjectMeta{Name: "p3"},
+			ObjectMeta: metav1.ObjectMeta{Name: "p3", Labels: map[string]string{
+				utils.DeploymentIdentifier: "deployment",
+			}},
 			Status: v1.PodStatus{
 				PodIP: "3.3.3.3",
 				Conditions: []v1.PodCondition{
@@ -182,7 +189,9 @@ func getReadyPods() []*v1.Pod {
 				},
 			}},
 		{
-			ObjectMeta: metav1.ObjectMeta{Name: "p4"},
+			ObjectMeta: metav1.ObjectMeta{Name: "p4", Labels: map[string]string{
+				utils.DeploymentIdentifier: "deployment",
+			}},
 			Status: v1.PodStatus{
 				PodIP: "4.4.4.4",
 				Conditions: []v1.PodCondition{

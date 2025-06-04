@@ -35,7 +35,7 @@ var (
 )
 
 func init() {
-	RegisterDelayedConstructor(RouterPrefixCacheAndLoad, NewPrefixCacheAndLoadRouter)
+	Register(RouterPrefixCacheAndLoad, NewPrefixCacheAndLoadRouter)
 }
 
 const (

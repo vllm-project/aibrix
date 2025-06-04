@@ -31,7 +31,7 @@ var (
 )
 
 func init() {
-	Register(RouterRandom, RandomRouterProviderFunc)
+	RegisterProvider(RouterRandom, RandomRouterProviderFunc)
 }
 
 type randomRouter struct {

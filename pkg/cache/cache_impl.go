@@ -293,7 +293,10 @@ func (c *Store) GetModelProfileByPod(pod *v1.Pod, modelName string) (*ModelGPUPr
 	key := ModelGPUProfileKey(modelName, deploymentName)
 	profile, ok := c.deploymentProfiles.Load(key)
 	if !ok {
-		return nil, fmt.Errorf("profile not available for %s", key)
+		return nil, MissingProfileError{
+			CacheError: ErrorMissingProfile,
+			ProfileKey: key,
+		}
 	}
 
 	return profile, nil

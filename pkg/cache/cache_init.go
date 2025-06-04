@@ -72,6 +72,13 @@ type Store struct {
 	// buffer for sync map operations
 	bufferPod   *Pod
 	bufferModel *Model
+
+	// podMetricsWorkerCount
+	// Number of concurrent workers used to update Pod metrics
+	podMetricsWorkerCount int
+
+	// podMetricsJobs Channel for sending Pod metrics update jobs to workers
+	podMetricsJobs chan *Pod
 }
 
 // Get retrieves the cache instance
@@ -96,13 +103,23 @@ func Get() (Cache, error) {
 //
 //	Store: Initialized cache store instance
 func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterProvider ModelRouterProviderFunc) *Store {
-	return &Store{
-		initialized:         true,
-		redisClient:         redisClient,
-		prometheusApi:       prometheusApi,
-		requestTrace:        &utils.SyncMap[string, *RequestTrace]{},
-		modelRouterProvider: modelRouterProvider,
+
+	store = &Store{
+		initialized:           true,
+		redisClient:           redisClient,
+		prometheusApi:         prometheusApi,
+		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
+		modelRouterProvider:   modelRouterProvider,
+		podMetricsWorkerCount: defaultPodMetricsWorkerCount,
+		podMetricsJobs:        make(chan *Pod, 100), // Initialize the job channel with a buffer size of 100
 	}
+
+	// Start podMetrics worker pool
+	for w := 0; w < store.podMetricsWorkerCount; w++ {
+		go store.worker(store.podMetricsJobs)
+	}
+
+	return store
 }
 
 // NewForTest initializes the cache store for testing purposes, it can be repeated call for reset.

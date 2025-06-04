@@ -44,7 +44,7 @@ var (
 )
 
 func init() {
-	RegisterDelayedConstructor(RouterPrefixCache, NewPrefixCacheRouter)
+	Register(RouterPrefixCache, NewPrefixCacheRouter)
 }
 
 type prefixCacheRouter struct {
