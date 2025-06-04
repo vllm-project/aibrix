@@ -802,7 +802,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         Returns:
             The memory regions corresponding to the tokens.
         """
-        prefix = cache_key.tokens
+        prefix = cache_key.prefix
         tokens = cache_key.tokens
 
         if prefix is not None and len(prefix) % self.block_ntokens != 0:
