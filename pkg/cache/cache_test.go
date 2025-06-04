@@ -28,6 +28,7 @@ import (
 	. "github.com/onsi/gomega"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -143,6 +144,18 @@ func (c *lagacyCache) AddRequestTrace(modelName string, inputTokens, outputToken
 	}
 
 	c.requestTrace[modelName][fmt.Sprintf("%v:%v", inputIndex, outputIndex)] += 1
+}
+
+type testRouter struct {
+	Model string
+}
+
+func (r *testRouter) Route(_ *types.RoutingContext, _ types.PodList) (string, error) {
+	return "addr", nil
+}
+
+func testModelRouterProvider(modelName string) (types.Router, error) {
+	return &testRouter{Model: modelName}, nil
 }
 
 var _ = Describe("Cache", func() {
@@ -415,6 +428,15 @@ var _ = Describe("Cache", func() {
 		Expect(exist).To(BeTrue())
 		_, exist = metaModel.Pods.Load("default/p3")
 		Expect(exist).To(BeTrue())
+	})
+
+	It("if set modelRouterProvider, should cache being used as a model router manager", func() {
+		store := InitWithModelRouterProvider(NewForTest(), testModelRouterProvider)
+		store.addPod(getReadyPod("p1", "default", "m1", 0))
+		metaModel, exist := store.metaModels.Load("m1")
+		Expect(exist).To(BeTrue())
+		Expect(metaModel.QueueRouter).ToNot(BeNil())
+		Expect(metaModel.QueueRouter).To(BeAssignableToTypeOf(&testRouter{}))
 	})
 
 	It("should GetPod return k8s pod", func() {

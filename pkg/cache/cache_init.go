@@ -141,7 +141,7 @@ func NewWithPodsMetricsForTest(pods []*v1.Pod, model string, podMetrics map[stri
 
 // InitModelRouterProvider initializes the cache store with model router provider for testing purposes, it can be repeated call for reset.
 // Call this function before InitWithPods for expected behavior.
-func InitModelRouterProvider(st *Store, modelRouterProvider ModelRouterProviderFunc) *Store {
+func InitWithModelRouterProvider(st *Store, modelRouterProvider ModelRouterProviderFunc) *Store {
 	st.modelRouterProvider = modelRouterProvider
 	return st
 }
@@ -156,6 +156,29 @@ func InitWithPods(st *Store, pods []*v1.Pod, model string) *Store {
 		st.addPod(pod)
 	}
 	return st
+}
+
+// InitWithAsyncPods initializes the cache store with pods initialized in a async way, this simulate the timeline of how store initalizes
+func InitWithAsyncPods(st *Store, pods []*v1.Pod, model string) <-chan *Store {
+	ret := make(chan *Store, 1)
+	var wait sync.WaitGroup
+	for _, pod := range pods {
+		wait.Add(1)
+		if pod.Labels == nil {
+			pod.Labels = make(map[string]string)
+		}
+		pod.Labels[modelIdentifier] = model
+		go func() {
+			st.addPod(pod)
+			wait.Done()
+		}()
+	}
+	go func() {
+		wait.Wait()
+		ret <- st
+		close(ret)
+	}()
+	return ret
 }
 
 // InitWithPods initializes the cache store with pods metrics for testing purposes, it can be repeated call for reset.

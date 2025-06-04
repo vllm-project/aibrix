@@ -17,7 +17,10 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/vllm-project/aibrix/pkg/types"
 
@@ -29,10 +32,12 @@ const (
 )
 
 var (
+	ErrInitTimeout           = errors.New("router initialization timeout")
 	ErrFallbackNotSupported  = errors.New("router not support fallback")
 	ErrFallbackNotRegistered = errors.New("fallback router not registered")
 )
 
+var routerInited, routerDoneInit = context.WithTimeout(context.Background(), 1*time.Second)
 var routerFactory = map[types.RoutingAlgorithm]types.RouterProviderFunc{}
 var routerConstructor = map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc{}
 
@@ -76,6 +81,11 @@ func RegisterProvider(algorithm types.RoutingAlgorithm, provider types.RouterPro
 
 func SetFallback(router types.Router, fallback types.RoutingAlgorithm) error {
 	if r, ok := router.(types.FallbackRouter); ok {
+		<-routerInited.Done()
+		initErr := routerInited.Err()
+		if initErr != context.Canceled {
+			return fmt.Errorf("router did not initialized: %v", initErr)
+		}
 		if provider, ok := routerFactory[fallback]; !ok {
 			return ErrFallbackNotRegistered
 		} else {
@@ -91,4 +101,5 @@ func Init() {
 		routerFactory[algorithm] = constructor()
 		klog.Infof("Registered router for %s", algorithm)
 	}
+	routerDoneInit()
 }

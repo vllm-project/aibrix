@@ -92,7 +92,7 @@ var _ = Describe("SLOQueue", func() {
 
 		store = cache.NewForTest()
 		Init() // Required to initialize the router registry after store was initialized and before pods are added.
-		store = cache.InitWithPods(cache.InitModelRouterProvider(store, NewPackSLORouter), []*v1.Pod{
+		store = cache.InitWithPods(cache.InitWithModelRouterProvider(store, NewPackSLORouter), []*v1.Pod{
 			{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      deployment + "-replicaset-pod1",
@@ -131,7 +131,6 @@ var _ = Describe("SLOQueue", func() {
 			},
 		}, model)
 		store.UpdateModelProfile(profileKey, profile, true)
-
 	})
 
 	Describe("Error handling", func() {
