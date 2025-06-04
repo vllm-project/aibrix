@@ -23,6 +23,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 	atomic_ext "go.uber.org/atomic"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 type Pod struct {
@@ -39,7 +40,12 @@ type Pod struct {
 	lastTraceLogTimestamp int64
 }
 
-func (pod *Pod) CanLogPodTrace() bool {
+func (pod *Pod) CanLogPodTrace(level klog.Level) bool {
+	// Skip log throttling for greater log level.
+	if klog.V(level).Enabled() {
+		return true
+	}
+
 	lastTs := atomic.LoadInt64(&pod.lastTraceLogTimestamp)
 	ts := time.Now().UnixNano()
 	if ts-lastTs < int64(traceLogInterval) {
