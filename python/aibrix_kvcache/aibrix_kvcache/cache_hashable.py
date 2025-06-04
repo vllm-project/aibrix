@@ -78,7 +78,7 @@ class TokenCacheKey(BaseKVCacheHashable):
         return self._storage
 
     def all_tokens_memoryview(self) -> memoryview:
-        return memoryview(self._storage)
+        return memoryview(self._storage)  # type: ignore
 
     def __len__(self) -> int:
         return len(self._storage)
@@ -144,7 +144,7 @@ class MemoryRegionCacheEntry(BaseKVCacheHashable):
 
     def all_tokens_memoryview(self) -> memoryview:
         assert self._mr is not None
-        return memoryview(np_array_concat(*self._mr.unpack_tokens()))
+        return memoryview(np_array_concat(*self._mr.unpack_tokens()))  # type: ignore
 
     def __len__(self) -> int:
         assert self._mr is not None
