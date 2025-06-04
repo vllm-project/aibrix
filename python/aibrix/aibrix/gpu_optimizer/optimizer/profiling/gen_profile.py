@@ -179,7 +179,7 @@ def gen(args):
             # We keep the smallest request_rate to maximize profile completeness.
             max_request_rate = np.min(filtered_df["request_rate"])
             logger.debug(
-                f"Candidate request rates for {input_tokens[j]}:{output_tokens[i]}:\n{filtered_df["request_rate"].unique(), filtered_df.loc[(filtered_df["metric"] == "TPUT"), "mean"].tolist()}"
+                f"Candidate request rates for {input_tokens[j]}:{output_tokens[i]}:\n{filtered_df['request_rate'].unique()}, {filtered_df.loc[(filtered_df['metric'] == 'TPUT'), 'mean'].tolist()}"
             )
             # Filter out request_rates that can cause pending requests accumulate: TPUT < request_rate * TPUT_TOLERANCE
             shortlist = filtered_df.loc[
@@ -187,7 +187,7 @@ def gen(args):
                 & (filtered_df["mean"] >= filtered_df["request_rate"] * TPUT_TOLERANCE)
             ]
             logger.debug(
-                f"Candidate request rates for {input_tokens[j]}:{output_tokens[i]}:\n{shortlist["request_rate"].unique()}"
+                f"Candidate request rates for {input_tokens[j]}:{output_tokens[i]}:\n{shortlist['request_rate'].unique()}"
             )
             # Test max request rate
             if len(shortlist) > 0:
