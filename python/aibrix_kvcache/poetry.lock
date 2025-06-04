@@ -203,6 +203,7 @@ files = [
 [[package]]
 name = "click"
 version = "8.2.1"
+version = "8.2.1"
 description = "Composable command line interface toolkit"
 optional = true
 python-versions = ">=3.10"
@@ -363,6 +364,30 @@ files = [
     {file = "h11-0.16.0-py3-none-any.whl", hash = "sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86"},
     {file = "h11-0.16.0.tar.gz", hash = "sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1"},
 ]
+
+[[package]]
+name = "hpkv"
+version = "0.0.1"
+description = "This is HPKV's client. HPKV is specifically designed for modern high-performance computing (HPC) and artificial intelligence (AI) computing. It solely supports RDMA. HPKV also supports GDR (GPU Direct RDMA), enabling the value of a key to be directly transferred between HPKV and the GPU."
+optional = true
+python-versions = ">=3.8"
+groups = ["main"]
+markers = "extra == \"hpkv\""
+files = [
+    {file = "hpkv-0.0.1-cp310-cp310-manylinux2014_x86_64.whl", hash = "sha256:a07b76f1d5cdca703815e8e99fd8ea7d4e5f5cff9a5739b1fe8ee30988f8bdd5"},
+    {file = "hpkv-0.0.1-cp311-cp311-manylinux2014_x86_64.whl", hash = "sha256:d5a2729a4ed49e05590d085ad784bdd6076620d1ec561449e38ca8626f3d1bb9"},
+    {file = "hpkv-0.0.1-cp312-cp312-manylinux2014_x86_64.whl", hash = "sha256:8f7804bf59dce58dbf7823f5c5e1e625c0188b5a785c2005e002d2ca7db45259"},
+    {file = "hpkv-0.0.1-cp38-cp38-manylinux2014_x86_64.whl", hash = "sha256:e84cc38e0e0a0072b2774b45c706a50e96423ad08657e4012791aff28c2d32a4"},
+    {file = "hpkv-0.0.1-cp39-cp39-manylinux2014_x86_64.whl", hash = "sha256:ef06aa453cae495c8aa67dc618f5911368d8c423cb34e7b077b2dec7081eda91"},
+]
+
+[package.dependencies]
+pybind11 = "*"
+
+[package.source]
+type = "legacy"
+url = "https://scqq9isgq31i0fb8nt4eg.apigateway-cn-beijing.volceapi.com/simple"
+reference = "hpkv_internal"
 
 [[package]]
 name = "idna"
@@ -1085,7 +1110,7 @@ description = "Seamless operability between C++11 and Python"
 optional = true
 python-versions = ">=3.7"
 groups = ["main"]
-markers = "extra == \"infinistore\""
+markers = "extra == \"infinistore\" or extra == \"hpkv\""
 files = [
     {file = "pybind11-2.13.6-py3-none-any.whl", hash = "sha256:237c41e29157b962835d356b370ededd57594a26d5894a795960f0047cb5caf5"},
     {file = "pybind11-2.13.6.tar.gz", hash = "sha256:ba6af10348c12b24e92fa086b39cfba0eff619b61ac77c406167d813b096d39a"},
