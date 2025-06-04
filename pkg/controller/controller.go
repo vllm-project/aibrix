@@ -31,8 +31,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -61,7 +60,7 @@ func Initialize(mgr manager.Manager) error {
 	if features.IsControllerEnabled(features.DistributedInferenceController) {
 		// Check if the CRD (e.g., "rayclusters.ray.io") exists. If not, fail directly.
 		crdName := "rayclusters.ray.io"
-		if err := checkCRDExists(mgr.GetClient(), crdName); err != nil {
+		if err := checkCRDExists(mgr.GetAPIReader(), crdName); err != nil {
 			return fmt.Errorf("failed to validate CRD '%s': %v. "+
 				"Please ensure that the CRD is installed and available in the cluster. "+
 				"You can verify this by running 'kubectl get crd %s'",
@@ -92,16 +91,13 @@ func SetupWithManager(m manager.Manager, runtimeConfig config.RuntimeConfig) err
 }
 
 // checkCRDExists checks if the specified CRD exists in the cluster.
-func checkCRDExists(c client.Client, crdName string) error {
-	gvk := schema.GroupVersionKind{
-		Group:   "apiextensions.k8s.io",
-		Version: "v1",
-		Kind:    "CustomResourceDefinition",
+func checkCRDExists(c client.Reader, crdName string) error {
+	crd := &metav1.PartialObjectMetadata{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "apiextensions.k8s.io/v1",
+			Kind:       "CustomResourceDefinition",
+		},
 	}
-	// Create an unstructured object to represent the CRD.
-	crd := &unstructured.Unstructured{}
-	crd.SetGroupVersionKind(gvk)
-	crd.SetName(crdName)
 
 	err := c.Get(context.TODO(), client.ObjectKey{Name: crdName}, crd)
 	if err != nil {
