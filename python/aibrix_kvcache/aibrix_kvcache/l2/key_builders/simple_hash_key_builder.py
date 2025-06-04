@@ -40,7 +40,7 @@ class SimpleHashKeyBuilder(KeyBuilder):
 
         prefix_len = len(prefix) if prefix is not None else 0
         all = np_array_concat(prefix, tokens)
-        all_bytes = memoryview(all)
+        all_bytes = memoryview(all)  # type: ignore
         for i in range(0, token_size, self.block_size):
             keys = all[: prefix_len + i + self.block_size]
 
