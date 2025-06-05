@@ -181,7 +181,7 @@ Edit ``kind-config.yaml`` to mount your model cache, then:
    kind create cluster --config=./development/vllm/kind-config.yaml
 
 Build and load images
-~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: bash
 
