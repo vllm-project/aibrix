@@ -144,7 +144,7 @@ func (r loraAffinityRouter) evaluatePodForLoraAffinity(pod *v1.Pod, targetModel 
 	// Get LoRA metrics for the pod
 	runningAdapters, runningErr := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RunningLoraAdapters)
 	waitingAdapters, waitingErr := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.WaitingLoraAdapters)
-	maxAdapters, maxErr := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.WaitingLoraAdapters)
+	maxAdapters, maxErr := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.MaxLora)
 
 	// If we can't get metrics, consider the pod as having capacity but no affinity
 	if runningErr != nil || waitingErr != nil || maxErr != nil {
