@@ -191,7 +191,7 @@ wget https://raw.githubusercontent.com/Azure/AzurePublicDataset/refs/heads/maste
 
 export AZURE_TRACE_NAME=/tmp/AzureLLMInferenceTrace_conv.csv
 python -m generator.workload_generator.workload_generator \
-    --trace-file $AZURE_TRACE_NAME \
+    --traffic-file $AZURE_TRACE_NAME \
     --prompt-file $PROMPT_FILE \
     --interval-ms 1000 \
     --duration-ms 600000 \
@@ -202,6 +202,20 @@ python -m generator.workload_generator.workload_generator \
 ```
 
 Note that the trace file contains both input and output lengths. And therefore dataset in `$SHAREGPT_FILE_PATH` needs to be tokenized to be able to sampled based on their input/output token lengths. Therefore it is required to specify tokenizer to generate based on this trace. Use `--group-interval-seconds` to specify grouping interval from the original trace. The file would be stored under `output` folder and the plot illustrates the workload pattern will be under the `plot` directory.
+
+### Generate a workload file based on Mooncake Trace
+
+```bash
+wget https://raw.githubusercontent.com/kvcache-ai/Mooncake/refs/heads/main/FAST25-release/traces/conversation_trace.jsonl -O /tmp/Mooncake_trace.jsonl
+export MOONCAKE_TRACE_NAME=/tmp/Mooncake_trace.jsonl
+python -m generator.workload_generator.workload_generator \
+    --traffic-file $MOONCAKE_TRACE_NAME \
+    --duration-ms 600000 \
+    --trace-type mooncake \
+    --model "Qwen/Qwen2.5-Coder-7B-Instruct" \
+    --output-dir "output"
+```
+
 
 
 Use [client](../client/README.md) to test generated trace locally. 

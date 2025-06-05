@@ -3,6 +3,7 @@ import argparse
 import time
 import pandas as pd
 import numpy as np
+from tqdm import tqdm
 
 from pandas import Timedelta
 from typing import List, Dict, Any
@@ -24,9 +25,14 @@ from generator.workload_generator.utils import (if_sessioned_dataset,
                    get_tokenizer, 
                    plot_workload, 
                    make_serializable, 
-                   load_config,
+                   load_json,
+                   load_jsonl,
                    save_workload, 
                    )
+
+from generator.dataset_generator.synthetic_prompt import (generate_synthetic_prompt,
+                                                          adjust_prompt_length,
+                                                        )
 
 # Set up logging to print only warning and above level messages
 logging.basicConfig(level=logging.INFO)
@@ -351,6 +357,67 @@ def generate_from_azure_csv(file_path: str,
 
     return grouped_requests
 
+def generate_from_mooncake_jsonl(file_path: str,
+                            prompt_file_path: str,
+                            duration_ms: int,
+                            tokenizer: PreTrainedTokenizerBase,
+                            output_file: str = 'output/output',
+                            to_jsonl: bool = False,
+                            ) -> List[List[Any]]:
+    if prompt_file_path:
+        raise ValueError(f"prompt_file_path can only be None")
+    
+    chunk_size = 512
+    trace = load_jsonl(file_path)
+    end_time = duration_ms
+    id_to_chunks = {}
+    grouped_requests = []
+    prev_timestamp = -1
+    current_group = None
+    
+    for entry in tqdm(trace, desc=f"Preparing prompts based on {file_path}"):
+        timestamp = entry["timestamp"]
+        if timestamp > end_time:
+            break
+            
+        # Start a new group if timestamp changes
+        if timestamp != prev_timestamp:
+            if current_group is not None:
+                grouped_requests.append(current_group)
+            current_group = {
+                "timestamp": timestamp,
+                "requests": []
+            }
+            prev_timestamp = timestamp
+            
+        input_length = entry["input_length"]
+        output_length = entry["output_length"]
+        hash_ids = entry["hash_ids"]
+        prompt_concat = ""
+        
+        for id in hash_ids:
+            if id in id_to_chunks:
+                prompt_concat += id_to_chunks[id]
+            else:
+                prompt_unique, _ = generate_synthetic_prompt(tokenizer=tokenizer, target_token_length=chunk_size, unique_prefix=str(id))
+                id_to_chunks[id] = prompt_unique
+                prompt_concat += prompt_unique
+        prompt = adjust_prompt_length(tokenizer = tokenizer, prompt = prompt_concat, target_token_length=input_length)   
+        current_group["requests"].append({
+            "prompt": prompt,
+            "prompt_length": len(tokenizer.encode(prompt_concat)),
+            "output_length": output_length
+        })
+    
+    # Add the last group if it exists
+    if current_group is not None:
+        grouped_requests.append(current_group)
+        
+    grouped_requests = make_serializable(grouped_requests)
+    save_workload(grouped_requests, output_file, use_jsonl=to_jsonl)
+
+    return grouped_requests
+
 def main(args):
     # Generate workloads and pair with prompts
     workload_dict = {}
@@ -364,17 +431,17 @@ def main(args):
         if args.traffic_pattern:
             qps_pattern_config = to_fluctuate_pattern_config(config_type = args.traffic_pattern, mean = 6)
         elif args.traffic_pattern_config:
-            qps_pattern_config = user_to_synthetic_config(user_config = load_config(args.traffic_pattern_config), duration_ms = args.duration_ms)
+            qps_pattern_config = user_to_synthetic_config(user_config = load_json(args.traffic_pattern_config), duration_ms = args.duration_ms)
             
         if args.prompt_len_pattern:
             input_pattern_config = to_fluctuate_pattern_config(config_type = args.prompt_len_pattern, mean = 1024)
         elif args.prompt_len_pattern_config:
-            input_pattern_config = user_to_synthetic_config(user_config = load_config(args.prompt_len_pattern_config), duration_ms = args.duration_ms)
+            input_pattern_config = user_to_synthetic_config(user_config = load_json(args.prompt_len_pattern_config), duration_ms = args.duration_ms)
             
         if args.completion_len_pattern:
             output_pattern_config = to_fluctuate_pattern_config(config_type = args.completion_len_pattern, mean = 1024)
         elif args.completion_len_pattern_config:
-            output_pattern_config = user_to_synthetic_config(user_config = load_config(args.completion_len_pattern_config), duration_ms = args.duration_ms)
+            output_pattern_config = user_to_synthetic_config(user_config = load_json(args.completion_len_pattern_config), duration_ms = args.duration_ms)
         
         if qps_pattern_config is None:
             raise ValueError(f"qps_pattern_config cannot be None")
@@ -431,6 +498,15 @@ def main(args):
                                                          to_jsonl=(args.output_format == "jsonl"),
                                                          )
 
+        elif args.trace_type == "mooncake":
+            generated_workload = generate_from_mooncake_jsonl(file_path=args.traffic_file, 
+                                                              prompt_file_path=args.prompt_file,
+                                                              duration_ms=args.duration_ms, 
+                                                              tokenizer=tokenizer,
+                                                              output_file=f"{args.output_dir}/workload",
+                                                              to_jsonl=(args.output_format == "jsonl"),
+                                                              )
+        
         workload_dict[args.trace_type] = generated_workload
 
     if workload_dict:
@@ -444,11 +520,11 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Workload Generator')
-    parser.add_argument('--prompt-file', type=str, required=True, help='File containing sampling prompts.')
-    parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'stat', 'azure'],
+    parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'stat', 'azure', 'mooncake'],
                         help='Type of trace consumed. Choose among: synthetic, stat, azure.')
     parser.add_argument('--model', type=str, required=False, default="Qwen/Qwen2.5-Coder-7B-Instruct",
                         help='Target model for the workload.')
+    parser.add_argument('--prompt-file', type=str, required=False, default = None, help='File containing sampling prompts.')
     parser.add_argument('--interval-ms', type=int, required=False, default=1000,
                         help='Granularity of request injection interval in milliseconds.')
     parser.add_argument('--duration-ms', type=int, default=60000, help='Duration of the trace generated.')
@@ -456,7 +532,7 @@ if __name__ == '__main__':
     parser.add_argument('--stat-trace-type', type=str, choices=['maas', 'cloudide'], default="maas", help='Type of stat traces.')
     parser.add_argument('--output-dir', type=str, required=False, default="output", help='Output directory to save.'
                                                                                          'the workload.')
-    parser.add_argument('--output-format', type=str, choices=['json', 'jsonl'], default='json',
+    parser.add_argument('--output-format', type=str, choices=['json', 'jsonl'], default='jsonl',
                         help='Set output data format to either .json or .jsonl (default is .json).')
     
     ###### Synthetic and constant workload
