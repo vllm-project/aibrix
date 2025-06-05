@@ -225,17 +225,23 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.Model = model
 	r.Message = message
 	r.RequestID = requestID
-	r.RequestTime = time.Now()
-	r.tokens = nil
-	r.predictor = nil
 	if user != "" {
 		r.User = &user
 	} else {
 		r.User = nil
 	}
+	r.RequestTime = time.Now()
+	r.PendingLoad = 0
+	r.TraceTerm = 0
+	// RoutedTime will not be reset, it must before ReqeustTime at this time.
+
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
 	r.lastError = nil
+	// debugDelay will be reset by tests.
+	r.tokens = nil
+	r.predictor = nil
+	r.statsUpdated = 0
 }
 
 func (r *RoutingContext) debugWait() {
