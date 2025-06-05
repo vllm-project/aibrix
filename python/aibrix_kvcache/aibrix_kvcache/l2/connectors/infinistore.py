@@ -18,12 +18,17 @@ from typing import List, Sequence, Tuple
 
 import infinistore
 import torch
+from validators import ipv4, ipv6
 
 from ... import envs
 from ...common import AsyncBase
+from ...common.absl_logging import getLogger
 from ...memory import MemoryRegion
 from ...status import Status, StatusCodes
+from ...transport import AddrFamily, DeviceRequest, GIDType, RDMATransport
 from . import Connector, ConnectorFeature
+
+logger = getLogger(__name__)
 
 
 @AsyncBase.async_wrap(delete="_delete")
@@ -52,18 +57,73 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
         service_port = kwargs.get(
             "port", envs.AIBRIX_KV_CACHE_OL_INFINISTORE_SERVICE_PORT
         )
+        assert ipv4(host_addr) or ipv6(host_addr), "Invalid host_addr"
         dev_list = envs.AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST
-        assert (
-            len(dev_list) > 0
-        ), "AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST is empty"
+        connection_type = envs.AIBRIX_KV_CACHE_OL_INFINISTORE_CONNECTION_TYPE
+        ib_port = envs.AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT
+        link_type = envs.AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE
+
+        if connection_type == "TCP":
+            config = infinistore.ClientConfig(
+                host_addr=host_addr,
+                service_port=service_port,
+                connection_type=connection_type,
+                link_type=link_type,
+            )
+            return cls(config, conn_id, executor)
+
+        # RDMA
+        addr_family = (
+            AddrFamily.AF_INET if ipv4(host_addr) else AddrFamily.AF_INET6
+        )
+        gid_type = GIDType.ROCE_V2 if link_type != "IB" else GIDType.IB_ROCE_V1
+        if len(dev_list) == 0:
+            logger.info(
+                "AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST is not set, "
+                "trying to auto-detect visible devices"
+            )
+            addr_range = envs.AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE
+            rdma = RDMATransport(
+                addr_range=addr_range,
+                addr_family=addr_family,
+                gid_type=gid_type,
+            )
+            status = rdma.get_device_list()
+            assert status.is_ok(), f"Failed to get device list: {status}"
+
+            devices = status.get()
+            for d in devices:
+                dev_list.append(f"{d.device_name}:{d.port_attrs.gid_index}")
+        else:
+            requests: List[DeviceRequest] = []
+            for dev_name in dev_list:
+                if ":" in dev_name:
+                    splits = dev_name.split(":")
+                    request = DeviceRequest(
+                        device_name=splits[0],
+                        gid_index=int(splits[1]),
+                    )
+                else:
+                    request = DeviceRequest(device_name=dev_name)
+                requests.append(request)
+            rdma = RDMATransport(
+                request=requests,
+                addr_family=addr_family,
+                gid_type=gid_type,
+            )
+            status = rdma.get_device_list()
+            # Only update dev_list if we got a new list
+            if status.is_ok():
+                devices = status.get()
+                dev_list.clear()
+                for d in devices:
+                    dev_list.append(f"{d.device_name}:{d.port_attrs.gid_index}")
 
         num_visible_gpus = torch.cuda.device_count()
 
-        dev_list = dev_list[:num_visible_gpus]
-        assert num_visible_gpus % len(dev_list) == 0, (
-            "AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST is not a "
-            "multiple of num. of visible GPUs"
-        )
+        dev_list = [
+            dev_list[i % len(dev_list)] for i in range(num_visible_gpus)
+        ]
 
         # For InfiniStore RDMA, we need to map the GPU index to the RNIC
         # index to support multi-GPU per RNIC. For example, if we have 8
@@ -75,6 +135,8 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
         dev_name = dev_list[rnic_idx]
         hint_gid_index_str = ""
 
+        logger.info(f"InfiniStore selects {dev_name}")
+
         # If dev_name is in the format of "mlx5_i:xxx", then we need to
         # extract the dev_name and hint_gid_index from the dev_name.
         if ":" in dev_name:
@@ -85,9 +147,9 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
         config = infinistore.ClientConfig(
             host_addr=host_addr,
             service_port=service_port,
-            connection_type=envs.AIBRIX_KV_CACHE_OL_INFINISTORE_CONNECTION_TYPE,
-            ib_port=envs.AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT,
-            link_type=envs.AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE,
+            connection_type=connection_type,
+            ib_port=ib_port,
+            link_type=link_type,
             dev_name=dev_name,
         )
 
