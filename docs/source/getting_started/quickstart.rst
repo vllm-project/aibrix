@@ -34,7 +34,7 @@ Wait for few minutes and run `kubectl get pods -n aibrix-system` to check pod st
 
 
 Deploy base model
-~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~
 
 Save yaml as `model.yaml` and run `kubectl apply -f model.yaml`.
 
