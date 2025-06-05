@@ -82,7 +82,7 @@ def new_deployment(deployment):
 
     return DeploymentStates(
         name=deployment.metadata.name,
-        namespace=deployment.metadate.namespace,
+        namespace=deployment.metadata.namespace,
         replicas=deployment.spec.replicas
         if deployment.spec.replicas is not None
         else 0,
