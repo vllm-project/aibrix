@@ -207,9 +207,18 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if !checkValidAutoscalingStrategy(pa.Spec.ScalingStrategy) {
-		// TODO: update status or conditions
-		// this is unrecoverable unless user make changes.
-		return ctrl.Result{}, nil
+		apimeta.SetStatusCondition(&pa.Status.Conditions, metav1.Condition{
+			Type:               "AutoscalingStrategy",
+			Status:             metav1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "AutoscalingStrategyInvalid",
+			Message:            fmt.Sprintf("autoscaling strategy %s is invalid", pa.Spec.ScalingStrategy),
+		})
+		return ctrl.Result{}, r.Client.Status().Update(ctx, &pa)
+	}
+
+	if apimeta.RemoveStatusCondition(&pa.Status.Conditions, "AutoscalingStrategy") {
+		return ctrl.Result{}, r.Client.Status().Update(ctx, &pa)
 	}
 
 	switch pa.Spec.ScalingStrategy {
@@ -218,12 +227,6 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	case autoscalingv1alpha1.KPA, autoscalingv1alpha1.APA:
 		return r.reconcileCustomPA(ctx, pa)
 	}
-
-	newStatus := computeStatus(ctx, pa)
-	if err := r.updateStatusIfNeeded(ctx, newStatus, &pa); err != nil {
-		return ctrl.Result{}, err
-	}
-
 	return ctrl.Result{}, nil
 }
 
