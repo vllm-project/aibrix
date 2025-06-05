@@ -158,7 +158,7 @@ If you meet problems exposing external IPs, feel free to debug with following co
     envoy-gateway                            ClusterIP      10.96.166.226   <none>        18000/TCP,18001/TCP,18002/TCP,19001/TCP   10d
 
 Local Development with CPU-only vLLM
--------------------------------------------------
+------------------------------------
 
 This section explains how to run vLLM in a local Kubernetes cluster using CPU-only environments (e.g., for macOS or Linux dev).
 
