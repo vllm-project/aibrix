@@ -48,7 +48,7 @@ Ensure that:
 
 
 Invoke the model endpoint using gateway API
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Depending on where you deployed the AIBrix, you can use either of the following options to query the gateway.
 
