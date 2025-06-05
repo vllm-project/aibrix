@@ -189,7 +189,7 @@ Build and load images
    kind load docker-image aibrix/runtime:nightly
 
 Load CPU environment image
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **For macOS:**
 
