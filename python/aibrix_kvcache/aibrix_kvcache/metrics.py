@@ -18,10 +18,11 @@ import functools
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Sequence
+from typing import Any, Callable, Dict, List
 
+from .cache_hashable import TokenCacheKey
 from .status import Status
-from .utils import cpu_perf_timer
+from .utils import cpu_perf_timer, human_readable_bytes
 
 TOKEN_BUCKETS = [1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8096]
 MS_BUCKETS = [
@@ -392,25 +393,29 @@ class UsageMetrics(Metrics):
     """Usage metrics."""
 
     resource: MetricRecorder.Resource
-    capacity: int = 0
-    used: int = 0
+    capacity_nbytes: int = 0
+    used_nbytes: int = 0
 
     def __init__(
         self,
         resource: MetricRecorder.Resource,
-        capacity: int,
+        capacity_nbytes: int,
     ) -> None:
         self.resource = resource
-        self.capacity = capacity
+        self.capacity_nbytes = capacity_nbytes
 
-    def update(self, used: int) -> None:
-        self.used = used
+    def update(self, used_nbytes: int) -> None:
+        self.used_nbytes = used_nbytes
 
     def reset(self) -> None:
         pass
 
     def summary(self) -> str:
-        return f"{self.resource.name}: {self.used}/{self.capacity}"
+        return (
+            f"{self.resource.name}: "
+            f"{human_readable_bytes(self.used_nbytes)}"
+            f"/{human_readable_bytes(self.capacity_nbytes)}"
+        )
 
 
 class UsageMetricsExporter(BaseMetricsExporter):
@@ -447,7 +452,7 @@ class UsageMetricsExporter(BaseMetricsExporter):
     def export(self, labels: Dict[str, str], metrics: Metrics) -> None:
         assert isinstance(metrics, UsageMetrics)
 
-        if metrics.capacity <= 0:
+        if metrics.capacity_nbytes <= 0:
             return
 
         labels = labels.copy()
@@ -456,8 +461,8 @@ class UsageMetricsExporter(BaseMetricsExporter):
             f"Labels " f"{set(labels.keys())} do not match {self._labelnames}"
         )
 
-        self._export_gauge(self.gauge_used, labels, metrics.used)
-        self._export_gauge(self.gauge_capacity, labels, metrics.capacity)
+        self._export_gauge(self.gauge_used, labels, metrics.used_nbytes)
+        self._export_gauge(self.gauge_capacity, labels, metrics.capacity_nbytes)
 
 
 class BaseCacheMetrics(Metrics, MetricRecorder):
@@ -642,7 +647,7 @@ class L1CacheMetrics(BaseCacheMetrics):
         *,
         cache_type: str,
         block_ntokens: int,
-        capacity: int = 0,
+        capacity_nbytes: int = 0,
         enable_time_measurement: bool = True,
         enable_breakdown_measurement: bool = True,
     ) -> None:
@@ -661,11 +666,11 @@ class L1CacheMetrics(BaseCacheMetrics):
         )
         self.eviction_policy_usage_metrics = UsageMetrics(
             MetricRecorder.Resource.L1_EVICTION_POLICY,
-            capacity,
+            capacity_nbytes,
         )
         self.allocator_usage_metrics = UsageMetrics(
             MetricRecorder.Resource.L1_ALLOCATOR,
-            capacity,
+            capacity_nbytes,
         )
 
     def _get_all_metrics(self) -> List[Metrics]:
@@ -697,11 +702,11 @@ class L1CacheMetrics(BaseCacheMetrics):
                 op, num_prefix, num_tokens, status, lat_ms, breakdowns
             )
 
-    def trace_usage(self, resource, used):
+    def trace_usage(self, resource, used_nbytes):
         if resource is MetricRecorder.Resource.L1_EVICTION_POLICY:
-            self.eviction_policy_usage_metrics.update(used)
+            self.eviction_policy_usage_metrics.update(used_nbytes)
         elif resource is MetricRecorder.Resource.L1_ALLOCATOR:
-            self.allocator_usage_metrics.update(used)
+            self.allocator_usage_metrics.update(used_nbytes)
         else:
             raise ValueError(f"Unknown resource: {resource}")
 
@@ -736,7 +741,7 @@ class L1CacheMetrics(BaseCacheMetrics):
             self.eviction_policy_usage_metrics,
             self.allocator_usage_metrics,
         ]:
-            if r.capacity > 0:
+            if r.capacity_nbytes > 0:
                 summary += ", " if len(summary) > 0 else ""
                 summary += f"{r.summary()}"
         if len(summary) > 0:
@@ -764,7 +769,7 @@ class KVCacheMetrics(Metrics):
         self,
         *,
         block_ntokens: int,
-        capacity: int,
+        capacity_nbytes: int,
         enable_l1: bool,
         enable_l2: bool,
         enable_time_measurement: bool = True,
@@ -777,7 +782,7 @@ class KVCacheMetrics(Metrics):
             self.l1 = L1CacheMetrics(
                 cache_type="L1Cache",
                 block_ntokens=block_ntokens,
-                capacity=capacity,
+                capacity_nbytes=capacity_nbytes,
                 enable_time_measurement=enable_time_measurement,
                 enable_breakdown_measurement=enable_breakdown_measurement,
             )
@@ -866,16 +871,17 @@ class MeasurableBase:
             @functools.wraps(func)
             async def async_wrapper(
                 self,
-                prefix: Sequence[int] | None,
-                tokens: Sequence[int],
+                cache_key: TokenCacheKey,
                 *args,
                 **kwargs,
             ):
                 with cpu_perf_timer(
                     self._enable_time_measurement
                 ) as get_lat_ms:
-                    status = await func(self, prefix, tokens, *args, **kwargs)
+                    status = await func(self, cache_key, *args, **kwargs)
                 if self._recorder:
+                    prefix = cache_key.prefix
+                    tokens = cache_key.tokens
                     self._recorder.record(
                         op,
                         0 if prefix is None else len(prefix),
@@ -888,16 +894,17 @@ class MeasurableBase:
             @functools.wraps(func)
             def wrapper(
                 self,
-                prefix: Sequence[int] | None,
-                tokens: Sequence[int],
+                cache_key: TokenCacheKey,
                 *args,
                 **kwargs,
             ):
                 with cpu_perf_timer(
                     self._enable_time_measurement
                 ) as get_lat_ms:
-                    status = func(self, prefix, tokens, *args, **kwargs)
+                    status = func(self, cache_key, *args, **kwargs)
                 if self._recorder:
+                    prefix = cache_key.prefix
+                    tokens = cache_key.tokens
                     self._recorder.record(
                         op,
                         0 if prefix is None else len(prefix),

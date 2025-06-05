@@ -15,7 +15,7 @@
 from concurrent.futures import Executor
 from dataclasses import dataclass
 from threading import Lock
-from typing import Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import torch
 
@@ -76,7 +76,7 @@ class MockConnector(Connector[bytes, torch.Tensor], AsyncBase):
             feature.mput_mget = True
         if self.config.use_rdma:
             feature.rdma = True
-        return ConnectorFeature()
+        return feature
 
     def __del__(self) -> None:
         self.close()
@@ -113,7 +113,7 @@ class MockConnector(Connector[bytes, torch.Tensor], AsyncBase):
 
     def get_batches(
         self,
-        keys: Sequence[bytes],
+        keys: Sequence[Any],
         mrs: Sequence[MemoryRegion],
         batch_size: int,
     ) -> Sequence[Sequence[Tuple[bytes, MemoryRegion]]]:

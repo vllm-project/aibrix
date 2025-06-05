@@ -13,14 +13,12 @@
 # limitations under the License.
 
 import random
-from typing import Sequence
 
+import numpy as np
 import pytest
 
 from aibrix_kvcache.l2.key_builders import (
-    HexKeyBuilder,
-    MD5Hasher,
-    RawKeyBuilder,
+    FarmHasher,
     RollingHashKeyBuilder,
     SimpleHashKeyBuilder,
 )
@@ -32,10 +30,8 @@ BLOCK_SIZE = 16
 
 @pytest.fixture(
     params=[
-        HexKeyBuilder(BLOCK_SIZE),
-        RawKeyBuilder(BLOCK_SIZE),
-        RollingHashKeyBuilder(MD5Hasher(), BLOCK_SIZE),
-        SimpleHashKeyBuilder(MD5Hasher(), BLOCK_SIZE),
+        RollingHashKeyBuilder(FarmHasher(), BLOCK_SIZE),
+        SimpleHashKeyBuilder(FarmHasher(), BLOCK_SIZE),
     ]
 )
 def key_builder(request):
@@ -48,8 +44,16 @@ def prefix_length(request):
 
 
 def test_key_builder(benchmark, key_builder, prefix_length):
-    prefix = [random.randint(0, 99999999) for _ in range(prefix_length)]
-    tokens = [random.randint(0, 99999999) for _ in range(TOKENS_LENGTH)]
+    random.seed(123)
+
+    prefix = np.array(
+        [random.randint(0, 99999999) for _ in range(prefix_length)],
+        dtype=np.int32,
+    )
+    tokens = np.array(
+        [random.randint(0, 99999999) for _ in range(TOKENS_LENGTH)],
+        dtype=np.int32,
+    )
 
     # Run benchmark
     benchmark(key_builder.build, prefix, tokens)
@@ -58,5 +62,5 @@ def test_key_builder(benchmark, key_builder, prefix_length):
     assert len(result) > 0
     for key_tuple in result:
         assert len(key_tuple) == 2
-        assert isinstance(key_tuple[0], Sequence)
+        assert isinstance(key_tuple[0], np.ndarray)
         assert isinstance(key_tuple[1], (str, bytes))

@@ -15,7 +15,7 @@
 from abc import abstractmethod
 from concurrent.futures import Executor
 from dataclasses import dataclass
-from typing import Generic, List, Sequence, Tuple, TypeVar
+from typing import Any, Generic, List, Sequence, Tuple, TypeVar
 
 import torch
 
@@ -166,7 +166,7 @@ class Connector(Generic[K, V]):
 
     def get_batches(
         self,
-        keys: Sequence[K],
+        keys: Sequence[Any],
         mrs: Sequence[MemoryRegion],
         batch_size: int,
     ) -> Sequence[Sequence[Tuple[K, MemoryRegion]]]:
