@@ -221,7 +221,7 @@ Deploy vLLM model in kind cluster
    kubectl create -k development/vllm/linux
 
 Access model endpoint
-~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: bash
 
