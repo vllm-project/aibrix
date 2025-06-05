@@ -319,7 +319,7 @@ def main(signal, timeout):
                     start_serving_thread(watch_version, deployment, False)
                 except Exception as e:
                     logger.warning(
-                        f"Error on handle existing deployment {deployment.metadata.namepsace}/{deployment.metadata.name}: {e} "
+                        f"Error on handle existing deployment {deployment.metadata.namespace}/{deployment.metadata.name}: {e} "
                     )
         except client.rest.ApiException as ae:
             logger.error(
