@@ -530,7 +530,7 @@ class L2Cache(MeasurableBase):
             if len(tokens_in_mr) != self.block_ntokens:
                 return False
             all_tokens = np_array_concat(prefix_in_mr, tokens_in_mr)
-            is_identical = all(all_tokens == real_key)
+            is_identical = np.all(all_tokens == real_key)
             if is_identical:
                 return True
             else:
