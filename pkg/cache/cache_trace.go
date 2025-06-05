@@ -78,7 +78,7 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 	}
 
 	if metaPod.CanLogPodTrace(5) {
-		klog.V(4).InfoS("pod stats updated (addPodStats).", "pod", metaPod.Name, "request", ctx.RequestID, "running_requests", requests, "pending_util", utilization, "pending_load", ctx.PendingLoad)
+		klog.V(4).InfoS("pod stats updated (addPodStats).", "pod", metaPod.Name, "requestID", ctx.RequestID, "running_requests", requests, "pending_util", utilization, "pending_load", ctx.PendingLoad)
 	}
 }
 
@@ -119,7 +119,7 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 	}
 
 	if metaPod.CanLogPodTrace(5) {
-		klog.V(4).InfoS("pod stats updated (donePodStats).", "pod", metaPod.Name, "request", ctx.RequestID, "running requests", requests, "pending load", utilization, "pending_load", ctx.PendingLoad)
+		klog.V(4).InfoS("pod stats updated (donePodStats).", "pod", metaPod.Name, "requestID", ctx.RequestID, "running_requests", requests, "pending_util", utilization, "pending_load", ctx.PendingLoad)
 	}
 }
 

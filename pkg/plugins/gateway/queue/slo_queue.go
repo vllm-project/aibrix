@@ -130,7 +130,7 @@ func (q *SLOQueue) Enqueue(ctx *types.RoutingContext, currentTime time.Time) err
 
 	// SimpleQueue.Enqueue() returns nil always.
 	sub.Enqueue(ctx, currentTime) // nolint: errcheck
-	q.debugSub(fmt.Sprintf("%s request enqueued", ctx.Model))
+	q.debugSub(fmt.Sprintf("%s request enqueued, request=%s", ctx.Model, ctx.RequestID))
 	return nil
 }
 
@@ -260,6 +260,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 	})
 
 	// Start from ealiest
+	q.debugCandidates(fmt.Sprintf("%s candidates", q.modelName), dequeueCandidates)
 	for _, candidate := range dequeueCandidates {
 		var lastErr error
 		if monogenousGPURouting {
@@ -297,10 +298,11 @@ func (q *SLOQueue) Dequeue(ts time.Time) (*types.RoutingContext, error) {
 	if len(q.lastCandidateSubKey) == 0 {
 		return nil, fmt.Errorf("call SLOQueue.Peek first")
 	}
-	sub, _ := q.subs.Load(q.lastCandidateSubKey)
+	subkey := q.lastCandidateSubKey
+	sub, _ := q.subs.Load(subkey)
 	q.lastCandidateSubKey = ""
 	q.lastCandidateError = nil
-	defer q.debugSub(fmt.Sprintf("%s request dequeued from sub %s", q.modelName, q.lastCandidateSubKey))
+	defer q.debugSub(fmt.Sprintf("%s request dequeued from sub %s,", q.modelName, subkey))
 	return sub.Dequeue(ts)
 }
 
@@ -461,20 +463,38 @@ func (q *SLOQueue) higherRank(rank1 float64, rank2 float64) float64 {
 }
 
 func (q *SLOQueue) debugSub(msg string) {
-	if !klog.V(4).Enabled() {
+	if !klog.V(5).Enabled() {
 		return
 	}
 
 	var logMsg strings.Builder
 	logMsg.WriteString(msg)
 	logMsg.WriteRune(',')
-	logMsg.WriteString("SLOQueue subs stats:")
+	logMsg.WriteString("sub_stats=")
 	q.subs.Range(func(key string, sub types.RouterQueue[*types.RoutingContext]) bool {
 		logMsg.WriteString(key)
 		logMsg.WriteRune('(')
 		logMsg.WriteString(strconv.Itoa(sub.Len()))
-		logMsg.WriteRune(')')
+		logMsg.WriteString(") ")
 		return true
 	})
-	klog.V(4).Infof(logMsg.String())
+	klog.V(5).Infof(logMsg.String())
+}
+
+func (q *SLOQueue) debugCandidates(msg string, candidates []*candidateRouterRequest) {
+	if !klog.V(5).Enabled() {
+		return
+	}
+
+	var logMsg strings.Builder
+	logMsg.WriteString(msg)
+	logMsg.WriteRune(',')
+	logMsg.WriteString("candidates=")
+	for _, candidate := range candidates {
+		logMsg.WriteString(candidate.RequestID)
+		logMsg.WriteRune('(')
+		logMsg.WriteString(fmt.Sprintf("%.2f", candidate.Profiles[0].Rank))
+		logMsg.WriteString(") ")
+	}
+	klog.V(5).Infof(logMsg.String())
 }

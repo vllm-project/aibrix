@@ -34,7 +34,7 @@ func NewPackLoadRouter(provider cache.CappedLoadProvider) (types.Router, error) 
 }
 
 func (r *packLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	klog.V(4).Info("Routing using packLoadRouter", "candidates", pods.Len())
+	klog.V(4).InfoS("Routing using packLoadRouter", "candidates", pods.Len(), "requestID", ctx.RequestID)
 
 	if pods.Len() == 0 {
 		return "", ErrorNoAvailablePod
