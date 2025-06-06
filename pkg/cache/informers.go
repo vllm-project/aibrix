@@ -237,7 +237,6 @@ func (c *Store) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 		c.addPodAndModelMappingLockedByName(pod, newModel.Namespace, newModel.Name)
 	}
 
-	klog.V(4).Infof("MODELADAPTER UPDATED. %s/%s %s", oldModel.Namespace, oldModel.Name, newModel.Status.Phase)
 	c.debugInfo()
 }
 
@@ -262,7 +261,6 @@ func (c *Store) deleteModelAdapter(obj interface{}) {
 		c.deletePodAndModelMappingLocked(pod, model.Namespace, model.Name, 0)
 	}
 
-	klog.V(4).Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
 	c.debugInfo()
 }
 
@@ -311,11 +309,14 @@ func (c *Store) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
 				klog.Errorf("failed to initialize model-based queue router: %v", err)
 			}
 		}
+		klog.V(4).Infof("MODEL(ADAPTER) CREATED: %s", modelName)
 	}
 
 	metaPod.Models.Store(modelName, modelName)
 	key := fmt.Sprintf("%s/%s", metaPod.Namespace, metaPod.Name)
 	metaModel.Pods.Store(key, metaPod.Pod)
+
+	klog.V(4).InfoS("Pod added to model", "model", modelName, "pod", metaPod.Name, "pods", metaModel.Pods.Len())
 }
 
 func (c *Store) deletePodLocked(podName, podNamespace string) *Pod {
@@ -340,8 +341,11 @@ func (c *Store) deletePodAndModelMappingLocked(podName, namespace, modelName str
 		if meta, ok := c.metaModels.Load(modelName); ok {
 			key := fmt.Sprintf("%s/%s", namespace, podName)
 			meta.Pods.Delete(key)
+			klog.V(4).InfoS("Pod removed from model", "model", modelName, "pod", podName, "pods", meta.Pods.Len())
+
 			if meta.Pods.Len() == 0 {
 				c.metaModels.Delete(modelName)
+				klog.V(4).Infof("MODEL(ADAPTER) DELETED: %s", modelName)
 			}
 		}
 	}

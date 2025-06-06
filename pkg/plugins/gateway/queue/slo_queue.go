@@ -159,7 +159,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 
 	// Refill candidates
 	q.dequeueCandidates = q.dequeueCandidates[:0]
-	q.debugSub(fmt.Sprintf("peeking %s requests", q.modelName))
+	q.debugSub(fmt.Sprintf("peeking %s requests for %v", q.modelName, deployments))
 	// Define fallback handler to handle cases like:
 	// 1. No available profiles.
 	// 2. Profile does not provide SLO info.
@@ -462,15 +462,12 @@ func (q *SLOQueue) higherRank(rank1 float64, rank2 float64) float64 {
 	return rank1 - rank2
 }
 
-func (q *SLOQueue) debugSub(msg string) {
+func (q *SLOQueue) debugSub(msg string, keyAndValues ...interface{}) {
 	if !klog.V(5).Enabled() {
 		return
 	}
 
 	var logMsg strings.Builder
-	logMsg.WriteString(msg)
-	logMsg.WriteRune(',')
-	logMsg.WriteString("sub_stats=")
 	q.subs.Range(func(key string, sub types.RouterQueue[*types.RoutingContext]) bool {
 		logMsg.WriteString(key)
 		logMsg.WriteRune('(')
@@ -478,7 +475,7 @@ func (q *SLOQueue) debugSub(msg string) {
 		logMsg.WriteString(") ")
 		return true
 	})
-	klog.V(5).Infof(logMsg.String())
+	klog.V(5).InfoS(msg, "sub_stats", logMsg.String())
 }
 
 func (q *SLOQueue) debugCandidates(msg string, candidates []*candidateRouterRequest) {
@@ -487,14 +484,16 @@ func (q *SLOQueue) debugCandidates(msg string, candidates []*candidateRouterRequ
 	}
 
 	var logMsg strings.Builder
-	logMsg.WriteString(msg)
-	logMsg.WriteRune(',')
-	logMsg.WriteString("candidates=")
 	for _, candidate := range candidates {
 		logMsg.WriteString(candidate.RequestID)
 		logMsg.WriteRune('(')
-		logMsg.WriteString(fmt.Sprintf("%.2f", candidate.Profiles[0].Rank))
+		for _, profile := range candidate.Profiles {
+			logMsg.WriteString(profile.Key)
+			logMsg.WriteRune(':')
+			logMsg.WriteString(fmt.Sprintf("%.3f", profile.Rank))
+			logMsg.WriteRune(' ')
+		}
 		logMsg.WriteString(") ")
 	}
-	klog.V(5).Infof(logMsg.String())
+	klog.V(5).InfoS(msg, "candidates", logMsg.String())
 }
