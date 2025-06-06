@@ -17,7 +17,6 @@ package cache
 
 import (
 	"errors"
-	"fmt"
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -123,8 +122,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	newPod := newObj.(*v1.Pod)
 
 	_, oldOk := oldPod.Labels[modelIdentifier]
-	key := fmt.Sprintf("%s/%s", oldPod.Namespace, oldPod.Name)
-	_, existed := c.metaPods.Load(key) // Make sure nothing left.
+	_, existed := c.metaPods.Load(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name)) // Make sure nothing left.
 	newModelName, newOk := newPod.Labels[modelIdentifier]
 
 	if !oldOk && !existed && !newOk {
@@ -188,8 +186,7 @@ func (c *Store) deletePod(obj interface{}) {
 			return
 		}
 	}
-	key := fmt.Sprintf("%s/%s", namespace, name)
-	_, existed := c.metaPods.Load(key)
+	_, existed := c.metaPods.Load(utils.GeneratePodKey(namespace, name))
 	if !hasModelLabel && !existed {
 		return
 	}
@@ -273,8 +270,7 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 	} else {
 		c.bufferPod.Pod = pod
 	}
-	key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-	metaPod, loaded := c.metaPods.LoadOrStore(key, c.bufferPod)
+	metaPod, loaded := c.metaPods.LoadOrStore(utils.GeneratePodKey(pod.Namespace, pod.Name), c.bufferPod)
 	if !loaded {
 		c.bufferPod = nil
 	}
@@ -282,8 +278,7 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 }
 
 func (c *Store) addPodAndModelMappingLockedByName(podName, namespace, modelName string) {
-	key := fmt.Sprintf("%s/%s", namespace, podName)
-	pod, ok := c.metaPods.Load(key)
+	pod, ok := c.metaPods.Load(utils.GeneratePodKey(namespace, podName))
 	if !ok {
 		klog.Errorf("pod %s does not exist in internal-cache", podName)
 		return
@@ -313,10 +308,10 @@ func (c *Store) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
 	}
 
 	metaPod.Models.Store(modelName, modelName)
-	key := fmt.Sprintf("%s/%s", metaPod.Namespace, metaPod.Name)
-	metaModel.Pods.Store(key, metaPod.Pod)
+	podKey := utils.GeneratePodKey(metaPod.Namespace, metaPod.Name)
+	metaModel.Pods.Store(podKey, metaPod.Pod)
 
-	klog.V(4).InfoS("Pod added to model", "model", modelName, "pod", metaPod.Name, "pods", metaModel.Pods.Len())
+	klog.V(4).InfoS("Pod added to model", "model", modelName, "pod", podKey, "pods", metaModel.Pods.Len())
 }
 
 func (c *Store) deletePodLocked(podName, podNamespace string) *Pod {
@@ -329,9 +324,9 @@ func (c *Store) deletePodLocked(podName, podNamespace string) *Pod {
 // If ignoreMapping > 0, podToModel mapping will be ignored.
 // If ignoreMapping < 0, modelToPod mapping will be ignored
 func (c *Store) deletePodAndModelMappingLocked(podName, namespace, modelName string, ignoreMapping int) {
+	podKey := utils.GeneratePodKey(namespace, podName)
 	if ignoreMapping <= 0 {
-		key := fmt.Sprintf("%s/%s", namespace, podName)
-		if metaPod, ok := c.metaPods.Load(key); ok {
+		if metaPod, ok := c.metaPods.Load(podKey); ok {
 			metaPod.Models.Delete(modelName)
 			// PodToModelMapping entry should only be deleted during pod deleting.
 		}
@@ -339,9 +334,8 @@ func (c *Store) deletePodAndModelMappingLocked(podName, namespace, modelName str
 
 	if ignoreMapping >= 0 {
 		if meta, ok := c.metaModels.Load(modelName); ok {
-			key := fmt.Sprintf("%s/%s", namespace, podName)
-			meta.Pods.Delete(key)
-			klog.V(4).InfoS("Pod removed from model", "model", modelName, "pod", podName, "pods", meta.Pods.Len())
+			meta.Pods.Delete(podKey)
+			klog.V(4).InfoS("Pod removed from model", "model", modelName, "pod", podKey, "pods", meta.Pods.Len())
 
 			if meta.Pods.Len() == 0 {
 				c.metaModels.Delete(modelName)
@@ -362,15 +356,14 @@ func (c *Store) resyncModelAdapters(store cache.Store) {
 			c.mu.Lock()
 			// Process each pod instance in the ModelAdapter
 			for _, podName := range modelAdapter.Status.Instances {
-				key := fmt.Sprintf("%s/%s", modelAdapter.Namespace, podName)
 				// Check if pod exists in cache before creating mapping
-				if _, exists := c.metaPods.Load(key); exists {
+				if _, exists := c.metaPods.Load(utils.GeneratePodKey(modelAdapter.Namespace, podName)); exists {
 					c.addPodAndModelMappingLockedByName(podName, modelAdapter.Namespace, modelAdapter.Name)
-					klog.V(4).Infof("Resynced pod mapping for adapter %s/%s, pod %s",
-						modelAdapter.Namespace, modelAdapter.Name, podName)
+					klog.V(4).Infof("Resynced pod mapping for adapter %s, pod %s/%s",
+						modelAdapter.Name, modelAdapter.Namespace, podName)
 				} else {
-					klog.Warningf("Pod %s not found in cache for ModelAdapter %s/%s during resync",
-						podName, modelAdapter.Namespace, modelAdapter.Name)
+					klog.Warningf("Pod %s/%s not found in cache for ModelAdapter %s during resync",
+						modelAdapter.Namespace, podName, modelAdapter.Name)
 				}
 			}
 			c.mu.Unlock()
