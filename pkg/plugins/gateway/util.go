@@ -118,31 +118,59 @@ func getRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
 
 // getChatCompletionsMessage returns message for chat completions object
 func getChatCompletionsMessage(jsonMap map[string]json.RawMessage) (string, *extProcPb.ProcessingResponse) {
-	// openai golang lib does not support unmarshal for ChatCompletionsNewParams.Messages object (https://github.com/openai/openai-go/issues/247)
-	// Once supported, remove the short term fix
-	type Message struct {
-		Content string `json:"content"`
-		Role    string `json:"role"`
-	}
-
 	messages, ok := jsonMap["messages"]
 	if !ok {
 		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", HeaderErrorRequestBodyProcessing, "true")
 	}
 
-	var output []Message
-	if err := json.Unmarshal(messages, &output); err != nil {
-		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "unable to marshal messages from request body", HeaderErrorRequestBodyProcessing, "true")
+	// First unmarshal using openai-go's ChatCompletionMessage for compatibility
+	var chatMessages []openai.ChatCompletionMessage
+	if err := json.Unmarshal(messages, &chatMessages); err != nil {
+		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "unable to unmarshal messages from request body", HeaderErrorRequestBodyProcessing, "true")
 	}
 
 	var builder strings.Builder
-	for i, m := range output {
+	for i, msg := range chatMessages {
 		if i > 0 {
 			builder.WriteString(" ")
 		}
-		builder.WriteString(m.Content)
+
+		// Extract text content from the message
+		// The Content field might be a simple string or a JSON array
+		contentStr := extractTextFromContent(msg.Content)
+		builder.WriteString(contentStr)
 	}
 	return builder.String(), nil
+}
+
+// extractTextFromContent handles both string content and array content formats
+func extractTextFromContent(content string) string {
+	// First check if it's already a plain string (not JSON)
+	if !strings.HasPrefix(strings.TrimSpace(content), "[") {
+		return content
+	}
+
+	// Try to parse as array of content parts
+	type ContentPart struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	}
+
+	var contentParts []ContentPart
+	if err := json.Unmarshal([]byte(content), &contentParts); err != nil {
+		// If parsing fails, return the original content
+		return content
+	}
+
+	// Extract text from all text-type content parts
+	var texts []string
+	for _, part := range contentParts {
+		if part.Type == "text" && part.Text != "" {
+			texts = append(texts, part.Text)
+		}
+	}
+
+	return strings.Join(texts, " ")
 }
 
 // generateErrorResponse construct envoy proxy error response
