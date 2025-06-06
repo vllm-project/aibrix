@@ -4,6 +4,7 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: aibrix
+  annotations:
     kpa.autoscaling.aibrix.ai/scale-down-delay: 0s
   name: podautoscaler-deepseek-coder-7b-l20
   namespace: default

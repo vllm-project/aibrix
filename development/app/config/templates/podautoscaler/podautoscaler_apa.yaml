@@ -6,6 +6,7 @@ metadata:
   labels:
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
+  annotations:
     autoscaling.aibrix.ai/up-fluctuation-tolerance: "0.1"
     autoscaling.aibrix.ai/down-fluctuation-tolerance: "0.2"
     apa.autoscaling.aibrix.ai/window: "30s"
