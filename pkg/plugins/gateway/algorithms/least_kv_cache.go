@@ -33,7 +33,7 @@ var (
 )
 
 func init() {
-	RegisterDelayedConstructor(RouterLeastKvCache, NewLeastKvCacheRouter)
+	Register(RouterLeastKvCache, NewLeastKvCacheRouter)
 }
 
 type leastKvCacheRouter struct {

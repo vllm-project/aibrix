@@ -68,7 +68,7 @@ def _load_plain_dataset(
         }
         for entry in dataset if entry['prompt'] is not None
     )
-    logging.warn(f"...Complete sessioned dataframe transformation")
+    logging.warning(f"...Complete sessioned dataframe transformation")
     return df
 
 class RequestFinder:
@@ -197,7 +197,7 @@ class RequestFinder:
                     if not repeating:
                         self.df.drop(index=sample_idx, inplace=True)  # Remove the selected row
                         self.df.reset_index(drop=True, inplace=True)  # Reset index to avoid issues
-                    logging.warn(f"No exact match found for request {i + 1}, target input/output lengths {input_len}/{output_len}, use closest QA pair input {closest_input} output {closest_output}.")
+                    logging.warning(f"No exact match found for request {i + 1}, target input/output lengths {input_len}/{output_len}, use closest QA pair input {closest_input} output {closest_output}.")
 
         return filtered_results
 
@@ -265,7 +265,7 @@ class RequestFinder:
                 if len(sample_session["prompts"] == 0):
                     self.df.drop(index=sample_idx, inplace=True)  # Remove the selected row
                     self.df.reset_index(drop=True, inplace=True)  # Reset index to avoid issues
-                logging.warn(f"No exact match found for request {i + 1}, target input/output lengths {input_len}/{output_len}, use closest QA pair input {closest_input} output {closest_output}.")
+                logging.warning(f"No exact match found for request {i + 1}, target input/output lengths {input_len}/{output_len}, use closest QA pair input {closest_input} output {closest_output}.")
         return filtered_results
   
     def sample_requests_all(
