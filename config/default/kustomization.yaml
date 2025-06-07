@@ -19,13 +19,12 @@ namePrefix: aibrix-
 
 resources:
 - ../namespace
-- ../crd
 - ../rbac
 - ../manager
 - ../gateway
 - ../metadata
 - ../gpu-optimizer
-- ../dependency/kuberay-operator
+- ../kuberay-operator
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml
 - ../webhook
