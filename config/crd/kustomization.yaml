@@ -5,6 +5,7 @@ resources:
 - autoscaling
 - model
 - orchestration
+- ray
 #+kubebuilder:scaffold:crdkustomizeresource
 
 patches:
