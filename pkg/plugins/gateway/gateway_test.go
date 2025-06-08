@@ -17,14 +17,19 @@ limitations under the License.
 package gateway
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"testing"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
 )
 
 func Test_ValidateRoutingStrategy(t *testing.T) {
@@ -142,4 +147,126 @@ func Test_buildEnvoyProxyHeaders(t *testing.T) {
 
 	headers = buildEnvoyProxyHeaders(headers, "key3", "value3")
 	assert.Equal(t, 3, len(headers))
+}
+
+func Test_selectTargetPod(t *testing.T) {
+	// Initialize routing algorithms
+	routing.Init()
+
+	tests := []struct {
+		name          string
+		pods          types.PodList
+		mockSetup     func(*MockRouter, types.RoutingAlgorithm)
+		expectedError bool
+		expectedPodIP string
+	}{
+		{
+			name: "routing.Select returns error",
+			pods: &MockPodList{pods: []*v1.Pod{{
+				Status: v1.PodStatus{
+					PodIP:      "1.2.3.4",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				},
+			}}},
+			mockSetup: func(mockRouter *MockRouter, algo types.RoutingAlgorithm) {
+				routing.Register(algo, func(ctx *types.RoutingContext) (types.Router, error) {
+					return nil, fmt.Errorf("routing select error")
+				})
+			},
+			expectedError: true,
+		},
+		{
+			name: "no pods available",
+			pods: &MockPodList{pods: []*v1.Pod{}},
+			mockSetup: func(m *MockRouter, algo types.RoutingAlgorithm) {
+				routing.Register(algo, func(ctx *types.RoutingContext) (types.Router, error) {
+					return m, nil
+				})
+				// No expectations needed as pods.Len() == 0
+			},
+			expectedError: true,
+		},
+		{
+			name: "no ready pods available",
+			pods: &MockPodList{pods: []*v1.Pod{{
+				Status: v1.PodStatus{
+					PodIP:      "1.2.3.4",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse}},
+				},
+			}}},
+			mockSetup: func(mockRouter *MockRouter, algo types.RoutingAlgorithm) {
+				routing.Register(algo, func(ctx *types.RoutingContext) (types.Router, error) {
+					return mockRouter, nil
+				})
+				// No expectations needed as no ready pods
+			},
+			expectedError: true,
+		},
+		{
+			name: "single ready pod",
+			pods: &MockPodList{pods: []*v1.Pod{{
+				Status: v1.PodStatus{
+					PodIP:      "1.2.3.4",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				},
+			}}},
+			mockSetup: func(mockRouter *MockRouter, algo types.RoutingAlgorithm) {
+				routing.Register(algo, func(ctx *types.RoutingContext) (types.Router, error) {
+					return mockRouter, nil
+				})
+				// Explicitly set expectation that Route should not be called
+				mockRouter.On("Route", mock.Anything, mock.Anything).Unset()
+			},
+			expectedError: false,
+			expectedPodIP: "1.2.3.4:8000",
+		},
+		{
+			name: "multiple ready pods",
+			pods: &MockPodList{pods: []*v1.Pod{
+				{
+					Status: v1.PodStatus{
+						PodIP:      "1.2.3.4",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+				{
+					Status: v1.PodStatus{
+						PodIP:      "5.6.7.8",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+			}},
+			mockSetup: func(mockRouter *MockRouter, algo types.RoutingAlgorithm) {
+				routing.Register(algo, func(ctx *types.RoutingContext) (types.Router, error) {
+					return mockRouter, nil
+				})
+				mockRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).Once()
+			},
+			expectedError: false,
+			expectedPodIP: "1.2.3.4:8000",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockRouter := new(MockRouter)
+			routingAlgo := types.RoutingAlgorithm(fmt.Sprintf("test-router-%s", tt.name))
+
+			tt.mockSetup(mockRouter, routingAlgo)
+
+			server := &Server{}
+			ctx := types.NewRoutingContext(context.Background(), routingAlgo, "test-model", "test-message", "test-request", "test-user")
+
+			podIP, err := server.selectTargetPod(ctx, tt.pods)
+
+			if tt.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectedPodIP, podIP)
+			}
+
+			mockRouter.AssertExpectations(t)
+		})
+	}
 }
