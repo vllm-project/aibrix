@@ -20,6 +20,7 @@ import (
 
 // TestRouterAlgorithm is a dedicated routing algorithm for testing
 const TestRouterAlgorithm types.RoutingAlgorithm = "test-router"
+const RouterNotSet types.RoutingAlgorithm = "not-set"
 
 // MockCache implements cache.Cache interface for testing
 type MockCache struct {
@@ -139,6 +140,12 @@ func TestHandleRequestBody(t *testing.T) {
 	// Initialize routing algorithms
 	routingalgorithms.Init()
 
+	// Add cleanup function to reset router registry after test
+	defer func() {
+		// Reset router registry to initial state
+		routingalgorithms.Init()
+	}()
+
 	tests := []TestCase{
 		{
 			name:        "invalid request body",
@@ -146,7 +153,7 @@ func TestHandleRequestBody(t *testing.T) {
 			user: utils.User{
 				Name: "test-user",
 			},
-			routingAlgo: routingalgorithms.RouterNotSet,
+			routingAlgo: RouterNotSet,
 			expected: TestResponse{
 				statusCode: envoyTypePb.StatusCode_BadRequest,
 				model:      "",
@@ -169,7 +176,7 @@ func TestHandleRequestBody(t *testing.T) {
 			user: utils.User{
 				Name: "test-user",
 			},
-			routingAlgo: routingalgorithms.RouterNotSet,
+			routingAlgo: RouterNotSet,
 			mockSetup: func(m *MockCache, _ *MockRouter) {
 				m.On("HasModel", "non-existent-model").Return(false)
 			},
