@@ -16,14 +16,12 @@ from typing import Sequence, Tuple
 
 import numpy as np
 
-from .hasher import Hasher
 from .key_builder import KeyBuilder
 
 
-class SimpleHashKeyBuilder(KeyBuilder):
-    def __init__(self, hasher: Hasher, block_size: int):
+class RawKeyBuilder(KeyBuilder):
+    def __init__(self, block_size: int):
         super().__init__()
-        self.hasher = hasher
         self.block_size = block_size
 
     def build(
@@ -37,15 +35,16 @@ class SimpleHashKeyBuilder(KeyBuilder):
 
         results = []
 
-        prefix_len = len(prefix) if prefix is not None else 0
         all = (tuple(prefix) if prefix is not None else ()) + tuple(tokens)
+        assert len(all) % self.block_size == 0
+        prefix_len = len(prefix) if prefix is not None else 0
+
         all_bytes = memoryview(np.array(all, dtype=np.int32).data)  # type: ignore
         for i in range(0, token_size, self.block_size):
             keys = all[: prefix_len + i + self.block_size]
-
-            data = all_bytes[: prefix_len + i + self.block_size]
-            curr_hash = self.hasher.hash(data)
-
-            results.append((keys, curr_hash.to_bytes(16)))
+            block_bytes = all_bytes[
+                : prefix_len + i + self.block_size
+            ].tobytes()
+            results.append((keys, block_bytes))
 
         return tuple(results)

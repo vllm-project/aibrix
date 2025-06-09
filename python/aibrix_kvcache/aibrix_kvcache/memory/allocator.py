@@ -20,9 +20,12 @@ import numpy as np
 import torch
 from sortedcontainers import SortedDict, SortedList
 
+from .. import envs
 from ..status import Status, StatusCodes
-from ..utils import np_array_concat, round_up
+from ..utils import round_up
 from .ref_counted_obj import RefCountedObj
+
+MR_USE_COMPACT_LAYOUT = not envs.AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED
 
 
 @dataclass
@@ -114,8 +117,16 @@ class MemoryRegion(RefCountedObj):
         self.slab = slab
         self.addr = addr
         self.length = len
+        self._init_meta()
+
+    def _init_meta(self) -> None:
         self._block_nbytes = -1
         self._is_sealed = False
+        self._prefix: Tuple[int, ...] | None = None
+        self._tokens: Tuple[int, ...] = tuple()
+
+    def __len__(self) -> int:
+        return self.length
 
     def __repr__(self) -> str:
         return (
@@ -130,7 +141,7 @@ class MemoryRegion(RefCountedObj):
     def __memoryview__(self) -> memoryview:
         """Memoryview protocol support"""
         return memoryview(
-            self.slab[self.addr : self.addr + self.length].numpy()  # type: ignore
+            self.slab[self.addr : self.addr + self.length].numpy().data  # type: ignore
         )
 
     @property
@@ -159,24 +170,34 @@ class MemoryRegion(RefCountedObj):
         stop = start + bytes_per_int
         magic = self.slab[start:stop].view(torch.int32).numpy()[0]
 
-        assert (
-            magic == MemoryRegion.MAGIC
-        ), "Magic mismatch, MUST pack tokens before sealing."
+        if MR_USE_COMPACT_LAYOUT:
+            assert (
+                magic == ~MemoryRegion.MAGIC
+            ), "Magic mismatch, MUST pack tokens before sealing."
+        else:
+            assert (
+                magic == MemoryRegion.MAGIC
+            ), "Magic mismatch, MUST pack tokens before sealing."
 
-        start = stop
-        stop = start + MemoryRegionFooter.nbytes()
-        footer = MemoryRegionFooter.from_numpy(
-            self.slab[start:stop].view(torch.int32).numpy()
-        )
-        ntokens = footer.prefix_length + footer.tokens_length
-        actual_length = self.calculate_size(self.block_nbytes, ntokens)
-        assert actual_length <= self.length, f"{actual_length} > {self.length}"
+        if not MR_USE_COMPACT_LAYOUT:
+            start = stop
+            stop = start + MemoryRegionFooter.nbytes()
+            footer = MemoryRegionFooter.from_numpy(
+                self.slab[start:stop].view(torch.int32).numpy()
+            )
+            ntokens = footer.prefix_length + footer.tokens_length
+            actual_length = self.calculate_size(self.block_nbytes, ntokens)
+            assert (
+                actual_length <= self.length
+            ), f"{actual_length} > {self.length}"
 
-        # return the rest of the MR
-        self.allocator._finalize_mr(
-            self.slab, self.addr + actual_length, self.length - actual_length
-        )
-        self.length = actual_length
+            # return the rest of the MR
+            self.allocator._finalize_mr(
+                self.slab,
+                self.addr + actual_length,
+                self.length - actual_length,
+            )
+            self.length = actual_length
 
         self._is_sealed = True
 
@@ -198,6 +219,7 @@ class MemoryRegion(RefCountedObj):
         return self.slab.data_ptr() + self.addr
 
     def destroy_unsafe(self):
+        self._init_meta()
         self.allocator._finalize_mr(self.slab, self.addr, self.length)
 
     def to_tensor(
@@ -230,8 +252,8 @@ class MemoryRegion(RefCountedObj):
     def pack_tokens(
         self,
         *,
-        tokens: Sequence[int] | np.ndarray,
-        prefix: Sequence[int] | np.ndarray | None = None,
+        tokens: Tuple[int, ...],
+        prefix: Tuple[int, ...] | None = None,
     ) -> None:
         """Pack tokens into the MR.
         Args:
@@ -242,19 +264,26 @@ class MemoryRegion(RefCountedObj):
         assert ntokens > 0, "tokens must not be empty"
 
         bytes_per_token = np.dtype(np.int32).itemsize
-        ntokens_limit = (self.length - self.block_nbytes) // bytes_per_token - 3
-        assert (
-            ntokens <= ntokens_limit
-        ), f"tokens ({ntokens}) must not exceed the limit ({ntokens_limit})"
+        if not MR_USE_COMPACT_LAYOUT:
+            ntokens_limit = (
+                self.length - self.block_nbytes - MemoryRegionFooter.nbytes()
+            ) // bytes_per_token - 1
+            assert (
+                ntokens <= ntokens_limit
+            ), f"tokens ({ntokens}) must not exceed the limit ({ntokens_limit})"
 
-        if prefix is not None and not isinstance(prefix, np.ndarray):
-            prefix = np.array(prefix, dtype=np.int32)
-        if not isinstance(tokens, np.ndarray):
-            tokens = np.array(tokens, dtype=np.int32)
-
-        if prefix is not None:
-            assert prefix.dtype == np.int32, "prefix must be int32"
-        assert tokens.dtype == np.int32, "tokens must be int32"
+        self._prefix = prefix
+        self._tokens = tokens
+        if MR_USE_COMPACT_LAYOUT:
+            # Write ~magic
+            start = self.addr + self.block_nbytes
+            stop = start + bytes_per_token
+            self.slab[start:stop].copy_(
+                torch.from_numpy(
+                    np.array([~MemoryRegion.MAGIC], dtype=np.int32)
+                ).view(torch.uint8)
+            )
+            return
 
         # Write magic
         start = self.addr + self.block_nbytes
@@ -273,24 +302,33 @@ class MemoryRegion(RefCountedObj):
             torch.from_numpy(footer.to_numpy()).view(torch.uint8)
         )
         # Pack tokens
-        all = np_array_concat(prefix, tokens)
+        all = np.array((prefix or tuple()) + tokens, dtype=np.int32)
         start = stop
         stop = start + bytes_per_token * len(all)
         self.slab[start:stop].copy_(torch.from_numpy(all).view(torch.uint8))
 
-    def unpack_tokens(self) -> Tuple[np.ndarray | None, np.ndarray]:
+    def unpack_tokens(self) -> Tuple[Tuple[int, ...] | None, Tuple[int, ...]]:
         """Unpack tokens from the MR.
         Returns:
             The prefix and tokens.
         """
+        if len(self._tokens) > 0:
+            return self._prefix, self._tokens
+
         bytes_per_token = np.dtype(np.int32).itemsize
         start = self.addr + self.block_nbytes
         stop = start + bytes_per_token
         magic = self.slab[start:stop].view(torch.int32).numpy()[0]
 
+        if MR_USE_COMPACT_LAYOUT:
+            if magic != ~MemoryRegion.MAGIC:
+                # corrupted mr or current mr is not packed with tokens
+                return None, tuple()
+            return self._prefix, self._tokens
+
         if magic != MemoryRegion.MAGIC:
             # corrupted mr or current mr is not packed with tokens
-            return None, np.array([], dtype=np.int32)
+            return None, tuple()
 
         start = stop
         stop = start + MemoryRegionFooter.nbytes()
@@ -303,14 +341,24 @@ class MemoryRegion(RefCountedObj):
         else:
             start = stop
             stop = start + bytes_per_token * footer.prefix_length
-            prefix = self.slab[start:stop].view(torch.int32).numpy()
+            prefix = tuple(
+                self.slab[start:stop].view(torch.int32).numpy().tolist()
+            )
 
         if footer.tokens_length <= 0:
-            return prefix, np.array([], dtype=np.int32)
+            return None, tuple()
 
         start = stop
         stop = start + bytes_per_token * footer.tokens_length
-        return prefix, self.slab[start:stop].view(torch.int32).numpy()
+        tokens = tuple(self.slab[start:stop].view(torch.int32).numpy().tolist())
+
+        self._prefix = prefix
+        self._tokens = tokens
+        return self._prefix, self._tokens
+
+    @staticmethod
+    def use_compact_layout() -> bool:
+        return MR_USE_COMPACT_LAYOUT
 
     @staticmethod
     def calculate_size(block_nbytes: int, ntokens: int) -> int:
@@ -321,17 +369,25 @@ class MemoryRegion(RefCountedObj):
         Returns:
             The size of the MR in bytes.
         """
-        # Layout: [cache block, magic, footer, tokens]
-        magic_nbytes = np.dtype(np.int32).itemsize
-        footer_nbytes = MemoryRegionFooter.nbytes()
-        tokens_nbytes = np.dtype(np.int32).itemsize * ntokens
-        size = int(block_nbytes + magic_nbytes + footer_nbytes + tokens_nbytes)
-        return round_up(size, TensorPoolAllocator.ALLOC_SIZE_ALIGNMENT)
+        if MR_USE_COMPACT_LAYOUT:
+            # Layout: [cache block, ~magic]
+            not_magic_nbytes = np.dtype(np.int32).itemsize
+            size = int(block_nbytes + not_magic_nbytes)
+            return round_up(size, TensorPoolAllocator.ALLOC_SIZE_ALIGNMENT)
+        else:
+            # Layout: [cache block, magic, footer, tokens]
+            magic_nbytes = np.dtype(np.int32).itemsize
+            footer_nbytes = MemoryRegionFooter.nbytes()
+            tokens_nbytes = np.dtype(np.int32).itemsize * ntokens
+            size = int(
+                block_nbytes + magic_nbytes + footer_nbytes + tokens_nbytes
+            )
+            return round_up(size, TensorPoolAllocator.ALLOC_SIZE_ALIGNMENT)
 
 
 class TensorPoolAllocator:
     SLAB_MAX_NBYTES = 1 * 1024**3  # 1GB in bytes
-    ALLOC_SIZE_ALIGNMENT = 128
+    ALLOC_SIZE_ALIGNMENT = 16
 
     def __init__(
         self,

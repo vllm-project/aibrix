@@ -12,11 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Tuple
+from typing import Sequence, Tuple
 
 import numpy as np
 
-from ...utils import np_array_concat
 from .hasher import Hasher
 from .key_builder import KeyBuilder
 
@@ -28,8 +27,8 @@ class RollingHashKeyBuilder(KeyBuilder):
         self.block_size = block_size
 
     def build(
-        self, prefix: np.ndarray | None, tokens: np.ndarray
-    ) -> Tuple[Tuple[np.ndarray, bytes], ...]:
+        self, prefix: Sequence[int] | None, tokens: Sequence[int]
+    ) -> Tuple[Tuple[Tuple[int, ...], bytes], ...]:
         assert prefix is None or len(prefix) % self.block_size == 0
 
         token_size = len(tokens) - len(tokens) % self.block_size
@@ -49,9 +48,11 @@ class RollingHashKeyBuilder(KeyBuilder):
                     start = 1
                 candidates[1:] = prefix[i : i + self.block_size]
 
-                prev_hash = self.hasher.hash(memoryview(candidates[start:]))  # type: ignore
+                prev_hash = self.hasher.hash(
+                    memoryview(candidates[start:].data)
+                )  # type: ignore
 
-        all = np_array_concat(prefix, tokens)
+        all = (tuple(prefix) if prefix is not None else ()) + tuple(tokens)
         prefix_len = len(prefix) if prefix is not None else 0
         for i in range(0, token_size, self.block_size):
             if prev_hash > 0:
@@ -62,7 +63,7 @@ class RollingHashKeyBuilder(KeyBuilder):
             candidates[1:] = tokens[i : i + self.block_size]
             keys = all[: prefix_len + i + self.block_size]
 
-            curr_hash = self.hasher.hash(memoryview(candidates[start:]))  # type: ignore
+            curr_hash = self.hasher.hash(memoryview(candidates[start:].data))  # type: ignore
 
             results.append((keys, curr_hash.to_bytes(16)))
             prev_hash = curr_hash

@@ -131,3 +131,19 @@ def redis_client(redis_server):
         yield client
     finally:
         client.flushall()  # Clean up after each test
+
+
+@pytest.fixture(
+    params=["with_compact_layout", "without_compact_layout"], scope="function"
+)
+def compact_layout_enabled(request):
+    import aibrix_kvcache
+
+    origin = aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT
+    if request.param == "with_compact_layout":
+        aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT = True
+    else:
+        aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT = False
+    yield request.param == "with_compact_layout"
+
+    aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT = origin

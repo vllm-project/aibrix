@@ -34,6 +34,12 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_CHUNK_SIZE: int = 512
     AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED: bool = True
     AIBRIX_KV_CACHE_OL_BREAKDOWN_MEASUREMENT_ENABLED: bool = True
+    # Whether to validate the token in L2 cache. Defaults to False.
+    #
+    # Note:
+    # If disabled, we will use a tight memory layout for both L1 and L2
+    # cache. I.e., we will not pack tokens in the cache entry.
+    AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED: bool = False
 
     AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED: bool = True
     AIBRIX_KV_CACHE_OL_L1_CACHE_EVICTION_POLICY: str = "S3FIFO"
@@ -139,6 +145,12 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     ),
     "AIBRIX_KV_CACHE_OL_BREAKDOWN_MEASUREMENT_ENABLED": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_BREAKDOWN_MEASUREMENT_ENABLED", "1")
+        .strip()
+        .lower()
+        in ("1", "true")
+    ),
+    "AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED", "0")
         .strip()
         .lower()
         in ("1", "true")

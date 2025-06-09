@@ -21,7 +21,7 @@ from aibrix_kvcache.utils import round_up
 
 
 @pytest.fixture
-def allocator():
+def allocator(compact_layout_enabled):
     # use a small slab size for testing
     TensorPoolAllocator.SLAB_MAX_NBYTES = 1024
     TensorPoolAllocator.ALLOC_SIZE_ALIGNMENT = 8
