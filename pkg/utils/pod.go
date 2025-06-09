@@ -283,6 +283,9 @@ func GetModelPortForPod(requestID string, pod *v1.Pod) int64 {
 	if !ok {
 		klog.Warningf("requestID: %v, pod: %v is missing port identifier label: %v, hence default to port: %v",
 			requestID, pod.Name, modelPortIdentifier, defaultPodMetricPort)
+		if pod.Labels == nil {
+			pod.Labels = make(map[string]string)
+		}
 		pod.Labels[modelPortIdentifier] = strconv.Itoa(defaultPodMetricPort)
 		return defaultPodMetricPort
 	}

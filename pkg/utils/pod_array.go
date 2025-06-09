@@ -107,8 +107,8 @@ func (arr *PodArray) initDeployments() {
 			podsByDeployment[lastDeploymentName] = arr.Pods[offset:i]
 			offset = i
 			lastClass = podIndexes[pod.Name]
-			lastDeploymentName = DeploymentNameFromPod(pod)
 			deployments = append(deployments, lastDeploymentName)
+			lastDeploymentName = DeploymentNameFromPod(pod)
 		}
 	}
 	podsByDeployment[lastDeploymentName] = arr.Pods[offset:]

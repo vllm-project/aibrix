@@ -50,6 +50,82 @@ func getPodWithDeployment(deploymentName string) *v1.Pod {
 }
 
 var _ = Describe("PodArray", func() {
+	It("Should work with nil object", func() {
+		var podArray *PodArray
+		Expect(podArray.Len()).To(Equal(0))
+		Expect(podArray.All()).To(BeNil())
+	})
+
+	It("Should All() return original pods", func() {
+		pods := []*v1.Pod{getPodWithDeployment("deployment")}
+		podArray := &PodArray{Pods: pods}
+		Expect(len(podArray.All())).To(Equal(1))
+		Expect(&podArray.All()[0]).To(Equal(&pods[0]))
+	})
+
+	It("Should Index() skip nil pods", func() {
+		pods := []*v1.Pod{}
+		podArray := &PodArray{Pods: pods}
+		Expect(podArray.Indexes()).To(BeNil())
+		podArray = &PodArray{Pods: nil}
+		Expect(podArray.Indexes()).To(BeNil())
+	})
+
+	It("Should Indexes() return single deployment names for monogenous deployment", func() {
+		deployment := "deployment-1"
+		pods := []*v1.Pod{
+			getPodWithDeployment(deployment),
+			getPodWithDeployment(deployment),
+		}
+		podArray := &PodArray{Pods: pods}
+		Expect(podArray.Indexes()).To(Equal([]string{deployment}))
+	})
+
+	It("Should Indexes() return multiple different deployment names for heterogneous deployments", func() {
+		deployments := []string{"deployment-1", "deployment-2"}
+		pods := []*v1.Pod{
+			getPodWithDeployment(deployments[0]),
+			getPodWithDeployment(deployments[1]),
+			getPodWithDeployment(deployments[1]),
+			getPodWithDeployment(deployments[0]),
+			getPodWithDeployment(deployments[0]),
+		}
+		podArray := &PodArray{Pods: pods}
+		Expect(podArray.Indexes()).To(Equal(deployments))
+	})
+
+	It("Should ListByIndex() skip nil pods", func() {
+		pods := []*v1.Pod{}
+		podArray := &PodArray{Pods: pods}
+		Expect(podArray.ListByIndex("deployment-1")).To(BeNil())
+		podArray = &PodArray{Pods: nil}
+		Expect(podArray.ListByIndex("deployment-1")).To(BeNil())
+	})
+
+	It("Should ListByIndex() reuse pods array for monogenous deployment", func() {
+		deployment := "deployment-1"
+		pods := []*v1.Pod{
+			getPodWithDeployment(deployment),
+			getPodWithDeployment(deployment),
+		}
+		podArray := &PodArray{Pods: pods}
+		Expect(&podArray.ListByIndex("deployment-1")[0]).To(Equal(&pods[0]))
+	})
+
+	It("Should InListByIndex() reuse pods array for heterogneous deployments", func() {
+		deployments := []string{"deployment-1", "deployment-2"}
+		pods := []*v1.Pod{
+			getPodWithDeployment(deployments[0]),
+			getPodWithDeployment(deployments[1]),
+			getPodWithDeployment(deployments[1]),
+			getPodWithDeployment(deployments[0]),
+			getPodWithDeployment(deployments[0]),
+		}
+		podArray := &PodArray{Pods: pods}
+		Expect(&podArray.ListByIndex("deployment-1")[0]).To(Equal(&pods[0]))
+		Expect(&podArray.ListByIndex("deployment-2")[0]).To(Equal(&pods[3]))
+	})
+
 	It("Should perform current PodsByDeployments call correctly", func() {
 		deploymentNames := []string{"deployment-1", "deployment-2"}
 		var pods []*v1.Pod
