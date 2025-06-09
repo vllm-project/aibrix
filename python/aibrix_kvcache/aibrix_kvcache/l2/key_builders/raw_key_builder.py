@@ -15,18 +15,16 @@
 import array
 from typing import Sequence, Tuple
 
-from .hasher import Hasher
 from .key_builder import KeyBuilder
 
 
-class SimpleHashKeyBuilder(KeyBuilder):
-    def __init__(self, hasher: Hasher, block_size: int):
+class RawKeyBuilder(KeyBuilder):
+    def __init__(self, block_size: int):
         super().__init__(block_size)
-        self.hasher = hasher
 
     @property
     def signature(self) -> str:
-        return "sim"
+        return "raw"
 
     def build(
         self, prefix: Sequence[int] | None, tokens: Sequence[int]
@@ -39,16 +37,18 @@ class SimpleHashKeyBuilder(KeyBuilder):
 
         results = []
 
-        prefix_len = len(prefix) if prefix is not None else 0
-        all = (tuple(prefix) if prefix is not None else ()) + tuple(tokens)
-        all_bytes = memoryview(array.array("I", all).tobytes())
+        not_none_prefix = tuple() if prefix is None else tuple(prefix)
+        all = tuple(not_none_prefix + tuple(tokens[:token_size]))
+        assert len(all) % self.block_size == 0
+        prefix_len = len(not_none_prefix)
+
+        all_bytes = array.array("I", all).tobytes()
         itemsize = array.array("I").itemsize
         for i in range(0, token_size, self.block_size):
             keys = all[: prefix_len + i + self.block_size]
-
-            data = all_bytes[: (prefix_len + i + self.block_size) * itemsize]
-            curr_hash = self.hasher.hash(data)
-
-            results.append((keys, curr_hash.to_bytes(16)))
+            block_bytes = all_bytes[
+                : (prefix_len + i + self.block_size) * itemsize
+            ]
+            results.append((keys, block_bytes))
 
         return tuple(results)

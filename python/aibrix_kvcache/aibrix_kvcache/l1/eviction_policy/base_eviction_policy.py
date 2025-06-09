@@ -13,9 +13,9 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from typing import Callable, Dict, Generic, Iterator, TypeVar
+from typing import Callable, Dict, Generic, Iterator, Tuple, TypeVar
 
-from ...cache_hashable import KVCacheHashable, MemoryRegionCacheEntry
+from ...cache_hashable import KVCacheHashable
 from ...memory import MemoryRegion
 from ...status import Status
 from ...utils import human_readable_bytes
@@ -23,16 +23,17 @@ from ...utils import human_readable_bytes
 N = TypeVar("N", bound="BaseEvictionPolicyNode")
 
 Functor = Callable[
-    [MemoryRegionCacheEntry],
+    [KVCacheHashable, MemoryRegion],
     None,
 ]
 
 
 class BaseEvictionPolicyNode(ABC):
-    __slots__ = ("payload", "key", "value", "hotness")
+    __slots__ = ("key", "value", "hotness")
 
-    def __init__(self, payload: KVCacheHashable):
-        self.payload: KVCacheHashable = payload
+    def __init__(self, key: KVCacheHashable, value: MemoryRegion):
+        self.key: KVCacheHashable = key
+        self.value: MemoryRegion = value
         self.hotness: int = 0
 
     def __repr__(self) -> str:
@@ -40,7 +41,7 @@ class BaseEvictionPolicyNode(ABC):
             {f"{slot}={getattr(self, slot, None)}" for slot in self.__slots__}
         )
         return (
-            f"Node(payload_size={len(self.payload)}, "
+            f"Node(key={self.key}, value={self.value}, "
             f"hotness={self.hotness}, {derived_members})"
         )
 
@@ -109,10 +110,9 @@ class BaseEvictionPolicy(Generic[N]):
         return self._capacity_nbytes
 
     def __del__(self) -> None:
-        for entry in self._hashmap.keys():
-            if isinstance(entry, MemoryRegionCacheEntry):
-                entry.ref_down()
-        self._hashmap.clear()
+        for _, node in self._hashmap.items():
+            if node.value is not None:
+                node.value.ref_down()
 
     def __len__(self) -> int:
         """Return the usage in the eviction policy."""
@@ -128,6 +128,10 @@ class BaseEvictionPolicy(Generic[N]):
         if not status.is_ok():
             raise KeyError(key)
         return status.get()
+
+    def __setitem__(self, key: KVCacheHashable, value: MemoryRegion) -> None:
+        """Set the value of the key."""
+        self.put(key, value)
 
     def __delitem__(self, key: KVCacheHashable) -> None:
         """Delete the key."""
@@ -151,6 +155,20 @@ class BaseEvictionPolicy(Generic[N]):
         """
         self._on_hot_access = functor
 
+    def items(self) -> Iterator[Tuple[KVCacheHashable, MemoryRegion]]:
+        """Return an iterator over the key-value pairs in the
+        eviction policy.
+        """
+        return iter({(key, node.value) for key, node in self._hashmap.items()})
+
+    def keys(self) -> Iterator[KVCacheHashable]:
+        """Return an iterator over the keys in the eviction policy."""
+        return iter(self._hashmap.keys())
+
+    def values(self) -> Iterator[MemoryRegion]:
+        """Return an iterator over the values in the eviction policy."""
+        return iter({node.value for node in self._hashmap.values()})
+
     def __repr__(self) -> str:
         return (
             f"{self._name}("
@@ -163,10 +181,11 @@ class BaseEvictionPolicy(Generic[N]):
         return self.__repr__()
 
     @abstractmethod
-    def put(self, entry: MemoryRegionCacheEntry) -> Status:
-        """Put an entry into the eviction policy.
+    def put(self, key: KVCacheHashable, value: MemoryRegion) -> Status:
+        """Put a key into the eviction policy.
         Args:
-            entry: The entry to put.
+            key (KVCacheHashable): The key of the item.
+            value: The value of the item.
         Returns:
             Status: The status of the operation.
         """

@@ -12,13 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Iterator, cast
+from typing import Iterator, Tuple
 
 from ... import envs
-from ...cache_hashable import (
-    KVCacheHashable,
-    MemoryRegionCacheEntry,
-)
+from ...cache_hashable import KVCacheHashable
 from ...memory import MemoryRegion
 from ...status import Status, StatusCodes
 from .base_eviction_policy import (
@@ -31,8 +28,8 @@ from .base_eviction_policy import (
 class S3FIFONode(BaseEvictionPolicyNode):
     __slots__ = ("next", "prev", "queue")
 
-    def __init__(self, payload: KVCacheHashable) -> None:
-        super().__init__(payload)
+    def __init__(self, key: KVCacheHashable, value: MemoryRegion):
+        super().__init__(key, value)
         self.next: S3FIFONode | None = None
         self.prev: S3FIFONode | None = None
         self.queue: S3FIFOQueue | None = None
@@ -63,7 +60,8 @@ class S3FIFOQueue:
         if self._tail is None:
             self._tail = node
         self._len += 1
-        self._size_nbytes += len(node.payload)
+        if node.value:
+            self._size_nbytes += len(node.value)
 
     def pop(self) -> S3FIFONode | None:
         node = self._tail
@@ -86,7 +84,8 @@ class S3FIFOQueue:
         node.prev = None
         node.queue = None
         self._len -= 1
-        self._size_nbytes -= len(node.payload)
+        if node.value:
+            self._size_nbytes -= len(node.value)
 
 
 class S3FIFO(BaseEvictionPolicy[S3FIFONode]):
@@ -166,44 +165,67 @@ class S3FIFO(BaseEvictionPolicy[S3FIFONode]):
             }
         )
 
+    def items(self) -> Iterator[Tuple[KVCacheHashable, MemoryRegion]]:
+        """Return an iterator over the key-value pairs in the
+        eviction policy.
+        """
+        return iter(
+            {
+                (key, node.value)
+                for key, node in self._hashmap.items()
+                if self._hashmap[key].queue != self._ghost_fifo
+            }
+        )
+
+    def keys(self) -> Iterator[KVCacheHashable]:
+        """Return an iterator over the keys in the eviction policy."""
+        return iter(self)
+
+    def values(self) -> Iterator[MemoryRegion]:
+        """Return an iterator over the values in the eviction policy."""
+        return iter({value for _, value in self.items()})
+
     def put(
         self,
-        entry: MemoryRegionCacheEntry,
+        key: KVCacheHashable,
+        value: MemoryRegion,
     ) -> Status:
-        node = self._hashmap.pop(entry, None)
-        if node is not None:
+        if key in self._hashmap:
+            node = self._hashmap[key]
+
             if node.queue == self._ghost_fifo:
                 # We hit on a ghost entry, let's promote it to main fifo.
 
                 # Remove it from ghost fifo
                 self._ghost_fifo.erase(node)
 
-                # Assign new entry
-                node.payload = entry
+                # Assign new value
+                node.value = value
                 node.hotness = 0
 
                 # Insert into main fifo
                 self._main_fifo.append(node)
 
                 if self._on_hot_access:
-                    entry = cast(MemoryRegionCacheEntry, node.payload)
-                    entry.ref_up()
-                    self._on_hot_access(entry)
+                    value.ref_up()
+                    self._on_hot_access(key, value)
             else:
                 # Hit on small or main fifo
-                node.payload.ref_down()  # type: ignore
+                queue = node.queue
 
-                node.payload = entry
+                queue.erase(node)  # type: ignore
+                node.value.ref_down()
+
+                node.value = value
+                queue.append(node)  # type: ignore
         else:
             # New key always goes to small fifo
-            node = S3FIFONode(entry)
+            node = S3FIFONode(key, value)
+            self._hashmap[key] = node
             self._small_fifo.append(node)
             if self._on_put is not None:
-                entry = cast(MemoryRegionCacheEntry, node.payload)
-                entry.ref_up()
-                self._on_put(entry)
-
-        self._hashmap[entry] = node
+                value.ref_up()
+                self._on_put(key, value)
 
         if len(self) > self._capacity_nbytes:
             self.evict()
@@ -223,7 +245,7 @@ class S3FIFO(BaseEvictionPolicy[S3FIFONode]):
             # Hit on a ghost entry, return None
             return Status(StatusCodes.NOT_FOUND)
 
-        entry = cast(MemoryRegionCacheEntry, node.payload)
+        mr = node.value
         # Invoke on_hot_access callback on the item that will be promoted
         # to main fifo
         if all(
@@ -233,20 +255,22 @@ class S3FIFO(BaseEvictionPolicy[S3FIFONode]):
                 self._on_hot_access is not None,
             ]
         ):
-            entry.ref_up()
-            self._on_hot_access(entry)  # type: ignore
+            mr.ref_up()
+            self._on_hot_access(key, mr)  # type: ignore
 
         node.hotness = min(node.hotness + 1, 3)
-        entry.ref_up()
-        return Status.ok(entry._mr)
+        mr.ref_up()
+        return Status.ok(mr)
 
     def delete(self, key: KVCacheHashable) -> Status:
         node = self._hashmap.pop(key, None)
         if node:
             assert node.queue is not None
+            queue = node.queue
             node.queue.erase(node)
-            if node.queue != self._ghost_fifo:
-                node.payload.ref_down()  # type: ignore
+
+            if queue != self._ghost_fifo:
+                node.value.ref_down()
 
         return Status.ok()
 
@@ -269,7 +293,7 @@ class S3FIFO(BaseEvictionPolicy[S3FIFONode]):
             curr = queue._head
             while curr is not None and curr.next != queue._head:
                 total_in_list += 1
-                key = curr.payload
+                key = curr.key
                 assert self._hashmap.get(key, None) == curr
                 assert self._hashmap[key].queue == queue
                 curr = curr.next
@@ -287,25 +311,20 @@ class S3FIFO(BaseEvictionPolicy[S3FIFONode]):
             node.hotness = 0
             self._main_fifo.append(node)
             # Trigger eviction on main fifo if needed
-            if self._main_fifo.nbytes() > self._main_fifo_capacity_nbytes:
+            while self._main_fifo.nbytes() > self._main_fifo_capacity_nbytes:
                 self._evict_one_from_main_fifo()
         else:
-            entry = cast(MemoryRegionCacheEntry, node.payload)
-            del self._hashmap[entry]
-
             if self._on_evict:
-                self._on_evict(entry)
+                self._on_evict(node.key, node.value)
             else:
-                entry.ref_down()
+                node.value.ref_down()
             # Insert into ghost fifo
             node.hotness = -1
-            node.payload = entry.cache_key()
+            node.value = None  # type: ignore
             self._ghost_fifo.append(node)
-            # Update the key in hashmap
-            self._hashmap[node.payload] = node
             # Trigger eviction on ghost fifo if needed
-            if self._ghost_fifo.nbytes() > self._main_fifo_capacity_nbytes:
-                self._evict_ghost_fifo()
+            while self._ghost_fifo.nbytes() > self._main_fifo_capacity_nbytes:
+                self._evict_one_from_ghost_fifo()
 
     def _evict_one_from_main_fifo(self) -> None:
         node = self._main_fifo.pop()
@@ -316,16 +335,15 @@ class S3FIFO(BaseEvictionPolicy[S3FIFONode]):
             node.hotness -= 1
             self._main_fifo.append(node)
         else:
-            entry = cast(MemoryRegionCacheEntry, node.payload)
-            del self._hashmap[node.payload]
-
             if self._on_evict:
-                self._on_evict(entry)
+                self._on_evict(node.key, node.value)
             else:
-                entry.ref_down()
+                node.value.ref_down()
+            del self._hashmap[node.key]
 
-    def _evict_ghost_fifo(self) -> None:
-        while self._ghost_fifo.nbytes() > self._main_fifo_capacity_nbytes:
-            node = self._ghost_fifo.pop()
-            assert node is not None
-            del self._hashmap[node.payload]
+    def _evict_one_from_ghost_fifo(self) -> None:
+        node = self._ghost_fifo.pop()
+        if node is None:
+            return
+
+        del self._hashmap[node.key]

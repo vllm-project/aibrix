@@ -15,18 +15,16 @@
 import array
 from typing import Sequence, Tuple
 
-from .hasher import Hasher
 from .key_builder import KeyBuilder
 
 
-class SimpleHashKeyBuilder(KeyBuilder):
-    def __init__(self, hasher: Hasher, block_size: int):
+class HexKeyBuilder(KeyBuilder):
+    def __init__(self, block_size: int):
         super().__init__(block_size)
-        self.hasher = hasher
 
     @property
     def signature(self) -> str:
-        return "sim"
+        return "hex"
 
     def build(
         self, prefix: Sequence[int] | None, tokens: Sequence[int]
@@ -39,16 +37,16 @@ class SimpleHashKeyBuilder(KeyBuilder):
 
         results = []
 
-        prefix_len = len(prefix) if prefix is not None else 0
         all = (tuple(prefix) if prefix is not None else ()) + tuple(tokens)
+        assert len(all) % self.block_size == 0
+        prefix_len = len(prefix) if prefix is not None else 0
+
         all_bytes = memoryview(array.array("I", all).tobytes())
         itemsize = array.array("I").itemsize
         for i in range(0, token_size, self.block_size):
             keys = all[: prefix_len + i + self.block_size]
-
-            data = all_bytes[: (prefix_len + i + self.block_size) * itemsize]
-            curr_hash = self.hasher.hash(data)
-
-            results.append((keys, curr_hash.to_bytes(16)))
+            end = (prefix_len + i + self.block_size) * itemsize
+            block_hex = all_bytes[:end].hex()
+            results.append((keys, block_hex.encode("utf-8")))
 
         return tuple(results)

@@ -16,9 +16,7 @@ import os
 import time
 from contextlib import contextmanager
 
-import numpy as np
 import torch
-from numpy.lib.stride_tricks import as_strided
 
 
 def round_up(x: int, y: int) -> int:
@@ -74,32 +72,13 @@ def ensure_dir_exist(path: str) -> None:
         os.makedirs(dir)
 
 
-def np_array_data_ptr(arr: np.ndarray) -> int:
-    return arr.__array_interface__["data"][0]
+def hash_combine_128(hash1, hash2, prime=0x1000000000000000000013B) -> int:
+    # 128-bit mask
+    mask = (1 << 128) - 1
 
-
-def np_array_concat(a: np.ndarray | None, b: np.ndarray | None) -> np.ndarray:
-    assert a is not None or b is not None, "a and b cannot be both None"
-
-    if a is None:
-        return b  # type: ignore
-    if b is None:
-        return a
-
-    assert a.dtype == b.dtype, f"a.dtype != b.dtype: {a.dtype} != {b.dtype}"
-
-    a_data_ptr = np_array_data_ptr(a)
-    b_data_ptr = np_array_data_ptr(b)
-    if a_data_ptr + a.nbytes == b_data_ptr:
-        # a and b are contiguous, so we can use as_strided to concatenate them
-        return as_strided(
-            a,
-            shape=(a.size + b.size,),
-            strides=(a.itemsize,),
-        )
-    else:
-        # a and b are not contiguous, use np.concatenate
-        return np.concatenate((a, b))
+    combined = (hash1 ^ (hash2 + prime + (hash1 << 24) + (hash1 >> 4))) & mask
+    combined = (combined * prime) & mask
+    return combined
 
 
 def human_readable_bytes(size: float) -> str:

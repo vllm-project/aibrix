@@ -18,9 +18,8 @@ import functools
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Sequence
 
-from .cache_hashable import TokenCacheKey
 from .status import Status
 from .utils import cpu_perf_timer, human_readable_bytes
 
@@ -871,17 +870,16 @@ class MeasurableBase:
             @functools.wraps(func)
             async def async_wrapper(
                 self,
-                cache_key: TokenCacheKey,
+                prefix: Sequence[int] | None,
+                tokens: Sequence[int],
                 *args,
                 **kwargs,
             ):
                 with cpu_perf_timer(
                     self._enable_time_measurement
                 ) as get_lat_ms:
-                    status = await func(self, cache_key, *args, **kwargs)
+                    status = await func(self, prefix, tokens, *args, **kwargs)
                 if self._recorder:
-                    prefix = cache_key.prefix
-                    tokens = cache_key.tokens
                     self._recorder.record(
                         op,
                         0 if prefix is None else len(prefix),
@@ -894,17 +892,16 @@ class MeasurableBase:
             @functools.wraps(func)
             def wrapper(
                 self,
-                cache_key: TokenCacheKey,
+                prefix: Sequence[int] | None,
+                tokens: Sequence[int],
                 *args,
                 **kwargs,
             ):
                 with cpu_perf_timer(
                     self._enable_time_measurement
                 ) as get_lat_ms:
-                    status = func(self, cache_key, *args, **kwargs)
+                    status = func(self, prefix, tokens, *args, **kwargs)
                 if self._recorder:
-                    prefix = cache_key.prefix
-                    tokens = cache_key.tokens
                     self._recorder.record(
                         op,
                         0 if prefix is None else len(prefix),

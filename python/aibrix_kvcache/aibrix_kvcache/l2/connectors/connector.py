@@ -48,6 +48,8 @@ class ConnectorConfig:
     namespace: str
     partition_id: str
     executor: Executor
+    key_builder_signature: str = ""
+    layout_signature: str = ""
 
 
 @dataclass
@@ -70,8 +72,14 @@ class Connector(Generic[K, V]):
         namespace = config.namespace
         partition_id = config.partition_id
         executor = config.executor
+        key_builder_signature = config.key_builder_signature
+        layout_signature = config.layout_signature
 
         conn_id = f"{namespace}_{partition_id}"
+        signatures = f"{key_builder_signature}{layout_signature}"
+        if len(signatures) > 0:
+            conn_id = f"{conn_id}_{signatures}"
+
         if backend_name == "ROCKSDB":
             from .rocksdb import RocksDBConnector
 

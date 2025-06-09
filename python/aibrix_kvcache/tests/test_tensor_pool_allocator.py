@@ -17,11 +17,10 @@ import random
 import pytest
 
 from aibrix_kvcache.memory import TensorPoolAllocator
-from aibrix_kvcache.utils import round_up
 
 
 @pytest.fixture
-def allocator():
+def allocator(compact_layout_enabled):
     # use a small slab size for testing
     TensorPoolAllocator.SLAB_MAX_NBYTES = 1024
     TensorPoolAllocator.ALLOC_SIZE_ALIGNMENT = 8
@@ -71,14 +70,13 @@ def test_allocating_heterogeneous(allocator):
     """Test allocating with heterogeneous sizes."""
     assert allocator.num_memory_regions == 1024
     sizes = [random.randint(8, 1024) for _ in range(31)]
-    aligned_sizes = [round_up(s, 8) for s in sizes]
     status = allocator.alloc(sizes)
     allocator.assert_consistency()
     assert status.is_ok()
-    assert len(allocator) == sum(aligned_sizes)
+    assert len(allocator) == sum(sizes)
     mrs = status.value
     assert len(mrs) == len(sizes)
-    assert sum([mr.length for mr in mrs]) == sum(aligned_sizes)
+    assert sum([mr.length for mr in mrs]) == sum(sizes)
     [mr.ref_down() for mr in mrs]  # Trigger garbage collection
     assert len(allocator) == 0
     allocator.assert_consistency()
@@ -164,12 +162,11 @@ def test_stress_allocation(allocator, rseed):
     for i in range(num_allocations):
         random.shuffle(sizes_list)
         sizes = sizes_list[i % len(sizes_list)]
-        aligned_sizes = [round_up(s, 8) for s in sizes]
         status = allocator.alloc(sizes)
         assert status.is_ok()
         mrs.extend(status.value)
-        allocated_size += sum(aligned_sizes)
-        assert sum([mr.length for mr in status.value]) == sum(aligned_sizes)
+        allocated_size += sum(sizes)
+        assert sum([mr.length for mr in status.value]) == sum(sizes)
         assert len(allocator) == allocated_size
         allocator.assert_consistency()
 

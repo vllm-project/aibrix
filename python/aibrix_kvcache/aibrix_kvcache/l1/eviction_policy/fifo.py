@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import cast
-
-from ...cache_hashable import KVCacheHashable, MemoryRegionCacheEntry
+from ...cache_hashable import KVCacheHashable
 from ...memory import MemoryRegion
 from ...status import Status, StatusCodes
 from .base_eviction_policy import (
@@ -27,8 +25,8 @@ from .base_eviction_policy import (
 class FIFONode(BaseEvictionPolicyNode):
     __slots__ = ("next", "prev")
 
-    def __init__(self, payload: KVCacheHashable):
-        super().__init__(payload)
+    def __init__(self, key: KVCacheHashable, value: MemoryRegion):
+        super().__init__(key, value)
         self.next: FIFONode | None = None
         self.prev: FIFONode | None = None
 
@@ -53,24 +51,27 @@ class FIFO(BaseEvictionPolicy[FIFONode]):
 
     def put(
         self,
-        entry: MemoryRegionCacheEntry,
+        key: KVCacheHashable,
+        value: MemoryRegion,
     ) -> Status:
-        node = self._hashmap.pop(entry, None)
-        if node is not None:
-            node.payload.ref_down()  # type: ignore
-            usage = len(entry) - len(node.payload)
+        if key in self._hashmap:
+            node = self._hashmap[key]
 
-            node.payload = entry
+            node_value_len = len(node.value)
+            node.value.ref_down()
+            usage = len(value) - node_value_len
+
+            node.value = value
             node.hotness = 0
         else:
-            node = FIFONode(entry)
+            node = FIFONode(key, value)
+            self._hashmap[key] = node
             self._prepend_to_head(node)
-            usage = len(entry)
+            usage = len(value)
             if self._on_put is not None:
-                entry.ref_up()
-                self._on_put(node.payload)  # type: ignore
+                value.ref_up()
+                self._on_put(key, value)
 
-        self._hashmap[entry] = node
         self._used_nbytes += usage
 
         if len(self) > self._capacity_nbytes:
@@ -86,22 +87,22 @@ class FIFO(BaseEvictionPolicy[FIFONode]):
             return Status(StatusCodes.NOT_FOUND)
 
         node = self._hashmap[key]
-        entry = cast(MemoryRegionCacheEntry, node.payload)
+        mr = node.value
         # The item becomes hot after the first access
         if node.hotness == 0 and self._on_hot_access:
-            entry.ref_up()
-            self._on_hot_access(entry)
+            mr.ref_up()
+            self._on_hot_access(key, mr)
 
         node.hotness = 1
-        entry.ref_up()
-        return Status.ok(entry._mr)
+        mr.ref_up()
+        return Status.ok(mr)
 
     def delete(self, key: KVCacheHashable) -> Status:
         node = self._hashmap.pop(key, None)
         if node:
-            self._used_nbytes -= len(node.payload)
+            self._used_nbytes -= len(node.value)
             self._remove_from_list(node)
-            node.payload.ref_down()  # type: ignore
+            node.value.ref_down()
 
         return Status.ok()
 
@@ -111,11 +112,12 @@ class FIFO(BaseEvictionPolicy[FIFONode]):
             if not self._tail:
                 break
             if self._on_evict:
-                entry = cast(MemoryRegionCacheEntry, self._tail.payload)
-                entry.ref_up()
-                self._on_evict(entry)
+                key = self._tail.key
+                mr = self._tail.value
+                mr.ref_up()
+                self._on_evict(key, mr)
             evicted_node = self._tail
-            self.delete(evicted_node.payload)
+            self.delete(evicted_node.key)
         return Status.ok()
 
     def assert_consistency(self) -> None:
@@ -123,7 +125,7 @@ class FIFO(BaseEvictionPolicy[FIFONode]):
         curr = self._head
         while curr is not None and curr.next != self._head:
             total_in_list += 1
-            assert self._hashmap.get(curr.payload, None) == curr
+            assert self._hashmap.get(curr.key, None) == curr
             curr = curr.next
         assert total_in_list == len(
             self._hashmap

@@ -86,13 +86,14 @@ def release_mrs(mrs: Sequence[MemoryRegion]):
 
 def randomize_mrs(mrs: Sequence[MemoryRegion]):
     for mr in mrs:
-        mr.to_tensor(CACHE_DTYPE).uniform_()
+        # randomize
+        mr.slab[mr.addr : mr.addr + mr.length].view(
+            CACHE_DTYPE
+        ).zero_().uniform_()
 
 
 def randomize_cache_handle(handle: KVCacheHandle):
-    tensors = handle.to_tensors()
-    for tensor in tensors:
-        tensor.view(CACHE_DTYPE).uniform_()
+    randomize_mrs(handle.memory_regions)
 
 
 @pytest.fixture
@@ -131,3 +132,19 @@ def redis_client(redis_server):
         yield client
     finally:
         client.flushall()  # Clean up after each test
+
+
+@pytest.fixture(
+    params=["with_compact_layout", "without_compact_layout"], scope="function"
+)
+def compact_layout_enabled(request):
+    import aibrix_kvcache
+
+    origin = aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT
+    if request.param == "with_compact_layout":
+        aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT = True
+    else:
+        aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT = False
+    yield request.param == "with_compact_layout"
+
+    aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT = origin

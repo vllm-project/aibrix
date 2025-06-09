@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from .cache_handle import KVCacheHandle, MemoryRegionKVCacheHandle
-from .cache_hashable import TokenCacheKey
 from .cache_manager import (
     BaseKVCacheManager,
     GroupAwareKVCacheManager,
@@ -26,7 +25,6 @@ from .status import Status, StatusCodes
 
 __all__ = [
     "KVCacheHandle",
-    "TokenCacheKey",
     "MemoryRegionKVCacheHandle",
     "BaseKVCacheManager",
     "GroupAwareKVCacheManager",

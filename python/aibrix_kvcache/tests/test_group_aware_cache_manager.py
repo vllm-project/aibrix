@@ -18,7 +18,6 @@ import random
 from contextlib import contextmanager
 from typing import Any, List
 
-import numpy as np
 import pytest
 import torch
 import torch.distributed as dist
@@ -30,10 +29,8 @@ from aibrix_kvcache import (
     KVCacheBlockLayout,
     KVCacheConfig,
     ModelSpec,
-    TokenCacheKey,
     cache_manager,
 )
-from aibrix_kvcache.utils import np_array_concat
 
 from .conftest import (
     discard_all_aibrix_envs,
@@ -149,18 +146,17 @@ def _test_put_and_get_aligned(
         rank, world_size, layout
     ) as cache_config:
         shape, spec, cache = cache_config
-        tokens = np.array([i for i in range(32)], dtype=np.int32)
+        tokens = [i for i in range(32)]
         origin_tokens = copy.deepcopy(tokens)
-        cache_key = TokenCacheKey(tokens=tokens)
-        status = cache.allocate_for(cache_key)
+        status = cache.allocate_for(None, tokens)
         assert status.is_ok()
         put_handle = status.value
         randomize_cache_handle(put_handle)
         put_tensors = put_handle.to_tensors()
         put_tensors = [t.clone() for t in put_tensors]
 
-        put_status = cache.put(cache_key, put_handle)
-        assert all(tokens == origin_tokens), f"{tokens}!= {origin_tokens}"
+        put_status = cache.put(None, tokens, put_handle)
+        assert tokens == origin_tokens, f"{tokens}!= {origin_tokens}"
         assert put_status.is_ok(), f"{put_status}"
         assert put_status.value == len(
             tokens
@@ -169,8 +165,8 @@ def _test_put_and_get_aligned(
         if envs_name.endswith("async"):
             cache.flush()
 
-        get_status = cache.acquire(cache_key)
-        assert all(tokens == origin_tokens), f"{tokens}!= {origin_tokens}"
+        get_status = cache.acquire(None, tokens)
+        assert tokens == origin_tokens, f"{tokens}!= {origin_tokens}"
         assert get_status.is_ok(), f"{get_status}"
         assert get_status.value[0] == 32, f"{get_status.value[0]}!= 32"
         get_handle = get_status.value[1]
@@ -210,13 +206,11 @@ def _test_stress_cache(
             if num_prefix_blocks > 0:
                 prefix_tokens = [j for j in range(num_prefix_blocks * 16)]
                 prefix_tokens = _bcast_object(prefix_tokens)
-                prefix_tokens = np.array(prefix_tokens, dtype=np.int32)
-                prefix_cache_key = TokenCacheKey(tokens=prefix_tokens)
-                status = cache.allocate_for(prefix_cache_key)
+                status = cache.allocate_for(None, prefix_tokens)
                 assert status.is_ok()
                 put_handle = status.value
                 randomize_cache_handle(put_handle)
-                cache.put(prefix_cache_key, put_handle)
+                cache.put(None, prefix_tokens, put_handle)
 
             else:
                 prefix_tokens = None
@@ -227,18 +221,15 @@ def _test_stress_cache(
             tokens = [j for j in range(ntokens)]
             random.shuffle(tokens)
             tokens = _bcast_object(tokens)
-            tokens = np.array(tokens, dtype=np.int32)
-            cache_key = TokenCacheKey(prefix=prefix_tokens, tokens=tokens)
-            status = cache.allocate_for(cache_key)
+            status = cache.allocate_for(prefix_tokens, tokens)
             assert status.is_ok()
             token_handle = status.value
             randomize_cache_handle(token_handle)
             token_tensors = token_handle.to_tensors()
             token_tensors = [t.clone() for t in token_tensors]
             tokens = tokens[: len(token_handle) * 16]
-            cache_key = TokenCacheKey(prefix=prefix_tokens, tokens=tokens)
-            cache.put(cache_key, token_handle)
-            query[i] = (prefix_tokens, tokens, token_tensors)
+            cache.put(prefix_tokens, tokens, token_handle)
+            query[i] = (prefix_tokens or [], tokens, token_tensors)
 
         if envs_name.endswith("async"):
             cache.flush()
@@ -252,19 +243,14 @@ def _test_stress_cache(
                 ntokens_left = (len(tokens) - ntokens_to_del) // 16 * 16
                 # we delete some portion of tokens on different ranks to mimic
                 # the scenario of different ranks have different cache hits
-                delete_key = TokenCacheKey(
-                    prefix=np_array_concat(
-                        prefix_tokens, tokens[:ntokens_left]
-                    ),
-                    tokens=tokens[ntokens_left:],
+                del_status = cache.delete(
+                    prefix_tokens + tokens[:ntokens_left], tokens[ntokens_left:]
                 )
-                del_status = cache.delete(delete_key)
                 assert del_status.is_ok(), f"{del_status}"
             else:
                 ntokens_left = len(tokens)
 
-            get_key = TokenCacheKey(prefix=prefix_tokens, tokens=tokens)
-            get_status = cache.acquire(get_key)
+            get_status = cache.acquire(prefix_tokens, tokens)
             if get_status.is_ok():
                 assert get_status.value[0] > 0, f"{get_status.value[0]}<=0"
                 assert (

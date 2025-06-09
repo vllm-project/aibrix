@@ -12,14 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import random
 from typing import Sequence
 
-import numpy as np
 import pytest
 import torch
 
-from aibrix_kvcache.cache_hashable import TokenCacheKey
 from aibrix_kvcache.l1 import L1Cache
 from aibrix_kvcache.memory import MemoryRegion, TensorPoolAllocator
 
@@ -28,21 +27,22 @@ from .conftest import CACHE_DTYPE, release_mrs
 
 def check_tokens(
     mrs: Sequence[MemoryRegion],
-    prefix: np.ndarray | None,
-    tokens: np.ndarray,
+    prefix: Sequence[int] | None,
+    tokens: Sequence[int],
     block_ntokens: int,
 ):
+    if MemoryRegion.use_compact_layout():
+        return
+
     if prefix is None:
-        prefix = np.array([], dtype=tokens.dtype)
+        prefix = []
     for i, mr in enumerate(mrs):
-        expected_tokens = np.concatenate(
-            (prefix, tokens[: (i + 1) * block_ntokens])
-        )
+        expected_tokens = tuple(prefix + tokens[: (i + 1) * block_ntokens])
         prefix_from_mr, tokens_from_mr = mr.unpack_tokens()
         if prefix_from_mr is None:
-            prefix_from_mr = np.array([], dtype=np.int32)
-        assert all(prefix_from_mr == expected_tokens[:-block_ntokens])
-        assert all(tokens_from_mr == expected_tokens[-block_ntokens:])
+            prefix_from_mr = ()
+        assert prefix_from_mr == expected_tokens[:-block_ntokens]
+        assert tokens_from_mr == expected_tokens[-block_ntokens:]
 
 
 def test_cache_initialization(cache_conf_fixture):
@@ -70,16 +70,18 @@ def test_put_and_get_aligned(cache_conf_fixture):
         block_spec=spec,
     )
 
-    tokens = np.array([i for i in range(32)], dtype=np.int32)
-    cache_key = TokenCacheKey(tokens=tokens)
+    tokens = [i for i in range(32)]
+    origin_tokens = copy.deepcopy(tokens)
     shape[spec.block_shape_token_dim] = 32
     kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
 
-    put_status = cache.put(cache_key, kv_tensors)
+    put_status = cache.put(None, tokens, kv_tensors)
+    assert tokens == origin_tokens
     assert put_status.is_ok()
     assert put_status.value == 2
 
-    get_status = cache.acquire(cache_key)
+    get_status = cache.acquire(None, tokens)
+    assert tokens == origin_tokens
     assert get_status.is_ok()
     assert len(get_status.value) == 2
     mrs = get_status.value
@@ -88,7 +90,7 @@ def test_put_and_get_aligned(cache_conf_fixture):
     cat = torch.cat(tensors, dim=spec.block_shape_token_dim)
     assert cat.shape == kv_tensors.shape
     assert torch.equal(cat, kv_tensors)
-    exists_status = cache.exists(cache_key)
+    exists_status = cache.exists(None, tokens)
     assert exists_status.is_ok()
     assert exists_status.value == 2
     release_mrs(mrs)
@@ -105,16 +107,15 @@ def test_put_and_get_unaligned(cache_conf_fixture):
         block_spec=spec,
     )
 
-    tokens = np.array([i for i in range(35)], dtype=np.int32)
-    cache_key = TokenCacheKey(tokens=tokens)
+    tokens = [i for i in range(35)]
     shape[spec.block_shape_token_dim] = len(tokens)
     kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
 
-    put_status = cache.put(cache_key, kv_tensors)
+    put_status = cache.put(None, tokens, kv_tensors)
     assert put_status.is_ok()
     assert put_status.value == 2
 
-    get_status = cache.acquire(cache_key)
+    get_status = cache.acquire(None, tokens)
     assert get_status.is_ok()
     assert len(get_status.value) == 2
     mrs = get_status.value
@@ -126,7 +127,7 @@ def test_put_and_get_unaligned(cache_conf_fixture):
         torch.cat(tensors, dim=spec.block_shape_token_dim),
         kv_tensors[tuple(slices)],
     )
-    exists_status = cache.exists(cache_key)
+    exists_status = cache.exists(None, tokens)
     assert exists_status.is_ok()
     assert exists_status.value == 2
     release_mrs(mrs)
@@ -144,25 +145,23 @@ def test_put_and_get_with_prefix(cache_conf_fixture, eviction_policy):
         block_spec=spec,
     )
 
-    tokens0 = np.array([i for i in range(32)], dtype=np.int32)
-    cache_key0 = TokenCacheKey(tokens=tokens0)
+    tokens0 = [i for i in range(32)]
     shape[spec.block_shape_token_dim] = len(tokens0)
     kv_tensors0 = torch.randn(*shape, dtype=CACHE_DTYPE)
 
-    put_status = cache.put(cache_key0, kv_tensors0)
+    put_status = cache.put(None, tokens0, kv_tensors0)
     assert put_status.is_ok()
     assert put_status.value == 2
 
-    tokens1 = np.array([i for i in range(100, 135)], dtype=np.int32)
-    cache_key01 = TokenCacheKey(prefix=tokens0, tokens=tokens1)
+    tokens1 = [i for i in range(100, 135)]
     shape[spec.block_shape_token_dim] = len(tokens1)
     kv_tensors1 = torch.randn(*shape, dtype=CACHE_DTYPE)
 
-    put_status = cache.put(cache_key01, kv_tensors1)
+    put_status = cache.put(tokens0, tokens1, kv_tensors1)
     assert put_status.is_ok()
     assert put_status.value == 2
 
-    get_status = cache.acquire(cache_key0)
+    get_status = cache.acquire(None, tokens0)
     assert get_status.is_ok()
     mrs = get_status.value
     check_tokens(mrs, None, tokens0, spec.block_ntokens)
@@ -172,7 +171,7 @@ def test_put_and_get_with_prefix(cache_conf_fixture, eviction_policy):
     )
     release_mrs(mrs)
 
-    get_status = cache.acquire(cache_key01)
+    get_status = cache.acquire(tokens0, tokens1)
     assert get_status.is_ok()
     mrs = get_status.value
     check_tokens(mrs, tokens0, tokens1, spec.block_ntokens)
@@ -183,14 +182,13 @@ def test_put_and_get_with_prefix(cache_conf_fixture, eviction_policy):
         torch.cat(tensors, dim=spec.block_shape_token_dim),
         kv_tensors1[tuple(slices)],
     )
-    exists_status = cache.exists(cache_key01)
+    exists_status = cache.exists(tokens0, tokens1)
     assert exists_status.is_ok()
     assert exists_status.value == 2
     release_mrs(mrs)
 
-    tokens01 = np.concatenate((tokens0, tokens1))
-    cache_key = TokenCacheKey(tokens=tokens01)
-    get_status = cache.acquire(cache_key)
+    tokens01 = tokens0 + tokens1
+    get_status = cache.acquire(None, tokens01)
     assert get_status.is_ok()
     mrs = get_status.value
     check_tokens(mrs, None, tokens01, spec.block_ntokens)
@@ -224,16 +222,15 @@ def test_duplicated_puts(cache_conf_fixture, eviction_policy):
     )
 
     for _ in range(10):
-        tokens = np.array([i for i in range(32)], dtype=np.int32)
-        cache_key = TokenCacheKey(tokens=tokens)
+        tokens = [i for i in range(32)]
         shape[spec.block_shape_token_dim] = len(tokens)
         kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
 
-        put_status = cache.put(cache_key, kv_tensors)
+        put_status = cache.put(None, tokens, kv_tensors)
         assert put_status.is_ok()
         assert put_status.value == 2
 
-        get_status = cache.acquire(cache_key)
+        get_status = cache.acquire(None, tokens)
         assert get_status.is_ok()
         mrs = get_status.value
         check_tokens(mrs, None, tokens, spec.block_ntokens)
@@ -267,12 +264,11 @@ def test_cache_eviction(cache_conf_fixture, eviction_policy):
     ) + MemoryRegion.calculate_size(spec.block_nbytes, 32)
     expected_capacity_nbytes = 0
     for i in range(0, capacity_nbytes, per_put_nbytes):
-        tokens = np.array([i * 64 + j for j in range(32)], dtype=np.int32)
-        cache_key = TokenCacheKey(tokens=tokens)
+        tokens = [i * 64 + j for j in range(32)]
         shape[spec.block_shape_token_dim] = len(tokens)
         kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
 
-        put_status = cache.put(cache_key, kv_tensors)
+        put_status = cache.put(None, tokens, kv_tensors)
         assert put_status.is_ok(), f"i={i}, len(cache)={len(cache)}"
         assert (
             put_status.value
@@ -286,11 +282,10 @@ def test_cache_eviction(cache_conf_fixture, eviction_policy):
             break
 
     cap = len(cache)
-    tokens = np.array([640 + j for j in range(32)], dtype=np.int32)
-    cache_key = TokenCacheKey(tokens=tokens)
+    tokens = [640 + j for j in range(32)]
     shape[spec.block_shape_token_dim] = len(tokens)
     kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
-    put_status = cache.put(cache_key, kv_tensors)
+    put_status = cache.put(None, tokens, kv_tensors)
     assert put_status.is_ok()
     assert (
         put_status.value
@@ -314,14 +309,12 @@ def test_stress_cache(cache_conf_fixture, eviction_policy):
     query = {}
     for i in range(500):
         num_prefix_blocks = random.randint(0, 10)
-        prefix_tokens = np.array(
-            [j for j in range(num_prefix_blocks * spec.block_ntokens)],
-            dtype=np.int32,
-        )
-        prefix_cache_key = TokenCacheKey(tokens=prefix_tokens)
+        prefix_tokens = [
+            j for j in range(num_prefix_blocks * spec.block_ntokens)
+        ]
         shape[spec.block_shape_token_dim] = len(prefix_tokens)
         prefix_kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
-        put_status = cache.put(prefix_cache_key, prefix_kv_tensors)
+        put_status = cache.put(None, prefix_tokens, prefix_kv_tensors)
         if put_status.is_out_of_memory():
             continue
 
@@ -331,17 +324,16 @@ def test_stress_cache(cache_conf_fixture, eviction_policy):
             and put_status.value
             <= prefix_kv_tensors.shape[spec.block_shape_token_dim]
         )
-        status = cache.acquire(prefix_cache_key)
+        status = cache.acquire(None, prefix_tokens)
         if status.is_ok():
             release_mrs(status.value)
 
         ntokens = random.randint(16, 1024)
-        tokens = np.array([j for j in range(ntokens)], dtype=np.int32)
+        tokens = [j for j in range(ntokens)]
         random.shuffle(tokens)
         shape[spec.block_shape_token_dim] = len(tokens)
         kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
-        cache_key = TokenCacheKey(prefix=prefix_tokens, tokens=tokens)
-        put_status = cache.put(cache_key, kv_tensors)
+        put_status = cache.put(prefix_tokens, tokens, kv_tensors)
         if put_status.is_out_of_memory():
             continue
 
@@ -350,7 +342,7 @@ def test_stress_cache(cache_conf_fixture, eviction_policy):
             put_status.value >= 0
             and put_status.value <= kv_tensors.shape[spec.block_shape_token_dim]
         )
-        status = cache.acquire(cache_key)
+        status = cache.acquire(prefix_tokens, tokens)
         if status.is_ok():
             release_mrs(status.value)
         query[i] = (prefix_tokens, tokens, kv_tensors)
@@ -370,10 +362,7 @@ def test_stress_cache(cache_conf_fixture, eviction_policy):
                 else spec.block_ntokens
             )
 
-            cache_key = TokenCacheKey(
-                prefix=prefix_tokens, tokens=tokens[j : j + length]
-            )
-            get_status = cache.acquire(cache_key)
+            get_status = cache.acquire(prefix_tokens, tokens[j : j + length])
             if get_status.is_ok():
                 assert len(get_status.value) > 0
                 mrs = get_status.value
@@ -397,14 +386,14 @@ def test_stress_cache(cache_conf_fixture, eviction_policy):
                 )
                 release_mrs(mrs)
                 results.append(1)
-                exists_status = cache.exists(cache_key)
+                exists_status = cache.exists(
+                    prefix_tokens, tokens[j : j + length]
+                )
                 assert exists_status.is_ok()
                 assert exists_status.value == len(get_status.value)
             else:
                 results.append(0)
-            prefix_tokens = np.concatenate(
-                (prefix_tokens, tokens[j : j + length])
-            )
+            prefix_tokens += tokens[j : j + length]
             j += length
 
     num_oks = sum(results)

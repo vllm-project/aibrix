@@ -12,20 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .key_builders import (
-    FarmHasher,
-    MD5Hasher,
-    RollingHashKeyBuilder,
-    SimpleHashKeyBuilder,
-)
+from .key_builders import KeyBuilder
 from .l2_cache import L2Cache
 from .marshallers import StringSerializer, TensorSerializer, ZstdCompressor
 
 __all__ = [
-    "MD5Hasher",
-    "FarmHasher",
-    "RollingHashKeyBuilder",
-    "SimpleHashKeyBuilder",
+    "KeyBuilder",
     "L2Cache",
     "StringSerializer",
     "TensorSerializer",

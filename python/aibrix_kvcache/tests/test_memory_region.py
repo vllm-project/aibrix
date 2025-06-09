@@ -18,10 +18,10 @@ from aibrix_kvcache.memory import MemoryRegion, TensorPoolAllocator
 from .conftest import randomize_mrs
 
 
-def test_pack_unpack_basic():
+def test_pack_unpack_basic(compact_layout_enabled):
     block_nbytes = 16
     max_ntokens = 57
-    expected_mr_nbytes = 256
+    expected_mr_nbytes = block_nbytes if compact_layout_enabled else 256
     assert (
         MemoryRegion.calculate_size(
             block_nbytes=block_nbytes, ntokens=max_ntokens
@@ -35,39 +35,37 @@ def test_pack_unpack_basic():
     mr = status.get()[0]
     assert mr.length == expected_mr_nbytes
     mr.block_nbytes = block_nbytes
+    randomize_mrs([mr])
     # mr is not packed with any tokens, should return None, []
     assert mr.unpack_tokens()[0] is None
     assert len(mr.unpack_tokens()[1]) == 0
-    randomize_mrs([mr])
-    assert mr.unpack_tokens()[0] is None
-    assert len(mr.unpack_tokens()[1]) == 0
     orig_tensor = mr.to_tensor().clone()
-    orig_tokens = list(range(16))
+    orig_tokens = tuple(range(16))
     mr.pack_tokens(tokens=orig_tokens)
     mr.seal()
     prefix_from_mr, tokens_from_mr = mr.unpack_tokens()
     # check if tokens are unpacked correctly
     assert prefix_from_mr is None
     assert len(tokens_from_mr) == len(orig_tokens)
-    assert all(tokens_from_mr == orig_tokens)
+    assert tokens_from_mr == orig_tokens
     # check if data is preserved
     assert mr.to_tensor().equal(orig_tensor)
 
-    orig_prefix = list(range(128, 128 + 16))
-    orig_tokens = list(range(256, 256 + 16))
+    orig_prefix = tuple(range(128, 128 + 16))
+    orig_tokens = tuple(range(256, 256 + 16))
     mr.pack_tokens(prefix=orig_prefix, tokens=orig_tokens)
     mr.seal()
     prefix_from_mr, tokens_from_mr = mr.unpack_tokens()
     assert len(prefix_from_mr) == len(orig_prefix)
-    assert all(prefix_from_mr == orig_prefix)
+    assert prefix_from_mr == orig_prefix
     assert len(tokens_from_mr) == len(orig_tokens)
-    assert all(tokens_from_mr == orig_tokens)
+    assert tokens_from_mr == orig_tokens
 
 
-def test_pack_unpack_max():
+def test_pack_unpack_max(compact_layout_enabled):
     block_nbytes = 16
     max_ntokens = 57
-    expected_mr_nbytes = 256
+    expected_mr_nbytes = block_nbytes if compact_layout_enabled else 256
     assert (
         MemoryRegion.calculate_size(
             block_nbytes=block_nbytes, ntokens=max_ntokens
@@ -81,19 +79,17 @@ def test_pack_unpack_max():
     mr = status.get()[0]
     assert mr.length == expected_mr_nbytes
     mr.block_nbytes = block_nbytes
+    randomize_mrs([mr])
     # mr is not packed with any tokens, should return None, []
     assert mr.unpack_tokens()[0] is None
     assert len(mr.unpack_tokens()[1]) == 0
-    randomize_mrs([mr])
-    assert mr.unpack_tokens()[0] is None
-    assert len(mr.unpack_tokens()[1]) == 0
     orig_tensor = mr.to_tensor().clone()
-    orig_tokens = list(range(max_ntokens))
+    orig_tokens = tuple(range(max_ntokens))
     mr.pack_tokens(tokens=orig_tokens)
     mr.seal()
     _, tokens_from_mr = mr.unpack_tokens()
     # check if tokens are unpacked correctly
     assert len(tokens_from_mr) == len(orig_tokens)
-    assert all(tokens_from_mr == orig_tokens)
+    assert tokens_from_mr == orig_tokens
     # check if data is preserved
     assert mr.to_tensor().equal(orig_tensor)

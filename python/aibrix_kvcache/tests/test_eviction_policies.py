@@ -14,11 +14,10 @@
 
 import os
 
-import numpy as np
 import pytest
 import torch
 
-from aibrix_kvcache.cache_hashable import MemoryRegionCacheEntry, TokenCacheKey
+from aibrix_kvcache.cache_hashable import TokenCacheKey
 from aibrix_kvcache.l1.eviction_policy import FIFO, LRU, S3FIFO
 from aibrix_kvcache.memory import MemoryRegion, TensorPoolAllocator
 
@@ -50,17 +49,19 @@ evicted_data = []
 hot_data = []
 
 
-def on_evict_callback(entry: MemoryRegionCacheEntry):
-    evicted_data.append(entry)
+def on_evict_callback(key: TokenCacheKey, value: MemoryRegion):
+    evicted_data.append((key, value))
 
 
-def on_hot_access_callback(entry: MemoryRegionCacheEntry):
-    hot_data.append(entry)
+def on_hot_access_callback(key: TokenCacheKey, value: MemoryRegion):
+    hot_data.append((key, value))
 
 
-def build_cache_entry(
-    allocator: TensorPoolAllocator, block_nbytes: int, tokens: list[int]
-) -> MemoryRegionCacheEntry:
+def build_cache_value(
+    allocator: TensorPoolAllocator,
+    block_nbytes: int,
+    key: TokenCacheKey,
+) -> MemoryRegion:
     status = allocator.alloc(TEST_ALLOC_SIZE)
     assert status.is_ok()
     mr = status.get()[0]
@@ -68,14 +69,14 @@ def build_cache_entry(
     assert mr.length == TEST_ALLOC_SIZE
     mr.block_nbytes = block_nbytes
     randomize_mrs([mr])
-    mr.pack_tokens(tokens=tokens)
+    mr.pack_tokens(prefix=key.prefix, tokens=key.tokens)
     mr.seal()
-    return MemoryRegionCacheEntry(mr)
+    return mr
 
 
 def check_ref_count(mr: MemoryRegion, expected_ref_count: int):
-    for entry in hot_data:
-        if entry._mr == mr:
+    for _, hot_mr in hot_data:
+        if hot_mr == mr:
             expected_ref_count += 1
     assert mr.ref_count == expected_ref_count
 
@@ -88,12 +89,12 @@ def policy(request):
         on_hot_access=on_hot_access_callback,
     )  # capacity_nbytes 100 * TEST_ALLOC_SIZE
 
-    for entry in evicted_data:
-        entry.ref_down()
+    for _, mr in evicted_data:
+        mr.ref_down()
     evicted_data.clear()
 
-    for entry in hot_data:
-        entry.ref_down()
+    for _, mr in hot_data:
+        mr.ref_down()
     hot_data.clear()
 
 
@@ -108,11 +109,10 @@ def test_put_and_get(policy):
     block_nbytes = 16
     assert len(policy) == 0
     allocator = TensorPoolAllocator(capacity_nbytes=256 * TEST_ALLOC_SIZE)
-    entry = build_cache_entry(allocator, block_nbytes, list(range(24)))
-    mr = entry._mr
-    assert policy.put(entry).is_ok()
-    cache_key = entry.cache_key()
-    assert policy.get(cache_key).value.data_ptr() == mr.data_ptr()
+    key = TokenCacheKey(None, tuple(range(24)))
+    mr = build_cache_value(allocator, block_nbytes, key)
+    assert policy.put(key, mr).is_ok()
+    assert policy.get(key).value.data_ptr() == mr.data_ptr()
     check_ref_count(mr, 2)
     assert len(policy) == mr.length
     policy.assert_consistency()
@@ -122,18 +122,14 @@ def test_put_update_existing(policy):
     block_nbytes = 16
     assert len(policy) == 0
     allocator = TensorPoolAllocator(capacity_nbytes=256 * TEST_ALLOC_SIZE)
-    entry0 = build_cache_entry(allocator, block_nbytes, list(range(24)))
-    entry1 = build_cache_entry(allocator, block_nbytes, list(range(24)))
-    mr0 = entry0._mr
-    mr1 = entry1._mr
-    assert entry0 == entry1
-    assert entry0.cache_key() == entry1.cache_key()
-    assert policy.put(entry0).is_ok()
+    key = TokenCacheKey(None, tuple(range(24)))
+    mr0 = build_cache_value(allocator, block_nbytes, key)
+    mr1 = build_cache_value(allocator, block_nbytes, key)
+    assert policy.put(key, mr0).is_ok()
     assert len(policy) == mr0.length
-    assert policy.put(entry1).is_ok()
+    assert policy.put(key, mr1).is_ok()
     check_ref_count(mr0, 0)
-    cache_key = entry1.cache_key()
-    assert policy.get(cache_key).value.data_ptr() == mr1.data_ptr()
+    assert policy.get(key).value.data_ptr() == mr1.data_ptr()
     check_ref_count(mr1, 2)
     assert len(policy) == mr1.length
     policy.assert_consistency()
@@ -141,11 +137,12 @@ def test_put_update_existing(policy):
 
 def test_eviction(small_capacity_policy):
     allocator = TensorPoolAllocator(capacity_nbytes=256 * TEST_ALLOC_SIZE)
-    entry0 = build_cache_entry(allocator, 16, list(range(16)))
-    entry1 = build_cache_entry(allocator, 16, list(range(24)))
-    assert entry0 != entry1
-    assert small_capacity_policy.put(entry0).is_ok()
-    assert small_capacity_policy.put(entry1).is_ok()
+    key0 = TokenCacheKey(None, tuple(range(16)))
+    mr0 = build_cache_value(allocator, 16, key0)
+    key1 = TokenCacheKey(None, tuple(range(24)))
+    mr1 = build_cache_value(allocator, 16, key1)
+    assert small_capacity_policy.put(key0, mr0).is_ok()
+    assert small_capacity_policy.put(key1, mr1).is_ok()
     assert len(small_capacity_policy) == 2 * TEST_ALLOC_SIZE
     assert small_capacity_policy.evict().is_ok()
     assert len(small_capacity_policy) == TEST_ALLOC_SIZE
@@ -154,12 +151,15 @@ def test_eviction(small_capacity_policy):
 
 def test_multiple_evictions(policy):
     allocator = TensorPoolAllocator(capacity_nbytes=256 * TEST_ALLOC_SIZE)
-    entry0 = build_cache_entry(allocator, 16, list(range(16)))
-    entry1 = build_cache_entry(allocator, 16, list(range(2, 16)))
-    entry2 = build_cache_entry(allocator, 16, list(range(3, 16)))
-    assert policy.put(entry0).is_ok()
-    assert policy.put(entry1).is_ok()
-    assert policy.put(entry2).is_ok()
+    key0 = TokenCacheKey(None, tuple(range(16)))
+    key1 = TokenCacheKey(None, tuple(range(2, 16)))
+    key2 = TokenCacheKey(None, tuple(range(3, 16)))
+    mr0 = build_cache_value(allocator, 16, key0)
+    mr1 = build_cache_value(allocator, 16, key1)
+    mr2 = build_cache_value(allocator, 16, key2)
+    assert policy.put(key0, mr0).is_ok()
+    assert policy.put(key1, mr1).is_ok()
+    assert policy.put(key2, mr2).is_ok()
     assert len(policy) == 3 * TEST_ALLOC_SIZE
     assert policy.evict(2 * TEST_ALLOC_SIZE).is_ok()
     assert len(policy) == TEST_ALLOC_SIZE
@@ -170,10 +170,10 @@ def test_multiple_evictions(policy):
 
 def test_delete(policy):
     allocator = TensorPoolAllocator(capacity_nbytes=256 * TEST_ALLOC_SIZE)
-    entry = build_cache_entry(allocator, 16, list(range(16)))
-    assert policy.put(entry).is_ok()
+    key = TokenCacheKey(None, tuple(range(16)))
+    mr = build_cache_value(allocator, 16, key)
+    assert policy.put(key, mr).is_ok()
     assert len(policy) == TEST_ALLOC_SIZE
-    key = entry.cache_key()
     assert policy.delete(key).is_ok()
     assert policy.get(key).is_not_found()
     assert len(policy) == 0
@@ -181,7 +181,7 @@ def test_delete(policy):
 
 
 def test_delete_empty(policy):
-    key = TokenCacheKey(tokens=np.array(list(range(16)), dtype=np.int32))
+    key = TokenCacheKey(None, tuple(range(16)))
     policy.delete(key)  # Should not raise an error
     assert len(policy) == 0
     policy.assert_consistency()
@@ -195,15 +195,16 @@ def test_basic(policy):
 
     # insert data
     for i in range(capacity // TEST_ALLOC_SIZE // 2):
-        entry = build_cache_entry(allocator, 64, [i])
-        ground_truth.append((i, entry._mr.to_tensor()))
-        policy.put(entry)
+        key = TokenCacheKey(None, (i,))
+        mr = build_cache_value(allocator, 64, key)
+        ground_truth.append((i, mr.to_tensor()))
+        policy.put(key, mr)
 
     assert tensors_equal_unordered(
         tuple(
             [
-                (entry._mr.unpack_tokens()[1][0], entry._mr.to_tensor())
-                for entry in policy
+                (mr.unpack_tokens()[1][0], mr.to_tensor())
+                for mr in policy.values()
             ]
         ),
         tuple(ground_truth),
@@ -211,7 +212,7 @@ def test_basic(policy):
 
     # test get
     for i in range(capacity // TEST_ALLOC_SIZE // 2):
-        key = TokenCacheKey(tokens=np.array([i], dtype=np.int32))
+        key = TokenCacheKey(None, (i,))
         assert torch.equal(
             policy.get(key).value.to_tensor(), ground_truth[i][1]
         )
@@ -220,18 +221,19 @@ def test_basic(policy):
     ground_truth = []
     for i in range(capacity // TEST_ALLOC_SIZE):
         idx = i + 999999
-        entry = build_cache_entry(allocator, 64, [idx])
-        ground_truth.append((idx, entry._mr.to_tensor()))
-        policy.put(entry)
+        key = TokenCacheKey(None, (idx,))
+        mr = build_cache_value(allocator, 64, key)
+        ground_truth.append((idx, mr.to_tensor()))
+        policy.put(key, mr)
         if policy.name == "S3FIFO":
             # for S3FIFO, we need to get the data to trigger promotion
             # to main fifo when eviction happens on small fifo
-            assert policy.get(entry).is_ok()
+            assert policy.get(key).is_ok()
 
     # test new data
     for i in range(capacity // TEST_ALLOC_SIZE):
         idx = i + 999999
-        key = TokenCacheKey(tokens=np.array([idx], dtype=np.int32))
+        key = TokenCacheKey(None, (idx,))
         assert torch.equal(
             policy.get(key).value.to_tensor(), ground_truth[i][1]
         )
@@ -244,22 +246,24 @@ def test_on_evict_callback(policy):
     capacity = policy.capacity_nbytes
     ground_truth = []
     for i in range(capacity // TEST_ALLOC_SIZE):
-        entry = build_cache_entry(allocator, 64, [i])
-        ground_truth.append((i, entry._mr.to_tensor()))
-        policy.put(entry)
+        key = TokenCacheKey(None, (i,))
+        mr = build_cache_value(allocator, 64, key)
+        ground_truth.append((i, mr.to_tensor()))
+        policy.put(key, mr)
 
     for i in range(capacity // TEST_ALLOC_SIZE):
         idx = i + 999999
-        entry = build_cache_entry(allocator, 64, [idx])
-        policy.put(entry)
+        key = TokenCacheKey(None, (idx,))
+        mr = build_cache_value(allocator, 64, key)
+        policy.put(key, mr)
 
     assert len(ground_truth) == len(evicted_data)
     assert tensors_equal_unordered(
         tuple(ground_truth),
         tuple(
             [
-                (entry._mr.unpack_tokens()[1][0], entry._mr.to_tensor())
-                for entry in evicted_data
+                (mr.unpack_tokens()[1][0], mr.to_tensor())
+                for _, mr in evicted_data
             ]
         ),
     )
@@ -272,24 +276,22 @@ def test_on_hot_access_callback(policy):
     capacity = policy.capacity_nbytes
     ground_truth = []
     for i in range(capacity // TEST_ALLOC_SIZE):
-        entry = build_cache_entry(allocator, 64, [i])
-        policy.put(entry)
+        key = TokenCacheKey(None, (i,))
+        mr = build_cache_value(allocator, 64, key)
+        policy.put(key, mr)
         if i % 3 == 0:
-            key = TokenCacheKey(tokens=np.array([i], dtype=np.int32))
+            key = TokenCacheKey(prefix=None, tokens=(i,))
             # get multiple times to ensure no duplicate calls to
             # on_hot_access callback
             for _ in range(5):
                 policy.get(key)
-            ground_truth.append((i, entry._mr.to_tensor()))
+            ground_truth.append((i, mr.to_tensor()))
 
     assert len(ground_truth) == len(hot_data)
     assert tensors_equal_unordered(
         tuple(ground_truth),
         tuple(
-            [
-                (entry._mr.unpack_tokens()[1][0], entry._mr.to_tensor())
-                for entry in hot_data
-            ]
+            [(mr.unpack_tokens()[1][0], mr.to_tensor()) for _, mr in hot_data]
         ),
     )
     policy.assert_consistency()
