@@ -64,7 +64,7 @@ python -m generator.workload_generator.workload_generator \
     --duration-ms 300000 \
     --target-qps $TARGET_QPS \
     --trace-type constant \
-    --model "Qwen/Qwen2.5-Coder-7B-Instruct" \
+    --tokenizer "Qwen/Qwen2.5-Coder-7B-Instruct" \
     --output-dir "output" \
     --output-format jsonl 
 ```
@@ -81,7 +81,7 @@ python -m generator.workload_generator.workload_generator \
     --traffic-pattern "slight_fluctuation" \
     --prompt-len-pattern "slight_fluctuation" \
     --completion-len-pattern "slight_fluctuation" \
-    --model "Qwen/Qwen2.5-Coder-7B-Instruct" \
+    --tokenizer "Qwen/Qwen2.5-Coder-7B-Instruct" \
     --output-dir "./output" --output-format jsonl 
 ```
 
@@ -98,7 +98,7 @@ python -m generator.workload_generator.workload_generator \
     --traffic-pattern-config $TRAFFIC_PATTERN_FILE \
     --prompt-len-pattern-config $PROMPT_LEN_FILE \
     --completion-len-pattern-config $COMPLETION_LEN_FILE \
-    --model "Qwen/Qwen2.5-Coder-7B-Instruct" \
+    --tokenizer "Qwen/Qwen2.5-Coder-7B-Instruct" \
     --output-dir "./output" \
     --output-format jsonl 
 ```
@@ -123,7 +123,7 @@ python -m generator.workload_generator.workload_generator \
     --traffic-file "$TRAFFIC_FILE" \
     --prompt-len-file "$PROMPT_LEN_FILE" \
     --completion-len-file "$COMPLETION_LEN_FILE"  \
-    --model "Qwen/Qwen2.5-Coder-7B-Instruct" \
+    --tokenizer "Qwen/Qwen2.5-Coder-7B-Instruct" \
     --output-dir "./output" \
     --output-format jsonl \
     --qps-scale 1.0 \
@@ -197,7 +197,7 @@ python -m generator.workload_generator.workload_generator \
     --duration-ms 600000 \
     --trace-type azure \
     --group-interval-seconds 1 \
-    --model "Qwen/Qwen2.5-Coder-7B-Instruct" \
+    --tokenizer "Qwen/Qwen2.5-Coder-7B-Instruct" \
     --output-dir "output"
 ```
 
@@ -212,7 +212,7 @@ python -m generator.workload_generator.workload_generator \
     --traffic-file $MOONCAKE_TRACE_NAME \
     --duration-ms 600000 \
     --trace-type mooncake \
-    --model "Qwen/Qwen2.5-Coder-7B-Instruct" \
+    --tokenizer "Qwen/Qwen2.5-Coder-7B-Instruct" \
     --output-dir "output"
 ```
 

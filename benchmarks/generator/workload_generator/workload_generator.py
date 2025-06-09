@@ -421,7 +421,7 @@ def generate_from_mooncake_jsonl(file_path: str,
 def main(args):
     # Generate workloads and pair with prompts
     workload_dict = {}
-    tokenizer = get_tokenizer(pretrained_model_name_or_path=args.model, trust_remote_code=True)
+    tokenizer = get_tokenizer(pretrained_model_name_or_path=args.tokenizer, trust_remote_code=True)
 
     if args.trace_type == "synthetic":
         qps_pattern_config = None
@@ -522,7 +522,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Workload Generator')
     parser.add_argument('--trace-type', type=str, required=True, choices=['constant','synthetic', 'stat', 'azure', 'mooncake'],
                         help='Type of trace consumed. Choose among: synthetic, stat, azure.')
-    parser.add_argument('--model', type=str, required=False, default="Qwen/Qwen2.5-Coder-7B-Instruct",
+    parser.add_argument('--tokenizer', type=str, required=False, default="Qwen/Qwen2.5-Coder-7B-Instruct",
                         help='Target model for the workload.')
     parser.add_argument('--prompt-file', type=str, required=False, default = None, help='File containing sampling prompts.')
     parser.add_argument('--interval-ms', type=int, required=False, default=1000,

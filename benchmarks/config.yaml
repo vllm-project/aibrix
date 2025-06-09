@@ -2,7 +2,6 @@
 # DO NOT COMMIT this file if it contains sensitive info
 
 # API and model settings
-model_name: "deepseek-ai/deepseek-llm-7b-chat"
 tokenizer: "deepseek-ai/deepseek-llm-7b-chat"
 
 # ---------------

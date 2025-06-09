@@ -156,7 +156,7 @@ class BenchmarkRunner:
             "interval_ms": self.config["interval_ms"],
             "duration_ms": self.config["duration_ms"],
             "trace_type": workload_type,
-            "model": self.config["model_name"],
+            "tokenizer": self.config["tokenizer"],
             "output_dir": workload_type_dir,
             "output_format": "jsonl",
         }
