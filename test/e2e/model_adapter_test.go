@@ -107,6 +107,6 @@ func validateModelAdapter(t *testing.T, client *v1alpha1.Clientset, name string)
 			}
 			return true, nil
 		}))
-	assert.True(t, len(adapter.Status.Instances) > 0, "model adapter scheduled on atleast one pod")
+	assert.True(t, len(adapter.Status.Instances) > 0, "model adapter scheduled on atleast One pod")
 	return adapter
 }
