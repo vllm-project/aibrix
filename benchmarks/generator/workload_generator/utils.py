@@ -295,8 +295,19 @@ def save_workload(load_struct: List[Any],
             json.dump(load_struct, file, indent=4)
         logging.warning(f'Saved workload file to {output_path + ".json"}')
 
-def load_config(config_path: str) -> Dict[str, Any]:
-    with open(config_path, "r") as file:
-        config = json.load(file)
-    return config
+def load_json(json_path: str) -> Dict[str, Any]:
+    with open(json_path, "r") as file:
+        json_collection = json.load(file)
+    logging.warning(f'Loaded json from path {json_path}')
+    return json_collection
+
+
+def load_jsonl(jsonl_path: str) -> List[Dict[str, Any]]:
+    jsonl_collection = []
+    with open(jsonl_path, "r") as file:
+        for line in file:
+            if line.strip():  # Skip empty lines
+                jsonl_collection.append(json.loads(line))
+    logging.warning(f'Loaded json from path {jsonl_path}')
+    return jsonl_collection
 
