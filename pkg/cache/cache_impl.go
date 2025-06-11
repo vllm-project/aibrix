@@ -164,7 +164,9 @@ func (c *Store) GetMetricValueByPodModel(podName, podNamespace, modelName string
 	return c.getPodMetricImpl(podName, &metaPod.ModelMetrics, c.getPodModelMetricName(modelName, metricName))
 }
 
-// AddRequestCount tracks new request initiation
+// AddRequestCount tracks new request initiation.
+// If ctx is provided,  AddRequestCount can be called multiple times for the same request.
+//
 // Parameters:
 //
 //	ctx: Routing context
@@ -175,36 +177,41 @@ func (c *Store) GetMetricValueByPodModel(podName, podNamespace, modelName string
 //
 //	int64: Trace term identifier
 func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64) {
-	if ctx != nil && !ctx.CanUpdateStats() {
-		// Current implementation assumes AddRequestCount() will not be called concurrently.
-		// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
-		return ctx.TraceTerm
-	}
-
-	if enableGPUOptimizerTracing {
-		success := false
-		for {
-			trace := c.getRequestTrace(modelName)
-			// TODO: use non-empty key if we have output prediction to decide buckets early.
-			if traceTerm, success = trace.AddRequest(requestID, ""); success {
-				if ctx != nil {
-					ctx.TraceTerm = traceTerm
+	// Current implementation assumes AddRequestCount() will not be called concurrently.
+	// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
+	if ctx == nil || ctx.CanAddTrace() {
+		if enableGPUOptimizerTracing {
+			success := false
+			for {
+				trace := c.getRequestTrace(modelName)
+				// TODO: use non-empty key if we have output prediction to decide buckets early.
+				if traceTerm, success = trace.AddRequest(requestID, ""); success {
+					if ctx != nil {
+						ctx.TraceTerm = traceTerm
+					}
+					break
 				}
-				break
+				// In case AddRequest return false, it has been recycled and we want to retry.
 			}
-			// In case AddRequest return false, it has been recycled and we want to retry.
+		}
+
+		meta, ok := c.metaModels.Load(modelName)
+		if ok {
+			atomic.AddInt32(&meta.pendingRequests, 1)
 		}
 	}
 
-	meta, ok := c.metaModels.Load(modelName)
-	if ok {
-		atomic.AddInt32(&meta.pendingRequests, 1)
-	}
-
-	if ctx != nil {
+	// Current implementation assumes AddRequestCount() will not be called concurrently.
+	// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
+	if ctx == nil {
+		return
+	} else if !ctx.HasRouted() || !ctx.CanUpdateStats() {
+		traceTerm = ctx.TraceTerm
+		return
+	} else {
 		c.addPodStats(ctx, requestID)
 	}
-	return traceTerm
+	return
 }
 
 // DoneRequestCount completes request tracking

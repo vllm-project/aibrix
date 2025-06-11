@@ -55,6 +55,7 @@ type RoutingContext struct {
 	tokens       []int
 	predictor    OutputPredictor
 	statsUpdated int32 // Use to flag if in-memory realtime statistics has been updated for the request.
+	traceAdded   int32 // Use to flag if trace has been added to cache
 }
 
 var requestPool = sync.Pool{
@@ -208,6 +209,11 @@ func (r *RoutingContext) HasError() bool {
 // CanUpdateStats returns true if the first time trying update in-memory realtime statistics.
 func (r *RoutingContext) CanUpdateStats() bool {
 	return atomic.CompareAndSwapInt32(&r.statsUpdated, 0, 1)
+}
+
+// CanAddTrace returns true if the first time trying add trace to cache.
+func (r *RoutingContext) CanAddTrace() bool {
+	return atomic.CompareAndSwapInt32(&r.traceAdded, 0, 1)
 }
 
 // GetRoutingDelay returns the time duration used for routing the request.

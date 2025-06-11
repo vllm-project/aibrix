@@ -60,6 +60,9 @@ func (r *queueRouter) Route(ctx *types.RoutingContext, pods types.PodList) (stri
 		return "", nil   // Result is irrelevant
 	}
 
+	// Ensure the request being counted even the request might not be counted.
+	// Noted, AddRequestCount should implement the idempotence for trace count.
+	r.cache.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
 	if err := r.queue.Enqueue(ctx, time.Now()); err != nil {
 		return "", err
 	}
