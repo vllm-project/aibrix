@@ -24,11 +24,10 @@ Run AIBrix Benchmark End-to-End
 -------------------------------
 
 .. note::
-    The benchmark script `benchmark.py <https://github.com/vllm-project/aibrix/blob/main/benchmarks/benchmark.py>`_ performs all steps up to the AIBrix workload format and trigger benchmark client without setting up benchmark environment for different scenarios. It assumes that AIBrix is already set up and expects a fully responsive endpoint.
+    The benchmark script `benchmark.py <https://github.com/vllm-project/aibrix/blob/main/benchmarks/benchmark.py>`_ performs all steps up to the AIBrix workload format and triggers the benchmark client without setting up the benchmark environment for different scenarios. It assumes that AIBrix is already set up and expects a fully responsive endpoint.
  
 
-
-First, make sure you have configured your API key as well as your endpoint like
+First, make sure you have configured your API key as well as your endpoint like this:
 
 .. code-block:: bash
 
@@ -36,7 +35,7 @@ First, make sure you have configured your API key as well as your endpoint like
     kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 &
 
 
-To run all steps using the default setting, try
+To run all steps using the default setting, try:
 
 .. code-block:: bash
 
@@ -84,7 +83,7 @@ Run Dataset Generator
   :width: 70%
   :align: center
 
-The goal of AIBrix's dataset generator is to generate a prompt dataset, or convert an existing dataset to a format that can be sampled from by the workload generator. The AIBrix dataset generator generates synthetic prompts that follow certain application patterns (i.e., cache sharing) or convert time-series traces (e.g., Open-source LLM trace like ShareGPT) to standard dataset format. 
+The goal of AIBrix's dataset generator is to generate a prompt dataset or convert an existing dataset to a format that can be sampled from by the workload generator. The AIBrix dataset generator generates synthetic prompts that follow certain application patterns (i.e., cache sharing) or converts time-series traces (e.g., Open-source LLM trace like ShareGPT) to a standard dataset format.
 A synthetic dataset needs to be in one of the two formats:
 
 - Plain format (no sessions)
@@ -102,38 +101,34 @@ A synthetic dataset needs to be in one of the two formats:
     {"session_id": 0, "prompts": ["XXX", "YYY"]}
     {"session_id": 1, "prompts": ["AAA", "BBB", "CCC"]}
 
-The dataset generator either generates a prompt dataset or converts an existing dataset which belongs to one of the two formats above. 
+The dataset generator either generates a prompt dataset or converts an existing dataset which belongs to one of the two formats above.
 
-
-To run dataset generation, do
-
+To run dataset generation, do:
 
 .. code-block:: bash
 
     python benchmark.py --stage dataset --config config.yaml
 
 
-Currently, we support four types of dataset. 
+Currently, we support four types of datasets:
 
 **1. Controlled Synthetic Sharing**
-- This type allows users to generate a cache sharing *plain-format* dataset with *controlled prompt token length* and *controlled prefix sharing length*, as well as controlled number of prefixes (i.e., sessions). To tune the prompt token length and shared length, set configuration variables under ```dataset_configs.synthetic_shared``` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
+- This type allows users to generate a cache sharing *plain-format* dataset with *controlled prompt token length* and *controlled prefix sharing length*, as well as a controlled number of prefixes (i.e., sessions). To tune the prompt token length and shared length, set configuration variables under ```dataset_configs.synthetic_shared``` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
 **2. Multiturn Synthetic**
-- Multiturn synthetic data generation produces *sessioned-format* dataset. Each session ID maps to a *controlled number of prompts* per session and *controlled prompt lengths*. These variables are under the ```dataset_configs.synthetic_multiturn``` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
+- Multiturn synthetic data generation produces a *sessioned-format* dataset. Each session ID maps to a *controlled number of prompts* per session and *controlled prompt lengths*. These variables are under the ```dataset_configs.synthetic_multiturn``` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
 **3. ShareGPT**
-- This generation type converts ShareGPT dataset to *sessioned-format* dataset that has session_id, prompts and completions. Configuration variables are under `dataset_configs.sharegpt` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
+- This generation type converts the ShareGPT dataset to a *sessioned-format* dataset that has session_id, prompts, and completions. Configuration variables are under `dataset_configs.sharegpt` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
 **4. Client trace**
 - This generation type converts client output into a *plain-format* dataset. Configuration variables are under the `dataset_configs.client_trace` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
 The first two types generate synthetic prompts, while the latter two convert external data sources or benchmark data.
 
-
 To set the type of dataset to be generated, set the environment variable `prompt_type` in the configuration file to one of the following values: ```synthetic_multiturn```, ```synthetic_shared```, ```sharegpt```, ```client_trace```.
 
-For details of dataset generator, check out `dataset_generator <https://github.com/vllm-project/aibrix/blob/main/benchmarks/generator/dataset_generator>`_ directory. 
-
+For details of the dataset generator, check out the `dataset_generator <https://github.com/vllm-project/aibrix/blob/main/benchmarks/generator/dataset_generator>`_ directory.
 
 Run Workload Generator
 ----------------------
@@ -144,31 +139,32 @@ Run Workload Generator
   :align: center
 
 
-The goal of AIBrix's workload generator is to perform workload shaping. The workload generator specifies the timing and requests to be dispatched in by the benchmark client. A workload generator accepts either a trace/metrics files (where either time and requests are specified, or QPS/input/output volume are specified) or user-specified static or dynamic load patterns. The workload generator will sample the workload based on a dataset in one of the two formats discussed in [dataset generator](#run-dataset-generator). There are three types of workload the generator currently supports. 
+The goal of AIBrix's workload generator is to perform workload shaping. The workload generator specifies the timing and requests to be dispatched by the benchmark client. A workload generator accepts either trace/metrics files (where either time and requests are specified, or QPS/input/output volume are specified) or user-specified static or dynamic load patterns. The workload generator will sample the workload based on a dataset in one of the two formats discussed in the dataset generator section. There are four types of workloads the generator currently supports:
 
 **1. The "constant" and "synthetic" workload type**
 
-- The workload generator can produce two types of *synthetic load pattern*, with multiple workload configurations that can be manually tuned (e.g., traffic/QPS distribution, input request token length distribution, output token length distribution, maximum concurrent sessions, etc.):
-    - Constant load (**constant**): The mean load (QPS/input length/output length) stays constant with controallable fluctuation. Configuration variables are under the `workload_configs.constant` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
+- The workload generator can produce two types of *synthetic load patterns*, with multiple workload configurations that can be manually tuned (e.g., traffic/QPS distribution, input request token length distribution, output token length distribution, maximum concurrent sessions, etc.):
+    - Constant load (**constant**): The mean load (QPS/input length/output length) stays constant with controllable fluctuation. Configuration variables are under the `workload_configs.constant` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
     - Synthetic fluctuation load (**synthetic**): The loads (QPS/input length/output length) fluctuate based on configurable parameters. Configuration variables are under the `workload_configs.synthetic` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
 **2. The "stat" workload type**
 
-- For *metrics file (e.g., .csv file exported from Grafana dashboard)*, the workload generator will generate the QPS/input length/output length distribution that follows the collected time-series metrics specified in the file. The actual prompt used in the workload, will be based on one of the synthetic dataset generated by the previous section. Configuration variables are under the `workload_configs.stat` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
-
-
+- For *metrics files (e.g., .csv files exported from Grafana dashboard)*, the workload generator will generate the QPS/input length/output length distribution that follows the collected time-series metrics specified in the file. The actual prompts used in the workload will be based on one of the synthetic datasets generated by the previous section. Configuration variables are under the `workload_configs.stat` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
 **3. The "azure" workload type**
 
-- For a trace (e.g., Azure LLM trace), both the requests and timestamp associated with the requests are provided, and the workload generator will generate a workload that simply replay requests based on the timestamp. Configuration variables are under the `workload_configs.azure` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
+- For a trace (e.g., `Azure LLM trace <https://github.com/Azure/AzurePublicDataset/blob/master/data/AzureLLMInferenceTrace_conv.csv>`_), both the requests and timestamps associated with the requests are provided, and the workload generator will generate a workload that simply replays requests based on the timestamp. Configuration variables are under the `workload_configs.azure` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
-Workload generator could be run by:
+**4. The "mooncake" workload type**
+- For a `Mooncake LLM trace <https://github.com/kvcache-ai/Mooncake/tree/main/FAST25-release/traces>`_, the request input/output, the cache block ID along with timestamps associated with the requests are provided, and the workload generator will generate a workload that simulates requests following the same traffic pattern. Configuration variables are under the `workload_configs.mooncake` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
+
+The workload generator can be run by:
 
 .. code-block:: bash
 
     python benchmark.py --stage workload --config config.yaml
 
-The workload generator will generate a workload file in the `output/workload` directory. The file will be look like this:
+The workload generator will generate a workload file in the `output/workload` directory. The file will look like this:
 
 .. code-block:: bash
 
@@ -191,14 +187,9 @@ The workload generator will generate a workload file in the `output/workload` di
         ]
     }
 
+To choose a different workload type, set the environment variable `workload_type` in the configuration file to one of the following values: ```constant```, ```synthetic```, ```stat```, ```azure```, ```mooncake```.
 
-
-
-To choose different workload type, set the environment variable `workload_type` in the configuration file to one of the following values: ```constant```, ```synthetic```, ```stat```, ```azure```.
-
-
-For details of workload generator, check out `workload_generator <https://github.com/vllm-project/aibrix/blob/main/benchmarks/generator/workload_generator>`_. 
-
+For details of the workload generator, check out the `workload_generator <https://github.com/vllm-project/aibrix/blob/main/benchmarks/generator/workload_generator>`_ directory.
 
 Run Benchmark Client
 --------------------
@@ -208,15 +199,13 @@ Run Benchmark Client
   :width: 30%
   :align: center
 
-The benchmark client supports both batch and streaming mode. Streaming mode supports intra-request metrics like TTFT/TPOT. Configure endpoint and target model via `config.yaml <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_ or command line arguments.
+The benchmark client supports both batch and streaming modes. Streaming mode supports intra-request metrics like TTFT/TPOT. Configure the endpoint and target model via `config.yaml <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_ or command line arguments.
 
 The benchmark client can be run using:
 
 .. code-block:: bash
 
     python benchmark.py --stage client --config config.yaml
-
-
 
 Run Analysis
 ------------
@@ -227,4 +216,4 @@ Run analysis on the benchmark results using:
 
     python benchmark.py --stage analysis --config config.yaml
 
-Configure path and performance target via `config.yaml <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_ or command line arguments.
+Configure the path and performance target via `config.yaml <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_ or command line arguments.

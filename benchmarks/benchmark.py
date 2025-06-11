@@ -156,7 +156,7 @@ class BenchmarkRunner:
             "interval_ms": self.config["interval_ms"],
             "duration_ms": self.config["duration_ms"],
             "trace_type": workload_type,
-            "model": self.config["model_name"],
+            "tokenizer": self.config["tokenizer"],
             "output_dir": workload_type_dir,
             "output_format": "jsonl",
         }
@@ -189,16 +189,45 @@ class BenchmarkRunner:
             })
             
         elif workload_type == "azure":
-            if not Path(subconfig["azure_trace"]).is_file():
+            if not Path(subconfig["trace_path"]).is_file():
                 logging.info("Downloading Azure dataset...")
                 subprocess.run([
                     "wget", "https://raw.githubusercontent.com/Azure/AzurePublicDataset/refs/heads/master/data/AzureLLMInferenceTrace_conv.csv",
-                    "-O", subconfig["azure_trace"]
+                    "-O", subconfig["trace_path"]
                 ], check=True)
             args_dict.update({
-                "traffic_file": subconfig["azure_trace"],
+                "traffic_file": subconfig["trace_path"],
                 "group_interval_seconds": 1,
             })
+            
+        elif workload_type == "mooncake":
+            if not Path(subconfig["trace_path"]).is_file():
+                logging.info("Downloading Mooncake dataset...")
+                if subconfig["trace_type"] == "conversation":
+                    subprocess.run([
+                        "wget", "https://raw.githubusercontent.com/kvcache-ai/Mooncake/refs/heads/main/FAST25-release/traces/conversation_trace.jsonl",
+                        "-O", subconfig["trace_path"]
+                    ], check=True)
+                elif subconfig["trace_type"] == "synthetic":
+                    subprocess.run([
+                        "wget", "https://raw.githubusercontent.com/kvcache-ai/Mooncake/refs/heads/main/FAST25-release/traces/synthetic_trace.jsonl",
+                        "-O", subconfig["trace_path"]
+                    ], check=True)
+                elif subconfig["trace_type"] == "toolagent":
+                    subprocess.run([
+                        "wget", "https://raw.githubusercontent.com/kvcache-ai/Mooncake/refs/heads/main/FAST25-release/traces/toolagent_trace.jsonl",
+                        "-O", subconfig["trace_path"]
+                    ], check=True)
+                else:
+                    trace_type = subconfig["trace_type"]
+                    logging.error(f"Unknown trace type: {trace_type}")
+                    logging.error("Choose among [conversation|synthetic|toolagent]")
+                    sys.exit(1)
+            args_dict.update({
+                "traffic_file": subconfig["trace_path"],
+                "prompt_file": None,
+            })
+                    
 
         args = Namespace(**args_dict)
         logging.info(f"Running workload generator with args: {args}")
