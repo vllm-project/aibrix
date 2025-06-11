@@ -204,14 +204,14 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 	// Current implementation assumes AddRequestCount() will not be called concurrently.
 	// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
 	if ctx == nil {
-		return
+		return traceTerm
 	} else if !ctx.HasRouted() || !ctx.CanUpdateStats() {
-		traceTerm = ctx.TraceTerm
-		return
+		return ctx.TraceTerm
 	} else {
+		traceTerm = ctx.TraceTerm
 		c.addPodStats(ctx, requestID)
 	}
-	return
+	return traceTerm
 }
 
 // DoneRequestCount completes request tracking
