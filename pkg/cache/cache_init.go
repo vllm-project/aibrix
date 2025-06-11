@@ -158,7 +158,7 @@ func InitWithPods(st *Store, pods []*v1.Pod, model string) *Store {
 	return st
 }
 
-// InitWithAsyncPods initializes the cache store with pods initialized in a async way, this simulate the timeline of how store initalizes
+// InitWithAsyncPods initializes the cache store with pods initialized in an async way, this simulate the timeline of how store initializes
 func InitWithAsyncPods(st *Store, pods []*v1.Pod, model string) <-chan *Store {
 	ret := make(chan *Store, 1)
 	var wait sync.WaitGroup

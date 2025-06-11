@@ -46,7 +46,7 @@ func requestContextWithMessage(model string, message string) *types.RoutingConte
 func TestSetFallback(t *testing.T) {
 	deployment := "deployment"
 	store := cache.NewForTest()
-	store = cache.InitWithModelRouterProvider(store, NewPackSLORouter)
+	store = cache.InitWithModelRouterProvider(store, NewSLORouter)
 	storeCh := cache.InitWithAsyncPods(store, []*v1.Pod{
 		{
 			ObjectMeta: metav1.ObjectMeta{

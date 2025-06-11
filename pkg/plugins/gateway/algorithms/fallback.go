@@ -19,7 +19,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
-var DefaultFallbackAlgorithm types.RoutingAlgorithm = RouterRandom
+const DefaultFallbackAlgorithm types.RoutingAlgorithm = RouterRandom
+
 var DefaultFallbackRouter types.RouterProviderFunc = RandomRouterProviderFunc
 
 type FallbackRouter struct {

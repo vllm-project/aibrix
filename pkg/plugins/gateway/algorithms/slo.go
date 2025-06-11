@@ -21,6 +21,31 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
+const (
+	RouterSLO                 types.RoutingAlgorithm = "slo"
+	RouterSLOPackLoad         types.RoutingAlgorithm = "slo-pack-load"
+	RouterSLOLeastLoad        types.RoutingAlgorithm = "slo-least-load"
+	RouterSLOLeastLoadPulling types.RoutingAlgorithm = "slo-least-load-pulling"
+)
+
+var (
+	routerSLOProvider types.RouterProviderFunc = func(ctx *types.RoutingContext) (types.Router, error) {
+		c, err := cache.Get()
+		if err != nil {
+			return nil, err
+		}
+
+		return c.GetRouter(ctx)
+	}
+)
+
+func init() {
+	RegisterProvider(RouterSLO, routerSLOProvider)
+	RegisterProvider(RouterSLOPackLoad, routerSLOProvider)
+	RegisterProvider(RouterSLOLeastLoad, routerSLOProvider)
+	RegisterProvider(RouterSLOLeastLoadPulling, routerSLOProvider)
+}
+
 // SLORouter is a router that add FallbackRouter mechanism to the queue.
 type SLORouter struct {
 	FallbackRouter
@@ -35,32 +60,22 @@ func (r *SLORouter) Route(ctx *types.RoutingContext, pods types.PodList) (string
 	return r.SLOQueue.Route(ctx, pods)
 }
 
-func NewPackSLORouter(modelName string) (types.Router, error) {
+func NewSLORouter(modelName string) (types.Router, error) {
 	loadProvider, err := cache.NewPendingLoadProvider()
 	if err != nil {
 		return nil, err
 	}
 
-	loadRouter, _ := NewPackLoadRouter(loadProvider)
-	sloQueue, err := queue.NewSLOQueue(loadRouter, modelName)
-	if err != nil {
-		return nil, err
-	}
-	router := &SLORouter{SLOQueue: sloQueue}
-	if err := SetFallback(router, RouterLeastRequest); err != nil {
-		return nil, err
-	}
-	return NewQueueRouter(router, sloQueue)
-}
+	rm := NewRouterManager()
+	defaultRouter, _ := NewPackLoadRouter(loadProvider)
+	defaultProvider := func(_ *types.RoutingContext) (types.Router, error) { return defaultRouter, nil }
+	rm.RegisterProvider(RouterSLO, defaultProvider)
+	rm.RegisterProvider(RouterSLOPackLoad, defaultProvider)
+	rm.Register(RouterSLOLeastLoad, func() (types.Router, error) { return NewLeastLoadRouter(loadProvider) })
+	rm.Register(RouterSLOLeastLoadPulling, func() (types.Router, error) { return NewLeastLoadPullingRouter(loadProvider) })
+	rm.Init()
 
-func NewLeastLoadSLORouter(modelName string) (types.Router, error) {
-	loadProvider, err := cache.NewPendingLoadProvider()
-	if err != nil {
-		return nil, err
-	}
-
-	loadRouter, _ := NewLeastLoadPullingRouter(loadProvider)
-	sloQueue, err := queue.NewSLOQueue(loadRouter, modelName)
+	sloQueue, err := queue.NewSLOQueue(rm.Select, modelName)
 	if err != nil {
 		return nil, err
 	}

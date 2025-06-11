@@ -78,8 +78,8 @@ func (crr *candidateRouterRequest) nextProfile() *candidateProfiles {
 }
 
 type SLOQueue struct {
-	types.Router
-	cache cache.Cache
+	routerProvider types.RouterProviderFunc
+	cache          cache.Cache
 
 	modelName string
 	subs      utils.SyncMap[string, types.RouterQueue[*types.RoutingContext]]
@@ -91,7 +91,7 @@ type SLOQueue struct {
 	lastCandidateError  error  // Clear in Dequeue()
 }
 
-func NewSLOQueue(base types.Router, modelName string) (router *SLOQueue, err error) {
+func NewSLOQueue(provider types.RouterProviderFunc, modelName string) (router *SLOQueue, err error) {
 	// Dedup deployments
 	c, err := cache.Get()
 	if err != nil {
@@ -99,9 +99,9 @@ func NewSLOQueue(base types.Router, modelName string) (router *SLOQueue, err err
 	}
 
 	router = &SLOQueue{
-		Router:    base,
-		cache:     c,
-		modelName: modelName,
+		routerProvider: provider,
+		cache:          c,
+		modelName:      modelName,
 	}
 	router.subpool.New = func() any { return NewSimpleQueue[*types.RoutingContext](initialSubQueueSize) }
 	router.expandDequeueCandidatesLocked(initialTotalSubQueues)
@@ -271,14 +271,14 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 					break
 				}
 				// Try routing.
-				_, lastErr = q.Router.Route(candidate.RoutingContext, &utils.PodArray{Pods: pods.ListByIndex(profile.Key)})
+				_, lastErr = q.subRoute(candidate.RoutingContext, &utils.PodArray{Pods: pods.ListByIndex(profile.Key)})
 				// If monogenousGPURoutingOnly is enabled, only the most relaxing profile is considered.
 				if monogenousGPURoutingOnly || candidate.RoutingContext.HasRouted() {
 					break
 				}
 			}
 		} else {
-			_, lastErr = q.Router.Route(candidate.RoutingContext, pods)
+			_, lastErr = q.subRoute(candidate.RoutingContext, pods)
 		}
 		if candidate.RoutingContext.HasRouted() {
 			q.lastCandidateSubKey = candidate.SubKey
@@ -317,7 +317,7 @@ func (q *SLOQueue) Len() (total int) {
 func (q *SLOQueue) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
 	// Ctx is not routed if no profiles is found during Peek.
 	if !ctx.HasRouted() && q.lastCandidateError == nil {
-		return q.Router.Route(ctx, pods)
+		return q.subRoute(ctx, pods)
 	}
 	if q.lastCandidateError != nil {
 		return "", q.lastCandidateError
@@ -496,4 +496,13 @@ func (q *SLOQueue) debugCandidates(msg string, candidates []*candidateRouterRequ
 		logMsg.WriteString(") ")
 	}
 	klog.V(5).InfoS(msg, "candidates", logMsg.String())
+}
+
+func (q *SLOQueue) subRoute(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	router, err := q.routerProvider(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	return router.Route(ctx, pods)
 }

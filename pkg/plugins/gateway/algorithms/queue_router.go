@@ -25,21 +25,6 @@ import (
 	"k8s.io/klog/v2"
 )
 
-var (
-	RouterSLO types.RoutingAlgorithm = "slo"
-)
-
-func init() {
-	RegisterProvider(RouterSLO, func(ctx *types.RoutingContext) (types.Router, error) {
-		c, err := cache.Get()
-		if err != nil {
-			return nil, err
-		}
-
-		return c.GetRouter(ctx)
-	})
-}
-
 type queueRouter struct {
 	router         types.Router
 	queue          types.RouterQueue[*types.RoutingContext]

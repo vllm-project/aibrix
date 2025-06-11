@@ -30,9 +30,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
-var (
-	RouterPrefixCacheAndLoad types.RoutingAlgorithm = "prefix-cache-preble"
-)
+const RouterPrefixCacheAndLoad types.RoutingAlgorithm = "prefix-cache-preble"
 
 func init() {
 	Register(RouterPrefixCacheAndLoad, NewPrefixCacheAndLoadRouter)
