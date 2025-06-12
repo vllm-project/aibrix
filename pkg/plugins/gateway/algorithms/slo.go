@@ -67,12 +67,12 @@ func NewSLORouter(modelName string) (types.Router, error) {
 	}
 
 	rm := NewRouterManager()
-	defaultRouter, _ := NewPackLoadRouter(loadProvider)
+	defaultRouter, _ := NewLeastLoadPullingRouter(loadProvider)
 	defaultProvider := func(_ *types.RoutingContext) (types.Router, error) { return defaultRouter, nil }
 	rm.RegisterProvider(RouterSLO, defaultProvider)
-	rm.RegisterProvider(RouterSLOPackLoad, defaultProvider)
+	rm.RegisterProvider(RouterSLOLeastLoadPulling, defaultProvider)
+	rm.Register(RouterSLOPackLoad, func() (types.Router, error) { return NewPackLoadRouter(loadProvider) })
 	rm.Register(RouterSLOLeastLoad, func() (types.Router, error) { return NewLeastLoadRouter(loadProvider) })
-	rm.Register(RouterSLOLeastLoadPulling, func() (types.Router, error) { return NewLeastLoadPullingRouter(loadProvider) })
 	rm.Init()
 
 	sloQueue, err := queue.NewSLOQueue(rm.Select, modelName)
