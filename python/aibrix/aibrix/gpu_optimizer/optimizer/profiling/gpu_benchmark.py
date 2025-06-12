@@ -520,6 +520,8 @@ if __name__ == "__main__":
         default=0.0,
         help="Temperature for text generation (default: 0.0)",
     )
-    parser.add_argument("--routing-strategy", type=str, default=None, help="Specify routing strategy.")
+    parser.add_argument(
+        "--routing-strategy", type=str, default=None, help="Specify routing strategy."
+    )
     args = parser.parse_args()
     main(args)

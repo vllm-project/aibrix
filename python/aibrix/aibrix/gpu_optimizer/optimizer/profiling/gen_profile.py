@@ -131,10 +131,8 @@ def gen(args):
         percentile_field = f"P{args.percentile}"
 
     # Iterate slo_tputs and fill in the matrix with the throughput values that matches the SLO
-    def setMetrics(conclusion_df, i, j): 
-        e2es[i, j] = conclusion_df.loc[
-            conclusion_df["metric"] == "E2E", "mean"
-        ].iloc[0]
+    def setMetrics(conclusion_df, i, j):
+        e2es[i, j] = conclusion_df.loc[conclusion_df["metric"] == "E2E", "mean"].iloc[0]
         if slos["TTFT"].is_set():
             ttfts[i, j] = conclusion_df.loc[
                 conclusion_df["metric"] == "TTFT", "mean"
