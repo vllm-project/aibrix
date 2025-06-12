@@ -89,6 +89,9 @@ jobs:
           path: cover.out
           if-no-files-found: error
           retention-days: 1
+      
+      - name: Run Race Condition Tests
+        run: make test-race-condition
 
       - name: Run Integration Tests
         run: make test-integration
