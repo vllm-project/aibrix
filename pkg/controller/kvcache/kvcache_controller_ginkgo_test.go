@@ -55,7 +55,7 @@ var _ = Describe("KVCache Controller", func() {
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
-						Labels: map[string]string{
+						Annotations: map[string]string{
 							constants.KVCacheLabelKeyBackend: constants.KVCacheBackendVineyard,
 						},
 					},
