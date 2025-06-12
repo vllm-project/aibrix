@@ -153,14 +153,14 @@ func (r *KVCacheReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return reconcile.Result{}, err
 	}
 
-	backend := getKVCacheBackendFromMetadata(kvCache)
-	handler, ok := r.Backends[backend]
+	backend := getKVCacheBackendFromAnnotations(kvCache)
+	backendHandler, ok := r.Backends[backend]
 	if !ok {
 		klog.Warningf("unsupported backend %s", backend)
 		return ctrl.Result{}, fmt.Errorf("unsupported backend: %s", backend)
 	}
 
-	return handler.Reconcile(ctx, kvCache)
+	return backendHandler.Reconcile(ctx, kvCache)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -170,37 +170,14 @@ func (r *KVCacheReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// getKVCacheBackendFromMetadata returns the backend based on labels and annotations with fallback logic.
-func getKVCacheBackendFromMetadata(kv *orchestrationv1alpha1.KVCache) string {
+// getKVCacheBackendFromAnnotations returns the backend based on labels and annotations.
+func getKVCacheBackendFromAnnotations(kv *orchestrationv1alpha1.KVCache) string {
 	backend := kv.Annotations[constants.KVCacheLabelKeyBackend]
-	if backend != "" {
-		if isValidKVCacheBackend(backend) {
-			return backend
-		}
-
-		// TODO: Move validation logic to webhook.
-		// invalid value provided, fall back to default backend
+	if backend == "" {
+		// In some case where webhooks are disabled (e.g., via --disable-webhook),
+		// mutating webhooks cannot inject default values into the spec. Using annotations
+		// ensures that users can still explicitly specify the backend, even when no webhook is active.
 		return constants.KVCacheBackendDefault
 	}
-
-	// provide the compatibility for distributed, centralized mode.
-	mode := kv.Annotations[constants.KVCacheAnnotationMode]
-	switch mode {
-	case "distributed":
-		return constants.KVCacheBackendInfinistore
-	case "centralized":
-		return constants.KVCacheBackendVineyard
-	default:
-		return constants.KVCacheBackendDefault
-	}
-}
-
-// isValidKVCacheBackend returns true if the backend is one of the supported backends.
-func isValidKVCacheBackend(b string) bool {
-	switch b {
-	case constants.KVCacheBackendVineyard, constants.KVCacheBackendHPKV, constants.KVCacheBackendInfinistore:
-		return true
-	default:
-		return false
-	}
+	return backend
 }
