@@ -10,39 +10,30 @@ import threading
 from queue import Queue
 
 
-from typing import List, Dict, Set
-from client.utils import (load_workload, prepare_prompt, update_response, try_remove_next_task, try_add_running_task, Mailbox)
-        
+from typing import List, Dict
+from client.utils import (load_workload, prepare_prompt, update_response)
+
 thread_pool_size = 1
 QUEUE_SIZE = 1
 logging.basicConfig(level=logging.INFO)
-task_queue = Queue(maxsize=QUEUE_SIZE * 2)  # Single shared queue
-session_history = dict()
-mailbox_map = dict() # session to mailbox
-history_lock = threading.Lock()  # Lock for protecting session_history
-session_lock = threading.Lock()  # Lock for protecting running sessions
+task_queues = []
+session_history = []
 
 def worker(thread_idx, task_queue, client, model, max_output, send_request_func, output_file):
     """Worker function to run an asyncio event loop in a separate thread."""
     asyncio.set_event_loop(asyncio.new_event_loop())
     loop = asyncio.get_event_loop()
-
-    async def handle_task(task_args):
-        _, _, _, session_id, _ = task_args
-        success = try_add_running_task(session_id, mailbox_map, session_lock, *task_args)
-        if success:
-            task = asyncio.create_task(send_request_func(client, model, max_output, *task_args))
-            await task
-
     while True:
         logging.debug(f"Worker {thread_idx} waiting for task...")
-        task_args = task_queue.get()
+        task = task_queue.get()
         logging.debug(f"Worker {thread_idx} receive task...")
-        if task_args is None:
+        if task is None:  # Stop signal
             logging.warning(f"Worker {thread_idx} exit.")
             break
-        loop.run_until_complete(handle_task(task_args))
+        else:
+            loop.run_until_complete(send_request_func(client, model, max_output, *task))
         task_queue.task_done()
+
 
 def start_worker_threads(thread_idx, task_queue, client, model, max_output, send_request_func, output_file):
     """Start multiple threads, each running an event loop for handling tasks."""
@@ -51,7 +42,8 @@ def start_worker_threads(thread_idx, task_queue, client, model, max_output, send
     return thread
 
 
-async def send_request_streaming_launch(client: openai.AsyncOpenAI,
+
+async def send_request_streaming(client: openai.AsyncOpenAI,
                              model: str,
                              max_output: int, 
                              request: Dict,
@@ -60,14 +52,17 @@ async def send_request_streaming_launch(client: openai.AsyncOpenAI,
                              session_id: int,
                              target_time: int,
                              ):
-    prompt = prepare_prompt(prompt = request["prompt"], session_id = request.get("session_id", None), history = None if session_id is None else session_history, history_lock=history_lock) 
+    prompt = prepare_prompt(prompt = request["prompt"], session_id = request.get("session_id", None), history = None if session_id is None else session_history[session_id % len(task_queues)]) 
     start_time = time.time()
+    first_response_time = None
+    target_pod = ""
+    target_request_id = ""
     try:
-        logging.warning(f"send_request_streaming_launch: Prepare to launch task after {target_time - start_time}")
+        logging.warning(f"send_request_streaming: Prepare to launch task after {target_time - start_time}")
         if target_time > start_time:
             await asyncio.sleep(target_time - start_time)
         dispatch_time = asyncio.get_event_loop().time()
-        coroutine = client.chat.completions.create(
+        response_stream = await client.chat.completions.create(
             model=model,
             messages=prompt,
             temperature=0,
@@ -75,61 +70,21 @@ async def send_request_streaming_launch(client: openai.AsyncOpenAI,
             stream=True,
             stream_options={"include_usage": True},
         )
-        task = asyncio.create_task(coroutine)
-        task.add_done_callback(lambda future: asyncio.create_task(send_request_streaming_callback(future, prompt, output_file, request_id, session_id, dispatch_time)))
-        return task
-    except Exception as e:
-        error_time = time.time()
-        error_type = type(e).__name__
-        error_result = {
-            "request_id": request_id,
-            "status": "error",
-            "error_type": error_type,
-            "error_message": str(e),
-            "error_traceback": traceback.format_exc(),
-            "input": prompt,
-            "output": "",
-            "prompt_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "latency": error_time - dispatch_time,
-            "throughput": 0,
-            "start_time": dispatch_time,
-            "end_time": error_time,
-            "ttft": None,
-            "tpot": None,
-            "target_pod": "",
-            "target_request_id": "",
-            "session_id": session_id,
-        }
-        logging.error(f"Request {request_id}: Error ({error_type}): {str(e)}")
-        output_file.write(json.dumps(error_result) + "\n")
-        output_file.flush()
-        return None
-
-async def send_request_streaming_callback(future, prompt, output_file, request_id, session_id, dispatch_time):
-    
-    print(f"send_request_streaming_callback {session_id}")
-    text_chunks = []
-    prompt_tokens = 0
-    output_tokens = 0
-    total_tokens = 0
-    first_response_time = None
-    target_pod = ""
-    target_request_id = ""
-
-    try:
-        response_stream = future.result()
         if hasattr(response_stream, 'response') and hasattr(response_stream.response, 'headers'):
             target_pod = response_stream.response.headers.get('target-pod')
             target_request_id = response_stream.response.headers.get('request-id')
+
+        text_chunks = []
+        prompt_tokens = 0
+        output_tokens = 0
+        total_tokens = 0
 
         try:
             async for chunk in response_stream:
                 if chunk.choices:
                     if chunk.choices[0].delta.content is not None:
                         if not first_response_time:
-                            first_response_time = time.time()
+                            first_response_time = asyncio.get_event_loop().time()
                         output_text = chunk.choices[0].delta.content
                         text_chunks.append(output_text)
                 if hasattr(chunk, 'usage') and chunk.usage is not None:
@@ -144,19 +99,16 @@ async def send_request_streaming_callback(future, prompt, output_file, request_i
         except Exception as stream_error:
             # Handle errors during streaming
             logging.error(f"Request {request_id}: Stream interrupted: {type(stream_error).__name__}: {str(stream_error)}")
-        
+
         response_text = "".join(text_chunks)
-        response_time = time.time()
+        response_time = asyncio.get_event_loop().time()
         latency = response_time - dispatch_time
         throughput = output_tokens / latency if output_tokens > 0 else 0
         ttft = first_response_time - dispatch_time if first_response_time else None
         tpot = (response_time - first_response_time) / output_tokens if first_response_time and output_tokens > 0 else None
 
         if session_id is not None:
-            update_response(response = response_text, session_id = session_id, history = session_history, history_lock=history_lock)
-            task = try_remove_next_task(session_id, mailbox_map, session_lock)
-            if task:
-                task_queue.put(task)
+            update_response(response = response_text, session_id = session_id, history = session_history[int(session_id) % len(task_queues)])
         
         result = {
             "request_id": request_id,
@@ -177,13 +129,15 @@ async def send_request_streaming_callback(future, prompt, output_file, request_i
             "session_id": session_id,
         }
 
+        # Write result to JSONL file
         logging.info(f"Request {request_id}: Completed successfully. Tokens: {total_tokens}, Latency: {latency:.2f}s")
         output_file.write(json.dumps(result) + "\n")
-        output_file.flush()
+        output_file.flush()  # Ensure data is written immediately to the file
         return result
 
     except Exception as e:
-        error_time = time.time()
+        error_time = asyncio.get_event_loop().time()
+        # Determine error type based on exception class
         error_type = type(e).__name__
         error_result = {
             "request_id": request_id,
@@ -200,8 +154,6 @@ async def send_request_streaming_callback(future, prompt, output_file, request_i
             "throughput": 0,
             "start_time": dispatch_time,
             "end_time": error_time,
-            "ttft": None,
-            "tpot": None,
             "target_pod": target_pod,
             "target_request_id": target_request_id,
             "session_id": session_id,
@@ -228,7 +180,7 @@ async def benchmark_streaming(api_key: str,
     threads = []
     for thread_idx in range(0, thread_pool_size):
         client = create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
-        threads.append(start_worker_threads(thread_idx, task_queue, client, model, max_output, send_request_streaming_launch, output_file))
+        threads.append(start_worker_threads(thread_idx, task_queues[thread_idx], client, model, max_output, send_request_streaming, output_file))
     for requests_dict in load_struct:
         ts = int(requests_dict["timestamp"] * scale_factor)
         requests = requests_dict["requests"]
@@ -236,27 +188,27 @@ async def benchmark_streaming(api_key: str,
         for i in range(len(requests)):
             if "session_id" in requests[i]:
                 session_id = requests[i].get("session_id", None)
+                task_queue_id = int(session_id) % len(task_queues)
             else:
                 session_id = None
-            task_args = (requests[i], output_file, request_id, session_id, target_time)
-            if try_add_running_task(session_id, mailbox_map, session_lock, *task_args):
-                task_queue.put(task_args)
+                task_queue_id = int(request_id) % len(task_queues)
+            task_queues[task_queue_id].put((requests[i], output_file, request_id, session_id, target_time))
             request_id += 1
         num_requests += len(requests)
-    task_queue.join()
+    for task_queue in task_queues:
+        task_queue.join()
     # Stop all worker threads
     logging.warning("Producer completed ...")
-    for _ in range(thread_pool_size):
-        task_queue.put(None)
+    for i, thread in enumerate(threads):
+        task_queues[i].put(None)
 
     for thread in threads:
         thread.join()
         logging.warning(f"Worker thread {thread} completed ...")
     logging.warning(f"All {num_requests} requests completed for deployment.")
 
-  
 # Asynchronous request handler
-async def send_request_batch_launch(client: openai.AsyncOpenAI,
+async def send_request_batch(client: openai.AsyncOpenAI,
                              model: str,
                              max_output: int, 
                              request: Dict,
@@ -265,61 +217,25 @@ async def send_request_batch_launch(client: openai.AsyncOpenAI,
                              session_id: int, 
                              target_time: int,
                              ):
-    prompt = prepare_prompt(prompt = request["prompt"], session_id = request.get("session_id", None), history = None if session_id is None else session_history, history_lock=history_lock) 
+    prompt = prepare_prompt(prompt = request["prompt"], session_id = request.get("session_id", None), history = None if session_id is None else session_history[session_id % len(task_queues)]) 
     start_time = time.time()
-    logging.warning(f"send_request_batch_launch: Prepare to launch task after {target_time - start_time}")
-    if target_time > start_time:
-        await asyncio.sleep(target_time - start_time)
-    dispatch_time = time.time()
+    target_pod = ""
     try:
-        coroutine = client.chat.completions.create(
+        logging.warning(f"send_request_batch: Prepare to launch task after {target_time - start_time}")
+        if target_time > start_time:
+            await asyncio.sleep(target_time - start_time)
+        dispatch_time = asyncio.get_event_loop().time()
+        response = await client.chat.completions.create(
             model=model,
             messages=prompt,
             temperature=0,
             max_tokens=max_output,
         )
-        task = asyncio.create_task(coroutine)
-        task.add_done_callback(lambda future: send_request_batch_callback(future, prompt, output_file, request_id, session_id, dispatch_time))
-        return task
-    except Exception as e:
-        # Handle immediate exceptions from create() call
-        error_time = time.time()
-        error_type = type(e).__name__
-        error_result = {
-            "request_id": request_id,
-            "status": "error",
-            "error_type": error_type,
-            "error_message": str(e),
-            "error_traceback": traceback.format_exc(),
-            "input": prompt,
-            "output": "",
-            "prompt_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "latency": error_time - dispatch_time,
-            "throughput": 0,
-            "start_time": dispatch_time,
-            "end_time": error_time,
-            "ttft": None,
-            "tpot": None,
-            "target_pod": "",
-            "session_id": session_id,
-        }
-        logging.error(f"Request {request_id}: Error ({error_type}): {str(e)}")
-        output_file.write(json.dumps(error_result) + "\n")
-        output_file.flush()
-        return None
-    
-def send_request_batch_callback(future, prompt, output_file, request_id, session_id, dispatch_time):
-    response_time = time.time()
-    latency = response_time - dispatch_time
-    target_pod = ""
-
-    try:
-        response = future.result()  # This will raise the exception if one occurred
         if hasattr(response, 'response') and hasattr(response.response, 'headers'):
             target_pod = response.response.headers.get('target-pod')
-        
+
+        response_time = asyncio.get_event_loop().time()
+        latency = response_time - dispatch_time
         prompt_tokens = response.usage.prompt_tokens
         output_tokens = response.usage.completion_tokens
         total_tokens = response.usage.total_tokens
@@ -327,10 +243,7 @@ def send_request_batch_callback(future, prompt, output_file, request_id, session
         output_text = response.choices[0].message.content
 
         if session_id is not None:
-            update_response(response = output_text, session_id = session_id, history = session_history, history_lock=history_lock)
-            task = try_remove_next_task(session_id, mailbox_map, session_lock)
-            if task:
-                task_queue.put(task)
+            update_response(response = output_text, session_id = session_id, history = session_history[int(session_id) % len(task_queues)])
         
         result = {
             "request_id": request_id,
@@ -350,11 +263,13 @@ def send_request_batch_callback(future, prompt, output_file, request_id, session
             "session_id": session_id,
         }
         logging.info(result)
+        # Write result to JSONL file
         output_file.write(json.dumps(result) + "\n")
-        output_file.flush()
+        output_file.flush()  # Ensure data is written immediately to the file
         return result
 
     except Exception as e:
+        error_time = asyncio.get_event_loop().time()
         error_type = type(e).__name__
         error_result = {
             "request_id": request_id,
@@ -367,10 +282,10 @@ def send_request_batch_callback(future, prompt, output_file, request_id, session
             "prompt_tokens": 0,
             "output_tokens": 0,
             "total_tokens": 0,
-            "latency": latency,
+            "latency": error_time - dispatch_time,
             "throughput": 0,
             "start_time": dispatch_time,
-            "end_time": response_time,
+            "end_time": error_time,
             "ttft": None,
             "tpot": None,
             "target_pod": target_pod,
@@ -380,6 +295,7 @@ def send_request_batch_callback(future, prompt, output_file, request_id, session
         output_file.write(json.dumps(error_result) + "\n")
         output_file.flush()
         return error_result
+
 
 async def benchmark_batch(api_key: str,
                           endpoint: str,
@@ -399,7 +315,7 @@ async def benchmark_batch(api_key: str,
     
     for thread_idx in range(0, thread_pool_size):
         client = create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
-        threads.append(start_worker_threads(thread_idx, task_queue, client, model, max_output, send_request_batch_launch, output_file))
+        threads.append(start_worker_threads(thread_idx, task_queues[thread_idx], client, model, max_output, send_request_batch, output_file))
     for requests_dict in load_struct:
         ts = int(requests_dict["timestamp"] * scale_factor)
         requests = requests_dict["requests"]
@@ -407,17 +323,19 @@ async def benchmark_batch(api_key: str,
         for i in range(len(requests)):
             if "session_id" in requests[i]:
                 session_id = requests[i].get("session_id", None)
+                task_queue_id = session_id % len(task_queues)
             else:
                 session_id = None
-            task_args = (requests[i], output_file, request_id, session_id, target_time)
-            if try_add_running_task(session_id, mailbox_map, session_lock, *task_args):
-                task_queue.put(task_args)
+                task_queue_id = request_id % len(task_queues)
+            logging.debug(f"Sender placing task at queue {task_queue_id}...")
+            task_queues[task_queue_id].put((requests[i], output_file, request_id, session_id, target_time))
             request_id += 1
         num_requests += len(requests)
-    task_queue.join()
+    for task_queue in task_queues:
+        task_queue.join()
     # Stop all worker threads
-    for _ in range(thread_pool_size):
-        task_queue.put(None)
+    for i, _ in enumerate(threads):
+        task_queues[i].put(None)
 
     for thread in threads:
         thread.join()
@@ -453,7 +371,9 @@ def main(args):
     logging.info(f"Starting benchmark on endpoint {args.endpoint} client_pool_size {args.client_pool_size}")
     global thread_pool_size
     thread_pool_size = args.client_pool_size
-    session_history = {}  # Single session history
+    for _ in range(thread_pool_size):
+        task_queues.append(Queue(maxsize=QUEUE_SIZE * 2))
+        session_history.append({})
         
     with open(args.output_file_path, 'w', encoding='utf-8') as output_file:
         load_struct = load_workload(args.workload_path)
