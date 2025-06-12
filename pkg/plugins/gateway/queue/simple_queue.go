@@ -18,6 +18,7 @@ package queue
 
 import (
 	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,20 +33,25 @@ var (
 type SimpleQueue[V comparable] struct {
 	mu            sync.RWMutex
 	queue         []V
-	enqueueCursor int32 // Atomic
-	dequeueCursor int32 // Atomic
+	enqueueCursor int64 // Atomic, logic address
+	dequeueCursor int64 // Atomic, logic address
+	baseCursor    int64 // Used for logic <-> physical address mapping
 
 	// expansion footprints
-	expansionOffset int32
+	zeroout []V
 }
 
 func NewSimpleQueue[V comparable](initialCapacity int) *SimpleQueue[V] {
 	if initialCapacity < 1 {
 		initialCapacity = types.DefaultQueueCapacity
 	}
-	return &SimpleQueue[V]{
+	queue := &SimpleQueue[V]{
 		queue: make([]V, initialCapacity),
 	}
+	if initialCapacity >= types.DefaultQueueCapacity {
+		queue.zeroout = make([]V, initialCapacity)
+	}
+	return queue
 }
 
 func (q *SimpleQueue[V]) Enqueue(value V, _ time.Time) error {
@@ -57,16 +63,14 @@ func (q *SimpleQueue[V]) Enqueue(value V, _ time.Time) error {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
-	pos := atomic.AddInt32(&q.enqueueCursor, 1)
-	capacity := int32(len(q.queue))
-
-	fixedPos := pos
-	if pos > capacity {
+	cursor := atomic.AddInt64(&q.enqueueCursor, 1) - 1
+	pos := q.physicalPosRLocked(cursor)
+	if pos >= int64(len(q.queue)) {
 		q.mu.RUnlock()
-		fixedPos = q.expand(pos)
+		pos = q.expand(cursor, pos)
 		q.mu.RLock()
 	}
-	q.queue[fixedPos-1] = value
+	q.queue[pos] = value
 	return nil
 }
 
@@ -74,14 +78,27 @@ func (q *SimpleQueue[V]) Peek(_ time.Time, _ types.PodList) (c V, err error) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
-	dequeuePos := atomic.LoadInt32(&q.dequeueCursor)
-	enqueuePos := atomic.LoadInt32(&q.enqueueCursor)
+	nilVal := c
+	for {
+		dequeueCursor := atomic.LoadInt64(&q.dequeueCursor)
+		enqueueCursor := atomic.LoadInt64(&q.enqueueCursor)
 
-	if dequeuePos >= enqueuePos {
-		return c, types.ErrQueueEmpty
+		if dequeueCursor >= enqueueCursor {
+			return c, types.ErrQueueEmpty
+		}
+
+		c = q.queue[q.physicalPosRLocked(dequeueCursor)]
+		if c == nilVal {
+			// Must unlock to give expand() change to acquire lock.
+			q.mu.RUnlock()
+			runtime.Gosched()
+			q.mu.RLock()
+			continue
+			// return c, types.ErrQueueEmpty
+		}
+		return c, nil
 	}
 
-	return q.queue[dequeuePos], nil
 }
 
 func (q *SimpleQueue[V]) Dequeue(_ time.Time) (c V, err error) {
@@ -90,29 +107,35 @@ func (q *SimpleQueue[V]) Dequeue(_ time.Time) (c V, err error) {
 
 	nilVal := c
 	for {
-		dequeuePos := atomic.LoadInt32(&q.dequeueCursor)
-		enqueuePos := atomic.LoadInt32(&q.enqueueCursor)
+		dequeueCursor := atomic.LoadInt64(&q.dequeueCursor)
+		enqueueCursor := atomic.LoadInt64(&q.enqueueCursor)
 
-		if dequeuePos >= enqueuePos {
+		if dequeueCursor >= enqueueCursor {
 			return c, types.ErrQueueEmpty
 		}
 
 		// Like enqueue, dequeuePos can out of bound along with enqueuePos
-		if dequeuePos >= int32(len(q.queue)) {
+		dequeuePos := q.physicalPosRLocked(dequeueCursor)
+		if dequeuePos >= int64(len(q.queue)) {
 			q.mu.RUnlock()
-			dequeuePos = q.expand(dequeuePos)
+			dequeuePos = q.expand(dequeueCursor, dequeuePos)
 			q.mu.RLock()
 		}
 
-		// Make sure value was completely enqueued or return err.
-		// This is rare. Instead of wait for evaluation, we treat it as queue empty.
+		// Make sure value was completely enqueued, wait if not.
 		c = q.queue[dequeuePos]
 		if c == nilVal {
-			return c, types.ErrQueueEmpty
+			// Must unlock to give expand() change to acquire lock.
+			q.mu.RUnlock()
+			runtime.Gosched()
+			q.mu.RLock()
+			continue
+			// return c, types.ErrQueueEmpty
 		}
-		if atomic.CompareAndSwapInt32(&q.dequeueCursor, dequeuePos, dequeuePos+1) {
-			// Release reference
-			q.queue[dequeuePos] = nilVal
+		// We must move dequeueCursor forward after the expand check and confirmed dequeue position, or we may lose the undequed value during expand check.
+		if atomic.CompareAndSwapInt64(&q.dequeueCursor, dequeueCursor, dequeueCursor+1) {
+			// We don't release reference here, leave expand clear them in the lock.
+			// q.queue[dequeuePos] = nilVal
 			return c, nil
 		} else {
 			// reset
@@ -125,7 +148,7 @@ func (q *SimpleQueue[V]) Len() int {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
-	return int(atomic.LoadInt32(&q.enqueueCursor) - atomic.LoadInt32(&q.dequeueCursor))
+	return int(atomic.LoadInt64(&q.enqueueCursor) - atomic.LoadInt64(&q.dequeueCursor))
 }
 
 func (q *SimpleQueue[V]) Cap() int {
@@ -135,27 +158,48 @@ func (q *SimpleQueue[V]) Cap() int {
 	return cap(q.queue)
 }
 
-func (q *SimpleQueue[V]) expand(triggerCursor int32) int32 {
+func (q *SimpleQueue[V]) physicalPosRLocked(pos int64) int64 {
+	return pos - q.baseCursor
+}
+
+// Return new position in the queue.
+func (q *SimpleQueue[V]) expand(triggerCursor int64, triggerPos int64) int64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	if triggerCursor < int32(len(q.queue)) {
-		return triggerCursor - q.expansionOffset
+	if triggerPos < int64(len(q.queue)) {
+		return q.physicalPosRLocked(triggerCursor)
 	}
 
-	q.expansionOffset = 0 // Reset offset
-	oldCapacity := int32(cap(q.queue))
-	used := triggerCursor - q.dequeueCursor - 1
+	oldCapacity := int64(cap(q.queue))
+	dequeuePos := q.physicalPosRLocked(q.dequeueCursor) // position before packing/expansion
+	used := triggerPos - dequeuePos
 
 	// Determine new capacity
 	newQueue := q.queue
 	if used > oldCapacity/2 {
 		// Expand capacity
 		newQueue = make([]V, oldCapacity*2)
+		// Pack existing elements
+		copy(newQueue, q.queue[dequeuePos:])
+	} else {
+		// Pack existing elements
+		copy(newQueue, q.queue[dequeuePos:])
+		// Zero out old elements
+		start := len(q.queue) - int(dequeuePos)
+		if q.zeroout != nil {
+			for start < len(newQueue) {
+				copy(newQueue[start:], q.zeroout)
+				start += len(q.zeroout)
+			}
+		} else {
+			var nilVal V
+			for start < len(newQueue) {
+				newQueue[start] = nilVal
+				start++
+			}
+		}
 	}
-	// Pack existing elements
-	copy(newQueue, q.queue[q.dequeueCursor:])
-	q.expansionOffset = q.dequeueCursor
-	q.queue, q.enqueueCursor, q.dequeueCursor = newQueue, q.enqueueCursor-q.expansionOffset, 0
-	return triggerCursor - q.expansionOffset
+	q.queue, q.baseCursor = newQueue, q.baseCursor+dequeuePos
+	return q.physicalPosRLocked(triggerCursor)
 }

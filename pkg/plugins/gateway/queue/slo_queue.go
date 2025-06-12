@@ -178,59 +178,64 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		return true
 	}
 	q.subs.Range(func(key string, sub types.RouterQueue[*types.RoutingContext]) bool {
-		if sub.Len() > 0 {
-			r, _ := sub.Peek(currentTime, pods)
-			// Keep fallback decision in case anything wrong.
-			// Fallback decision occupies first element(0) of q.dequeueCandidates.
-			fbRet := fallbackHandler(key, r)
-			// Fallback case 1: No available profiles.
-			if availableProfiles == 0 {
-				// Warned, simply follows fallback decision.
-				return fbRet
-			}
-			// Append new candidate to candidates
-			idx := len(q.dequeueCandidates)
-			q.validateDequeueCandidatesLocked(idx + 1)
-			q.dequeueCandidates = q.dequeueCandidates[:idx+1]
-			// Reset values
-			candidate := q.dequeueCandidates[idx]
-			candidate.RoutingContext = r
-			candidate.SubKey = key
-			candidate.resetProfiles()
-			// Use a relaxer SLO
-			var rank float64
-			var rankErr error
-			for _, profile := range deploymentProfiles {
-				// Skip deployments with no profile
-				if profile == nil {
-					continue
-				}
-				// Calculate rank
-				if queueOverallSLO {
-					rank, rankErr = q.queueRank(currentTime, r, sub, profile)
-				} else {
-					rank, rankErr = q.rank(currentTime, r, profile)
-				}
-				if rankErr != nil {
-					err = rankErr
-					klog.Warningf("SLOQueue failed to get SLO info for request %s with profile %s: %v, skip.", r.RequestID, profile.Deployment, rankErr)
-					continue
-				}
-				cp := candidate.nextProfile()
-				cp.Rank = rank
-				cp.Key = profile.Deployment
-			}
-			// Fallback case 2: Profile does not provide SLO info.
-			if len(candidate.Profiles) == 0 {
-				// No available profiles, skip this subqueue.
-				klog.Warningf("SLOQueue failed to get SLO info for request %s in all profiles, fallback to FIFO queue.", r.RequestID)
-				return fbRet
-			}
-			// Sort by rank ascendingly, so the first one contains lowest rank.
-			sort.Slice(candidate.Profiles, func(i, j int) bool {
-				return q.higherRank(candidate.Profiles[i].Rank, candidate.Profiles[j].Rank) < 0
-			})
+		r, peekErr := sub.Peek(currentTime, pods)
+		if peekErr == types.ErrQueueEmpty {
+			return true
+		} else if peekErr != nil {
+			klog.Errorf("Failed to peek subqueue %s: %v.", key, peekErr)
+			return true
 		}
+
+		// Keep fallback decision in case anything wrong.
+		// Fallback decision occupies first element(0) of q.dequeueCandidates.
+		fbRet := fallbackHandler(key, r)
+		// Fallback case 1: No available profiles.
+		if availableProfiles == 0 {
+			// Warned, simply follows fallback decision.
+			return fbRet
+		}
+		// Append new candidate to candidates
+		idx := len(q.dequeueCandidates)
+		q.validateDequeueCandidatesLocked(idx + 1)
+		q.dequeueCandidates = q.dequeueCandidates[:idx+1]
+		// Reset values
+		candidate := q.dequeueCandidates[idx]
+		candidate.RoutingContext = r
+		candidate.SubKey = key
+		candidate.resetProfiles()
+		// Use a relaxer SLO
+		var rank float64
+		var rankErr error
+		for _, profile := range deploymentProfiles {
+			// Skip deployments with no profile
+			if profile == nil {
+				continue
+			}
+			// Calculate rank
+			if queueOverallSLO {
+				rank, rankErr = q.queueRank(currentTime, r, sub, profile)
+			} else {
+				rank, rankErr = q.rank(currentTime, r, profile)
+			}
+			if rankErr != nil {
+				err = rankErr
+				klog.Warningf("SLOQueue failed to get SLO info for request %s with profile %s: %v, skip.", r.RequestID, profile.Deployment, rankErr)
+				continue
+			}
+			cp := candidate.nextProfile()
+			cp.Rank = rank
+			cp.Key = profile.Deployment
+		}
+		// Fallback case 2: Profile does not provide SLO info.
+		if len(candidate.Profiles) == 0 {
+			// No available profiles, skip this subqueue.
+			klog.Warningf("SLOQueue failed to get SLO info for request %s in all profiles, fallback to FIFO queue.", r.RequestID)
+			return fbRet
+		}
+		// Sort by rank ascendingly, so the first one contains lowest rank.
+		sort.Slice(candidate.Profiles, func(i, j int) bool {
+			return q.higherRank(candidate.Profiles[i].Rank, candidate.Profiles[j].Rank) < 0
+		})
 		return true
 	})
 	if err != nil {

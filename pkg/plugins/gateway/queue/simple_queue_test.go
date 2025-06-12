@@ -17,6 +17,7 @@ package queue
 
 import (
 	"log"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -125,6 +126,7 @@ var _ = Describe("SimpleQueue", func() {
 					for j := 0; j < perWorker; j++ {
 						// nolint: errcheck
 						queue.Enqueue(n*perWorker+j+1, time.Now()) // start with 1
+						runtime.Gosched()
 						enqueued <- n*perWorker + j + 1
 					}
 				}(i)
@@ -135,7 +137,7 @@ var _ = Describe("SimpleQueue", func() {
 			numErrs := int32(0)
 			wg.Add(numWorkers)
 			for i := 0; i < numWorkers; i++ {
-				go func() {
+				go func(n int) {
 					defer wg.Done()
 					for j := 0; j < perWorker; j++ {
 						val, err := queue.Dequeue(time.Now())
@@ -144,9 +146,10 @@ var _ = Describe("SimpleQueue", func() {
 							atomic.AddInt32(&numErrs, 1)
 							continue
 						}
+						runtime.Gosched()
 						dequeued <- val
 					}
-				}()
+				}(i)
 			}
 
 			wg.Wait()
@@ -185,6 +188,57 @@ var _ = Describe("SimpleQueue", func() {
 			Expect(queue.Len()).To(Equal(int(numErrs)))
 			// Verify non duplicated dequeue object.
 			Expect(int(numErrs)).To(Equal(expectedErrs))
+		})
+
+		It("should peek() consistent with len() result", func() {
+			var wg sync.WaitGroup
+			numWorkers := 10
+			const perWorker = 100
+
+			// queue = NewSimpleQueue[int](numWorkers * perWorker)
+
+			// Concurrent enqueues
+			wg.Add(numWorkers)
+			for i := 0; i < numWorkers; i++ {
+				go func(n int) {
+					defer wg.Done()
+					for j := 0; j < perWorker; j++ {
+						// nolint: errcheck
+						queue.Enqueue(n*perWorker+j+1, time.Now()) // start with 1
+						runtime.Gosched()
+					}
+				}(i)
+			}
+
+			// Concurrent dequeues
+			seen := int32(0)
+			numErrs := int32(0)
+			wg.Add(numWorkers)
+			for i := 0; i < numWorkers; i++ {
+				go func(n int) {
+					defer wg.Done()
+					for j := 0; j < perWorker; j++ {
+						if queue.Len() > 0 {
+							_, err := queue.Peek(time.Now(), nil)
+							if err != nil {
+								// This is possible because there may be more dequeue calls than enqueue calls at some time.
+								atomic.AddInt32(&numErrs, 1)
+								continue
+							}
+							runtime.Gosched()
+							atomic.AddInt32(&seen, 1)
+						}
+					}
+				}(i)
+			}
+
+			wg.Wait()
+
+			// Verify all enqueued
+			Expect(queue.Len()).To(Equal(numWorkers * perWorker))
+			// Verify non duplicated dequeue object.
+			Expect(seen > 0).To(BeTrue())
+			Expect(numErrs).To(Equal(int32(0)))
 		})
 
 		It("should maintain consistency under load", func() {
