@@ -6,8 +6,8 @@ import time
 import os
 import asyncio
 
-def get_pod_status_counts(deployment_name, namespace="default"):
-   config.load_kube_config(context="ccr3aths9g2gqedu8asdg@41073177-kcu0mslcp5mhjsva38rpg")
+def get_pod_status_counts(deployment_name, kube_context, namespace="default"):
+   config.load_kube_config(context=kube_context)
    v1 = client.CoreV1Api()
    pods = v1.list_namespaced_pod(namespace)
    filtered_pods = [pod for pod in pods.items if deployment_name in pod.metadata.name]
@@ -39,12 +39,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("deployment", help="Deployment name")
     parser.add_argument("output_dir", help="Output directory")
+    parser.add_argument("kube_context", help="Kube context")
     args = parser.parse_args()
    
     filename = f"{args.output_dir}/pod_count.csv"
     idx = 0
     while True:
-        status_counts = get_pod_status_counts(args.deployment)
+        status_counts = get_pod_status_counts(args.deployment, args.kube_context)
         write_to_csv(args.deployment, status_counts, filename, idx)
         time.sleep(1)
         idx += 1
