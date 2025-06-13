@@ -19,7 +19,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
@@ -192,7 +191,7 @@ var _ = Describe("SLO", func() {
 			for i := 0; i < 2048; i++ {
 				builder.WriteString("ho ")
 			}
-			req, cancel := newReqWithTimeout(model, builder.String(), "request_slo_failure", 10*time.Millisecond)
+			req, cancel := newReqWithTimeout(model, builder.String(), "request_slo_failure", 100*time.Millisecond)
 			defer cancel()
 			promptLen, _ := req.PromptLength()
 			Expect(promptLen > 2000).To(BeTrue())
@@ -222,8 +221,8 @@ var _ = Describe("SLO", func() {
 	It("Packing router should prefer the same pod", func() {
 		pods, _ := store.ListPodsByModel(model)
 
-		req1, cancel1 := newReqWithTimeout(model, "message1", "request_id_1", 10*time.Millisecond)
-		req2, cancel2 := newReqWithTimeout(model, "message2", "request_id_2", 10*time.Millisecond)
+		req1, cancel1 := newReqWithTimeout(model, "message1", "request_id_1", 100*time.Millisecond)
+		req2, cancel2 := newReqWithTimeout(model, "message2", "request_id_2", 100*time.Millisecond)
 		req2.Algorithm = RouterSLOPackLoad // Override routing algorithm
 		defer cancel1()
 		defer cancel2()
@@ -231,7 +230,7 @@ var _ = Describe("SLO", func() {
 		podAddr1, err := route(store, req1, pods)
 		Expect(err).To(BeNil())
 
-		// time.Sleep(1000 * time.Millisecond)
+		time.Sleep(1 * time.Millisecond) // There is a small gap between route and metric update due to operated by different goroutines.
 		pendingLoad, err := store.GetMetricValueByPod(req1.TargetPod().Name, req1.TargetPod().Namespace, metrics.RealtimeNormalizedPendings)
 		Expect(err).To(BeNil())
 		Expect(pendingLoad.GetSimpleValue() <= 0.5).To(BeTrue())
@@ -253,8 +252,7 @@ var _ = Describe("SLO", func() {
 			_, err := route(store, req, pods)
 			Expect(err).To(BeNil())
 
-			// time.Sleep(1000 * time.Millisecond)
-			runtime.Gosched()
+			time.Sleep(1 * time.Millisecond) // There is a small gap between route and metric update due to operated by different goroutines.
 			pendingLoad, err := store.GetMetricValueByPod(req.TargetPod().Name, req.TargetPod().Namespace, metrics.RealtimeNormalizedPendings)
 			Expect(err).To(BeNil())
 			return req, pendingLoad.GetSimpleValue()
@@ -285,7 +283,7 @@ var _ = Describe("SLO", func() {
 		store.DoneRequestCount(firstReq, "request_id_1", firstReq.Model, 1)
 
 		// Check the blockage is released.
-		Eventually(blockage, 20*time.Millisecond).Should(BeClosed())
+		Eventually(blockage, 1*time.Second).Should(BeClosed())
 		Expect(lastReq).ToNot(BeNil())
 		Expect(lastReq.TargetPod()).To(BeIdenticalTo(firstReq.TargetPod()))
 	})

@@ -50,7 +50,7 @@ type RoutingContext struct {
 
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
-	lastError    error
+	lastError    atomic.Pointer[error]
 	debugDelay   time.Duration
 	tokens       []int
 	predictor    OutputPredictor
@@ -156,7 +156,7 @@ func (r *RoutingContext) SetTargetPod(pod *v1.Pod) {
 // SetError sets the error of the routing context asynchronously.
 // Do not call this function from synchronize routers. Asynchronize routers call this to set an error.
 func (r *RoutingContext) SetError(err error) {
-	r.lastError = err
+	r.lastError.Store(&err)
 	r.SetTargetPod(nil)
 }
 
@@ -180,7 +180,7 @@ func (r *RoutingContext) TargetPod() *v1.Pod {
 // GetError returns the error of the routing context.
 func (r *RoutingContext) GetError() error {
 	if r.TargetPod() == nil {
-		return r.lastError
+		return *r.lastError.Load()
 	}
 	return nil
 }
@@ -203,7 +203,8 @@ func (r *RoutingContext) HasRouted() bool {
 // HasError returns true if the request has an error.
 func (r *RoutingContext) HasError() bool {
 	pod := r.targetPod.Load()
-	return pod == nil && r.lastError != nil
+	lastError := *r.lastError.Load()
+	return pod == nil && lastError != nil
 }
 
 // CanUpdateStats returns true if the first time trying update in-memory realtime statistics.
@@ -243,7 +244,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
-	r.lastError = nil
+	r.lastError.Store(nil)
 	// debugDelay will be reset by tests.
 	r.tokens = nil
 	r.predictor = nil
