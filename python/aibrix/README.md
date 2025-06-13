@@ -22,7 +22,7 @@ The AI Runtime hides various implementation details on the inference engine side
 
 At present, `vLLM` engine is supported, and in the future, `SGLang` and other inference engines will be supported.
 
-For more details on integrate with `vLLM`, please refer to our [Runtime docs](https://github.com/vllm-project/aibrix/blob/main/docs/source/features/runtime.rst#metric-standardization).
+For more details on integration with `vLLM`, please refer to our [Runtime docs](https://github.com/vllm-project/aibrix/blob/main/docs/source/features/runtime.rst#metric-standardization).
 
 ## Contributing
 We welcome contributions from the community! Check out our [contributing guidelines](https://github.com/vllm-project/aibrix/blob/main/CONTRIBUTING.md) to see how you can make a difference.
@@ -36,7 +36,7 @@ pip install -e .
 
 ### Lint, Format and Type Check
 
-Before contribute your code, please run the following commands to ensure that your code passes the tests and linting checks.
+Before contributing your code, please run the following commands to ensure that your code passes the tests and linting checks.
 
 ```bash
 # install dependencies
