@@ -65,7 +65,7 @@ kubectl delete -k config/simulator
 
 1. Get the service endpoint
 
-You can two options to expose the service:
+You have two options to expose the service:
 
 ```shell
 # Option 1: Port forward the envoy service
