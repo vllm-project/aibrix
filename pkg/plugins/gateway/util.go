@@ -24,6 +24,7 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/packages/param"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
@@ -69,6 +70,24 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		}
 		model = completionObj.Model
 		message = completionObj.Prompt
+	} else if requestPath == "/v1/embeddings" {
+		message = "" // prefix_cache algorithms are not relevant for embeddings
+		var jsonMap map[string]json.RawMessage
+		if err := json.Unmarshal(requestBody, &jsonMap); err != nil {
+			klog.ErrorS(err, "error to unmarshal request body", "requestID", requestID, "requestBody", string(requestBody))
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		embeddingObj := openai.EmbeddingNewParams{}
+		if err := json.Unmarshal(requestBody, &embeddingObj); err != nil {
+			klog.ErrorS(err, "error to unmarshal embeddings object", "requestID", requestID, "requestBody", string(requestBody))
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		model = embeddingObj.Model
+		if errRes = checkEmbeddingInputSequenceLen(requestID, embeddingObj); errRes != nil {
+			return
+		}
 	} else {
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", HeaderErrorRequestBodyProcessing, "true")
 		return
@@ -140,6 +159,48 @@ func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCo
 		}
 	}
 	return builder.String(), nil
+}
+
+// getEmbeddingsInputLen returns the len of the embeddings object
+func checkEmbeddingInputSequenceLen(requestID string, embeddingObj openai.EmbeddingNewParams) *extProcPb.ProcessingResponse {
+	inputParam := embeddingObj.Input
+	var size int
+	switch input := embeddingNewParamsInputUnionAsAny(&inputParam).(type) {
+	case *string:
+		size = len(*input)
+	case *[]string:
+		size = len(*input)
+	case *[]int64:
+		size = len(*input)
+	case *[][]int64:
+		size = len(*input)
+	default:
+	}
+
+	if size == 0 {
+		klog.ErrorS(nil, "no input in the request body", "requestID", requestID)
+		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", HeaderErrorRequestBodyProcessing, "true")
+	}
+	if size > 1024 {
+		klog.ErrorS(nil, "embeddings content is too large", "requestID", requestID, "size", size)
+		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "embeddings content is too large", HeaderErrorRequestBodyProcessing, "true")
+	}
+
+	return nil
+}
+
+// TODO: make asAny method publicly available on OpenAI go
+func embeddingNewParamsInputUnionAsAny(u *openai.EmbeddingNewParamsInputUnion) any {
+	if !param.IsOmitted(u.OfString) {
+		return &u.OfString.Value
+	} else if !param.IsOmitted(u.OfArrayOfStrings) {
+		return &u.OfArrayOfStrings
+	} else if !param.IsOmitted(u.OfArrayOfTokens) {
+		return &u.OfArrayOfTokens
+	} else if !param.IsOmitted(u.OfArrayOfTokenArrays) {
+		return &u.OfArrayOfTokenArrays
+	}
+	return nil
 }
 
 // generateErrorResponse construct envoy proxy error response
