@@ -227,6 +227,15 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 								modelHeaderMatch,
 							},
 						},
+						{
+							Path: &gatewayv1.HTTPPathMatch{
+								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+								Value: ptr.To("/v1/embeddings"),
+							},
+							Headers: []gatewayv1.HTTPHeaderMatch{
+								modelHeaderMatch,
+							},
+						},
 					},
 					BackendRefs: []gatewayv1.HTTPBackendRef{
 						{
