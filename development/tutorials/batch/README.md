@@ -26,7 +26,7 @@ _driver.create_job(job_id, "sample_endpoint", "20m")
 
 ## Check job status
 After the job submission, we can check job status using the following operation. This API requires the job ID. 
-The returned status might be one of the status: JobStatus.PENDING,JobStatus.IN_PROGRESS, JobStatus.COMPLETED. 
+The returned status might be one of the statuses: JobStatus.PENDING,JobStatus.IN_PROGRESS, JobStatus.COMPLETED. 
 
 ```
 status = _driver.get_job_status(job_id)

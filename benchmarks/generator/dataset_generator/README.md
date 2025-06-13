@@ -76,7 +76,7 @@ python -m generator.dataset_generator.synthetic_prefix_sharing_dataset \
     --output output.jsonl
 ```
 
-This will generate a .jsonl file that contains collection of prompt to serve as input to the workload generator. 
+This will generate a .jsonl file that contains a collection of prompts to serve as input to the workload generator. 
 
 The commands above simulate a cache sharing scheme for programming workload described in [Preble](https://arxiv.org/pdf/2407.00023), as shown below:
 ![image](dataset-examples.png)
