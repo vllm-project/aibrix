@@ -69,11 +69,11 @@ var _ = Describe("RouterContext", func() {
 		Expect(rctx.predictor).To(BeIdenticalTo(predictor))
 		shouldBlock(func() { rctx.TargetPod() }, 100*time.Millisecond)
 		Expect(rctx.targetPod.Load()).To(BeIdenticalTo(nilPod))
-		Expect(rctx.lastError).To(BeNil())
+		Expect(rctx.getError()).To(BeNil())
 
 		rctx.SetError(fmt.Errorf("error"))
 		Expect(rctx.targetPod.Load()).To(BeNil()) // target pod set
-		Expect(rctx.lastError).ToNot(BeNil())     // No blocking
+		Expect(rctx.getError()).ToNot(BeNil())    // No blocking
 
 		rctx.Delete()
 		ctx2 := context.Background()
@@ -87,7 +87,7 @@ var _ = Describe("RouterContext", func() {
 		Expect(rctx.predictor).To(BeNil())
 		shouldBlock(func() { rctx.TargetPod() }, 100*time.Millisecond)
 		Expect(rctx.targetPod.Load()).To(BeIdenticalTo(nilPod))
-		Expect(rctx.lastError).To(BeNil()) // No blocking
+		Expect(rctx.getError()).To(BeNil()) // No blocking
 
 		rctx.Delete()
 	})

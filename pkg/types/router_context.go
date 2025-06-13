@@ -18,6 +18,7 @@ package types
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -27,7 +28,10 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-var nilPod = &v1.Pod{}
+var (
+	nilPod       = &v1.Pod{}
+	unknownError = errors.New("unknown error")
+)
 
 type RequestFeatures []float64
 
@@ -156,7 +160,11 @@ func (r *RoutingContext) SetTargetPod(pod *v1.Pod) {
 // SetError sets the error of the routing context asynchronously.
 // Do not call this function from synchronize routers. Asynchronize routers call this to set an error.
 func (r *RoutingContext) SetError(err error) {
-	r.lastError.Store(&err)
+	if err == nil {
+		r.lastError.Store(&unknownError)
+	} else {
+		r.lastError.Store(&err)
+	}
 	r.SetTargetPod(nil)
 }
 
@@ -180,7 +188,7 @@ func (r *RoutingContext) TargetPod() *v1.Pod {
 // GetError returns the error of the routing context.
 func (r *RoutingContext) GetError() error {
 	if r.TargetPod() == nil {
-		return *r.lastError.Load()
+		return r.getError()
 	}
 	return nil
 }
@@ -203,8 +211,7 @@ func (r *RoutingContext) HasRouted() bool {
 // HasError returns true if the request has an error.
 func (r *RoutingContext) HasError() bool {
 	pod := r.targetPod.Load()
-	lastError := *r.lastError.Load()
-	return pod == nil && lastError != nil
+	return pod == nil && r.getError() != nil
 }
 
 // CanUpdateStats returns true if the first time trying update in-memory realtime statistics.
@@ -224,6 +231,14 @@ func (r *RoutingContext) GetRoutingDelay() time.Duration {
 
 func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
 	return fmt.Sprintf("%v:%v", pod.Status.PodIP, utils.GetModelPortForPod(r.RequestID, pod))
+}
+
+func (r *RoutingContext) getError() (err error) {
+	errAddr := r.lastError.Load()
+	if errAddr != nil {
+		return *errAddr
+	}
+	return
 }
 
 func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID, user string) {
