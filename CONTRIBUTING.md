@@ -37,7 +37,7 @@ Start by picking an [issue](https://github.com/vllm-project/aibrix/issues) tagge
 
 Join our community through various channels:
 
-- **Slack Channel**: TODO
+- **Slack Channel**: TODO (Link to be added once channel is public)
 - **Wechat User Groups**: TODO
 - **Email**: TODO
 - **Forums**: TODO
