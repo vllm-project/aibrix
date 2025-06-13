@@ -19,7 +19,9 @@ package modelrouter
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -41,9 +43,12 @@ import (
 
 const (
 	// TODO (varun): cleanup model related identifiers and establish common consensus
-	modelHeaderIdentifier = "model"
-	modelIdentifier       = "model.aibrix.ai/name"
-	modelPortIdentifier   = "model.aibrix.ai/port"
+	modelHeaderIdentifier          = "model"
+	modelIdentifier                = "model.aibrix.ai/name"
+	modelPortIdentifier            = "model.aibrix.ai/port"
+	modelSupportedRoutesIdentifier = "model.aibrix.ai/supported-routes"
+	modelEmbeddingsRoute           = "embeddings"
+	modelChatCompletionsRoute      = "chat-completions"
 	// TODO (varun): parameterize it or dynamically resolve it
 	aibrixEnvoyGateway          = "aibrix-eg"
 	aibrixEnvoyGatewayNamespace = "aibrix-system"
@@ -105,6 +110,42 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 	})
 
 	return err
+}
+
+func getSupportedRoutesMatchFromLabelsOrDefault(labels map[string]string, modelHeaderMatch gatewayv1.HTTPHeaderMatch) []gatewayv1.HTTPRouteMatch {
+	nameToRoutePathPrefix := map[string][]string{
+		modelEmbeddingsRoute:      {"/v1/embeddings"},
+		modelChatCompletionsRoute: {"/v1/completions", "/v1/chat/completions"},
+	}
+
+	var pathPrefixes []string
+	if routesLabelValue, ok := labels[modelSupportedRoutesIdentifier]; ok {
+		routes := strings.Split(routesLabelValue, ",")
+		for k, route := range nameToRoutePathPrefix {
+			if slices.Contains(routes, k) {
+				pathPrefixes = append(pathPrefixes, route...)
+			}
+		}
+	}
+
+	// completions and chat completions routes by default
+	if len(pathPrefixes) == 0 {
+		pathPrefixes = append(pathPrefixes, nameToRoutePathPrefix[modelChatCompletionsRoute]...)
+	}
+
+	var routesmatch []gatewayv1.HTTPRouteMatch
+	for _, path := range pathPrefixes {
+		routesmatch = append(routesmatch, gatewayv1.HTTPRouteMatch{
+			Path: &gatewayv1.HTTPPathMatch{
+				Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+				Value: ptr.To(path),
+			},
+			Headers: []gatewayv1.HTTPHeaderMatch{
+				modelHeaderMatch,
+			},
+		})
+	}
+	return routesmatch
 }
 
 type ModelRouter struct {
@@ -192,6 +233,8 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 		Value: modelName,
 	}
 
+	httpRoutesMatch := getSupportedRoutesMatchFromLabelsOrDefault(labels, modelHeaderMatch)
+
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-router", modelName),
@@ -208,35 +251,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 			},
 			Rules: []gatewayv1.HTTPRouteRule{
 				{
-					Matches: []gatewayv1.HTTPRouteMatch{
-						{
-							Path: &gatewayv1.HTTPPathMatch{
-								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
-								Value: ptr.To("/v1/completions"),
-							},
-							Headers: []gatewayv1.HTTPHeaderMatch{
-								modelHeaderMatch,
-							},
-						},
-						{
-							Path: &gatewayv1.HTTPPathMatch{
-								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
-								Value: ptr.To("/v1/chat/completions"),
-							},
-							Headers: []gatewayv1.HTTPHeaderMatch{
-								modelHeaderMatch,
-							},
-						},
-						{
-							Path: &gatewayv1.HTTPPathMatch{
-								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
-								Value: ptr.To("/v1/embeddings"),
-							},
-							Headers: []gatewayv1.HTTPHeaderMatch{
-								modelHeaderMatch,
-							},
-						},
-					},
+					Matches: httpRoutesMatch,
 					BackendRefs: []gatewayv1.HTTPBackendRef{
 						{
 							BackendRef: gatewayv1.BackendRef{
