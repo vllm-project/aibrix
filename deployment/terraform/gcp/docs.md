@@ -1,7 +1,7 @@
 # AIBrix GCP Terraform Module
 This module deploys an AIBrix cluster in its entirety onto a Google Container Cluster. It is the quickest way to get up and running with AIBrix. The purpose of this module is to both allow developers to quickly spin up the stack, and allow for the team to test on the GCP cloud environment. 
 
-**NOTE: This module was created to allow users to quickly spin up AIBrix on GCP. It is not currently built for production deployments. The user is is responsible for any costs incurred by running this module.**
+**NOTE: This module was created to allow users to quickly spin up AIBrix on GCP. It is not currently built for production deployments. The user is responsible for any costs incurred by running this module.**
 
 ## Quickstart
 
@@ -17,7 +17,7 @@ This module deploys an AIBrix cluster in its entirety onto a Google Container Cl
 4. Run `terraform init` to initialize the module.
 5. Run `terraform plan` to see details on the resources created by this module.
 6. When you are satisfied with the plan and want to create the resources, run `terraform apply`. NOTE: if you recieve `NodePool aibrix-gpu-nodes was created in the error state "ERROR"` while running the script, check your quotas for GPUs and the specific instances you're trying to deploy.
-7. Wait for module to complete running. It will output a command to recieve the kubernetes config file and a public IP address.
+7. Wait for module to complete running. It will output a command to receive the kubernetes config file and a public IP address.
 8. Run a command against the public IP:
 ```bash
 ENDPOINT="<YOUR PUBLIC IP>"

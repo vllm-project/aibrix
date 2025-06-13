@@ -6,7 +6,7 @@ The deployment will utilize the full weights (671B) of the model without any qua
 ## Prerequisite
 
 Before the AIBrix deployment, some preliminary work such as model weight download to object storage or share file system, and customized container image setup has been completed.
-We don't cover all the step but just address the critical part instead.
+We don't cover all the steps but just address the critical part instead.
 
 ### Cluster
 
@@ -87,8 +87,8 @@ Besides that, we also need `IPC_LOCK` and Share Memory Support.
 
 ## Installation
 
-You need AIBrix v0.2.1, which has been proven effective for our multi-nodes deployment needs. When deploying AIBrix, it's important to note that the AIBrix mirror is mainly hosted on Dockerhub,
-and deploying it in environments has Dockerhub access limitation can be challenging. To overcome this, let check our tutorial to override the control plane images with your own registry, enabling a smooth deployment of customized AIBrix.
+You need AIBrix v0.2.1, which has been proven effective for our multi-node deployment needs. When deploying AIBrix, it's important to note that the AIBrix mirror is mainly hosted on Dockerhub,
+and deploying it in environments has Dockerhub access limitation can be challenging. To overcome this, let's check our tutorial to override the control plane images with your own registry, enabling a smooth deployment of customized AIBrix.
 
 It should be emphasized that there might be aspects related to the cloud environment, for example, `ReadWriteMany` volume provider, `Local Disk` etc. 
 We take [Volcano Cloud](https://www.volcengine.com/) as a reference here, but users are advised to check their own cloud infrastructure.
