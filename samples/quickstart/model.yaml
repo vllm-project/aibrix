@@ -1,3 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+  name: aibrix-system-llm # Using a different namespace rather than `default` to avoid conflicts with other namespaces.
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -5,7 +13,7 @@ metadata:
     model.aibrix.ai/name: deepseek-r1-distill-llama-8b # Note: The label value `model.aibrix.ai/name` here must match with the service name.
     model.aibrix.ai/port: "8000"
   name: deepseek-r1-distill-llama-8b
-  namespace: default
+  namespace: aibrix-system-llm
 spec:
   replicas: 1
   selector:
@@ -16,6 +24,14 @@ spec:
       labels:
         model.aibrix.ai/name: deepseek-r1-distill-llama-8b
     spec:
+      volumes:
+        - name: cache-volume
+          persistentVolumeClaim:
+            claimName: deepseek-r1-distill-llama-8b
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "2Gi"
       containers:
         - command:
             - python3
@@ -34,7 +50,7 @@ spec:
             - deepseek-r1-distill-llama-8b
             - --max-model-len
             - "12288" # 24k length, this is to avoid "The model's max seq len (131072) is larger than the maximum number of tokens that can be stored in KV cache" issue.
-          image: vllm/vllm-openai:v0.7.1
+          image: vllm/vllm-openai:v0.9.0
           imagePullPolicy: IfNotPresent
           name: vllm-openai
           ports:
@@ -42,9 +58,18 @@ spec:
               protocol: TCP
           resources:
             limits:
+              cpu: "8"
+              memory: 20G
               nvidia.com/gpu: "1"
             requests:
+              cpu: "2"
+              memory: 6G
               nvidia.com/gpu: "1"
+          volumeMounts:
+            - mountPath: /root/.cache/huggingface
+              name: cache-volume
+            - name: shm
+              mountPath: /dev/shm
           livenessProbe:
             httpGet:
               path: /health
@@ -54,6 +79,7 @@ spec:
             periodSeconds: 5
             successThreshold: 1
             timeoutSeconds: 1
+            initialDelaySeconds: 100
           readinessProbe:
             httpGet:
               path: /health
@@ -63,6 +89,7 @@ spec:
             periodSeconds: 5
             successThreshold: 1
             timeoutSeconds: 1
+            initialDelaySeconds: 100
           startupProbe:
             httpGet:
               path: /health
@@ -74,7 +101,6 @@ spec:
             timeoutSeconds: 1
 
 ---
-
 apiVersion: v1
 kind: Service
 metadata:
@@ -85,7 +111,7 @@ metadata:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8080"
   name: deepseek-r1-distill-llama-8b # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
-  namespace: default
+  namespace: aibrix-system-llm
 spec:
   ports:
     - name: serve
@@ -99,3 +125,17 @@ spec:
   selector:
     model.aibrix.ai/name: deepseek-r1-distill-llama-8b
   type: ClusterIP
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deepseek-r1-distill-llama-8b
+  namespace: aibrix-system-llm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 30Gi
+  volumeMode: Filesystem
