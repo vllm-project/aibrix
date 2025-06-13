@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -76,7 +77,7 @@ func shouldBlock(cb func(), duration time.Duration) chan bool {
 	return block
 }
 
-var _ = Describe("SLOQueue", func() {
+var _ = Describe("SLO", func() {
 	var (
 		store      *cache.Store
 		model      = "llama2-7b"
@@ -223,6 +224,7 @@ var _ = Describe("SLOQueue", func() {
 
 		req1, cancel1 := newReqWithTimeout(model, "message1", "request_id_1", 10*time.Millisecond)
 		req2, cancel2 := newReqWithTimeout(model, "message2", "request_id_2", 10*time.Millisecond)
+		req2.Algorithm = RouterSLOPackLoad // Override routing algorithm
 		defer cancel1()
 		defer cancel2()
 
@@ -246,11 +248,13 @@ var _ = Describe("SLOQueue", func() {
 			defer GinkgoRecover()
 
 			req, cancel := newReqWithTimeout(model, "message", fmt.Sprintf("request_id_%d", id), timeout)
+			req.Algorithm = RouterSLOPackLoad // Override routing algorithm
 			defer cancel()
 			_, err := route(store, req, pods)
 			Expect(err).To(BeNil())
 
 			// time.Sleep(1000 * time.Millisecond)
+			runtime.Gosched()
 			pendingLoad, err := store.GetMetricValueByPod(req.TargetPod().Name, req.TargetPod().Namespace, metrics.RealtimeNormalizedPendings)
 			Expect(err).To(BeNil())
 			return req, pendingLoad.GetSimpleValue()

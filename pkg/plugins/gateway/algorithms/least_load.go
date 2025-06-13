@@ -84,6 +84,7 @@ func (r *leastLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (
 			if err == cache.ErrorSLOFailureRequest {
 				lastErr = r.updateError(lastErr, err)
 				klog.V(4).InfoS("Skipped pod due to SLOFailureRequest in leastLoadRouter", "pod", pod.Name, "request", ctx.RequestID)
+				continue
 			} else if err != nil {
 				lastErr = r.updateError(lastErr, err)
 				klog.ErrorS(err, "Skipped pod due to fail to get consumption in leastLoadRouter", "pod", pod.Name)
