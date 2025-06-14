@@ -152,6 +152,7 @@ async def send_request(
     backend: str,
     api_url: str,
     api_key: Optional[str],
+    routing_strategy: Optional[str],
     model: str,
     prompt: str,
     prompt_len: int,
@@ -166,8 +167,10 @@ async def send_request(
     headers = {
         "User-Agent": "Benchmark Client",
     }
-    if api_key is not None or api_key != "":
+    if api_key is not None and api_key != "":
         headers["Authorization"] = f"Bearer {api_key}"
+    if routing_strategy is not None and routing_strategy != "":
+        headers["routing-strategy"] = routing_strategy
 
     streaming = stream
     if backend == "vllm":
@@ -274,6 +277,7 @@ async def benchmark(
     backend: str,
     api_url: str,
     api_key: Optional[str],
+    routing_strategy: Optional[str],
     model: str,
     input_requests: List[Tuple[str, int, int, float]],
     best_of: int,
@@ -297,6 +301,7 @@ async def benchmark(
                 backend,
                 api_url,
                 api_key,
+                routing_strategy,
                 model,
                 prompt,
                 prompt_len,
@@ -347,6 +352,7 @@ def main(args: argparse.Namespace):
                 args.backend,
                 api_url,
                 args.api_key,
+                args.routing_strategy,  # Routing strategy for vllm only, no effect on other backends
                 args.model,
                 input_requests,
                 args.best_of,
@@ -513,6 +519,9 @@ if __name__ == "__main__":
         type=float,
         default=0.0,
         help="Temperature for text generation (default: 0.0)",
+    )
+    parser.add_argument(
+        "--routing-strategy", type=str, default=None, help="Specify routing strategy."
     )
     args = parser.parse_args()
     main(args)

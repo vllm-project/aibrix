@@ -1,0 +1,38 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: aibrix-system
+
+namePrefix: aibrix-
+
+resources:
+- ../../../gateway/gateway-plugin
+
+images:
+- name: gateway-plugins
+  newName: aibrix/gateway-plugins
+  newTag: nightly
+
+patches:
+- patch: |-  # Use the '|' and '-' for inline patching
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: gateway-plugins
+    spec:
+      template:
+        spec:
+          containers:
+            - name: gateway-plugin
+              args:
+                - -v=5
+              env:
+                - name: AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS
+                  value: "60000"
+                - name: AIBRIX_GPU_OPTIMIZER_TRACING_FLAG
+                  value: "true"
+  target:
+    kind: Deployment
+    name: gateway-plugins
+    namespace: system
+    version: v1

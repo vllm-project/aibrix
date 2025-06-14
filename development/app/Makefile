@@ -113,5 +113,17 @@ test-gateway2:
             "max_tokens": 512 \
         }'
 
+test-router:
+	curl -v http://localhost:8888/v1/chat/completions \
+		-H "model: llama2-7b" \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Bearer any_key" \
+		-H "routing-strategy: slo" \
+		-d '{ \
+			"model": "llama2-7b", \
+			"messages": [{"role": "user", "content": "Say this is a test!"}], \
+			"temperature": 0.7 \
+		}'
+
 metrics:
 	curl http://localhost:8000/metrics

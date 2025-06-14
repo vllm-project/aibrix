@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-plugins
+  namespace: aibrix-system
+spec:
+  replicas: 1
+  template:
+    spec:
+      affinity:
+        nodeAffinity: # prevent gateway pod to be placed on gpu node.
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: vke.node.gpu.schedule
+                  operator: NotIn
+                  values:
+                    - nvidia
+      containers:
+        - name: gateway-plugin
+          resources:
+            limits:
+              cpu: "2"
+              memory: 8Gi
+            requests:
+              cpu: "2"
+              memory: 8Gi
+          env:
+            - name: AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE
+              value: "character"
+            - name: AIBRIX_PREFIX_CACHE_BLOCK_SIZE
+              value: "128"
+            - name: AIBRIX_PREFIX_CACHE_BLOCK_NUMBER
+              value: "200000"
+            - name: AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT
+              value: "16"
+            - name: AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR
+              value: "2"

@@ -1,17 +1,16 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: aibrix-system
-
-namePrefix: aibrix-
-
 resources:
-- ../../../gateway/gateway-plugin
+- ../../dev/gateway-plugin
+
+patches:
+  - path: gateway_plugins_patch.yaml
 
 images:
 - name: busybox
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/busybox
   newTag: stable
-- name: gateway-plugins
+- name: aibrix/gateway-plugins
   newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins
   newTag: nightly

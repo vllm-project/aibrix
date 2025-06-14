@@ -82,6 +82,50 @@ var _ = Describe("Pod", func() {
 
 		Expect(modified).To(Equal(expected))
 	})
+
+	Describe("DeploymentNameFromPod", func() {
+
+		It("should DeploymentNameFromPod return correct deployment name from pod labels", func() {
+			pod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						DeploymentIdentifier: "test-deployment",
+					},
+				},
+			}
+			expected := "test-deployment"
+			result := DeploymentNameFromPod(pod)
+			Expect(result).To(Equal(expected))
+		})
+
+		It("should DeploymentNameFromPod return correct deployment name from ReplicaSet ownerReferences", func() {
+			pod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "ReplicaSet",
+							Name: "mock-llama2-7b-754558b67c",
+						},
+					},
+				},
+			}
+			expected := "mock-llama2-7b"
+			result := DeploymentNameFromPod(pod)
+			Expect(result).To(Equal(expected))
+		})
+
+		It("should DeploymentNameFromPod return empty string if no valid source found", func() {
+			pod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:          map[string]string{},
+					OwnerReferences: []metav1.OwnerReference{},
+				},
+			}
+			expected := ""
+			result := DeploymentNameFromPod(pod)
+			Expect(result).To(Equal(expected))
+		})
+	})
 })
 
 func TestModePortForPod(t *testing.T) {

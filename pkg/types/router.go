@@ -23,6 +23,14 @@ type Router interface {
 	Route(ctx *RoutingContext, readyPodList PodList) (string, error)
 }
 
+// FallbackRouter enables router chaining by set a fallback router.
+type FallbackRouter interface {
+	Router
+
+	// SetFallback sets the fallback router
+	SetFallback(RoutingAlgorithm, RouterProviderFunc)
+}
+
 // RouterProvider provides a stateful way to get a router, allowing a struct to provide the router by strategy and model.
 type RouterProvider interface {
 	// GetRouter returns the router

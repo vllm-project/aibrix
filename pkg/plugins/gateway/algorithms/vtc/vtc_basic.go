@@ -55,7 +55,7 @@ var (
 
 // BasicVTCRouter implements the VTC routing algorithm
 type BasicVTCRouter struct {
-	cache          cache.Cache
+	cache          cache.MetricCache
 	tokenTracker   TokenTracker
 	tokenEstimator TokenEstimator
 	config         *VTCConfig

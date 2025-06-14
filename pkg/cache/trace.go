@@ -37,9 +37,8 @@ const (
 	RequestTraceNumMetaKeys // Guardian for the number of RequestTraceMetaKey. This is not a actual meta key.
 )
 
-var (
-	enableGPUOptimizerTracing = getGPUOptimizerTracingFlag()
-)
+// enableGPUOptimizerTracing is a flag to enable tracing GPU optimizer, default false
+var enableGPUOptimizerTracing = getGPUOptimizerTracingFlag()
 
 func getGPUOptimizerTracingFlag() bool {
 	value := utils.LoadEnv("AIBRIX_GPU_OPTIMIZER_TRACING_FLAG", "false")
@@ -142,8 +141,6 @@ func (t *RequestTrace) DoneRequestTrace(requestID string, inputTokens, outputTok
 	if key != "" {
 		t.addRequestTraceLocked(key)
 	}
-
-	// TODO: Track output stats based on input tokens
 	return key, true
 }
 

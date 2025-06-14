@@ -1,3 +1,5 @@
+//go:build !race
+
 /*
 Copyright 2024 The Aibrix Team.
 
@@ -28,6 +30,7 @@ import (
 	. "github.com/onsi/gomega"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -102,12 +105,16 @@ func newCache() *Store {
 	}
 }
 
-func newTraceCache() *Store {
+func newTraceCache() (store *Store, reset func()) {
+	oldFloag := enableGPUOptimizerTracing
 	enableGPUOptimizerTracing = true
+	reset = func() {
+		enableGPUOptimizerTracing = oldFloag
+	}
 	return &Store{
 		initialized:  true,
 		requestTrace: &utils.SyncMap[string, *RequestTrace]{},
-	}
+	}, reset
 }
 
 func TestCache(t *testing.T) {
@@ -139,6 +146,18 @@ func (c *lagacyCache) AddRequestTrace(modelName string, inputTokens, outputToken
 	}
 
 	c.requestTrace[modelName][fmt.Sprintf("%v:%v", inputIndex, outputIndex)] += 1
+}
+
+type testRouter struct {
+	Model string
+}
+
+func (r *testRouter) Route(_ *types.RoutingContext, _ types.PodList) (string, error) {
+	return "addr", nil
+}
+
+func testModelRouterProvider(modelName string) (types.Router, error) {
+	return &testRouter{Model: modelName}, nil
 }
 
 var _ = Describe("Cache", func() {
@@ -413,6 +432,15 @@ var _ = Describe("Cache", func() {
 		Expect(exist).To(BeTrue())
 	})
 
+	It("if set modelRouterProvider, should cache being used as a model router manager", func() {
+		store := InitWithModelRouterProvider(NewForTest(), testModelRouterProvider)
+		store.addPod(getReadyPod("p1", "default", "m1", 0))
+		metaModel, exist := store.metaModels.Load("m1")
+		Expect(exist).To(BeTrue())
+		Expect(metaModel.QueueRouter).ToNot(BeNil())
+		Expect(metaModel.QueueRouter).To(BeAssignableToTypeOf(&testRouter{}))
+	})
+
 	It("should GetPod return k8s pod", func() {
 		cache := newCache()
 		pod := getReadyPod("p1", "default", "m1", 0)
@@ -492,8 +520,15 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should basic add request count, add request trace no err", func() {
+		oldFloag := enableGPUOptimizerTracing
+		enableGPUOptimizerTracing = true
+		defer func() {
+			enableGPUOptimizerTracing = oldFloag
+		}()
+
 		modelName := "llama-7b"
-		cache := newTraceCache()
+		cache, reset := newTraceCache()
+		defer reset()
 		cache.AddPod(getReadyPod("p1", "default", modelName, 0))
 
 		term := cache.AddRequestCount(nil, "no use now", modelName)
@@ -526,7 +561,8 @@ var _ = Describe("Cache", func() {
 
 	It("should global pending counter return 0.", func() {
 		modelName := "llama-7b"
-		cache := newTraceCache()
+		cache, reset := newTraceCache()
+		defer reset()
 		cache.AddPod(getReadyPod("p1", "default", modelName, 0))
 
 		total := 100000
@@ -571,7 +607,8 @@ func BenchmarkLagacyAddRequestTrace(b *testing.B) {
 }
 
 func BenchmarkAddRequest(b *testing.B) {
-	cache := newTraceCache()
+	cache, reset := newTraceCache()
+	defer reset()
 	thread := 10
 	var wg sync.WaitGroup
 	for i := 0; i < thread; i++ {
@@ -587,7 +624,8 @@ func BenchmarkAddRequest(b *testing.B) {
 }
 
 func BenchmarkDoneRequest(b *testing.B) {
-	cache := newTraceCache()
+	cache, reset := newTraceCache()
+	defer reset()
 	thread := 10
 	var wg sync.WaitGroup
 	term := cache.AddRequestCount(nil, "no use now", "model")
@@ -604,7 +642,8 @@ func BenchmarkDoneRequest(b *testing.B) {
 }
 
 func BenchmarkDoneRequestTrace(b *testing.B) {
-	cache := newTraceCache()
+	cache, reset := newTraceCache()
+	defer reset()
 	thread := 10
 	var wg sync.WaitGroup
 	term := cache.AddRequestCount(nil, "no use now", "model")

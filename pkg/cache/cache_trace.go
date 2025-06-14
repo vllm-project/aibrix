@@ -30,6 +30,7 @@ import (
 
 const (
 	expireWriteRequestTraceIntervalInMins = 10
+	traceLogInterval                      = 1 * time.Second
 )
 
 func (c *Store) getRequestTrace(modelName string) *RequestTrace {
@@ -48,15 +49,35 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 		return
 	}
 	pod := ctx.TargetPod()
-	key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-	metaPod, ok := c.metaPods.Load(key)
+	metaPod, ok := c.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
 	if !ok {
 		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
 		return
 	}
+
+	// Update running requests
 	requests := atomic.AddInt32(&metaPod.runningRequests, 1)
-	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
-		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNumRequestsRunning, pod.Name, requestID)
+	if err := c.updatePodRecord(metaPod, "", metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
+		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s, err: %v", metrics.RealtimeNumRequestsRunning, metaPod.Name, requestID, err)
+	}
+
+	// Update pending load
+	var utilization float64
+	if c.pendingLoadProvider != nil {
+		var err error
+		ctx.PendingLoad, err = c.pendingLoadProvider.GetConsumption(ctx, pod)
+		if err == nil {
+			utilization = metaPod.pendingLoadUtilization.Add(ctx.PendingLoad)
+			if c.updatePodRecord(metaPod, "", metrics.RealtimeNormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization}) != nil {
+				klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s, err: %v", metrics.RealtimeNormalizedPendings, metaPod.Name, requestID, err)
+			}
+		} else if !IsError(err, ErrorMissingProfile) { // ErrorMissingProfile is not considered as an error here and should be reported where the profile is essential.
+			klog.Errorf("error on track request load consumption: %v", err)
+		}
+	}
+
+	if metaPod.CanLogPodTrace(5) {
+		klog.V(4).InfoS("pod stats updated (addPodStats).", "pod", metaPod.Name, "requestID", ctx.RequestID, "running_requests", requests, "pending_util", utilization, "pending_load", ctx.PendingLoad)
 	}
 }
 
@@ -67,15 +88,36 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 	pod := ctx.TargetPod()
 
 	// Now that pendingLoadProvider must be set.
-	key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-	metaPod, ok := c.metaPods.Load(key)
+	metaPod, ok := c.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
 	if !ok {
 		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
 		return
 	}
+
+	// Update running requests
 	requests := atomic.AddInt32(&metaPod.runningRequests, -1)
 	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
 		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNumRequestsRunning, pod.Name, requestID)
+	}
+
+	// Update pending load
+	var utilization float64
+	if ctx.PendingLoad != 0.0 {
+		utilization = metaPod.pendingLoadUtilization.Add(-ctx.PendingLoad)
+		if c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization}) != nil {
+			klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNormalizedPendings, pod.Name, requestID)
+		}
+		if utilization < c.pendingLoadProvider.Cap() {
+			// Notify queue router to try route with pending requests.
+			if metaModel, ok := c.metaModels.Load(ctx.Model); ok && metaModel.QueueRouter != nil {
+				// nolint: errcheck
+				metaModel.QueueRouter.Route(nil, metaModel.Pods.Array())
+			}
+		}
+	}
+
+	if metaPod.CanLogPodTrace(5) {
+		klog.V(4).InfoS("pod stats updated (donePodStats).", "pod", metaPod.Name, "requestID", ctx.RequestID, "running_requests", requests, "pending_util", utilization, "pending_load", ctx.PendingLoad)
 	}
 }
 
