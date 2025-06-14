@@ -64,8 +64,8 @@ OUTPUT_FILE=throughput.jsonl ROUTING_STRATEGY=throughput locust -f benchmark.py 
 ## Local Testing
 
 ```bash
-make docker-build-plugins
-aibrix/plugins:9bd45a9915b71936ff0001a6fbfc32f10b65e480
+make docker-build-gateway-plugins
+aibrix/gateway-plugins:9bd45a9915b71936ff0001a6fbfc32f10b65e480
 
 k edit deployment aibrix-gateway-plugins
 

@@ -47,10 +47,10 @@ Navigate to the cloned directory and run:
 make build
 ```
 
-Build and push your image to the location specified by `IMG`:
+Build and push your images to the registry location specified by `AIBRIX_CONTAINER_REGISTRY_NAMESPACE`:
 
 ```sh
-make docker-build docker-push IMG=<some-registry>/aibrix:tag
+make docker-build-all docker-push-all AIBRIX_CONTAINER_REGISTRY_NAMESPACE=<some-registry>
 ```
 
 > **NOTE:** This image ought to be published in the personal registry you specified.
@@ -67,16 +67,16 @@ make install
 
 ### Deploy the Manager to Kubernetes
 
-Deploy the Manager to your cluster using the `IMG` environment variable to specify the image:
+Deploy the Manager to your cluster using the `AIBRIX_CONTAINER_REGISTRY_NAMESPACE` environment variable to specify the image:
 
 ```sh
-make deploy IMG=<some-registry>/aibrix:tag
+make deploy AIBRIX_CONTAINER_REGISTRY_NAMESPACE=<some-registry>
 ```
 
 If you prefer local testing and do not want to push the image to a remote DockerHub, you can specify any name, such as:
 
 ```sh
-make deploy IMG=example.com/aibrix:v1
+make deploy AIBRIX_CONTAINER_REGISTRY_NAMESPACE=example.com
 ```
 
 > **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin privileges or be logged in as admin.
@@ -134,7 +134,7 @@ Following are the steps to build the installer and distribute this project to us
 1. Build the installer for the image built and published in the registry:
 
 ```sh
-make build-installer IMG=<some-registry>/aibrix:tag
+make build-installer AIBRIX_CONTAINER_REGISTRY_NAMESPACE=<some-registry>
 ```
 
 NOTE: The makefile target mentioned above generates an 'install.yaml' file in the dist directory. This file contains all the resources built with Kustomize, which are necessary to install this project without its dependencies.
