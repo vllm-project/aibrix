@@ -22,7 +22,7 @@ class KeyBuilder(ABC):
     @abstractmethod
     def build(
         self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Tuple[Tuple[Sequence[int], str | bytes], ...]:
+    ) -> Tuple[Tuple[Tuple[int, ...], bytes], ...]:
         """Build a sequence of keys from given tokens.
         Args:
             prefix (Sequence[int] | None): prefix tokens

@@ -34,12 +34,17 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_CHUNK_SIZE: int = 512
     AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED: bool = True
     AIBRIX_KV_CACHE_OL_BREAKDOWN_MEASUREMENT_ENABLED: bool = True
+    # Whether to validate the token in L2 cache. Defaults to False.
+    #
+    # Note:
+    # If disabled, we will use a tight memory layout for both L1 and L2
+    # cache. I.e., we will not pack tokens in the cache entry.
+    AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED: bool = False
 
     AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED: bool = True
     AIBRIX_KV_CACHE_OL_L1_CACHE_EVICTION_POLICY: str = "S3FIFO"
     AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB: float = 10
     AIBRIX_KV_CACHE_OL_DEVICE: str = "cpu"
-    AIBRIX_KV_CACHE_OL_L1_CACHE_EVICT_SIZE: int = 16
 
     # S3FIFO Env Vars
     AIBRIX_KV_CACHE_OL_S3FIFO_SMALL_TO_MAIN_PROMO_THRESHOLD: int = 1
@@ -144,6 +149,12 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
         .lower()
         in ("1", "true")
     ),
+    "AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED", "0")
+        .strip()
+        .lower()
+        in ("1", "true")
+    ),
     # ================== L1Cache Env Vars ==================
     "AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED", "1").strip().lower()
@@ -159,9 +170,6 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     ),
     "AIBRIX_KV_CACHE_OL_DEVICE": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_DEVICE", "cpu").strip().lower()
-    ),
-    "AIBRIX_KV_CACHE_OL_L1_CACHE_EVICT_SIZE": lambda: int(
-        os.getenv("AIBRIX_KV_CACHE_OL_L1_CACHE_EVICT_SIZE", "16")
     ),
     # ================== S3FIFO Env Vars ==================
     # Promotion threshold of small fifo to main fifo

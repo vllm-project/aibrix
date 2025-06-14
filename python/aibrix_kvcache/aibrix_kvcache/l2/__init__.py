@@ -13,9 +13,8 @@
 # limitations under the License.
 
 from .key_builders import (
-    HexKeyBuilder,
+    FarmHasher,
     MD5Hasher,
-    RawKeyBuilder,
     RollingHashKeyBuilder,
     SimpleHashKeyBuilder,
 )
@@ -24,8 +23,7 @@ from .marshallers import StringSerializer, TensorSerializer, ZstdCompressor
 
 __all__ = [
     "MD5Hasher",
-    "HexKeyBuilder",
-    "RawKeyBuilder",
+    "FarmHasher",
     "RollingHashKeyBuilder",
     "SimpleHashKeyBuilder",
     "L2Cache",

@@ -12,40 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Hashable
-
-from ...memory import RefCountedObj
+from ...cache_hashable import KVCacheHashable
+from ...memory import MemoryRegion
 from ...status import Status, StatusCodes
 from .base_eviction_policy import (
     BaseEvictionPolicy,
     BaseEvictionPolicyNode,
     Functor,
-    V,
 )
 
 
-class LRUNode(BaseEvictionPolicyNode[V]):
+class LRUNode(BaseEvictionPolicyNode):
     __slots__ = ("next", "prev")
 
-    def __init__(self, key: Hashable, value: V):
+    def __init__(self, key: KVCacheHashable, value: MemoryRegion):
         super().__init__(key, value)
         self.next: LRUNode | None = None
         self.prev: LRUNode | None = None
 
 
-class LRU(BaseEvictionPolicy[LRUNode, V]):
+class LRU(BaseEvictionPolicy[LRUNode]):
     def __init__(
         self,
-        capacity: int,
-        evict_size: int = 1,
+        capacity_nbytes: int,
         on_put: Functor | None = None,
         on_evict: Functor | None = None,
         on_hot_access: Functor | None = None,
     ) -> None:
         super().__init__(
             name="LRU",
-            capacity=capacity,
-            evict_size=evict_size,
+            capacity_nbytes=capacity_nbytes,
             on_put=on_put,
             on_evict=on_evict,
             on_hot_access=on_hot_access,
@@ -55,16 +51,15 @@ class LRU(BaseEvictionPolicy[LRUNode, V]):
 
     def put(
         self,
-        key: Hashable,
-        value: V,
+        key: KVCacheHashable,
+        value: MemoryRegion,
     ) -> Status:
         if key in self._hashmap:
             node = self._hashmap[key]
 
-            if node.value is not None:
-                if isinstance(node.value, RefCountedObj):
-                    node.value.ref_down()
-                node.value = None
+            node_value_len = len(node.value)
+            node.value.ref_down()
+            usage = len(value) - node_value_len
 
             node.value = value
             node.hotness = 0
@@ -75,59 +70,59 @@ class LRU(BaseEvictionPolicy[LRUNode, V]):
             node = LRUNode(key, value)
             self._hashmap[key] = node
             self._prepend_to_head(node)
+            usage = len(value)
             if self._on_put is not None:
-                if isinstance(node.value, RefCountedObj):
-                    node.value.ref_up()
-                self._on_put(node.key, node.value)
+                value.ref_up()
+                self._on_put(key, value)
 
-        if len(self) > self._capacity:
-            self.evict(self.evict_size)
+        self._used_nbytes += usage
+
+        if len(self) > self._capacity_nbytes:
+            self.evict()
 
         return Status.ok()
 
     def get(
         self,
-        key: Hashable,
-    ) -> Status[V]:
+        key: KVCacheHashable,
+    ) -> Status[MemoryRegion]:
         if key not in self._hashmap:
             return Status(StatusCodes.NOT_FOUND)
 
         node = self._hashmap[key]
+        mr = node.value
 
         # The item becomes hot after the first access
         if node.hotness == 0 and self._on_hot_access:
-            if isinstance(node.value, RefCountedObj):
-                node.value.ref_up()
-            self._on_hot_access(node.key, node.value)
+            mr.ref_up()
+            self._on_hot_access(key, mr)
 
         self._remove_from_list(node)
         self._prepend_to_head(node)
 
         node.hotness = 1
-        if isinstance(node.value, RefCountedObj):
-            node.value.ref_up()
-        return Status.ok(node.value)
+        mr.ref_up()
+        return Status.ok(mr)
 
-    def delete(self, key: Hashable) -> Status:
+    def delete(self, key: KVCacheHashable) -> Status:
         node = self._hashmap.pop(key, None)
         if node:
+            self._used_nbytes -= len(node.value)
             self._remove_from_list(node)
-
-            if node.value is not None:
-                if isinstance(node.value, RefCountedObj):
-                    node.value.ref_down()
-                node.value = None
+            node.value.ref_down()
 
         return Status.ok()
 
-    def evict(self, size: int = 1) -> Status:
-        for _ in range(size):
+    def evict(self, nbytes: int = 1) -> Status:
+        target_usage = max(0, min(len(self), self.capacity_nbytes) - nbytes)
+        while len(self) > target_usage:
             if not self._tail:
                 break
             if self._on_evict:
-                if isinstance(self._tail.value, RefCountedObj):
-                    self._tail.value.ref_up()
-                self._on_evict(self._tail.key, self._tail.value)
+                key = self._tail.key
+                mr = self._tail.value
+                mr.ref_up()
+                self._on_evict(key, mr)
             evicted_node = self._tail
             self.delete(evicted_node.key)
 
