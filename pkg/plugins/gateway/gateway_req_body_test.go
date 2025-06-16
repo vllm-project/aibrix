@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -148,37 +147,84 @@ func TestHandleRequestBody(t *testing.T) {
 
 	tests := []TestCase{
 		{
-			name:        "invalid request body",
-			requestBody: `{"invalid": "json"`,
+			name:        "no routing strategy - should only set model header",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
 			user: utils.User{
 				Name: "test-user",
 			},
-			routingAlgo: RouterNotSet,
+			routingAlgo: "", // No routing strategy
+			mockSetup: func(mockCache *MockCache, _ *MockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				podList := &MockPodList{
+					pods: []*v1.Pod{
+						{
+							Status: v1.PodStatus{
+								PodIP: "1.2.3.4",
+								Conditions: []v1.PodCondition{
+									{
+										Type:   v1.PodReady,
+										Status: v1.ConditionTrue,
+									},
+								},
+							},
+						},
+						{
+							Status: v1.PodStatus{
+								PodIP: "4.5.6.7",
+								Conditions: []v1.PodCondition{
+									{
+										Type:   v1.PodReady,
+										Status: v1.ConditionTrue,
+									},
+								},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
+			},
 			expected: TestResponse{
-				statusCode: envoyTypePb.StatusCode_BadRequest,
-				model:      "",
+				statusCode: envoyTypePb.StatusCode_OK,
+				headers: []*configPb.HeaderValueOption{
+					{
+						Header: &configPb.HeaderValue{
+							Key:      HeaderModel,
+							RawValue: []byte("test-model"),
+						},
+					},
+				},
+				model:      "test-model",
 				stream:     false,
-				term:       0,
-				routingCtx: nil,
+				term:       1,
+				routingCtx: &types.RoutingContext{},
 			},
 			validate: func(t *testing.T, tt *TestCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
-				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
+				assert.Equal(t, tt.expected.headers, resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders())
 				assert.Equal(t, tt.expected.model, model)
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
-				assert.Nil(t, routingCtx)
+				assert.NotNil(t, routingCtx)
+				assert.Equal(t, tt.expected.model, routingCtx.Model)
+				assert.Equal(t, tt.routingAlgo, routingCtx.Algorithm)
+				// Verify no routing headers are set
+				for _, header := range resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+					assert.NotEqual(t, HeaderRoutingStrategy, header.Header.Key)
+					assert.NotEqual(t, HeaderTargetPod, header.Header.Key)
+				}
 			},
 			checkStream: false,
 		},
 		{
-			name:        "model not in cache",
-			requestBody: `{"model": "non-existent-model", "messages": [{"role": "user", "content": "test"}]}`,
+			name:        "model not in cache - should return error",
+			requestBody: `{"model": "unknown-model", "messages": [{"role": "user", "content": "test"}]}`,
 			user: utils.User{
 				Name: "test-user",
 			},
-			routingAlgo: RouterNotSet,
-			mockSetup: func(m *MockCache, _ *MockRouter) {
-				m.On("HasModel", "non-existent-model").Return(false)
+			routingAlgo: "", // No routing strategy needed for this test
+			mockSetup: func(mockCache *MockCache, _ *MockRouter) {
+				mockCache.On("HasModel", "unknown-model").Return(false)
 			},
 			expected: TestResponse{
 				statusCode: envoyTypePb.StatusCode_BadRequest,
@@ -186,7 +232,7 @@ func TestHandleRequestBody(t *testing.T) {
 					{
 						Header: &configPb.HeaderValue{
 							Key:      HeaderErrorNoModelBackends,
-							RawValue: []byte("non-existent-model"),
+							RawValue: []byte("unknown-model"),
 						},
 					},
 					{
@@ -196,7 +242,7 @@ func TestHandleRequestBody(t *testing.T) {
 						},
 					},
 				},
-				model:      "non-existent-model",
+				model:      "unknown-model",
 				stream:     false,
 				term:       0,
 				routingCtx: nil,
@@ -212,7 +258,7 @@ func TestHandleRequestBody(t *testing.T) {
 			checkStream: false,
 		},
 		{
-			name:        "successful request with test router",
+			name:        "valid routing strategy - should set both routing and target pod headers",
 			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
 			user: utils.User{
 				Name: "test-user",
@@ -256,7 +302,7 @@ func TestHandleRequestBody(t *testing.T) {
 					{
 						Header: &configPb.HeaderValue{
 							Key:      HeaderRoutingStrategy,
-							RawValue: []byte(string(TestRouterAlgorithm)),
+							RawValue: []byte("test-router"),
 						},
 					},
 					{
@@ -280,17 +326,33 @@ func TestHandleRequestBody(t *testing.T) {
 				assert.NotNil(t, routingCtx)
 				assert.Equal(t, tt.expected.model, routingCtx.Model)
 				assert.Equal(t, tt.routingAlgo, routingCtx.Algorithm)
+				// Verify both routing headers are set
+				foundRoutingStrategy := false
+				foundTargetPod := false
+				for _, header := range resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+					if header.Header.Key == HeaderRoutingStrategy {
+						foundRoutingStrategy = true
+						assert.Equal(t, "test-router", string(header.Header.RawValue))
+					}
+					if header.Header.Key == HeaderTargetPod {
+						foundTargetPod = true
+						assert.Equal(t, "1.2.3.4:8000", string(header.Header.RawValue))
+					}
+				}
+				assert.True(t, foundRoutingStrategy, "HeaderRoutingStrategy not found")
+				assert.True(t, foundTargetPod, "HeaderTargetPod not found")
 			},
 			checkStream: false,
 		},
 		{
-			name:        "selectTargetPod returns error",
+			name:        "invalid routing strategy - should fallback to random router",
 			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
 			user: utils.User{
 				Name: "test-user",
 			},
-			routingAlgo: TestRouterAlgorithm,
-			mockSetup: func(mockCache *MockCache, mockRouter *MockRouter) {
+			routingAlgo: "invalid-router", // Invalid routing strategy
+			mockSetup: func(mockCache *MockCache, _ *MockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
 				podList := &MockPodList{
 					pods: []*v1.Pod{
 						{
@@ -306,7 +368,7 @@ func TestHandleRequestBody(t *testing.T) {
 						},
 						{
 							Status: v1.PodStatus{
-								PodIP: "4.5.6.7",
+								PodIP: "5.6.7.8",
 								Conditions: []v1.PodCondition{
 									{
 										Type:   v1.PodReady,
@@ -317,16 +379,102 @@ func TestHandleRequestBody(t *testing.T) {
 						},
 					},
 				}
-				mockCache.On("HasModel", "test-model").Return(true)
 				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
-				mockRouter.On("Route", mock.Anything, mock.Anything).Return("", fmt.Errorf("routing error")).Once()
+				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
+			},
+			expected: TestResponse{
+				statusCode: envoyTypePb.StatusCode_OK,
+				headers: []*configPb.HeaderValueOption{
+					{
+						Header: &configPb.HeaderValue{
+							Key:      HeaderRoutingStrategy,
+							RawValue: []byte("invalid-router"),
+						},
+					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:      HeaderTargetPod,
+							RawValue: []byte("1.2.3.4:8000"),
+						},
+					},
+				},
+				model:      "test-model",
+				stream:     false,
+				term:       1,
+				routingCtx: &types.RoutingContext{},
+			},
+			validate: func(t *testing.T, tt *TestCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
+				assert.Equal(t, tt.expected.headers, resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders())
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+				assert.NotNil(t, routingCtx)
+				assert.Equal(t, tt.expected.model, routingCtx.Model)
+				assert.Equal(t, tt.routingAlgo, routingCtx.Algorithm)
+				// Verify both routing headers are set
+				foundRoutingStrategy := false
+				foundTargetPod := false
+				for _, header := range resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+					if header.Header.Key == HeaderRoutingStrategy {
+						foundRoutingStrategy = true
+						assert.Equal(t, "invalid-router", string(header.Header.RawValue))
+					}
+					if header.Header.Key == HeaderTargetPod {
+						foundTargetPod = true
+						assert.Equal(t, "1.2.3.4:8000", string(header.Header.RawValue))
+					}
+				}
+				assert.True(t, foundRoutingStrategy, "HeaderRoutingStrategy not found")
+				assert.True(t, foundTargetPod, "HeaderTargetPod not found")
+			},
+			checkStream: false,
+		},
+		{
+			name:        "no routable pods available - should return ServiceUnavailable",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "", // No routing strategy needed for this test
+			mockSetup: func(mockCache *MockCache, _ *MockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				// Create pods that exist but are not routable (not ready)
+				podList := &MockPodList{
+					pods: []*v1.Pod{
+						{
+							Status: v1.PodStatus{
+								PodIP: "1.2.3.4",
+								Conditions: []v1.PodCondition{
+									{
+										Type:   v1.PodReady,
+										Status: v1.ConditionFalse, // Not ready
+									},
+								},
+							},
+						},
+						{
+							Status: v1.PodStatus{
+								PodIP: "5.6.7.8",
+								Conditions: []v1.PodCondition{
+									{
+										Type:   v1.PodReady,
+										Status: v1.ConditionFalse, // Not ready
+									},
+								},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				// No AddRequestCount expectation since the function should return early with error
 			},
 			expected: TestResponse{
 				statusCode: envoyTypePb.StatusCode_ServiceUnavailable,
 				headers: []*configPb.HeaderValueOption{
 					{
 						Header: &configPb.HeaderValue{
-							Key:      HeaderErrorRouting,
+							Key:      HeaderErrorNoModelBackends,
 							RawValue: []byte("true"),
 						},
 					},
@@ -340,18 +488,74 @@ func TestHandleRequestBody(t *testing.T) {
 				model:      "test-model",
 				stream:     false,
 				term:       0,
-				routingCtx: &types.RoutingContext{},
+				routingCtx: nil,
 			},
 			validate: func(t *testing.T, tt *TestCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
 				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
-				newVar := resp.GetImmediateResponse().GetHeaders()
-				assert.Equal(t, tt.expected.headers, newVar.GetSetHeaders())
+				assert.Equal(t, tt.expected.headers, resp.GetImmediateResponse().GetHeaders().GetSetHeaders())
 				assert.Equal(t, tt.expected.model, model)
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
-				assert.NotNil(t, routingCtx)
-				assert.Equal(t, tt.expected.model, routingCtx.Model)
-				assert.Equal(t, tt.routingAlgo, routingCtx.Algorithm)
+				assert.Nil(t, routingCtx)
+			},
+			checkStream: false,
+		},
+		{
+			name:        "routable pod without IP - should return ServiceUnavailable",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "", // No routing strategy needed for this test
+			mockSetup: func(mockCache *MockCache, _ *MockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				// Create pods that exist but are not routable (not ready)
+				podList := &MockPodList{
+					pods: []*v1.Pod{
+						{
+							Status: v1.PodStatus{
+								PodIP: "",
+								Conditions: []v1.PodCondition{
+									{
+										Type:   v1.PodReady,
+										Status: v1.ConditionTrue, // Not ready
+									},
+								},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				// No AddRequestCount expectation since the function should return early with error
+			},
+			expected: TestResponse{
+				statusCode: envoyTypePb.StatusCode_ServiceUnavailable,
+				headers: []*configPb.HeaderValueOption{
+					{
+						Header: &configPb.HeaderValue{
+							Key:      HeaderErrorNoModelBackends,
+							RawValue: []byte("true"),
+						},
+					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:   "Content-Type",
+							Value: "application/json",
+						},
+					},
+				},
+				model:      "test-model",
+				stream:     false,
+				term:       0,
+				routingCtx: nil,
+			},
+			validate: func(t *testing.T, tt *TestCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				assert.Equal(t, tt.expected.headers, resp.GetImmediateResponse().GetHeaders().GetSetHeaders())
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+				assert.Nil(t, routingCtx)
 			},
 			checkStream: false,
 		},
@@ -360,6 +564,14 @@ func TestHandleRequestBody(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt // Create new variable for each test case
 		t.Run(tt.name, func(t *testing.T) {
+			// Add panic recovery for subtests too
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("Subtest %v panicked: %v", tt.name, r)
+					t.FailNow()
+				}
+			}()
+
 			// Initialize mock cache and router
 			mockCache := new(MockCache)
 			mockRouter := new(MockRouter)
@@ -367,12 +579,13 @@ func TestHandleRequestBody(t *testing.T) {
 				tt.mockSetup(mockCache, mockRouter)
 			}
 
-			// Register mock router for this test case
-			mockRouterProvider := func(ctx *types.RoutingContext) (types.Router, error) {
-				return mockRouter, nil
+			// Register mock router for this test case if needed
+			if tt.routingAlgo != "" && tt.routingAlgo != "not-set" && tt.routingAlgo != "invalid-router" {
+				mockRouterProvider := func(ctx *types.RoutingContext) (types.Router, error) {
+					return mockRouter, nil
+				}
+				routingalgorithms.Register(tt.routingAlgo, mockRouterProvider)
 			}
-			// Only register for the test algorithm
-			routingalgorithms.Register(tt.routingAlgo, mockRouterProvider)
 
 			// Create server with mock cache
 			server := &Server{
