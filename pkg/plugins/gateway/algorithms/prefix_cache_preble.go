@@ -31,18 +31,25 @@ import (
 )
 
 var (
-	RouterPrefixCacheAndLoad types.RoutingAlgorithm = "prefix-cache-preble"
+	RouterPrefixCachePreble types.RoutingAlgorithm = "prefix-cache-preble"
 )
 
 func init() {
-	Register(RouterPrefixCacheAndLoad, NewPrefixCacheAndLoadRouter)
+	Register(RouterPrefixCachePreble, NewPrefixCacheAndLoadRouter)
 }
 
 const (
-	defaultDecodingLength = 45                      // FIXME: decode length is hardcoded. Preble as well.
-	slidingWindowPeriod   = 3 * time.Minute         // NOTE: hardcoded
-	evictionLoopInterval  = 1000 * time.Millisecond // NOTE: hardcoded
-	targetGPU             = "V100"                  // A6000 // FIXME: make it configurable
+	PREBLE_TARGET_GPU             = "AIBRIX_ROUTER_PREBLE_TARGET_GPU"
+	PREBLE_DECODING_LENGTH        = "AIBRIX_ROUTER_PREBLE_DECODING_LENGTH"
+	PREBLE_SLIDING_WINDOW_PERIOD  = "AIBRIX_ROUTER_PREBLE_SLIDING_WINDOW_PERIOD"
+	PREBLE_EVICTION_LOOP_INTERVAL = "AIBRIX_ROUTER_PREBLE_EVICTION_LOOP_INTERVAL"
+)
+
+var (
+	targetGPU            = utils.LoadEnv(PREBLE_TARGET_GPU, "V100")
+	decodingLength       = utils.LoadEnvInt(PREBLE_DECODING_LENGTH, 45)
+	slidingWindowPeriod  = time.Duration(utils.LoadEnvInt(PREBLE_SLIDING_WINDOW_PERIOD, 3)) * time.Minute
+	evictionLoopInterval = time.Duration(utils.LoadEnvInt(PREBLE_EVICTION_LOOP_INTERVAL, 1000)) * time.Millisecond
 )
 
 type SlidingWindowHistogram struct {
@@ -552,7 +559,7 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 		currentNode = currentNode.GetParent()
 	}
 
-	p.histogram.update(time.Now(), node, node, targetPod.Name, defaultDecodingLength)
+	p.histogram.update(time.Now(), node, node, targetPod.Name, decodingLength)
 
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
