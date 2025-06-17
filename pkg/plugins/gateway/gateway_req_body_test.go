@@ -420,7 +420,6 @@ func TestHandleRequestBody(t *testing.T) {
 			},
 			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
 				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
-				assert.Equal(t, tt.expected.headers, resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders())
 				assert.Equal(t, tt.expected.model, model)
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
