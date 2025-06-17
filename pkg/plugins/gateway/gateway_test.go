@@ -169,7 +169,7 @@ func Test_selectTargetPod(t *testing.T) {
 				},
 			}}},
 			mockSetup: func(mockRouter *MockRouter, algo types.RoutingAlgorithm) {
-				routing.Register(algo, func(ctx *types.RoutingContext) (types.Router, error) {
+				routing.Register(algo, func() (types.Router, error) {
 					return nil, fmt.Errorf("routing select error")
 				})
 			},
@@ -179,7 +179,7 @@ func Test_selectTargetPod(t *testing.T) {
 			name: "no pods available",
 			pods: &MockPodList{pods: []*v1.Pod{}},
 			mockSetup: func(m *MockRouter, algo types.RoutingAlgorithm) {
-				routing.Register(algo, func(ctx *types.RoutingContext) (types.Router, error) {
+				routing.Register(algo, func() (types.Router, error) {
 					return m, nil
 				})
 				// No expectations needed as pods.Len() == 0
@@ -195,7 +195,7 @@ func Test_selectTargetPod(t *testing.T) {
 				},
 			}}},
 			mockSetup: func(mockRouter *MockRouter, algo types.RoutingAlgorithm) {
-				routing.Register(algo, func(ctx *types.RoutingContext) (types.Router, error) {
+				routing.Register(algo, func() (types.Router, error) {
 					return mockRouter, nil
 				})
 				// No expectations needed as no ready pods
@@ -211,7 +211,7 @@ func Test_selectTargetPod(t *testing.T) {
 				},
 			}}},
 			mockSetup: func(mockRouter *MockRouter, algo types.RoutingAlgorithm) {
-				routing.Register(algo, func(ctx *types.RoutingContext) (types.Router, error) {
+				routing.Register(algo, func() (types.Router, error) {
 					return mockRouter, nil
 				})
 				// Explicitly set expectation that Route should not be called
@@ -237,7 +237,7 @@ func Test_selectTargetPod(t *testing.T) {
 				},
 			}},
 			mockSetup: func(mockRouter *MockRouter, algo types.RoutingAlgorithm) {
-				routing.Register(algo, func(ctx *types.RoutingContext) (types.Router, error) {
+				routing.Register(algo, func() (types.Router, error) {
 					return mockRouter, nil
 				})
 				mockRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).Once()
