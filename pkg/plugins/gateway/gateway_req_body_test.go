@@ -1,3 +1,19 @@
+/*
+Copyright 2024 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package gateway
 
 import (
@@ -113,28 +129,6 @@ func (m *MockRouter) Name() string {
 	return "mock-router"
 }
 
-// TestResponse represents the expected response values from HandleRequestBody
-type TestResponse struct {
-	statusCode envoyTypePb.StatusCode
-	headers    []*configPb.HeaderValueOption
-	model      string
-	routingCtx *types.RoutingContext
-	stream     bool
-	term       int64
-}
-
-// TestCase represents a test case with its validation function
-type TestCase struct {
-	name        string
-	requestBody string
-	user        utils.User
-	routingAlgo types.RoutingAlgorithm
-	mockSetup   func(*MockCache, *MockRouter)
-	expected    TestResponse
-	validate    func(*testing.T, *TestCase, *extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64)
-	checkStream bool
-}
-
 func TestHandleRequestBody(t *testing.T) {
 	// Initialize routing algorithms
 	routingalgorithms.Init()
@@ -145,7 +139,28 @@ func TestHandleRequestBody(t *testing.T) {
 		routingalgorithms.Init()
 	}()
 
-	tests := []TestCase{
+	// testResponse represents the expected response values from HandleRequestBody
+	type testResponse struct {
+		statusCode envoyTypePb.StatusCode
+		headers    []*configPb.HeaderValueOption
+		model      string
+		routingCtx *types.RoutingContext
+		stream     bool
+		term       int64
+	}
+
+	// testCase represents a test case with its validation function
+	type testCase struct {
+		name        string
+		requestBody string
+		user        utils.User
+		routingAlgo types.RoutingAlgorithm
+		mockSetup   func(*MockCache, *MockRouter)
+		expected    testResponse
+		validate    func(*testing.T, *testCase, *extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64)
+		checkStream bool
+	}
+	tests := []testCase{
 		{
 			name:        "no routing strategy - should only set model header",
 			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
@@ -184,7 +199,7 @@ func TestHandleRequestBody(t *testing.T) {
 				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
 				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
 			},
-			expected: TestResponse{
+			expected: testResponse{
 				statusCode: envoyTypePb.StatusCode_OK,
 				headers: []*configPb.HeaderValueOption{
 					{
@@ -199,7 +214,7 @@ func TestHandleRequestBody(t *testing.T) {
 				term:       1,
 				routingCtx: &types.RoutingContext{},
 			},
-			validate: func(t *testing.T, tt *TestCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
 				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
 				assert.Equal(t, tt.expected.headers, resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders())
 				assert.Equal(t, tt.expected.model, model)
@@ -226,7 +241,7 @@ func TestHandleRequestBody(t *testing.T) {
 			mockSetup: func(mockCache *MockCache, _ *MockRouter) {
 				mockCache.On("HasModel", "unknown-model").Return(false)
 			},
-			expected: TestResponse{
+			expected: testResponse{
 				statusCode: envoyTypePb.StatusCode_BadRequest,
 				headers: []*configPb.HeaderValueOption{
 					{
@@ -247,7 +262,7 @@ func TestHandleRequestBody(t *testing.T) {
 				term:       0,
 				routingCtx: nil,
 			},
-			validate: func(t *testing.T, tt *TestCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
 				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
 				assert.Equal(t, tt.expected.headers, resp.GetImmediateResponse().GetHeaders().GetSetHeaders())
 				assert.Equal(t, tt.expected.model, model)
@@ -296,7 +311,7 @@ func TestHandleRequestBody(t *testing.T) {
 				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
 				mockRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).Once()
 			},
-			expected: TestResponse{
+			expected: testResponse{
 				statusCode: envoyTypePb.StatusCode_OK,
 				headers: []*configPb.HeaderValueOption{
 					{
@@ -317,7 +332,7 @@ func TestHandleRequestBody(t *testing.T) {
 				term:       1,
 				routingCtx: &types.RoutingContext{},
 			},
-			validate: func(t *testing.T, tt *TestCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
 				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
 				assert.Equal(t, tt.expected.headers, resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders())
 				assert.Equal(t, tt.expected.model, model)
@@ -382,7 +397,7 @@ func TestHandleRequestBody(t *testing.T) {
 				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
 				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
 			},
-			expected: TestResponse{
+			expected: testResponse{
 				statusCode: envoyTypePb.StatusCode_OK,
 				headers: []*configPb.HeaderValueOption{
 					{
@@ -403,7 +418,7 @@ func TestHandleRequestBody(t *testing.T) {
 				term:       1,
 				routingCtx: &types.RoutingContext{},
 			},
-			validate: func(t *testing.T, tt *TestCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
 				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
 				assert.Equal(t, tt.expected.headers, resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders())
 				assert.Equal(t, tt.expected.model, model)
@@ -422,7 +437,9 @@ func TestHandleRequestBody(t *testing.T) {
 					}
 					if header.Header.Key == HeaderTargetPod {
 						foundTargetPod = true
-						assert.Equal(t, "1.2.3.4:8000", string(header.Header.RawValue))
+						// Since this is a random router, accept either valid pod IP from the mock setup
+						targetPodIP := string(header.Header.RawValue)
+						assert.Contains(t, []string{"1.2.3.4:8000", "5.6.7.8:8000"}, targetPodIP, "Target pod IP should be one of the pod IPs from the mock setup")
 					}
 				}
 				assert.True(t, foundRoutingStrategy, "HeaderRoutingStrategy not found")
@@ -469,7 +486,7 @@ func TestHandleRequestBody(t *testing.T) {
 				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
 				// No AddRequestCount expectation since the function should return early with error
 			},
-			expected: TestResponse{
+			expected: testResponse{
 				statusCode: envoyTypePb.StatusCode_ServiceUnavailable,
 				headers: []*configPb.HeaderValueOption{
 					{
@@ -490,7 +507,7 @@ func TestHandleRequestBody(t *testing.T) {
 				term:       0,
 				routingCtx: nil,
 			},
-			validate: func(t *testing.T, tt *TestCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
 				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
 				assert.Equal(t, tt.expected.headers, resp.GetImmediateResponse().GetHeaders().GetSetHeaders())
 				assert.Equal(t, tt.expected.model, model)
@@ -528,7 +545,7 @@ func TestHandleRequestBody(t *testing.T) {
 				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
 				// No AddRequestCount expectation since the function should return early with error
 			},
-			expected: TestResponse{
+			expected: testResponse{
 				statusCode: envoyTypePb.StatusCode_ServiceUnavailable,
 				headers: []*configPb.HeaderValueOption{
 					{
@@ -549,7 +566,7 @@ func TestHandleRequestBody(t *testing.T) {
 				term:       0,
 				routingCtx: nil,
 			},
-			validate: func(t *testing.T, tt *TestCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
 				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
 				assert.Equal(t, tt.expected.headers, resp.GetImmediateResponse().GetHeaders().GetSetHeaders())
 				assert.Equal(t, tt.expected.model, model)
