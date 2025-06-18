@@ -133,11 +133,6 @@ func TestHandleRequestBody(t *testing.T) {
 	// Initialize routing algorithms
 	routingalgorithms.Init()
 
-	// Add cleanup function to reset router registry after test
-	defer func() {
-		// Reset router registry to initial state
-		routingalgorithms.Init()
-	}()
 
 	// testResponse represents the expected response values from HandleRequestBody
 	type testResponse struct {
@@ -601,6 +596,7 @@ func TestHandleRequestBody(t *testing.T) {
 					return mockRouter, nil
 				}
 				routingalgorithms.Register(tt.routingAlgo, mockRouterProvider)
+				routingalgorithms.Init()
 			}
 
 			// Create server with mock cache

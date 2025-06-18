@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -167,11 +168,19 @@ func Test_selectTargetPod(t *testing.T) {
 					PodIP:      "1.2.3.4",
 					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
 				},
+			},
+			{
+				Status: v1.PodStatus{
+					PodIP:      "1.2.3.4",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				},
 			}}},
 			mockSetup: func(mockRouter *MockRouter, algo types.RoutingAlgorithm) {
 				routing.Register(algo, func() (types.Router, error) {
-					return nil, fmt.Errorf("routing select error")
+					return mockRouter, nil
 				})
+				mockRouter.On("Route", mock.Anything, mock.Anything).Return("", errors.New("test error"))
+
 			},
 			expectedError: true,
 		},
@@ -253,6 +262,7 @@ func Test_selectTargetPod(t *testing.T) {
 			routingAlgo := types.RoutingAlgorithm(fmt.Sprintf("test-router-%s", tt.name))
 
 			tt.mockSetup(mockRouter, routingAlgo)
+			routing.Init()
 
 			server := &Server{}
 			ctx := types.NewRoutingContext(context.Background(), routingAlgo, "test-model", "test-message", "test-request", "test-user")
