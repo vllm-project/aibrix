@@ -157,25 +157,25 @@ func Test_selectTargetPod(t *testing.T) {
 	tests := []struct {
 		name          string
 		pods          types.PodList
-		mockSetup     func(*MockRouter, types.RoutingAlgorithm)
+		mockSetup     func(*mockRouter, types.RoutingAlgorithm)
 		expectedError bool
 		expectedPodIP string
 	}{
 		{
 			name: "routing.Select returns error",
-			pods: &MockPodList{pods: []*v1.Pod{{
+			pods: &mockPodList{pods: []*v1.Pod{{
 				Status: v1.PodStatus{
 					PodIP:      "1.2.3.4",
 					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
 				},
 			},
-			{
-				Status: v1.PodStatus{
-					PodIP:      "1.2.3.4",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
-				},
-			}}},
-			mockSetup: func(mockRouter *MockRouter, algo types.RoutingAlgorithm) {
+				{
+					Status: v1.PodStatus{
+						PodIP:      "1.2.3.4",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				}}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
 				routing.Register(algo, func() (types.Router, error) {
 					return mockRouter, nil
 				})
@@ -186,8 +186,8 @@ func Test_selectTargetPod(t *testing.T) {
 		},
 		{
 			name: "no pods available",
-			pods: &MockPodList{pods: []*v1.Pod{}},
-			mockSetup: func(m *MockRouter, algo types.RoutingAlgorithm) {
+			pods: &mockPodList{pods: []*v1.Pod{}},
+			mockSetup: func(m *mockRouter, algo types.RoutingAlgorithm) {
 				routing.Register(algo, func() (types.Router, error) {
 					return m, nil
 				})
@@ -197,13 +197,13 @@ func Test_selectTargetPod(t *testing.T) {
 		},
 		{
 			name: "no ready pods available",
-			pods: &MockPodList{pods: []*v1.Pod{{
+			pods: &mockPodList{pods: []*v1.Pod{{
 				Status: v1.PodStatus{
 					PodIP:      "1.2.3.4",
 					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse}},
 				},
 			}}},
-			mockSetup: func(mockRouter *MockRouter, algo types.RoutingAlgorithm) {
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
 				routing.Register(algo, func() (types.Router, error) {
 					return mockRouter, nil
 				})
@@ -213,13 +213,13 @@ func Test_selectTargetPod(t *testing.T) {
 		},
 		{
 			name: "single ready pod",
-			pods: &MockPodList{pods: []*v1.Pod{{
+			pods: &mockPodList{pods: []*v1.Pod{{
 				Status: v1.PodStatus{
 					PodIP:      "1.2.3.4",
 					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
 				},
 			}}},
-			mockSetup: func(mockRouter *MockRouter, algo types.RoutingAlgorithm) {
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
 				routing.Register(algo, func() (types.Router, error) {
 					return mockRouter, nil
 				})
@@ -231,7 +231,7 @@ func Test_selectTargetPod(t *testing.T) {
 		},
 		{
 			name: "multiple ready pods",
-			pods: &MockPodList{pods: []*v1.Pod{
+			pods: &mockPodList{pods: []*v1.Pod{
 				{
 					Status: v1.PodStatus{
 						PodIP:      "1.2.3.4",
@@ -245,7 +245,7 @@ func Test_selectTargetPod(t *testing.T) {
 					},
 				},
 			}},
-			mockSetup: func(mockRouter *MockRouter, algo types.RoutingAlgorithm) {
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
 				routing.Register(algo, func() (types.Router, error) {
 					return mockRouter, nil
 				})
@@ -258,7 +258,7 @@ func Test_selectTargetPod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockRouter := new(MockRouter)
+			mockRouter := new(mockRouter)
 			routingAlgo := types.RoutingAlgorithm(fmt.Sprintf("test-router-%s", tt.name))
 
 			tt.mockSetup(mockRouter, routingAlgo)

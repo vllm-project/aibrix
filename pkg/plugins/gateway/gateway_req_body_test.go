@@ -26,7 +26,6 @@ import (
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
-	"github.com/vllm-project/aibrix/pkg/metrics"
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -37,102 +36,9 @@ import (
 const TestRouterAlgorithm types.RoutingAlgorithm = "test-router"
 const RouterNotSet types.RoutingAlgorithm = "not-set"
 
-// MockCache implements cache.Cache interface for testing
-type MockCache struct {
-	mock.Mock
-}
-
-func (m *MockCache) HasModel(model string) bool {
-	args := m.Called(model)
-	return args.Bool(0)
-}
-
-func (m *MockCache) ListPodsByModel(model string) (types.PodList, error) {
-	args := m.Called(model)
-	return args.Get(0).(types.PodList), args.Error(1)
-}
-
-func (m *MockCache) AddRequestCount(ctx *types.RoutingContext, requestID string, model string) int64 {
-	args := m.Called(ctx, requestID, model)
-	return args.Get(0).(int64)
-}
-
-func (m *MockCache) DoneRequestCount(ctx *types.RoutingContext, requestID string, model string, term int64) {
-	m.Called(ctx, requestID, model, term)
-}
-
-func (m *MockCache) DoneRequestTrace(ctx *types.RoutingContext, requestID string, model string, term int64, inputTokens int64, outputTokens int64) {
-	m.Called(ctx, requestID, model, term, inputTokens, outputTokens)
-}
-
-func (m *MockCache) AddSubscriber(subscriber metrics.MetricSubscriber) {
-	m.Called(subscriber)
-}
-
-func (m *MockCache) GetMetricValueByPod(namespace string, podName string, metricName string) (metrics.MetricValue, error) {
-	args := m.Called(namespace, podName, metricName)
-	return args.Get(0).(metrics.MetricValue), args.Error(1)
-}
-
-func (m *MockCache) GetMetricValueByPodModel(namespace string, podName string, model string, metricName string) (metrics.MetricValue, error) {
-	args := m.Called(namespace, podName, model, metricName)
-	return args.Get(0).(metrics.MetricValue), args.Error(1)
-}
-
-func (m *MockCache) GetPod(namespace string, podName string) (*v1.Pod, error) {
-	args := m.Called(namespace, podName)
-	return args.Get(0).(*v1.Pod), args.Error(1)
-}
-
-func (m *MockCache) ListModels() []string {
-	args := m.Called()
-	return args.Get(0).([]string)
-}
-
-func (m *MockCache) ListModelsByPod(namespace string, podName string) ([]string, error) {
-	args := m.Called(namespace, podName)
-	return args.Get(0).([]string), args.Error(1)
-}
-
-// MockPodList implements types.PodList interface for testing
-type MockPodList struct {
-	pods []*v1.Pod
-}
-
-func (m *MockPodList) All() []*v1.Pod {
-	return m.pods
-}
-
-func (m *MockPodList) Len() int {
-	return len(m.pods)
-}
-
-func (m *MockPodList) Indexes() []string {
-	return []string{} // For testing, we don't need to implement actual indexing
-}
-
-func (m *MockPodList) ListByIndex(index string) []*v1.Pod {
-	return []*v1.Pod{} // For testing, we don't need to implement actual indexing
-}
-
-// MockRouter implements types.Router interface for testing
-type MockRouter struct {
-	mock.Mock
-}
-
-func (m *MockRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	args := m.Called(ctx, pods)
-	return args.String(0), args.Error(1)
-}
-
-func (m *MockRouter) Name() string {
-	return "mock-router"
-}
-
-func TestHandleRequestBody(t *testing.T) {
+func Test_handleRequestBody(t *testing.T) {
 	// Initialize routing algorithms
 	routingalgorithms.Init()
-
 
 	// testResponse represents the expected response values from HandleRequestBody
 	type testResponse struct {
@@ -150,7 +56,7 @@ func TestHandleRequestBody(t *testing.T) {
 		requestBody string
 		user        utils.User
 		routingAlgo types.RoutingAlgorithm
-		mockSetup   func(*MockCache, *MockRouter)
+		mockSetup   func(*MockCache, *mockRouter)
 		expected    testResponse
 		validate    func(*testing.T, *testCase, *extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64)
 		checkStream bool
@@ -163,9 +69,9 @@ func TestHandleRequestBody(t *testing.T) {
 				Name: "test-user",
 			},
 			routingAlgo: "", // No routing strategy
-			mockSetup: func(mockCache *MockCache, _ *MockRouter) {
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
 				mockCache.On("HasModel", "test-model").Return(true)
-				podList := &MockPodList{
+				podList := &mockPodList{
 					pods: []*v1.Pod{
 						{
 							Status: v1.PodStatus{
@@ -233,7 +139,7 @@ func TestHandleRequestBody(t *testing.T) {
 				Name: "test-user",
 			},
 			routingAlgo: "", // No routing strategy needed for this test
-			mockSetup: func(mockCache *MockCache, _ *MockRouter) {
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
 				mockCache.On("HasModel", "unknown-model").Return(false)
 			},
 			expected: testResponse{
@@ -274,8 +180,8 @@ func TestHandleRequestBody(t *testing.T) {
 				Name: "test-user",
 			},
 			routingAlgo: TestRouterAlgorithm,
-			mockSetup: func(mockCache *MockCache, mockRouter *MockRouter) {
-				podList := &MockPodList{
+			mockSetup: func(mockCache *MockCache, mockRouter *mockRouter) {
+				podList := &mockPodList{
 					pods: []*v1.Pod{
 						{
 							Status: v1.PodStatus{
@@ -361,9 +267,9 @@ func TestHandleRequestBody(t *testing.T) {
 				Name: "test-user",
 			},
 			routingAlgo: "invalid-router", // Invalid routing strategy
-			mockSetup: func(mockCache *MockCache, _ *MockRouter) {
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
 				mockCache.On("HasModel", "test-model").Return(true)
-				podList := &MockPodList{
+				podList := &mockPodList{
 					pods: []*v1.Pod{
 						{
 							Status: v1.PodStatus{
@@ -448,10 +354,10 @@ func TestHandleRequestBody(t *testing.T) {
 				Name: "test-user",
 			},
 			routingAlgo: "", // No routing strategy needed for this test
-			mockSetup: func(mockCache *MockCache, _ *MockRouter) {
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
 				mockCache.On("HasModel", "test-model").Return(true)
 				// Create pods that exist but are not routable (not ready)
-				podList := &MockPodList{
+				podList := &mockPodList{
 					pods: []*v1.Pod{
 						{
 							Status: v1.PodStatus{
@@ -518,10 +424,10 @@ func TestHandleRequestBody(t *testing.T) {
 				Name: "test-user",
 			},
 			routingAlgo: "", // No routing strategy needed for this test
-			mockSetup: func(mockCache *MockCache, _ *MockRouter) {
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
 				mockCache.On("HasModel", "test-model").Return(true)
 				// Create pods that exist but are not routable (not ready)
-				podList := &MockPodList{
+				podList := &mockPodList{
 					pods: []*v1.Pod{
 						{
 							Status: v1.PodStatus{
@@ -585,7 +491,7 @@ func TestHandleRequestBody(t *testing.T) {
 
 			// Initialize mock cache and router
 			mockCache := new(MockCache)
-			mockRouter := new(MockRouter)
+			mockRouter := new(mockRouter)
 			if tt.mockSetup != nil {
 				tt.mockSetup(mockCache, mockRouter)
 			}
