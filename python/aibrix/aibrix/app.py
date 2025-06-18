@@ -29,6 +29,7 @@ from aibrix.openapi.engine.base import InferenceEngine, get_inference_engine
 from aibrix.openapi.model import ModelManager
 from aibrix.openapi.protocol import (
     DownloadModelRequest,
+    EmbeddingRequest,
     ErrorResponse,
     ListModelRequest,
     LoadLoraAdapterRequest,
@@ -186,6 +187,14 @@ async def readiness_check():
     if inference_engine_ready():
         return JSONResponse(content={"status": "ready"}, status_code=200)
     return JSONResponse(content={"status": "not ready"}, status_code=503)
+
+
+@router.post("/v1/embeddings")
+async def create_embeddings(request: EmbeddingRequest, raw_request: Request):
+    response = await inference_engine(raw_request).create_embeddings(request)
+    if isinstance(response, ErrorResponse):
+        return JSONResponse(content=response.model_dump(), status_code=response.code)
+    return JSONResponse(status_code=200, content=response.model_dump())
 
 
 def build_app(args: argparse.Namespace):

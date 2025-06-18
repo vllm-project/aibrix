@@ -21,6 +21,8 @@ import httpx
 from aibrix.logger import init_logger
 from aibrix.openapi.engine.base import InferenceEngine
 from aibrix.openapi.protocol import (
+    EmbeddingRequest,
+    EmbeddingResponse,
     ErrorResponse,
     LoadLoraAdapterRequest,
     UnloadLoraAdapterRequest,
@@ -139,3 +141,29 @@ class VLLMInferenceEngine(InferenceEngine):
                 err_type="ServerError",
                 status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
+
+    async def create_embeddings(
+        self, request: EmbeddingRequest
+    ) -> Union[ErrorResponse, EmbeddingResponse]:
+        embeddings_url = urljoin(self.endpoint, "/v1/embeddings")
+
+        try:
+            response = await self.client.post(
+                embeddings_url, json=request.model_dump(), headers=self.headers
+            )
+        except Exception as e:
+            logger.error(f"Failed to create embeddings: {e}")
+            return self._create_error_response(
+                "Failed to create embeddings",
+                err_type="ServerError",
+                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+
+        if response.status_code != HTTPStatus.OK:
+            return self._create_error_response(
+                f"Failed to create embeddings: {response.text}",
+                err_type="ServerError",
+                status_code=HTTPStatus(value=response.status_code),
+            )
+
+        return EmbeddingResponse(**response.json())

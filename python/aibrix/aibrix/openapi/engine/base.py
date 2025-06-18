@@ -20,6 +20,8 @@ from typing import Optional, Union
 from packaging.version import Version
 
 from aibrix.openapi.protocol import (
+    EmbeddingRequest,
+    EmbeddingResponse,
     ErrorResponse,
     LoadLoraAdapterRequest,
     UnloadLoraAdapterRequest,
@@ -67,6 +69,16 @@ class InferenceEngine(ABC):
         return self._create_error_response(
             f"Inference engine {self.name} with version {self.version} "
             "not support list models",
+            err_type="NotImplementedError",
+            status_code=HTTPStatus.NOT_IMPLEMENTED,
+        )
+
+    async def create_embeddings(
+        self, request: EmbeddingRequest
+    ) -> Union[ErrorResponse, EmbeddingResponse]:
+        return self._create_error_response(
+            f"Inference engine {self.name} with version {self.version} "
+            "not support embeddings",
             err_type="NotImplementedError",
             status_code=HTTPStatus.NOT_IMPLEMENTED,
         )

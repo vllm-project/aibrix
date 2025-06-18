@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -66,3 +66,29 @@ class ListModelRequest(NoExtraBaseModel):
 class ListModelResponse(NoExtraBaseModel):
     object: str = "list"
     data: List[ModelStatusCard] = Field(default_factory=list)
+
+
+class EmbeddingRequest(NoExtraBaseModel):
+    input: Union[str, List[str], List[int], List[List[int]]]
+    model: str
+    encoding_format: Optional[Literal["float", "base64"]] = "float"
+    dimensions: Optional[int] = None
+    user: Optional[str] = None
+
+
+class EmbeddingData(NoExtraBaseModel):
+    object: Literal["embedding"] = "embedding"
+    embedding: Union[List[float], str]  # float array or base64 string
+    index: int
+
+
+class EmbeddingUsage(NoExtraBaseModel):
+    prompt_tokens: int
+    total_tokens: int
+
+
+class EmbeddingResponse(NoExtraBaseModel):
+    object: Literal["list"] = "list"
+    data: List[EmbeddingData]
+    model: str
+    usage: EmbeddingUsage

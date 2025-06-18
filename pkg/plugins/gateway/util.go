@@ -69,6 +69,29 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		}
 		model = completionObj.Model
 		message = completionObj.Prompt
+	} else if requestPath == "/v1/embeddings" {
+		var embeddingReq struct {
+			Input interface{} `json:"input"`
+			Model string      `json:"model"`
+		}
+		if err := json.Unmarshal(requestBody, &embeddingReq); err != nil {
+			klog.ErrorS(err, "error to unmarshal embeddings object", "requestID", requestID, "requestBody", string(requestBody))
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		model = embeddingReq.Model
+		// Convert input to string for message
+		switch v := embeddingReq.Input.(type) {
+		case string:
+			message = v
+		case []interface{}:
+			// Handle array inputs
+			if len(v) > 0 {
+				if str, ok := v[0].(string); ok {
+					message = str
+				}
+			}
+		}
 	} else {
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", HeaderErrorRequestBodyProcessing, "true")
 		return
