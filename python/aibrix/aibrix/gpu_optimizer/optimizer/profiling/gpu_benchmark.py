@@ -125,11 +125,7 @@ def sample_requests(
                     # Limit the number of requests read from workload
 
                     # print(f"Request {i}: {entry}")
-                    cur_timestamp = entry["timestamp"]
-                    next_timestamp = (
-                        next_entry["timestamp"] if i < len(data) - 1 else cur_timestamp
-                    )
-                    interval = (next_timestamp - cur_timestamp) / 1000.0
+                    interval = (next_entry["timestamp"] - entry["timestamp"]) / 1000.0
                     if not load_entry(requests, entry, interval, num_requests):
                         return requests
                 # Load last entry
