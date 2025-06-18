@@ -597,7 +597,7 @@ func TestHandleRequestBody(t *testing.T) {
 
 			// Register mock router for this test case if needed
 			if tt.routingAlgo != "" && tt.routingAlgo != "not-set" && tt.routingAlgo != "invalid-router" {
-				mockRouterProvider := func(ctx *types.RoutingContext) (types.Router, error) {
+				mockRouterProvider := func() (types.Router, error) {
 					return mockRouter, nil
 				}
 				routingalgorithms.Register(tt.routingAlgo, mockRouterProvider)
