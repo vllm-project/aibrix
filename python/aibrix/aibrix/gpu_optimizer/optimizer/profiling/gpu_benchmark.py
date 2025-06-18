@@ -48,6 +48,28 @@ def print_err(
     print(*values, sep=sep, end=end, file=sys.stderr, flush=flush)
 
 
+# Return False if number of requests exceeds.
+def load_entry(
+    requests: List[Tuple[str, int, int, float]],
+    entry: dict,
+    interval: float,
+    num_requests: int,
+) -> bool:
+    for i, req in enumerate(entry["Requests"]):
+        requests.append(
+            (
+                req["Prompt"],
+                req["Prompt Length"],
+                req["Output Length"] if req["Output Length"] is not None else 0,
+                interval if i == len(entry["Requests"]) - 1 else 0,
+            )
+        )
+        if num_requests > 0 and len(requests) >= num_requests:
+            return False
+
+    return True
+
+
 def sample_requests(
     num_requests: int,
     config_input_len: int,
@@ -59,7 +81,9 @@ def sample_requests(
         try:
             with open(workload_dataset_file) as f:
                 # Check file extension to determine format
-                if workload_dataset_file.endswith('.jsonl') or workload_dataset_file.endswith('.jsonlines'):
+                if workload_dataset_file.endswith(
+                    ".jsonl"
+                ) or workload_dataset_file.endswith(".jsonlines"):
                     # JSONL format: generator that yields parsed JSON objects line by line
                     data = (json.loads(line) for line in f)
                 else:
@@ -67,27 +91,26 @@ def sample_requests(
                     data = (item for item in json.load(f))
 
                 # Return timestamp and request tuples
-                requests = []
-                for i, entry in enumerate(data):
+                requests: List[Tuple[str, int, int, float]] = []
+                entry = None
+
+                for i, next_entry in enumerate(data):
+                    if entry is None:
+                        entry = next_entry
+                        continue
                     # Limit the number of requests read from workload
 
                     # print(f"Request {i}: {entry}")
                     cur_timestamp = entry["Timestamp"]
                     next_timestamp = (
-                        data[i + 1]["Timestamp"] if i < len(data) - 1 else cur_timestamp
+                        next_entry["Timestamp"] if i < len(data) - 1 else cur_timestamp
                     )
                     interval = (next_timestamp - cur_timestamp) / 1000.0
-                    for i, req in enumerate(entry["Requests"]):
-                        requests.append(
-                            (
-                                req["Prompt"],
-                                req["Prompt Length"],
-                                req["Output Length"],
-                                interval if i == len(entry["Requests"]) - 1 else 0,
-                            )
-                        )
-                        if num_requests > 0 and len(requests) >= num_requests:
-                            return requests
+                    if not load_entry(requests, entry, interval, num_requests):
+                        return requests
+                # Load last entry
+                load_entry(requests, next_entry, 0.0, num_requests)
+
                 # print('total requests: ', len(requests))
                 # print('the least requests: ', requests[len(requests) - 1])
                 return requests
@@ -186,12 +209,11 @@ async def send_request(
             "prompt": prompt,
             # "n": 1,
             # "best_of": best_of,
-            # "use_beam_search": use_beam_search,
             "temperature": 0.0 if use_beam_search else TEMPERATURE,
             # "top_p": 1.0,
-            "max_tokens": output_len,
-            # "ignore_eos": True,
         }
+        if output_len > 0:
+            pload["max_tokens"] = output_len
         if stream:
             pload["stream"] = 1
         # Only apply "next_in" for simulator which requires no api_key.
