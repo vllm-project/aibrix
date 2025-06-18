@@ -58,7 +58,14 @@ def sample_requests(
     if workload_dataset_file:
         try:
             with open(workload_dataset_file) as f:
-                data = json.load(f)
+                # Check file extension to determine format
+                if workload_dataset_file.endswith('.jsonl') or workload_dataset_file.endswith('.jsonlines'):
+                    # JSONL format: generator that yields parsed JSON objects line by line
+                    data = (json.loads(line) for line in f)
+                else:
+                    # Standard JSON format: load entire file and create generator over items
+                    data = (item for item in json.load(f))
+
                 # Return timestamp and request tuples
                 requests = []
                 for i, entry in enumerate(data):
