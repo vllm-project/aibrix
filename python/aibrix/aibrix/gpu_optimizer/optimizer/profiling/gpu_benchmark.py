@@ -55,13 +55,13 @@ def load_entry(
     interval: float,
     num_requests: int,
 ) -> bool:
-    for i, req in enumerate(entry["Requests"]):
+    for i, req in enumerate(entry["requests"]):
         requests.append(
             (
-                req["Prompt"],
-                req["Prompt Length"],
-                req["Output Length"] if req["Output Length"] is not None else 0,
-                interval if i == len(entry["Requests"]) - 1 else 0,
+                req["prompt"],
+                req["prompt_length"],
+                req["output_length"] if req["output_length"] is not None else 0,
+                interval if i == len(entry["requests"]) - 1 else 0,
             )
         )
         if num_requests > 0 and len(requests) >= num_requests:
@@ -70,10 +70,28 @@ def load_entry(
     return True
 
 
+def normalize_entry(entry: dict, ver: int):
+    if ver == 1:
+        newEntry = {"timestamp": entry["Timestamp"], "requests": []}
+        for i, req in enumerate(entry["Requests"]):
+            newEntry["requests"].append(
+                {
+                    "prompt": req["Prompt"],
+                    "prompt_length": req["Prompt Length"],
+                    "output_length": req["Output Length"],
+                }
+            )
+        return newEntry
+
+    # Update to date version >= 2
+    return entry
+
+
 def sample_requests(
     num_requests: int,
     config_input_len: int,
     config_output_len: int,
+    workload_dataset_version: int,
     workload_dataset_file: Optional[str] = None,
 ) -> List[Tuple[str, int, int, float]]:
     """Sample requests from prompt dataset or generate synthetic ones."""
@@ -85,10 +103,16 @@ def sample_requests(
                     ".jsonl"
                 ) or workload_dataset_file.endswith(".jsonlines"):
                     # JSONL format: generator that yields parsed JSON objects line by line
-                    data = (json.loads(line) for line in f)
+                    data = (
+                        normalize_entry(json.loads(line), workload_dataset_version)
+                        for line in f
+                    )
                 else:
                     # Standard JSON format: load entire file and create generator over items
-                    data = (item for item in json.load(f))
+                    data = (
+                        normalize_entry(item, workload_dataset_version)
+                        for item in json.load(f)
+                    )
 
                 # Return timestamp and request tuples
                 requests: List[Tuple[str, int, int, float]] = []
@@ -101,9 +125,9 @@ def sample_requests(
                     # Limit the number of requests read from workload
 
                     # print(f"Request {i}: {entry}")
-                    cur_timestamp = entry["Timestamp"]
+                    cur_timestamp = entry["timestamp"]
                     next_timestamp = (
-                        next_entry["Timestamp"] if i < len(data) - 1 else cur_timestamp
+                        next_entry["timestamp"] if i < len(data) - 1 else cur_timestamp
                     )
                     interval = (next_timestamp - cur_timestamp) / 1000.0
                     if not load_entry(requests, entry, interval, num_requests):
@@ -370,7 +394,11 @@ def main(args: argparse.Namespace):
 
     api_url = f"http://{args.host}:{args.port}/v1/completions"
     input_requests = sample_requests(
-        args.num_prompts, args.input_len, args.output_len, args.workload_dataset_file
+        args.num_prompts,
+        args.input_len,
+        args.output_len,
+        args.workload_dataset_version,
+        args.workload_dataset_file,
     )
     result["samples"] = len(input_requests)  # Update number of samples
 
@@ -537,10 +565,16 @@ if __name__ == "__main__":
     )
     parser.add_argument("--stream", action="store_true", help="Enable stream request.")
     parser.add_argument(
-        "--workload_dataset_file",
+        "--workload-dataset-file",
         type=str,
         default=None,
         help="Path to a JSON file containing prompts",
+    )
+    parser.add_argument(
+        "--workload-dataset-version",
+        type=int,
+        default=2,
+        help="Version of workload dataset",
     )
     parser.add_argument("--use-workload-interval", action="store_true")
     parser.add_argument(
