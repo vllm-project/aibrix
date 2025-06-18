@@ -172,7 +172,7 @@ async def get_request(
             if interval > 0:
                 batch += 1
                 virtual_ts += interval
-                interval = virtual_ts - current_time # Fix interval
+                interval = virtual_ts - current_time  # Fix interval
                 if interval > 0:
                     await asyncio.sleep(interval)
             continue
