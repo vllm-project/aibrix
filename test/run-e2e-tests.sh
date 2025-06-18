@@ -125,22 +125,6 @@ collect_logs() {
   done
 }
 
-# Function to ensure gotestsum is available
-ensure_gotestsum() {
-  if ! command -v gotestsum &> /dev/null; then
-    echo "Installing gotestsum..."
-    go install gotest.tools/gotestsum@latest
-    # Add GOPATH/bin to PATH if it's not already there
-    if [[ ":$PATH:" != *":$HOME/go/bin:"* ]]; then
-      export PATH="$HOME/go/bin:$PATH"
-    fi
-    # Verify installation
-    if ! command -v gotestsum &> /dev/null; then
-      echo "Error: gotestsum installation failed or not found in PATH"
-      exit 1
-    fi
-  fi
-}
 
 # Start port forwarding before running tests
 start_port_forwards
@@ -150,7 +134,7 @@ ensure_gotestsum
 
 # Run tests using gotestsum
 echo "Running e2e tests..."
-gotestsum --format testname -- ./test/e2e/... -run "TestBaseModelInference|TestBaseModelInferenceFailures|TestStrategyRequiresCache|TestRandomRouting|TestPrefixCacheRouting|TestMultiTurnConversation"
+go test ./test/e2e/ -v -timeout 0
 TEST_EXIT_CODE=$?
 
 # Exit with the test's exit code
