@@ -128,6 +128,8 @@ def sample_requests(
                     interval = (next_entry["timestamp"] - entry["timestamp"]) / 1000.0
                     if not load_entry(requests, entry, interval, num_requests):
                         return requests
+                    # Handle next entry
+                    entry = next_entry
                 # Load last entry
                 load_entry(requests, next_entry, 0.0, num_requests)
 
@@ -239,6 +241,9 @@ async def send_request(
         # Only apply "next_in" for simulator which requires no api_key.
         if next_in > 0.0 and (api_key is None or api_key == ""):
             pload["next_in"] = next_in
+    elif backend == "dryrun":
+        await asyncio.sleep(0.001)
+        return
     else:
         raise ValueError(f"Unknown backend: {backend}")
 
@@ -336,7 +341,7 @@ async def benchmark(
     stream: bool,
     verbose: bool,
     trace: bool,
-    use_workload_interval: bool = False,
+    use_workload_interval: bool,
 ) -> None:
     tasks: List[asyncio.Task] = []
 
@@ -450,6 +455,8 @@ def main(args: argparse.Namespace):
 
     # Compute the latency statistics.
     avg_latency = np.mean([latency for _, _, latency in REQUEST_LATENCY])
+    if args.backend == "dryrun":
+        return
     if args.verbose:
         print("REQUEST LATENCIES")
         print(f"Avg: {avg_latency:.2f} s")
@@ -519,7 +526,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Benchmark the online serving throughput."
     )
-    parser.add_argument("--backend", type=str, default="vllm", choices=["vllm"])
+    parser.add_argument(
+        "--backend", type=str, default="vllm", choices=["vllm", "dryrun"]
+    )
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--model", type=str, default="llama2-7b")
