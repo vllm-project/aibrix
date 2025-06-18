@@ -160,17 +160,21 @@ async def get_request(
     start_time = time.perf_counter()
 
     batch = 0
+    virtual_ts = 0.0
     for i, (prompt, prompt_len, output_len, interval) in enumerate(requests):
         current_time = time.perf_counter() - start_time
         if use_workload_interval:
             if verbose:
                 print(
-                    f"Batch {batch}, Request {i}: Sending at {current_time:.3f}s with interval {interval:.3f}s"
+                    f"Batch {batch}, Request {i}: Sending at {current_time:.3f}s(expected: {virtual_ts:.3f}s) with interval {interval:.3f}s"
                 )
             yield (prompt, prompt_len, output_len, interval)
             if interval > 0:
                 batch += 1
-                await asyncio.sleep(interval)
+                virtual_ts += interval
+                interval = virtual_ts - current_time # Fix interval
+                if interval > 0:
+                    await asyncio.sleep(interval)
             continue
         else:
             interval = 0.0
