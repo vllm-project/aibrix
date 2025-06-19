@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -182,6 +183,11 @@ func checkEmbeddingInputSequenceLen(requestID string, embeddingObj openai.Embedd
 		size = len(*input)
 		isArrayType = true
 	default:
+		// Should never happend, but if input is of an unexpected non-nil type, let's explicitly error log it.
+		// Size will be 0 in this case, which is then handled by the check below.
+		if input != nil {
+			klog.ErrorS(nil, "unhandled embedding input type", "requestID", requestID, "inputType", fmt.Sprintf("%T", input))
+		}
 	}
 
 	if size == 0 {
