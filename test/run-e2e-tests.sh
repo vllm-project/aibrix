@@ -129,9 +129,6 @@ collect_logs() {
 # Start port forwarding before running tests
 start_port_forwards
 
-# Ensure gotestsum is available
-ensure_gotestsum
-
 # Run tests using gotestsum
 echo "Running e2e tests..."
 go test ./test/e2e/ -v -timeout 0
