@@ -18,10 +18,12 @@ package utils
 import (
 	"fmt"
 	"math/rand"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -81,3 +83,59 @@ var _ = Describe("Pod", func() {
 		Expect(modified).To(Equal(expected))
 	})
 })
+
+func TestModePortForPod(t *testing.T) {
+	testcases := []struct {
+		message      string
+		pod          *v1.Pod
+		expectedPort int64
+	}{
+		{
+			message: "read port from pod labels",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "p1",
+					Labels: map[string]string{
+						"model.aibrix.ai/port": "9000",
+					},
+				},
+			},
+			expectedPort: 9000,
+		},
+		{
+			message: "incorrect model port label value",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "p1",
+					Labels: map[string]string{
+						"model.aibrix.ai/port": "port",
+					},
+				},
+			},
+			expectedPort: 8000,
+		},
+		{
+			message: "return default port if not configured in pod labels",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "p1",
+					Labels: map[string]string{},
+				},
+			},
+			expectedPort: 8000,
+		},
+		{
+			message: "return default port if no label is present",
+			pod: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "p1",
+				},
+			},
+			expectedPort: 8000,
+		},
+	}
+
+	for _, tt := range testcases {
+		assert.Equal(t, tt.expectedPort, GetModelPortForPod("1", tt.pod), tt.message)
+	}
+}

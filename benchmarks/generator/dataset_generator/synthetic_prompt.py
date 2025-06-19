@@ -1,4 +1,6 @@
 import random
+from typing import Tuple
+from transformers import PreTrainedTokenizer
 
 # A collection of realistic text templates for generating prompts
 REALISTIC_TEMPLATES = [
@@ -70,7 +72,9 @@ PADDING_PROMPT = [
                 f" I've been trying to understand this concept for {random.choice(['days', 'weeks', 'months'])} and would appreciate a clear explanation."
             ]
 
-def generate_synthetic_prompt(tokenizer, target_token_length):
+def generate_synthetic_prompt(tokenizer: PreTrainedTokenizer, 
+                              target_token_length: int,
+                              unique_prefix: str = None) -> Tuple[str, int]:
     """
     Generate a realistic prompt using templates and domain-specific vocabulary
     
@@ -79,7 +83,9 @@ def generate_synthetic_prompt(tokenizer, target_token_length):
         target_token_length: Desired length in tokens
         
     Returns:
-        A realistic prompt string
+        A tuple containing:
+        - A realistic prompt string
+        - The actual token count of the generated prompt
     """
     # Start with a random template
     template = random.choice(REALISTIC_TEMPLATES)
@@ -117,6 +123,9 @@ def generate_synthetic_prompt(tokenizer, target_token_length):
         skill=random.choice(["programming", "data analysis", "system design", "technical writing", "debugging"])
     )
     
+    if unique_prefix:
+        filled_template = unique_prefix + filled_template
+    
     # Check token length
     token_count = len(tokenizer.encode(filled_template))
     
@@ -142,7 +151,20 @@ def generate_synthetic_prompt(tokenizer, target_token_length):
     return filled_template, token_count
 
 
-def adjust_prompt_length(tokenizer, prompt, target_token_length):
+def adjust_prompt_length(tokenizer: PreTrainedTokenizer, 
+                        prompt: str, 
+                        target_token_length: int) -> str:
+    """
+    Adjust the length of a prompt to match the target token length
+    
+    Args:
+        tokenizer: The tokenizer to use
+        prompt: The input prompt to adjust
+        target_token_length: Desired length in tokens
+        
+    Returns:
+        The adjusted prompt string
+    """
     #print(f"prompt type {type(prompt)}")
     token_count = len(tokenizer.encode(prompt))
     adjusted_prompt = prompt

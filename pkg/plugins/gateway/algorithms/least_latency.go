@@ -32,7 +32,7 @@ var (
 )
 
 func init() {
-	RegisterDelayedConstructor(RouterLeastLatency, NewLeastExpectedLatencyRouter)
+	Register(RouterLeastLatency, NewLeastExpectedLatencyRouter)
 }
 
 type leastExpectedLatencyRouter struct {

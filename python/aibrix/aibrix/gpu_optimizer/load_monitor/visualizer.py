@@ -122,7 +122,10 @@ def get_debug_model_montior(
         if profile_reader is not None:
             for _, profile in enumerate(profile_reader.read()):
                 debug_monitor.add_deployment(
-                    "0", profile.gpu, None, DeploymentStates(profile.gpu, 0)
+                    "0",
+                    profile.gpu,
+                    None,
+                    DeploymentStates(name=profile.gpu, replicas=0),
                 )
 
     return debug_monitor

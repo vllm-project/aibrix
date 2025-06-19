@@ -1,3 +1,5 @@
+//go:build !race
+
 /*
 Copyright 2024 The Aibrix Team.
 

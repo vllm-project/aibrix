@@ -33,7 +33,7 @@ var (
 )
 
 func init() {
-	RegisterDelayedConstructor(RouterThroughput, NewThroughputRouter)
+	Register(RouterThroughput, NewThroughputRouter)
 }
 
 type throughputRouter struct {

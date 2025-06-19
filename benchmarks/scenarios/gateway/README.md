@@ -64,8 +64,8 @@ OUTPUT_FILE=throughput.jsonl ROUTING_STRATEGY=throughput locust -f benchmark.py 
 ## Local Testing
 
 ```bash
-make docker-build-plugins
-aibrix/plugins:9bd45a9915b71936ff0001a6fbfc32f10b65e480
+make docker-build-gateway-plugins
+aibrix/gateway-plugins:9bd45a9915b71936ff0001a6fbfc32f10b65e480
 
 k edit deployment aibrix-gateway-plugins
 
@@ -91,7 +91,7 @@ curl  http://localhost:8888/v1/chat/completions \
 ```bash
 python client.py \
 --dataset-path "/tmp/ShareGPT_V3_unfiltered_cleaned_split.json" \
---endpoint "http://101.126.24.162:8000" \
+--endpoint "http://localhost:8888" \
 --num-prompts 2000 \
 --interval 0.05 \
 --output-file-path "k8s-v2.jsonl"
@@ -100,7 +100,7 @@ python client.py \
 ```bash
 python client.py \
 --dataset-path "/tmp/ShareGPT_V3_unfiltered_cleaned_split.json" \
---endpoint "http://101.126.81.102:80" \
+--endpoint "http://localhost:8888" \
 --num-prompts 2000 \
 --interval 0.05 \
 --output-file-path "httproute-v2.jsonl"
@@ -110,7 +110,7 @@ update env
 ```bash
 python client.py \
 --dataset-path "/tmp/ShareGPT_V3_unfiltered_cleaned_split.json" \
---endpoint "http://101.126.81.102:80" \
+--endpoint "http://localhost:8888" \
 --num-prompts 2000 \
 --interval 0.05 \
 --output-file-path "random-v2.jsonl"
@@ -119,7 +119,7 @@ python client.py \
 ```bash
 python client.py \
 --dataset-path "/tmp/ShareGPT_V3_unfiltered_cleaned_split.json" \
---endpoint "http://101.126.81.102:80" \
+--endpoint "http://localhost:8888" \
 --num-prompts 2000 \
 --interval 0.05 \
 --output-file-path "least-request-v2.jsonl"
@@ -128,7 +128,7 @@ python client.py \
 ```bash
 python client.py \
 --dataset-path "/tmp/ShareGPT_V3_unfiltered_cleaned_split.json" \
---endpoint "http://101.126.81.102:80" \
+--endpoint "http://localhost:8888" \
 --num-prompts 2000 \
 --interval 0.05 \
 --output-file-path "throughput-v2.jsonl"

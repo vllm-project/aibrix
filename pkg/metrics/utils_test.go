@@ -17,7 +17,13 @@ limitations under the License.
 package metrics
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -88,4 +94,89 @@ func TestBuildQueryWithModelLabel(t *testing.T) {
 		assert.Contains(t, query, `vllm:time_per_output_token_seconds_bucket`)
 		assert.Contains(t, query, `model_name="Qwen/Qwen2.5-1.5B-Instruct"`)
 	})
+}
+
+func TestParseMetricsURLWithContext(t *testing.T) {
+	tests := []struct {
+		name           string
+		metricsContent string
+		statusCode     int
+		timeout        time.Duration
+		wantErr        bool
+		errContains    string
+	}{
+		{
+			name: "Success with valid metrics",
+			metricsContent: `
+				# HELP http_requests_total The total number of HTTP requests.
+				# TYPE http_requests_total counter
+				http_requests_total{method="post",code="200"} 1027 1395066363000
+			`,
+			statusCode: http.StatusOK,
+			timeout:    5 * time.Second,
+			wantErr:    false,
+		},
+		{
+			name:           "HTTP non-200 status code",
+			metricsContent: "",
+			statusCode:     http.StatusServiceUnavailable,
+			timeout:        5 * time.Second,
+			wantErr:        true,
+			errContains:    "Bad status code while fetching metrics",
+		},
+		{
+			name: "Context timeout",
+			metricsContent: `
+				http_requests_total{method="post",code="200"} 1027
+			`,
+			statusCode:  http.StatusOK,
+			timeout:     1 * time.Nanosecond,
+			wantErr:     true,
+			errContains: "context deadline exceeded",
+		},
+		{
+			name:           "Invalid metric format",
+			metricsContent: "invalid_metric_format_here",
+			statusCode:     http.StatusOK,
+			timeout:        5 * time.Second,
+			wantErr:        true,
+			errContains:    "Error parsing metric families",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup mock server
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_, err := io.WriteString(w, tt.metricsContent)
+				if err != nil {
+					return
+				}
+			}))
+			defer server.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), tt.timeout)
+			defer cancel()
+			metrics, err := ParseMetricsURLWithContext(ctx, server.URL)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error but got none")
+				}
+				if tt.errContains == "context deadline exceeded" {
+					if !strings.Contains(err.Error(), tt.errContains) {
+						t.Fatalf("expected error to contain %q, got %q", tt.errContains, err.Error())
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(metrics) == 0 {
+				t.Errorf("expected non-empty metrics map")
+			}
+		})
+	}
 }

@@ -4,19 +4,16 @@ import json
 import logging
 import numpy as np
 import argparse
-
+from typing import List, Dict, Tuple, Any, Optional, Union
 from tqdm import tqdm
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizer
 from scipy.stats import truncnorm
 from generator.dataset_generator.synthetic_prompt import generate_synthetic_prompt, adjust_prompt_length
 from generator.dataset_generator.util import save_workload_jsonl, save_dataset_jsonl
 
-
-def generate_unique_prefix(base_text, index):
-    return str(index) + base_text[len(str(index)):]
     
 
-def prepare_prompts(tokenizer, config):
+def prepare_prompts(tokenizer: PreTrainedTokenizer, config: Dict[str, Any]) -> Tuple[List[List[str]], int, List[List[int]]]:
     """
     Prepare prompts based on the provided configuration
     
@@ -42,8 +39,7 @@ def prepare_prompts(tokenizer, config):
     
     for i in range(num_prefix):
         shared_length_mean = int(prompt_length_mean * shared_proportion_mean)
-        base_prefix, token_count = generate_synthetic_prompt(tokenizer, shared_length_mean)
-        unique_prefix = generate_unique_prefix(base_prefix, i)
+        base_prefix, token_count = generate_synthetic_prompt(tokenizer, shared_length_mean, str(i))
         prompt_list = []
         token_count_list = []
         
@@ -90,7 +86,7 @@ def prepare_prompts(tokenizer, config):
     
     return all_prompts, tot_input_len, prompts_token_counts
 
-def calculate_prefix_proportion(prefix_length, suffix_length):
+def calculate_prefix_proportion(prefix_length: int, suffix_length: int) -> float:
     """
     Calculate the proportion of the prompt that is prefix.
     
@@ -105,7 +101,7 @@ def calculate_prefix_proportion(prefix_length, suffix_length):
     """
     return prefix_length / (prefix_length + suffix_length)
 
-def calculate_average_prefix_sharing_ratio(tokenizer, all_prompts):
+def calculate_average_prefix_sharing_ratio(tokenizer: PreTrainedTokenizer, all_prompts: List[List[str]]) -> float:
     """
     Calculate the average prefix sharing ratio across all prompt lists.
     
@@ -155,7 +151,7 @@ def calculate_average_prefix_sharing_ratio(tokenizer, all_prompts):
 
     return sum(sharing_ratios) / len(sharing_ratios)
 
-def calculate_prefix_sharing_ratio(tokenizer, all_prompts, prompts_token_counts, prefix_length):
+def calculate_prefix_sharing_ratio(tokenizer: PreTrainedTokenizer, all_prompts: List[List[str]], prompts_token_counts: List[List[int]], prefix_length: int) -> float:
     """
     Calculate the prefix sharing ratio in the entire workload based on token counts
     
@@ -206,7 +202,7 @@ def calculate_prefix_sharing_ratio(tokenizer, all_prompts, prompts_token_counts,
     
     return sharing_ratio
 
-def generate_poisson_arrival_times(num_requests, rps, start_time=0):
+def generate_poisson_arrival_times(num_requests: int, rps: float, start_time: int = 0) -> List[int]:
     """
     Generate arrival times based on Poisson distribution
     
@@ -230,7 +226,7 @@ def generate_poisson_arrival_times(num_requests, rps, start_time=0):
     
     return timestamps
 
-def generate_workload_from_config(tokenizer, config):
+def generate_workload_from_config(tokenizer: PreTrainedTokenizer, config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Process multiple workload configurations and combine them
     
@@ -358,7 +354,7 @@ def generate_workload_from_config(tokenizer, config):
     }
 
 
-def generate_dataset_from_config(tokenizer, config, num_configs):
+def generate_dataset_from_config(tokenizer: PreTrainedTokenizer, config: Dict[str, Any], num_configs: int) -> Dict[str, Any]:
     """
     Process multiple workload configurations and combine them
     
@@ -453,7 +449,7 @@ def generate_dataset_from_config(tokenizer, config, num_configs):
         "overall_prefix_proportion": overall_prefix_proportion
     }
 
-def save_stats(workload_data, stats_file):
+def save_stats(workload_data: Dict[str, Any], stats_file: str) -> None:
     """
     Save workload statistics to a JSON file
     
@@ -500,7 +496,7 @@ def save_stats(workload_data, stats_file):
     logging.info(f"Overall efficiency gain: {workload_data['overall_sharing_ratio']*100:.2f}% (computational savings from prefix sharing)")
 
 
-def get_configurations(args: argparse.Namespace):
+def get_configurations(args: argparse.Namespace) -> List[Dict[str, Any]]:
     """
     Generate configurations based on command line arguments
     

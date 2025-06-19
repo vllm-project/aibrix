@@ -28,7 +28,7 @@ def worker(thread_idx, task_queue, client, model, max_output, send_request_func,
         task = task_queue.get()
         logging.debug(f"Worker {thread_idx} receive task...")
         if task is None:  # Stop signal
-            logging.warn(f"Worker {thread_idx} exit.")
+            logging.warning(f"Worker {thread_idx} exit.")
             break
         else:
             loop.run_until_complete(send_request_func(client, model, max_output, *task))
@@ -198,13 +198,13 @@ async def benchmark_streaming(api_key: str,
     for task_queue in task_queues:
         task_queue.join()
     # Stop all worker threads
-    logging.warn("Producer completed ...")
+    logging.warning("Producer completed ...")
     for i, thread in enumerate(threads):
         task_queues[i].put(None)
 
     for thread in threads:
         thread.join()
-        logging.warn(f"Worker thread {thread} completed ...")
+        logging.warning(f"Worker thread {thread} completed ...")
     logging.warning(f"All {num_requests} requests completed for deployment.")
 
 # Asynchronous request handler
@@ -339,7 +339,7 @@ async def benchmark_batch(api_key: str,
 
     for thread in threads:
         thread.join()
-        logging.warn(f"Worker thread {thread} completed ...")
+        logging.warning(f"Worker thread {thread} completed ...")
     logging.warning(f"All {num_requests} requests completed for deployment.")
 
 def create_client(api_key: str,

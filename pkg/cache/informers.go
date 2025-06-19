@@ -82,6 +82,14 @@ func initCacheInformers(instance *Store, config *rest.Config, stopCh <-chan stru
 	if !cache.WaitForCacheSync(stopCh, podInformer.HasSynced, modelInformer.HasSynced) {
 		return errors.New("timed out waiting for caches to sync")
 	}
+
+	// After cache sync, resync all ModelAdapters to ensure pod mappings are correct
+	// This handles the case where ModelAdapters were processed before their pods were cached
+	instance.resyncModelAdapters(modelInformer.GetStore())
+
+	// Log cache state after initialization
+	klog.Infof("Cache initialization completed. Models: %v", instance.ListModels())
+
 	return nil
 }
 
@@ -328,4 +336,33 @@ func (c *Store) deletePodAndModelMappingLocked(podName, namespace, modelName str
 			}
 		}
 	}
+}
+
+// resyncModelAdapters processes all ModelAdapters from the informer store to ensure
+// all pod mappings are correctly established after cache initialization
+func (c *Store) resyncModelAdapters(store cache.Store) {
+	klog.Info("Resyncing ModelAdapters to ensure pod mappings are correct")
+
+	objects := store.List()
+	for _, obj := range objects {
+		if modelAdapter, ok := obj.(*modelv1alpha1.ModelAdapter); ok {
+			c.mu.Lock()
+			// Process each pod instance in the ModelAdapter
+			for _, podName := range modelAdapter.Status.Instances {
+				key := fmt.Sprintf("%s/%s", modelAdapter.Namespace, podName)
+				// Check if pod exists in cache before creating mapping
+				if _, exists := c.metaPods.Load(key); exists {
+					c.addPodAndModelMappingLockedByName(podName, modelAdapter.Namespace, modelAdapter.Name)
+					klog.V(4).Infof("Resynced pod mapping for adapter %s/%s, pod %s",
+						modelAdapter.Namespace, modelAdapter.Name, podName)
+				} else {
+					klog.Warningf("Pod %s not found in cache for ModelAdapter %s/%s during resync",
+						podName, modelAdapter.Namespace, modelAdapter.Name)
+				}
+			}
+			c.mu.Unlock()
+		}
+	}
+
+	klog.Info("ModelAdapter resync completed")
 }

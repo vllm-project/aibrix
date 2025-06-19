@@ -22,5 +22,5 @@ import (
 
 func init() {
 	// Register the VTC Basic router
-	RegisterDelayedConstructor(vtc.RouterVTCBasic, vtc.NewVTCBasicRouter)
+	Register(vtc.RouterVTCBasic, vtc.NewVTCBasicRouter)
 }

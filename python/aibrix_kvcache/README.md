@@ -1,7 +1,7 @@
 # AIBrix KV Cache Offloading Framework for Cross-Engine KV Reuse
 AIBrix KV cache offloading framework provides several common functionalities for cross-engine KV reuse use cases:
 
-**Tensor Parallelism Aware Management**: When inference engine (e.g., vLLM) uses tensor parallelism, each participating engine instance fetches KV tensors independently from the cache backend. In case of cache misses, before proceeding with prefill computation, participants must align the potentially different number of KV tensors fetched from the external KV cache service to ensure a consistent view .
+**Tensor Parallelism Aware Management**: When inference engine (e.g., vLLM) uses tensor parallelism, each participating engine instance fetches KV tensors independently of the cache backend. In case of cache misses, before proceeding with prefill computation, participants must align the potentially different number of KV tensors fetched from the external KV cache service to ensure a consistent view.
 
 **Embedded Cache w/ CPU Memory**: To meet performance requirements, it's common to have a small CPU memory-based cache embedded in the engine to avoid frequently accessing remote cache backends.
 
