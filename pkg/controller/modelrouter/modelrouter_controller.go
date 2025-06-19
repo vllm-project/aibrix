@@ -47,8 +47,9 @@ const (
 	modelIdentifier                = "model.aibrix.ai/name"
 	modelPortIdentifier            = "model.aibrix.ai/port"
 	modelSupportedRoutesIdentifier = "model.aibrix.ai/supported-routes"
-	modelEmbeddingsRoute           = "embeddings"
-	modelChatCompletionsRoute      = "chat-completions"
+	modelRouteEmbeddings           = "embeddings"
+	modelRouteChatCompletions      = "chat-completions"
+	modelRouteDefault              = modelRouteChatCompletions
 	// TODO (varun): parameterize it or dynamically resolve it
 	aibrixEnvoyGateway          = "aibrix-eg"
 	aibrixEnvoyGatewayNamespace = "aibrix-system"
@@ -112,25 +113,26 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 	return err
 }
 
+// getSupportedRoutesMatchFromLabelsOrDefault returns the HTTPRouteMatch based on the model route labels value
 func getSupportedRoutesMatchFromLabelsOrDefault(labels map[string]string, modelHeaderMatch gatewayv1.HTTPHeaderMatch) []gatewayv1.HTTPRouteMatch {
-	nameToRoutePathPrefix := map[string][]string{
-		modelEmbeddingsRoute:      {"/v1/embeddings"},
-		modelChatCompletionsRoute: {"/v1/completions", "/v1/chat/completions"},
+	labelValueToRoutePathPrefix := map[string][]string{
+		modelRouteEmbeddings:      {"/v1/embeddings"},
+		modelRouteChatCompletions: {"/v1/completions", "/v1/chat/completions"},
 	}
 
 	var pathPrefixes []string
 	if routesLabelValue, ok := labels[modelSupportedRoutesIdentifier]; ok {
 		routes := strings.Split(routesLabelValue, ",")
-		for k, route := range nameToRoutePathPrefix {
+		for k, route := range labelValueToRoutePathPrefix {
 			if slices.Contains(routes, k) {
 				pathPrefixes = append(pathPrefixes, route...)
 			}
 		}
 	}
 
-	// completions and chat completions routes by default
+	// Add the default pathPrefixes if no route defines via labels
 	if len(pathPrefixes) == 0 {
-		pathPrefixes = append(pathPrefixes, nameToRoutePathPrefix[modelChatCompletionsRoute]...)
+		pathPrefixes = append(pathPrefixes, labelValueToRoutePathPrefix[modelRouteDefault]...)
 	}
 
 	var routesmatch []gatewayv1.HTTPRouteMatch
