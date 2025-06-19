@@ -29,6 +29,10 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// OpenAI has a 2048 size limits for embeddings array inputs
+// see https://platform.openai.com/docs/api-reference/embeddings/create#embeddings-create-input
+var maxEmbeddingInputArraySize = 2048
+
 // validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
 // nolint:nakedret
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
@@ -165,15 +169,18 @@ func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCo
 func checkEmbeddingInputSequenceLen(requestID string, embeddingObj openai.EmbeddingNewParams) *extProcPb.ProcessingResponse {
 	inputParam := embeddingObj.Input
 	var size int
+	isArrayType := false
 	switch input := embeddingNewParamsInputUnionAsAny(&inputParam).(type) {
 	case *string:
 		size = len(*input)
 	case *[]string:
 		size = len(*input)
+		isArrayType = true
 	case *[]int64:
 		size = len(*input)
 	case *[][]int64:
 		size = len(*input)
+		isArrayType = true
 	default:
 	}
 
@@ -181,7 +188,8 @@ func checkEmbeddingInputSequenceLen(requestID string, embeddingObj openai.Embedd
 		klog.ErrorS(nil, "no input in the request body", "requestID", requestID)
 		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", HeaderErrorRequestBodyProcessing, "true")
 	}
-	if size > 1024 {
+
+	if isArrayType && size > maxEmbeddingInputArraySize {
 		klog.ErrorS(nil, "embeddings content is too large", "requestID", requestID, "size", size)
 		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "embeddings content is too large", HeaderErrorRequestBodyProcessing, "true")
 	}
