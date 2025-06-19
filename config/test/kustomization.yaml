@@ -3,10 +3,3 @@ kind: Kustomization
 
 resources:
 - ../default
-
-patches:
-- path: gateway/vtc-test-env-patch.yaml
-  target:
-    kind: Deployment
-    name: aibrix-gateway-plugins
-    namespace: aibrix-system

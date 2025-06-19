@@ -3,12 +3,6 @@ kind: Service
 metadata:
   name: gateway-plugins
   namespace: aibrix-system
-  labels:
-    app: gateway-plugins
-    prometheus.io/scrape: "true"
-    prometheus.io/port: "8080"
-  annotations:
-    prometheus.io/path: "/metrics"
 spec:
   selector:
     app: gateway-plugins
@@ -21,10 +15,6 @@ spec:
       protocol: TCP
       port: 6060
       targetPort: 6060
-    - name: metrics
-      protocol: TCP
-      port: 8080
-      targetPort: 8080
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -80,8 +70,6 @@ spec:
               containerPort: 50052
             - name: profiling
               containerPort: 6060
-            - name: metrics
-              containerPort: 8080
           resources:
             limits:
               cpu: 1

@@ -34,7 +34,6 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/vllm-project/aibrix/pkg/cache"
-	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -55,7 +54,6 @@ type Server struct {
 	gatewayClient       *gatewayapi.Clientset
 	requestCountTracker map[string]int
 	cache               cache.Cache
-	metricsServer       *metrics.Server
 }
 
 func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient *gatewayapi.Clientset) *Server {
@@ -75,7 +73,6 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		gatewayClient:       gatewayClient,
 		requestCountTracker: map[string]int{},
 		cache:               c,
-		metricsServer:       nil,
 	}
 }
 
@@ -205,27 +202,6 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 		}
 	}
 	return errors.New(strings.Join(errMsg, ", "))
-}
-
-func (s *Server) StartMetricsServer(addr string) error {
-	if s.metricsServer != nil {
-		return nil
-	}
-
-	s.metricsServer = metrics.NewServer(addr)
-	if err := s.metricsServer.Start(); err != nil {
-		return fmt.Errorf("failed to start metrics server: %v", err)
-	}
-
-	return nil
-}
-
-func (s *Server) Shutdown() {
-	if s.metricsServer != nil {
-		if err := s.metricsServer.Stop(); err != nil {
-			klog.ErrorS(err, "Error stopping metrics server")
-		}
-	}
 }
 
 func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.ProcessingResponse, respErrorCode int,
