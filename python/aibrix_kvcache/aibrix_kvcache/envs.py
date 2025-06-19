@@ -101,7 +101,7 @@ if TYPE_CHECKING:
     # Since 0.2.42, InfiniStore supports RDMA GID index in client config,
     # users can specify the GID index of each device in this format:
     # "mlx5_0:gid0,mlx5_1:gid1,mlx5_2:gid2"
-    AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST: List[str] = ["mlx5_0"]
+    AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST: List[str] = []
     AIBRIX_KV_CACHE_OL_INFINISTORE_USE_GDR: bool = True
 
     # HPKV Env Vars
@@ -110,6 +110,11 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_HPKV_LOCAL_ADDR: str = "127.0.0.1"
     AIBRIX_KV_CACHE_OL_HPKV_LOCAL_PORT: int = 12345
     AIBRIX_KV_CACHE_OL_HPKV_USE_GDR: bool = True
+
+    # RDMA Auto-Detection Env Vars
+    # Defines the range of valid GIDs. Similar to NVSHMEM_IB_ADDR_RANGE
+    # for NVSHMEM. It must be a valid CIDR.
+    AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE: str = "::/0"
 
 # The begin-* and end* here are used by the documentation generator
 # to extract the used env vars.
@@ -289,10 +294,13 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
             "AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE", "Ethernet"
         ).strip()
     ),
-    "AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST": lambda: (
-        os.getenv("AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST", "mlx5_0")
-        .strip()
-        .split(",")
+    "AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST": lambda: list(
+        filter(
+            None,
+            os.getenv("AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST", "")
+            .strip()
+            .split(","),
+        )
     ),
     "AIBRIX_KV_CACHE_OL_INFINISTORE_USE_GDR": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_INFINISTORE_USE_GDR", "1").strip().lower()
@@ -314,6 +322,12 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     "AIBRIX_KV_CACHE_OL_HPKV_USE_GDR": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_HPKV_USE_GDR", "1").strip().lower()
         in ("1", "true")
+    ),
+    # ================== RDMA Auto-Detection Env Vars ==================
+    "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE": lambda: (
+        os.getenv(
+            "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE", "::/0"
+        ).strip()
     ),
 }
 
