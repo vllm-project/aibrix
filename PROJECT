@@ -63,4 +63,13 @@ resources:
   kind: StormService
   path: github.com/vllm-project/aibrix/api/orchestration/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: aibrix.ai
+  group: orchestration
+  kind: RoleSet
+  path: github.com/vllm-project/aibrix/api/orchestration/v1alpha1
+  version: v1alpha1
 version: "3"
