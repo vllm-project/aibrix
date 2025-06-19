@@ -5,6 +5,7 @@ resources:
 - autoscaling
 - model
 - orchestration
+- bases/orchestration.aibrix.ai_stormservices.yaml
 #+kubebuilder:scaffold:crdkustomizeresource
 
 patches:
@@ -19,6 +20,7 @@ patches:
 #- path: patches/cainjection_in_orchestration_rayclusterreplicasets.yaml
 #- path: patches/cainjection_in_orchestration_rayclusterfleets.yaml
 #- path: patches/cainjection_in_orchestration_kvcaches.yaml
+#- path: patches/cainjection_in_orchestration_stormservices.yaml
 #+kubebuilder:scaffold:crdkustomizecainjectionpatch
 
 # [WEBHOOK] To enable webhook, uncomment the following section
