@@ -19,7 +19,9 @@ package modelrouter
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,20 +37,32 @@ import (
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
+	aibrixgateway "github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 )
 
 const (
 	// TODO (varun): cleanup model related identifiers and establish common consensus
-	modelHeaderIdentifier = "model"
-	modelIdentifier       = "model.aibrix.ai/name"
-	modelPortIdentifier   = "model.aibrix.ai/port"
+	modelHeaderIdentifier               = "model"
+	modelIdentifier                     = "model.aibrix.ai/name"
+	modelPortIdentifier                 = "model.aibrix.ai/port"
+	modelSupportedRequestTypeIdentifier = "model.aibrix.ai/supported-request-types"
 	// TODO (varun): parameterize it or dynamically resolve it
 	aibrixEnvoyGateway          = "aibrix-eg"
 	aibrixEnvoyGatewayNamespace = "aibrix-system"
 
 	defaultModelServingPort = 8000
+)
+
+var (
+	requestTypeIdentifierToSupportedRoutePathPrefix = map[string][]string{
+		string(aibrixgateway.OpenAiRequestEmbeddingsType):      {string(aibrixgateway.OpenAiRequestEmbeddingsPath)},
+		string(aibrixgateway.OpenAiRequestChatCompletionsType): {string(aibrixgateway.OpenAiRequestCompletionsPath), string(aibrixgateway.OpenAiRequestChatCompletionsPath)},
+		string(aibrixgateway.OpenAiRequestCompletionsType):     {string(aibrixgateway.OpenAiRequestCompletionsPath), string(aibrixgateway.OpenAiRequestChatCompletionsPath)},
+	}
+
+	defaultSupportedRequestType = string(aibrixgateway.OpenAiRequestChatCompletionsType)
 )
 
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
@@ -105,6 +119,38 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 	})
 
 	return err
+}
+
+// getSupportedRoutesMatchFromLabelsOrDefault returns the HTTPRouteMatch based on the model route labels value
+func getSupportedRoutesMatchFromLabelsOrDefault(labels map[string]string, modelHeaderMatch gatewayv1.HTTPHeaderMatch) []gatewayv1.HTTPRouteMatch {
+	var pathPrefixes []string
+	if routesLabelValue, ok := labels[modelSupportedRequestTypeIdentifier]; ok {
+		routesIdentifier := strings.Split(routesLabelValue, ",")
+		for id, paths := range requestTypeIdentifierToSupportedRoutePathPrefix {
+			if slices.Contains(routesIdentifier, id) {
+				pathPrefixes = append(pathPrefixes, paths...)
+			}
+		}
+	}
+
+	// Add the default pathPrefixes if no route defines via labels
+	if len(pathPrefixes) == 0 {
+		pathPrefixes = append(pathPrefixes, requestTypeIdentifierToSupportedRoutePathPrefix[defaultSupportedRequestType]...)
+	}
+
+	var routesmatch []gatewayv1.HTTPRouteMatch
+	for _, path := range pathPrefixes {
+		routesmatch = append(routesmatch, gatewayv1.HTTPRouteMatch{
+			Path: &gatewayv1.HTTPPathMatch{
+				Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+				Value: ptr.To(path),
+			},
+			Headers: []gatewayv1.HTTPHeaderMatch{
+				modelHeaderMatch,
+			},
+		})
+	}
+	return routesmatch
 }
 
 type ModelRouter struct {
@@ -192,6 +238,8 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 		Value: modelName,
 	}
 
+	httpRoutesMatch := getSupportedRoutesMatchFromLabelsOrDefault(labels, modelHeaderMatch)
+
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-router", modelName),
@@ -208,26 +256,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 			},
 			Rules: []gatewayv1.HTTPRouteRule{
 				{
-					Matches: []gatewayv1.HTTPRouteMatch{
-						{
-							Path: &gatewayv1.HTTPPathMatch{
-								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
-								Value: ptr.To("/v1/completions"),
-							},
-							Headers: []gatewayv1.HTTPHeaderMatch{
-								modelHeaderMatch,
-							},
-						},
-						{
-							Path: &gatewayv1.HTTPPathMatch{
-								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
-								Value: ptr.To("/v1/chat/completions"),
-							},
-							Headers: []gatewayv1.HTTPHeaderMatch{
-								modelHeaderMatch,
-							},
-						},
-					},
+					Matches: httpRoutesMatch,
 					BackendRefs: []gatewayv1.HTTPBackendRef{
 						{
 							BackendRef: gatewayv1.BackendRef{

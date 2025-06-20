@@ -18,21 +18,29 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/packages/param"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
 
-// validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
+// OpenAI has a 2048 size limits for embeddings array inputs
+// see https://platform.openai.com/docs/api-reference/embeddings/create#embeddings-create-input
+var maxEmbeddingInputArraySize = 2048
+
+// validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestType.
 // nolint:nakedret
-func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+func validateRequestBody(requestID string, requestType OpenAiRequestType, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	var streamOptions openai.ChatCompletionStreamOptionsParam
-	if requestPath == "/v1/chat/completions" {
+	switch requestType {
+
+	case OpenAiRequestChatCompletionsType:
 		var jsonMap map[string]json.RawMessage
 		if err := json.Unmarshal(requestBody, &jsonMap); err != nil {
 			klog.ErrorS(err, "error to unmarshal request body", "requestID", requestID, "requestBody", string(requestBody))
@@ -53,7 +61,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		if errRes = validateStreamOptions(requestID, user, &stream, streamOptions, jsonMap); errRes != nil {
 			return
 		}
-	} else if requestPath == "/v1/completions" {
+
+	case OpenAiRequestCompletionsType:
 		// openai.CompletionsNewParams does not support json unmarshal for CompletionNewParamsPromptUnion in release v0.1.0-beta.10
 		// once supported, input request will be directly unmarshal into openai.CompletionsNewParams
 		type Completion struct {
@@ -69,12 +78,31 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		}
 		model = completionObj.Model
 		message = completionObj.Prompt
-	} else {
+
+	case OpenAiRequestEmbeddingsType:
+		message = "" // prefix_cache algorithms are not relevant for embeddings
+		var jsonMap map[string]json.RawMessage
+		if err := json.Unmarshal(requestBody, &jsonMap); err != nil {
+			klog.ErrorS(err, "error to unmarshal request body", "requestID", requestID, "requestBody", string(requestBody))
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		embeddingObj := openai.EmbeddingNewParams{}
+		if err := json.Unmarshal(requestBody, &embeddingObj); err != nil {
+			klog.ErrorS(err, "error to unmarshal embeddings object", "requestID", requestID, "requestBody", string(requestBody))
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		model = embeddingObj.Model
+		if errRes = checkEmbeddingInputSequenceLen(requestID, embeddingObj); errRes != nil {
+			return
+		}
+	case OpenAiRequestUnknownType:
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
-	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "message", message, "stream", stream, "streamOptions", streamOptions)
+	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestType", requestType, "model", model, "message", message, "stream", stream, "streamOptions", streamOptions)
 	return
 }
 
@@ -140,6 +168,57 @@ func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCo
 		}
 	}
 	return builder.String(), nil
+}
+
+// getEmbeddingsInputLen returns the len of the embeddings object
+func checkEmbeddingInputSequenceLen(requestID string, embeddingObj openai.EmbeddingNewParams) *extProcPb.ProcessingResponse {
+	inputParam := embeddingObj.Input
+	var size int
+	isArrayType := false
+	switch input := embeddingNewParamsInputUnionAsAny(&inputParam).(type) {
+	case *string:
+		size = len(*input)
+	case *[]string:
+		size = len(*input)
+		isArrayType = true
+	case *[]int64:
+		size = len(*input)
+	case *[][]int64:
+		size = len(*input)
+		isArrayType = true
+	default:
+		// Should never happen, but if input is of an unexpected non-nil type, let's explicitly error log it.
+		// Size will be 0 in this case, which is then handled by the check below.
+		if input != nil {
+			klog.ErrorS(nil, "unhandled embedding input type", "requestID", requestID, "inputType", fmt.Sprintf("%T", input))
+		}
+	}
+
+	if size == 0 {
+		klog.ErrorS(nil, "no input in the request body", "requestID", requestID)
+		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", HeaderErrorRequestBodyProcessing, "true")
+	}
+
+	if isArrayType && size > maxEmbeddingInputArraySize {
+		klog.ErrorS(nil, "embeddings content is too large", "requestID", requestID, "size", size)
+		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "embeddings content is too large", HeaderErrorRequestBodyProcessing, "true")
+	}
+
+	return nil
+}
+
+// TODO: make asAny method publicly available on OpenAI go
+func embeddingNewParamsInputUnionAsAny(u *openai.EmbeddingNewParamsInputUnion) any {
+	if !param.IsOmitted(u.OfString) {
+		return &u.OfString.Value
+	} else if !param.IsOmitted(u.OfArrayOfStrings) {
+		return &u.OfArrayOfStrings
+	} else if !param.IsOmitted(u.OfArrayOfTokens) {
+		return &u.OfArrayOfTokens
+	} else if !param.IsOmitted(u.OfArrayOfTokenArrays) {
+		return &u.OfArrayOfTokenArrays
+	}
+	return nil
 }
 
 // generateErrorResponse construct envoy proxy error response

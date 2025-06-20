@@ -82,6 +82,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var respErrorCode int
 	var model string
 	var requestPath string
+	var requestType OpenAiRequestType
 	var routingAlgorithm types.RoutingAlgorithm
 	var routerCtx *types.RoutingContext
 	var stream, isRespError bool
@@ -113,7 +114,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			resp, user, rpm, routingAlgorithm, requestPath = s.HandleRequestHeaders(ctx, requestID, req)
 
 		case *extProcPb.ProcessingRequest_RequestBody:
-			resp, model, routerCtx, stream, traceTerm = s.HandleRequestBody(ctx, requestID, requestPath, req, user, routingAlgorithm)
+			resp, model, routerCtx, stream, requestType, traceTerm = s.HandleRequestBody(ctx, requestID, requestPath, req, user, routingAlgorithm)
 			if routerCtx != nil {
 				ctx = routerCtx
 			}
@@ -135,7 +136,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID,
 					string(req.Request.(*extProcPb.ProcessingRequest_ResponseBody).ResponseBody.GetBody()))
 			} else {
-				resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, stream, traceTerm, completed)
+				resp, completed = s.HandleResponseBody(ctx, requestID, req, requestType, user, rpm, model, stream, traceTerm, completed)
 			}
 		default:
 			klog.Infof("Unknown Request type %+v\n", v)
@@ -205,7 +206,8 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 }
 
 func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.ProcessingResponse, respErrorCode int,
-	model, requestID, errMsg string) *extProcPb.ProcessingResponse {
+	model, requestID, errMsg string,
+) *extProcPb.ProcessingResponse {
 	httprouteErr := s.validateHTTPRouteStatus(ctx, model)
 	if errMsg != "" && httprouteErr != nil {
 		errMsg = fmt.Sprintf("%s. %s", errMsg, httprouteErr.Error())
