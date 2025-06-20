@@ -39,7 +39,7 @@ def prepare_prompts(tokenizer: PreTrainedTokenizer, config: Dict[str, Any]) -> T
     
     for i in range(num_prefix):
         shared_length_mean = int(prompt_length_mean * shared_proportion_mean)
-        base_prefix, token_count = generate_synthetic_prompt(tokenizer, shared_length_mean, str(i))
+        unique_prefix, token_count = generate_synthetic_prompt(tokenizer, shared_length_mean, str(i))
         prompt_list = []
         token_count_list = []
         
