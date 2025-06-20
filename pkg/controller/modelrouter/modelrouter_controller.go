@@ -37,24 +37,32 @@ import (
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
+	aibrixgateway "github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 )
 
 const (
 	// TODO (varun): cleanup model related identifiers and establish common consensus
-	modelHeaderIdentifier          = "model"
-	modelIdentifier                = "model.aibrix.ai/name"
-	modelPortIdentifier            = "model.aibrix.ai/port"
-	modelSupportedRoutesIdentifier = "model.aibrix.ai/supported-routes"
-	modelRouteEmbeddings           = "embeddings"
-	modelRouteChatCompletions      = "chat-completions"
-	modelRouteDefault              = modelRouteChatCompletions
+	modelHeaderIdentifier               = "model"
+	modelIdentifier                     = "model.aibrix.ai/name"
+	modelPortIdentifier                 = "model.aibrix.ai/port"
+	modelSupportedRequestTypeIdentifier = "model.aibrix.ai/supported-request-types"
 	// TODO (varun): parameterize it or dynamically resolve it
 	aibrixEnvoyGateway          = "aibrix-eg"
 	aibrixEnvoyGatewayNamespace = "aibrix-system"
 
 	defaultModelServingPort = 8000
+)
+
+var (
+	requestTypeIdentifierToSupportedRoutePathPrefix = map[string][]string{
+		string(aibrixgateway.OpenAiRequestEmbeddingsType):      {string(aibrixgateway.OpenAiRequestEmbeddingsPath)},
+		string(aibrixgateway.OpenAiRequestChatCompletionsType): {string(aibrixgateway.OpenAiRequestCompletionsPath), string(aibrixgateway.OpenAiRequestChatCompletionsPath)},
+		string(aibrixgateway.OpenAiRequestCompletionsType):     {string(aibrixgateway.OpenAiRequestCompletionsPath), string(aibrixgateway.OpenAiRequestChatCompletionsPath)},
+	}
+
+	defaultSupportedRequestType = string(aibrixgateway.OpenAiRequestChatCompletionsType)
 )
 
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
@@ -115,24 +123,19 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 
 // getSupportedRoutesMatchFromLabelsOrDefault returns the HTTPRouteMatch based on the model route labels value
 func getSupportedRoutesMatchFromLabelsOrDefault(labels map[string]string, modelHeaderMatch gatewayv1.HTTPHeaderMatch) []gatewayv1.HTTPRouteMatch {
-	labelValueToRoutePathPrefix := map[string][]string{
-		modelRouteEmbeddings:      {"/v1/embeddings"},
-		modelRouteChatCompletions: {"/v1/completions", "/v1/chat/completions"},
-	}
-
 	var pathPrefixes []string
-	if routesLabelValue, ok := labels[modelSupportedRoutesIdentifier]; ok {
-		routes := strings.Split(routesLabelValue, ",")
-		for k, route := range labelValueToRoutePathPrefix {
-			if slices.Contains(routes, k) {
-				pathPrefixes = append(pathPrefixes, route...)
+	if routesLabelValue, ok := labels[modelSupportedRequestTypeIdentifier]; ok {
+		routesIdentifier := strings.Split(routesLabelValue, ",")
+		for id, paths := range requestTypeIdentifierToSupportedRoutePathPrefix {
+			if slices.Contains(routesIdentifier, id) {
+				pathPrefixes = append(pathPrefixes, paths...)
 			}
 		}
 	}
 
 	// Add the default pathPrefixes if no route defines via labels
 	if len(pathPrefixes) == 0 {
-		pathPrefixes = append(pathPrefixes, labelValueToRoutePathPrefix[modelRouteDefault]...)
+		pathPrefixes = append(pathPrefixes, requestTypeIdentifierToSupportedRoutePathPrefix[defaultSupportedRequestType]...)
 	}
 
 	var routesmatch []gatewayv1.HTTPRouteMatch
