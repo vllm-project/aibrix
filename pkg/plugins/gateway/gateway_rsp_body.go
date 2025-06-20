@@ -35,9 +35,26 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
+func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, requestType OpenAiRequestType, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 
+	switch requestType {
+	case OpenAiRequestChatCompletionsType, OpenAiRequestCompletionsType:
+		return s.handleChatCompletionsResponseBody(ctx, requestID, b, user, rpm, model, stream, traceTerm, hasCompleted)
+	case OpenAiRequestEmbeddingsType:
+		return s.handleEmbeddingsResponseBody(ctx, requestID, b, user, rpm, model, false, traceTerm, hasCompleted)
+	default:
+		// all other openAi request types (e.g. audio, image, ..) are not supported yet
+		return generateErrorResponse(
+			envoyTypePb.StatusCode_NotImplemented,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorResponseUnknown, RawValue: []byte("true"),
+			}}},
+			"request type not supported"), true
+	}
+}
+
+func (s *Server) handleChatCompletionsResponseBody(ctx context.Context, requestID string, b *extProcPb.ProcessingRequest_ResponseBody, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	var res openai.ChatCompletion
 	var usage openai.CompletionUsage
 	var promptTokens, completionTokens int64
@@ -138,6 +155,146 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 		// Update promptTokens and completeTokens
 		promptTokens = usage.PromptTokens
 		completionTokens = usage.CompletionTokens
+		// Count token per user.
+		if user.Name != "" {
+			tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), res.Usage.TotalTokens)
+			if err != nil {
+				return generateErrorResponse(
+					envoyTypePb.StatusCode_InternalServerError,
+					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+						Key: HeaderErrorIncrTPM, RawValue: []byte("true"),
+					}}},
+					err.Error()), complete
+			}
+
+			headers = append(headers,
+				&configPb.HeaderValueOption{
+					Header: &configPb.HeaderValue{
+						Key:      HeaderUpdateRPM,
+						RawValue: []byte(fmt.Sprintf("%d", rpm)),
+					},
+				},
+				&configPb.HeaderValueOption{
+					Header: &configPb.HeaderValue{
+						Key:      HeaderUpdateTPM,
+						RawValue: []byte(fmt.Sprintf("%d", tpm)),
+					},
+				},
+			)
+			requestEnd = fmt.Sprintf(requestEnd+"rpm: %d, tpm: %d, ", rpm, tpm)
+		}
+
+		if routerCtx != nil && routerCtx.HasRouted() {
+			targetPodIP := routerCtx.TargetAddress()
+			headers = append(headers,
+				&configPb.HeaderValueOption{
+					Header: &configPb.HeaderValue{
+						Key:      HeaderTargetPod,
+						RawValue: []byte(targetPodIP),
+					},
+				},
+				&configPb.HeaderValueOption{
+					Header: &configPb.HeaderValue{
+						Key:      HeaderRequestID,
+						RawValue: []byte(requestID),
+					},
+				},
+			)
+			requestEnd = fmt.Sprintf(requestEnd+"targetPod: %s", targetPodIP)
+		}
+
+		klog.Infof("request end, requestID: %s - %s", requestID, requestEnd)
+	} else if b.ResponseBody.EndOfStream {
+		complete = true
+	}
+
+	return &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_ResponseBody{
+			ResponseBody: &extProcPb.BodyResponse{
+				Response: &extProcPb.CommonResponse{
+					HeaderMutation: &extProcPb.HeaderMutation{
+						SetHeaders: headers,
+					},
+				},
+			},
+		},
+	}, complete
+}
+
+func (s *Server) handleEmbeddingsResponseBody(ctx context.Context, requestID string, b *extProcPb.ProcessingRequest_ResponseBody, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
+	var res openai.CreateEmbeddingResponse
+	var usage openai.CreateEmbeddingResponseUsage
+	var promptTokens, completionTokens int64
+	var headers []*configPb.HeaderValueOption
+	complete := hasCompleted
+	routerCtx, _ := ctx.(*types.RoutingContext)
+
+	defer func() {
+		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
+		if !hasCompleted && complete {
+			s.cache.DoneRequestTrace(routerCtx, requestID, model, promptTokens, completionTokens, traceTerm)
+			if routerCtx != nil {
+				routerCtx.Delete()
+			}
+		}
+	}()
+
+	// Use request ID as a key to store per-request buffer
+	// Retrieve or create buffer
+	buf, _ := requestBuffers.LoadOrStore(requestID, &bytes.Buffer{})
+	buffer := buf.(*bytes.Buffer)
+	// Append data to per-request buffer
+	buffer.Write(b.ResponseBody.Body)
+
+	if !b.ResponseBody.EndOfStream {
+		// Partial data received, wait for more chunks, we just return a common response here.
+		return &extProcPb.ProcessingResponse{
+			Response: &extProcPb.ProcessingResponse_ResponseBody{
+				ResponseBody: &extProcPb.BodyResponse{
+					Response: &extProcPb.CommonResponse{},
+				},
+			},
+		}, complete
+	}
+
+	// Last part received, process the full response
+	finalBody := buffer.Bytes()
+	// Clean up the buffer after final processing
+	requestBuffers.Delete(requestID)
+
+	if err := json.Unmarshal(finalBody, &res); err != nil {
+		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+		complete = true
+		return generateErrorResponse(
+			envoyTypePb.StatusCode_InternalServerError,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorResponseUnmarshal, RawValue: []byte("true"),
+			}}},
+			err.Error()), complete
+	} else if len(res.Model) == 0 {
+		msg := ErrorUnknownResponse.Error()
+		responseBodyContent := string(b.ResponseBody.GetBody())
+		if len(responseBodyContent) != 0 {
+			msg = responseBodyContent
+		}
+		klog.ErrorS(err, "unexpected response", "requestID", requestID, "responseBody", responseBodyContent)
+		complete = true
+		return generateErrorResponse(
+			envoyTypePb.StatusCode_InternalServerError,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorResponseUnknown, RawValue: []byte("true"),
+			}}},
+			msg), complete
+	}
+	// Do not overwrite model, res can be empty.
+	usage = res.Usage
+
+	var requestEnd string
+	if usage.TotalTokens != 0 {
+		complete = true
+		// Update promptTokens and completeTokens
+		promptTokens = usage.PromptTokens
+		completionTokens = 0 // no completion tokens in embeddings request
 		// Count token per user.
 		if user.Name != "" {
 			tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), res.Usage.TotalTokens)
