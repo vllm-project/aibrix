@@ -34,11 +34,13 @@ import (
 // see https://platform.openai.com/docs/api-reference/embeddings/create#embeddings-create-input
 var maxEmbeddingInputArraySize = 2048
 
-// validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
+// validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestType.
 // nolint:nakedret
-func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+func validateRequestBody(requestID string, requestType OpenAiRequestType, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	var streamOptions openai.ChatCompletionStreamOptionsParam
-	if requestPath == "/v1/chat/completions" {
+	switch requestType {
+
+	case OpenAiRequestChatCompletionsType:
 		var jsonMap map[string]json.RawMessage
 		if err := json.Unmarshal(requestBody, &jsonMap); err != nil {
 			klog.ErrorS(err, "error to unmarshal request body", "requestID", requestID, "requestBody", string(requestBody))
@@ -59,7 +61,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		if errRes = validateStreamOptions(requestID, user, &stream, streamOptions, jsonMap); errRes != nil {
 			return
 		}
-	} else if requestPath == "/v1/completions" {
+
+	case OpenAiRequestCompletionsType:
 		// openai.CompletionsNewParams does not support json unmarshal for CompletionNewParamsPromptUnion in release v0.1.0-beta.10
 		// once supported, input request will be directly unmarshal into openai.CompletionsNewParams
 		type Completion struct {
@@ -75,7 +78,8 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		}
 		model = completionObj.Model
 		message = completionObj.Prompt
-	} else if requestPath == "/v1/embeddings" {
+
+	case OpenAiRequestEmbeddingsType:
 		message = "" // prefix_cache algorithms are not relevant for embeddings
 		var jsonMap map[string]json.RawMessage
 		if err := json.Unmarshal(requestBody, &jsonMap); err != nil {
@@ -93,12 +97,12 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		if errRes = checkEmbeddingInputSequenceLen(requestID, embeddingObj); errRes != nil {
 			return
 		}
-	} else {
+	case OpenAiRequestUnknownType:
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
-	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "message", message, "stream", stream, "streamOptions", streamOptions)
+	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestType", requestType, "model", model, "message", message, "stream", stream, "streamOptions", streamOptions)
 	return
 }
 

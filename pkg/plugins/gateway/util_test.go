@@ -28,7 +28,7 @@ import (
 func Test_ValidateRequestBody(t *testing.T) {
 	testCases := []struct {
 		message     string
-		requestPath string
+		requestType OpenAiRequestType
 		requestBody []byte
 		model       string
 		messages    string
@@ -38,30 +38,30 @@ func Test_ValidateRequestBody(t *testing.T) {
 	}{
 		{
 			message:     "unknown path",
-			requestPath: "/v1/unknown",
+			requestType: OpenAiRequestUnknownType,
 			statusCode:  envoyTypePb.StatusCode_NotImplemented,
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal error",
-			requestPath: "/v1/chat/completions",
+			requestType: OpenAiRequestChatCompletionsType,
 			requestBody: []byte("bad_request"),
 			statusCode:  envoyTypePb.StatusCode_BadRequest,
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal ChatCompletionsNewParams",
-			requestPath: "/v1/chat/completions",
+			requestType: OpenAiRequestChatCompletionsType,
 			requestBody: []byte(`{"model": 1}`),
 			statusCode:  envoyTypePb.StatusCode_BadRequest,
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal no messages",
-			requestPath: "/v1/chat/completions",
+			requestType: OpenAiRequestChatCompletionsType,
 			requestBody: []byte(`{"model": "llama2-7b"}`),
 			statusCode:  envoyTypePb.StatusCode_BadRequest,
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal valid messages",
-			requestPath: "/v1/chat/completions",
+			requestType: OpenAiRequestChatCompletionsType,
 			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
 			model:       "llama2-7b",
 			messages:    "this is system say this is test",
@@ -69,13 +69,13 @@ func Test_ValidateRequestBody(t *testing.T) {
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal invalid messages with complex content",
-			requestPath: "/v1/chat/completions",
+			requestType: OpenAiRequestChatCompletionsType,
 			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": {"type": "text", "text": "say this is test", "complex": make(chan int)}}]}`),
 			statusCode:  envoyTypePb.StatusCode_BadRequest,
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal valid messages with complex content",
-			requestPath: "/v1/chat/completions",
+			requestType: OpenAiRequestChatCompletionsType,
 			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": [{"type": "text", "text": "say this is test"}, {"type": "text", "text": "say this is test"}]}]}`),
 			model:       "llama2-7b",
 			messages:    "this is system [{\"text\":\"say this is test\",\"type\":\"text\"},{\"text\":\"say this is test\",\"type\":\"text\"}]",
@@ -83,7 +83,7 @@ func Test_ValidateRequestBody(t *testing.T) {
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal valid messages with stop string param",
-			requestPath: "/v1/chat/completions",
+			requestType: OpenAiRequestChatCompletionsType,
 			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}], "stop": "stop"}`),
 			model:       "llama2-7b",
 			messages:    "this is system say this is test",
@@ -91,7 +91,7 @@ func Test_ValidateRequestBody(t *testing.T) {
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal valid messages with stop array param",
-			requestPath: "/v1/chat/completions",
+			requestType: OpenAiRequestChatCompletionsType,
 			requestBody: []byte(`{"model": "llama2-7b", "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}], "stop": ["stop"]}`),
 			model:       "llama2-7b",
 			messages:    "this is system say this is test",
@@ -99,13 +99,13 @@ func Test_ValidateRequestBody(t *testing.T) {
 		},
 		{
 			message:     "/v1/chat/completions json unmarshal invalid stream bool",
-			requestPath: "/v1/chat/completions",
+			requestType: OpenAiRequestChatCompletionsType,
 			requestBody: []byte(`{"model": "llama2-7b", "stream": "true", "messages": [{"role": "system", "content": "this is system"}]}`),
 			statusCode:  envoyTypePb.StatusCode_BadRequest,
 		},
 		{
 			message:     "/v1/chat/completions json unmarshal stream options is null",
-			requestPath: "/v1/chat/completions",
+			requestType: OpenAiRequestChatCompletionsType,
 			user:        utils.User{Tpm: 1},
 			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "messages": [{"role": "system", "content": "this is system"}]}`),
 			statusCode:  envoyTypePb.StatusCode_BadRequest,
@@ -113,20 +113,20 @@ func Test_ValidateRequestBody(t *testing.T) {
 		{
 			message:     "/v1/chat/completions stream_options.include_usage == false with user.TPM >= 1 is NOT OK",
 			user:        utils.User{Tpm: 1},
-			requestPath: "/v1/chat/completions",
+			requestType: OpenAiRequestChatCompletionsType,
 			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": false},  "messages": [{"role": "system", "content": "this is system"}]}`),
 			statusCode:  envoyTypePb.StatusCode_BadRequest,
 		},
 		{
 			message:     "/v1/chat/completions stream_options.include_usage == false with user.TPM == 0 is OK",
-			requestPath: "/v1/chat/completions",
+			requestType: OpenAiRequestChatCompletionsType,
 			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": false},  "messages": [{"role": "system", "content": "this is system"}]}`),
 			statusCode:  envoyTypePb.StatusCode_OK,
 		},
 		{
 			message:     "/v1/chat/completions valid request body",
 			user:        utils.User{Tpm: 1},
-			requestPath: "/v1/chat/completions",
+			requestType: OpenAiRequestChatCompletionsType,
 			requestBody: []byte(`{"model": "llama2-7b", "stream": true, "stream_options": {"include_usage": true}, "messages": [{"role": "system", "content": "this is system"},{"role": "user", "content": "say this is test"}]}`),
 			stream:      true,
 			model:       "llama2-7b",
@@ -136,7 +136,7 @@ func Test_ValidateRequestBody(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("1", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, stream, errRes := validateRequestBody("1", tt.requestType, tt.requestBody, tt.user)
 
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
