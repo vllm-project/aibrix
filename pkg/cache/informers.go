@@ -97,13 +97,13 @@ func (c *Store) addPod(obj interface{}) {
 	// only track pods with model deployments
 	modelName, ok := pod.Labels[modelIdentifier]
 	if !ok {
-		// klog.InfoS("ignored pod without model label", "name", pod.Name)
+		klog.V(4).InfoS("ignored pod without model label", "name", pod.Name)
 		return
 	}
 	// ignore worker pods
 	nodeType, ok := pod.Labels[nodeType]
 	if ok && nodeType == nodeWorker {
-		klog.InfoS("ignored ray worker pod", "name", pod.Name)
+		klog.V(4).InfoS("ignored ray worker pod", "name", pod.Name)
 		return
 	}
 
@@ -291,7 +291,7 @@ func (c *Store) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
 	if c.bufferModel == nil {
 		c.bufferModel = &Model{
 			Pods:            utils.NewRegistryWithArrayProvider(func(arr []*v1.Pod) *utils.PodArray { return &utils.PodArray{Pods: arr} }),
-			OutputPredictor: NewSimmpleOutputPredictor(maxInputTokens, maxOutputTokens, movingWindow),
+			OutputPredictor: NewSimpleOutputPredictor(maxInputTokens, maxOutputTokens, movingWindow),
 		}
 	}
 	metaModel, loaded := c.metaModels.LoadOrStore(modelName, c.bufferModel)

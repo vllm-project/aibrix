@@ -54,11 +54,14 @@ type Store struct {
 	modelRouterProvider ModelRouterProviderFunc // Function to get model router
 
 	// Metrics related fields
-	subscribers         []metrics.MetricSubscriber            // List of metric subscribers
-	metrics             map[string]any                        // Generic metric storage
-	requestTrace        *utils.SyncMap[string, *RequestTrace] // Request trace data (model_name -> *RequestTrace)
-	pendingLoadProvider CappedLoadProvider                    // Provider that defines load in terms of pending requests.
-	numRequestsTraces   int32                                 // Request trace counter
+	subscribers         []metrics.MetricSubscriber // List of metric subscribers
+	metrics             map[string]any             // Generic metric storage
+	pendingLoadProvider CappedLoadProvider         // Provider that defines load in terms of pending requests.
+	numRequestsTraces   int32                      // Request trace counter
+
+	// Request trace fields
+	enableTracing bool                                  // Default to load from enableGPUOptimizerTracing, can be configured.
+	requestTrace  *utils.SyncMap[string, *RequestTrace] // Request trace data (model_name -> *RequestTrace)
 
 	// Pod related storage
 	metaPods utils.SyncMap[string, *Pod] // pod_namespace/pod_name -> *Pod
@@ -67,7 +70,8 @@ type Store struct {
 	metaModels utils.SyncMap[string, *Model] // model_name -> *Model
 
 	// Deploymnent related storage
-	deploymentProfiles utils.SyncMap[string, *ModelGPUProfile] // deployment_name -> *ModelGPUProfile
+	enableProfileCaching bool                                    // Default to load from enableModelGPUProfileCaching, can be configured.
+	deploymentProfiles   utils.SyncMap[string, *ModelGPUProfile] // deployment_name -> *ModelGPUProfile
 
 	// buffer for sync map operations
 	bufferPod   *Pod
@@ -108,10 +112,12 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 		initialized:           true,
 		redisClient:           redisClient,
 		prometheusApi:         prometheusApi,
+		enableTracing:         enableGPUOptimizerTracing,
 		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
 		modelRouterProvider:   modelRouterProvider,
 		podMetricsWorkerCount: defaultPodMetricsWorkerCount,
 		podMetricsJobs:        make(chan *Pod, 100), // Initialize the job channel with a buffer size of 100
+		enableProfileCaching:  enableModelGPUProfileCaching,
 	}
 
 	// Start podMetrics worker pool
@@ -124,8 +130,15 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 
 // NewForTest initializes the cache store for testing purposes, it can be repeated call for reset.
 func NewForTest() *Store {
-	store = &Store{initialized: true}
-	if enableModelGPUProfileCaching {
+	store = &Store{
+		initialized:          true,
+		enableTracing:        enableGPUOptimizerTracing,
+		enableProfileCaching: enableModelGPUProfileCaching,
+	}
+	if store.enableTracing {
+		store.requestTrace = &utils.SyncMap[string, *RequestTrace]{}
+	}
+	if store.enableProfileCaching {
 		initProfileCache(store, nil, true)
 	}
 	return store
@@ -143,6 +156,24 @@ func NewWithPodsMetricsForTest(pods []*v1.Pod, model string, podMetrics map[stri
 // Call this function before InitWithPods for expected behavior.
 func InitWithModelRouterProvider(st *Store, modelRouterProvider ModelRouterProviderFunc) *Store {
 	st.modelRouterProvider = modelRouterProvider
+	return st
+}
+
+// InitWithRequestTrace initializes the cache store with request trace.
+func InitWithRequestTrace(st *Store) *Store {
+	if !st.enableTracing {
+		st.enableTracing = true
+		st.requestTrace = &utils.SyncMap[string, *RequestTrace]{}
+	}
+	return st
+}
+
+// InitWithRequestTrace initializes the cache store with request trace.
+func InitWithProfileCache(st *Store) *Store {
+	if !st.enableProfileCaching {
+		st.enableProfileCaching = true
+		initProfileCache(st, nil, true)
+	}
 	return st
 }
 
@@ -236,10 +267,10 @@ func InitForGateway(config *rest.Config, stopCh <-chan struct{}, redisClient *re
 			panic(err)
 		}
 		initMetricsCache(store, stopCh)
-		if enableModelGPUProfileCaching {
+		if store.enableProfileCaching {
 			initProfileCache(store, stopCh, false)
 		}
-		if enableGPUOptimizerTracing {
+		if store.enableTracing {
 			initTraceCache(redisClient, stopCh)
 		}
 	})

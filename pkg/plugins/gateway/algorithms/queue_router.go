@@ -32,7 +32,7 @@ type queueRouter struct {
 	chRouteTrigger chan types.PodList
 }
 
-func NewQueueRouter(backend types.Router, queue types.RouterQueue[*types.RoutingContext]) (types.Router, error) {
+func NewQueueRouter(backend types.Router, queue types.RouterQueue[*types.RoutingContext]) (types.QueueRouter, error) {
 	c, err := cache.Get()
 	if err != nil {
 		return nil, err
@@ -75,6 +75,10 @@ func (r *queueRouter) Route(ctx *types.RoutingContext, pods types.PodList) (stri
 	}
 
 	return ctx.TargetAddress(), ctx.GetError()
+}
+
+func (r *queueRouter) Len() int {
+	return r.queue.Len()
 }
 
 func (r *queueRouter) tryRoute(pods types.PodList) {

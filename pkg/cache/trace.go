@@ -34,6 +34,7 @@ const (
 	MetaKeyTracePrecision
 	MetaKeyTotalRequests
 	MetaKeyPendingRequests
+	MetaKeyQueueingRequests
 	RequestTraceNumMetaKeys // Guardian for the number of RequestTraceMetaKey. This is not a actual meta key.
 )
 
@@ -50,7 +51,7 @@ func getGPUOptimizerTracingFlag() bool {
 	return boolVal
 }
 
-var requestTraceMetaKeys = [...]string{"meta_v", "meta_interval_sec", "meta_precision", "meta_total_reqs", "meta_pending_reqs", "meta_len"}
+var requestTraceMetaKeys = [...]string{"meta_v", "meta_interval_sec", "meta_precision", "meta_total_reqs", "meta_pending_reqs", "meta_queueing_reqs", "meta_len"}
 var NewRequestTrace = newRequestTraceGen(nil)
 
 func (key RequestTraceMetaKey) ToString() string {
@@ -62,7 +63,8 @@ const (
 	// v1: No meta, default
 	// v2: Added meta data include version(meta_v), bucket precision(meta_precision), and interval(meta_interval_sec) to notify client the trace interval.
 	// v3: Added the number of total requests(meta_total_reqs) and pending requests(meta_pending_reqs) for uncompleted requests.
-	RequestTraceVersion = 3
+	// v4: Added the number of queueing requests (meta_queue_reqs) for unrouted requests.
+	RequestTraceVersion = 4
 	// Trace write interval
 	RequestTraceWriteInterval = 10 * time.Second
 	// Max tolerable write delay to write ticks.
@@ -152,7 +154,7 @@ func (t *RequestTrace) Unlock() {
 	t.mu.Unlock()
 }
 
-func (t *RequestTrace) ToMapLocked(total_pending int32) map[string]int {
+func (t *RequestTrace) ToMapLocked(total_pending, queueing int) map[string]int {
 	ret := make(map[string]int, int(t.numKeys)+int(RequestTraceNumMetaKeys))
 	t.trace.Range(func(_key, _count any) bool {
 		ret[_key.(string)] = int(*(_count.(*int32)))
@@ -162,14 +164,15 @@ func (t *RequestTrace) ToMapLocked(total_pending int32) map[string]int {
 	ret[MetaKeyIntervalInSeconds.ToString()] = int(RequestTraceWriteInterval / time.Second)
 	ret[MetaKeyTracePrecision.ToString()] = int(1 / RequestTracePrecision)
 	ret[MetaKeyTotalRequests.ToString()] = int(atomic.LoadInt32(&t.numRequests))
-	ret[MetaKeyPendingRequests.ToString()] = int(total_pending) // Disregard differences between pending in or out of window in this version.
+	ret[MetaKeyPendingRequests.ToString()] = total_pending // Disregard differences between pending in or out of window in this version.
+	ret[MetaKeyQueueingRequests.ToString()] = queueing
 	return ret
 }
 
-func (t *RequestTrace) ToMap(total_pending int32) map[string]int {
+func (t *RequestTrace) ToMap(total_pending, queueing int) map[string]int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.ToMapLocked(total_pending)
+	return t.ToMapLocked(total_pending, queueing)
 }
 
 func (t *RequestTrace) RecycleLocked() {

@@ -22,7 +22,7 @@ import (
 )
 
 // ModelRouterProviderFunc defines the function to provider per-model router
-type ModelRouterProviderFunc func(modelName string) (types.Router, error)
+type ModelRouterProviderFunc func(modelName string) (types.QueueRouter, error)
 
 type Model struct {
 	// Pods is a CustomizedRegistry that stores *v1.Pod objects.
@@ -31,7 +31,7 @@ type Model struct {
 	Pods *utils.CustomizedRegistry[*v1.Pod, *utils.PodArray]
 	// Metrics utils.SyncMap[string, metrics.MetricValue] // reserved
 	OutputPredictor types.OutputPredictor
-	QueueRouter     types.Router
+	QueueRouter     types.QueueRouter
 
 	pendingRequests int32
 }

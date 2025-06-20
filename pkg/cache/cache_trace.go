@@ -138,11 +138,15 @@ func (c *Store) writeRequestTraceToStorage(roundT int64) {
 		requestTrace.Store(modelName, nil) // Simply assign nil instead of delete
 
 		trace.Lock()
-		pending := int32(0)
+		pending := 0
+		queueing := 0
 		if meta, loaded := c.metaModels.Load(modelName); loaded {
-			pending = atomic.LoadInt32(&meta.pendingRequests)
+			pending = int(atomic.LoadInt32(&meta.pendingRequests))
+			if meta.QueueRouter != nil {
+				queueing = meta.QueueRouter.Len()
+			}
 		}
-		traceMap := trace.ToMapLocked(pending)
+		traceMap := trace.ToMapLocked(pending, queueing)
 		trace.RecycleLocked()
 		trace.Unlock()
 
@@ -160,4 +164,13 @@ func (c *Store) writeRequestTraceToStorage(roundT int64) {
 	})
 
 	klog.V(5).Infof("writeRequestTraceWithKey: %v", roundT)
+}
+
+func (c *Store) DumpRequestTrace(modelName string) map[string]int {
+	trace, ok := c.requestTrace.Load(modelName)
+	if !ok {
+		return nil
+	} else {
+		return trace.ToMap(0, 0)
+	}
 }

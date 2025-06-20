@@ -28,10 +28,10 @@ import (
 )
 
 // var _ = Describe("OutputPredictor", func() {
-// 	var predictor *SimmpleOutputPredictor
+// 	var predictor *SimpleOutputPredictor
 
 // 	BeforeEach(func() {
-// 		predictor = NewSimmpleOutputPredictor(32, 32, 60*time.Second)
+// 		predictor = NewSimpleOutputPredictor(32, 32, 60*time.Second)
 // 	})
 
 // 	Context("when initializing OutputPredictor", func() {
@@ -57,40 +57,43 @@ func getWeightedDistribution(fn func() int, weights []int) (distribution []int) 
 	return distribution
 }
 
-var _ = Describe("SimmpleOutputPredictor", func() {
+var _ = Describe("SimpleOutputPredictor", func() {
 	var (
-		p   *SimmpleOutputPredictor
+		p   *SimpleOutputPredictor
 		now time.Time
 	)
 
 	Describe("Initialization", func() {
 		It("should initialize with correct buckets and history size", func() {
-			p = NewSimmpleOutputPredictor(8, 8, 60*time.Second)
-			Expect(len(p.history.window)).To(Equal(7))
-			Expect(len(p.history.Head())).To(Equal(4*4 + 1))
+			p = NewSimpleOutputPredictor(8, 16, 60*time.Second)
+			Expect(len(p.history.window)).To(Equal(7)) // 60/10 + 1
+			Expect(len(p.history.Head())).To(Equal(4*5 + 1))
 			Expect(p.history.size).To(Equal(int32(0)))
-			Expect(len(p.inputs)).To(Equal(4 * 4))
+			Expect(len(p.inputs)).To(Equal(4 * 5))
 			Expect(len(p.inputsSums)).To(Equal(4))
 			Expect(p.inputBuckets).To(Equal(4))
-			Expect(p.outputBuckets).To(Equal(4))
+			Expect(p.outputBuckets).To(Equal(5))
 		})
 
 		It("should initialize with correct buckets size with non-aligned window size", func() {
-			p = NewSimmpleOutputPredictor(8, 8, 65*time.Second)
-			Expect(len(p.history.window)).To(Equal(8))
+			p = NewSimpleOutputPredictor(8, 16, 65*time.Second)
+			Expect(len(p.history.window)).To(Equal(8)) // cel(65/10) + 1
 		})
 	})
 
 	// Helper methods to access private functions for testing
 	Context("Test Helpers", func() {
 		BeforeEach(func() {
-			p = NewSimmpleOutputPredictor(8, 8, 60*time.Second)
+			p = NewSimpleOutputPredictor(8, 16, 60*time.Second)
 		})
 
 		It("bucket2idx should compute index correctly", func() {
-			// Assuming the code's current (incorrect) implementation
-			idx := p.bucket2idx(1, 2)
-			Expect(idx).To(Equal(1*p.inputBuckets + 2))
+			// First
+			Expect(p.bucket2idx(0, 0)).To(Equal(0))
+			// Last
+			Expect(p.bucket2idx(3, 4)).To(Equal(19))
+			// Middle
+			Expect(p.bucket2idx(1, 2)).To(Equal(1*5 + 2))
 		})
 
 		It("token2bucket should round bucket correctly", func() {
@@ -113,7 +116,7 @@ var _ = Describe("SimmpleOutputPredictor", func() {
 		})
 
 		It("token2bucket should clamp large input tokens to max bucket", func() {
-			p = NewSimmpleOutputPredictor(8, 8, 30*time.Second)
+			p = NewSimpleOutputPredictor(8, 16, 30*time.Second)
 			bucket := p.token2bucket(1000, p.inputBuckets)
 			maxBucket := p.inputBuckets - 1
 			Expect(bucket).To(Equal(maxBucket))
@@ -123,7 +126,7 @@ var _ = Describe("SimmpleOutputPredictor", func() {
 	Describe("Adding Traces", func() {
 
 		BeforeEach(func() {
-			p = NewSimmpleOutputPredictor(8, 8, 60*time.Second)
+			p = NewSimpleOutputPredictor(8, 16, 60*time.Second)
 		})
 
 		It("should update the correct distribution index", func() {
@@ -152,7 +155,7 @@ var _ = Describe("SimmpleOutputPredictor", func() {
 
 	Describe("Prediction", func() {
 		BeforeEach(func() {
-			p = NewSimmpleOutputPredictor(8, 8, 60*time.Second)
+			p = NewSimpleOutputPredictor(8, 16, 60*time.Second)
 			now = p.history.headTimestamp
 		})
 
@@ -172,7 +175,7 @@ var _ = Describe("SimmpleOutputPredictor", func() {
 			result := p.Predict(2)
 			Expect(result).To(Equal(4)) // Output round to 2^N
 
-			p.AddTraceWithTimestamp(2, 4, 1, now.Add(11*time.Second)) // Trigger rotation
+			p.AddTraceWithTimestamp(2, 4, 1, now.Add(12*time.Second)) // Trigger rotation
 
 			Expect(p.Predict(2)).To(Equal(4))
 		})
@@ -195,7 +198,8 @@ var _ = Describe("SimmpleOutputPredictor", func() {
 
 	Describe("Rotation", func() {
 		BeforeEach(func() {
-			p = NewSimmpleOutputPredictor(8, 8, 30*time.Second)
+			p = NewSimpleOutputPredictor(8, 16, 30*time.Second)
+			p.testing = true // Enable testWait
 			now = p.history.headTimestamp
 		})
 
@@ -207,7 +211,7 @@ var _ = Describe("SimmpleOutputPredictor", func() {
 			Expect(p.history.size).To(Equal(int32(0)))
 			Expect(p.history.Head().getSkipped()).To(Equal(int32(0))) // First bucket have no skipped set
 
-			p.AddTraceWithTimestamp(1, 1, 5, now.Add(11*time.Second))
+			p.AddTraceWithTimestamp(1, 1, 5, now.Add(12*time.Second))
 			Consistently(func() int32 {
 				return atomic.LoadInt32(&p.inputsSums[0])
 			}, 100*time.Millisecond).Should(Equal(int32(10)))
@@ -360,7 +364,7 @@ var _ = Describe("SimmpleOutputPredictor", func() {
 		It("should remove old data from summary: exist 1, 0, 1, pass 1", func() {
 			// log.Println("should remove old data from summary: exist 1, 0, 1, pass 1")
 			p.AddTraceWithTimestamp(1, 1, 5, now)
-			p.AddTraceWithTimestamp(1, 1, 5, now.Add(21*time.Second))
+			p.AddTraceWithTimestamp(1, 1, 5, now.Add(22*time.Second))
 
 			// Wait for exeuction
 			Eventually(func() int32 {
@@ -380,7 +384,7 @@ var _ = Describe("SimmpleOutputPredictor", func() {
 
 		It("should remove old data from summary: exist 1, 0, 1, pass window - 1", func() {
 			p.AddTraceWithTimestamp(1, 1, 5, now)
-			p.AddTraceWithTimestamp(1, 1, 5, now.Add(21*time.Second))
+			p.AddTraceWithTimestamp(1, 1, 5, now.Add(22*time.Second))
 
 			// Wait for exeuction
 			Eventually(func() int32 {
@@ -401,7 +405,7 @@ var _ = Describe("SimmpleOutputPredictor", func() {
 
 	Describe("Concurrency", func() {
 		It("should handle concurrent AddTrace and Predict calls", func() {
-			p = NewSimmpleOutputPredictor(1024, 1024, time.Minute)
+			p = NewSimpleOutputPredictor(1024, 2048, time.Minute)
 			var wg sync.WaitGroup
 			wg.Add(2)
 

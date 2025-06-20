@@ -23,6 +23,14 @@ type Router interface {
 	Route(ctx *RoutingContext, readyPodList PodList) (string, error)
 }
 
+// QueueRouter defines the interface for routers that contains built-in queue and
+// offers queue status query.
+type QueueRouter interface {
+	Router
+
+	Len() int
+}
+
 // FallbackRouter enables router chaining by set a fallback router.
 type FallbackRouter interface {
 	Router

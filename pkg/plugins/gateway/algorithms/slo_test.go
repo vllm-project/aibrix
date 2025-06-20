@@ -287,4 +287,26 @@ var _ = Describe("SLO", func() {
 		Expect(lastReq).ToNot(BeNil())
 		Expect(lastReq.TargetPod()).To(BeIdenticalTo(firstReq.TargetPod()))
 	})
+
+	It("Should cache.RequestTrace counts one and one only", func() {
+		store = cache.InitWithRequestTrace(store)
+		pods, _ := store.ListPodsByModel(model)
+
+		// Use a context with a timeout to ensure the function doesn't block indefinitely
+		req, cancel := newReqWithTimeout(model, "message", "request_id", 10*time.Millisecond)
+		defer cancel()
+		_, err := route(store, req, pods)
+		Expect(err).To(BeNil())
+		Expect(req.HasRouted()).To(BeTrue())
+		Expect(req.Algorithm).To(Equal(RouterSLO))
+
+		// Wait for metric to be updated
+		time.Sleep(1 * time.Millisecond) // There is a small gap between route and metric update due to operated by different goroutines.
+		_, err = store.GetMetricValueByPod(req.TargetPod().Name, req.TargetPod().Namespace, metrics.RealtimeNormalizedPendings)
+		Expect(err).To(BeNil())
+
+		trace := store.DumpRequestTrace(model)
+		Expect(trace).ToNot(BeNil())
+		Expect(trace[cache.MetaKeyTotalRequests.ToString()]).To(Equal(1))
+	})
 })

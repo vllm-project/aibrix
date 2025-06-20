@@ -180,7 +180,7 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 	// Current implementation assumes AddRequestCount() will not be called concurrently.
 	// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
 	if ctx == nil || ctx.CanAddTrace() {
-		if enableGPUOptimizerTracing {
+		if c.enableTracing {
 			success := false
 			for {
 				trace := c.getRequestTrace(modelName)
@@ -232,7 +232,7 @@ func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, mo
 	}
 
 	// DoneRequest only works for current term, no need to retry.
-	if enableGPUOptimizerTracing {
+	if c.enableTracing {
 		c.getRequestTrace(modelName).DoneRequest(requestID, traceTerm)
 	}
 }
@@ -256,7 +256,7 @@ func (c *Store) DoneRequestTrace(ctx *types.RoutingContext, requestID string, mo
 		atomic.AddInt32(&meta.pendingRequests, -1)
 	}
 
-	if enableGPUOptimizerTracing {
+	if c.enableTracing {
 		var traceKey string
 		for {
 			trace := c.getRequestTrace(modelName)

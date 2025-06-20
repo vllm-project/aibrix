@@ -78,7 +78,7 @@ func main() {
 		panic(err)
 	}
 
-	cache.InitForGateway(config, stopCh, redisClient, routing.NewSLORouter)
+	cache.InitForGateway(config, stopCh, redisClient, routing.ModelRouterFactory)
 
 	// Connect to K8s cluster
 	k8sClient, err := kubernetes.NewForConfig(config)

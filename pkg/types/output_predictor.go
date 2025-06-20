@@ -16,8 +16,10 @@ limitations under the License.
 package types
 
 type OutputPredictor interface {
+	// AddTrace collects history input and output tokens data.
 	AddTrace(inputTokens, outputTokens int, cnt int32)
 
+	// Predict outputs the number of output tokens based on the number of input tokens.
 	Predict(promptLen int) (outputLen int)
 }
 

@@ -99,24 +99,6 @@ func getNewModelAdapterWithPods(modelName, namespace string, podNames []string) 
 	return adapter
 }
 
-func newCache() *Store {
-	return &Store{
-		initialized: true,
-	}
-}
-
-func newTraceCache() (store *Store, reset func()) {
-	oldFloag := enableGPUOptimizerTracing
-	enableGPUOptimizerTracing = true
-	reset = func() {
-		enableGPUOptimizerTracing = oldFloag
-	}
-	return &Store{
-		initialized:  true,
-		requestTrace: &utils.SyncMap[string, *RequestTrace]{},
-	}, reset
-}
-
 func TestCache(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Cache Suite")
@@ -156,14 +138,24 @@ func (r *testRouter) Route(_ *types.RoutingContext, _ types.PodList) (string, er
 	return "addr", nil
 }
 
-func testModelRouterProvider(modelName string) (types.Router, error) {
+func (r *testRouter) Len() int {
+	return 0
+}
+
+func testModelRouterProvider(modelName string) (types.QueueRouter, error) {
 	return &testRouter{Model: modelName}, nil
 }
 
 var _ = Describe("Cache", func() {
-	It("should both addPod create both pods and metaModels entry", func() {
-		cache := newCache()
+	var (
+		cache *Store
+	)
 
+	BeforeEach(func() {
+		cache = NewForTest()
+	})
+
+	It("should both addPod create both pods and metaModels entry", func() {
 		// Ignore pods without model label
 		podWOModel := getReadyPod("p1", "default", "m1", 0)
 		podWOModel.ObjectMeta.Labels = nil
@@ -206,7 +198,6 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should addModelAdapter create metaModels entry", func() {
-		cache := newCache()
 		cache.addPod(getReadyPod("p1", "default", "m1", 0))
 
 		// Success
@@ -243,7 +234,6 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should updatePod clear old mappings with no model adapter inherited", func() {
-		cache := newCache()
 		oldPod := getReadyPod("p1", "default", "m1", 0)
 		cache.addPod(oldPod)
 		cache.addModelAdapter(getNewModelAdapter("m1adapter", "default", oldPod.Name))
@@ -290,8 +280,6 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should pods returned after updatePod reflect updated pods", func() {
-		cache := newCache()
-
 		oldPod := getNewPod("p1", "default", "m1", 0)
 		cache.addPod(oldPod)
 		pods, err := cache.ListPodsByModel("m1")
@@ -309,7 +297,6 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should deletePod clear pod, model, and modelAdapter entrys", func() {
-		cache := newCache()
 		pod := getReadyPod("p1", "default", "m1", 0)
 		cache.addPod(pod)
 		cache.addModelAdapter(getNewModelAdapter("m1adapter", "default", pod.Name))
@@ -337,7 +324,6 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should deleteModelAdapter remove mappings", func() {
-		cache := newCache()
 		cache.addPod(getReadyPod("p1", "default", "m1", 0))
 		cache.addPod(getReadyPod("p2", "default", "m1", 0))
 		cache.addPod(getReadyPod("p3", "default", "m1", 0))
@@ -376,7 +362,6 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should updateModelAdapter reset mappings", func() {
-		cache := newCache()
 		cache.addPod(getReadyPod("p1", "default", "m1", 0))
 		cache.addPod(getReadyPod("p2", "default", "m1", 0))
 		cache.addPod(getReadyPod("p3", "default", "m1", 0))
@@ -433,16 +418,15 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("if set modelRouterProvider, should cache being used as a model router manager", func() {
-		store := InitWithModelRouterProvider(NewForTest(), testModelRouterProvider)
-		store.addPod(getReadyPod("p1", "default", "m1", 0))
-		metaModel, exist := store.metaModels.Load("m1")
+		cache = InitWithModelRouterProvider(cache, testModelRouterProvider)
+		cache.addPod(getReadyPod("p1", "default", "m1", 0))
+		metaModel, exist := cache.metaModels.Load("m1")
 		Expect(exist).To(BeTrue())
 		Expect(metaModel.QueueRouter).ToNot(BeNil())
 		Expect(metaModel.QueueRouter).To(BeAssignableToTypeOf(&testRouter{}))
 	})
 
 	It("should GetPod return k8s pod", func() {
-		cache := newCache()
 		pod := getReadyPod("p1", "default", "m1", 0)
 		cache.addPod(pod)
 
@@ -455,7 +439,6 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should GetPods return k8s pod slice", func() {
-		cache := newCache()
 		pod1 := getReadyPod("p1", "default", "m1", 0)
 		pod2 := getReadyPod("p2", "default", "m2", 0)
 		cache.addPod(pod1)
@@ -468,7 +451,6 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should GetPodsForModel() return a PodArray", func() {
-		cache := newCache()
 		pod1 := getReadyPod("p1", "default", "m1", 0)
 		pod2 := getReadyPod("p2", "default", "m2", 0)
 		cache.addPod(pod1)
@@ -485,7 +467,6 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should ListModels return string slice", func() {
-		cache := newCache()
 		pod1 := getReadyPod("p1", "default", "m1", 0)
 		pod2 := getReadyPod("p2", "default", "m2", 0)
 		cache.addPod(pod1)
@@ -504,7 +485,6 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should GetModelsForPod() return a string slice", func() {
-		cache := newCache()
 		pod1 := getReadyPod("p1", "default", "m1", 0)
 		pod2 := getReadyPod("p2", "default", "m2", 0)
 		cache.addPod(pod1)
@@ -520,15 +500,8 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should basic add request count, add request trace no err", func() {
-		oldFloag := enableGPUOptimizerTracing
-		enableGPUOptimizerTracing = true
-		defer func() {
-			enableGPUOptimizerTracing = oldFloag
-		}()
-
 		modelName := "llama-7b"
-		cache, reset := newTraceCache()
-		defer reset()
+		cache := InitWithRequestTrace(cache)
 		cache.AddPod(getReadyPod("p1", "default", modelName, 0))
 
 		term := cache.AddRequestCount(nil, "no use now", modelName)
@@ -561,8 +534,7 @@ var _ = Describe("Cache", func() {
 
 	It("should global pending counter return 0.", func() {
 		modelName := "llama-7b"
-		cache, reset := newTraceCache()
-		defer reset()
+		cache := InitWithRequestTrace(cache)
 		cache.AddPod(getReadyPod("p1", "default", modelName, 0))
 
 		total := 100000
@@ -607,8 +579,7 @@ func BenchmarkLagacyAddRequestTrace(b *testing.B) {
 }
 
 func BenchmarkAddRequest(b *testing.B) {
-	cache, reset := newTraceCache()
-	defer reset()
+	cache := InitWithRequestTrace(NewForTest())
 	thread := 10
 	var wg sync.WaitGroup
 	for i := 0; i < thread; i++ {
@@ -624,8 +595,7 @@ func BenchmarkAddRequest(b *testing.B) {
 }
 
 func BenchmarkDoneRequest(b *testing.B) {
-	cache, reset := newTraceCache()
-	defer reset()
+	cache := InitWithRequestTrace(NewForTest())
 	thread := 10
 	var wg sync.WaitGroup
 	term := cache.AddRequestCount(nil, "no use now", "model")
@@ -642,8 +612,7 @@ func BenchmarkDoneRequest(b *testing.B) {
 }
 
 func BenchmarkDoneRequestTrace(b *testing.B) {
-	cache, reset := newTraceCache()
-	defer reset()
+	cache := InitWithRequestTrace(NewForTest())
 	thread := 10
 	var wg sync.WaitGroup
 	term := cache.AddRequestCount(nil, "no use now", "model")

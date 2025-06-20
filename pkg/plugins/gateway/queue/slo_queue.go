@@ -467,7 +467,7 @@ func (q *SLOQueue) higherRank(rank1 float64, rank2 float64) float64 {
 	return rank1 - rank2
 }
 
-func (q *SLOQueue) debugSub(msg string, keyAndValues ...interface{}) {
+func (q *SLOQueue) debugSub(msg string) {
 	if !klog.V(5).Enabled() {
 		return
 	}

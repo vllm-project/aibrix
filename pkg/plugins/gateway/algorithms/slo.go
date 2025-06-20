@@ -60,7 +60,7 @@ func (r *SLORouter) Route(ctx *types.RoutingContext, pods types.PodList) (string
 	return r.SLOQueue.Route(ctx, pods)
 }
 
-func NewSLORouter(modelName string) (types.Router, error) {
+func NewSLORouter(modelName string) (types.QueueRouter, error) {
 	loadProvider, err := cache.NewPendingLoadProvider()
 	if err != nil {
 		return nil, err

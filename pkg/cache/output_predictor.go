@@ -47,15 +47,23 @@ const (
 // ColdPredictionStrategy defines the strategy when there is no history for the predictor.
 type ColdPredictionStrategy int
 
-type SimmpleOutputPredictor struct {
+// SimpleOutputPredictor collects moving histogram of output tokens of completed requests corresponding each input token buckets,
+// and uses weighted random to predict output tokens for a specific request.
+// Usage:
+// 1. NewSimpleOutputPredictor() with max input and output estimation, specifing the window size.
+// 2. AddTrace() to collect seen output tokens. Output tokens will be categorized in input token bucket of round(log2(input tokens)).
+// 3. Call Predict() to get a prediction of number of output tokens by the number of input tokens.
+type SimpleOutputPredictor struct {
 	history       rotatingHistory
 	inputs        outputDistribution
 	inputsSums    []int32
 	inputBuckets  int
 	outputBuckets int
 
-	mu   sync.RWMutex
-	rand func(int32) int32
+	mu       sync.RWMutex
+	rand     func(int32) int32
+	testing  bool
+	testWait sync.WaitGroup
 }
 
 // Inputs/Output distribution
@@ -135,7 +143,7 @@ func (hist *rotatingHistory) resetTail(distributions outputDistribution, sums []
 	atomic.AddInt32(&hist.size, -hist.Tail().getSkipped())
 }
 
-func NewSimmpleOutputPredictor(maxInputTokens, maxOutputTokens int, window time.Duration) *SimmpleOutputPredictor {
+func NewSimpleOutputPredictor(maxInputTokens, maxOutputTokens int, window time.Duration) *SimpleOutputPredictor {
 	// We allocate 1 more history slot to make summary update on rotating lock free
 	extraSlot := 1
 	if window%MovingInterval > 0 {
@@ -143,7 +151,7 @@ func NewSimmpleOutputPredictor(maxInputTokens, maxOutputTokens int, window time.
 	}
 	inputBuckets := int(math.Ceil(math.Log2(float64(maxInputTokens + 1))))
 	outputBuckets := int(math.Ceil(math.Log2(float64(maxOutputTokens + 1))))
-	predictor := &SimmpleOutputPredictor{
+	predictor := &SimpleOutputPredictor{
 		history: rotatingHistory{
 			window:        make([]outputDistribution, int(window/MovingInterval)+extraSlot),
 			headTimestamp: time.Now(),
@@ -160,11 +168,16 @@ func NewSimmpleOutputPredictor(maxInputTokens, maxOutputTokens int, window time.
 	return predictor
 }
 
-func (p *SimmpleOutputPredictor) AddTraceWithTimestamp(inputTokens, outputTokens int, cnt int32, ts time.Time) {
+func (p *SimpleOutputPredictor) AddTraceWithTimestamp(inputTokens, outputTokens int, cnt int32, ts time.Time) {
 	p.tryRotate(ts)
 
 	inputBucket := p.token2bucket(inputTokens, p.inputBuckets)
 	idx := p.bucket2idx(inputBucket, p.token2bucket(outputTokens, p.outputBuckets))
+
+	// In testing, enforce time series
+	if p.testing {
+		p.testWait.Wait()
+	}
 
 	// Avoid operations during rotating
 	p.mu.RLock()
@@ -176,11 +189,11 @@ func (p *SimmpleOutputPredictor) AddTraceWithTimestamp(inputTokens, outputTokens
 	atomic.AddInt32(&p.history.window[p.history.head][idx], cnt)
 }
 
-func (p *SimmpleOutputPredictor) AddTrace(inputTokens, outputTokens int, cnt int32) {
+func (p *SimpleOutputPredictor) AddTrace(inputTokens, outputTokens int, cnt int32) {
 	p.AddTraceWithTimestamp(inputTokens, outputTokens, cnt, time.Now())
 }
 
-func (p *SimmpleOutputPredictor) Predict(inputTokens int) int {
+func (p *SimpleOutputPredictor) Predict(inputTokens int) int {
 	inputBucket := p.token2bucket(inputTokens, p.inputBuckets)
 	randRange := atomic.LoadInt32(&p.inputsSums[inputBucket])
 	if randRange == int32(0) {
@@ -199,7 +212,7 @@ func (p *SimmpleOutputPredictor) Predict(inputTokens int) int {
 	return int(math.Pow(2, float64(p.outputBuckets-1)))
 }
 
-func (p *SimmpleOutputPredictor) coldPredict(inputTokens int) int {
+func (p *SimpleOutputPredictor) coldPredict(inputTokens int) int {
 	switch DefaultColdPrediction {
 	case RandomColdPredition:
 		return rand.Intn(MaxOutputLen) + 1
@@ -213,11 +226,11 @@ func (p *SimmpleOutputPredictor) coldPredict(inputTokens int) int {
 	}
 }
 
-func (p *SimmpleOutputPredictor) bucket2idx(inputBucket, outputBucket int) int {
-	return inputBucket*p.inputBuckets + outputBucket
+func (p *SimpleOutputPredictor) bucket2idx(inputBucket, outputBucket int) int {
+	return inputBucket*p.outputBuckets + outputBucket
 }
 
-func (p *SimmpleOutputPredictor) token2bucket(tokens int, limit int) int {
+func (p *SimpleOutputPredictor) token2bucket(tokens int, limit int) int {
 	bucket := 0
 	if tokens > 0 {
 		bucket = int(math.Round(math.Log2(float64(tokens))))
@@ -228,18 +241,25 @@ func (p *SimmpleOutputPredictor) token2bucket(tokens int, limit int) int {
 	return bucket
 }
 
-func (p *SimmpleOutputPredictor) tryRotate(ts time.Time) {
+func (p *SimpleOutputPredictor) tryRotate(ts time.Time) {
 	if ts.Sub(p.history.headTimestamp) < MovingInterval {
 		return
+	}
+	if p.testing {
+		p.testWait.Add(1)
 	}
 	go p.rotate(ts)
 	runtime.Gosched() // allow rotate first.
 }
 
-func (p *SimmpleOutputPredictor) rotate(ts time.Time) bool {
+func (p *SimpleOutputPredictor) rotate(ts time.Time) bool {
+	if p.testing {
+		defer p.testWait.Done()
+	}
+
 	window := int32(len(p.history.window) - 1)
 	if p.history.Size() > window {
-		klog.Error("unexpected no spare time slot in SimmpleOutputPredictor")
+		klog.Error("unexpected no spare time slot in SimpleOutputPredictor")
 		return false
 	}
 
