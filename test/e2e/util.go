@@ -23,19 +23,21 @@ import (
 	"testing"
 	"time"
 
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/clientcmd"
+
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/stretchr/testify/assert"
 	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	"github.com/vllm-project/aibrix/pkg/utils"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 const (
@@ -148,15 +150,20 @@ func validateInferenceWithClient(t *testing.T, client openai.Client, modelName s
 }
 
 func validateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expectedPodCount int) {
-	allPodsReady := false
-	for i := 0; i <= 3; i++ {
-		podlist, err := client.CoreV1().Pods("default").List(context.Background(), v1.ListOptions{})
-		if err == nil && expectedPodCount == len(utils.FilterActivePods(podlist.Items)) {
-			allPodsReady = true
-			t.Log("all pods are ready", len(utils.FilterActivePods(podlist.Items)))
-			break
-		}
-		time.Sleep(1 * time.Second)
-	}
-	assert.True(t, allPodsReady, "ensure all pods are ready")
+	err := wait.PollUntilContextTimeout(context.Background(), 100*time.Millisecond, 10*time.Second,
+		true, func(ctx context.Context) (bool, error) {
+			podList, err := client.CoreV1().Pods("default").List(ctx, v1.ListOptions{})
+			if err != nil {
+				t.Logf("failed to list pods: %v", err)
+				return false, err
+			}
+			activePods := utils.FilterActivePods(podList.Items)
+			if len(activePods) == expectedPodCount {
+				t.Logf("All %d pods are ready", expectedPodCount)
+				return true, nil
+			}
+			t.Logf("Waiting for %d pods to be ready. Current count: %d", expectedPodCount, len(activePods))
+			return false, nil
+		})
+	assert.NoError(t, err, "timeout waiting for all pods to be ready")
 }
