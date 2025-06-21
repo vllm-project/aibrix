@@ -5,9 +5,9 @@ metadata:
   namespace: aibrix-system
   labels:
     app: gateway-plugins
+  annotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8080"
-  annotations:
     prometheus.io/path: "/metrics"
 spec:
   selector:
