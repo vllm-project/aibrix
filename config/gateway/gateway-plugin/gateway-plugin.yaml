@@ -198,6 +198,6 @@ spec:
       processingMode:
         request:
           body: Buffered
-        response: 
+        response:
           body: Streamed
       messageTimeout: 5s
