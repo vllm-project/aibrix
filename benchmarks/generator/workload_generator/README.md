@@ -216,3 +216,16 @@ python -m generator.workload_generator.workload_generator \
 ```
 
 Use [client](../client/README.md) to test the generated trace locally. 
+
+
+
+## Utility for workload manipulation
+### Concatenate workload files
+```bash
+python utility.py --mode concat --input-files ${WORKLOAD1_FILE} ${WORKLOAD2_FILE}  --output-file concat.jsonl
+```
+
+### Merge workload files
+```bash
+python utility.py --mode merge --input-files ${WORKLOAD1_FILE} ${WORKLOAD2_FILE}  --output-file merge.jsonl
+```
