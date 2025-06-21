@@ -19,6 +19,8 @@ patches:
 #- path: patches/cainjection_in_orchestration_rayclusterreplicasets.yaml
 #- path: patches/cainjection_in_orchestration_rayclusterfleets.yaml
 #- path: patches/cainjection_in_orchestration_kvcaches.yaml
+#- path: patches/cainjection_in_orchestration_stormservices.yaml
+#- path: patches/cainjection_in_orchestration_rolesets.yaml
 #+kubebuilder:scaffold:crdkustomizecainjectionpatch
 
 # [WEBHOOK] To enable webhook, uncomment the following section
