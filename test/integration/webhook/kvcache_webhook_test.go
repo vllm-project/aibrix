@@ -17,14 +17,15 @@ limitations under the License.
 package webhook
 
 import (
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	modelapi "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 var _ = ginkgo.Describe("kvcache default and validation", func() {
@@ -51,6 +52,101 @@ var _ = ginkgo.Describe("kvcache default and validation", func() {
 		}
 	})
 
+	type testDefaultingCase struct {
+		kvcache     func() *orchestrationapi.KVCache
+		wantKvcache func() *orchestrationapi.KVCache
+	}
+	ginkgo.DescribeTable("Defaulting test",
+		func(tc *testDefaultingCase) {
+			model := tc.kvcache()
+			gomega.Expect(k8sClient.Create(ctx, model)).To(gomega.Succeed())
+			gomega.Expect(model).To(gomega.BeComparableTo(tc.wantKvcache(),
+				cmpopts.IgnoreTypes(orchestrationapi.KVCacheStatus{}),
+				cmpopts.IgnoreFields(orchestrationapi.KVCacheSpec{}, "Service"),
+				cmpopts.IgnoreFields(metav1.ObjectMeta{}, "UID",
+					"ResourceVersion", "Generation", "CreationTimestamp", "ManagedFields")))
+		},
+		ginkgo.Entry("apply kvcache with no backend specified", &testDefaultingCase{
+			kvcache: func() *orchestrationapi.KVCache {
+				return &orchestrationapi.KVCache{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "kvcache-cluster-no-backend",
+						Namespace: ns.Name,
+						Annotations: map[string]string{
+							"infinistore.kvcache.orchestration.aibrix.ai/link-type": "Ethernet",
+						},
+					},
+					Spec: orchestrationapi.KVCacheSpec{
+						Metadata: &orchestrationapi.MetadataSpec{},
+						Service: orchestrationapi.ServiceSpec{
+							Type: corev1.ServiceTypeClusterIP,
+							Ports: []corev1.ServicePort{
+								{
+									Name:       "service",
+									Port:       12345,
+									TargetPort: intstr.FromInt(12345),
+									Protocol:   corev1.ProtocolTCP,
+								},
+								{
+									Name:       "admin",
+									Port:       8088,
+									TargetPort: intstr.FromInt(8088),
+									Protocol:   corev1.ProtocolTCP,
+								},
+							},
+						},
+						Watcher: &orchestrationapi.RuntimeSpec{},
+						Cache:   orchestrationapi.RuntimeSpec{},
+					},
+				}
+			},
+			wantKvcache: func() *orchestrationapi.KVCache {
+				return &orchestrationapi.KVCache{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "kvcache-cluster-no-backend",
+						Namespace: ns.Name,
+						Annotations: map[string]string{
+							"infinistore.kvcache.orchestration.aibrix.ai/link-type": "Ethernet",
+							"kvcache.orchestration.aibrix.ai/backend":               "vineyard",
+							"kvcache.orchestration.aibrix.ai/mode":                  "vineyard",
+						},
+					},
+					Spec: orchestrationapi.KVCacheSpec{
+						Mode:     "distributed",
+						Metadata: &orchestrationapi.MetadataSpec{},
+						Service: orchestrationapi.ServiceSpec{
+							Type: corev1.ServiceTypeClusterIP,
+							Ports: []corev1.ServicePort{
+								{
+									Name:       "service",
+									Port:       12345,
+									TargetPort: intstr.FromInt(12345),
+									Protocol:   corev1.ProtocolTCP,
+								},
+								{
+									Name:       "admin",
+									Port:       8088,
+									TargetPort: intstr.FromInt(8088),
+									Protocol:   corev1.ProtocolTCP,
+								},
+							},
+						},
+						Watcher: &orchestrationapi.RuntimeSpec{
+							Replicas:        1,
+							ImagePullPolicy: string(corev1.PullIfNotPresent),
+							Env:             []corev1.EnvVar{},
+						},
+						Cache: orchestrationapi.RuntimeSpec{
+							Replicas:        1,
+							ImagePullPolicy: string(corev1.PullIfNotPresent),
+							Env:             []corev1.EnvVar{},
+						},
+					},
+				}
+			},
+		}),
+	)
+
 	type testValidatingCase struct {
 		kvcache func() *orchestrationapi.KVCache
 		failed  bool
@@ -68,7 +164,7 @@ var _ = ginkgo.Describe("kvcache default and validation", func() {
 				kv := &orchestrationapi.KVCache{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "kvcache-cluster",
-						Namespace: "default",
+						Namespace: ns.Name,
 						Annotations: map[string]string{
 							"kvcache.orchestration.aibrix.ai/backend":                    "infinistore",
 							"infinistore.kvcache.orchestration.aibrix.ai/link-type":      "Ethernet",
