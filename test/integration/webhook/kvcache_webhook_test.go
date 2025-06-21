@@ -126,6 +126,28 @@ var _ = ginkgo.Describe("kvcache default and validation", func() {
 							"kvcache.orchestration.aibrix.ai/backend": "unsupported_backend",
 						},
 					},
+					Spec: orchestrationapi.KVCacheSpec{
+						Metadata: &orchestrationapi.MetadataSpec{},
+						Service: orchestrationapi.ServiceSpec{
+							Type: corev1.ServiceTypeClusterIP,
+							Ports: []corev1.ServicePort{
+								{
+									Name:       "service",
+									Port:       12345,
+									TargetPort: intstr.FromInt(12345),
+									Protocol:   corev1.ProtocolTCP,
+								},
+								{
+									Name:       "admin",
+									Port:       8088,
+									TargetPort: intstr.FromInt(8088),
+									Protocol:   corev1.ProtocolTCP,
+								},
+							},
+						},
+						Watcher: &orchestrationapi.RuntimeSpec{},
+						Cache:   orchestrationapi.RuntimeSpec{},
+					},
 				}
 				return kv
 			},
@@ -141,6 +163,28 @@ var _ = ginkgo.Describe("kvcache default and validation", func() {
 							"infinistore.kvcache.orchestration.aibrix.ai/link-type": "Ethernet",
 						},
 					},
+					Spec: orchestrationapi.KVCacheSpec{
+						Metadata: &orchestrationapi.MetadataSpec{},
+						Service: orchestrationapi.ServiceSpec{
+							Type: corev1.ServiceTypeClusterIP,
+							Ports: []corev1.ServicePort{
+								{
+									Name:       "service",
+									Port:       12345,
+									TargetPort: intstr.FromInt(12345),
+									Protocol:   corev1.ProtocolTCP,
+								},
+								{
+									Name:       "admin",
+									Port:       8088,
+									TargetPort: intstr.FromInt(8088),
+									Protocol:   corev1.ProtocolTCP,
+								},
+							},
+						},
+						Watcher: &orchestrationapi.RuntimeSpec{},
+						Cache:   orchestrationapi.RuntimeSpec{},
+					},
 				}
 				return kv
 			},
@@ -155,6 +199,28 @@ var _ = ginkgo.Describe("kvcache default and validation", func() {
 						Annotations: map[string]string{
 							"infinistore.kvcache.orchestration.aibrix.ai/mode": "distributed",
 						},
+					},
+					Spec: orchestrationapi.KVCacheSpec{
+						Metadata: &orchestrationapi.MetadataSpec{},
+						Service: orchestrationapi.ServiceSpec{
+							Type: corev1.ServiceTypeClusterIP,
+							Ports: []corev1.ServicePort{
+								{
+									Name:       "service",
+									Port:       12345,
+									TargetPort: intstr.FromInt(12345),
+									Protocol:   corev1.ProtocolTCP,
+								},
+								{
+									Name:       "admin",
+									Port:       8088,
+									TargetPort: intstr.FromInt(8088),
+									Protocol:   corev1.ProtocolTCP,
+								},
+							},
+						},
+						Watcher: &orchestrationapi.RuntimeSpec{},
+						Cache:   orchestrationapi.RuntimeSpec{},
 					},
 				}
 				return kv
