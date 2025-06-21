@@ -19,6 +19,7 @@ package utils
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -35,6 +36,12 @@ const (
 	modelPortIdentifier  = "model.aibrix.ai/port"
 	defaultPodMetricPort = 8000
 )
+
+var DeploymentIdentifier string = getDeploymentIdentifier()
+
+func getDeploymentIdentifier() string {
+	return LoadEnv("AIBRIX_POD_DEPLOYMENT_LABEL", "app.kubernetes.io/name")
+}
 
 // GeneratePodKey generates a key in the format "namespace/name" for a given pod.
 func GeneratePodKey(podNamespace, podName string) string {
@@ -222,6 +229,7 @@ func FilterPods(pods []v1.Pod, filterFn filterPod) []v1.Pod {
 	return filtered
 }
 
+// FilterPodByName returns the pod with the given name.
 func FilterPodByName(podname string, pods []*v1.Pod) (*v1.Pod, bool) {
 	for _, pod := range pods {
 		if pod.Name == podname {
@@ -229,6 +237,34 @@ func FilterPodByName(podname string, pods []*v1.Pod) (*v1.Pod, bool) {
 		}
 	}
 	return nil, false
+}
+
+// DeploymentNameFromPod extracts the deployment name from the pod using two methods:
+// 1. If the pod has a label with the key "app.kubernetes.io/name", its value is considered the deployment name.
+// 2. If the pod has an owner reference of kind "ReplicaSet", the deployment name is extracted from the owner reference's name.
+func DeploymentNameFromPod(pod *v1.Pod) string {
+	if dpName, ok := pod.Labels[DeploymentIdentifier]; ok {
+		return dpName
+	}
+
+	// Try load from ReplicaSet
+	ownerReferences := pod.OwnerReferences
+	if len(ownerReferences) > 0 {
+		for _, ownerRef := range ownerReferences {
+			if ownerRef.Kind == "ReplicaSet" {
+				replicasetName := ownerRef.Name
+				re := regexp.MustCompile(`^(.*)-\w+$`)
+				matches := re.FindStringSubmatch(replicasetName)
+				if len(matches) > 1 {
+					return matches[1]
+				} else {
+					return ""
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 // SelectRandomPod selects a random pod from the provided list, ensuring it's routable.
@@ -247,6 +283,10 @@ func GetModelPortForPod(requestID string, pod *v1.Pod) int64 {
 	if !ok {
 		klog.Warningf("requestID: %v, pod: %v is missing port identifier label: %v, hence default to port: %v",
 			requestID, pod.Name, modelPortIdentifier, defaultPodMetricPort)
+		// if pod.Labels == nil {
+		// 	pod.Labels = make(map[string]string)
+		// }
+		// pod.Labels[modelPortIdentifier] = strconv.Itoa(defaultPodMetricPort)
 		return defaultPodMetricPort
 	}
 

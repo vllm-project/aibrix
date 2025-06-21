@@ -16,9 +16,13 @@ limitations under the License.
 package cache
 
 import (
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
+
+// ModelRouterProviderFunc defines the function to provider per-model router
+type ModelRouterProviderFunc func(modelName string) (types.QueueRouter, error)
 
 type Model struct {
 	// Pods is a CustomizedRegistry that stores *v1.Pod objects.
@@ -26,6 +30,8 @@ type Model struct {
 	// This allows efficient lookups and caching of Pod objects by their unique identifier.
 	Pods *utils.CustomizedRegistry[*v1.Pod, *utils.PodArray]
 	// Metrics utils.SyncMap[string, metrics.MetricValue] // reserved
+	OutputPredictor types.OutputPredictor
+	QueueRouter     types.QueueRouter
 
 	pendingRequests int32
 }

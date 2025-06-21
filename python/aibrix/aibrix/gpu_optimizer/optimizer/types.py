@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
 from typing import Callable, List, Optional, Protocol, Tuple
 
 
@@ -37,6 +37,14 @@ class GPUProfile:
     tputs: list = field(default_factory=list)  # units: requests per second
     indexes: list = field(default_factory=list)  # value ticks of tputs columns and rows
     created: float = 0.0
+
+    def __init__(self, **kwargs):
+        for f in fields(self):
+            # Attempt to get the value from kwargs, or use the field's default.
+            value = kwargs.pop(f.name, MISSING)
+
+            if value is not MISSING:
+                setattr(self, f.name, value)
 
 
 WorkloadSignatureErrorHandler = Callable[[int, float, float, float, float], bool]
