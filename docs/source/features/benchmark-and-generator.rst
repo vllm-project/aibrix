@@ -156,6 +156,7 @@ The goal of AIBrix's workload generator is to perform workload shaping. The work
 - For a trace (e.g., `Azure LLM trace <https://github.com/Azure/AzurePublicDataset/blob/master/data/AzureLLMInferenceTrace_conv.csv>`_), both the requests and timestamps associated with the requests are provided, and the workload generator will generate a workload that simply replays requests based on the timestamp. Configuration variables are under the `workload_configs.azure` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
 **4. The "mooncake" workload type**
+
 - For a `Mooncake LLM trace <https://github.com/kvcache-ai/Mooncake/tree/main/FAST25-release/traces>`_, the request input/output, the cache block ID along with timestamps associated with the requests are provided, and the workload generator will generate a workload that simulates requests following the same traffic pattern. Configuration variables are under the `workload_configs.mooncake` in the `configuration file <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_.
 
 The workload generator can be run by:

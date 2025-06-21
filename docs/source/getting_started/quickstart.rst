@@ -180,6 +180,17 @@ Edit ``kind-config.yaml`` to mount your model cache, then:
 
    kind create cluster --config=./development/vllm/kind-config.yaml
 
+For Dev & Testing Local Setup with Monitoring
+---------------------------------------------
+
+.. code-block:: bash
+
+    make dev-install-in-kind
+    make dev-port-forward
+    make dev-stop-port-forward
+    make dev-uninstall-from-kind
+
+
 Build and load images
 ~~~~~~~~~~~~~~~~~~~~~
 
