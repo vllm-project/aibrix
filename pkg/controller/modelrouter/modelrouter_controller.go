@@ -35,6 +35,7 @@ import (
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 )
@@ -241,7 +242,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 						},
 					},
 					Timeouts: &gatewayv1.HTTPRouteTimeouts{
-						Request: ptr.To(gatewayv1.Duration("120s")),
+						Request: ptr.To(gatewayv1.Duration(fmt.Sprintf("%ds", utils.LoadEnvInt("AIBRIX_GATEWAY_TIMEOUT_SECONDS", 120)))),
 					},
 				},
 			},
@@ -274,7 +275,7 @@ func (m *ModelRouter) createReferenceGrant(namespace string) {
 	}
 
 	if err := m.Client.Get(context.Background(), client.ObjectKeyFromObject(&referenceGrant), &referenceGrant); err == nil {
-		klog.InfoS("reference grant already exists", "referencegrant", referenceGrant)
+		klog.InfoS("reference grant already exists", "referencegrant", referenceGrant.Name)
 		return
 	}
 
@@ -303,7 +304,7 @@ func (m *ModelRouter) createReferenceGrant(namespace string) {
 		klog.ErrorS(err, "error on creating referencegrant", "referencegrant", referenceGrant)
 		return
 	}
-	klog.InfoS("referencegrant created", "referencegrant", referenceGrant)
+	klog.InfoS("referencegrant created", "referencegrant", referenceGrant.Name)
 }
 
 func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string) {
