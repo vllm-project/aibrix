@@ -147,7 +147,7 @@ func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
 		if end > len(tokens) {
 			break
 		}
-		_, _ = digest.Write(tokens[i:end])
+		_, _ = digest.Write(tokens[0:end])
 		prefixHashes = append(prefixHashes, digest.Sum64())
 		digest.ResetWithSeed(seed)
 	}
