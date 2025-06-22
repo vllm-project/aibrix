@@ -36,6 +36,7 @@ import (
 const TestRouterAlgorithm types.RoutingAlgorithm = "test-router"
 const RouterNotSet types.RoutingAlgorithm = "not-set"
 
+// Test_handleRequestBody tests the HandleRequestBody function for various scenarios
 func Test_handleRequestBody(t *testing.T) {
 	// Initialize routing algorithms
 	routingalgorithms.Init()
@@ -61,6 +62,7 @@ func Test_handleRequestBody(t *testing.T) {
 		validate    func(*testing.T, *testCase, *extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64)
 		checkStream bool
 	}
+	// Define test cases for different routing and error scenarios
 	tests := []testCase{
 		{
 			name:        "no routing strategy - should only set model header",
@@ -75,24 +77,14 @@ func Test_handleRequestBody(t *testing.T) {
 					pods: []*v1.Pod{
 						{
 							Status: v1.PodStatus{
-								PodIP: "1.2.3.4",
-								Conditions: []v1.PodCondition{
-									{
-										Type:   v1.PodReady,
-										Status: v1.ConditionTrue,
-									},
-								},
+								PodIP:      "1.2.3.4",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
 							},
 						},
 						{
 							Status: v1.PodStatus{
-								PodIP: "4.5.6.7",
-								Conditions: []v1.PodCondition{
-									{
-										Type:   v1.PodReady,
-										Status: v1.ConditionTrue,
-									},
-								},
+								PodIP:      "4.5.6.7",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
 							},
 						},
 					},
@@ -102,20 +94,14 @@ func Test_handleRequestBody(t *testing.T) {
 			},
 			expected: testResponse{
 				statusCode: envoyTypePb.StatusCode_OK,
-				headers: []*configPb.HeaderValueOption{
-					{
-						Header: &configPb.HeaderValue{
-							Key:      HeaderModel,
-							RawValue: []byte("test-model"),
-						},
-					},
-				},
+				headers:    []*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: HeaderModel, RawValue: []byte("test-model")}}},
 				model:      "test-model",
 				stream:     false,
 				term:       1,
 				routingCtx: &types.RoutingContext{},
 			},
 			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				// Validate that only the model header is set and no routing headers are present
 				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
 				assert.Equal(t, tt.expected.headers, resp.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders())
 				assert.Equal(t, tt.expected.model, model)
@@ -273,24 +259,14 @@ func Test_handleRequestBody(t *testing.T) {
 					pods: []*v1.Pod{
 						{
 							Status: v1.PodStatus{
-								PodIP: "1.2.3.4",
-								Conditions: []v1.PodCondition{
-									{
-										Type:   v1.PodReady,
-										Status: v1.ConditionTrue,
-									},
-								},
+								PodIP:      "1.2.3.4",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
 							},
 						},
 						{
 							Status: v1.PodStatus{
-								PodIP: "5.6.7.8",
-								Conditions: []v1.PodCondition{
-									{
-										Type:   v1.PodReady,
-										Status: v1.ConditionTrue,
-									},
-								},
+								PodIP:      "5.6.7.8",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
 							},
 						},
 					},
@@ -479,17 +455,18 @@ func Test_handleRequestBody(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt // Create new variable for each test case
-		t.Run(tt.name, func(t *testing.T) {
+		// Run each test case as a subtest
+		t.Run(tt.name, func(subtest *testing.T) {
+			subtest.Parallel()
 			// Add panic recovery for subtests too
 			defer func() {
 				if r := recover(); r != nil {
-					t.Errorf("Subtest %v panicked: %v", tt.name, r)
-					t.FailNow()
+					subtest.Errorf("Subtest %v panicked: %v", tt.name, r)
+					subtest.FailNow()
 				}
 			}()
 
-			// Initialize mock cache and router
+			// Initialize mock cache and router for each test
 			mockCache := new(MockCache)
 			mockRouter := new(mockRouter)
 			if tt.mockSetup != nil {
@@ -510,7 +487,7 @@ func Test_handleRequestBody(t *testing.T) {
 				cache: mockCache,
 			}
 
-			// Create request
+			// Create request for the test case
 			req := &extProcPb.ProcessingRequest{
 				Request: &extProcPb.ProcessingRequest_RequestBody{
 					RequestBody: &extProcPb.HttpBody{
@@ -519,7 +496,7 @@ func Test_handleRequestBody(t *testing.T) {
 				},
 			}
 
-			// Call HandleRequestBody
+			// Call HandleRequestBody and validate the response
 			resp, model, routingCtx, stream, term := server.HandleRequestBody(
 				context.Background(),
 				"test-request-id",
@@ -530,11 +507,11 @@ func Test_handleRequestBody(t *testing.T) {
 			)
 
 			// Validate response using test-specific validation function
-			tt.validate(t, &tt, resp, model, routingCtx, stream, term)
+			tt.validate(subtest, &tt, resp, model, routingCtx, stream, term)
 
 			// Verify all mock expectations were met
-			mockCache.AssertExpectations(t)
-			mockRouter.AssertExpectations(t)
+			mockCache.AssertExpectations(subtest)
+			mockRouter.AssertExpectations(subtest)
 		})
 	}
 }

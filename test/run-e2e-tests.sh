@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# This script runs end-to-end tests for the Aibrix project.
+# It sets up the environment, manages port-forwards, and ensures cleanup.
 
 set -x
 set -o errexit
@@ -70,6 +72,7 @@ fi
 
 # Function to kill existing port-forward processes
 kill_existing_port_forwards() {
+  # If a PID file exists, kill all processes listed in it
   if [ -f /tmp/aibrix-port-forwards.pid ]; then
     echo "Killing existing port-forward processes..."
     while read pid; do
@@ -88,6 +91,7 @@ start_port_forwards() {
 
   # Start new port-forwards and store PIDs
   echo "Starting port-forwarding..."
+  # Each port-forward runs in the background and its PID is saved
   kubectl port-forward svc/llama2-7b 8000:8000 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
   kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
   kubectl -n aibrix-system port-forward service/aibrix-redis-master 6379:6379 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
@@ -101,7 +105,7 @@ function cleanup {
 
   if [ -n "$INSTALL_AIBRIX" ]; then
     echo "Cleaning up k8s resources..."
-    # clean up env at end
+    # Clean up k8s resources if INSTALL_AIBRIX is set
     kubectl delete --ignore-not-found=true -k config/test
     kubectl delete --ignore-not-found=true -k config/dependency
     cd development/app
@@ -115,6 +119,7 @@ function cleanup {
 # Set up single trap for cleanup
 trap cleanup EXIT
 
+# Function to collect logs on error
 collect_logs() {
   echo "Collecting pods and logs"
   kubectl get pods -n aibrix-system
@@ -125,11 +130,15 @@ collect_logs() {
   done
 }
 
+trap "collect_logs" ERR
 
 # Start port forwarding before running tests
 start_port_forwards
 
 # Run tests using gotestsum
+# The test exit code is captured and used as the script's exit code
+# so CI can detect failures
+
 echo "Running e2e tests..."
 go test ./test/e2e/ -v -timeout 0
 TEST_EXIT_CODE=$?

@@ -150,10 +150,12 @@ func Test_buildEnvoyProxyHeaders(t *testing.T) {
 	assert.Equal(t, 3, len(headers))
 }
 
+// Test_selectTargetPod tests the selectTargetPod method for various pod selection scenarios
 func Test_selectTargetPod(t *testing.T) {
-	// Initialize routing algorithms
+	// Initialize routing algorithms for the test
 	routing.Init()
 
+	// Define test cases for different pod selection and error scenarios
 	tests := []struct {
 		name          string
 		pods          types.PodList
@@ -176,6 +178,7 @@ func Test_selectTargetPod(t *testing.T) {
 					},
 				}}},
 			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router that returns an error
 				routing.Register(algo, func() (types.Router, error) {
 					return mockRouter, nil
 				})
@@ -188,6 +191,7 @@ func Test_selectTargetPod(t *testing.T) {
 			name: "no pods available",
 			pods: &mockPodList{pods: []*v1.Pod{}},
 			mockSetup: func(m *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router, but no pods are available
 				routing.Register(algo, func() (types.Router, error) {
 					return m, nil
 				})
@@ -204,6 +208,7 @@ func Test_selectTargetPod(t *testing.T) {
 				},
 			}}},
 			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router, but no pods are ready
 				routing.Register(algo, func() (types.Router, error) {
 					return mockRouter, nil
 				})
@@ -220,6 +225,7 @@ func Test_selectTargetPod(t *testing.T) {
 				},
 			}}},
 			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router, but only one pod is ready so Route should not be called
 				routing.Register(algo, func() (types.Router, error) {
 					return mockRouter, nil
 				})
@@ -246,6 +252,7 @@ func Test_selectTargetPod(t *testing.T) {
 				},
 			}},
 			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router that selects a pod from multiple ready pods
 				routing.Register(algo, func() (types.Router, error) {
 					return mockRouter, nil
 				})
@@ -257,26 +264,31 @@ func Test_selectTargetPod(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		// Run each test case as a subtest
+		t.Run(tt.name, func(subtest *testing.T) {
+			subtest.Parallel() // Run subtests in parallel
 			mockRouter := new(mockRouter)
 			routingAlgo := types.RoutingAlgorithm(fmt.Sprintf("test-router-%s", tt.name))
 
+			// Set up the mock router and register the routing algorithm for this test
 			tt.mockSetup(mockRouter, routingAlgo)
 			routing.Init()
 
 			server := &Server{}
 			ctx := types.NewRoutingContext(context.Background(), routingAlgo, "test-model", "test-message", "test-request", "test-user")
 
+			// Call selectTargetPod and check the result
 			podIP, err := server.selectTargetPod(ctx, tt.pods)
 
 			if tt.expectedError {
-				assert.Error(t, err)
+				assert.Error(subtest, err)
 			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.expectedPodIP, podIP)
+				assert.NoError(subtest, err)
+				assert.Equal(subtest, tt.expectedPodIP, podIP)
 			}
 
-			mockRouter.AssertExpectations(t)
+			// Ensure all mock expectations are met
+			mockRouter.AssertExpectations(subtest)
 		})
 	}
 }
