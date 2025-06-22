@@ -62,6 +62,7 @@ func Test_handleRequestBody(t *testing.T) {
 		validate    func(*testing.T, *testCase, *extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64)
 		checkStream bool
 	}
+
 	// Define test cases for different routing and error scenarios
 	tests := []testCase{
 		{
@@ -167,6 +168,13 @@ func Test_handleRequestBody(t *testing.T) {
 			},
 			routingAlgo: TestRouterAlgorithm,
 			mockSetup: func(mockCache *MockCache, mockRouter *mockRouter) {
+				// Register mock router for this test case if needed
+				mockRouterProvider := func() (types.Router, error) {
+					return mockRouter, nil
+				}
+				routingalgorithms.Register(TestRouterAlgorithm, mockRouterProvider)
+				routingalgorithms.Init()
+
 				podList := &mockPodList{
 					pods: []*v1.Pod{
 						{
@@ -459,27 +467,18 @@ func Test_handleRequestBody(t *testing.T) {
 		t.Run(tt.name, func(subtest *testing.T) {
 			subtest.Parallel()
 			// Add panic recovery for subtests too
-			defer func() {
+			subtest.Cleanup(func() {
 				if r := recover(); r != nil {
 					subtest.Errorf("Subtest %v panicked: %v", tt.name, r)
 					subtest.FailNow()
 				}
-			}()
+			})
 
 			// Initialize mock cache and router for each test
 			mockCache := new(MockCache)
 			mockRouter := new(mockRouter)
 			if tt.mockSetup != nil {
 				tt.mockSetup(mockCache, mockRouter)
-			}
-
-			// Register mock router for this test case if needed
-			if tt.routingAlgo != "" && tt.routingAlgo != "not-set" && tt.routingAlgo != "invalid-router" {
-				mockRouterProvider := func() (types.Router, error) {
-					return mockRouter, nil
-				}
-				routingalgorithms.Register(tt.routingAlgo, mockRouterProvider)
-				routingalgorithms.Init()
 			}
 
 			// Create server with mock cache
