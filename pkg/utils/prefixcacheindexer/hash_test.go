@@ -61,6 +61,11 @@ func Test_PrefixHashTableE2E(t *testing.T) {
 	assert.Equal(t, targetPod, getFirstKey(matchedPods))
 	assert.Equal(t, 3, len(prefixHashes))
 
+	// there is no way to match prefix, even same block has been added
+	matchedPods, prefixHashes = cache.MatchPrefix([]byte{5, 6, 7, 8, 9, 10, 11, 12, 13}, model, getReadyPods())
+	assert.Equal(t, 0, len(matchedPods))
+	assert.Equal(t, 2, len(prefixHashes))
+
 	// different model sharing same prefix
 	matchedPods, prefixHashes = cache.MatchPrefix([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}, model2, getReadyPods())
 	assert.Equal(t, 0, len(matchedPods))
