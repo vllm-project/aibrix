@@ -17,10 +17,13 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"github.com/vllm-project/aibrix/pkg/types"
+	"sync"
 
+	"github.com/vllm-project/aibrix/pkg/types"
 	"k8s.io/klog/v2"
 )
+
+var routerMu sync.RWMutex
 
 const (
 	RouterNotSet = ""
@@ -63,6 +66,8 @@ func Register(algorithm types.RoutingAlgorithm, constructor types.RouterConstruc
 }
 
 func Init() {
+	routerMu.Lock()
+	defer routerMu.Unlock()
 	for algorithm, constructor := range routerConstructor {
 		routerFactory[algorithm] = constructor()
 		klog.Infof("Registered router for %s", algorithm)
