@@ -142,6 +142,9 @@ func NewInMemorySlidingWindowTokenTracker(config *VTCConfig, opts ...TokenTracke
 		config:          config,
 	}
 
+	// Initialize window size based on environment variables
+	tracker.updateWindowSize()
+
 	for _, opt := range opts {
 		opt(tracker)
 	}

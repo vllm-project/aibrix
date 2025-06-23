@@ -636,3 +636,22 @@ func TestSlidingWindowTokenTracker_SecondsUnitWindow(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, float64(0), toks, "token expired after seconds window")
 }
+
+func TestTokenTrackerWindowSizeThroughConstructor(t *testing.T) {
+	config := &VTCConfig{
+		InputTokenWeight:  1.0,
+		OutputTokenWeight: 1.0,
+	}
+
+	// Create tracker using constructor
+	tracker := NewInMemorySlidingWindowTokenTracker(config)
+	vtcTracker := tracker.(*InMemorySlidingWindowTokenTracker)
+	windowSize := vtcTracker.windowSize
+	bucketUnit := vtcTracker.bucketUnit
+
+	t.Logf("Initial state - windowSize: %v, bucketUnit: %v", windowSize, bucketUnit)
+
+	if windowSize == 0 {
+		t.Errorf("Window size should not be 0, got %v", windowSize)
+	}
+}
