@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -87,8 +88,19 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		case []interface{}:
 			// Handle array inputs
 			if len(v) > 0 {
-				if str, ok := v[0].(string); ok {
-					message = str
+				switch elem := v[0].(type) {
+				case string:
+					message = elem
+				case float64:
+					// Handle token ID (number)
+					message = fmt.Sprintf("Token array input (first token: %v)", elem)
+				case []interface{}:
+					// Handle nested array (number[][])
+					if len(elem) > 0 {
+						if token, ok := elem[0].(float64); ok {
+							message = fmt.Sprintf("Nested token array input (first token: %v)", token)
+						}
+					}
 				}
 			}
 		}

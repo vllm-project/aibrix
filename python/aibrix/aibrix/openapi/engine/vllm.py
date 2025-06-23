@@ -151,7 +151,7 @@ class VLLMInferenceEngine(InferenceEngine):
             response = await self.client.post(
                 embeddings_url, json=request.model_dump(), headers=self.headers
             )
-        except Exception as e:
+        except httpx.RequestError as e:
             logger.error(f"Failed to create embeddings: {e}")
             return self._create_error_response(
                 "Failed to create embeddings",
@@ -166,4 +166,12 @@ class VLLMInferenceEngine(InferenceEngine):
                 status_code=HTTPStatus(value=response.status_code),
             )
 
-        return EmbeddingResponse(**response.json())
+        try:
+            return EmbeddingResponse(**response.json())
+        except Exception as e:
+            logger.error(f"Failed to parse embedding response: {e}")
+            return self._create_error_response(
+                "Invalid response from inference engine",
+                err_type="ServerError",
+                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )

@@ -60,7 +60,9 @@ class TestVLLMInferenceEngineEmbeddings:
         mock_http_response.status_code = HTTPStatus.OK
         mock_http_response.json.return_value = mock_response
 
-        with patch.object(self.engine.client, "post", new_callable=AsyncMock) as mock_post:
+        with patch.object(
+            self.engine.client, "post", new_callable=AsyncMock
+        ) as mock_post:
             mock_post.return_value = mock_http_response
 
             request = EmbeddingRequest(
@@ -110,7 +112,9 @@ class TestVLLMInferenceEngineEmbeddings:
         mock_http_response.status_code = HTTPStatus.OK
         mock_http_response.json.return_value = mock_response
 
-        with patch.object(self.engine.client, "post", new_callable=AsyncMock) as mock_post:
+        with patch.object(
+            self.engine.client, "post", new_callable=AsyncMock
+        ) as mock_post:
             mock_post.return_value = mock_http_response
 
             request = EmbeddingRequest(
@@ -132,7 +136,9 @@ class TestVLLMInferenceEngineEmbeddings:
         mock_http_response.status_code = HTTPStatus.BAD_REQUEST
         mock_http_response.text = "Invalid model"
 
-        with patch.object(self.engine.client, "post", new_callable=AsyncMock) as mock_post:
+        with patch.object(
+            self.engine.client, "post", new_callable=AsyncMock
+        ) as mock_post:
             mock_post.return_value = mock_http_response
 
             request = EmbeddingRequest(
@@ -209,7 +215,10 @@ class TestVLLMInferenceEngineEmbeddings:
             assert isinstance(result, EmbeddingResponse)
             # Verify that the client was created with the Authorization header
             assert "Authorization" in engine_with_key.client.headers
-            assert engine_with_key.client.headers["Authorization"] == "Bearer test-api-key"
+            assert (
+                engine_with_key.client.headers["Authorization"]
+                == "Bearer test-api-key"
+            )
 
 
 class TestEmbeddingsAPIEndpoint:
