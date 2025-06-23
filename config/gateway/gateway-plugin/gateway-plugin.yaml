@@ -165,6 +165,9 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/completions
+        - path:
+            type: PathPrefix
+            value: /v1/embeddings
       backendRefs:
         - name: aibrix-gateway-plugins
           port: 50052
