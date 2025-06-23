@@ -38,6 +38,7 @@ const (
 	AvgPromptToksPerReq                  = "avg_prompt_toks_per_req"
 	AvgGenerationToksPerReq              = "avg_generation_toks_per_req"
 	GPUCacheUsagePerc                    = "gpu_cache_usage_perc"
+	GPUBusyTimeRatio                     = "gpu_busy_time_ratio"
 	CPUCacheUsagePerc                    = "cpu_cache_usage_perc"
 	AvgE2ELatencyPod                     = "avg_e2e_latency_pod"
 	AvgRequestsPerMinPod                 = "avg_requests_per_min_pod"
