@@ -159,7 +159,7 @@ jobs:
           kustomize edit set image gateway-plugins=aibrix/gateway-plugins:${{ github.sha }}
           kustomize edit set image metadata-service=aibrix/metadata-service:${{ github.sha }}
           cd ${{ github.workspace }}
-          kubectl apply -k config/default
+          kubectl apply -k config/test
 
       - name: Deploy Workload
         run: |
