@@ -291,3 +291,4 @@ class TestEmbeddingProtocolIntegration:
                     input=input_val,
                     model="test-model",
                 )
+

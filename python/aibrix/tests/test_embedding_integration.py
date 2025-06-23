@@ -413,3 +413,4 @@ class TestBaseInferenceEngineEmbeddings:
         assert result.type == "NotImplementedError"
         assert result.code == HTTPStatus.NOT_IMPLEMENTED
         assert "not support embeddings" in result.message
+
