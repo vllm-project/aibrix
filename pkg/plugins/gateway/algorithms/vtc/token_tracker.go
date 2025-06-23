@@ -140,10 +140,8 @@ func NewInMemorySlidingWindowTokenTracker(config *VTCConfig, opts ...TokenTracke
 		minTrackedToken: math.MaxFloat64, // Start high so first positive value becomes min
 		maxTrackedToken: 0.0,             // Start with zero as default max
 		config:          config,
+		windowSize:      time.Duration(tokenTrackerWindowSize) * timeUnitDuration[defaultUnit], // Initialize window size directly
 	}
-
-	// Initialize window size based on environment variables
-	tracker.updateWindowSize()
 
 	for _, opt := range opts {
 		opt(tracker)
