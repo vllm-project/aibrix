@@ -7,7 +7,6 @@ import json
 import io
 import traceback
 import threading
-from queue import Queue
 
 
 from typing import List, Dict, Callable
@@ -345,7 +344,6 @@ if __name__ == "__main__":
     parser.add_argument('--output-file-path', type=str, default="output.jsonl")
     parser.add_argument("--streaming", action="store_true", help="Use streaming client.")
     parser.add_argument("--routing-strategy", type=str, required=False, default="random", help="Routing strategy to use.")
-    parser.add_argument("--client-pool-size", type=int, required=False, default=1, help="Number of parallel clients to use.")
     parser.add_argument("--output-token-limit", type=int, required=False, default=None, help="Limit the maximum number of output tokens.")
     parser.add_argument('--time-scale', type=float, default=1.0, help="Scaling factor for workload's logical time.")
     parser.add_argument('--timeout-second', type=float, default=60.0, help="Timeout for each request in seconds.")
