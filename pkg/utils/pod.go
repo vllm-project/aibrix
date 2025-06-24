@@ -39,7 +39,7 @@ const (
 
 var (
 	ReplicaSetDeploymentFinder = regexp.MustCompile(`^(.*)-\w+$`)     // Deployment-[random name]
-	RayClusterFleatFinder      = regexp.MustCompile(`^(.*)-\w+-\w+$`) // RayClusterFleat-[random name]-[random name]
+	RayClusterFleetFinder      = regexp.MustCompile(`^(.*)-\w+-\w+$`) // RayClusterFleet-[random name]-[random name]
 )
 
 var DeploymentIdentifier string = getDeploymentIdentifier()
@@ -271,7 +271,7 @@ func DeploymentNameFromPod(pod *v1.Pod) string {
 			case "ReplicaSet":
 				re = ReplicaSetDeploymentFinder
 			case "RayCluster":
-				re = RayClusterFleatFinder
+				re = RayClusterFleetFinder
 			default:
 				continue
 			}
