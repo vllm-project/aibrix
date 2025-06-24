@@ -48,39 +48,91 @@ def print_err(
     print(*values, sep=sep, end=end, file=sys.stderr, flush=flush)
 
 
+# Return False if number of requests exceeds.
+def load_entry(
+    requests: List[Tuple[str, int, int, float]],
+    entry: dict,
+    interval: float,
+    num_requests: int,
+) -> bool:
+    for i, req in enumerate(entry["requests"]):
+        requests.append(
+            (
+                req["prompt"],
+                req["prompt_length"],
+                req["output_length"] if req["output_length"] is not None else 0,
+                interval if i == len(entry["requests"]) - 1 else 0,
+            )
+        )
+        if num_requests > 0 and len(requests) >= num_requests:
+            return False
+
+    return True
+
+
+def normalize_entry(entry: dict, ver: int):
+    if ver == 1:
+        newEntry = {"timestamp": entry["Timestamp"], "requests": []}
+        for i, req in enumerate(entry["Requests"]):
+            newEntry["requests"].append(
+                {
+                    "prompt": req["Prompt"],
+                    "prompt_length": req["Prompt Length"],
+                    "output_length": req["Output Length"],
+                }
+            )
+        return newEntry
+
+    # Update to date version >= 2
+    return entry
+
+
 def sample_requests(
     num_requests: int,
     config_input_len: int,
     config_output_len: int,
+    workload_dataset_version: int,
     workload_dataset_file: Optional[str] = None,
 ) -> List[Tuple[str, int, int, float]]:
     """Sample requests from prompt dataset or generate synthetic ones."""
     if workload_dataset_file:
         try:
             with open(workload_dataset_file) as f:
-                data = json.load(f)
+                # Check file extension to determine format
+                if workload_dataset_file.endswith(
+                    ".jsonl"
+                ) or workload_dataset_file.endswith(".jsonlines"):
+                    # JSONL format: generator that yields parsed JSON objects line by line
+                    data = (
+                        normalize_entry(json.loads(line), workload_dataset_version)
+                        for line in f
+                    )
+                else:
+                    # Standard JSON format: load entire file and create generator over items
+                    data = (
+                        normalize_entry(item, workload_dataset_version)
+                        for item in json.load(f)
+                    )
+
                 # Return timestamp and request tuples
-                requests = []
-                for i, entry in enumerate(data):
+                requests: List[Tuple[str, int, int, float]] = []
+                entry = None
+
+                for i, next_entry in enumerate(data):
+                    if entry is None:
+                        entry = next_entry
+                        continue
                     # Limit the number of requests read from workload
 
                     # print(f"Request {i}: {entry}")
-                    cur_timestamp = entry["Timestamp"]
-                    next_timestamp = (
-                        data[i + 1]["Timestamp"] if i < len(data) - 1 else cur_timestamp
-                    )
-                    interval = (next_timestamp - cur_timestamp) / 1000.0
-                    for i, req in enumerate(entry["Requests"]):
-                        requests.append(
-                            (
-                                req["Prompt"],
-                                req["Prompt Length"],
-                                req["Output Length"],
-                                interval if i == len(entry["Requests"]) - 1 else 0,
-                            )
-                        )
-                        if num_requests > 0 and len(requests) >= num_requests:
-                            return requests
+                    interval = (next_entry["timestamp"] - entry["timestamp"]) / 1000.0
+                    if not load_entry(requests, entry, interval, num_requests):
+                        return requests
+                    # Handle next entry
+                    entry = next_entry
+                # Load last entry
+                load_entry(requests, next_entry, 0.0, num_requests)
+
                 # print('total requests: ', len(requests))
                 # print('the least requests: ', requests[len(requests) - 1])
                 return requests
@@ -108,17 +160,21 @@ async def get_request(
     start_time = time.perf_counter()
 
     batch = 0
+    virtual_ts = 0.0
     for i, (prompt, prompt_len, output_len, interval) in enumerate(requests):
         current_time = time.perf_counter() - start_time
         if use_workload_interval:
             if verbose:
                 print(
-                    f"Batch {batch}, Request {i}: Sending at {current_time:.3f}s with interval {interval:.3f}s"
+                    f"Batch {batch}, Request {i}: Sending at {current_time:.3f}s(expected: {virtual_ts:.3f}s) with interval {interval:.3f}s"
                 )
             yield (prompt, prompt_len, output_len, interval)
             if interval > 0:
                 batch += 1
-                await asyncio.sleep(interval)
+                virtual_ts += interval
+                interval = virtual_ts - current_time  # Fix interval
+                if interval > 0:
+                    await asyncio.sleep(interval)
             continue
         else:
             interval = 0.0
@@ -152,6 +208,7 @@ async def send_request(
     backend: str,
     api_url: str,
     api_key: Optional[str],
+    routing_strategy: Optional[str],
     model: str,
     prompt: str,
     prompt_len: int,
@@ -166,8 +223,10 @@ async def send_request(
     headers = {
         "User-Agent": "Benchmark Client",
     }
-    if api_key is not None or api_key != "":
+    if api_key is not None and api_key != "":
         headers["Authorization"] = f"Bearer {api_key}"
+    if routing_strategy is not None and routing_strategy != "":
+        headers["routing-strategy"] = routing_strategy
 
     streaming = stream
     if backend == "vllm":
@@ -176,17 +235,19 @@ async def send_request(
             "prompt": prompt,
             # "n": 1,
             # "best_of": best_of,
-            # "use_beam_search": use_beam_search,
             "temperature": 0.0 if use_beam_search else TEMPERATURE,
             # "top_p": 1.0,
-            "max_tokens": output_len,
-            # "ignore_eos": True,
         }
+        if output_len > 0:
+            pload["max_tokens"] = output_len
         if stream:
             pload["stream"] = 1
         # Only apply "next_in" for simulator which requires no api_key.
         if next_in > 0.0 and (api_key is None or api_key == ""):
             pload["next_in"] = next_in
+    elif backend == "dryrun":
+        await asyncio.sleep(0.001)
+        return
     else:
         raise ValueError(f"Unknown backend: {backend}")
 
@@ -274,6 +335,7 @@ async def benchmark(
     backend: str,
     api_url: str,
     api_key: Optional[str],
+    routing_strategy: Optional[str],
     model: str,
     input_requests: List[Tuple[str, int, int, float]],
     best_of: int,
@@ -283,7 +345,7 @@ async def benchmark(
     stream: bool,
     verbose: bool,
     trace: bool,
-    use_workload_interval: bool = False,
+    use_workload_interval: bool,
 ) -> None:
     tasks: List[asyncio.Task] = []
 
@@ -297,6 +359,7 @@ async def benchmark(
                 backend,
                 api_url,
                 api_key,
+                routing_strategy,
                 model,
                 prompt,
                 prompt_len,
@@ -336,7 +399,11 @@ def main(args: argparse.Namespace):
 
     api_url = f"http://{args.host}:{args.port}/v1/completions"
     input_requests = sample_requests(
-        args.num_prompts, args.input_len, args.output_len, args.workload_dataset_file
+        args.num_prompts,
+        args.input_len,
+        args.output_len,
+        args.workload_dataset_version,
+        args.workload_dataset_file,
     )
     result["samples"] = len(input_requests)  # Update number of samples
 
@@ -347,6 +414,7 @@ def main(args: argparse.Namespace):
                 args.backend,
                 api_url,
                 args.api_key,
+                args.routing_strategy,  # Routing strategy for vllm only, no effect on other backends
                 args.model,
                 input_requests,
                 args.best_of,
@@ -391,6 +459,8 @@ def main(args: argparse.Namespace):
 
     # Compute the latency statistics.
     avg_latency = np.mean([latency for _, _, latency in REQUEST_LATENCY])
+    if args.backend == "dryrun":
+        return
     if args.verbose:
         print("REQUEST LATENCIES")
         print(f"Avg: {avg_latency:.2f} s")
@@ -460,7 +530,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Benchmark the online serving throughput."
     )
-    parser.add_argument("--backend", type=str, default="vllm", choices=["vllm"])
+    parser.add_argument(
+        "--backend", type=str, default="vllm", choices=["vllm", "dryrun"]
+    )
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--model", type=str, default="llama2-7b")
@@ -502,10 +574,16 @@ if __name__ == "__main__":
     )
     parser.add_argument("--stream", action="store_true", help="Enable stream request.")
     parser.add_argument(
-        "--workload_dataset_file",
+        "--workload-dataset-file",
         type=str,
         default=None,
         help="Path to a JSON file containing prompts",
+    )
+    parser.add_argument(
+        "--workload-dataset-version",
+        type=int,
+        default=2,
+        help="Version of workload dataset",
     )
     parser.add_argument("--use-workload-interval", action="store_true")
     parser.add_argument(
@@ -513,6 +591,9 @@ if __name__ == "__main__":
         type=float,
         default=0.0,
         help="Temperature for text generation (default: 0.0)",
+    )
+    parser.add_argument(
+        "--routing-strategy", type=str, default=None, help="Specify routing strategy."
     )
     args = parser.parse_args()
     main(args)

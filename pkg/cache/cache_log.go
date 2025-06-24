@@ -24,7 +24,7 @@ import (
 )
 
 func (c *Store) debugInfo() {
-	if !klog.V(4).Enabled() {
+	if !klog.V(5).Enabled() {
 		// skip debug info
 		return
 	}
@@ -34,7 +34,7 @@ func (c *Store) debugInfo() {
 		if !ok {
 			return true
 		}
-		klog.V(4).Infof("pod: %s, podIP: %v, models: %s", podName, pod.Status.PodIP, strings.Join(pod.Models.Array(), " "))
+		klog.V(5).Infof("pod: %s, podIP: %v, models: %s", podName, pod.Status.PodIP, strings.Join(pod.Models.Array(), " "))
 		pod.Metrics.Range(func(metricName string, metricVal metrics.MetricValue) bool {
 			klog.V(5).Infof("%v_%v_%v", podName, metricName, metricVal)
 			return true
@@ -51,7 +51,7 @@ func (c *Store) debugInfo() {
 			podList.WriteString(pod.Name)
 			podList.WriteByte(' ')
 		}
-		klog.V(4).Infof("model: %s, pods: %s", modelName, podList.String())
+		klog.V(5).Infof("model: %s, pods: %s", modelName, podList.String())
 		return true
 	})
 }

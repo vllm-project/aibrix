@@ -28,9 +28,7 @@ import (
 	klog "k8s.io/klog/v2"
 )
 
-var (
-	RouterLeastKvCache types.RoutingAlgorithm = "least-kv-cache"
-)
+const RouterLeastKvCache types.RoutingAlgorithm = "least-kv-cache"
 
 func init() {
 	Register(RouterLeastKvCache, NewLeastKvCacheRouter)

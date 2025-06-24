@@ -68,6 +68,60 @@ func genPods(cnt int, readyCnt int) []*v1.Pod {
 	return pods
 }
 
+// Sample ray cluser head:
+//
+//	apiVersion: v1
+//	kind: Pod
+//	metadata:
+//	  creationTimestamp: "2025-06-23T21:31:29Z"
+//	  generateName: qwen-coder-7b-instruct-77d9bbd669-s68dw-head-
+//	  labels:
+//	    app.kubernetes.io/created-by: kuberay-operator
+//	    app.kubernetes.io/name: kuberay
+//	    bke.prometheus.stack/scrape: "true"
+//	    model.aibrix.ai/name: qwen-coder-7b-instruct
+//	    orchestration.aibrix.ai/raycluster-fleet-name: qwen-coder-7b-instruct
+//	    pod-template-hash: 77d9bbd669
+//	    ray.io/cluster: qwen-coder-7b-instruct-77d9bbd669-s68dw
+//	    ray.io/cluster-dashboard: qwen-coder-7b-instruct-77d9bbd669-s68dw-dashboard
+//	    ray.io/group: headgroup
+//	    ray.io/identifier: qwen-coder-7b-instruct-77d9bbd669-s68dw-head
+//	    ray.io/is-ray-node: "yes"
+//	    ray.io/node-type: head
+//	  name: qwen-coder-7b-instruct-77d9bbd669-s68dw-head-hzmsf
+//	  namespace: aibrix-system
+//	  ownerReferences:
+//	  - apiVersion: ray.io/v1alpha1
+//	    blockOwnerDeletion: true
+//	    controller: true
+//	    kind: RayCluster
+//	    name: qwen-coder-7b-instruct-77d9bbd669-s68dw
+//	    uid: b51b8718-f517-4dd6-a5c5-50695fe54944
+//	  resourceVersion: "6389111448"
+//	  selfLink: /api/v1/namespaces/aibrix-system/pods/qwen-coder-7b-instruct-77d9bbd669-s68dw-head-hzmsf
+//	  uid: 6e8a0d75-1b06-4fdf-8b87-5a852574e353
+func getRayClusterHead(withLabel bool) *v1.Pod {
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				DeploymentIdentifier: "kuberay",
+				"ray.io/is-ray-node": "yes",
+				"ray.io/node-type":   "head",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					Kind: "RayCluster",
+					Name: "qwen-coder-7b-instruct-by-owner-77d9bbd669-s68dw",
+				},
+			},
+		},
+	}
+	if withLabel {
+		pod.ObjectMeta.Labels[ReyClusterFleetIdentifier] = "qwen-coder-7b-instruct-by-label"
+	}
+	return pod
+}
+
 var _ = Describe("Pod", func() {
 	It("should FilterRoutablePodsInPlace return sames as FilterRoutablePods", func() {
 		original := genPods(100, 75)
@@ -81,6 +135,64 @@ var _ = Describe("Pod", func() {
 		Expect(len(modified)).NotTo(Equal(len(original)))
 
 		Expect(modified).To(Equal(expected))
+	})
+
+	Describe("DeploymentNameFromPod", func() {
+
+		It("should return correct deployment name from pod labels", func() {
+			pod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						DeploymentIdentifier: "test-deployment",
+					},
+				},
+			}
+			expected := "test-deployment"
+			result := DeploymentNameFromPod(pod)
+			Expect(result).To(Equal(expected))
+		})
+
+		It("should return correct deployment name from ReplicaSet ownerReferences", func() {
+			pod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind: "ReplicaSet",
+							Name: "mock-llama2-7b-754558b67c",
+						},
+					},
+				},
+			}
+			expected := "mock-llama2-7b"
+			result := DeploymentNameFromPod(pod)
+			Expect(result).To(Equal(expected))
+		})
+
+		It("should return correct rayclusterfleet name from pod labels", func() {
+			pod := getRayClusterHead(true)
+			expected := "qwen-coder-7b-instruct-by-label"
+			result := DeploymentNameFromPod(pod)
+			Expect(result).To(Equal(expected))
+		})
+
+		It("should return correct rayclusterfleet name from pod ownerReferences", func() {
+			pod := getRayClusterHead(false)
+			expected := "qwen-coder-7b-instruct-by-owner"
+			result := DeploymentNameFromPod(pod)
+			Expect(result).To(Equal(expected))
+		})
+
+		It("should DeploymentNameFromPod return empty string if no valid source found", func() {
+			pod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:          map[string]string{},
+					OwnerReferences: []metav1.OwnerReference{},
+				},
+			}
+			expected := ""
+			result := DeploymentNameFromPod(pod)
+			Expect(result).To(Equal(expected))
+		})
 	})
 })
 

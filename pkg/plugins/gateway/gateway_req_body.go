@@ -68,7 +68,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, reques
 	} else {
 		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr)
 		if targetPodIP == "" || err != nil {
-			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingAlgorithm", routingAlgorithm, "model", model)
+			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingAlgorithm, "model", model, "routingDuration", routingCtx.GetRoutingDelay())
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_ServiceUnavailable,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
@@ -78,7 +78,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, reques
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
 			HeaderTargetPod, targetPodIP)
-		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream, "routingAlgorithm", routingAlgorithm, "targetPodIP", targetPodIP)
+		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream, "routingAlgorithm", routingAlgorithm, "targetPodIP", targetPodIP, "routingDuration", routingCtx.GetRoutingDelay())
 	}
 
 	term = s.cache.AddRequestCount(routingCtx, requestID, model)

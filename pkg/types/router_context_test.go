@@ -17,6 +17,7 @@ package types
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo"
@@ -43,34 +44,59 @@ func shouldNotBlock(cb func(), duration time.Duration) {
 	Eventually(block, duration).Should(Receive(BeFalse()))
 }
 
+type testOutputPredictor struct {
+}
+
+func (p *testOutputPredictor) AddTrace(inputTokens, outputTokens int, cnt int32) {
+	// Do nothing
+}
+
+func (p *testOutputPredictor) Predict(promptLen int) (outputLen int) {
+	return promptLen
+}
+
 var _ = Describe("RouterContext", func() {
 	It("should initialize correctly", func() {
+		predictor := &testOutputPredictor{}
 		ctx := context.Background()
 		rctx := NewRoutingContext(ctx, "algorithm", "model", "message", "r1", "")
+		rctx.SetOutputPreditor(predictor)
 		Expect(rctx.Context).To(BeIdenticalTo(ctx))
 		Expect(rctx.Algorithm).To(Equal(RoutingAlgorithm("algorithm")))
+		Expect(rctx.RequestID).To(Equal("r1"))
 		Expect(rctx.Model).To(Equal("model"))
 		Expect(rctx.Message).To(Equal("message"))
+		Expect(rctx.predictor).To(BeIdenticalTo(predictor))
 		shouldBlock(func() { rctx.TargetPod() }, 100*time.Millisecond)
 		Expect(rctx.targetPod.Load()).To(BeIdenticalTo(nilPod))
+		Expect(rctx.getError()).To(BeNil())
 
-		pod := &v1.Pod{}
-		rctx.SetTargetPod(pod)
-		Expect(rctx.targetPod.Load()).To(BeIdenticalTo(pod)) // target pod set
-		Expect(rctx.TargetPod()).To(BeIdenticalTo(pod))      // No blocking
+		rctx.SetError(fmt.Errorf("error"))
+		Expect(rctx.targetPod.Load()).To(BeNil()) // target pod set
+		Expect(rctx.getError()).ToNot(BeNil())    // No blocking
 
 		rctx.Delete()
 		ctx2 := context.Background()
-		rctx2 := NewRoutingContext(ctx2, "algorithm2", "model2", "message2", "r1", "")
+		rctx2 := NewRoutingContext(ctx2, "algorithm2", "model2", "message2", "r2", "")
 		Expect(rctx2).To(BeIdenticalTo(rctx)) // routing context reused
 		Expect(rctx2.Context).To(BeIdenticalTo(ctx2))
 		Expect(rctx2.Algorithm).To(Equal(RoutingAlgorithm("algorithm2")))
+		Expect(rctx.RequestID).To(Equal("r2"))
 		Expect(rctx2.Model).To(Equal("model2"))
 		Expect(rctx2.Message).To(Equal("message2"))
+		Expect(rctx.predictor).To(BeNil())
 		shouldBlock(func() { rctx.TargetPod() }, 100*time.Millisecond)
 		Expect(rctx.targetPod.Load()).To(BeIdenticalTo(nilPod))
+		Expect(rctx.getError()).To(BeNil()) // No blocking
 
-		rctx2.SetTargetPod(pod) // unblock
+		rctx.Delete()
+	})
+
+	It("should SetTargetPod accept nil", func() {
+		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
+		ctx.SetTargetPod(nil)
+		shouldNotBlock(func() { ctx.TargetPod() }, 100*time.Millisecond)
+		Expect(ctx.TargetPod()).To(BeNil())
 	})
 
 	It("should HasRouted() indicate correctly", func() {
@@ -85,6 +111,7 @@ var _ = Describe("RouterContext", func() {
 		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
 		ctx.Delete()
 		shouldNotBlock(func() { ctx.TargetPod() }, 100*time.Millisecond)
+		Expect(ctx.TargetPod()).To(BeNil())
 	})
 
 	It("should SetTargetPod twice ok but will not change original value", func() {
@@ -99,22 +126,54 @@ var _ = Describe("RouterContext", func() {
 		Expect(ctx.TargetPod()).To(BeIdenticalTo(pod))
 	})
 
-	It("should TargetPod unblock successfully", func() {
+	It("should SetError also SetTargetPod", func() {
+		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
+		err := fmt.Errorf("test error")
+		ctx.SetError(err)
+		shouldNotBlock(func() { ctx.TargetPod() }, 100*time.Millisecond)
+		Expect(ctx.TargetPod()).To(BeNil())
+		Expect(ctx.GetError()).To(BeIdenticalTo(err))
+	})
+
+	It("should HasRouted() indicate correctly", func() {
+		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
+		Expect(ctx.HasRouted()).To(BeFalse())
+
+		ctx.SetTargetPod(&v1.Pod{})
+		Expect(ctx.HasRouted()).To(BeTrue())
+
+		ctx = NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
+		ctx.SetTargetPod(nil)
+		Expect(ctx.HasRouted()).To(BeFalse())
+	})
+
+	It("should reset without SetTargetPod()", func() {
+		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
+		ctx.Delete()
+		shouldNotBlock(func() { ctx.TargetPod() }, 100*time.Millisecond)
+	})
+
+	It("should TargetPod block and unblock successfully", func() {
 		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
 		ctx.debugDelay = 100 * time.Millisecond
-		done := make(chan bool)
-		go func() {
-			ctx.TargetPod()
-			done <- true
-		}()
-
-		// Yield to allow TargetPod() pass targetPod nil check.
-		time.Sleep(30 * time.Millisecond)
+		shouldBlock(func() { ctx.TargetPod() }, 30*time.Millisecond)
 
 		// Set targetPod before blocking()
 		ctx.SetTargetPod(&v1.Pod{})
 
-		// Use Eventually to check if the function completes within a timeout
-		Eventually(done, 1*time.Second).Should(Receive(BeTrue()))
+		shouldNotBlock(func() { ctx.TargetPod() }, 100*time.Millisecond)
+	})
+
+	It("should GetError block and unblock successfully", func() {
+		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", "r1", "")
+		ctx.debugDelay = 100 * time.Millisecond
+		// nolint: errcheck
+		shouldBlock(func() { ctx.GetError() }, 30*time.Millisecond)
+
+		// Set targetPod before blocking()
+		ctx.SetError(fmt.Errorf("test error"))
+
+		// nolint: errcheck
+		shouldNotBlock(func() { ctx.GetError() }, 100*time.Millisecond)
 	})
 })

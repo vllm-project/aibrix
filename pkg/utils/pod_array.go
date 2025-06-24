@@ -22,10 +22,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-const (
-	DeploymentIdentifier string = "app.kubernetes.io/name"
-)
-
 // PodArray is a simple implementation of types.PodList indexed by deployment names
 type PodArray struct {
 	Pods []*v1.Pod
@@ -86,7 +82,7 @@ func (arr *PodArray) initDeployments() {
 	podIndexes := make(map[string]int, len(arr.Pods))
 	seen := 0
 	for _, pod := range arr.Pods {
-		deploymentName := pod.Labels[DeploymentIdentifier] // Count "" in.
+		deploymentName := DeploymentNameFromPod(pod) // Count "" in.
 		idx, ok := podClasses[deploymentName]
 		if !ok {
 			idx = seen
@@ -95,6 +91,7 @@ func (arr *PodArray) initDeployments() {
 		}
 		podIndexes[pod.Name] = idx
 	}
+	// Sort by podClasses
 	sort.Slice(arr.Pods, func(i, j int) bool {
 		return podIndexes[arr.Pods[i].Name] < podIndexes[arr.Pods[j].Name]
 	})
@@ -104,14 +101,14 @@ func (arr *PodArray) initDeployments() {
 	deployments := make([]string, 0, len(podClasses))
 	offset := 0
 	lastClass := podIndexes[arr.Pods[0].Name]
-	lastDeploymentName := arr.Pods[0].Labels[DeploymentIdentifier]
+	lastDeploymentName := DeploymentNameFromPod(arr.Pods[0])
 	for i, pod := range arr.Pods {
 		if podIndexes[pod.Name] != lastClass {
 			podsByDeployment[lastDeploymentName] = arr.Pods[offset:i]
 			offset = i
 			lastClass = podIndexes[pod.Name]
-			lastDeploymentName = pod.Labels[DeploymentIdentifier]
 			deployments = append(deployments, lastDeploymentName)
+			lastDeploymentName = DeploymentNameFromPod(pod)
 		}
 	}
 	podsByDeployment[lastDeploymentName] = arr.Pods[offset:]

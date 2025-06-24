@@ -19,6 +19,7 @@ package utils
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -35,6 +36,17 @@ const (
 	modelPortIdentifier  = "model.aibrix.ai/port"
 	defaultPodMetricPort = 8000
 )
+
+var (
+	ReplicaSetDeploymentFinder = regexp.MustCompile(`^(.*)-\w+$`)     // Deployment-[random name]
+	RayClusterFleatFinder      = regexp.MustCompile(`^(.*)-\w+-\w+$`) // RayClusterFleat-[random name]-[random name]
+)
+
+var DeploymentIdentifier string = getDeploymentIdentifier()
+
+func getDeploymentIdentifier() string {
+	return LoadEnv("AIBRIX_POD_DEPLOYMENT_LABEL", "app.kubernetes.io/name")
+}
 
 // GeneratePodKey generates a key in the format "namespace/name" for a given pod.
 func GeneratePodKey(podNamespace, podName string) string {
@@ -222,6 +234,7 @@ func FilterPods(pods []v1.Pod, filterFn filterPod) []v1.Pod {
 	return filtered
 }
 
+// FilterPodByName returns the pod with the given name.
 func FilterPodByName(podname string, pods []*v1.Pod) (*v1.Pod, bool) {
 	for _, pod := range pods {
 		if pod.Name == podname {
@@ -229,6 +242,48 @@ func FilterPodByName(podname string, pods []*v1.Pod) (*v1.Pod, bool) {
 		}
 	}
 	return nil, false
+}
+
+// DeploymentNameFromPod extracts the deployment name from the pod using two methods:
+// 1. If the pod has a label with the key "app.kubernetes.io/name", its value is considered the deployment name.
+// 2. If the pod has an owner reference of kind "ReplicaSet", the deployment name is extracted from the owner reference's name.
+// Alternatively, if the pod is a ray cluster node, we check:
+// 1. If the pod has a label with the key "orchestration.aibrix.ai/raycluster-fleet-name", its value is considered the deployment name.
+// 2. "app.kubernetes.io/name" is discared for ray cluster node identifid by the label "ray.io/is-ray-node"
+// 3. If the pod has an owner reference of kind "RayCluster", the deployment name is extracted from the owner reference's name.
+func DeploymentNameFromPod(pod *v1.Pod) string {
+	if fleet, ok := pod.Labels[ReyClusterFleetIdentifier]; ok {
+		return fleet
+	} else if dpName, ok := pod.Labels[DeploymentIdentifier]; ok {
+		// double check if RayClusterNodeType is not available
+		isRayNode, rayOK := pod.Labels[RayClusterIdentifier]
+		if !rayOK || isRayNode != RayClusterIdentifierYes {
+			return dpName
+		}
+	}
+
+	// Try load from ReplicaSet
+	ownerReferences := pod.OwnerReferences
+	if len(ownerReferences) > 0 {
+		for _, ownerRef := range ownerReferences {
+			var re *regexp.Regexp
+			switch ownerRef.Kind {
+			case "ReplicaSet":
+				re = ReplicaSetDeploymentFinder
+			case "RayCluster":
+				re = RayClusterFleatFinder
+			default:
+				continue
+			}
+
+			matches := re.FindStringSubmatch(ownerRef.Name)
+			if len(matches) > 1 {
+				return matches[1]
+			}
+		}
+	}
+
+	return ""
 }
 
 // SelectRandomPod selects a random pod from the provided list, ensuring it's routable.
@@ -247,6 +302,10 @@ func GetModelPortForPod(requestID string, pod *v1.Pod) int64 {
 	if !ok {
 		klog.Warningf("requestID: %v, pod: %v is missing port identifier label: %v, hence default to port: %v",
 			requestID, pod.Name, modelPortIdentifier, defaultPodMetricPort)
+		// if pod.Labels == nil {
+		// 	pod.Labels = make(map[string]string)
+		// }
+		// pod.Labels[modelPortIdentifier] = strconv.Itoa(defaultPodMetricPort)
 		return defaultPodMetricPort
 	}
 

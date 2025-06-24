@@ -24,12 +24,15 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
+const RouterRandom types.RoutingAlgorithm = "random"
+
 var (
-	RouterRandom types.RoutingAlgorithm = "random"
+	RandomRouter             = &randomRouter{}
+	RandomRouterProviderFunc = func(_ *types.RoutingContext) (types.Router, error) { return RandomRouter, nil }
 )
 
 func init() {
-	Register(RouterRandom, NewRandomRouter)
+	RegisterProvider(RouterRandom, RandomRouterProviderFunc)
 }
 
 type randomRouter struct {
