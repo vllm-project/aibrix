@@ -164,8 +164,8 @@ func Test_selectTargetPod(t *testing.T) {
 		expectedPodIP string
 	}{
 		{
-			name: "routing.Select returns error",
-			pods: &mockPodList{pods: []*v1.Pod{{
+			name: "routing.Route returns error",
+			pods: &utils.PodArray{Pods: []*v1.Pod{{
 				Status: v1.PodStatus{
 					PodIP:      "1.2.3.4",
 					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
@@ -189,7 +189,7 @@ func Test_selectTargetPod(t *testing.T) {
 		},
 		{
 			name: "no pods available",
-			pods: &mockPodList{pods: []*v1.Pod{}},
+			pods: &utils.PodArray{Pods: []*v1.Pod{}},
 			mockSetup: func(m *mockRouter, algo types.RoutingAlgorithm) {
 				// Register a mock router, but no pods are available
 				routing.Register(algo, func() (types.Router, error) {
@@ -201,7 +201,7 @@ func Test_selectTargetPod(t *testing.T) {
 		},
 		{
 			name: "no ready pods available",
-			pods: &mockPodList{pods: []*v1.Pod{{
+			pods: &utils.PodArray{Pods: []*v1.Pod{{
 				Status: v1.PodStatus{
 					PodIP:      "1.2.3.4",
 					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse}},
@@ -218,7 +218,7 @@ func Test_selectTargetPod(t *testing.T) {
 		},
 		{
 			name: "single ready pod",
-			pods: &mockPodList{pods: []*v1.Pod{{
+			pods: &utils.PodArray{Pods: []*v1.Pod{{
 				Status: v1.PodStatus{
 					PodIP:      "1.2.3.4",
 					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
@@ -237,7 +237,7 @@ func Test_selectTargetPod(t *testing.T) {
 		},
 		{
 			name: "multiple ready pods",
-			pods: &mockPodList{pods: []*v1.Pod{
+			pods: &utils.PodArray{Pods: []*v1.Pod{
 				{
 					Status: v1.PodStatus{
 						PodIP:      "1.2.3.4",

@@ -23,16 +23,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-// mockPodList implements types.PodList interface for testing
-type mockPodList struct {
-	pods []*v1.Pod
-}
-
-func (m *mockPodList) All() []*v1.Pod                     { return m.pods }
-func (m *mockPodList) Len() int                           { return len(m.pods) }
-func (m *mockPodList) Indexes() []string                  { return []string{} }
-func (m *mockPodList) ListByIndex(index string) []*v1.Pod { return []*v1.Pod{} }
-
 // mockRouter implements types.Router interface for testing
 type mockRouter struct {
 	mock.Mock

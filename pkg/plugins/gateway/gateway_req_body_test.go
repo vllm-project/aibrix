@@ -74,8 +74,8 @@ func Test_handleRequestBody(t *testing.T) {
 			routingAlgo: "", // No routing strategy
 			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
 				mockCache.On("HasModel", "test-model").Return(true)
-				podList := &mockPodList{
-					pods: []*v1.Pod{
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
 						{
 							Status: v1.PodStatus{
 								PodIP:      "1.2.3.4",
@@ -175,8 +175,8 @@ func Test_handleRequestBody(t *testing.T) {
 				routingalgorithms.Register(TestRouterAlgorithm, mockRouterProvider)
 				routingalgorithms.Init()
 
-				podList := &mockPodList{
-					pods: []*v1.Pod{
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
 						{
 							Status: v1.PodStatus{
 								PodIP: "1.2.3.4",
@@ -263,8 +263,8 @@ func Test_handleRequestBody(t *testing.T) {
 			routingAlgo: "invalid-router", // Invalid routing strategy
 			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
 				mockCache.On("HasModel", "test-model").Return(true)
-				podList := &mockPodList{
-					pods: []*v1.Pod{
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
 						{
 							Status: v1.PodStatus{
 								PodIP:      "1.2.3.4",
@@ -341,8 +341,8 @@ func Test_handleRequestBody(t *testing.T) {
 			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
 				mockCache.On("HasModel", "test-model").Return(true)
 				// Create pods that exist but are not routable (not ready)
-				podList := &mockPodList{
-					pods: []*v1.Pod{
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
 						{
 							Status: v1.PodStatus{
 								PodIP: "1.2.3.4",
@@ -411,8 +411,8 @@ func Test_handleRequestBody(t *testing.T) {
 			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
 				mockCache.On("HasModel", "test-model").Return(true)
 				// Create pods that exist but are not routable (not ready)
-				podList := &mockPodList{
-					pods: []*v1.Pod{
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
 						{
 							Status: v1.PodStatus{
 								PodIP: "",
