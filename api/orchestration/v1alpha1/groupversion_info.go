@@ -24,6 +24,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
+const (
+	StormServiceKind = "StormService"
+	RoleSetKind      = "RoleSet"
+)
+
 var (
 	// GroupVersion is group version used to register these objects
 	GroupVersion = schema.GroupVersion{Group: "orchestration.aibrix.ai", Version: "v1alpha1"}
