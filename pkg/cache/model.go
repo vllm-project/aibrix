@@ -28,10 +28,14 @@ type Model struct {
 	// Pods is a CustomizedRegistry that stores *v1.Pod objects.
 	// The internal map uses `namespace/name` as the key and `*v1.Pod` as the value.
 	// This allows efficient lookups and caching of Pod objects by their unique identifier.
+	// By outputing utils.PodArray on Array() call, the PodArray support efficient filtering by
+	// GPU (by deployment-like names, see utils.DeploymentNameFromPod() in utils/pod.go).
 	Pods *utils.CustomizedRegistry[*v1.Pod, *utils.PodArray]
-	// Metrics utils.SyncMap[string, metrics.MetricValue] // reserved
+	// OutputPredictor predicts the number of output tokens per request by history requests.
+	// The prediction is essential to SLO-aware features.
 	OutputPredictor types.OutputPredictor
-	QueueRouter     types.QueueRouter
+	// QueueRouter maintains a local request queue, enabling flexible request reordering.
+	QueueRouter types.QueueRouter
 
 	pendingRequests int32
 }

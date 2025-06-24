@@ -21,6 +21,10 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
+// PendingLoadProvider estimate server utilization in terms of pending load:
+// PendingLoad = 1 / PendingRequests = 1 / (Throughput * Latency),
+// where PendingRequests = Throughput * Latency follows Little's Law,
+// and Throughput(RPS) and Latency are from loaded profile per feature (input tokens, output tokens)
 type PendingLoadProvider struct {
 	*CachedLoadProvider
 }

@@ -48,18 +48,20 @@ type RoutingContext struct {
 	RequestID   string
 	User        *string
 	RequestTime time.Time // Time when the routing context is created.
-	PendingLoad float64   // Normalized pending load of request, available after AddRequestCount call.
+	PendingLoad float64   // Normalized pending load of request, available after AddRequestCount call. See cache.PendingLoadProvider
 	TraceTerm   int64     // Trace term identifier, available after AddRequestCount call.
-	RoutedTime  time.Time
+	RoutedTime  time.Time // Time consumed during routing.
 
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
 	lastError    atomic.Pointer[error]
-	debugDelay   time.Duration
-	tokens       []int
-	predictor    OutputPredictor
-	statsUpdated int32 // Use to flag if in-memory realtime statistics has been updated for the request.
-	traceAdded   int32 // Use to flag if trace has been added to cache
+	tokens       []int           // Cache of tokenized prompts
+	predictor    OutputPredictor // OutputPredictor gained from cache
+	statsUpdated int32           // Use to flag if in-memory realtime statistics has been updated for the request.
+	traceAdded   int32           // Use to flag if trace has been added to cache
+
+	// Fields for unit tests
+	debugDelay time.Duration
 }
 
 var requestPool = sync.Pool{
