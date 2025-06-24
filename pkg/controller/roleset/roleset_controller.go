@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Aibrix Team.
+Copyright 2025 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,45 +18,138 @@ package roleset
 
 import (
 	"context"
+	"fmt"
+	"time"
 
+	v1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/config"
+	orchestrationctrl "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
+	"github.com/vllm-project/aibrix/pkg/controller/util/patch"
 )
+
+const (
+	ControllerName            = "roleset-controller"
+	PodBurst                  = 500
+	PodOperationInitBatchSize = 16
+	RoleSetFinalizer          = "roleset-finalizer"
+)
+
+// controllerKind contains the schema.GroupVersionKind for this controller type.
+var controllerKind = orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)
+
+// Add creates a new ModelAdapter Controller and adds it to the Manager with default RBAC.
+// The Manager will set fields on the Controller and Start it when the Manager is Started.
+func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
+	r, err := newReconciler(mgr, runtimeConfig)
+	if err != nil {
+		return err
+	}
+	return add(mgr, r)
+}
+
+// add adds a new Controller to mgr with r as the reconcile.Reconciler
+func add(mgr manager.Manager, r reconcile.Reconciler) error {
+	// use the builder fashion. If we need more fine grain control later, we can switch to `controller.New()`
+	err := ctrl.NewControllerManagedBy(mgr).
+		Named(ControllerName).
+		For(&orchestrationv1alpha1.RoleSet{}).
+		Owns(&v1.Pod{}).
+		// TODO: Bring PodGroup back later
+		//Owns(&schedv1alpha1.PodGroup{}).
+		Complete(r)
+	if err != nil {
+		return err
+	}
+
+	klog.InfoS("Finished to add roleset-controller")
+	return nil
+}
+
+// newReconciler returns a new reconcile.Reconciler
+func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (reconcile.Reconciler, error) {
+	reconciler := &RoleSetReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		EventRecorder: mgr.GetEventRecorderFor(ControllerName),
+	}
+	return reconciler, nil
+}
 
 // RoleSetReconciler reconciles a RoleSet object
 type RoleSetReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	EventRecorder record.EventRecorder
 }
 
 //+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rolesets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rolesets/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rolesets/finalizers,verbs=update
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the RoleSet object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.3/pkg/reconcile
 func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	klog.Infof("Reconciling RoleSet %s", req.NamespacedName.String())
+	ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
+	defer cancel()
+	roleSet := &orchestrationv1alpha1.RoleSet{}
+	if err := r.Client.Get(ctx, req.NamespacedName, roleSet); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if roleSet.DeletionTimestamp != nil {
+		if done, err := r.finalize(ctx, roleSet); err != nil {
+			klog.Errorf("Reconciling RoleSet %s finalize error %v", req.NamespacedName.String(), err)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+		} else if !done {
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+		return ctrl.Result{}, nil
+	} else if !controllerutil.ContainsFinalizer(roleSet, RoleSetFinalizer) {
+		// add finalizer if not exist
+		if err := orchestrationctrl.Patch(ctx, r.Client, roleSet, patch.AddFinalizerPatch(roleSet, RoleSetFinalizer)); err != nil {
+			klog.Errorf("Adding RoleSet %s finalizer error %v", req.NamespacedName.String(), err)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+		}
+		return ctrl.Result{}, nil
+	}
 
-	// TODO(user): your logic here
+	var managedErrors []error
 
+	// TODO: disable pod group at this moment, consider to switch to open source pod group api later.
+	// 1. sync pod group
+	//if err := r.syncPodGroup(ctx, roleSet, &roleSet.Spec); err != nil {
+	//	managedErrors = append(managedErrors, fmt.Errorf("sync pod group error %v", err))
+	//}
+
+	// 2. sync pods
+	err := r.syncPods(ctx, roleSet)
+	if err != nil {
+		managedErrors = append(managedErrors, fmt.Errorf("sync pod error %v", err))
+	}
+
+	// 3. update roleset status
+	status, err := r.calculateStatus(roleSet, managedErrors)
+	if err != nil {
+		klog.Infof("roleset %s/%s calculate status error %v", roleSet.Namespace, roleSet.Name, err)
+		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
+	}
+	if apiequality.Semantic.DeepEqual(&roleSet.Status, status) {
+		return ctrl.Result{}, nil
+	}
+	roleSet.Status = *status
+	if err := orchestrationctrl.UpdateStatus(ctx, r.Client, roleSet); err != nil {
+		klog.Infof("roleset %s/%s update status error %v", roleSet.Namespace, roleSet.Name, err)
+		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
+	}
 	return ctrl.Result{}, nil
-}
-
-// SetupWithManager sets up the controller with the Manager.
-func (r *RoleSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&orchestrationv1alpha1.RoleSet{}).
-		Complete(r)
 }
