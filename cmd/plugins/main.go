@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Aibrix Team.
+Copyright 2025 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -41,16 +40,17 @@ import (
 )
 
 var (
-	grpc_port int
+	grpcAddr    string
+	metricsAddr string
 )
 
 func main() {
-	flag.IntVar(&grpc_port, "port", 50052, "gRPC port")
+	flag.StringVar(&grpcAddr, "grpc-bind-address", ":50052", "The address the gRPC server binds to.")
+	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
 	flag.Parse()
 
-	// Connect to Redis
 	redisClient := utils.GetRedisClient()
 	defer func() {
 		if err := redisClient.Close(); err != nil {
@@ -79,14 +79,12 @@ func main() {
 
 	cache.InitForGateway(config, stopCh, redisClient)
 
-	// Connect to K8s cluster
 	k8sClient, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		klog.Fatalf("Error creating kubernetes client: %v", err)
 	}
 
-	// grpc server init
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", grpc_port))
+	lis, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
 		klog.Fatalf("failed to listen: %v", err)
 	}
@@ -95,14 +93,21 @@ func main() {
 		klog.Fatalf("Error on creating gateway k8s client: %v", err)
 	}
 
+	gatewayServer := gateway.NewServer(redisClient, k8sClient, gatewayK8sClient)
+
+	if err := gatewayServer.StartMetricsServer(metricsAddr); err != nil {
+		klog.Fatalf("Failed to start metrics server: %v", err)
+	}
+	klog.Infof("Started metrics server on %s", metricsAddr)
+
 	s := grpc.NewServer()
-	extProcPb.RegisterExternalProcessorServer(s, gateway.NewServer(redisClient, k8sClient, gatewayK8sClient))
+	extProcPb.RegisterExternalProcessorServer(s, gatewayServer)
 
 	healthCheck := health.NewServer()
 	healthPb.RegisterHealthServer(s, healthCheck)
 	healthCheck.SetServingStatus("gateway-plugin", healthPb.HealthCheckResponse_SERVING)
 
-	klog.Info("starting gRPC server on port :50052")
+	klog.Info("starting gRPC server on " + grpcAddr)
 
 	go func() {
 		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
@@ -110,12 +115,12 @@ func main() {
 		}
 	}()
 
-	// shutdown
 	var gracefulStop = make(chan os.Signal, 1)
 	signal.Notify(gracefulStop, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-gracefulStop
 		klog.Warningf("signal received: %v, initiating graceful shutdown...", sig)
+		gatewayServer.Shutdown()
 		s.GracefulStop()
 		os.Exit(0)
 	}()
