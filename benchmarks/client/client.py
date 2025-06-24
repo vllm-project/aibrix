@@ -38,7 +38,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
     target_pod = ""
     target_request_id = ""
     try:
-        logging.warning(f"send_request_streaming: Prepare to launch task after {target_time - start_time}")
+        logging.warning(f"send_request_streaming: Prepare to launch task after {target_time - start_time} target_time {target_time} start_time {start_time}")
         if target_time > start_time:
             await asyncio.sleep(target_time - start_time)
         dispatch_time = asyncio.get_event_loop().time()
@@ -122,7 +122,7 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
         return result
 
     except Exception as e:
-        error_time = time.time()
+        error_time = asyncio.get_event_loop().time()
         error_type = type(e).__name__
         error_result = {
             "request_id": request_id,
@@ -225,7 +225,7 @@ async def send_request_batch(client: openai.AsyncOpenAI,
         return result
 
     except Exception as e:
-        error_time = time.time()
+        error_time = asyncio.get_event_loop().time()
         error_type = type(e).__name__
         error_result = {
             "request_id": request_id,
