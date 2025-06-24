@@ -236,6 +236,33 @@ func Test_selectTargetPod(t *testing.T) {
 			expectedPodIP: "1.2.3.4:8000",
 		},
 		{
+			name: "single ready pod out of two",
+			pods: &utils.PodArray{Pods: []*v1.Pod{{
+				Status: v1.PodStatus{
+					PodIP:      "8.9.10.11",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				},
+				
+			},
+		{
+				Status: v1.PodStatus{
+					PodIP:      "4.5.6.7",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse}},
+				},
+				
+			}}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router, but only one pod is ready so Route should not be called
+				routing.Register(algo, func() (types.Router, error) {
+					return mockRouter, nil
+				})
+				// Explicitly set expectation that Route should not be called
+				mockRouter.On("Route", mock.Anything, mock.Anything).Unset()
+			},
+			expectedError: false,
+			expectedPodIP: "8.9.10.11:8000",
+		},
+		{
 			name: "multiple ready pods",
 			pods: &utils.PodArray{Pods: []*v1.Pod{
 				{
