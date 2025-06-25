@@ -64,14 +64,34 @@ func ParsePodKey(key string) (string, string, bool) {
 	return parts[0], parts[1], true
 }
 
-// IsPodTerminating check if pod is in terminating status via whether the deletion timestamp is set
-func IsPodTerminating(pod *v1.Pod) bool {
-	return pod.ObjectMeta.DeletionTimestamp != nil
+func IsPodActive(p *v1.Pod) bool {
+	return v1.PodSucceeded != p.Status.Phase &&
+		v1.PodFailed != p.Status.Phase &&
+		p.DeletionTimestamp == nil
 }
+
+// IsPodTerminating check if pod is in terminating status via whether the deletion timestamp is set
+func IsPodTerminating(p *v1.Pod) bool {
+	return !IsPodTerminal(p) &&
+		p.DeletionTimestamp != nil
+}
+
+// In order to avoid introduce k8s.io/kubernetes package, some helpers code are replicated here.
+// source code: https://github.com/kubernetes/kubernetes/blob/master/pkg/api/v1/pod/util.go
 
 // IsPodReady returns true if a pod is ready; false otherwise.
 func IsPodReady(pod *v1.Pod) bool {
 	return IsPodReadyConditionTrue(pod.Status)
+}
+
+// IsPodTerminal returns true if a pod is terminal, all containers are stopped and cannot ever regress.
+func IsPodTerminal(pod *v1.Pod) bool {
+	return IsPodPhaseTerminal(pod.Status.Phase)
+}
+
+// IsPodPhaseTerminal returns true if the pod's phase is terminal.
+func IsPodPhaseTerminal(phase v1.PodPhase) bool {
+	return phase == v1.PodFailed || phase == v1.PodSucceeded
 }
 
 // IsPodReadyConditionTrue returns true if a pod is ready; false otherwise.

@@ -27,6 +27,8 @@ const (
 	ModelAdapterController         = "model-adapter-controller"
 	ModelRouteController           = "model-route-controller"
 	KVCacheController              = "kv-cache-controller"
+	// there's no need to register internal controllers like roleset, just use top-level controller name
+	StormServiceController = "stormservice-controller"
 )
 
 var (
@@ -39,6 +41,7 @@ var (
 
 	ValidControllers = []string{
 		PodAutoscalerController, DistributedInferenceController, ModelAdapterController, ModelRouteController, KVCacheController,
+		StormServiceController,
 	}
 )
 
@@ -112,4 +115,5 @@ func EnableAllControllers() {
 	EnabledControllers[DistributedInferenceController] = true
 	EnabledControllers[ModelRouteController] = true
 	EnabledControllers[KVCacheController] = true
+	EnabledControllers[StormServiceController] = true
 }

@@ -39,8 +39,8 @@ def main(args):
     end_times = []
     for i, item in enumerate(data):
         total_errors.append(1 if item["status"] == "error" else 0)
-        timestamps.append(item.get("start_time", f"Entry {i}"))
-        end_times.append(item.get("end_time", f"Entry {i}"))
+        timestamps.append(item.get("start_time", 0))
+        end_times.append(item.get("end_time", 0))
         prompt_tokens.append(item["prompt_tokens"]) # Prompt tokens
         output_tokens.append(item["output_tokens"]) 
         total_tokens.append(item["total_tokens"]) 
@@ -88,12 +88,13 @@ def main(args):
     def calculate_statistics(values):
         values = [value for value in values if value is not None]
         if len(values) == 0:
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0
+        total = sum(values)
         values = sorted(values)
         avg = sum(values) / len(values)
         median = np.median(values)
         percentile_99 = np.percentile(values, 99)
-        return avg, median, percentile_99
+        return total, avg, median, percentile_99
 
     # Calculate statistics for each metric
     stats = {
@@ -109,10 +110,11 @@ def main(args):
     }
 
     # Print statistics
-    for metric, (avg, median, p99) in stats.items():
-        logging.warning(f"{metric} Statistics: Average = {avg:.4f}, Median = {median:.4f}, 99th Percentile = {p99:.4f}")
+    for metric, (total, avg, median, p99) in stats.items():
+        logging.warning(f"{metric} Statistics: Total = {total:.4f} Average = {avg:.4f}, Median = {median:.4f}, 99th Percentile = {p99:.4f}")
     if goodput != None:
         logging.warning(f"Goodput (reqs/s) {goodput:.4f}")
+    logging.warning(f"Total requests : {len(data)}")
     logging.warning(f"Total Duration (s): {np.max(end_times) - np.min(start_times)}")
     logging.warning(f"Total tokens generated (toks): {np.sum(total_tokens)}")
     logging.warning(f"Throughput (end-to-end, toks/s): {np.sum(total_tokens)/(np.max(end_times) - np.min(start_times))}")

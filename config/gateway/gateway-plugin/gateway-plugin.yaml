@@ -3,6 +3,12 @@ kind: Service
 metadata:
   name: gateway-plugins
   namespace: system
+  labels:
+    app: gateway-plugins
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
 spec:
   selector:
     app: gateway-plugins
@@ -15,6 +21,10 @@ spec:
       protocol: TCP
       port: 6060
       targetPort: 6060
+    - name: metrics
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -70,6 +80,8 @@ spec:
               containerPort: 50052
             - name: profiling
               containerPort: 6060
+            - name: metrics
+              containerPort: 8080
           resources:
             limits:
               cpu: 1
@@ -121,7 +133,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: reserved-router-models-endpoint
-  namespace: aibrix-system
+  namespace: system
 spec:
   parentRefs:
     - name: aibrix-eg
@@ -138,7 +150,7 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
 metadata:
   name: skip-ext-proc
-  namespace: aibrix-system
+  namespace: system
 spec:
   targetRef:
     group: gateway.networking.k8s.io
@@ -153,7 +165,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: reserved-router
-  namespace: aibrix-system
+  namespace: system
 spec:
   parentRefs:
     - name: aibrix-eg
@@ -173,7 +185,7 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
 metadata:
   name: gateway-plugins-extension-policy
-  namespace: aibrix-system
+  namespace: system
 spec:
   targetRef:
     group: gateway.networking.k8s.io
@@ -186,6 +198,6 @@ spec:
       processingMode:
         request:
           body: Buffered
-        response: 
+        response:
           body: Streamed
       messageTimeout: 5s
