@@ -25,6 +25,25 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// queueRouter implements a request routing algorithm that uses a queue-based approach.
+// It accepts a backend stateless Router and a RouterQueue as inputs.
+// It manages incoming requests by:
+//
+//  1. Enqueuing requests instead of doing routing in Route() call.
+//  2. Peeking queue for finding next routing candidate.
+//  3. Passing the candidate to backend Router.
+//  4. Dequeuing requests when the Router successfully routes, suggesting pods become available (by calling.
+//  5. Alternatively, Route() will be called with nil request to trigger routing if pods become available
+//     before new request's arrival.
+//
+// # Noting that for atomicity concern, backend Router and RouterQueue may coordinating with an underlying router for actual pod selection in both step 2 and 3.
+//
+// It is the backend RouterQueue's responsibility to maintaining requests' dispatching order,
+// specificially, FIFO or reordering as necessary (as in the SLOQueue).
+//
+// Backend Router, in the other hand, ensures fair request distribution across pods.
+//
+// queueRouter is provisioned by cache by model and instances can be get from cache using the model identifier.
 type queueRouter struct {
 	router         types.Router
 	queue          types.RouterQueue[*types.RoutingContext]

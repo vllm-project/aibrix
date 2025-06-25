@@ -23,10 +23,12 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// leastLoadRouter prioritizes dispatching requests to pod of the most load. The definition of load depends on input CappedLoadProvider.
 type packLoadRouter struct {
 	provider cache.CappedLoadProvider
 }
 
+// NewPackLoadRouter creates packLoadRouter instance.
 func NewPackLoadRouter(provider cache.CappedLoadProvider) (types.Router, error) {
 	return &packLoadRouter{
 		provider: provider,

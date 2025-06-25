@@ -22,9 +22,16 @@ import (
 )
 
 const (
-	RouterSLO                 types.RoutingAlgorithm = "slo"
-	RouterSLOPackLoad         types.RoutingAlgorithm = "slo-pack-load"
-	RouterSLOLeastLoad        types.RoutingAlgorithm = "slo-least-load"
+	// Default routing algorithm for slo-family algorithms, setting to RouterSLOLeastLoadPulling.
+	RouterSLO types.RoutingAlgorithm = "slo"
+
+	// SLO-aware routing algorithm that using SLOQueue and packLoadRouter as the backend.
+	RouterSLOPackLoad types.RoutingAlgorithm = "slo-pack-load"
+
+	// SLO-aware routing algorithm that using SLOQueue and leastLoadRouter (push mode) as the backend.
+	RouterSLOLeastLoad types.RoutingAlgorithm = "slo-least-load"
+
+	// SLO-aware routing algorithm that using SLOQueue and leastLoadRouter (pull mode) as the backend.
 	RouterSLOLeastLoadPulling types.RoutingAlgorithm = "slo-least-load-pulling"
 )
 

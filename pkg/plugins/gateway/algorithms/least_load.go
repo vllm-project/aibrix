@@ -30,18 +30,29 @@ var (
 	ErrorNoAvailablePod = fmt.Errorf("no pod available")
 )
 
+// leastLoadRouter prioritizes dispatching requests to pod of the least load, and supports both push(default) and pull mode.
+// The definition of load depends on input LoadProvider (push mode) or CappedLoadProvider (pull mode).
+//
+// Below is a comparison of pull mode and default push mode:
+//
+//	Push mode: The router dispatches requests to the server, possibly overloading the server.
+//	Pull mode: The server pulls requests from the router based on the server's capacity.
+//
+// With profile support, the gateway now has server capacity knowledge and can achieve pull mode within the gateway.
 type leastLoadRouter struct {
 	provider       cache.LoadProvider
 	cappedProvider cache.CappedLoadProvider
-	pulling        bool
+	pulling        bool // Flag to indicate the leastLoadRouter will run in pull mode.
 }
 
+// NewLeastLoadRouter creates leastLoadRouter instance in the push mode.
 func NewLeastLoadRouter(provider cache.LoadProvider) (types.Router, error) {
 	return &leastLoadRouter{
 		provider: provider,
 	}, nil
 }
 
+// NewLeastLoadRouter creates leastLoadRouter instance in the pull mode.
 func NewLeastLoadPullingRouter(provider cache.CappedLoadProvider) (types.Router, error) {
 	return &leastLoadRouter{
 		provider:       provider,
