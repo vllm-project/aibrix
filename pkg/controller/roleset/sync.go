@@ -89,12 +89,12 @@ func (r *RoleSetReconciler) syncPods(ctx context.Context, roleSet *orchestration
 	return manager.Next(ctx, roleSet)
 }
 
-func (r *RoleSetReconciler) calculateStatus(rs *orchestrationv1alpha1.RoleSet, managedErrors []error) (*orchestrationv1alpha1.RoleSetStatus, error) {
+func (r *RoleSetReconciler) calculateStatus(ctx context.Context, rs *orchestrationv1alpha1.RoleSet, managedErrors []error) (*orchestrationv1alpha1.RoleSetStatus, error) {
 	newStatus := rs.Status.DeepCopy()
 	newStatus.Roles = nil
 	var notReadyRoles []string
 	for _, role := range rs.Spec.Roles {
-		if roleStatus, err := r.calculateStatusForRole(rs, &role); err != nil {
+		if roleStatus, err := r.calculateStatusForRole(ctx, rs, &role); err != nil {
 			// TODO: add into condition
 			continue
 		} else {
@@ -123,7 +123,7 @@ func (r *RoleSetReconciler) calculateStatus(rs *orchestrationv1alpha1.RoleSet, m
 	return newStatus, nil
 }
 
-func (r *RoleSetReconciler) calculateStatusForRole(rs *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (*orchestrationv1alpha1.RoleStatus, error) {
+func (r *RoleSetReconciler) calculateStatusForRole(ctx context.Context, rs *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (*orchestrationv1alpha1.RoleStatus, error) {
 	// collect pods of role
 	roleSetRequirement, _ := labels.NewRequirement(constants.RoleSetNameLabelKey, selection.Equals, []string{rs.Name})
 	labelSelector := labels.NewSelector()
@@ -162,7 +162,7 @@ func (r *RoleSetReconciler) finalize(ctx context.Context, roleSet *orchestration
 	labelSelector := labels.NewSelector()
 	labelSelector = labelSelector.Add(*roleSetRequirement)
 	allPods := &v1.PodList{}
-	if err := r.Client.List(context.Background(), allPods,
+	if err := r.Client.List(ctx, allPods,
 		client.InNamespace(roleSet.Namespace),
 		client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
 		return false, err

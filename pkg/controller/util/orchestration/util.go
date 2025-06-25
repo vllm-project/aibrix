@@ -169,7 +169,7 @@ func SlowStartBatch(count int, initialBatchSize int, fn func(int) error) (int, e
 	return successes, nil
 }
 
-func UpdateStatus(ctx context.Context, cli client.Client, obj client.Object) error {
+func UpdateStatus(ctx context.Context, scheme *runtime.Scheme, cli client.Client, obj client.Object) error {
 	firstTry := true
 	meta := obj
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
@@ -179,8 +179,8 @@ func UpdateStatus(ctx context.Context, cli client.Client, obj client.Object) err
 				return err
 			}
 		} else {
-			// TODO: update to not always create NewSchemae. use manager's
-			freshRaw, err := runtime.NewScheme().New(obj.GetObjectKind().GroupVersionKind())
+			// TODO: consider efficiency
+			freshRaw, err := scheme.New(obj.GetObjectKind().GroupVersionKind())
 			if err != nil {
 				return err
 			}

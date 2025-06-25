@@ -101,11 +101,11 @@ func (r *StormServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}()
 
 	stormService := &orchestrationv1alpha1.StormService{}
-	if err := r.Get(context.TODO(), req.NamespacedName, stormService); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, stormService); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if stormService.DeletionTimestamp != nil {
-		if done, err := r.finalize(context.TODO(), stormService); err != nil {
+		if done, err := r.finalize(ctx, stormService); err != nil {
 			klog.Errorf("stormservice %s/%s finalize failed: %v", stormService.Namespace, stormService.Name, err)
 			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
 		} else if !done {
@@ -113,29 +113,29 @@ func (r *StormServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 		return ctrl.Result{}, nil
 	} else if !controllerutil.ContainsFinalizer(stormService, StormServiceFinalizer) {
-		if err := utils.Patch(context.TODO(), r.Client, stormService, patch.AddFinalizerPatch(stormService, StormServiceFinalizer)); err != nil {
+		if err := utils.Patch(ctx, r.Client, stormService, patch.AddFinalizerPatch(stormService, StormServiceFinalizer)); err != nil {
 			klog.Errorf("add finalizer failed: %v, stormService %s", err, req.NamespacedName.String())
 			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
 		}
 	}
 
-	revisions, err := r.getControllerRevision(context.TODO(), stormService)
+	revisions, err := r.getControllerRevision(ctx, stormService)
 	if err != nil {
 		return ctrl.Result{}, nil
 	}
 	history.SortControllerRevisions(revisions)
 
-	currentRevision, updateRevision, collisionCount, err := r.syncRevision(stormService, revisions)
+	currentRevision, updateRevision, collisionCount, err := r.syncRevision(ctx, stormService, revisions)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	requeueAfter, err := r.sync(stormService, currentRevision, updateRevision, collisionCount)
+	requeueAfter, err := r.sync(ctx, stormService, currentRevision, updateRevision, collisionCount)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	err = r.truncateHistory(stormService, revisions, currentRevision, updateRevision)
+	err = r.truncateHistory(ctx, stormService, revisions, currentRevision, updateRevision)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

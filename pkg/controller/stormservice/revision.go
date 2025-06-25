@@ -110,7 +110,7 @@ func newRevision(stormService *orchestrationv1alpha1.StormService, revision int6
 	return cr, nil
 }
 
-func (r *StormServiceReconciler) createControllerRevision(parent metav1.Object, revision *apps.ControllerRevision, collisionCount *int32) (*apps.ControllerRevision, error) {
+func (r *StormServiceReconciler) createControllerRevision(ctx context.Context, parent metav1.Object, revision *apps.ControllerRevision, collisionCount *int32) (*apps.ControllerRevision, error) {
 	if collisionCount == nil {
 		return nil, fmt.Errorf("collisionCount should not be nil")
 	}
@@ -125,10 +125,10 @@ func (r *StormServiceReconciler) createControllerRevision(parent metav1.Object, 
 		clone.Name = history.ControllerRevisionName(parent.GetName(), hash)
 		clone.Namespace = parent.GetNamespace()
 
-		createErr := r.Client.Create(context.TODO(), clone)
+		createErr := r.Client.Create(ctx, clone)
 		if errors.IsAlreadyExists(createErr) {
 			exists := &apps.ControllerRevision{}
-			err := r.Client.Get(context.TODO(), client.ObjectKey{Namespace: clone.Namespace, Name: clone.Name}, clone)
+			err := r.Client.Get(ctx, client.ObjectKey{Namespace: clone.Namespace, Name: clone.Name}, clone)
 			if err != nil {
 				return nil, err
 			}
@@ -163,7 +163,7 @@ func (r *StormServiceReconciler) updateControllerRevision(revision *apps.Control
 	return clone, err
 }
 
-func (r *StormServiceReconciler) syncRevision(stormService *orchestrationv1alpha1.StormService, revisions []*apps.ControllerRevision) (*apps.ControllerRevision, *apps.ControllerRevision, int32, error) {
+func (r *StormServiceReconciler) syncRevision(ctx context.Context, stormService *orchestrationv1alpha1.StormService, revisions []*apps.ControllerRevision) (*apps.ControllerRevision, *apps.ControllerRevision, int32, error) {
 	var currentRevision, updateRevision *apps.ControllerRevision
 	revisionCount := len(revisions)
 
@@ -192,7 +192,7 @@ func (r *StormServiceReconciler) syncRevision(stormService *orchestrationv1alpha
 		}
 	} else {
 		//if there is no equivalent revision we create a new one
-		updateRevision, err = r.createControllerRevision(stormService, updateRevision, &collisionCount)
+		updateRevision, err = r.createControllerRevision(ctx, stormService, updateRevision, &collisionCount)
 		if err != nil {
 			return nil, nil, collisionCount, err
 		}
@@ -233,12 +233,8 @@ func applyRevision(stormService *orchestrationv1alpha1.StormService, revision *a
 	return restored, nil
 }
 
-func (r *StormServiceReconciler) truncateHistory(
-	stormService *orchestrationv1alpha1.StormService,
-	revisions []*apps.ControllerRevision,
-	current *apps.ControllerRevision,
-	update *apps.ControllerRevision) error {
-	roleSets, err := r.getRoleSetList(stormService.Spec.Selector)
+func (r *StormServiceReconciler) truncateHistory(ctx context.Context, stormService *orchestrationv1alpha1.StormService, revisions []*apps.ControllerRevision, current *apps.ControllerRevision, update *apps.ControllerRevision) error {
+	roleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
 	if err != nil {
 		return err
 	}
@@ -272,7 +268,7 @@ func (r *StormServiceReconciler) truncateHistory(
 	// delete any non-live history to maintain the revision limit.
 	revisionHistory = revisionHistory[:(historyLen - historyLimit)]
 	for i := 0; i < len(revisionHistory); i++ {
-		if err := r.Client.Delete(context.TODO(), revisionHistory[i]); err != nil {
+		if err := r.Client.Delete(ctx, revisionHistory[i]); err != nil {
 			return err
 		}
 	}

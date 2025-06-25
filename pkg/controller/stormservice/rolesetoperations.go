@@ -31,7 +31,7 @@ import (
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 )
 
-func (r *StormServiceReconciler) getRoleSetList(selector *metav1.LabelSelector) ([]*orchestrationv1alpha1.RoleSet, error) {
+func (r *StormServiceReconciler) getRoleSetList(ctx context.Context, selector *metav1.LabelSelector) ([]*orchestrationv1alpha1.RoleSet, error) {
 	if selector == nil {
 		return nil, fmt.Errorf("selector can not be nil")
 	}
@@ -40,7 +40,7 @@ func (r *StormServiceReconciler) getRoleSetList(selector *metav1.LabelSelector) 
 		return nil, fmt.Errorf("bad selector format: %v", err)
 	}
 	roleSetList := &orchestrationv1alpha1.RoleSetList{}
-	err = r.Client.List(context.TODO(), roleSetList, client.MatchingLabelsSelector{Selector: roleSetSelector})
+	err = r.Client.List(ctx, roleSetList, client.MatchingLabelsSelector{Selector: roleSetSelector})
 	if err != nil {
 		klog.Errorf("failed to list roleSets")
 		return nil, err

@@ -138,7 +138,7 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// 3. update roleset status
-	status, err := r.calculateStatus(roleSet, managedErrors)
+	status, err := r.calculateStatus(ctx, roleSet, managedErrors)
 	if err != nil {
 		klog.Infof("roleset %s/%s calculate status error %v", roleSet.Namespace, roleSet.Name, err)
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
@@ -147,7 +147,7 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 	roleSet.Status = *status
-	if err := orchestrationctrl.UpdateStatus(ctx, r.Client, roleSet); err != nil {
+	if err := orchestrationctrl.UpdateStatus(ctx, r.Scheme, r.Client, roleSet); err != nil {
 		klog.Infof("roleset %s/%s update status error %v", roleSet.Namespace, roleSet.Name, err)
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
 	}

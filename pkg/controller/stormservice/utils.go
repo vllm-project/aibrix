@@ -212,7 +212,7 @@ func sortRoleSetByReadiness(roleSets []*orchestrationv1alpha1.RoleSet) {
 	})
 }
 
-// 排序：老版本notReady -> 老版本ready -> 新版本notReady -> 新版本ready
+// Sorts role sets: old revisions before new, and within the same revision, not-ready before ready.
 func sortRoleSetByRevision(roleSets []*orchestrationv1alpha1.RoleSet, updatedRevision string) {
 	sort.Slice(roleSets, func(i, j int) bool {
 		if isRoleSetMatchRevision(roleSets[i], updatedRevision) {
