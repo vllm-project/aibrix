@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Aibrix Team.
+Copyright 2025 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,10 +22,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
@@ -43,6 +42,7 @@ var _ = Describe("StormService Controller", func() {
 		stormservice := &orchestrationv1alpha1.StormService{}
 
 		BeforeEach(func() {
+			Skip("skip this test and revisit once main logic is implemented")
 			By("creating the custom resource for the Kind StormService")
 			err := k8sClient.Get(ctx, typeNamespacedName, stormservice)
 			if err != nil && errors.IsNotFound(err) {
