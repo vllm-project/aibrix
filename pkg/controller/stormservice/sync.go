@@ -49,12 +49,12 @@ func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchest
 
 	var reconcileErr error
 	// 1. reconcile the number of roleSets to meet the spec.Replicas, both currentRevision and updateRevision
-	if scaling, err := r.scaling(stormService, current, currentRevision.Name, updateRevision.Name); err != nil {
+	if scaling, err := r.scaling(ctx, stormService, current, currentRevision.Name, updateRevision.Name); err != nil {
 		r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, ScalingEventType, "scaling error %s", err.Error())
 		reconcileErr = err
 	} else if !stormService.Spec.Paused && !scaling { // skip rollout when paused and in scaling
 		// 2. check the rollout progress
-		reconcileErr = r.rollout(stormService, currentRevision.Name, updateRevision.Name)
+		reconcileErr = r.rollout(ctx, stormService, currentRevision.Name, updateRevision.Name)
 		if reconcileErr != nil {
 			r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, RolloutEventType, "rollout error %s", reconcileErr.Error())
 		}
@@ -120,9 +120,9 @@ func calculateReplicas(desiredReplica, current, updated int32) (desiredCurrent i
 // 3. RoleSets may be unexpectedly created or deleted.
 // Note: Due to the presence of maxUnavailable, this function does not guarantee that the number of RoleSets
 // will exactly match spec.Replicas upon return — multiple scaling adjustments may be required.
-func (r *StormServiceReconciler) scaling(stormService, current *orchestrationv1alpha1.StormService, currentRevision, updatedRevision string) (bool, error) {
+func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, current *orchestrationv1alpha1.StormService, currentRevision, updatedRevision string) (bool, error) {
 	var scaling bool
-	allRoleSets, err := r.getRoleSetList(nil, stormService.Spec.Selector)
+	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
 	if err != nil {
 		return false, err
 	}
@@ -236,8 +236,8 @@ func (r *StormServiceReconciler) scaling(stormService, current *orchestrationv1a
 }
 
 // Rollout: execute the deployment update logic
-func (r *StormServiceReconciler) rollout(stormService *orchestrationv1alpha1.StormService, currentRevision, updatedRevision string) error {
-	allRoleSets, err := r.getRoleSetList(nil, stormService.Spec.Selector)
+func (r *StormServiceReconciler) rollout(ctx context.Context, stormService *orchestrationv1alpha1.StormService, currentRevision, updatedRevision string) error {
+	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
 	if err != nil {
 		return err
 	}
@@ -332,7 +332,7 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 		err := r.Client.Status().Update(ctx, stormService)
 		return false, err
 	}
-	allRoleSets, err := r.getRoleSetList(nil, stormService.Spec.Selector)
+	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
 	if err != nil {
 		return false, err
 	}
@@ -387,7 +387,7 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 
 func (r *StormServiceReconciler) finalize(ctx context.Context, stormService *orchestrationv1alpha1.StormService) (bool, error) {
 	// check if all rolesets are deleted
-	allRoleSets, err := r.getRoleSetList(nil, stormService.Spec.Selector)
+	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
 	if err != nil {
 		return false, err
 	}
