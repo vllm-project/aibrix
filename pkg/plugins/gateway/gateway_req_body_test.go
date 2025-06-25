@@ -23,6 +23,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
+	"time"
+
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
@@ -31,7 +33,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"time"
 )
 
 // TestRouterAlgorithm is a dedicated routing algorithm for testing
@@ -460,7 +461,7 @@ func Test_handleRequestBody(t *testing.T) {
 			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
 				mockCache.On("HasModel", "test-model").Return(true)
 				// Create pods that exist but are not routable (not ready)
-			podList := &utils.PodArray{
+				podList := &utils.PodArray{
 					Pods: []*v1.Pod{
 						{
 							Status: v1.PodStatus{
