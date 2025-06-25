@@ -17,25 +17,111 @@ limitations under the License.
 package v1alpha1
 
 import (
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
+	"k8s.io/apimachinery/pkg/util/intstr"
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+	// let's temporarily use godel scheduler's definition, consider to switch to community definitions
+	schedv1alpha1 "github.com/kubewharf/godel-scheduler-api/pkg/apis/scheduling/v1alpha1"
+)
 
 // RoleSetSpec defines the desired state of RoleSet
 type RoleSetSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	Roles []RoleSpec `json:"roles,omitempty"`
 
-	// Foo is an example field of RoleSet. Edit roleset_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// +optional
+	UpdateStrategy RoleSetUpdateStrategyType `json:"updateStrategy,omitempty"`
+
+	// +optional
+	SchedulingStrategy SchedulingStrategy `json:"schedulingStrategy,omitempty"`
+}
+
+// +enum
+type SchedulingStrategy struct {
+	PodGroup *schedv1alpha1.PodGroupSpec `json:"podGroup,omitempty"`
+}
+
+// +enum
+type RoleSetUpdateStrategyType string
+
+const (
+	// ParallelRoleSetUpdateStrategyType update all roles in parallel
+	ParallelRoleSetUpdateStrategyType RoleSetUpdateStrategyType = "Parallel"
+	// SequentialRoleSetStrategyType update all roles in sequential
+	SequentialRoleSetStrategyType RoleSetUpdateStrategyType = "Sequential"
+	// InterleaveRoleSetStrategyType update all roles in interleave, follow the rolling step defined in roles
+	InterleaveRoleSetStrategyType RoleSetUpdateStrategyType = "Interleave"
+)
+
+type DisruptionTolerance struct {
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
+}
+
+type RoleSpec struct {
+	Name string `json:"name,omitempty"`
+
+	// Replicas is the number of desired replicas.
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// +optional
+	// +patchStrategy=retainKeys
+	UpdateStrategy RoleUpdateStrategy `json:"updateStrategy,omitempty"`
+
+	// +optional
+	Stateful bool `json:"stateful,omitempty"`
+
+	// +optional
+	Template v1.PodTemplateSpec `json:"template,omitempty"`
+
+	// DisruptionTolerance indicates how many pods can be unavailable during the preemption/eviction.
+	// +optional
+	DisruptionTolerance DisruptionTolerance `json:"disruptionTolerance,omitempty"`
+}
+
+// +enum
+type RoleUpdateStrategy struct {
+	// +optional
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty" protobuf:"bytes,1,opt,name=maxUnavailable"`
+
+	// +optional
+	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty" protobuf:"bytes,2,opt,name=maxSurge"`
 }
 
 // RoleSetStatus defines the observed state of RoleSet
 type RoleSetStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	Roles []RoleStatus `json:"roles,omitempty"`
+	// +optional
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	Conditions Conditions `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+}
+
+// These are valid conditions of roleSet.
+const (
+	// RoleSetReady means the roleSet meeting the minimal requirements for the roleSet to be considered ready.
+	RoleSetReady          ConditionType = "Ready"
+	RoleSetReplicaFailure ConditionType = "ReplicaFailure"
+	RoleSetProgressing    ConditionType = "Progressing"
+)
+
+type RoleStatus struct {
+	Name string `json:"name,omitempty"`
+
+	// Replicas is the most recently oberved number of replicas.
+	Replicas int32 `json:"replicas"`
+
+	// +optional
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+
+	// +optional
+	NotReadyReplicas int32 `json:"notReadyReplicas,omitempty"`
+
+	// +optional
+	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
+
+	// +optional
+	UpdatedReadyReplicas int32 `json:"updatedReadyReplicas,omitempty"`
 }
 
 //+kubebuilder:object:root=true
