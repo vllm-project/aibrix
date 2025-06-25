@@ -73,6 +73,7 @@ func (r *leastLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (
 	}
 
 	lastErr := ErrorNoAvailablePod // The default error keeps if all pods are not ready.
+	errUpdated := false
 	for _, pod := range pods.All() {
 		if pod.Status.PodIP == "" {
 			// Pod not ready.
@@ -81,8 +82,10 @@ func (r *leastLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (
 
 		util, err := r.provider.GetUtilization(ctx, pod)
 		if err != nil {
-			lastErr = r.updateError(lastErr, err)
-			klog.ErrorS(err, "Skipped pod due to fail to get utilization in leastLoadRouter", "pod", pod.Name)
+			lastErr, errUpdated = r.updateError(lastErr, err)
+			if errUpdated {
+				klog.ErrorS(err, "Skipped pod due to fail to get utilization in leastLoadRouter", "pod", pod.Name, "requestID", ctx.RequestID)
+			}
 			continue
 		}
 
@@ -93,19 +96,23 @@ func (r *leastLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (
 		if r.pulling {
 			consumption, err = r.provider.GetConsumption(ctx, pod)
 			if err == cache.ErrorSLOFailureRequest {
-				lastErr = r.updateError(lastErr, err)
-				klog.V(4).InfoS("Skipped pod due to SLOFailureRequest in leastLoadRouter", "pod", pod.Name, "request", ctx.RequestID)
+				lastErr, errUpdated = r.updateError(lastErr, err)
+				if errUpdated {
+					klog.V(4).InfoS("Skipped pod due to SLOFailureRequest in leastLoadRouter", "pod", pod.Name, "requestID", ctx.RequestID)
+				}
 				continue
 			} else if err != nil {
-				lastErr = r.updateError(lastErr, err)
-				klog.ErrorS(err, "Skipped pod due to fail to get consumption in leastLoadRouter", "pod", pod.Name)
+				lastErr, errUpdated = r.updateError(lastErr, err)
+				if errUpdated {
+					klog.ErrorS(err, "Skipped pod due to fail to get consumption in leastLoadRouter", "pod", pod.Name, "requestID", ctx.RequestID)
+				}
 				continue
 			}
 		}
 
 		util += consumption // 0 if not in pulling mode
 		if r.pulling && util > r.cappedProvider.Cap() {
-			lastErr = r.updateError(lastErr, cache.ErrorLoadCapacityReached)
+			lastErr, _ = r.updateError(lastErr, cache.ErrorLoadCapacityReached)
 		} else if util <= minUtil {
 			minUtil = util
 			targetPod = pod
@@ -122,11 +129,11 @@ func (r *leastLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (
 	return ctx.TargetAddress(), nil
 }
 
-func (r *leastLoadRouter) updateError(last error, err error) error {
+func (r *leastLoadRouter) updateError(last error, err error) (newLast error, updated bool) {
 	// ErrorLoadCapacityReached is a temporary error.
-	if last == cache.ErrorLoadCapacityReached {
-		return last
+	if last == cache.ErrorLoadCapacityReached || last == err {
+		return last, false
 	}
 
-	return err
+	return err, true
 }
