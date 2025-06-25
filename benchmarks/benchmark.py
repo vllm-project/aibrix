@@ -245,7 +245,6 @@ class BenchmarkRunner:
             "output_file_path": f"{self.config['client_output']}/output.jsonl",
             "streaming": self.config.get("streaming_enabled", False),
             "routing_strategy": self.config.get("routing_strategy", "random"),
-            "client_pool_size": self.config.get("client_pool_size", 128),
             "output_token_limit": self.config.get("output_token_limit", 128),
             "time_scale": self.config.get("time_scale", 1.0),
             "timeout_second": self.config.get("timeout_second", 60.0),
