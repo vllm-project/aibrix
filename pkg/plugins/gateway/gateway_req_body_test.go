@@ -30,6 +30,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"time"
 )
 
 // TestRouterAlgorithm is a dedicated routing algorithm for testing
@@ -363,6 +365,115 @@ func Test_handleRequestBody(t *testing.T) {
 										Status: v1.ConditionFalse, // Not ready
 									},
 								},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				// No AddRequestCount expectation since the function should return early with error
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_ServiceUnavailable,
+				headers: []*configPb.HeaderValueOption{
+					{
+						Header: &configPb.HeaderValue{
+							Key:      HeaderErrorNoModelBackends,
+							RawValue: []byte("true"),
+						},
+					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:   "Content-Type",
+							Value: "application/json",
+						},
+					},
+				},
+				model:      "test-model",
+				stream:     false,
+				term:       0,
+				routingCtx: nil,
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				assert.Equal(t, tt.expected.headers, resp.GetImmediateResponse().GetHeaders().GetSetHeaders())
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+				assert.Nil(t, routingCtx)
+			},
+			checkStream: false,
+		},
+		{
+			name:        "empty pods list - should return ServiceUnavailable",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "", // No routing strategy needed for this test
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				// Create pods that exist but are not routable (not ready)
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				// No AddRequestCount expectation since the function should return early with error
+			},
+			expected: testResponse{
+				statusCode: envoyTypePb.StatusCode_ServiceUnavailable,
+				headers: []*configPb.HeaderValueOption{
+					{
+						Header: &configPb.HeaderValue{
+							Key:      HeaderErrorNoModelBackends,
+							RawValue: []byte("true"),
+						},
+					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:   "Content-Type",
+							Value: "application/json",
+						},
+					},
+				},
+				model:      "test-model",
+				stream:     false,
+				term:       0,
+				routingCtx: nil,
+			},
+			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
+				assert.Equal(t, tt.expected.statusCode, resp.GetImmediateResponse().GetStatus().GetCode())
+				assert.Equal(t, tt.expected.headers, resp.GetImmediateResponse().GetHeaders().GetSetHeaders())
+				assert.Equal(t, tt.expected.model, model)
+				assert.Equal(t, tt.expected.stream, stream)
+				assert.Equal(t, tt.expected.term, term)
+				assert.Nil(t, routingCtx)
+			},
+			checkStream: false,
+		},
+		{
+			name:        "single pod in termination - should return ServiceUnavailable",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "", // No routing strategy needed for this test
+			mockSetup: func(mockCache *MockCache, _ *mockRouter) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				// Create pods that exist but are not routable (not ready)
+			podList := &utils.PodArray{
+					Pods: []*v1.Pod{
+						{
+							Status: v1.PodStatus{
+								PodIP: "1.2.3.4",
+								Conditions: []v1.PodCondition{
+									{
+										Type:   v1.PodReady,
+										Status: v1.ConditionTrue, // Intentionaly set as ready for ensuring it's being filtered out due to the deletion timestamp existence.
+									},
+								},
+							},
+							ObjectMeta: metav1.ObjectMeta{
+								DeletionTimestamp: &metav1.Time{Time: time.Now()},
 							},
 						},
 					},
