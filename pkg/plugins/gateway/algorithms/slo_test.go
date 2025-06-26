@@ -90,7 +90,7 @@ var _ = Describe("SLO", func() {
 		profile, err = readExampleProfile("../../../../python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/simulator-llama2-7b-a100.json")
 		Expect(err).To(BeNil())
 
-		store = cache.NewForTest()
+		store = cache.InitForTest()
 		Init() // Required to initialize the router registry after store was initialized and before pods are added.
 		store = cache.InitWithPods(cache.InitWithModelRouterProvider(store, NewSLORouter), []*v1.Pod{
 			{

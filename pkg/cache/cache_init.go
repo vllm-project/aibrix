@@ -130,7 +130,7 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 
 // NewForTest initializes the cache store for testing purposes, it can be repeated call for reset.
 func NewForTest() *Store {
-	store = &Store{
+	store := &Store{
 		initialized:          true,
 		enableTracing:        enableGPUOptimizerTracing,
 		enableProfileCaching: enableModelGPUProfileCaching,
@@ -229,6 +229,12 @@ func InitWithPodsMetrics(st *Store, podMetrics map[string]map[string]metrics.Met
 		return true
 	})
 	return st
+}
+
+// InitForTest initialize the global store object for testing.
+func InitForTest() *Store {
+	store = NewForTest()
+	return store
 }
 
 // Init initializes the cache store (singleton pattern)
