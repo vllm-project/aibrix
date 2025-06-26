@@ -22,7 +22,9 @@ The following example shows how to:
     kind: Namespace
     metadata:
       labels:
-        pod-security.kubernetes.io/enforce: privileged
+        pod-security.kubernetes.io/enforce: baseline
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/warn: restricted
       name: aibrix-system-llm
     
     ---
@@ -97,8 +99,8 @@ The following example shows how to:
                 failureThreshold: 3
                 periodSeconds: 5
                 successThreshold: 1
-                timeoutSeconds: 1
-                initialDelaySeconds: 100
+                timeoutSeconds: 3
+                initialDelaySeconds: 30
               readinessProbe:
                 httpGet:
                   path: /health
@@ -107,8 +109,15 @@ The following example shows how to:
                 failureThreshold: 5
                 periodSeconds: 5
                 successThreshold: 1
-                timeoutSeconds: 1
-                initialDelaySeconds: 100
+                timeoutSeconds: 3
+                initialDelaySeconds: 30
+              startupProbe:
+                httpGet:
+                  path: /health
+                  port: 8000
+                  scheme: HTTP
+                failureThreshold: 30
+                periodSeconds: 5
     
     ---
     apiVersion: v1
@@ -149,18 +158,19 @@ The following example shows how to:
         requests:
           storage: 30Gi
       volumeMode: Filesystem
+      storageClassName: default
+
 
 Key Features
 ------------
 1. **PVC Caching** - 30Gi persistent storage for HuggingFace models at `/root/.cache/huggingface`
-2. **Security Context** - Dedicated namespace with privileged security policy
-3. **Resource Limits** - Explicit GPU/CPU/Memory allocations
-4. **Health Monitoring** - Multi-stage probes with failure thresholds
-5. **Metrics Integration** - Prometheus annotations for service discovery
+2. **Resource Limits** - Explicit GPU/CPU/Memory allocations
+3. **Health Monitoring** - Multi-stage probes with failure thresholds
+4. **Metrics Integration** - Prometheus annotations for service discovery
 
 Usage Notes
 -----------
 - Model name labels must match across Deployment/Service
 - PVC storage class should match cluster configuration
 - Adjust `max-model-len` according to actual model requirements
-- Probe delays accommodate model loading time (100s initial delay)
+- Probe delays accommodate model loading time (30s initial delay)
