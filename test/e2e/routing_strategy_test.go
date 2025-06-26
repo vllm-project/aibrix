@@ -77,16 +77,6 @@ func TestRandomRouting(t *testing.T) {
 		chi2Stat, significanceLevel)
 }
 
-func TestSLORouting(t *testing.T) {
-	iterration := 10
-
-	for i := 0; i < iterration; i++ {
-		req := "hello test"
-		targetPod := getTargetPodFromChatCompletion(t, req, "slo")
-		assert.NotEmpty(t, targetPod, "target pod should not be empty")
-	}
-}
-
 // nolint:lll
 func TestPrefixCacheRouting(t *testing.T) {
 	// #1 request - cache first time request

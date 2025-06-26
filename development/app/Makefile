@@ -118,7 +118,7 @@ test-router:
 		-H "model: llama2-7b" \
 		-H "Content-Type: application/json" \
 		-H "Authorization: Bearer any_key" \
-		-H "routing-strategy: slo" \
+		-H "routing-strategy: least-request" \
 		-d '{ \
 			"model": "llama2-7b", \
 			"messages": [{"role": "user", "content": "Say this is a test!"}], \

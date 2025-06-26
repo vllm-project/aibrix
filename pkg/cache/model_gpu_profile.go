@@ -57,25 +57,25 @@ func getModelGPUProfileCachingFlag() bool {
 }
 
 type ModelGPUProfile struct {
-	Deployment string      `json:"gpu"` // k8s deployment that specified model and GPU information.
-	Cost       float64     `json:"cost"`
+	Deployment string      `json:"gpu"`     // k8s deployment that specified model and GPU information.
+	Cost       float64     `json:"cost"`    // Dollar cost of the unit time GPU computing.
 	Tputs      [][]float64 `json:"tputs"`   // Max RPS per correspondent index.
 	Indexes    [][]float64 `json:"indexes"` // [output tokens, input tokens]
-	Created    float64     `json:"created"`
-	E2E        [][]float64 `json:"e2e"`  // Mean E2E latency per correspondent RPS.
-	TTFT       [][]float64 `json:"ttft"` // Mean TTFT per correspondent RPS.
-	TPOT       [][]float64 `json:"tpot"` // Mean TPOT.
-	SLOs       ModelSLOs   `json:"slos"` // SLOs used for specified model and GPU.
+	Created    float64     `json:"created"` // Profile generation timestamp in Unix format.
+	E2E        [][]float64 `json:"e2e"`     // Mean E2E latency per correspondent RPS.
+	TTFT       [][]float64 `json:"ttft"`    // Mean TTFT per correspondent RPS.
+	TPOT       [][]float64 `json:"tpot"`    // Mean TPOT.
+	SLOs       ModelSLOs   `json:"slos"`    // SLOs used for specified model and GPU.
 }
 
 type ModelSLOs struct {
-	Percentile int     `json:"percentile"`
-	TPUT       float64 `json:"tput"` // Request Throughput: RPS
-	TT         float64 `json:"tt"`   // Token Throughput
-	E2E        float64 `json:"e2e"`  // End-to-end latency
-	TTFT       float64 `json:"ttft"` // Time to first token
-	TPAT       float64 `json:"tpat"` // Time per all tokens
-	TPOT       float64 `json:"tpot"` // Time per output tokens
+	Percentile int     `json:"percentile"` // Percentile applied to SLO metric(s).
+	TPUT       float64 `json:"tput"`       // Request Throughput: RPS
+	TT         float64 `json:"tt"`         // Token Throughput
+	E2E        float64 `json:"e2e"`        // End-to-end latency
+	TTFT       float64 `json:"ttft"`       // Time to first token
+	TPAT       float64 `json:"tpat"`       // Time per all tokens (suggests normalized E2E latency for different workloads)
+	TPOT       float64 `json:"tpot"`       // Time per output tokens
 }
 
 func ModelGPUProfileKey(modelName string, deploymentName string) string {
