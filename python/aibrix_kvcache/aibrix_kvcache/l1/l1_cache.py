@@ -17,13 +17,14 @@ from typing import Iterator, Sequence, Tuple
 
 import torch
 
+from ..cache_hashable import TokenCacheKey
 from ..common import nvtx_range
 from ..common.absl_logging import getLogger, log_every_n_seconds
 from ..memory import MemoryRegion, TensorPoolAllocator
 from ..metrics import L1CacheMetrics, MeasurableBase, MetricRecorder
 from ..spec import KVCacheBlockSpec
 from ..status import Status, StatusCodes
-from ..utils import cpu_perf_timer
+from ..utils import cpu_perf_timer, human_readable_bytes
 from .eviction_policy import BaseEvictionPolicy, Functor
 
 logger = getLogger(__name__)
@@ -33,10 +34,9 @@ class L1Cache(MeasurableBase):
     def __init__(
         self,
         eviction_policy: str,
-        capacity: int,
+        capacity_nbytes: int,
         allocator: TensorPoolAllocator,
         block_spec: KVCacheBlockSpec,
-        evict_size: int = 1,
         on_put: Functor | None = None,
         on_evict: Functor | None = None,
         on_hot_access: Functor | None = None,
@@ -45,12 +45,9 @@ class L1Cache(MeasurableBase):
         """Create a cache object.
         Args:
             eviction_policy (str): The name of the eviction policy.
-            capacity (int): The capacity of the cache in terms of
-                            number of blocks.
+            capacity_nbytes (int): The capacity of the cache in bytes.
             allocator (TensorPoolAllocator): The allocator to allocate
                                              cache block.
-            evict_size (int): The number of items to evict at a time.
-                              Defaults to 1.
             on_put(Functor): The callback function to call when putting
                              new items. Defaults to None.
             on_evict(Functor): The evict function to call when evicting
@@ -60,7 +57,7 @@ class L1Cache(MeasurableBase):
             metrics (L1CacheMetrics): The metrics of the cache.
         """
         super().__init__(metrics)
-        self.capacity: int = capacity
+        self.capacity_nbytes: int = capacity_nbytes
         self.allocator: TensorPoolAllocator = allocator
         self.block_spec: KVCacheBlockSpec = block_spec
         self.block_shape: Tuple[int, ...] = self.block_spec.block_shape
@@ -71,30 +68,28 @@ class L1Cache(MeasurableBase):
 
         self._eviction_policy: BaseEvictionPolicy = BaseEvictionPolicy.create(
             eviction_policy,
-            capacity,
-            evict_size,
+            capacity_nbytes,
             on_put=on_put,
             on_evict=on_evict,
             on_hot_access=on_hot_access,
         )
 
-        assert (
-            self.allocator.capacity_nbytes >= self.capacity * self.block_nbytes
-        ), (
+        assert self.allocator.capacity_nbytes >= self.capacity_nbytes, (
             f"Allocator capacity {self.allocator.capacity_nbytes} should not "
-            f"be less than cache capacity {self.capacity * self.block_nbytes}."
+            f"be less than cache capacity {self.capacity_nbytes}."
         )
 
         logger.info("%s is initialized.", str(self))
 
     def __len__(self) -> int:
-        """Return the number of cache blocks in the cache."""
+        """Return the usage of the cache in bytes."""
         return len(self._eviction_policy)
 
     def __repr__(self) -> str:
         return (
-            f"L1Cache(policy={self._eviction_policy.name}, "
-            f"capacity={self.capacity}, size={len(self)})"
+            f"L1Cache(policy={self._eviction_policy.name}"
+            f", capacity_nbytes={human_readable_bytes(self.capacity_nbytes)}"
+            f", size={human_readable_bytes(len(self))})"
         )
 
     def __str__(self) -> str:
@@ -114,35 +109,33 @@ class L1Cache(MeasurableBase):
 
     def allocate(
         self,
-        num_blocks: int,
+        sizes: Sequence[int],
     ) -> Status[Sequence[MemoryRegion]]:
-        """Allocate a set of memory regions that have the capacity to
-        hold `nblocks`.
+        """Allocate a set of memory regions.
 
         Args:
-            num_blocks: The number of blocks to allocate.
+            sizes: The sizes of the memory regions.
         Returns:
             The memory regions.
         """
         if self._recorder:
             self._recorder.trace_usage(  # type: ignore[attr-defined]
                 MetricRecorder.Resource.L1_ALLOCATOR,
-                self.allocator._used_nbytes // self.block_nbytes,
+                self.allocator._used_nbytes,
             )
             self._recorder.trace_usage(  # type: ignore[attr-defined]
                 MetricRecorder.Resource.L1_EVICTION_POLICY,
                 len(self._eviction_policy),
             )
 
-        if self.capacity - len(self) < num_blocks:
-            self._eviction_policy.evict(num_blocks)
+        total = sum(sizes)
 
-        num_blocks = min(num_blocks, self.capacity - len(self))
+        status = self.allocator.alloc(sizes)
+        while status.is_out_of_memory() and len(self) > 0:
+            self._eviction_policy.evict(total)
+            status = self.allocator.alloc(sizes)
 
-        if num_blocks == 0:
-            return Status(StatusCodes.OUT_OF_MEMORY)
-
-        return self.allocator.alloc(self.block_nbytes * num_blocks)
+        return Status(status)
 
     @nvtx_range("exists", "kv_cache_ol.L1Cache")
     @MeasurableBase.measure(MetricRecorder.OP.EXISTS)
@@ -165,7 +158,8 @@ class L1Cache(MeasurableBase):
 
         total = 0
         for key in self._cache_block_keys(prefix, tokens):
-            if key in self._eviction_policy:
+            cache_key = TokenCacheKey(*key)
+            if cache_key in self._eviction_policy:
                 total += 1
             else:
                 break
@@ -255,7 +249,16 @@ class L1Cache(MeasurableBase):
         num_tokens = len(tokens)
         num_blocks = num_tokens // self.block_ntokens
 
-        status = self.allocate(num_blocks)
+        sizes = [
+            MemoryRegion.calculate_size(
+                self.block_nbytes, len(block_prefix) + len(block_tokens)
+            )
+            for block_prefix, block_tokens in self._cache_block_keys(
+                prefix, tokens
+            )
+        ]
+
+        status = self.allocate(sizes)
         if not status.is_ok():
             return Status(status)
 
@@ -277,6 +280,7 @@ class L1Cache(MeasurableBase):
         block_mr_shape[self.block_shape_token_dim] = self.block_ntokens
         with cpu_perf_timer() as get_copy_dur_ms:
             for i, block_mr in enumerate(block_mrs):
+                block_mr.block_nbytes = self.block_nbytes
                 cached_tensors = block_mr.to_tensor(
                     self.block_dtype, tuple(block_mr_shape)
                 )
@@ -345,13 +349,17 @@ class L1Cache(MeasurableBase):
         assert len(kv_mrs) == num_blocks
 
         bi = 0
-        for cache_key in self._cache_block_keys(
+        for block_prefix, block_tokens in self._cache_block_keys(
             prefix, tokens[: num_blocks * self.block_ntokens]
         ):
             if bi >= len(kv_mrs):
                 break
             block_mr = kv_mrs[bi]
-            if not self._eviction_policy.put(cache_key, block_mr).is_ok():
+            if not MemoryRegion.use_compact_layout():
+                block_mr.pack_tokens(prefix=block_prefix, tokens=block_tokens)
+            block_mr.seal()
+            block_key = TokenCacheKey(block_prefix, block_tokens)
+            if not self._eviction_policy.put(block_key, block_mr).is_ok():
                 break
             bi += 1
 
@@ -378,7 +386,7 @@ class L1Cache(MeasurableBase):
 
         mrs = []
         for key in self._cache_block_keys(prefix, tokens):
-            status = self._eviction_policy.get(key)
+            status = self._eviction_policy.get(TokenCacheKey(*key))
             if status.is_ok():
                 mrs.append(status.value)
             else:
@@ -402,12 +410,12 @@ class L1Cache(MeasurableBase):
             return Status(StatusCodes.INVALID)
 
         for key in self._cache_block_keys(prefix, tokens):
-            self._eviction_policy.delete(key)
+            self._eviction_policy.delete(TokenCacheKey(*key))
         return Status.ok()
 
     def _cache_block_keys(
         self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Iterator[Tuple[Sequence[int], Sequence[int]]]:
+    ) -> Iterator[Tuple[Tuple[int, ...], Tuple[int, ...]]]:
         """Get the cache block keys of the kv tensors.
         Args:
             prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
@@ -415,14 +423,30 @@ class L1Cache(MeasurableBase):
         Returns:
             The cache block keys of the kv tensors.
         """
+        return L1Cache.cache_block_keys(prefix, tokens, self.block_ntokens)
+
+    @staticmethod
+    def cache_block_keys(
+        prefix: Sequence[int] | None,
+        tokens: Sequence[int],
+        block_ntokens: int,
+    ) -> Iterator[Tuple[Tuple[int, ...], Tuple[int, ...]]]:
+        """Get the cache block keys of the kv tensors.
+        Args:
+            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
+            tokens (Sequence[int]): The tokens of the kv tensors.
+            block_ntokens (int): The number of tokens in a block.
+        Returns:
+            The cache block keys of the kv tensors.
+        """
         not_none_prefix = tuple(prefix or [])
         all = tuple(not_none_prefix + tuple(tokens))
 
         cache_key_len = len(not_none_prefix)
-        num_blocks = len(tokens) // self.block_ntokens
+        num_blocks = len(tokens) // block_ntokens
         for _ in range(num_blocks):
             yield (
                 all[:cache_key_len],
-                all[cache_key_len : cache_key_len + self.block_ntokens],
+                all[cache_key_len : cache_key_len + block_ntokens],
             )
-            cache_key_len += self.block_ntokens
+            cache_key_len += block_ntokens

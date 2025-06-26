@@ -22,7 +22,7 @@ import redis
 import torch
 
 from aibrix_kvcache.cache_handle import KVCacheHandle
-from aibrix_kvcache.memory import MemoryRegion, TensorPoolAllocator
+from aibrix_kvcache.memory import MemoryRegion
 from aibrix_kvcache.spec import (
     KVCacheBlockLayout,
     KVCacheBlockSpec,
@@ -80,30 +80,20 @@ def cache_conf_fixture(request):
     return get_cache_conf(layout)
 
 
-def get_allocator(capacity, shape, dtype):
-    mr_nbytes = torch.Size(shape).numel() * dtype.itemsize
-    # use a small slab size for testing
-    TensorPoolAllocator.SLAB_MAX_NBYTES = mr_nbytes * 8
-    capacity_nbytes = capacity * mr_nbytes
-    allocator = TensorPoolAllocator(
-        capacity_nbytes=capacity_nbytes, mr_nbytes=mr_nbytes
-    )
-    return allocator
-
-
 def release_mrs(mrs: Sequence[MemoryRegion]):
     [mr.ref_down() for mr in mrs]
 
 
 def randomize_mrs(mrs: Sequence[MemoryRegion]):
     for mr in mrs:
-        mr.to_tensor(CACHE_DTYPE).uniform_()
+        # randomize
+        mr.slab[mr.addr : mr.addr + mr.length].view(
+            CACHE_DTYPE
+        ).zero_().uniform_()
 
 
 def randomize_cache_handle(handle: KVCacheHandle):
-    tensors = handle.to_tensors()
-    for tensor in tensors:
-        tensor.view(CACHE_DTYPE).uniform_()
+    randomize_mrs(handle.memory_regions)
 
 
 @pytest.fixture
@@ -142,3 +132,19 @@ def redis_client(redis_server):
         yield client
     finally:
         client.flushall()  # Clean up after each test
+
+
+@pytest.fixture(
+    params=["with_compact_layout", "without_compact_layout"], scope="function"
+)
+def compact_layout_enabled(request):
+    import aibrix_kvcache
+
+    origin = aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT
+    if request.param == "with_compact_layout":
+        aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT = True
+    else:
+        aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT = False
+    yield request.param == "with_compact_layout"
+
+    aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT = origin

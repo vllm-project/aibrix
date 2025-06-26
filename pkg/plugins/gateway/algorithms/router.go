@@ -20,10 +20,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/types"
-
 	"k8s.io/klog/v2"
 )
 
@@ -43,6 +43,7 @@ type RouterManager struct {
 	routerDoneInit    context.CancelFunc
 	routerFactory     map[types.RoutingAlgorithm]types.RouterProviderFunc
 	routerConstructor map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc
+	routerMu          sync.RWMutex
 }
 
 func NewRouterManager() *RouterManager {
@@ -55,6 +56,8 @@ func NewRouterManager() *RouterManager {
 
 // Validate validates if user provided routing routers is supported by gateway
 func (rm *RouterManager) Validate(algorithms string) (types.RoutingAlgorithm, bool) {
+	rm.routerMu.RLock()
+	defer rm.routerMu.RUnlock()
 	if _, ok := rm.routerFactory[types.RoutingAlgorithm(algorithms)]; ok {
 		return types.RoutingAlgorithm(algorithms), ok
 	} else {
@@ -68,6 +71,8 @@ func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
 // Select the user provided router provider supported by gateway, no error reported and fallback to random router
 // Call Validate before this function to ensure expected behavior.
 func (rm *RouterManager) Select(ctx *types.RoutingContext) (types.Router, error) {
+	rm.routerMu.RLock()
+	defer rm.routerMu.RUnlock()
 	if provider, ok := rm.routerFactory[ctx.Algorithm]; ok {
 		return provider(ctx)
 	} else {
@@ -80,6 +85,8 @@ func Select(ctx *types.RoutingContext) (types.Router, error) {
 }
 
 func (rm *RouterManager) Register(algorithm types.RoutingAlgorithm, constructor types.RouterConstructor) {
+	rm.routerMu.Lock()
+	defer rm.routerMu.Unlock()
 	rm.routerConstructor[algorithm] = func() types.RouterProviderFunc {
 		router, err := constructor()
 		if err != nil {
@@ -96,6 +103,8 @@ func Register(algorithm types.RoutingAlgorithm, constructor types.RouterConstruc
 }
 
 func (rm *RouterManager) RegisterProvider(algorithm types.RoutingAlgorithm, provider types.RouterProviderFunc) {
+	rm.routerMu.Lock()
+	defer rm.routerMu.Unlock()
 	rm.routerFactory[algorithm] = provider
 	klog.Infof("Registered router for %s", algorithm)
 }
@@ -104,26 +113,34 @@ func RegisterProvider(algorithm types.RoutingAlgorithm, provider types.RouterPro
 }
 
 func (rm *RouterManager) SetFallback(router types.Router, fallback types.RoutingAlgorithm) error {
-	if r, ok := router.(types.FallbackRouter); ok {
-		<-rm.routerInited.Done()
-		initErr := rm.routerInited.Err()
-		if initErr != context.Canceled {
-			return fmt.Errorf("router did not initialized: %v", initErr)
-		}
-		if provider, ok := rm.routerFactory[fallback]; !ok {
-			return ErrFallbackNotRegistered
-		} else {
-			r.SetFallback(fallback, provider)
-		}
-		return nil
+	r, ok := router.(types.FallbackRouter)
+	if !ok {
+		return ErrFallbackNotSupported
 	}
-	return ErrFallbackNotSupported
+
+	<-rm.routerInited.Done()
+	initErr := rm.routerInited.Err()
+	if initErr != context.Canceled {
+		return fmt.Errorf("router did not initialized: %v", initErr)
+	}
+
+	rm.routerMu.RLock()
+	defer rm.routerMu.RUnlock()
+
+	if provider, ok := rm.routerFactory[fallback]; !ok {
+		return ErrFallbackNotRegistered
+	} else {
+		r.SetFallback(fallback, provider)
+	}
+	return nil
 }
 func SetFallback(router types.Router, fallback types.RoutingAlgorithm) error {
 	return defaultRM.SetFallback(router, fallback)
 }
 
 func (rm *RouterManager) Init() {
+	rm.routerMu.Lock()
+	defer rm.routerMu.Unlock()
 	for algorithm, constructor := range rm.routerConstructor {
 		rm.routerFactory[algorithm] = constructor()
 		klog.Infof("Registered router for %s", algorithm)

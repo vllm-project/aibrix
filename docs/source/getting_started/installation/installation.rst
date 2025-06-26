@@ -59,6 +59,7 @@ Install AIBrix in testing Environments
    mac-for-desktop.rst
    aws.rst
    gcp.rst
+   advanced-k8s-examples.rst
 
 
 Install Individual AIBrix Components

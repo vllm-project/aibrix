@@ -5737,10 +5737,10 @@ index 4c577c1c4..92dc1d8e9 100644
      k_pe: torch.Tensor,
 diff --git a/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py b/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py
 new file mode 100644
-index 000000000..6301f3a95
+index 000000000..0d65ed227
 --- /dev/null
 +++ b/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py
-@@ -0,0 +1,1123 @@
+@@ -0,0 +1,1126 @@
 +# SPDX-License-Identifier: Apache-2.0
 +import copy
 +import dataclasses
@@ -5753,7 +5753,8 @@ index 000000000..6301f3a95
 +import torch
 +from aibrix_kvcache import (BaseKVCacheManager, GroupAwareKVCacheManager,
 +                            KVCacheBlockLayout, KVCacheBlockSpec,
-+                            KVCacheConfig, KVCacheMetrics, KVCacheTensorSpec)
++                            KVCacheConfig, KVCacheMetrics, KVCacheTensorSpec,
++                            ModelSpec)
 +from aibrix_kvcache.common.absl_logging import (getLogger, log_every_n_seconds,
 +                                                log_if)
 +from aibrix_kvcache.metrics import (MS_BUCKETS, TOKEN_BUCKETS,
@@ -6224,7 +6225,9 @@ index 000000000..6301f3a95
 +            ),
 +        )
 +
-+        config = KVCacheConfig(block_spec=block_spec)
++        config = KVCacheConfig(block_spec=block_spec,
++                               model_spec=ModelSpec(
++                                   model_config.max_model_len))
 +
 +        if parallel_config.tensor_parallel_size == 1:
 +            self.cache = BaseKVCacheManager(config=config)
@@ -6480,7 +6483,7 @@ index 000000000..6301f3a95
 +                            new_chunk_prefix_len:new_chunk_prefix_len + length]
 +
 +                # allocate space for KV caches
-+                status = self.cache.allocate(length // self.block_ntokens)
++                status = self.cache.allocate_for(chunk_prefix, chunk_tokens)
 +                if not status.is_ok():
 +                    log_every_n_seconds(logger, logging.ERROR,
 +                                        "Failed to allocate : %s", 3,

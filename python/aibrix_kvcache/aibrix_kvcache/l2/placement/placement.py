@@ -371,7 +371,7 @@ class BasePlacement(Placement[K, V]):
 
     def get_batches(
         self,
-        keys: Sequence[K],
+        keys: Sequence[Any],
         mrs: Sequence[MemoryRegion],
         batch_size: int,
     ) -> Sequence[Sequence[Tuple[K, MemoryRegion]]]:

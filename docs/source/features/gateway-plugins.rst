@@ -328,6 +328,7 @@ Below are starting pointers to help debug.
 2. Check the logs for envoy proxy and aibrix-gateway-plugins. Copy the logs, if a github issue is created.
 
 .. code-block:: bash
+
     kubectl get pods -n envoy-gateway-system
 
     NAME                                                      READY   STATUS    RESTARTS   AGE
@@ -337,6 +338,7 @@ Below are starting pointers to help debug.
     kubectl logs envoy-aibrix-system-aibrix-eg-903790dc-84ccfcbc6b-hw2lq -n envoy-gateway-system
 
 .. code-block:: bash
+
     kubectl get pods -n aibrix-system
 
     NAME                                        READY   STATUS             RESTARTS   AGE

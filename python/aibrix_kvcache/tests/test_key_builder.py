@@ -13,13 +13,12 @@
 # limitations under the License.
 
 import random
-from typing import Sequence
 
 import pytest
 
 from aibrix_kvcache.l2.key_builders import (
+    FarmHasher,
     HexKeyBuilder,
-    MD5Hasher,
     RawKeyBuilder,
     RollingHashKeyBuilder,
     SimpleHashKeyBuilder,
@@ -34,9 +33,15 @@ BLOCK_SIZE = 16
     params=[
         HexKeyBuilder(BLOCK_SIZE),
         RawKeyBuilder(BLOCK_SIZE),
-        RollingHashKeyBuilder(MD5Hasher(), BLOCK_SIZE),
-        SimpleHashKeyBuilder(MD5Hasher(), BLOCK_SIZE),
-    ]
+        RollingHashKeyBuilder(FarmHasher(), BLOCK_SIZE),
+        SimpleHashKeyBuilder(FarmHasher(), BLOCK_SIZE),
+    ],
+    ids=[
+        "HexKeyBuilder",
+        "RawKeyBuilder",
+        "RollingHashKeyBuilder",
+        "SimpleHashKeyBuilder",
+    ],
 )
 def key_builder(request):
     return request.param
@@ -48,6 +53,8 @@ def prefix_length(request):
 
 
 def test_key_builder(benchmark, key_builder, prefix_length):
+    random.seed(123)
+
     prefix = [random.randint(0, 99999999) for _ in range(prefix_length)]
     tokens = [random.randint(0, 99999999) for _ in range(TOKENS_LENGTH)]
 
@@ -58,5 +65,5 @@ def test_key_builder(benchmark, key_builder, prefix_length):
     assert len(result) > 0
     for key_tuple in result:
         assert len(key_tuple) == 2
-        assert isinstance(key_tuple[0], Sequence)
-        assert isinstance(key_tuple[1], (str, bytes))
+        assert isinstance(key_tuple[0], tuple)
+        assert isinstance(key_tuple[1], bytes)

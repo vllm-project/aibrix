@@ -16,6 +16,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass
 from typing import Dict, List
 
+import hpkv._hpkv as HPKV
 import torch
 from hpkv.hpkv_client import HPKVClient
 
@@ -177,7 +178,7 @@ class HPKVConnector(Connector[bytes, torch.Tensor], AsyncBase):
         if not desc_status.is_ok():
             return Status(desc_status)
         desc = desc_status.get()
-        sgl = self.conn.SGL(mr.data_ptr(), mr.length, desc)
+        sgl = HPKV.SGL(mr.data_ptr(), mr.length, desc.reg_buf)
         if self.conn.get(self._key(key), sgl, mr.length) != 0:
             return Status(StatusCodes.ERROR)
         return Status.ok()
@@ -190,7 +191,7 @@ class HPKVConnector(Connector[bytes, torch.Tensor], AsyncBase):
         if not desc_status.is_ok():
             return Status(desc_status)
         desc = desc_status.get()
-        sgl = self.conn.SGL(mr.data_ptr(), mr.length, desc)
+        sgl = HPKV.SGL(mr.data_ptr(), mr.length, desc.reg_buf)
         if self.conn.set(self._key(key), sgl) != 0:
             return Status(StatusCodes.ERROR)
         return Status.ok()

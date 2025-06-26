@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .hasher import Hasher, MD5Hasher
+from .hasher import FarmHasher, Hasher, MD5Hasher
 from .hex_key_builder import HexKeyBuilder
 from .key_builder import KeyBuilder
 from .raw_key_builder import RawKeyBuilder
@@ -21,9 +21,10 @@ from .simple_hash_key_builder import SimpleHashKeyBuilder
 
 __all__ = [
     "Hasher",
-    "HexKeyBuilder",
     "MD5Hasher",
     "KeyBuilder",
+    "FarmHasher",
+    "HexKeyBuilder",
     "RawKeyBuilder",
     "RollingHashKeyBuilder",
     "SimpleHashKeyBuilder",
