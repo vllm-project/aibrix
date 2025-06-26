@@ -20,12 +20,15 @@ from .key_builder import KeyBuilder
 
 class RawKeyBuilder(KeyBuilder):
     def __init__(self, block_size: int):
-        super().__init__()
-        self.block_size = block_size
+        super().__init__(block_size)
+
+    @property
+    def signature(self) -> str:
+        return "raw"
 
     def build(
         self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Tuple[Tuple[Sequence[int], bytes], ...]:
+    ) -> Tuple[Tuple[Tuple[int, ...], bytes], ...]:
         assert prefix is None or len(prefix) % self.block_size == 0
 
         token_size = len(tokens) - len(tokens) % self.block_size

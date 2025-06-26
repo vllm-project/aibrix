@@ -16,11 +16,16 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import List, Sequence, Tuple
 
+import numpy as np
 import torch
 from sortedcontainers import SortedDict, SortedList
 
+from .. import envs
 from ..status import Status, StatusCodes
+from ..utils import round_up
 from .ref_counted_obj import RefCountedObj
+
+MR_USE_COMPACT_LAYOUT = not envs.AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED
 
 
 @dataclass
@@ -60,8 +65,44 @@ class MemoryRegionIntl:
         return mr
 
 
+@dataclass
+class MemoryRegionFooter:
+    prefix_length: int
+    tokens_length: int
+
+    def __init__(self, prefix_length: int, tokens_length: int):
+        self.prefix_length = prefix_length
+        self.tokens_length = tokens_length
+        self._storage = np.array(
+            [self.prefix_length, self.tokens_length], dtype=np.int32
+        )
+
+    def __post_init__(self):
+        if self.prefix_length < 0:
+            raise ValueError("prefix_length must be non-negative")
+        if self.tokens_length < 0:
+            raise ValueError("tokens_length must be non-negative")
+
+    def to_numpy(self) -> np.ndarray:
+        return self._storage
+
+    @staticmethod
+    def from_numpy(storage: np.ndarray) -> "MemoryRegionFooter":
+        return MemoryRegionFooter(
+            prefix_length=int(storage[0]), tokens_length=int(storage[1])
+        )
+
+    @staticmethod
+    def nbytes() -> int:
+        return np.dtype(np.int32).itemsize * 2
+
+
 class MemoryRegion(RefCountedObj):
-    """A memory region representation used by Allocator."""
+    """A memory region representation used by Allocator.
+    Layout: [cache block, magic, footer, tokens]
+    """
+
+    MAGIC: int = 0x3A7F1C42
 
     def __init__(
         self,
@@ -76,25 +117,89 @@ class MemoryRegion(RefCountedObj):
         self.slab = slab
         self.addr = addr
         self.length = len
+        self._init_meta()
+
+    def _init_meta(self) -> None:
+        self._block_nbytes = -1
+        self._is_sealed = False
+        self._prefix: Tuple[int, ...] | None = None
+        self._tokens: Tuple[int, ...] = tuple()
+
+    def __len__(self) -> int:
+        return self.length
 
     def __repr__(self) -> str:
         return (
             f"MemoryRegion(addr={self.slab.data_ptr() + self.addr}, "
-            f"length={self.length}, ref={self.ref_count})"
+            f"length={self.length}, ref={self.ref_count}, "
+            f"sealed={self._is_sealed})"
         )
 
     def __str__(self) -> str:
         return self.__repr__()
 
-    def __memoryview__(self):
+    def __memoryview__(self) -> memoryview:
         """Memoryview protocol support"""
         return memoryview(
-            self.slab[self.addr : self.addr + self.length].numpy()  # type: ignore
+            self.slab[self.addr : self.addr + self.length].numpy().data  # type: ignore
         )
+
+    @property
+    def block_nbytes(self) -> int:
+        """Get the size of the cache block in bytes."""
+        assert self._block_nbytes > 0, "block_nbytes must be set"
+        return self._block_nbytes
+
+    @block_nbytes.setter
+    def block_nbytes(self, block_nbytes: int) -> None:
+        """Set the size of the cache block in bytes."""
+        assert block_nbytes > 0, "block_nbytes must be positive"
+        self._block_nbytes = block_nbytes
+
+    @property
+    def is_sealed(self) -> bool:
+        """Check if the MR is sealed."""
+        return self._is_sealed
+
+    def seal(self) -> None:
+        if self._is_sealed:
+            return
+
+        if not MR_USE_COMPACT_LAYOUT:
+            bytes_per_int = np.dtype(np.int32).itemsize
+            start = self.addr + self.block_nbytes
+            stop = start + bytes_per_int
+            magic = self.slab[start:stop].view(torch.int32).numpy()[0]
+
+            assert (
+                magic == MemoryRegion.MAGIC
+            ), "Magic mismatch, MUST pack tokens before sealing."
+
+            start = stop
+            stop = start + MemoryRegionFooter.nbytes()
+            footer = MemoryRegionFooter.from_numpy(
+                self.slab[start:stop].view(torch.int32).numpy()
+            )
+            ntokens = footer.prefix_length + footer.tokens_length
+            actual_length = self.calculate_size(self.block_nbytes, ntokens)
+            assert (
+                actual_length <= self.length
+            ), f"{actual_length} > {self.length}"
+
+            if actual_length < self.length:
+                # return the rest of the MR
+                self.allocator._finalize_mr(
+                    self.slab,
+                    self.addr + actual_length,
+                    self.length - actual_length,
+                )
+            self.length = actual_length
+
+        self._is_sealed = True
 
     def fill(self, data: bytes) -> None:
         assert len(data) == self.length
-        self.slab[self.addr : self.addr + self.length].copy_(
+        self.slab[self.addr : self.addr + len(data)].copy_(
             torch.frombuffer(data, dtype=torch.uint8)
         )
 
@@ -108,6 +213,7 @@ class MemoryRegion(RefCountedObj):
         return self.slab.data_ptr() + self.addr
 
     def destroy_unsafe(self):
+        self._init_meta()
         self.allocator._finalize_mr(self.slab, self.addr, self.length)
 
     def to_tensor(
@@ -116,7 +222,7 @@ class MemoryRegion(RefCountedObj):
         mr_shape: Tuple[int, ...] | None = None,
     ) -> torch.Tensor:
         """Convert MR to tensor"""
-        ret = self.slab[self.addr : self.addr + self.length]
+        ret = self.slab[self.addr : self.addr + self.block_nbytes]
         if mr_dtype is not None:
             ret = ret.view(mr_dtype)
         if mr_shape is not None:
@@ -137,30 +243,147 @@ class MemoryRegion(RefCountedObj):
 
         return [mr.to_tensor(mr_dtype, mr_shape) for mr in mrs]
 
+    def pack_tokens(
+        self,
+        *,
+        tokens: Tuple[int, ...],
+        prefix: Tuple[int, ...] | None = None,
+    ) -> None:
+        """Pack tokens into the MR.
+        Args:
+            prefix: The prefix tokens.
+            tokens: The tokens to be set.
+        """
+        ntokens = len(tokens)
+        assert ntokens > 0, "tokens must not be empty"
+
+        if MR_USE_COMPACT_LAYOUT:
+            self._prefix = prefix
+            self._tokens = tokens
+            return
+
+        bytes_per_token = np.dtype(np.int32).itemsize
+
+        ntokens_limit = (
+            self.length - self.block_nbytes - MemoryRegionFooter.nbytes()
+        ) // bytes_per_token - 1
+        assert (
+            ntokens <= ntokens_limit
+        ), f"tokens ({ntokens}) must not exceed the limit ({ntokens_limit})"
+
+        self._prefix = prefix
+        self._tokens = tokens
+
+        # Write magic
+        start = self.addr + self.block_nbytes
+        stop = start + bytes_per_token
+        self.slab[start:stop].copy_(
+            torch.from_numpy(
+                np.array([MemoryRegion.MAGIC], dtype=np.int32)
+            ).view(torch.uint8)
+        )
+        # Write footer
+        prefix_length = len(prefix) if prefix is not None else 0
+        footer = MemoryRegionFooter(prefix_length, len(tokens))
+        start = stop
+        stop = start + MemoryRegionFooter.nbytes()
+        self.slab[start:stop].copy_(
+            torch.from_numpy(footer.to_numpy()).view(torch.uint8)
+        )
+        # Pack tokens
+        all = np.array((prefix or tuple()) + tokens, dtype=np.int32)
+        start = stop
+        stop = start + bytes_per_token * len(all)
+        self.slab[start:stop].copy_(torch.from_numpy(all).view(torch.uint8))
+
+    def unpack_tokens(self) -> Tuple[Tuple[int, ...] | None, Tuple[int, ...]]:
+        """Unpack tokens from the MR.
+        Returns:
+            The prefix and tokens.
+        """
+        if len(self._tokens) > 0 or MR_USE_COMPACT_LAYOUT:
+            return self._prefix, self._tokens
+
+        bytes_per_token = np.dtype(np.int32).itemsize
+        start = self.addr + self.block_nbytes
+        stop = start + bytes_per_token
+        magic = self.slab[start:stop].view(torch.int32).numpy()[0]
+
+        if magic != MemoryRegion.MAGIC:
+            # corrupted mr or current mr is not packed with tokens
+            return None, tuple()
+
+        start = stop
+        stop = start + MemoryRegionFooter.nbytes()
+        footer = MemoryRegionFooter.from_numpy(
+            self.slab[start:stop].view(torch.int32).numpy()
+        )
+
+        if footer.prefix_length <= 0:
+            prefix = None
+        else:
+            start = stop
+            stop = start + bytes_per_token * footer.prefix_length
+            prefix = tuple(
+                self.slab[start:stop].view(torch.int32).numpy().tolist()
+            )
+
+        if footer.tokens_length <= 0:
+            return None, tuple()
+
+        start = stop
+        stop = start + bytes_per_token * footer.tokens_length
+        tokens = tuple(self.slab[start:stop].view(torch.int32).numpy().tolist())
+
+        self._prefix = prefix
+        self._tokens = tokens
+        return self._prefix, self._tokens
+
+    @staticmethod
+    def use_compact_layout() -> bool:
+        return MR_USE_COMPACT_LAYOUT
+
+    @staticmethod
+    def calculate_size(block_nbytes: int, ntokens: int) -> int:
+        """Calculate the size of the MR.
+        Args:
+            block_nbytes: The size of the cache block in bytes.
+            ntokens: The number of tokens.
+        Returns:
+            The size of the MR in bytes.
+        """
+        if MR_USE_COMPACT_LAYOUT:
+            return block_nbytes
+        else:
+            # Layout: [cache block, magic, footer, tokens]
+            magic_nbytes = np.dtype(np.int32).itemsize
+            footer_nbytes = MemoryRegionFooter.nbytes()
+            tokens_nbytes = np.dtype(np.int32).itemsize * ntokens
+            size = int(
+                block_nbytes + magic_nbytes + footer_nbytes + tokens_nbytes
+            )
+            return round_up(size, TensorPoolAllocator.ALLOC_SIZE_ALIGNMENT)
+
 
 class TensorPoolAllocator:
     SLAB_MAX_NBYTES = 1 * 1024**3  # 1GB in bytes
+    ALLOC_SIZE_ALIGNMENT = 16
 
     def __init__(
         self,
-        mr_nbytes: int,
+        *,
         capacity_nbytes: int,
         device: str = "cpu",
         pin_memory: bool = False,
     ) -> None:
         """Initialize the tensor pool allocator.
         Args:
-            mr_nbytes: The size of the memory region in bytes.
             capacity_nbytes: The capacity of the allocator in bytes.
             device: The device to allocate the memory on.
             pin_memory: Whether to pin the memory.
         """
-        assert mr_nbytes > 0, "mr_nbytes must be greater than 0"
-        assert mr_nbytes % 2 == 0, "mr_nbytes must be a multiple of 2"
-
         self.capacity_nbytes: int = 0
         self._used_nbytes: int = 0
-        self.mr_nbytes: int = mr_nbytes
         self.device: str = "cpu" if device is None else device
         self.pin_memory: bool = pin_memory
 
@@ -182,8 +405,8 @@ class TensorPoolAllocator:
     def __repr__(self) -> str:
         return (
             f"TensorPoolAllocator(capacity_nbytes={self.capacity_nbytes}, "
-            f"used={self._used_nbytes}, mr_nbytes={self.mr_nbytes}, "
-            f"device={self.device}, pin_memory={self.pin_memory})"
+            f"used={self._used_nbytes}, device={self.device}, "
+            f"pin_memory={self.pin_memory})"
         )
 
     def __str__(self) -> str:
@@ -195,15 +418,10 @@ class TensorPoolAllocator:
 
     def _grow(self, size_nbytes: int) -> None:
         assert size_nbytes > 0, "size_nbytes must be greater than 0"
-        assert (
-            size_nbytes % self.mr_nbytes == 0
-        ), "size_nbytes must be a multiple of mr_nbytes"
-        slab_nmrs = self.SLAB_MAX_NBYTES // self.mr_nbytes
-        slab_nbytes = slab_nmrs * self.mr_nbytes
+        slab_nbytes = self.SLAB_MAX_NBYTES
 
+        size_nbytes = round_up(size_nbytes, slab_nbytes)
         nslabs = size_nbytes // slab_nbytes
-        if size_nbytes % slab_nbytes != 0:
-            nslabs += 1
         with self._lock:
             self.capacity_nbytes += nslabs * slab_nbytes
             for i in range(nslabs):
@@ -217,31 +435,38 @@ class TensorPoolAllocator:
                 self._used_nbytes += slab.numel()
                 self._finalize_mr_unsafe(slab, 0, slab.numel())
 
-    def alloc(self, size: int) -> Status[Sequence[MemoryRegion]]:
-        assert size % self.mr_nbytes == 0
-        num_mrs = size // self.mr_nbytes
-        if num_mrs == 0:
+    def alloc(
+        self, sizes: int | Sequence[int]
+    ) -> Status[Sequence[MemoryRegion]]:
+        if isinstance(sizes, int):
+            sizes = (sizes,)
+
+        if len(sizes) == 0:
             return Status(StatusCodes.INVALID)
 
-        allocated = 0
+        num_mrs = len(sizes)
+        offset = 0
         with self._lock:
             mrs: List[MemoryRegion] = []
             while len(mrs) < num_mrs:
-                status = self._alloc_unsafe(upper_bound=size - allocated)
+                status = self._alloc_unsafe(sizes[offset:])
                 if status.is_ok():
                     value = status.get()
                     mrs.extend(value)
-                    allocated += len(value) * self.mr_nbytes
+                    offset += len(value)
                 else:
-                    if allocated == 0:
+                    if len(mrs) == 0:
                         return status
                     return Status.ok(mrs)
             return Status.ok(mrs)
 
-    def _alloc_unsafe(self, upper_bound: int) -> Status[Sequence[MemoryRegion]]:
+    def _alloc_unsafe(
+        self, sizes: Sequence[int]
+    ) -> Status[Sequence[MemoryRegion]]:
         if len(self._lookup_table) == 0:
             return Status(StatusCodes.OUT_OF_MEMORY)
 
+        upper_bound = sum(sizes)
         # Find the first length that is greater than or equal to upper_bound
         idx = self._lookup_table.bisect_left(upper_bound)
         if idx >= len(self._lookup_table):
@@ -250,6 +475,10 @@ class TensorPoolAllocator:
             idx -= 1
 
         target_mr_len = self._lookup_table.keys()[idx]
+        # Check if the length is valid for at least one size
+        if target_mr_len < sizes[0]:
+            return Status(StatusCodes.OUT_OF_MEMORY)
+
         target_mr_list = self._lookup_table[target_mr_len]
         # Get the first memory region from the list
         target_mr = target_mr_list.pop()
@@ -259,35 +488,50 @@ class TensorPoolAllocator:
         if len(target_mr_list) == 0:
             del self._lookup_table[target_mr_len]
 
-        allocated = target_mr_len
+        # Calculate allocated size
+        allocated = 0
+        nmrs = 0
+        for size in sizes:
+            if size > target_mr_len - allocated:
+                break
+            allocated += size
+            nmrs += 1
+
         # Split the memory region if needed
-        if target_mr_len > upper_bound:
-            allocated = upper_bound
+        if target_mr_len > allocated:
             left_over_mr = MemoryRegionIntl(
                 slab=target_mr.slab,
-                addr=target_mr.addr + upper_bound,
-                length=target_mr.length - upper_bound,
+                addr=target_mr.addr + allocated,
+                length=target_mr.length - allocated,
             )
             self._mr_list.add(left_over_mr)
             self._lookup_table.setdefault(
                 left_over_mr.length, SortedList(key=lambda x: x.data_ptr())
             ).add(left_over_mr)
 
-        mrs = [None] * (allocated // self.mr_nbytes)
-        for offset in range(0, allocated, self.mr_nbytes):
-            mrs[offset // self.mr_nbytes] = MemoryRegion(  # type: ignore
-                self, target_mr.slab, target_mr.addr + offset, self.mr_nbytes
+        offset = 0
+        mrs = [None] * nmrs
+        for i in range(nmrs):
+            mrs[i] = MemoryRegion(  # type: ignore
+                self, target_mr.slab, target_mr.addr + offset, sizes[i]
             )
+            offset += sizes[i]
         self._used_nbytes += allocated
         return Status.ok(mrs)  # type: ignore
 
     def _finalize_mr(self, slab: torch.Tensor, addr: int, length: int) -> None:
+        if length <= 0:
+            return
+
         with self._lock:
             return self._finalize_mr_unsafe(slab, addr, length)
 
     def _finalize_mr_unsafe(
         self, slab: torch.Tensor, addr: int, length: int
     ) -> None:
+        if length <= 0:
+            return
+
         mr = MemoryRegionIntl(slab, addr, length)
         self._used_nbytes -= mr.length
         assert self._used_nbytes >= 0, "double free memory region"

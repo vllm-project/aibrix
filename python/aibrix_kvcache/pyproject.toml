@@ -21,6 +21,11 @@ packages = [
 ]
 exclude = ["tests"]
 
+[[tool.poetry.source]]
+name = "hpkv_internal"
+url = "https://scqq9isgq31i0fb8nt4eg.apigateway-cn-beijing.volceapi.com/simple/"
+priority = "supplemental"
+
 [tool.poetry.dependencies]
 python = ">=3.11,<3.13"
 asyncio = ">=3.4.3,<4.0.0"
@@ -45,6 +50,7 @@ fakeredis = "^2.28.1"
 infinistore = { version = "^0.2.35", optional = true }
 more-itertools = "^10.7.0"
 numpy = "*"
+hpkv = { version = "^0.0.1", optional = true, source = "hpkv_internal" }
 pyverbs = { version = "*", optional = true }
 validators = "^0.35.0"
 netifaces = "*"
@@ -52,6 +58,7 @@ netifaces = "*"
 [tool.poetry.extras]
 torch = ["torch"]
 infinistore = ["infinistore", "pyverbs"]
+hpkv = ["hpkv"]
 
 [tool.poetry.group.dev.dependencies]
 mypy = "1.11.1"

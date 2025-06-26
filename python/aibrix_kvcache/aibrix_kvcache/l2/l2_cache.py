@@ -15,7 +15,7 @@
 import asyncio
 import logging
 from concurrent.futures import Executor
-from typing import Any, Iterator, List, Sequence, Tuple
+from typing import Any, Iterator, List, Sequence, Tuple, cast
 
 import torch
 from more_itertools import batched
@@ -36,8 +36,6 @@ logger = getLogger(__name__)
 
 
 class L2Cache(MeasurableBase):
-    _backend: Connector
-
     def __init__(
         self,
         backend_name: str,
@@ -49,6 +47,7 @@ class L2Cache(MeasurableBase):
         op_batch: int = 8,
         metrics: L2CacheMetrics | None = None,
         meta_service: MetaService | None = None,
+        key_builder: KeyBuilder | None = None,
     ) -> None:
         """Create a cache object.
         Args:
@@ -61,6 +60,7 @@ class L2Cache(MeasurableBase):
             op_batch (int): The number of ops in a batch.
             metrics (L2CacheMetrics): metrics recorder.
             meta_service (MetaService): meta service.
+            key_builder (KeyBuilder): key builder.
         """
         super().__init__(metrics)
         self.block_spec: KVCacheBlockSpec = block_spec
@@ -68,10 +68,14 @@ class L2Cache(MeasurableBase):
         self.block_shape: Tuple[int, ...] = self.block_spec.block_shape
         self.block_dtype: torch.dtype = self.block_spec.block_dtype
         self.block_ntokens: int = self.block_spec.block_ntokens
+        self.block_nbytes: int = self.block_spec.block_nbytes
         self.block_shape_token_dim: int = self.block_spec.block_shape_token_dim
-        self.key_builder: KeyBuilder = RawKeyBuilder(self.block_ntokens)
+        self.key_builder: KeyBuilder = key_builder or RawKeyBuilder(
+            self.block_ntokens
+        )
         self.op_batch: int = op_batch
         self._executor: Executor = executor
+        self._backend: Connector = None  # type: ignore
 
         cat_head_ids = "_".join(
             [
@@ -86,11 +90,15 @@ class L2Cache(MeasurableBase):
             ]
         )
         partition_id = f"h{cat_head_ids}_l{cat_layer_ids}"
+        key_builder_signature = self.key_builder.signature
+        layout_signature = "c" if MemoryRegion.use_compact_layout() else "ex"
         backend_config = ConnectorConfig(
             backend_name=backend_name,
             namespace=namespace,
             partition_id=partition_id,
             executor=executor,
+            key_builder_signature=key_builder_signature,
+            layout_signature=layout_signature,
         )
 
         if meta_service is None:
@@ -160,8 +168,8 @@ class L2Cache(MeasurableBase):
 
         await asyncio.gather(
             *(
-                self._prefetch_impl(cache_key)
-                for _, cache_key in self._cache_block_keys(prefix, tokens)
+                self._prefetch_impl(k)
+                for _, k in self._cache_block_keys(prefix, tokens)
             ),
             return_exceptions=False,  # backend returns exception as status
         )
@@ -189,13 +197,11 @@ class L2Cache(MeasurableBase):
             return Status(StatusCodes.INVALID)
 
         total = 0
-        for key_batch in self._cache_block_key_batchs(prefix, tokens):
+        for key_batch in self._cache_block_key_batches(prefix, tokens):
             tasks = []
             async with asyncio.TaskGroup() as tg:
-                for real_key, cache_key in key_batch:
-                    tasks.append(
-                        tg.create_task(self._backend.exists(cache_key))
-                    )
+                for real_key, key_str in key_batch:
+                    tasks.append(tg.create_task(self._backend.exists(key_str)))
 
             if len(tasks) == 0:
                 break
@@ -243,11 +249,13 @@ class L2Cache(MeasurableBase):
 
         if isinstance(kv_tensors, MemoryRegion):
             # `kv_tensors` comes from L1Cache and should be only one block
-            assert len(tokens) // self.block_ntokens == 1
-            blocks = [kv_tensors]
-        elif isinstance(kv_tensors, list):
+            assert (
+                len(tokens) // self.block_ntokens == 1
+            ), f"len(tokens)={len(tokens)}"
+            blocks = tuple([kv_tensors])
+        elif isinstance(kv_tensors, Sequence):
             assert isinstance(kv_tensors[0], MemoryRegion)
-            blocks = kv_tensors
+            blocks = tuple(kv_tensors)
         elif isinstance(kv_tensors, KVCacheHandle):
             if len(tokens) != len(kv_tensors) * self.block_ntokens:
                 return Status(
@@ -259,11 +267,11 @@ class L2Cache(MeasurableBase):
                     ),
                 )
 
-            blocks = list(kv_tensors.memory_regions)
+            blocks = tuple(kv_tensors.memory_regions)
         else:
             raise ValueError(f"Unsupported type {type(kv_tensors).__name__}")
 
-        keys = [key for _, key in self._cache_block_keys(prefix, tokens)]
+        keys = tuple(self._cache_block_keys(prefix, tokens))
         # use mget if mput_mget is enabled
         if self._backend.feature.mput_mget:
             block_batches = self._backend.get_batches(
@@ -280,9 +288,20 @@ class L2Cache(MeasurableBase):
         num_processed_blocks = 0
         for batch in block_batches:
             num_blocks_in_batch = len(batch)
-            statuses = await self._backend.mput(*zip(*batch))
+            key_pairs, mrs = zip(*batch)
+            real_keys, cache_keys = zip(*key_pairs)
+            for i, mr in enumerate(mrs):
+                if not mr.is_sealed:
+                    if not MemoryRegion.use_compact_layout():
+                        mr.pack_tokens(
+                            prefix=real_keys[i][: -self.block_ntokens],
+                            tokens=real_keys[i][-self.block_ntokens :],
+                        )
+                    mr.seal()
 
-            if isinstance(statuses, list) and all(
+            statuses = await self._backend.mput(cache_keys, mrs)
+
+            if isinstance(statuses, Sequence) and all(
                 status.is_ok() for status in statuses
             ):
                 # all success, continue to the next batch
@@ -319,9 +338,9 @@ class L2Cache(MeasurableBase):
             tasks = []
             num_blocks_in_batch = len(batch)
             async with asyncio.TaskGroup() as tg:
-                for cache_key, block in batch:
+                for key_pair, block in batch:
                     tasks.append(
-                        tg.create_task(self._backend.put(cache_key, block))
+                        tg.create_task(self._backend_put_impl(key_pair, block))
                     )
 
             if len(tasks) == 0:
@@ -348,6 +367,28 @@ class L2Cache(MeasurableBase):
 
         return Status.ok(num_processed_blocks)
 
+    async def _backend_put_impl(
+        self, key_pair: Tuple[Tuple[int, ...], str], mr: MemoryRegion
+    ) -> Status:
+        """Put kv tensors to the backend.
+        Args:
+            key_pair: I.e., real_key and cache_key.
+                real_key (Tuple[int, ...]): The real key of the kv tensors.
+                cache_key (str): The cache key of the kv tensors.
+            mr (MemoryRegion): Memory region of kv tensors.
+        Returns:
+            The status of the put operation.
+        """
+        real_key, cache_key = key_pair
+        if not mr.is_sealed:
+            if not MemoryRegion.use_compact_layout():
+                mr.pack_tokens(
+                    prefix=real_key[: -self.block_ntokens],
+                    tokens=real_key[-self.block_ntokens :],
+                )
+            mr.seal()
+        return await self._backend.put(cache_key, mr)
+
     @nvtx_range("get", "kv_cache_ol.L2Cache")
     @MeasurableBase.measure(MetricRecorder.OP.GET)
     async def get(
@@ -371,10 +412,12 @@ class L2Cache(MeasurableBase):
 
         assert len(mrs) == len(tokens) // self.block_ntokens
 
-        keys = [key for _, key in self._cache_block_keys(prefix, tokens)]
+        keys = tuple(self._cache_block_keys(prefix, tokens))
         # use mput if mput_mget is enabled
         if self._backend.feature.mput_mget:
-            block_batches = self._backend.get_batches(keys, mrs, self.op_batch)
+            block_batches = tuple(
+                self._backend.get_batches(keys, mrs, self.op_batch)
+            )
             return await self._mget_impl(block_batches)
         else:
             block_batches = tuple(batched(zip(keys, mrs), self.op_batch))
@@ -385,22 +428,13 @@ class L2Cache(MeasurableBase):
     ) -> Status[int]:
         nr = 0
         for batch in block_batches:
-            statuses = await self._backend.mget(*zip(*batch))
+            status = await self._backend_mget_impl(*zip(*batch))
 
             should_break = False
-            if isinstance(statuses, Status):
-                log_every_n_seconds(
-                    logger,
-                    logging.ERROR,
-                    f"mget failed: {statuses}",
-                    n_seconds=3,
-                )
-                statuses = [statuses]
-            for status in statuses:
-                if not status.is_ok():
-                    should_break = True
-                    break
-                nr += 1
+            if not status.is_ok():
+                should_break = True
+                break
+            nr += status.get()
 
             if should_break:
                 break
@@ -410,6 +444,54 @@ class L2Cache(MeasurableBase):
 
         return Status.ok(nr)
 
+    async def _backend_mget_impl(
+        self,
+        key_pairs: Sequence[Tuple[Tuple[int, ...], str]],
+        mrs: Sequence[MemoryRegion],
+    ) -> Status[int]:
+        """Get kv tensors from the backend using mget.
+        Args:
+            key_pairs: I.e., a sequence of real_key and cache_key pairs.
+                real_key (Tuple[int, ...]): The real key of the kv tensors.
+                cache_key (str): The cache key of the kv tensors.
+            mrs: Memory regions to place the fetched kv tensors.
+        Returns:
+            Status of the mget operation.
+            Number of blocks that are fetched.
+        """
+        real_keys, cache_keys = zip(*key_pairs)
+        statuses = await self._backend.mget(cache_keys, mrs)
+        if isinstance(statuses, Status):
+            status = cast(Status, statuses)
+            if not status.is_ok():
+                log_every_n_seconds(
+                    logger,
+                    logging.ERROR,
+                    f"mget failed: {status}",
+                    n_seconds=3,
+                )
+                return status
+            statuses = [status] * len(mrs)
+
+        nr: int = 0
+        for i, status in enumerate(statuses):
+            if not status.is_ok():
+                continue
+            # Bypass token validation if MR is using compact layout
+            if not MemoryRegion.use_compact_layout():
+                mr = mrs[i]
+                mr.block_nbytes = self.block_nbytes
+                prefix_in_mr, tokens_in_mr = mr.unpack_tokens()
+                if not self._tokens_match(
+                    real_keys[i], prefix_in_mr, tokens_in_mr
+                ):
+                    continue
+            nr += 1
+
+        if nr == 0:
+            return Status(StatusCodes.NOT_FOUND)
+        return Status.ok(nr)
+
     async def _get_impl(
         self, block_batches: Sequence[Sequence[Tuple[Any, MemoryRegion]]]
     ) -> Status[int]:
@@ -417,9 +499,9 @@ class L2Cache(MeasurableBase):
         for batch in block_batches:
             tasks = []
             async with asyncio.TaskGroup() as tg:
-                for cache_key, mr in batch:
+                for key_pair, mr in batch:
                     tasks.append(
-                        tg.create_task(self._backend.get(cache_key, mr))
+                        tg.create_task(self._backend_get_impl(key_pair, mr))
                     )
 
             if len(tasks) == 0:
@@ -440,6 +522,61 @@ class L2Cache(MeasurableBase):
 
         return Status.ok(nr)
 
+    async def _backend_get_impl(
+        self, key_pair: Tuple[Tuple[int, ...], str], mr: MemoryRegion
+    ) -> Status:
+        """Get kv tensors from the backend.
+        Args:
+            key_pair: I.e., real_key and cache_key.
+                real_key (Tuple[int, ...]): The real key of the kv tensors.
+                cache_key (str): The cache key of the kv tensors.
+            mr (MemoryRegion): Memory region to place the fetched kv tensors.
+        Returns:
+            The status of the get operation.
+        """
+        real_key, cache_key = key_pair
+        status = await self._backend.get(cache_key, mr)
+        if not status.is_ok():
+            return status
+
+        # Bypass token validation if MR is using compact layout
+        if not MemoryRegion.use_compact_layout():
+            # check if tokens match
+            mr.block_nbytes = self.block_nbytes
+            prefix_in_mr, tokens_in_mr = mr.unpack_tokens()
+            if self._tokens_match(real_key, prefix_in_mr, tokens_in_mr):
+                return Status.ok()
+            else:
+                return Status(StatusCodes.NOT_FOUND, "tokens mismatch")
+
+        return Status.ok()
+
+    def _tokens_match(
+        self,
+        real_key: Tuple[int, ...],
+        prefix_in_mr: Tuple[int, ...] | None,
+        tokens_in_mr: Tuple[int, ...],
+    ) -> bool:
+        """Check if the tokens in mr match the real key.
+        Args:
+            real_key (Tuple[int, ...]): The real key of the kv tensors.
+            prefix_in_mr (Tuple[int, ...] | None): The prefix in mr.
+            tokens_in_mr (Tuple[int, ...]): The tokens in mr.
+        Returns:
+            True if the tokens in mr match the real key, False otherwise.
+        """
+        try:
+            if len(tokens_in_mr) != self.block_ntokens:
+                return False
+            all_tokens = (prefix_in_mr or tuple()) + tokens_in_mr
+            is_identical = all_tokens == real_key
+            if is_identical:
+                return True
+            else:
+                return False
+        except Exception:
+            return False
+
     @nvtx_range("delete", "kv_cache_ol.L2Cache")
     async def delete(
         self, prefix: Sequence[int] | None, tokens: Sequence[int]
@@ -454,13 +591,13 @@ class L2Cache(MeasurableBase):
         if prefix is not None and len(prefix) % self.block_ntokens != 0:
             return Status(StatusCodes.INVALID)
 
-        for _, cache_key in self._cache_block_keys(prefix, tokens):
-            await self._backend.delete(cache_key)
+        for _, key_str in self._cache_block_keys(prefix, tokens):
+            await self._backend.delete(key_str)
         return Status.ok()
 
     def _cache_block_keys(
         self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Iterator[Tuple[Sequence[int], str | bytes]]:
+    ) -> Iterator[Tuple[Tuple[int, ...], bytes]]:
         """Get the cache block keys of the kv tensors.
         Args:
             prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
@@ -470,9 +607,9 @@ class L2Cache(MeasurableBase):
         """
         return iter(self.key_builder.build(prefix, tokens))
 
-    def _cache_block_key_batchs(
+    def _cache_block_key_batches(
         self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Iterator[Iterator[Tuple[Sequence[int], str | bytes]]]:
+    ) -> Iterator[Iterator[Tuple[Tuple[int, ...], bytes]]]:
         """Get the cache block key batchs.
         Args:
             prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
