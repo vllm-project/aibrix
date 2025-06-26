@@ -17,10 +17,13 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"github.com/vllm-project/aibrix/pkg/types"
+	"sync"
 
+	"github.com/vllm-project/aibrix/pkg/types"
 	"k8s.io/klog/v2"
 )
+
+var routerMu sync.RWMutex
 
 const (
 	RouterNotSet = ""
@@ -31,6 +34,8 @@ var routerConstructor = map[types.RoutingAlgorithm]types.RouterProviderRegistrat
 
 // Validate validates if user provided routing routers is supported by gateway
 func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
+	routerMu.RLock()
+	defer routerMu.RUnlock()
 	if _, ok := routerFactory[types.RoutingAlgorithm(algorithms)]; ok {
 		return types.RoutingAlgorithm(algorithms), ok
 	} else {
@@ -41,6 +46,8 @@ func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
 // Select the user provided router provider supported by gateway, no error reported and fallback to random router
 // Call Validate before this function to ensure expected behavior.
 func Select(algorithms types.RoutingAlgorithm) types.RouterProviderFunc {
+	routerMu.RLock()
+	defer routerMu.RUnlock()
 	if provider, ok := routerFactory[algorithms]; ok {
 		return provider
 	} else {
@@ -50,6 +57,8 @@ func Select(algorithms types.RoutingAlgorithm) types.RouterProviderFunc {
 }
 
 func Register(algorithm types.RoutingAlgorithm, constructor types.RouterConstructor) {
+	routerMu.Lock()
+	defer routerMu.Unlock()
 	routerConstructor[algorithm] = func() types.RouterProviderFunc {
 		router, err := constructor()
 		if err != nil {
@@ -63,6 +72,8 @@ func Register(algorithm types.RoutingAlgorithm, constructor types.RouterConstruc
 }
 
 func Init() {
+	routerMu.Lock()
+	defer routerMu.Unlock()
 	for algorithm, constructor := range routerConstructor {
 		routerFactory[algorithm] = constructor()
 		klog.Infof("Registered router for %s", algorithm)

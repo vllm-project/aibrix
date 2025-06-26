@@ -17,14 +17,20 @@ limitations under the License.
 package gateway
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"testing"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
 )
 
 func Test_ValidateRoutingStrategy(t *testing.T) {
@@ -142,4 +148,172 @@ func Test_buildEnvoyProxyHeaders(t *testing.T) {
 
 	headers = buildEnvoyProxyHeaders(headers, "key3", "value3")
 	assert.Equal(t, 3, len(headers))
+}
+
+// Test_selectTargetPod tests the selectTargetPod method for various pod selection scenarios
+func Test_selectTargetPod(t *testing.T) {
+	// Initialize routing algorithms for the test
+	routing.Init()
+
+	// Define test cases for different pod selection and error scenarios
+	tests := []struct {
+		name          string
+		pods          types.PodList
+		mockSetup     func(*mockRouter, types.RoutingAlgorithm)
+		expectedError bool
+		expectedPodIP string
+	}{
+		{
+			name: "routing.Route returns error",
+			pods: &utils.PodArray{Pods: []*v1.Pod{{
+				Status: v1.PodStatus{
+					PodIP:      "1.2.3.4",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				},
+			},
+				{
+					Status: v1.PodStatus{
+						PodIP:      "1.2.3.4",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				}}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router that returns an error
+				routing.Register(algo, func() (types.Router, error) {
+					return mockRouter, nil
+				})
+				mockRouter.On("Route", mock.Anything, mock.Anything).Return("", errors.New("test error"))
+
+			},
+			expectedError: true,
+		},
+		{
+			name: "no pods available",
+			pods: &utils.PodArray{Pods: []*v1.Pod{}},
+			mockSetup: func(m *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router, but no pods are available
+				routing.Register(algo, func() (types.Router, error) {
+					return m, nil
+				})
+				// No expectations needed as pods.Len() == 0
+			},
+			expectedError: true,
+		},
+		{
+			name: "no ready pods available",
+			pods: &utils.PodArray{Pods: []*v1.Pod{{
+				Status: v1.PodStatus{
+					PodIP:      "1.2.3.4",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse}},
+				},
+			}}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router, but no pods are ready
+				routing.Register(algo, func() (types.Router, error) {
+					return mockRouter, nil
+				})
+				// No expectations needed as no ready pods
+			},
+			expectedError: true,
+		},
+		{
+			name: "single ready pod",
+			pods: &utils.PodArray{Pods: []*v1.Pod{{
+				Status: v1.PodStatus{
+					PodIP:      "1.2.3.4",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				},
+			}}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router, but only one pod is ready so Route should not be called
+				routing.Register(algo, func() (types.Router, error) {
+					return mockRouter, nil
+				})
+				// Explicitly set expectation that Route should not be called
+				mockRouter.On("Route", mock.Anything, mock.Anything).Unset()
+			},
+			expectedError: false,
+			expectedPodIP: "1.2.3.4:8000",
+		},
+		{
+			name: "single ready pod out of two",
+			pods: &utils.PodArray{Pods: []*v1.Pod{{
+				Status: v1.PodStatus{
+					PodIP:      "8.9.10.11",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				},
+			},
+				{
+					Status: v1.PodStatus{
+						PodIP:      "4.5.6.7",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse}},
+					},
+				}}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router, but only one pod is ready so Route should not be called
+				routing.Register(algo, func() (types.Router, error) {
+					return mockRouter, nil
+				})
+				// Explicitly set expectation that Route should not be called
+				mockRouter.On("Route", mock.Anything, mock.Anything).Unset()
+			},
+			expectedError: false,
+			expectedPodIP: "8.9.10.11:8000",
+		},
+		{
+			name: "multiple ready pods",
+			pods: &utils.PodArray{Pods: []*v1.Pod{
+				{
+					Status: v1.PodStatus{
+						PodIP:      "1.2.3.4",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+				{
+					Status: v1.PodStatus{
+						PodIP:      "5.6.7.8",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+			}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router that selects a pod from multiple ready pods
+				routing.Register(algo, func() (types.Router, error) {
+					return mockRouter, nil
+				})
+				mockRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).Once()
+			},
+			expectedError: false,
+			expectedPodIP: "1.2.3.4:8000",
+		},
+	}
+
+	for _, tt := range tests {
+		// Run each test case as a subtest
+		t.Run(tt.name, func(subtest *testing.T) {
+			subtest.Parallel() // Run subtests in parallel
+			mockRouter := new(mockRouter)
+			routingAlgo := types.RoutingAlgorithm(fmt.Sprintf("test-router-%s", tt.name))
+
+			// Set up the mock router and register the routing algorithm for this test
+			tt.mockSetup(mockRouter, routingAlgo)
+			routing.Init()
+
+			server := &Server{}
+			ctx := types.NewRoutingContext(context.Background(), routingAlgo, "test-model", "test-message", "test-request", "test-user")
+
+			// Call selectTargetPod and check the result
+			podIP, err := server.selectTargetPod(ctx, tt.pods)
+
+			if tt.expectedError {
+				assert.Error(subtest, err)
+			} else {
+				assert.NoError(subtest, err)
+				assert.Equal(subtest, tt.expectedPodIP, podIP)
+			}
+
+			// Ensure all mock expectations are met
+			mockRouter.AssertExpectations(subtest)
+		})
+	}
 }

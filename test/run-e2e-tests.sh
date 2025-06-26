@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# This script runs end-to-end tests for the Aibrix project.
+# It sets up the environment, manages port-forwards, and ensures cleanup.
 
 set -x
 set -o errexit
@@ -65,23 +67,59 @@ if [ -n "$INSTALL_AIBRIX" ]; then
   kubectl apply -k config/mock
   cd ../..
 
-  kubectl port-forward svc/llama2-7b 8000:8000 &
-  kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 &
-  kubectl -n aibrix-system port-forward service/aibrix-redis-master 6379:6379 &
+  trap cleanup EXIT
+fi
 
-  function cleanup {
-    echo "Cleaning up..."
-    # clean up env at end
+# Function to kill existing port-forward processes
+kill_existing_port_forwards() {
+  # If a PID file exists, kill all processes listed in it
+  if [ -f /tmp/aibrix-port-forwards.pid ]; then
+    echo "Killing existing port-forward processes..."
+    while read pid; do
+      if ps -p $pid > /dev/null; then
+        kill $pid 2>/dev/null || true
+      fi
+    done < /tmp/aibrix-port-forwards.pid
+    rm -f /tmp/aibrix-port-forwards.pid
+  fi
+}
+
+# Start port forwarding and store PIDs
+start_port_forwards() {
+  # Kill any existing port-forwards first
+  kill_existing_port_forwards
+
+  # Start new port-forwards and store PIDs
+  echo "Starting port-forwarding..."
+  # Each port-forward runs in the background and its PID is saved
+  kubectl port-forward svc/llama2-7b 8000:8000 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
+  kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
+  kubectl -n aibrix-system port-forward service/aibrix-redis-master 6379:6379 >/dev/null 2>&1 & echo $! >> /tmp/aibrix-port-forwards.pid
+}
+
+# Comprehensive cleanup function that handles both k8s resources and port forwards
+function cleanup {
+  echo "Running cleanup..."
+  # Always kill port forwards when exiting
+  kill_existing_port_forwards
+
+  if [ -n "$INSTALL_AIBRIX" ]; then
+    echo "Cleaning up k8s resources..."
+    # Clean up k8s resources if INSTALL_AIBRIX is set
     kubectl delete --ignore-not-found=true -k config/test
     kubectl delete --ignore-not-found=true -k config/dependency
     cd development/app
     kubectl delete -k config/mock
     cd ../..
-  }
+  else
+    echo "Skipping k8s cleanup as INSTALL_AIBRIX is not set"
+  fi
+}
 
-  trap cleanup EXIT
-fi
+# Set up single trap for cleanup
+trap cleanup EXIT
 
+# Function to collect logs on error
 collect_logs() {
   echo "Collecting pods and logs"
   kubectl get pods -n aibrix-system
@@ -94,4 +132,16 @@ collect_logs() {
 
 trap "collect_logs" ERR
 
+# Start port forwarding before running tests
+start_port_forwards
+
+# Run tests using gotestsum
+# The test exit code is captured and used as the script's exit code
+# so CI can detect failures
+
+echo "Running e2e tests..."
 go test ./test/e2e/ -v -timeout 0
+TEST_EXIT_CODE=$?
+
+# Exit with the test's exit code
+exit $TEST_EXIT_CODE
