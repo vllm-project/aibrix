@@ -27,9 +27,7 @@ import (
 	klog "k8s.io/klog/v2"
 )
 
-var (
-	RouterLeastBusyTime types.RoutingAlgorithm = "least-busy-time"
-)
+const RouterLeastBusyTime types.RoutingAlgorithm = "least-busy-time"
 
 func init() {
 	Register(RouterLeastBusyTime, NewLeastBusyTimeRouter)

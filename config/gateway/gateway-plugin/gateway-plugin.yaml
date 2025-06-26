@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: gateway-plugins
-  namespace: aibrix-system
+  namespace: system
   labels:
     app: gateway-plugins
   annotations:
@@ -30,7 +30,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: gateway-plugins
-  namespace: aibrix-system
+  namespace: system
 spec:
   strategy:
     type: RollingUpdate
@@ -133,7 +133,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: reserved-router-models-endpoint
-  namespace: aibrix-system
+  namespace: system
 spec:
   parentRefs:
     - name: aibrix-eg
@@ -150,7 +150,7 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
 metadata:
   name: skip-ext-proc
-  namespace: aibrix-system
+  namespace: system
 spec:
   targetRef:
     group: gateway.networking.k8s.io
@@ -165,7 +165,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: reserved-router
-  namespace: aibrix-system
+  namespace: system
 spec:
   parentRefs:
     - name: aibrix-eg
@@ -185,7 +185,7 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
 metadata:
   name: gateway-plugins-extension-policy
-  namespace: aibrix-system
+  namespace: system
 spec:
   targetRef:
     group: gateway.networking.k8s.io

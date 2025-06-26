@@ -27,9 +27,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-var (
-	RouterLeastRequest types.RoutingAlgorithm = "least-request"
-)
+const RouterLeastRequest types.RoutingAlgorithm = "least-request"
 
 func init() {
 	Register(RouterLeastRequest, NewLeastRequestRouter)
