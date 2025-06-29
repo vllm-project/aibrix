@@ -47,6 +47,7 @@ const (
 	MaxLora                              = "max_lora"
 	WaitingLoraAdapters                  = "waiting_lora_adapters"
 	RunningLoraAdapters                  = "running_lora_adapters"
+	LoraRequestsInfo                     = "lora_requests_info"
 	VTCBucketSizeActive                  = "vtc_bucket_size_active"
 	RealtimeNumRequestsRunning           = "realtime_num_requests_running"
 )
@@ -283,7 +284,7 @@ var (
 			MetricType: MetricType{
 				Query: QueryLabel,
 			},
-			RawMetricName: "lora_requests_info",
+			RawMetricName: LoraRequestsInfo,
 			Description:   "Max count of Lora Adapters",
 		},
 		RunningLoraAdapters: {
@@ -292,7 +293,7 @@ var (
 			MetricType: MetricType{
 				Query: QueryLabel,
 			},
-			RawMetricName: "lora_requests_info",
+			RawMetricName: LoraRequestsInfo,
 			Description:   "Count of running Lora Adapters",
 		},
 		WaitingLoraAdapters: {
@@ -301,7 +302,7 @@ var (
 			MetricType: MetricType{
 				Query: QueryLabel,
 			},
-			RawMetricName: "lora_requests_info",
+			RawMetricName: LoraRequestsInfo,
 			Description:   "Count of waiting Lora Adapters",
 		},
 		VTCBucketSizeActive: {
