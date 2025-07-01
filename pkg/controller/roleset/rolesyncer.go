@@ -345,7 +345,7 @@ func (s *StatefulRoleSyncer) printLog(roleSet *orchestrationv1alpha1.RoleSet, ro
 	for _, pod := range toDelete {
 		deletionNames = append(deletionNames, pod.Name)
 	}
-	klog.Infof("[StatefulRoleSyncer.printLog] roleset %s/%s role %s, toCreate %v, toDelete %v", roleSet.Namespace, roleSet.Name, role.Name, creationNames, deletionNames)
+	klog.Infof("roleset %s/%s role %s, toCreate %v, toDelete %v", roleSet.Namespace, roleSet.Name, role.Name, creationNames, deletionNames)
 }
 
 func (s *StatefulRoleSyncer) podSlotForRole(role *orchestrationv1alpha1.RoleSpec, activePods []*v1.Pod) (slots [][]*v1.Pod, toDelete []*v1.Pod) {

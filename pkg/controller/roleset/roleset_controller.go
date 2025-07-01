@@ -94,9 +94,11 @@ type RoleSetReconciler struct {
 	EventRecorder record.EventRecorder
 }
 
-//+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rolesets,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rolesets/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rolesets/finalizers,verbs=update
+// +kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rolesets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rolesets/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rolesets/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete;deletecollection
+// +kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;list;watch
 
 func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	klog.Infof("Reconciling RoleSet %s", req.NamespacedName.String())

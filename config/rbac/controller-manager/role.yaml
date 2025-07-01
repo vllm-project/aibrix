@@ -41,6 +41,7 @@ rules:
 - apiGroups:
   - apps
   resources:
+  - controllerrevisions
   - deployments
   - statefulsets
   verbs:
@@ -208,6 +209,8 @@ rules:
   - kvcaches
   - rayclusterfleets
   - rayclusterreplicasets
+  - rolesets
+  - stormservices
   verbs:
   - create
   - delete
@@ -222,6 +225,8 @@ rules:
   - kvcaches/finalizers
   - rayclusterfleets/finalizers
   - rayclusterreplicasets/finalizers
+  - rolesets/finalizers
+  - stormservices/finalizers
   verbs:
   - update
 - apiGroups:
@@ -230,6 +235,8 @@ rules:
   - kvcaches/status
   - rayclusterfleets/status
   - rayclusterreplicasets/status
+  - rolesets/status
+  - stormservices/status
   verbs:
   - get
   - patch

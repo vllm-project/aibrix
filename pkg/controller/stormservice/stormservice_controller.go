@@ -89,9 +89,12 @@ type StormServiceReconciler struct {
 	EventRecorder record.EventRecorder
 }
 
-//+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=stormservices,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=stormservices/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=stormservices/finalizers,verbs=update
+// +kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=stormservices,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=stormservices/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=stormservices/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete;deletecollection
+// +kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=controllerrevisions,verbs=get;list;watch;create;update;patch;delete
 
 func (r *StormServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	startTime := time.Now()
