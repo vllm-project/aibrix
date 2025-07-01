@@ -23,7 +23,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
-
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -69,7 +68,7 @@ func (c *Store) ListPods() []*v1.Pod {
 //
 // Returns:
 //
-//	*utils.PodArray: PodArray wrapper for a slice of Pod objects
+//	types.PodList: PodArray wrapper for a slice of Pod objects
 //	error: Error if model doesn't exist
 func (c *Store) ListPodsByModel(modelName string) (types.PodList, error) {
 	meta, ok := c.metaModels.Load(modelName)
@@ -165,7 +164,9 @@ func (c *Store) GetMetricValueByPodModel(podName, podNamespace, modelName string
 	return c.getPodMetricImpl(podName, &metaPod.ModelMetrics, c.getPodModelMetricName(modelName, metricName))
 }
 
-// AddRequestCount tracks new request initiation
+// AddRequestCount tracks new request initiation.
+// If ctx is provided,  AddRequestCount can be called multiple times for the same request.
+//
 // Parameters:
 //
 //	ctx: Routing context
@@ -176,27 +177,41 @@ func (c *Store) GetMetricValueByPodModel(podName, podNamespace, modelName string
 //
 //	int64: Trace term identifier
 func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64) {
-	if enableGPUOptimizerTracing {
-		success := false
-		for {
-			trace := c.getRequestTrace(modelName)
-			// TODO: use non-empty key if we have output prediction to decide buckets early.
-			if traceTerm, success = trace.AddRequest(requestID, ""); success {
-				break
+	// Current implementation assumes AddRequestCount() will not be called concurrently.
+	// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
+	if ctx == nil || ctx.CanAddTrace() {
+		if c.enableTracing {
+			success := false
+			for {
+				trace := c.getRequestTrace(modelName)
+				// TODO: use non-empty key if we have output prediction to decide buckets early.
+				if traceTerm, success = trace.AddRequest(requestID, ""); success {
+					if ctx != nil {
+						ctx.TraceTerm = traceTerm
+					}
+					break
+				}
+				// In case AddRequest return false, it has been recycled and we want to retry.
 			}
-			// In case AddRequest return false, it has been recycled and we want to retry.
+		}
+
+		meta, ok := c.metaModels.Load(modelName)
+		if ok {
+			atomic.AddInt32(&meta.pendingRequests, 1)
 		}
 	}
 
-	meta, ok := c.metaModels.Load(modelName)
-	if ok {
-		atomic.AddInt32(&meta.pendingRequests, 1)
-	}
-
-	if ctx != nil {
+	// Current implementation assumes AddRequestCount() will not be called concurrently.
+	// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
+	if ctx == nil {
+		return traceTerm
+	} else if !ctx.HasRouted() || !ctx.CanUpdateStats() {
+		return ctx.TraceTerm
+	} else {
+		traceTerm = ctx.TraceTerm
 		c.addPodStats(ctx, requestID)
 	}
-	return
+	return traceTerm
 }
 
 // DoneRequestCount completes request tracking
@@ -217,7 +232,7 @@ func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, mo
 	}
 
 	// DoneRequest only works for current term, no need to retry.
-	if enableGPUOptimizerTracing {
+	if c.enableTracing {
 		c.getRequestTrace(modelName).DoneRequest(requestID, traceTerm)
 	}
 }
@@ -241,7 +256,7 @@ func (c *Store) DoneRequestTrace(ctx *types.RoutingContext, requestID string, mo
 		atomic.AddInt32(&meta.pendingRequests, -1)
 	}
 
-	if enableGPUOptimizerTracing {
+	if c.enableTracing {
 		var traceKey string
 		for {
 			trace := c.getRequestTrace(modelName)
@@ -252,6 +267,9 @@ func (c *Store) DoneRequestTrace(ctx *types.RoutingContext, requestID string, mo
 		}
 		klog.V(5).Infof("inputTokens: %v, outputTokens: %v, trace key: %s", inputTokens, outputTokens, traceKey)
 	}
+
+	//
+	meta.OutputPredictor.AddTrace(int(inputTokens), int(outputTokens), 1)
 }
 
 // AddSubscriber registers new metric subscriber
@@ -261,4 +279,59 @@ func (c *Store) DoneRequestTrace(ctx *types.RoutingContext, requestID string, mo
 func (c *Store) AddSubscriber(subscriber metrics.MetricSubscriber) {
 	c.subscribers = append(c.subscribers, subscriber)
 	c.aggregateMetrics()
+}
+
+func (c *Store) UpdateModelProfile(key string, profile *ModelGPUProfile, force bool) {
+	existed, ok := c.deploymentProfiles.Load(key)
+	if profile == nil && ok {
+		c.deploymentProfiles.Delete(key)
+	} else if force || !ok || existed.Created < profile.Created {
+		c.deploymentProfiles.Store(key, profile)
+	}
+}
+
+func (c *Store) GetModelProfileByPod(pod *v1.Pod, modelName string) (*ModelGPUProfile, error) {
+	deploymentName := utils.DeploymentNameFromPod(pod)
+	if len(deploymentName) == 0 {
+		// Handle the case where the deployment name is not found (e.g., log an error)
+		return nil, fmt.Errorf("deployment name not found on pod %s", pod.Name)
+	}
+
+	key := ModelGPUProfileKey(modelName, deploymentName)
+	profile, ok := c.deploymentProfiles.Load(key)
+	if !ok {
+		return nil, MissingProfileError{
+			CacheError: ErrorMissingProfile,
+			ProfileKey: key,
+		}
+	}
+
+	return profile, nil
+}
+
+func (c *Store) GetModelProfileByDeploymentName(deploymentName string, modelName string) (*ModelGPUProfile, error) {
+	key := ModelGPUProfileKey(modelName, deploymentName)
+	profile, ok := c.deploymentProfiles.Load(key)
+	if !ok {
+		return nil, fmt.Errorf("profile not available for %s", key)
+	}
+
+	return profile, nil
+}
+
+func (c *Store) GetOutputPredictor(modelName string) (types.OutputPredictor, error) {
+	if model, ok := c.metaModels.Load(modelName); ok {
+		return model.OutputPredictor, nil
+	}
+	return nil, fmt.Errorf("model does not exist in the cache: %s", modelName)
+}
+
+func (c *Store) GetRouter(ctx *types.RoutingContext) (types.Router, error) {
+	if model, ok := c.metaModels.Load(ctx.Model); !ok {
+		return nil, fmt.Errorf("model does not exist in the cache: %s", ctx.Model)
+	} else if model.QueueRouter == nil {
+		return nil, fmt.Errorf("queue router not available for model: %s", ctx.Model)
+	} else {
+		return model.QueueRouter, nil
+	}
 }

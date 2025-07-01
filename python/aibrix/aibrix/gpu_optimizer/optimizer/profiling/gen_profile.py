@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import os
+from dataclasses import dataclass
 from datetime import datetime
 
 import numpy as np
@@ -25,8 +26,56 @@ import pandas as pd
 REDIS_PROFILE_KEY = "aibrix:profile_%s_%s"
 TPUT_TOLERANCE = 0.9
 
+DEFAULT_THROUGHPUT_SLO = 0.0
+DEFAULT_TIME_SLO = math.inf
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("aibrix.gpu_optimizer.profiling")
+
+
+@dataclass
+class SLO:
+    field: str = ""
+    default: float = DEFAULT_THROUGHPUT_SLO
+    arg_help: str = ""
+    value: float = 0.0
+
+    def is_set(self):
+        return self.value != self.default
+
+    def arg_name(self):
+        return self.field.lower()
+
+    def fill_args(self, args: dict):
+        self.value = args[self.arg_name()]
+
+
+slos = {
+    "TPUT": SLO(
+        **{  # type: ignore
+            "default": DEFAULT_THROUGHPUT_SLO,
+            "arg_help": "Throughput SLO target as RPS.",
+        }
+    ),
+    "TT": SLO(
+        **{  # type: ignore
+            "default": DEFAULT_THROUGHPUT_SLO,
+            "arg_help": "Token Throughput SLO target.",
+        }
+    ),
+    "E2E": SLO(
+        **{"default": DEFAULT_TIME_SLO, "arg_help": "E2E latency SLO target."}  # type: ignore
+    ),
+    "TTFT": SLO(
+        **{"default": DEFAULT_TIME_SLO, "arg_help": "Time To First Token SLO target."}  # type: ignore
+    ),
+    "TPAT": SLO(
+        **{"default": DEFAULT_TIME_SLO, "arg_help": "Time Per All Token SLO target."}  # type: ignore
+    ),
+    "TPOT": SLO(
+        **{"default": DEFAULT_TIME_SLO, "arg_help": "Time Per Output Token SLO target."}  # type: ignore
+    ),
+}
 
 
 def gen(args):
@@ -64,6 +113,8 @@ def gen(args):
     input_tokens.sort()
     output_tokens.sort()
     slo_tputs = np.zeros((len(output_tokens), len(input_tokens)), dtype=float)
+    e2es = np.zeros((len(output_tokens), len(input_tokens)), dtype=float)
+    ttfts = np.zeros((len(output_tokens), len(input_tokens)), dtype=float)
 
     # Create TPAT metric
     tpat_df = benchmark_df[benchmark_df["metric"] == "E2E"].copy()
@@ -80,105 +131,106 @@ def gen(args):
         percentile_field = f"P{args.percentile}"
 
     # Iterate slo_tputs and fill in the matrix with the throughput values that matches the SLO
+    def setMetrics(conclusion_df, i, j):
+        e2es[i, j] = conclusion_df.loc[conclusion_df["metric"] == "E2E", "mean"].iloc[0]
+        if slos["TTFT"].is_set():
+            ttfts[i, j] = conclusion_df.loc[
+                conclusion_df["metric"] == "TTFT", "mean"
+            ].iloc[0]
+
     for i in range(len(output_tokens)):
         for j in range(len(input_tokens)):
-            filtered_df = benchmark_df.loc[
+            feature_df = benchmark_df.loc[
                 (benchmark_df["input_tokens"] == input_tokens[j])
                 & (benchmark_df["output_tokens"] == output_tokens[i])
             ]
 
-            # Filter the bencmarks by throughput SLO. Besides, we arbitarily filter out instable throughput as TPUT < request_rate * TPUT_TOLERANCE
-            tput_df = filtered_df.loc[
+            # Filter the bencmarks by slos:
+            filtered_df = feature_df
+            for slo in slos.values():
+                if slo.default == DEFAULT_TIME_SLO:
+                    df = filtered_df.loc[
+                        (filtered_df["metric"] == slo.field)
+                        & (filtered_df[percentile_field] < slo.value)
+                    ]
+                else:
+                    df = filtered_df.loc[
+                        (filtered_df["metric"] == slo.field)
+                        & (filtered_df["mean"] >= slo.value)
+                    ]
+                # Nothing match
+                if len(df) == 0:
+                    filtered_df = df
+                    break
+                # Filter by request rate
+                filtered_df = filtered_df.loc[
+                    filtered_df["request_rate"].isin(df["request_rate"])
+                ]
+
+            if len(filtered_df) == 0:
+                setMetrics(feature_df, i, j)
+                continue
+
+            # Concluding
+
+            # Since all SLO target passed, minimum request_rate is qualified.
+            # We keep the smallest request_rate to maximize profile completeness.
+            max_request_rate = np.min(filtered_df["request_rate"])
+            logger.debug(
+                f"Candidate request rates for {input_tokens[j]}:{output_tokens[i]}:\n{filtered_df['request_rate'].unique()}, {filtered_df.loc[(filtered_df['metric'] == 'TPUT'), 'mean'].tolist()}"
+            )
+            # Filter out request_rates that can cause pending requests accumulate: TPUT < request_rate * TPUT_TOLERANCE
+            shortlist = filtered_df.loc[
                 (filtered_df["metric"] == "TPUT")
-                & (filtered_df["mean"] >= args.tput)
                 & (filtered_df["mean"] >= filtered_df["request_rate"] * TPUT_TOLERANCE)
             ]
-            if len(tput_df) == 0:
-                continue
-            filtered_df = filtered_df.loc[
-                filtered_df["request_rate"].isin(tput_df["request_rate"])
-            ]
-
-            # Filter the bencmarks by token throughput SLO
-            tt_df = filtered_df.loc[
-                (filtered_df["metric"] == "TT") & (filtered_df["mean"] >= args.tt)
-            ]
-            if len(tt_df) == 0:
-                continue
-            filtered_df = filtered_df.loc[
-                filtered_df["request_rate"].isin(tt_df["request_rate"])
-            ]
-
-            # Filter the bencmarks by E2E latency SLO
-            e2e_df = filtered_df.loc[
-                (filtered_df["metric"] == "E2E")
-                & (filtered_df[percentile_field] <= args.e2e)
-            ]
-            if len(e2e_df) == 0:
-                continue
-            filtered_df = filtered_df.loc[
-                filtered_df["request_rate"].isin(e2e_df["request_rate"])
-            ]
-
-            # Filter the bencmarks by TTFT SLO
-            ttft_df = filtered_df.loc[
-                (filtered_df["metric"] == "TTFT")
-                & (filtered_df[percentile_field] <= args.ttft)
-            ]
-            if len(ttft_df) == 0:
-                continue
-            filtered_df = filtered_df.loc[
-                filtered_df["request_rate"].isin(ttft_df["request_rate"])
-            ]
-
-            # Filter the bencmarks by TPAT SLO
-            tpat_df = filtered_df.loc[
-                (filtered_df["metric"] == "TPAT")
-                & (filtered_df[percentile_field] <= args.tpat)
-            ]
-            if len(tpat_df) == 0:
-                continue
-            filtered_df = filtered_df.loc[
-                filtered_df["request_rate"].isin(tpat_df["request_rate"])
-            ]
-
-            # Filter the bencmarks by TPOT SLO
-
-            tpot_df = filtered_df.loc[
-                (filtered_df["metric"] == "TPOT")
-                & (filtered_df[percentile_field] <= args.tpot)
-            ]
-            if len(tpot_df) == 0:
-                continue
-            filtered_df = filtered_df.loc[
-                filtered_df["request_rate"].isin(tpot_df["request_rate"])
-            ]
-
-            # Conclude
-            slo_tputs[i, j] = np.max(
-                filtered_df.loc[filtered_df["metric"] == "TPUT", "mean"]
+            logger.debug(
+                f"Candidate request rates for {input_tokens[j]}:{output_tokens[i]}:\n{shortlist['request_rate'].unique()}"
             )
-            msg = filtered_df.loc[
-                filtered_df["metric"] == "TPUT", ["request_rate", "mean"]
+            # Test max request rate
+            if len(shortlist) > 0:
+                max_request_rate = np.max(shortlist["request_rate"])
+
+            conclusion_df = filtered_df.loc[
+                filtered_df["request_rate"] == max_request_rate
+            ]
+            slo_tputs[i, j] = conclusion_df.loc[
+                conclusion_df["metric"] == "TPUT", "mean"
+            ].iloc[0]
+            setMetrics(conclusion_df, i, j)
+
+            msg = conclusion_df.loc[
+                conclusion_df["metric"] == "TPUT", ["request_rate", "mean"]
             ]
             logger.debug(
-                f"Candidate for {input_tokens[j]}:{output_tokens[i]} tputs: {msg}"
+                f"Candidate for {input_tokens[j]}:{output_tokens[i]} tputs:\n{msg}"
             )
 
-    # Print the matrix
+    # Prepare the profile
     result = {
         "gpu": args.deployment,
         "cost": args.cost,
         "tputs": slo_tputs.tolist(),
         "indexes": [output_tokens.tolist(), input_tokens.tolist()],
         "created": datetime.now().timestamp(),
+        "e2e": e2es.tolist(),
     }
+    if slos["TTFT"].is_set():
+        result["ttft"] = ttfts.tolist()
+    result["slos"] = {"percentile": args.percentile}
+    for field, slo in slos.items():
+        if slo.is_set():
+            result["slos"][slo.arg_name()] = slo.value
+
+    # Output
     if args.o is not None:
         if _try_store_redis(args, result):
             return
 
         with open(args.o, "w") as f:
             json.dump(result, f)
+    elif args.verbose:
+        print(json.dumps(result, indent=2))
     else:
         print(json.dumps(result))
 
@@ -232,24 +284,11 @@ def main():
     parser.add_argument(
         "--benchmark", type=str, default=None, help="Benchmark result file."
     )
-    parser.add_argument(
-        "--tput", type=float, default=0, help="Throughput SLO target as RPS."
-    )
-    parser.add_argument(
-        "--tt", type=float, default=0, help="Token Throughput SLO target."
-    )
-    parser.add_argument(
-        "--e2e", type=float, default=math.inf, help="E2E latency SLO target."
-    )
-    parser.add_argument(
-        "--ttft", type=float, default=math.inf, help="Time To First Token SLO target."
-    )
-    parser.add_argument(
-        "--tpat", type=float, default=math.inf, help="Time Per All Token SLO target."
-    )
-    parser.add_argument(
-        "--tpot", type=float, default=math.inf, help="Time Per Output Token SLO target."
-    )
+    for field, slo in slos.items():
+        slo.field = field
+        parser.add_argument(
+            f"--{slo.arg_name()}", type=float, default=slo.default, help=slo.arg_help
+        )
     parser.add_argument(
         "--percentile",
         type=int,
@@ -270,11 +309,13 @@ def main():
         action="store_true",
         help="Print more information for understanding the generated profile",
     )
-
     args = parser.parse_args()
     if args.verbose:
         logger.setLevel(level=logging.DEBUG)
 
+    args_dict = vars(args)
+    for slo in slos.values():
+        slo.fill_args(args_dict)
     gen(args)
 
 

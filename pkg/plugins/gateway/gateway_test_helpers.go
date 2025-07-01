@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"github.com/stretchr/testify/mock"
+	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
@@ -37,6 +38,7 @@ func (m *mockRouter) Name() string { return "mock-router" }
 // MockCache implements cache.Cache interface for testing
 type MockCache struct {
 	mock.Mock
+	cache.Cache
 }
 
 func (m *MockCache) HasModel(model string) bool {

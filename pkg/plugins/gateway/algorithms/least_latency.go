@@ -27,9 +27,7 @@ import (
 	klog "k8s.io/klog/v2"
 )
 
-var (
-	RouterLeastLatency types.RoutingAlgorithm = "least-latency"
-)
+const RouterLeastLatency types.RoutingAlgorithm = "least-latency"
 
 func init() {
 	Register(RouterLeastLatency, NewLeastExpectedLatencyRouter)

@@ -100,7 +100,11 @@ func initPrometheusAPI() prometheusv1.API {
 func (c *Store) getPodMetricImpl(podName string, metricStore *utils.SyncMap[string, metrics.MetricValue], metricName string) (metrics.MetricValue, error) {
 	metricVal, ok := metricStore.Load(metricName)
 	if !ok {
-		return nil, fmt.Errorf("no metric available for %s - %v", podName, metricName)
+		return nil, &MetricNotFoundError{
+			CacheError: ErrorTypeMetricNotFound,
+			PodName:    podName,
+			MetricName: metricName,
+		}
 	}
 
 	return metricVal, nil

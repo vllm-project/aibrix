@@ -65,7 +65,7 @@ func Test_ValidateRoutingStrategy(t *testing.T) {
 			expectedValidation: false,
 		},
 	}
-	cache.InitForTest()
+	cache.NewForTest()
 	routing.Init()
 	for _, tt := range tests {
 		_, currentValidation := routing.Validate(tt.routingStrategy)

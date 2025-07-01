@@ -18,6 +18,7 @@ package routingalgorithms
 
 import (
 	"context"
+	"log"
 	"slices"
 	"testing"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 
@@ -34,7 +36,7 @@ import (
 
 func Test_PrefixCacheE2E(t *testing.T) {
 	readyPods := getReadyPods()
-	c := cache.NewTestCacheWithPodsMetrics(
+	c := cache.NewWithPodsMetricsForTest(
 		readyPods,
 		"m1",
 		map[string]map[string]metrics.MetricValue{
@@ -133,10 +135,14 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	// post_request_count: [p1: 1 (abcdefgh), p2: 9 (abcdefghijkl), p3: 1 (wxyz), p4: 2(abcdefgh)]
 	t.Log(input)
 	for i := 0; i < 6; i++ {
-		c.AddRequestCount(ctx6, ctx6.RequestID, ctx6.Model)
+		ctx := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r7-12", "")
+		ctx.SetTargetPod(ctx6.TargetPod())
+		c.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
 	}
 	ctx7 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r7", "")
 	p1, err := prefixCacheRouter.Route(ctx7, podList)
+	log.Println(p2, p3, p4)
+	log.Println(p1)
 	assert.NoError(t, err)
 	assert.False(t, slices.Contains([]string{p2, p3, p4}, p1))
 }
@@ -144,7 +150,9 @@ func Test_PrefixCacheE2E(t *testing.T) {
 func getReadyPods() []*v1.Pod {
 	return []*v1.Pod{
 		{
-			ObjectMeta: metav1.ObjectMeta{Name: "p1"},
+			ObjectMeta: metav1.ObjectMeta{Name: "p1", Labels: map[string]string{
+				utils.DeploymentIdentifier: "deployment",
+			}},
 			Status: v1.PodStatus{
 				PodIP: "1.1.1.1",
 				Conditions: []v1.PodCondition{
@@ -155,7 +163,9 @@ func getReadyPods() []*v1.Pod {
 				},
 			}},
 		{
-			ObjectMeta: metav1.ObjectMeta{Name: "p2"},
+			ObjectMeta: metav1.ObjectMeta{Name: "p2", Labels: map[string]string{
+				utils.DeploymentIdentifier: "deployment",
+			}},
 			Status: v1.PodStatus{
 				PodIP: "2.2.2.2",
 				Conditions: []v1.PodCondition{
@@ -166,7 +176,9 @@ func getReadyPods() []*v1.Pod {
 				},
 			}},
 		{
-			ObjectMeta: metav1.ObjectMeta{Name: "p3"},
+			ObjectMeta: metav1.ObjectMeta{Name: "p3", Labels: map[string]string{
+				utils.DeploymentIdentifier: "deployment",
+			}},
 			Status: v1.PodStatus{
 				PodIP: "3.3.3.3",
 				Conditions: []v1.PodCondition{
@@ -177,7 +189,9 @@ func getReadyPods() []*v1.Pod {
 				},
 			}},
 		{
-			ObjectMeta: metav1.ObjectMeta{Name: "p4"},
+			ObjectMeta: metav1.ObjectMeta{Name: "p4", Labels: map[string]string{
+				utils.DeploymentIdentifier: "deployment",
+			}},
 			Status: v1.PodStatus{
 				PodIP: "4.4.4.4",
 				Conditions: []v1.PodCondition{
@@ -193,7 +207,7 @@ func getReadyPods() []*v1.Pod {
 func Test_ValidatePrePrefixMatchLoadBalance(t *testing.T) {
 	// no imbalance
 	readyPods := getReadyPods()
-	c := cache.NewTestCacheWithPodsMetrics(
+	c := cache.NewWithPodsMetricsForTest(
 		readyPods,
 		"m1",
 		map[string]map[string]metrics.MetricValue{
@@ -207,7 +221,7 @@ func Test_ValidatePrePrefixMatchLoadBalance(t *testing.T) {
 	assert.Nil(t, targetPod)
 
 	// imbalance with multiple pods matching criteria
-	c = cache.NewTestCacheWithPodsMetrics(
+	c = cache.NewWithPodsMetricsForTest(
 		readyPods,
 		"m1",
 		map[string]map[string]metrics.MetricValue{
@@ -232,7 +246,7 @@ func Test_ValidatePostPrefixMatchLoadBalance(t *testing.T) {
 	}{
 		{
 			name: "match pod with highest prefix match percent",
-			c: cache.NewTestCacheWithPodsMetrics(
+			c: cache.NewWithPodsMetricsForTest(
 				readyPods,
 				"m1",
 				map[string]map[string]metrics.MetricValue{
@@ -249,7 +263,7 @@ func Test_ValidatePostPrefixMatchLoadBalance(t *testing.T) {
 		},
 		{
 			name: "match pod with lowest running request count for same prefix match percent",
-			c: cache.NewTestCacheWithPodsMetrics(
+			c: cache.NewWithPodsMetricsForTest(
 				readyPods,
 				"m1",
 				map[string]map[string]metrics.MetricValue{
@@ -267,7 +281,7 @@ func Test_ValidatePostPrefixMatchLoadBalance(t *testing.T) {
 		},
 		{
 			name: "match any pod with same running request count and same prefix match percent",
-			c: cache.NewTestCacheWithPodsMetrics(
+			c: cache.NewWithPodsMetricsForTest(
 				readyPods,
 				"m1",
 				map[string]map[string]metrics.MetricValue{
@@ -285,7 +299,7 @@ func Test_ValidatePostPrefixMatchLoadBalance(t *testing.T) {
 		},
 		{
 			name: "match pod with lower prefix match percent with running requests below imbalance threshold",
-			c: cache.NewTestCacheWithPodsMetrics(
+			c: cache.NewWithPodsMetricsForTest(
 				readyPods,
 				"m1",
 				map[string]map[string]metrics.MetricValue{
@@ -302,7 +316,7 @@ func Test_ValidatePostPrefixMatchLoadBalance(t *testing.T) {
 		},
 		{
 			name: "ignore matched pod if their running requests are more than threshold",
-			c: cache.NewTestCacheWithPodsMetrics(
+			c: cache.NewWithPodsMetricsForTest(
 				readyPods,
 				"m1",
 				map[string]map[string]metrics.MetricValue{

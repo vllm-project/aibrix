@@ -60,8 +60,8 @@ var _ = Describe("reqeustTrace", func() {
 		trace.AddRequest("no use now", "no use now")
 		trace.DoneRequest("no use now", 0)
 		trace.AddRequestTrace("no use now", 1, 1, "1:1")
-		traceMap := trace.ToMap(2)
-		expected := []byte("{\"1:1\":1,\"meta_interval_sec\":10,\"meta_pending_reqs\":2,\"meta_precision\":10,\"meta_total_reqs\":1,\"meta_v\":3}")
+		traceMap := trace.ToMap(2, 3)
+		expected := []byte("{\"1:1\":1,\"meta_interval_sec\":10,\"meta_pending_reqs\":2,\"meta_precision\":10,\"meta_queueing_reqs\":3,\"meta_total_reqs\":1,\"meta_v\":4}")
 		marshaled, err := json.Marshal(traceMap)
 		Expect(err).To(BeNil())
 		Expect(marshaled).To(Equal(expected))
@@ -73,7 +73,7 @@ var _ = Describe("reqeustTrace", func() {
 		trace.DoneRequest("no use now", 0)
 		trace.DoneRequest("no use now", 0)
 		// TODO: Since in window pending requests are not used in this version, this test will never fail.
-		traceMap := trace.ToMap(0)
+		traceMap := trace.ToMap(0, 0)
 		Expect(traceMap[MetaKeyPendingRequests.ToString()]).To(Equal(0))
 	})
 

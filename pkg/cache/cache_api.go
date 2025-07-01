@@ -28,6 +28,9 @@ type Cache interface {
 	ModelCache
 	MetricCache
 	RequestTracker
+	ProfileCache
+	types.OutputPredictorProvider
+	types.RouterProvider
 }
 
 // PodCache defines operations for pod information caching
@@ -106,7 +109,10 @@ type MetricCache interface {
 
 // RequestTracker defines operations for track workload statistics
 type RequestTracker interface {
-	// AddRequestCount starts tracking request count
+	// AddRequestCount tracks the start of a request after routing.
+	// To support realtime statistics update and access, AddRequestCount can be called multiple times for a request.
+	// As the result, implementation should ensure thread-safe access to the counterm and idempotency.
+	//
 	// Parameters:
 	//   ctx: Routing context
 	//   requestID: Unique request identifier
@@ -115,14 +121,18 @@ type RequestTracker interface {
 	//   int64: Trace term identifier
 	AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64)
 
-	// DoneRequestCount completes request count tracking, only one DoneRequestXXX should be called for a request
+	// DoneRequestCount tracks the completion of a request without usage information like inputTokens and outputTokens.
+	// Only one DoneRequestXXX should be called for a request. Idemptency is not required.
+	//
 	// Parameters:
 	//   requestID: Unique request identifier
 	//   modelName: Name of the model
 	//   traceTerm: Trace term identifier
 	DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64)
 
-	// DoneRequestTrace completes request tracing, only one DoneRequestXXX should be called for a request
+	// DoneRequestTrace tracks the completion of a request with usage information like inputTokens and outputTokens.
+	// Only one DoneRequestXXX should be called for a request. Idemptency is not required.
+	//
 	// Parameters:
 	//   ctx: Routing context
 	//   requestID: Unique request identifier
@@ -131,4 +141,19 @@ type RequestTracker interface {
 	//   outputTokens: Number of output tokens
 	//   traceTerm: Trace term identifier
 	DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens, outputTokens, traceTerm int64)
+}
+
+// ProfileCache defines operations for model profiles
+type ProfileCache interface {
+	// GetModelProfileByPod gets model profile for a pod
+	// Parameters:
+	//   pod: Pod object
+	//   modelName: Name of the model
+	GetModelProfileByPod(pod *v1.Pod, modelName string) (*ModelGPUProfile, error)
+
+	// GetModelProfileByDeploymentName gets model profile for a deployment
+	// Parameters:
+	//   deploymentName: Name of the deployment
+	//   modelName: Name of the model
+	GetModelProfileByDeploymentName(deploymentName string, modelName string) (*ModelGPUProfile, error)
 }

@@ -160,7 +160,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 }
 
 func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	router, err := routing.Select(ctx.Algorithm)(ctx)
+	router, err := routing.Select(ctx)
 	if err != nil {
 		return "", err
 	}
