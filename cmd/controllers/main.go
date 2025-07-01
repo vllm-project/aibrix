@@ -97,6 +97,10 @@ func RegisterSchemas(scheme *runtime.Scheme) error {
 		utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
 	}
 
+	if features.IsControllerEnabled(features.StormServiceController) {
+		utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
+	}
+
 	scheme.AddUnversionedTypes(metav1.SchemeGroupVersion, &metav1.UpdateOptions{}, &metav1.DeleteOptions{}, &metav1.CreateOptions{})
 	//+kubebuilder:scaffold:scheme
 
