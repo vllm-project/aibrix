@@ -171,9 +171,9 @@ class MemoryRegion(RefCountedObj):
             stop = start + bytes_per_int
             magic = self.slab[start:stop].view(torch.int32).numpy()[0]
 
-            assert (
-                magic == MemoryRegion.MAGIC
-            ), "Magic mismatch, MUST pack tokens before sealing."
+            assert magic == MemoryRegion.MAGIC, (
+                "Magic mismatch, MUST pack tokens before sealing."
+            )
 
             start = stop
             stop = start + MemoryRegionFooter.nbytes()
@@ -182,9 +182,9 @@ class MemoryRegion(RefCountedObj):
             )
             ntokens = footer.prefix_length + footer.tokens_length
             actual_length = self.calculate_size(self.block_nbytes, ntokens)
-            assert (
-                actual_length <= self.length
-            ), f"{actual_length} > {self.length}"
+            assert actual_length <= self.length, (
+                f"{actual_length} > {self.length}"
+            )
 
             if actual_length < self.length:
                 # return the rest of the MR
@@ -267,9 +267,9 @@ class MemoryRegion(RefCountedObj):
         ntokens_limit = (
             self.length - self.block_nbytes - MemoryRegionFooter.nbytes()
         ) // bytes_per_token - 1
-        assert (
-            ntokens <= ntokens_limit
-        ), f"tokens ({ntokens}) must not exceed the limit ({ntokens_limit})"
+        assert ntokens <= ntokens_limit, (
+            f"tokens ({ntokens}) must not exceed the limit ({ntokens_limit})"
+        )
 
         self._prefix = prefix
         self._tokens = tokens
@@ -587,12 +587,12 @@ class TensorPoolAllocator:
                 mr_i = self._mr_list[i]
                 mr_list_total_nbytes += mr_i.length
                 assert mr_i.length > 0, f"{mr_i.length} <= 0"
-                assert (
-                    mr_i.length in self._lookup_table
-                ), f"len={mr_i.length} not in lookup_table"
-                assert (
-                    mr_i in self._lookup_table[mr_i.length]
-                ), f"{mr_i} not in lookup_table[{mr_i.length}]"
+                assert mr_i.length in self._lookup_table, (
+                    f"len={mr_i.length} not in lookup_table"
+                )
+                assert mr_i in self._lookup_table[mr_i.length], (
+                    f"{mr_i} not in lookup_table[{mr_i.length}]"
+                )
                 if i > 0:
                     mr_i_prev = self._mr_list[i - 1]
                     if (
@@ -623,6 +623,6 @@ class TensorPoolAllocator:
                     assert mr_len == mr.length, f"{mr_len} != {mr.length}"
                     assert mr in self._mr_list, f"{mr} not in mr_list"
                 lookup_table_total_nbytes += mr_len * len(mr_list)
-            assert (
-                lookup_table_total_nbytes == mr_list_total_nbytes
-            ), f"{lookup_table_total_nbytes} != {mr_list_total_nbytes}"
+            assert lookup_table_total_nbytes == mr_list_total_nbytes, (
+                f"{lookup_table_total_nbytes} != {mr_list_total_nbytes}"
+            )

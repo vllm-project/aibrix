@@ -249,9 +249,9 @@ class L2Cache(MeasurableBase):
 
         if isinstance(kv_tensors, MemoryRegion):
             # `kv_tensors` comes from L1Cache and should be only one block
-            assert (
-                len(tokens) // self.block_ntokens == 1
-            ), f"len(tokens)={len(tokens)}"
+            assert len(tokens) // self.block_ntokens == 1, (
+                f"len(tokens)={len(tokens)}"
+            )
             blocks = tuple([kv_tensors])
         elif isinstance(kv_tensors, Sequence):
             assert isinstance(kv_tensors[0], MemoryRegion)

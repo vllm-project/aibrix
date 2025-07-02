@@ -335,7 +335,7 @@ class OpMetricsExporter(BaseMetricsExporter):
         self.histogram_iteration_fetched_tokens = self._histogram_cls(
             name=f"{self._prefix}iteration_fetched_tokens",
             documentation=(
-                "Histogram of number of fetched tokens " "per iteration."
+                "Histogram of number of fetched tokens per iteration."
             ),
             labelnames=self._labelnames,
             buckets=TOKEN_BUCKETS,
@@ -343,7 +343,7 @@ class OpMetricsExporter(BaseMetricsExporter):
         self.histogram_iteration_op_lat_ms = self._histogram_cls(
             name=f"{self._prefix}iteration_op_lat_ms",
             documentation=(
-                "Histogram of operation latencies " "per iteration in ms."
+                "Histogram of operation latencies per iteration in ms."
             ),
             labelnames=self._labelnames,
             buckets=MS_BUCKETS,
@@ -358,7 +358,7 @@ class OpMetricsExporter(BaseMetricsExporter):
         labels = labels.copy()
         labels[self.OP_TYPE_LABELNAME] = metrics._op.name.lower()
         assert set(labels.keys()) == set(self._labelnames), (
-            f"Labels " f"{set(labels.keys())} do not match {self._labelnames}"
+            f"Labels {set(labels.keys())} do not match {self._labelnames}"
         )
 
         self._export_counter(
@@ -457,7 +457,7 @@ class UsageMetricsExporter(BaseMetricsExporter):
         labels = labels.copy()
         labels[self.RESOURCE_TYPE_LABELNAME] = metrics.resource.name.lower()
         assert set(labels.keys()) == set(self._labelnames), (
-            f"Labels " f"{set(labels.keys())} do not match {self._labelnames}"
+            f"Labels {set(labels.keys())} do not match {self._labelnames}"
         )
 
         self._export_gauge(self.gauge_used, labels, metrics.used_nbytes)
@@ -624,7 +624,7 @@ class BaseCacheMetricsExporter(BaseMetricsExporter):
         labels = labels.copy()
         labels[self.CACHE_TYPE_LABELNAME] = metrics._cache_type.lower()
         assert set(labels.keys()) == set(self._labelnames), (
-            f"Labels " f"{set(labels.keys())} do not match {self._labelnames}"
+            f"Labels {set(labels.keys())} do not match {self._labelnames}"
         )
 
         for m in metrics._get_all_metrics():

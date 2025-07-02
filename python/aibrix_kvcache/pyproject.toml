@@ -69,16 +69,6 @@ codespell = "2.4.1"
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
-[tool.mypy]
-ignore_missing_imports = true
-check_untyped_defs = true
-follow_imports = "silent"
-
-exclude = [
-    'aibrix_kvcache/common/absl_logging.py',
-    'tests/.*\.py$'
-]
-
 [tool.ruff]
 # Allow lines to be as long as 80.
 line-length = 80
