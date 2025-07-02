@@ -28,10 +28,15 @@ Documentation
    :maxdepth: 1
    :caption: Getting Started
 
-   designs/architecture.rst
    getting_started/quickstart.rst
    getting_started/installation/installation.rst
    getting_started/faq.rst
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Architecture
+
+   designs/architecture.rst
 
 .. toctree::
    :maxdepth: 1
