@@ -127,9 +127,9 @@ class FIFO(BaseEvictionPolicy[FIFONode]):
             total_in_list += 1
             assert self._hashmap.get(curr.key, None) == curr
             curr = curr.next
-        assert total_in_list == len(
-            self._hashmap
-        ), f"{total_in_list} != {len(self._hashmap)}"
+        assert total_in_list == len(self._hashmap), (
+            f"{total_in_list} != {len(self._hashmap)}"
+        )
 
     def _prepend_to_head(self, node: FIFONode) -> None:
         node.next = self._head

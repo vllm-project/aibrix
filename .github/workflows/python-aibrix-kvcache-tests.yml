@@ -27,18 +27,13 @@ jobs:
         run: |
           cd python/aibrix_kvcache
           python -m pip install --upgrade pip
-          pip install -U pip poetry
+          pip install -U pip poetry pre-commit
           poetry config virtualenvs.create false
           poetry install --no-root --with dev --extras "torch"
-      - name: Run Ruff
+      - name: Run Pre-Commit
         run: |
           cd python/aibrix_kvcache
-          python -m ruff check .
-          python -m ruff format --check .
-      - name: Run mypy
-        run: |
-          cd python/aibrix_kvcache
-          python -m mypy .
+          pre-commit run --all-files
       - name: Run Test
         run: |
           cd python/aibrix_kvcache/tests

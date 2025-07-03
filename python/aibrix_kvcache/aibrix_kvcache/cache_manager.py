@@ -447,9 +447,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                         self._l2_ingestion_callback  # type: ignore
                     )
 
-        assert (
-            self._l1_cache is not None or self._l2_cache is not None
-        ), "At least one cache service must be enabled."
+        assert self._l1_cache is not None or self._l2_cache is not None, (
+            "At least one cache service must be enabled."
+        )
 
         logger.info("%s is initialized", self)
 

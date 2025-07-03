@@ -245,8 +245,7 @@ class RDMATransport:
 
         if request.port_num in [port.port_num for port in active_ports]:
             logger.info(
-                "Got valid port number %d specified for device %s, "
-                "checking it",
+                "Got valid port number %d specified for device %s, checking it",
                 request.port_num,
                 device_name,
             )

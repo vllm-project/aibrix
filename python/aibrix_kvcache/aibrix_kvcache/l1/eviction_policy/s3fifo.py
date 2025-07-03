@@ -297,9 +297,9 @@ class S3FIFO(BaseEvictionPolicy[S3FIFONode]):
                 assert self._hashmap.get(key, None) == curr
                 assert self._hashmap[key].queue == queue
                 curr = curr.next
-        assert total_in_list == len(
-            self._hashmap
-        ), f"{total_in_list} != {len(self._hashmap)}"
+        assert total_in_list == len(self._hashmap), (
+            f"{total_in_list} != {len(self._hashmap)}"
+        )
 
     def _evict_one_from_small_fifo(self) -> None:
         node = self._small_fifo.pop()
