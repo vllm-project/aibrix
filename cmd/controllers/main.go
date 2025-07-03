@@ -320,6 +320,10 @@ func setupControllers(mgr ctrl.Manager, runtimeConfig config.RuntimeConfig, cert
 			setupLog.Error(err, "unable to setup webhook", "webhook", "ModelAdapter")
 			os.Exit(1)
 		}
+		if err := apiwebhook.SetupKVCacheWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to setup webhook", "webhook", "KVCache")
+			os.Exit(1)
+		}
 	}
 
 	// Kind controller registration is encapsulated inside the pkg/controller/controller.go

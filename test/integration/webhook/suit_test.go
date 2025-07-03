@@ -127,6 +127,8 @@ var _ = BeforeSuite(func() {
 
 	err = apiwebhook.SetupModelAdapterWebhook(mgr)
 	Expect(err).NotTo(HaveOccurred())
+	err = apiwebhook.SetupKVCacheWebhookWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
 
 	//+kubebuilder:scaffold:webhook
 

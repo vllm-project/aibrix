@@ -46,38 +46,6 @@ func Test_getKVCacheBackendFromMetadata(t *testing.T) {
 			},
 			expected: constants.KVCacheBackendInfinistore,
 		},
-		{
-			name: "invalid backend annotation falls back to default",
-			annotations: map[string]string{
-				constants.KVCacheLabelKeyBackend: "unknown-backend",
-			},
-			expected: constants.KVCacheBackendDefault,
-		},
-		{
-			name: "no annotation, distributed mode via annotation",
-			annotations: map[string]string{
-				constants.KVCacheAnnotationMode: "distributed",
-			},
-			expected: constants.KVCacheBackendInfinistore,
-		},
-		{
-			name: "no annotation, centralized mode via annotation",
-			annotations: map[string]string{
-				constants.KVCacheAnnotationMode: "centralized",
-			},
-			expected: constants.KVCacheBackendVineyard,
-		},
-		{
-			name: "no annotation, unknown mode falls back to default",
-			annotations: map[string]string{
-				constants.KVCacheAnnotationMode: "invalid-mode",
-			},
-			expected: constants.KVCacheBackendDefault,
-		},
-		{
-			name:     "no annotation or annotation, falls back to default",
-			expected: constants.KVCacheBackendDefault,
-		},
 	}
 
 	for _, tc := range testCases {
@@ -87,48 +55,7 @@ func Test_getKVCacheBackendFromMetadata(t *testing.T) {
 					Annotations: tc.annotations,
 				},
 			}
-			result := getKVCacheBackendFromMetadata(kv)
-			assert.Equal(t, tc.expected, result)
-		})
-	}
-}
-
-func Test_isValidKVCacheBackend(t *testing.T) {
-	testCases := []struct {
-		name     string
-		input    string
-		expected bool
-	}{
-		{
-			name:     "valid vineyard backend",
-			input:    constants.KVCacheBackendVineyard,
-			expected: true,
-		},
-		{
-			name:     "valid infinistore backend",
-			input:    constants.KVCacheBackendInfinistore,
-			expected: true,
-		},
-		{
-			name:     "valid hpkv backend",
-			input:    constants.KVCacheBackendHPKV,
-			expected: true,
-		},
-		{
-			name:     "invalid backend",
-			input:    "not-a-valid-backend",
-			expected: false,
-		},
-		{
-			name:     "empty backend",
-			input:    "",
-			expected: false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := isValidKVCacheBackend(tc.input)
+			result := getKVCacheBackendFromAnnotations(kv)
 			assert.Equal(t, tc.expected, result)
 		})
 	}
