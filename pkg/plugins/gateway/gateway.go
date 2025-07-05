@@ -98,15 +98,18 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	for {
 		select {
 		case <-ctx.Done():
+			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
 			return ctx.Err()
 		default:
 		}
 
 		req, err := srv.Recv()
 		if err == io.EOF {
+			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
 			return nil
 		}
 		if err != nil {
+			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
 			return status.Errorf(codes.Unknown, "cannot receive stream request: %v", err)
 		}
 

@@ -216,9 +216,13 @@ func (r *RoutingContext) HasError() bool {
 	return pod == nil && r.getError() != nil
 }
 
-// CanUpdateStats returns true if the first time trying update in-memory realtime statistics.
-func (r *RoutingContext) CanUpdateStats() bool {
+// CanAddStats returns true if the first time trying update in-memory realtime statistics.
+func (r *RoutingContext) CanAddStats() bool {
 	return atomic.CompareAndSwapInt32(&r.statsUpdated, 0, 1)
+}
+
+func (r *RoutingContext) CanDoneStats() bool {
+	return atomic.CompareAndSwapInt32(&r.statsUpdated, 1, 2)
 }
 
 // CanAddTrace returns true if the first time trying add trace to cache.

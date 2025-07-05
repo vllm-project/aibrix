@@ -205,7 +205,7 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 	// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
 	if ctx == nil {
 		return traceTerm
-	} else if !ctx.HasRouted() || !ctx.CanUpdateStats() {
+	} else if !ctx.HasRouted() || !ctx.CanAddStats() {
 		return ctx.TraceTerm
 	} else {
 		traceTerm = ctx.TraceTerm
@@ -222,7 +222,7 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 //		modelName: Model handling the request
 //		traceTerm: Trace term identifier
 func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
-	if ctx != nil {
+	if ctx != nil && ctx.CanDoneStats() {
 		c.donePodStats(ctx, requestID)
 	}
 
@@ -247,7 +247,7 @@ func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, mo
 //	outputTokens: Output tokens count
 //	traceTerm: Trace term identifier
 func (c *Store) DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens, outputTokens, traceTerm int64) {
-	if ctx != nil {
+	if ctx != nil && ctx.CanDoneStats() {
 		c.donePodStats(ctx, requestID)
 	}
 

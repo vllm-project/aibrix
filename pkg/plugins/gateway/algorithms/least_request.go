@@ -25,6 +25,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
+
+	"k8s.io/klog/v2"
 )
 
 const RouterLeastRequest types.RoutingAlgorithm = "least-request"
@@ -78,6 +80,7 @@ func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod
 
 	minCount := math.MaxInt32
 	podRequestCount := getRequestCounts(cache, readyPods)
+	klog.V(4).InfoS("selectTargetPodWithLeastRequestCount", "podRequestCount", podRequestCount)
 	for _, totalReq := range podRequestCount {
 		if totalReq <= minCount {
 			minCount = totalReq
