@@ -37,8 +37,9 @@ Documentation
    :caption: Architecture
 
    designs/architecture.rst
+   designs/aibrix-router.rst
    designs/aibrix-kvcache-offloading-framework.rst
-   designs/ai-runtime.rst
+   designs/aibrix-engine-runtime.rst
 
 .. toctree::
    :maxdepth: 1
