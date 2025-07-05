@@ -38,6 +38,7 @@ Documentation
 
    designs/architecture.rst
    designs/aibrix-kvcache-offloading-framework.rst
+   designs/ai-runtime.rst
 
 .. toctree::
    :maxdepth: 1
