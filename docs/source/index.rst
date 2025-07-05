@@ -37,6 +37,9 @@ Documentation
    :caption: Architecture
 
    designs/architecture.rst
+   designs/aibrix-router.rst
+   designs/aibrix-kvcache-offloading-framework.rst
+   designs/aibrix-engine-runtime.rst
 
 .. toctree::
    :maxdepth: 1
@@ -48,9 +51,7 @@ Documentation
    features/heterogeneous-gpu.rst
    features/autoscaling/autoscaling.rst
    features/runtime.rst
-   features/kvcache-offloading-framework.rst
    features/kvcache-offloading.rst
-   features/distributed-kvcache-and-cross-engine-kv-reuse.rst
    features/benchmark-and-generator.rst
 
 .. toctree::

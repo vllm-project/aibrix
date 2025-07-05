@@ -4,17 +4,6 @@
 Optimizer-based Autoscaler
 ==========================
 
-Overview 
---------
-
-Optimizer-based Autoscaler is a proactive autoscaling solution which uses offline profiles of GPU to calculate the number of GPUs needed for the deployment rather than using GPU usage metrics. It includes (1) LLM Request Monitoring and (2) GPU Optimizer. The following figure shows the overall architecture. First, the LLM Request Monitoring component is responsible for monitoring past inference requests and their request patterns. Second, the GPU Optimizer component is responsible for calculating the optimal GPU number recommendation based on the request patterns and sending the recommendation to the K8s KPA.
-
-
-.. figure:: ../../assets/images/autoscaler/optimizer-based-podautoscaler.png
-  :alt: optimizer-based-podautoscaler
-  :width: 100%
-  :align: center
-
 
 How It Works
 ------------------------------------------
