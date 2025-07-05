@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Always import version first
+from .version import __version__, __version_tuple__  # isort:skip
+
 from .cache_handle import KVCacheHandle, MemoryRegionKVCacheHandle
 from .cache_manager import (
     BaseKVCacheManager,
@@ -24,6 +27,8 @@ from .spec import *
 from .status import Status, StatusCodes
 
 __all__ = [
+    "__version__",
+    "__version_tuple__",
     "KVCacheHandle",
     "MemoryRegionKVCacheHandle",
     "BaseKVCacheManager",
