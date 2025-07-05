@@ -5,7 +5,7 @@ KVCache Offloading
 ==================
 
 .. note::
-    If you’re not yet familiar with the concepts of KVCache L1 and L2, please refer to AIBrix KVCache Offloading document at `AIBrix KVCache Offloading <../designs/aibrix-kvcache-offloading-framework>`_.
+    If you’re not yet familiar with the concepts of KVCache L1 and L2, please refer to AIBrix KVCache Offloading document at :ref:`aibrix_kvcache-offloading-framework`.
 
 .. note::
     The AIBrix KVCache Offloading framework can be used as a standalone component — there’s no need to install the entire AIBrix stack.

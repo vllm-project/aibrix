@@ -1,8 +1,8 @@
-.. _kvcache-offloading-framework:
+.. _aibrix_kvcache-offloading-framework:
 
-============================
-KVCache Offloading Framework
-============================
+===================================
+AIBrix KVCache Offloading Framework
+===================================
 
 The rising demand for large language models has intensified the need for efficient memory management and caching to optimize inference performance and reduce costs. In multi-round use cases like chatbots and agent-based systems, overlapping token sequences lead to redundant computations during the prefill phase, wasting resources and limiting throughput.
 
@@ -22,7 +22,7 @@ As shown in Figure 1, on the data plane, it integrates tightly with inference en
 L1 Engine DRAM Cache Management
 -------------------------------
 
-The growing demands of modern models and increasing context lengths in LLM inference have led to KV caches consuming progressively more GPU memory, pushing against the hardware limits of even the most advanced GPUs. Recent systems like `Dynamo <https://github.com/ai-dynamo/dynamo>`_, `LMCache <https://github.com/LMCache/LMCache>`_, and `MoonCake <https://github.com/kvcache-ai/Mooncake>`_ have developed solutions that offload KV cache to external memory hierarchies, spanning from CPU memory to SSDs. :ref:`kvcache-offloading-framework` supports the offloading of KV cache to CPU memory as well by only enabling its DRAM-backed ``L1Cache``. While this approach does not enable KV cache sharing across multiple engines, it eliminates the complexity of distributed KV cache setup and configuration. More importantly, by leveraging the significantly larger capacity of CPU memory, this method delivers substantial performance gains —- making it an ideal solution for use cases that prioritize scalable KV cache capacity over cross-engine KV reuse.
+The growing demands of modern models and increasing context lengths in LLM inference have led to KV caches consuming progressively more GPU memory, pushing against the hardware limits of even the most advanced GPUs. Recent systems like `Dynamo <https://github.com/ai-dynamo/dynamo>`_, `LMCache <https://github.com/LMCache/LMCache>`_, and `MoonCake <https://github.com/kvcache-ai/Mooncake>`_ have developed solutions that offload KV cache to external memory hierarchies, spanning from CPU memory to SSDs. :ref:`kvcache-offloading` supports the offloading of KV cache to CPU memory as well by only enabling its DRAM-backed ``L1Cache``. While this approach does not enable KV cache sharing across multiple engines, it eliminates the complexity of distributed KV cache setup and configuration. More importantly, by leveraging the significantly larger capacity of CPU memory, this method delivers substantial performance gains —- making it an ideal solution for use cases that prioritize scalable KV cache capacity over cross-engine KV reuse.
 
 
 L2 Distributed KVCache and Cross-Engine KV Reuse
