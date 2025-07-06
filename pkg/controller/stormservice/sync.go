@@ -250,6 +250,9 @@ func (r *StormServiceReconciler) rollout(ctx context.Context, stormService *orch
 		return nil
 	}
 	switch stormService.Spec.UpdateStrategy.Type {
+	case "":
+		// By default use RollingUpdate strategy
+		fallthrough
 	case orchestrationv1alpha1.RollingUpdateStormServiceStrategyType:
 		return r.rollingUpdate(allRoleSets, stormService, currentRevision, updatedRevision)
 	case orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType:

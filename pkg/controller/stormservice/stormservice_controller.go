@@ -107,6 +107,9 @@ func (r *StormServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.Get(ctx, req.NamespacedName, stormService); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+
+	r.setDefaultStormServiceValues(stormService)
+
 	if stormService.DeletionTimestamp != nil {
 		if done, err := r.finalize(ctx, stormService); err != nil {
 			klog.Errorf("stormservice %s/%s finalize failed: %v", stormService.Namespace, stormService.Name, err)
@@ -144,4 +147,12 @@ func (r *StormServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+func (r *StormServiceReconciler) setDefaultStormServiceValues(storm *orchestrationv1alpha1.StormService) {
+	if storm.Spec.UpdateStrategy.Type == "" {
+		storm.Spec.UpdateStrategy.Type = orchestrationv1alpha1.RollingUpdateStormServiceStrategyType
+	}
+
+	// fill other default values if any
 }
