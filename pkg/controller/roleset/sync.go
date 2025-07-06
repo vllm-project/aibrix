@@ -23,9 +23,11 @@ import (
 
 	schedv1alpha1 "github.com/kubewharf/godel-scheduler-api/pkg/apis/scheduling/v1alpha1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -96,6 +98,7 @@ func (r *RoleSetReconciler) calculateStatus(ctx context.Context, rs *orchestrati
 	for _, role := range rs.Spec.Roles {
 		if roleStatus, err := r.calculateStatusForRole(ctx, rs, &role); err != nil {
 			// TODO: add into condition
+			klog.Warningf("Failed to calculate status for role %s: %v", role.Name, err)
 			continue
 		} else {
 			newStatus.Roles = append(newStatus.Roles, *roleStatus)
@@ -120,6 +123,7 @@ func (r *RoleSetReconciler) calculateStatus(ctx context.Context, rs *orchestrati
 	} else if len(managedErrors) == 0 && failureCond != nil {
 		RemoveRoleSetCondition(newStatus, orchestrationv1alpha1.RoleSetReplicaFailure)
 	}
+	// TODO: what if new errors added and failureCond is not nil. can it reflect the new errors?
 	return newStatus, nil
 }
 
@@ -170,13 +174,17 @@ func (r *RoleSetReconciler) finalize(ctx context.Context, roleSet *orchestration
 		// delete pods
 		for i := range allPods.Items {
 			if err = r.Client.Delete(ctx, &allPods.Items[i]); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
 				return false, err
 			}
 		}
+		// let's wait for next reconcile to move to next step, it helps make sure the pod resources are cleaned up.
 		return false, nil
 	}
 
-	// TODO: temporarily disable it
+	// TODO: temporarily disable pod group
 	// 2. check if pg is deleted
 	//podGroup := &schedv1alpha1.PodGroup{}
 	//if err := r.Client.Get(ctx, client.ObjectKey{Name: roleSet.Name, Namespace: roleSet.Namespace}, podGroup); client.IgnoreNotFound(err) != nil {
@@ -192,6 +200,7 @@ func (r *RoleSetReconciler) finalize(ctx context.Context, roleSet *orchestration
 	// 3. remove finalizer
 	if controllerutil.ContainsFinalizer(roleSet, RoleSetFinalizer) {
 		if err := utils.Patch(ctx, r.Client, roleSet, patch.RemoveFinalizerPatch(roleSet, RoleSetFinalizer)); err != nil {
+			klog.Warningf("Failed to remove finalizer for roleSet %s/%s: %v", roleSet.Namespace, roleSet.Name, err)
 			return false, err
 		}
 	}

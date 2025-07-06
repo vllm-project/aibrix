@@ -51,6 +51,7 @@ func (m *RollingManagerSequential) Next(ctx context.Context, roleSet *orchestrat
 		return nil
 	}
 	// 2. do the rollout process for each role
+	// TODO: in future, consider the rollout sequence based on the role's priority
 	for _, role := range roleSet.Spec.Roles {
 		klog.Infof("[RollingManagerSequential.Next] start to rollout roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
 		err := GetRoleSyncer(m.cli, &role).Rollout(ctx, roleSet, &role)

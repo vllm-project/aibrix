@@ -86,6 +86,7 @@ func RemoveRoleSetCondition(status *orchestrationv1alpha1.RoleSetStatus, condTyp
 var (
 	ContainerInjectEnv   = sets.NewString(constants.StormServiceNameEnvKey, constants.RoleSetNameEnvKey, constants.RoleSetIndexEnvKey, constants.RoleNameEnvKey, constants.RoleReplicaIndexEnvKey)
 	roleSetInheritLabels = map[string]bool{
+		// TODO: move to const
 		"name":           true,
 		"previous-owner": true,
 	}
@@ -137,6 +138,7 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 	for i := range pod.Spec.Containers {
 		var env []v1.EnvVar
 		for j := range pod.Spec.Containers[i].Env {
+			// TODO: use merge way instead of overwrite, e.g. injectOrReplaceEnv
 			if ContainerInjectEnv.Has(pod.Spec.Containers[i].Env[j].Name) {
 				continue
 			}
