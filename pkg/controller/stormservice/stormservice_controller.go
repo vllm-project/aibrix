@@ -38,7 +38,7 @@ import (
 
 const (
 	ControllerName              = "stormservice-controller"
-	DefaultRequeueAfter         = 1 * time.Minute
+	DefaultRequeueAfter         = 15 * time.Second
 	DefaultRevisionHistoryLimit = 10
 	StormServiceFinalizer       = "stormservice-finalizer"
 )
