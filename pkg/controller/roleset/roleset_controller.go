@@ -40,9 +40,10 @@ import (
 
 const (
 	ControllerName            = "roleset-controller"
+	RoleSetFinalizer          = "roleset-finalizer"
+	DefaultRequeueAfter       = 15 * time.Second
 	PodBurst                  = 500
 	PodOperationInitBatchSize = 16
-	RoleSetFinalizer          = "roleset-finalizer"
 )
 
 // controllerKind contains the schema.GroupVersionKind for this controller type.
@@ -111,16 +112,16 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if roleSet.DeletionTimestamp != nil {
 		if done, err := r.finalize(ctx, roleSet); err != nil {
 			klog.Errorf("Reconciling RoleSet %s finalize error %v", req.NamespacedName.String(), err)
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
 		} else if !done {
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, nil
 		}
 		return ctrl.Result{}, nil
 	} else if !controllerutil.ContainsFinalizer(roleSet, RoleSetFinalizer) {
 		// add finalizer if not exist
 		if err := orchestrationctrl.Patch(ctx, r.Client, roleSet, patch.AddFinalizerPatch(roleSet, RoleSetFinalizer)); err != nil {
 			klog.Errorf("Adding RoleSet %s finalizer error %v", req.NamespacedName.String(), err)
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
 		}
 		return ctrl.Result{}, nil
 	}
