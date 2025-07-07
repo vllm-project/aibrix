@@ -114,6 +114,7 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			klog.Errorf("Reconciling RoleSet %s finalize error %v", req.NamespacedName.String(), err)
 			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
 		} else if !done {
+			klog.Infof("Reconciling RoleSet %s finalize not done yet, reconcile after %v seconds", req.NamespacedName.String(), DefaultRequeueAfter)
 			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, nil
 		}
 		return ctrl.Result{}, nil
