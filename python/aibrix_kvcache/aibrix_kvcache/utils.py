@@ -19,6 +19,14 @@ from contextlib import contextmanager
 import torch
 
 
+def round_up(x: int, y: int) -> int:
+    return ((x + y - 1) // y) * y
+
+
+def round_down(x: int, y: int) -> int:
+    return (x // y) * y
+
+
 def tensor_to_bytes(tensor: torch.Tensor) -> bytes:
     """Convert a PyTorch tensor (CPU/GPU) to raw bytes."""
     if tensor.is_cuda:
@@ -62,3 +70,41 @@ def ensure_dir_exist(path: str) -> None:
     dir = os.path.dirname(path)
     if not os.path.exists(dir):
         os.makedirs(dir)
+
+
+def hash_combine_128(hash1, hash2, prime=0x1000000000000000000013B) -> int:
+    # 128-bit mask
+    mask = (1 << 128) - 1
+
+    combined = (hash1 ^ (hash2 + prime + (hash1 << 24) + (hash1 >> 4))) & mask
+    combined = (combined * prime) & mask
+    return combined
+
+
+def human_readable_bytes(size: float) -> str:
+    """Convert a size in bytes to a human-readable format.
+
+    Args:
+        size: Integer representing size in bytes
+
+    Returns:
+        Human-readable string with appropriate unit (B, KB, MB, GB, etc.)
+    """
+    # List of units to use
+    units = ["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"]
+
+    # Handle zero or negative sizes
+    if size <= 0:
+        return "0 B"
+
+    # Calculate which unit to use
+    unit_index = 0
+    while size >= 1024 and unit_index < len(units) - 1:
+        size /= 1024
+        unit_index += 1
+
+    # Format the number with 4 decimal places if not in bytes
+    if unit_index == 0:
+        return f"{size} {units[unit_index]}"
+    else:
+        return f"{size:.4f} {units[unit_index]}"

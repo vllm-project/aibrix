@@ -117,3 +117,14 @@ class KVCacheBlockSpec:
                 len(self.tensor_spec.heads),
                 self.tensor_spec.head_size,
             )
+
+
+@dataclass
+class ModelSpec:
+    """Model specification.
+
+    Args:
+        max_model_len: Max length of a sequence (including prompt and output).
+    """
+
+    max_model_len: int

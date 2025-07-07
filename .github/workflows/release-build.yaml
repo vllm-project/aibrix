@@ -74,7 +74,7 @@ jobs:
         run: |
           cd python/aibrix
           python -m pip install --upgrade pip
-          pip install -U pip poetry
+          pip install -U pip poetry build
       - name: Build and publish
         env:
           POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_TOKEN }}
@@ -84,7 +84,8 @@ jobs:
           popd
 
           pushd python/aibrix_kvcache
-          poetry publish --build
+          pip install -r requirements/build.txt -r requirements/dev.txt -r requirements/core.txt
+          python -m build --sdist --wheel --no-isolation
           popd
       - name: Add package to release artifact
         run: |

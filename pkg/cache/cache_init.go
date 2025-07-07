@@ -17,6 +17,7 @@ limitations under the License.
 package cache
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -37,24 +38,40 @@ var (
 	once  sync.Once  // Singleton pattern control lock
 )
 
+const (
+	// For output predictor
+	maxInputTokens  = 1024 * 1024       // 1M
+	maxOutputTokens = 1024 * 1024       // 1M
+	movingWindow    = 240 * time.Second // keep window same with window size of GPU optimizer.
+)
+
 // Store contains core data structures and components of the caching system
 type Store struct {
-	mu            sync.RWMutex     // Read-write lock for concurrency safety
-	initialized   bool             // Initialization status flag
-	redisClient   *redis.Client    // Redis client instance
-	prometheusApi prometheusv1.API // Prometheus API client
+	mu                  sync.RWMutex            // Read-write lock for concurrency safety
+	initialized         bool                    // Initialization status flag
+	redisClient         *redis.Client           // Redis client instance
+	prometheusApi       prometheusv1.API        // Prometheus API client
+	modelRouterProvider ModelRouterProviderFunc // Function to get model router
 
 	// Metrics related fields
-	subscribers       []metrics.MetricSubscriber            // List of metric subscribers
-	metrics           map[string]any                        // Generic metric storage
-	requestTrace      *utils.SyncMap[string, *RequestTrace] // Request trace data (model_name -> *RequestTrace)
-	numRequestsTraces int32                                 // Request trace counter
+	subscribers         []metrics.MetricSubscriber // List of metric subscribers
+	metrics             map[string]any             // Generic metric storage
+	pendingLoadProvider CappedLoadProvider         // Provider that defines load in terms of pending requests.
+	numRequestsTraces   int32                      // Request trace counter
+
+	// Request trace fields
+	enableTracing bool                                  // Default to load from enableGPUOptimizerTracing, can be configured.
+	requestTrace  *utils.SyncMap[string, *RequestTrace] // Request trace data (model_name -> *RequestTrace)
 
 	// Pod related storage
 	metaPods utils.SyncMap[string, *Pod] // pod_namespace/pod_name -> *Pod
 
-	// Mapping relationships
+	// Model related storage
 	metaModels utils.SyncMap[string, *Model] // model_name -> *Model
+
+	// Deploymnent related storage
+	enableProfileCaching bool                                    // Default to load from enableModelGPUProfileCaching, can be configured.
+	deploymentProfiles   utils.SyncMap[string, *ModelGPUProfile] // aibrix:profile_[model_name]_[deployment_name] -> *ModelGPUProfile
 
 	// buffer for sync map operations
 	bufferPod   *Pod
@@ -89,15 +106,18 @@ func Get() (Cache, error) {
 // Returns:
 //
 //	Store: Initialized cache store instance
-func New(redisClient *redis.Client, prometheusApi prometheusv1.API) *Store {
+func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterProvider ModelRouterProviderFunc) *Store {
 
 	store = &Store{
 		initialized:           true,
 		redisClient:           redisClient,
 		prometheusApi:         prometheusApi,
+		enableTracing:         enableGPUOptimizerTracing,
 		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
+		modelRouterProvider:   modelRouterProvider,
 		podMetricsWorkerCount: defaultPodMetricsWorkerCount,
 		podMetricsJobs:        make(chan *Pod, 100), // Initialize the job channel with a buffer size of 100
+		enableProfileCaching:  enableModelGPUProfileCaching,
 	}
 
 	// Start podMetrics worker pool
@@ -108,40 +128,112 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API) *Store {
 	return store
 }
 
-func NewTestCacheWithPods(pods []*v1.Pod, model string) *Store {
-	c := &Store{}
-	for _, pod := range pods {
-		pod.Labels = make(map[string]string)
-		pod.Labels[modelIdentifier] = model
-		c.addPod(pod)
+// NewForTest initializes the cache store for testing purposes, it can be repeated call for reset.
+func NewForTest() *Store {
+	store := &Store{
+		initialized:          true,
+		enableTracing:        enableGPUOptimizerTracing,
+		enableProfileCaching: enableModelGPUProfileCaching,
 	}
-	return c
+	if store.enableTracing {
+		store.requestTrace = &utils.SyncMap[string, *RequestTrace]{}
+	}
+	if store.enableProfileCaching {
+		initProfileCache(store, nil, true)
+	}
+	return store
 }
 
-func NewTestCacheWithPodsMetrics(pods []*v1.Pod, model string, podMetrics map[string]map[string]metrics.MetricValue) *Store {
-	c := NewTestCacheWithPods(pods, model)
-	c.metaPods.Range(func(key string, metaPod *Pod) bool {
+func NewWithPodsForTest(pods []*v1.Pod, model string) *Store {
+	return InitWithPods(NewForTest(), pods, model)
+}
+
+func NewWithPodsMetricsForTest(pods []*v1.Pod, model string, podMetrics map[string]map[string]metrics.MetricValue) *Store {
+	return InitWithPodsMetrics(InitWithPods(NewForTest(), pods, model), podMetrics)
+}
+
+// InitModelRouterProvider initializes the cache store with model router provider for testing purposes, it can be repeated call for reset.
+// Call this function before InitWithPods for expected behavior.
+func InitWithModelRouterProvider(st *Store, modelRouterProvider ModelRouterProviderFunc) *Store {
+	st.modelRouterProvider = modelRouterProvider
+	return st
+}
+
+// InitWithRequestTrace initializes the cache store with request trace.
+func InitWithRequestTrace(st *Store) *Store {
+	if !st.enableTracing {
+		st.enableTracing = true
+		st.requestTrace = &utils.SyncMap[string, *RequestTrace]{}
+	}
+	return st
+}
+
+// InitWithRequestTrace initializes the cache store with request trace.
+func InitWithProfileCache(st *Store) *Store {
+	if !st.enableProfileCaching {
+		st.enableProfileCaching = true
+		initProfileCache(st, nil, true)
+	}
+	return st
+}
+
+// InitWithPods initializes the cache store with pods for testing purposes, it can be repeated call for reset.
+func InitWithPods(st *Store, pods []*v1.Pod, model string) *Store {
+	for _, pod := range pods {
+		if pod.Labels == nil {
+			pod.Labels = make(map[string]string)
+		}
+		pod.Labels[modelIdentifier] = model
+		st.addPod(pod)
+	}
+	return st
+}
+
+// InitWithAsyncPods initializes the cache store with pods initialized in an async way, this simulate the timeline of how store initializes
+func InitWithAsyncPods(st *Store, pods []*v1.Pod, model string) <-chan *Store {
+	ret := make(chan *Store, 1)
+	var wait sync.WaitGroup
+	for _, pod := range pods {
+		wait.Add(1)
+		if pod.Labels == nil {
+			pod.Labels = make(map[string]string)
+		}
+		pod.Labels[modelIdentifier] = model
+		go func() {
+			st.addPod(pod)
+			wait.Done()
+		}()
+	}
+	go func() {
+		wait.Wait()
+		ret <- st
+		close(ret)
+	}()
+	return ret
+}
+
+// InitWithPods initializes the cache store with pods metrics for testing purposes, it can be repeated call for reset.
+func InitWithPodsMetrics(st *Store, podMetrics map[string]map[string]metrics.MetricValue) *Store {
+	st.metaPods.Range(func(key string, metaPod *Pod) bool {
 		_, podName, ok := utils.ParsePodKey(key)
 		if !ok {
 			return true
 		}
 		if podmetrics, ok := podMetrics[podName]; ok {
 			for metricName, metric := range podmetrics {
-				if err := c.updatePodRecord(metaPod, model, metricName, metrics.PodMetricScope, metric); err != nil {
+				if err := st.updatePodRecord(metaPod, "", metricName, metrics.PodMetricScope, metric); err != nil {
 					return false
 				}
 			}
 		}
 		return true
 	})
-	return c
+	return st
 }
 
-// InitForTest initializes the cache store for testing purposes
+// InitForTest initialize the global store object for testing.
 func InitForTest() *Store {
-	once.Do(func() {
-		store = &Store{initialized: true}
-	})
+	store = NewForTest()
 	return store
 }
 
@@ -158,26 +250,33 @@ func InitForTest() *Store {
 func Init(config *rest.Config, stopCh <-chan struct{}) *Store {
 	// Configure cache components
 	enableGPUOptimizerTracing = false
-	return InitForGateway(config, stopCh, nil)
+	enableModelGPUProfileCaching = false
+	return InitForGateway(config, stopCh, nil, nil)
 }
 
 func InitForMetadata(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Store {
 	// Configure cache components
 	enableGPUOptimizerTracing = false
-	return InitForGateway(config, stopCh, redisClient)
+	enableModelGPUProfileCaching = false
+	return InitForGateway(config, stopCh, redisClient, nil)
 }
 
-func InitForGateway(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Store {
+func InitForGateway(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client, modelRouterProvider ModelRouterProviderFunc) *Store {
 	once.Do(func() {
-		klog.Info("initialize cache for gateway")
-		store = New(redisClient, initPrometheusAPI())
+		klog.InfoS("initialize cache for gateway",
+			"enableModelGPUProfileCaching", enableModelGPUProfileCaching,
+			"enableGPUOptimizerTracing", enableGPUOptimizerTracing)
+		store = New(redisClient, initPrometheusAPI(), modelRouterProvider)
 
 		// Initialize cache components
 		if err := initCacheInformers(store, config, stopCh); err != nil {
 			panic(err)
 		}
 		initMetricsCache(store, stopCh)
-		if enableGPUOptimizerTracing {
+		if store.enableProfileCaching {
+			initProfileCache(store, stopCh, false)
+		}
+		if store.enableTracing {
 			initTraceCache(redisClient, stopCh)
 		}
 	})
@@ -202,6 +301,32 @@ func initMetricsCache(store *Store, stopCh <-chan struct{}) {
 				if klog.V(5).Enabled() {
 					store.debugInfo()
 				}
+			case <-stopCh:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+}
+
+// initMetricsCache initializes metrics cache update loop
+// Parameters:
+//
+//	store: Cache store instance
+//	stopCh: Stop signal channel
+func initProfileCache(store *Store, stopCh <-chan struct{}, forTesting bool) {
+	store.pendingLoadProvider = newPendingLoadProvider(store)
+	if forTesting {
+		return
+	}
+	// Skip initialization below during testing
+	ticker := time.NewTicker(defaultModelGPUProfileRefreshInterval)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				// Periodically update metrics
+				store.updateDeploymentProfiles(context.Background())
 			case <-stopCh:
 				ticker.Stop()
 				return

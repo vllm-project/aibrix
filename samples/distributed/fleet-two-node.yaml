@@ -38,6 +38,7 @@ spec:
                 args:
                   - >
                     ulimit -n 65536 &&
+                    apt update && apt install -y wget net-tools && pip3 install ray[default] pyarrow pandas &&
                     echo "[INFO] Starting Ray head node..." &&
                     eval "$KUBERAY_GEN_RAY_START_CMD" &
 

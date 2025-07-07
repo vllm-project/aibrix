@@ -87,7 +87,6 @@ target_model: "llama-3-8b-instruct"  # Or "deepseek-llm-7b-chat"
 time_scale: 1.0
 routing_strategy: "random" 
 streaming_enabled: true # Options: true, false
-client_pool_size: 1
 output_token_limit: 128
 timeout_second: 60.0
 max_retries: 0

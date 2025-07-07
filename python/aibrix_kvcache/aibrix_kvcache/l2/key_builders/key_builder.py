@@ -19,10 +19,41 @@ from typing import Sequence, Tuple
 class KeyBuilder(ABC):
     """KeyBuilder is used to build a sequence of keys from given tokens."""
 
+    def __init__(self, block_size: int):
+        self.block_size = block_size
+
+    @staticmethod
+    def create(
+        name: str,
+        **kwargs,
+    ) -> "KeyBuilder":
+        """Create a KeyBuilder."""
+        if name == "RAW":
+            from .raw_key_builder import RawKeyBuilder
+
+            return RawKeyBuilder(**kwargs)
+        elif name == "ROLLING_HASH":
+            from .hasher import FarmHasher
+            from .rolling_hash_key_builder import RollingHashKeyBuilder
+
+            return RollingHashKeyBuilder(FarmHasher(), **kwargs)
+        elif name == "SIMPLE_HASH":
+            from .hasher import FarmHasher
+            from .simple_hash_key_builder import SimpleHashKeyBuilder
+
+            return SimpleHashKeyBuilder(FarmHasher(), **kwargs)
+        else:
+            raise ValueError(f"Unknown key builder type: {name}")
+
+    @property
+    @abstractmethod
+    def signature(self) -> str:
+        raise NotImplementedError
+
     @abstractmethod
     def build(
         self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Tuple[Tuple[Sequence[int], str | bytes], ...]:
+    ) -> Tuple[Tuple[Tuple[int, ...], bytes], ...]:
         """Build a sequence of keys from given tokens.
         Args:
             prefix (Sequence[int] | None): prefix tokens

@@ -34,12 +34,17 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_CHUNK_SIZE: int = 512
     AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED: bool = True
     AIBRIX_KV_CACHE_OL_BREAKDOWN_MEASUREMENT_ENABLED: bool = True
+    # Whether to validate the token in L2 cache. Defaults to False.
+    #
+    # Note:
+    # If disabled, we will use a tight memory layout for both L1 and L2
+    # cache. I.e., we will not pack tokens in the cache entry.
+    AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED: bool = False
 
     AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED: bool = True
     AIBRIX_KV_CACHE_OL_L1_CACHE_EVICTION_POLICY: str = "S3FIFO"
     AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB: float = 10
     AIBRIX_KV_CACHE_OL_DEVICE: str = "cpu"
-    AIBRIX_KV_CACHE_OL_L1_CACHE_EVICT_SIZE: int = 16
 
     # S3FIFO Env Vars
     AIBRIX_KV_CACHE_OL_S3FIFO_SMALL_TO_MAIN_PROMO_THRESHOLD: int = 1
@@ -53,6 +58,9 @@ if TYPE_CHECKING:
     # L2 cache placement policy. Defaults to "SIMPLE".
     # Only applicable if using meta service.
     AIBRIX_KV_CACHE_OL_L2_CACHE_PLACEMENT_POLICY: str = "SIMPLE"
+
+    # L2 cache key builder. Defaults to raw.
+    AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER: str = "RAW"
 
     # If meta service backend is not set, L2 cache backend will use direct
     # mode to access the given cache server.
@@ -101,7 +109,7 @@ if TYPE_CHECKING:
     # Since 0.2.42, InfiniStore supports RDMA GID index in client config,
     # users can specify the GID index of each device in this format:
     # "mlx5_0:gid0,mlx5_1:gid1,mlx5_2:gid2"
-    AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST: List[str] = ["mlx5_0"]
+    AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST: List[str] = []
     AIBRIX_KV_CACHE_OL_INFINISTORE_USE_GDR: bool = True
 
     # HPKV Env Vars
@@ -110,6 +118,11 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_HPKV_LOCAL_ADDR: str = "127.0.0.1"
     AIBRIX_KV_CACHE_OL_HPKV_LOCAL_PORT: int = 12345
     AIBRIX_KV_CACHE_OL_HPKV_USE_GDR: bool = True
+
+    # RDMA Auto-Detection Env Vars
+    # Defines the range of valid GIDs. Similar to NVSHMEM_IB_ADDR_RANGE
+    # for NVSHMEM. It must be a valid CIDR.
+    AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE: str = "::/0"
 
 # The begin-* and end* here are used by the documentation generator
 # to extract the used env vars.
@@ -144,6 +157,12 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
         .lower()
         in ("1", "true")
     ),
+    "AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED", "0")
+        .strip()
+        .lower()
+        in ("1", "true")
+    ),
     # ================== L1Cache Env Vars ==================
     "AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED", "1").strip().lower()
@@ -159,9 +178,6 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     ),
     "AIBRIX_KV_CACHE_OL_DEVICE": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_DEVICE", "cpu").strip().lower()
-    ),
-    "AIBRIX_KV_CACHE_OL_L1_CACHE_EVICT_SIZE": lambda: int(
-        os.getenv("AIBRIX_KV_CACHE_OL_L1_CACHE_EVICT_SIZE", "16")
     ),
     # ================== S3FIFO Env Vars ==================
     # Promotion threshold of small fifo to main fifo
@@ -208,6 +224,11 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     ),
     "AIBRIX_KV_CACHE_OL_L2_CACHE_PLACEMENT_POLICY": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_L2_CACHE_PLACEMENT_POLICY", "SIMPLE")
+        .strip()
+        .upper()
+    ),
+    "AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER", "RAW")
         .strip()
         .upper()
     ),
@@ -289,10 +310,13 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
             "AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE", "Ethernet"
         ).strip()
     ),
-    "AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST": lambda: (
-        os.getenv("AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST", "mlx5_0")
-        .strip()
-        .split(",")
+    "AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST": lambda: list(
+        filter(
+            None,
+            os.getenv("AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST", "")
+            .strip()
+            .split(","),
+        )
     ),
     "AIBRIX_KV_CACHE_OL_INFINISTORE_USE_GDR": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_INFINISTORE_USE_GDR", "1").strip().lower()
@@ -314,6 +338,12 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     "AIBRIX_KV_CACHE_OL_HPKV_USE_GDR": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_HPKV_USE_GDR", "1").strip().lower()
         in ("1", "true")
+    ),
+    # ================== RDMA Auto-Detection Env Vars ==================
+    "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE": lambda: (
+        os.getenv(
+            "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE", "::/0"
+        ).strip()
     ),
 }
 

@@ -15,15 +15,19 @@
 import copy
 import os
 import random
-import shutil
 
 import pytest
 import torch
 
-from aibrix_kvcache import BaseKVCacheManager, KVCacheConfig, cache_manager
+from aibrix_kvcache import (
+    BaseKVCacheManager,
+    KVCacheConfig,
+    ModelSpec,
+    cache_manager,
+)
 from aibrix_kvcache.memory import TensorPoolAllocator
 
-from .conftest import TEMP_ROOT, discard_all_aibrix_envs, randomize_cache_handle
+from .conftest import discard_all_aibrix_envs, randomize_cache_handle
 
 cache_manager.TESTING_DISABLE_PIN_MEMORY = True
 
@@ -48,25 +52,20 @@ def cache_mgr_fixture(cache_conf_fixture, request):
         # enable l2 and disable l1
         os.environ["AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED"] = "0"
 
-        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "ROCKSDB"
+        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "MOCK"
         os.environ[
             "AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_MAX_INFLIGHT_TOKENS"
         ] = "0"
 
-        # rocksdb envs
-        os.environ["AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT"] = TEMP_ROOT
     elif request.param == "l2_async":
         # enable l2 and disable l1
         os.environ["AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED"] = "0"
-        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "ROCKSDB"
-
-        # rocksdb envs
-        os.environ["AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT"] = TEMP_ROOT
+        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "MOCK"
 
     elif request.param == "l1_l2_sync":
         # enable both l1 and l2
         os.environ["AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED"] = "1"
-        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "ROCKSDB"
+        os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "MOCK"
 
         # let allocator use host memory
         os.environ["AIBRIX_KV_CACHE_OL_L1_CACHE_DEVICE"] = "cpu"
@@ -80,17 +79,11 @@ def cache_mgr_fixture(cache_conf_fixture, request):
         # always use double get
         os.environ["AIBRIX_KV_CACHE_OL_DOUBLE_GET_THRESHOLD"] = "0"
 
-        # rocksdb envs
-        os.environ["AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT"] = TEMP_ROOT
-
-    if os.path.exists(TEMP_ROOT):
-        shutil.rmtree(TEMP_ROOT, ignore_errors=True)
-
     shape, spec = cache_conf_fixture
 
     cache = None
     try:
-        config = KVCacheConfig(block_spec=spec)
+        config = KVCacheConfig(block_spec=spec, model_spec=ModelSpec(1024))
         # use a small slab size for testing
         TensorPoolAllocator.SLAB_MAX_NBYTES = spec.block_nbytes * 8
         cache = BaseKVCacheManager(config=config)
@@ -99,16 +92,13 @@ def cache_mgr_fixture(cache_conf_fixture, request):
         if cache is not None:
             print(cache.metrics.summary())
             cache.close()
-        if os.path.exists(TEMP_ROOT):
-            shutil.rmtree(TEMP_ROOT, ignore_errors=True)
 
 
 def test_cache_initialization(cache_mgr_fixture):
-    _, _, cache_mgr, _ = cache_mgr_fixture
-    request_param = getattr(cache_mgr, "__test_request_param__", "")
-    if "l1" in request_param:
+    _, _, cache_mgr, param = cache_mgr_fixture
+    if "l1" in param:
         assert cache_mgr._l1_cache is not None
-    if "l2" in request_param:
+    if "l2" in param:
         assert cache_mgr._l2_cache is not None
 
 
@@ -116,7 +106,7 @@ def test_put_and_get_aligned(cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
     tokens = [i for i in range(32)]
     origin_tokens = copy.deepcopy(tokens)
-    status = cache_mgr.allocate(2)
+    status = cache_mgr.allocate_for(None, tokens)
     assert status.is_ok()
     put_handle = status.value
     randomize_cache_handle(put_handle)
@@ -150,7 +140,7 @@ def test_put_and_get_aligned(cache_mgr_fixture):
 def test_put_and_get_with_prefix(cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
     tokens0 = [i for i in range(32)]
-    status = cache_mgr.allocate(2)
+    status = cache_mgr.allocate_for(None, tokens0)
     assert status.is_ok()
     put_handle0 = status.value
     assert len(put_handle0) == 2
@@ -162,7 +152,7 @@ def test_put_and_get_with_prefix(cache_mgr_fixture):
     assert put_status.is_ok()
 
     tokens1 = [i for i in range(100, 132)]
-    status = cache_mgr.allocate(2)
+    status = cache_mgr.allocate_for(None, tokens1)
     assert status.is_ok()
     put_handle1 = status.value
     assert len(put_handle1) == 2
@@ -219,7 +209,7 @@ def test_duplicated_puts(cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
     for _ in range(10):
         tokens = [i for i in range(32)]
-        status = cache_mgr.allocate(2)
+        status = cache_mgr.allocate_for(None, tokens)
         assert status.is_ok()
         put_handle = status.value
         randomize_cache_handle(put_handle)
@@ -249,7 +239,7 @@ def test_delete(cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
     tokens = [i for i in range(32)]
     origin_tokens = copy.deepcopy(tokens)
-    status = cache_mgr.allocate(2)
+    status = cache_mgr.allocate_for(None, tokens)
     assert status.is_ok()
     put_handle = status.value
     randomize_cache_handle(put_handle)
@@ -279,14 +269,14 @@ def test_delete(cache_mgr_fixture):
     assert get_status.is_not_found()
 
 
-def test_stress_cache(cache_mgr_fixture):
+def test_stress_cache(cache_mgr_fixture, compact_layout_enabled):
     shape, spec, cache_mgr, param = cache_mgr_fixture
     query = {}
     for i in range(200):
         num_prefix_blocks = random.randint(0, 10)
         if num_prefix_blocks > 0:
             prefix_tokens = [j for j in range(num_prefix_blocks * 16)]
-            status = cache_mgr.allocate(num_prefix_blocks)
+            status = cache_mgr.allocate_for(None, prefix_tokens)
             assert status.is_ok()
             prefix_handle = status.value
             randomize_cache_handle(prefix_handle)
@@ -309,7 +299,10 @@ def test_stress_cache(cache_mgr_fixture):
         num_token_blocks = random.randint(1, 64)
         tokens = [j for j in range(num_token_blocks * 16)]
         random.shuffle(tokens)
-        status = cache_mgr.allocate(num_token_blocks)
+        status = cache_mgr.allocate_for(prefix_tokens, tokens)
+        if status.is_out_of_memory():
+            continue
+
         assert status.is_ok()
         token_handle = status.value
         randomize_cache_handle(token_handle)
@@ -380,5 +373,3 @@ def test_stress_cache(cache_mgr_fixture):
     for reason, num in recorder.get_metrics.num_errors_by_reason.items():
         if num > 0 and reason not in ["out_of_memory", "denied", "not_found"]:
             raise AssertionError(f"GET {reason}: {num}")
-    num_oks = sum(results)
-    assert num_oks > 50

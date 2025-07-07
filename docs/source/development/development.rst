@@ -31,6 +31,17 @@ If you want to clean up everything and reinstall the latest code
     kubectl delete -k config/default
     kubectl delete -k config/dependency
 
+For Dev & Testing Local Setup with Monitoring
+---------------------------------------------
+
+.. code-block:: bash
+
+    make dev-install-in-kind
+    make dev-port-forward
+    make dev-stop-port-forward
+    make dev-uninstall-from-kind
+
+
 Mocked CPU App
 --------------
 

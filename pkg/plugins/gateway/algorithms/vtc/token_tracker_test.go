@@ -19,12 +19,14 @@ package vtc
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 func TestSlidingWindowTokenTracker_GetTokenCount(t *testing.T) {
@@ -635,4 +637,64 @@ func TestSlidingWindowTokenTracker_SecondsUnitWindow(t *testing.T) {
 	toks, err = tracker.GetTokenCount(ctx, "user")
 	assert.NoError(t, err)
 	assert.Equal(t, float64(0), toks, "token expired after seconds window")
+}
+
+func TestTokenTrackerWindowSizeThroughConstructor(t *testing.T) {
+	originalWindowSize := os.Getenv(VTC_TOKEN_TRACKER_WINDOW_SIZE)
+	originalTimeUnit := os.Getenv(VTC_TOKEN_TRACKER_TIME_UNIT)
+
+	if err := os.Setenv(VTC_TOKEN_TRACKER_WINDOW_SIZE, "5"); err != nil {
+		t.Fatalf("Failed to set environment variable %s: %v", VTC_TOKEN_TRACKER_WINDOW_SIZE, err)
+	}
+	if err := os.Setenv(VTC_TOKEN_TRACKER_TIME_UNIT, "minutes"); err != nil {
+		t.Fatalf("Failed to set environment variable %s: %v", VTC_TOKEN_TRACKER_TIME_UNIT, err)
+	}
+
+	tokenTrackerWindowSize = utils.LoadEnvInt(VTC_TOKEN_TRACKER_WINDOW_SIZE, defaultTokenTrackerWindowSize)
+	timeUnitStr = utils.LoadEnv(VTC_TOKEN_TRACKER_TIME_UNIT, defaultTimeUnit)
+
+	// Defer restoring original environment variables
+	defer func() {
+		if originalWindowSize != "" {
+			if err := os.Setenv(VTC_TOKEN_TRACKER_WINDOW_SIZE, originalWindowSize); err != nil {
+				t.Logf("Failed to restore environment variable %s: %v", VTC_TOKEN_TRACKER_WINDOW_SIZE, err)
+			}
+		} else {
+			if err := os.Unsetenv(VTC_TOKEN_TRACKER_WINDOW_SIZE); err != nil {
+				t.Logf("Failed to unset environment variable %s: %v", VTC_TOKEN_TRACKER_WINDOW_SIZE, err)
+			}
+		}
+
+		if originalTimeUnit != "" {
+			if err := os.Setenv(VTC_TOKEN_TRACKER_TIME_UNIT, originalTimeUnit); err != nil {
+				t.Logf("Failed to restore environment variable %s: %v", VTC_TOKEN_TRACKER_TIME_UNIT, err)
+			}
+		} else {
+			if err := os.Unsetenv(VTC_TOKEN_TRACKER_TIME_UNIT); err != nil {
+				t.Logf("Failed to unset environment variable %s: %v", VTC_TOKEN_TRACKER_TIME_UNIT, err)
+			}
+		}
+	}()
+
+	config := &VTCConfig{
+		InputTokenWeight:  1.0,
+		OutputTokenWeight: 1.0,
+	}
+
+	tracker := NewInMemorySlidingWindowTokenTracker(config)
+	vtcTracker := tracker.(*InMemorySlidingWindowTokenTracker)
+	windowSize := vtcTracker.windowSize
+	bucketUnit := vtcTracker.bucketUnit
+
+	t.Logf("Initial state - windowSize: %v, bucketUnit: %v", windowSize, bucketUnit)
+
+	if windowSize == 0 {
+		t.Errorf("Window size should not be 0, got %v", windowSize)
+	}
+
+	// Default is 5 minutes (from defaultTokenTrackerWindowSize and defaultTimeUnit)
+	expectedWindowSize := 5 * time.Minute
+	assert.Equal(t, expectedWindowSize, windowSize, "Window size should be initialized with the default value of 5 minutes")
+
+	assert.Equal(t, Minutes, bucketUnit, "Bucket unit should be initialized with the default value of Minutes")
 }

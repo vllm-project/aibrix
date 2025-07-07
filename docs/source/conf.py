@@ -26,6 +26,7 @@ extensions = [
     'sphinx_click',
     'sphinx_copybutton',
     'sphinx_design',
+    'sphinxcontrib.mermaid',
 ]
 
 templates_path = ['_templates']
@@ -49,6 +50,7 @@ html_theme_options = {
     "use_repository_button": True,
     "repository_branch": "main",
     'path_to_docs': 'docs/source',
+    'show_nav_level': 2,
 
     # theme
     'pygments_light_style': 'tango',

@@ -28,6 +28,7 @@ go.work.sum
 .DS_Store
 __pycache__
 *.xml
+.*.pid
 
 # Python virtual environment directory
 .venv

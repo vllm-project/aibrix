@@ -36,7 +36,38 @@ func podsFromCache(c *cache.Store) *utils.PodArray {
 }
 
 func requestContext(model string) *types.RoutingContext {
-	return types.NewRoutingContext(context.Background(), types.RoutingAlgorithm("random"), model, "", "", "")
+	return types.NewRoutingContext(context.Background(), RouterNotSet, model, "", "id", "")
+}
+
+func TestSetFallback(t *testing.T) {
+	deployment := "deployment"
+	store := cache.NewForTest()
+	store = cache.InitWithModelRouterProvider(store, NewSLORouter)
+	storeCh := cache.InitWithAsyncPods(store, []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deployment + "-replicaset-pod1",
+				Namespace: "default",
+				Labels: map[string]string{
+					utils.DeploymentIdentifier: deployment,
+				},
+			},
+			Status: v1.PodStatus{
+				PodIP: "1.0.0.1",
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodReady,
+						Status: v1.ConditionTrue,
+					},
+				},
+			},
+		},
+	}, "test model")
+	Init() // Required to initialize the router registry after store was initialized and before pods are added.
+	store = <-storeCh
+
+	_, err := store.GetRouter(RouterSLO.NewContext(context.Background(), "test model", "", "request id", ""))
+	assert.Nil(t, err, "set fallback should wait router initialize")
 }
 
 func TestNoPods(t *testing.T) {
@@ -64,7 +95,7 @@ func TestNoPods(t *testing.T) {
 
 func TestWithNoIPPods(t *testing.T) {
 	model := ""
-	c := cache.NewTestCacheWithPods([]*v1.Pod{
+	c := cache.NewWithPodsForTest([]*v1.Pod{
 		{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "p1",
@@ -95,7 +126,7 @@ func TestWithIPPods(t *testing.T) {
 	// case 1: pod ready
 	// case 2: pod ready & terminating -> we can send request at this moment.
 	model := ""
-	c := cache.NewTestCacheWithPodsMetrics(
+	c := cache.NewWithPodsMetricsForTest(
 		[]*v1.Pod{
 			{
 				ObjectMeta: metav1.ObjectMeta{

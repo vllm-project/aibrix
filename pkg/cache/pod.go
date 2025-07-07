@@ -16,9 +16,14 @@ limitations under the License.
 package cache
 
 import (
+	"sync/atomic"
+	"time"
+
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	atomic_ext "go.uber.org/atomic"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 type Pod struct {
@@ -27,5 +32,26 @@ type Pod struct {
 	Metrics      utils.SyncMap[string, metrics.MetricValue] // Pod metrics (metric_name -> value)
 	ModelMetrics utils.SyncMap[string, metrics.MetricValue] // Pod-model metrics (model_name/metric_name -> value)
 
-	runningRequests int32 // Realtime running requests counter.
+	// Realtime statstistic
+	runningRequests        int32 // Realtime running requests counter.
+	pendingLoadUtilization atomic_ext.Float64
+
+	// Log frenquency control
+	lastTraceLogTimestamp int64
+}
+
+func (pod *Pod) CanLogPodTrace(level klog.Level) bool {
+	// Skip log throttling for greater log level.
+	if klog.V(level).Enabled() {
+		return true
+	}
+
+	lastTs := atomic.LoadInt64(&pod.lastTraceLogTimestamp)
+	ts := time.Now().UnixNano()
+	if ts-lastTs < int64(traceLogInterval) {
+		return false
+	}
+
+	// Ensure only one attempt pass.
+	return atomic.CompareAndSwapInt64(&pod.lastTraceLogTimestamp, lastTs, ts)
 }

@@ -15,6 +15,8 @@
 import hashlib
 from abc import ABC, abstractmethod
 
+from farmhash import FarmHash128
+
 
 class Hasher(ABC):
     @abstractmethod
@@ -33,3 +35,8 @@ class Hasher(ABC):
 class MD5Hasher(Hasher):
     def hash(self, data: bytes) -> int:
         return int(hashlib.md5(data).hexdigest(), 16)
+
+
+class FarmHasher(Hasher):
+    def hash(self, data: bytes) -> int:
+        return int(FarmHash128(data))

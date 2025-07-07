@@ -17,6 +17,7 @@ package vtc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"testing"
@@ -30,6 +31,10 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+)
+
+var (
+	errNotImplemented = errors.New("not implemented")
 )
 
 // SimpleCache is a simplified implementation of the cache interface for testing
@@ -65,36 +70,6 @@ func (c *SimpleCache) GetMetricValueByPodModel(podName, podNamespace, modelName,
 		return &metrics.SimpleMetricValue{Value: value}, nil
 	}
 	return &metrics.SimpleMetricValue{Value: 0}, nil
-}
-
-func (c *SimpleCache) AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) int64 {
-	return 1
-}
-
-func (c *SimpleCache) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
-}
-
-func (c *SimpleCache) DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64, inputTokens int64, outputTokens int64) {
-}
-
-func (c *SimpleCache) GetPod(podName, podNamespace string) (*v1.Pod, error) {
-	return nil, nil
-}
-
-func (c *SimpleCache) ListPodsByModel(modelName string) (types.PodList, error) {
-	return nil, nil
-}
-
-func (c *SimpleCache) HasModel(modelName string) bool {
-	return true
-}
-
-func (c *SimpleCache) ListModels() []string {
-	return []string{}
-}
-
-func (c *SimpleCache) ListModelsByPod(podName, podNamespace string) ([]string, error) {
-	return []string{}, nil
 }
 
 func (c *SimpleCache) GetMetricValueByPod(podName, podNamespace, metricName string) (metrics.MetricValue, error) {

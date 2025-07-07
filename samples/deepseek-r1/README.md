@@ -51,6 +51,7 @@ Users can select different storage options for the [model weights](https://huggi
 | Persistent Volume                               | models volume, PVC                       | [Link](./deepseek-r1-pvc.yaml)         |
 | Object Storage(S3 / GCS) with AIBrix AI Runtime | models volume, HostPath                  | [Link](./deepseek-r1-ai-runtime.yaml)  |
 | Local Disk                                      | models volume, HostPath + InitContainer  | [Link](./deepseek-r1-local-nvme.yaml)  |
+| Local Disk                                      | HostPath + TCP w/o RDMA + TP8 + PP2      | [Link](./deepseek-r1-tcp.yaml)         |
 
 ### High Performance Network
 

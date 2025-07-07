@@ -97,6 +97,10 @@ func RegisterSchemas(scheme *runtime.Scheme) error {
 		utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
 	}
 
+	if features.IsControllerEnabled(features.StormServiceController) {
+		utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
+	}
+
 	scheme.AddUnversionedTypes(metav1.SchemeGroupVersion, &metav1.UpdateOptions{}, &metav1.DeleteOptions{}, &metav1.CreateOptions{})
 	//+kubebuilder:scaffold:scheme
 
@@ -314,6 +318,10 @@ func setupControllers(mgr ctrl.Manager, runtimeConfig config.RuntimeConfig, cert
 		setupLog.Info("certs ready")
 		if err := apiwebhook.SetupModelAdapterWebhook(mgr); err != nil {
 			setupLog.Error(err, "unable to setup webhook", "webhook", "ModelAdapter")
+			os.Exit(1)
+		}
+		if err := apiwebhook.SetupKVCacheWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to setup webhook", "webhook", "KVCache")
 			os.Exit(1)
 		}
 	}

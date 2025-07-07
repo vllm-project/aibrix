@@ -28,9 +28,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
-var (
-	RouterThroughput types.RoutingAlgorithm = "throughput"
-)
+const RouterThroughput types.RoutingAlgorithm = "throughput"
 
 func init() {
 	Register(RouterThroughput, NewThroughputRouter)

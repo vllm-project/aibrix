@@ -27,6 +27,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler"
 	"github.com/vllm-project/aibrix/pkg/controller/rayclusterfleet"
 	"github.com/vllm-project/aibrix/pkg/controller/rayclusterreplicaset"
+	"github.com/vllm-project/aibrix/pkg/controller/roleset"
+	"github.com/vllm-project/aibrix/pkg/controller/stormservice"
 	"github.com/vllm-project/aibrix/pkg/features"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -73,6 +75,12 @@ func Initialize(mgr manager.Manager) error {
 	if features.IsControllerEnabled(features.KVCacheController) {
 		controllerAddFuncs = append(controllerAddFuncs, kvcache.Add)
 	}
+
+	if features.IsControllerEnabled(features.StormServiceController) {
+		controllerAddFuncs = append(controllerAddFuncs, roleset.Add)
+		controllerAddFuncs = append(controllerAddFuncs, stormservice.Add)
+	}
+
 	return nil
 }
 

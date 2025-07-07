@@ -24,6 +24,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+var (
+	RayClusterIdentifier      string = "ray.io/is-ray-node"
+	RayClusterIdentifierYes   string = "yes"
+	RayClusterNodeType        string = "ray.io/node-type"
+	ReyClusterFleetIdentifier string = getReyClusterFleetIdentifier()
+)
+
+func getReyClusterFleetIdentifier() string {
+	return LoadEnv("AIBRIX_POD_RAYCLUSTERFLEET_LABEL", "orchestration.aibrix.ai/raycluster-fleet-name")
+}
+
 // IsRayClusterReady returns true if a RayCluster is ready; false otherwise.
 func IsRayClusterReady(cluster *rayclusterv1.RayCluster) bool {
 	return IsRayClusterStateReady(cluster.Status)
