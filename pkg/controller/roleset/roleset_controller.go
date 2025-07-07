@@ -40,7 +40,7 @@ import (
 
 const (
 	ControllerName            = "roleset-controller"
-	RoleSetFinalizer          = "roleset-finalizer"
+	RoleSetFinalizer          = "orchestration.aibrix.ai/roleset-finalizer"
 	DefaultRequeueAfter       = 15 * time.Second
 	PodBurst                  = 500
 	PodOperationInitBatchSize = 16

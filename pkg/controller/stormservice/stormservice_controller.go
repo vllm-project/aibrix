@@ -40,7 +40,7 @@ const (
 	ControllerName              = "stormservice-controller"
 	DefaultRequeueAfter         = 15 * time.Second
 	DefaultRevisionHistoryLimit = 10
-	StormServiceFinalizer       = "stormservice-finalizer"
+	StormServiceFinalizer       = "orchestration.aibrix.ai/stormservice-finalizer"
 )
 
 // controllerKind contains the schema.GroupVersionKind for this controller type.
