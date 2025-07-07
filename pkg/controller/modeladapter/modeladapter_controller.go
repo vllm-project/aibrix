@@ -396,7 +396,7 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 	if r.inconsistentModelAdapterStatus(oldInstance.Status, instance.Status) {
 		condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionTrue,
 			ModelAdapterAvailable, fmt.Sprintf("ModelAdapter %s is ready", klog.KObj(instance)))
-		if err = r.updateStatus(ctx, instance, condition); err != nil {
+		if err := r.updateStatus(ctx, instance, condition); err != nil {
 			return reconcile.Result{}, fmt.Errorf("update modelAdapter status error: %v", err)
 		}
 	}
@@ -622,6 +622,7 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 		}
 
 		if targetPod.DeletionTimestamp != nil {
+			klog.V(4).Infof("Skipping pod %s/%s because it is being deleted", targetPod.Namespace, targetPod.Name)
 			continue
 		}
 
