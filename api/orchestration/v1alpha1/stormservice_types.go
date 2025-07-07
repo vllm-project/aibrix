@@ -116,6 +116,9 @@ type StormServiceStatus struct {
 	// uses this field as a collision avoidance mechanism when it needs to create the name for the newest ControllerRevision.
 	// +optional
 	CollisionCount *int32 `json:"collisionCount,omitempty"`
+
+	// The label selector information of the pods belonging to the StormService object.
+	ScalingTargetSelector string `json:"scalingTargetSelector,omitempty"`
 }
 
 // These are valid conditions of a stormService.
@@ -155,6 +158,7 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+//+kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.scalingTargetSelector
 
 // StormService is the Schema for the stormservices API
 type StormService struct {

@@ -3939,6 +3939,8 @@ spec:
               replicas:
                 format: int32
                 type: integer
+              scalingTargetSelector:
+                type: string
               updateRevision:
                 type: string
               updatedReadyReplicas:
@@ -3952,4 +3954,8 @@ spec:
     served: true
     storage: true
     subresources:
+      scale:
+        labelSelectorPath: .status.scalingTargetSelector
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.replicas
       status: {}
