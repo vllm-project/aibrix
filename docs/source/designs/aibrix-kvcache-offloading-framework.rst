@@ -1,8 +1,8 @@
-.. _kvcache-offloading-framework:
+.. _aibrix_kvcache-offloading-framework:
 
-============================
-KVCache Offloading Framework
-============================
+===================================
+AIBrix KVCache Offloading Framework
+===================================
 
 The rising demand for large language models has intensified the need for efficient memory management and caching to optimize inference performance and reduce costs. In multi-round use cases like chatbots and agent-based systems, overlapping token sequences lead to redundant computations during the prefill phase, wasting resources and limiting throughput.
 
@@ -18,6 +18,25 @@ With AIBrix v0.3.0, we introduce a **production-ready KVCache Offloading Framewo
 **Figure 1. AIBrix KVCache Offloading Framework**
 
 As shown in Figure 1, on the data plane, it integrates tightly with inference engines (e.g., vLLM) via *AIBrix Offloading Connector*, which employs optimized CUDA kernels to significantly accelerate data movement between GPU and CPU. For memory scalability, its multi-tiered cache manager dynamically balances workloads across storage layers, alleviating GPU memory capacity limits while minimizing latency penalties. The framework supports pluggable eviction policies (e.g., LRU, `S3FIFO <https://blog.jasony.me/system/cache/2023/08/01/s3fifo>`_) and diverse backend storage options (e.g., `InfiniStore <https://github.com/bytedance/InfiniStore>`_), enabling selective KV cache offloading to reduce network and PCIe contention. Crucially, its cache placement module can coordinate with the centralized distributed KV cache cluster manager to maximize global KV cache utilization. This enables cross-engine KV reuse and ensures cluster-wide resource efficiency, transforming isolated KV cache instances into a scalable, shared KV cache infrastructure.
+
+L1 Engine DRAM Cache Management
+-------------------------------
+
+The growing demands of modern models and increasing context lengths in LLM inference have led to KV caches consuming progressively more GPU memory, pushing against the hardware limits of even the most advanced GPUs. Recent systems like `Dynamo <https://github.com/ai-dynamo/dynamo>`_, `LMCache <https://github.com/LMCache/LMCache>`_, and `MoonCake <https://github.com/kvcache-ai/Mooncake>`_ have developed solutions that offload KV cache to external memory hierarchies, spanning from CPU memory to SSDs. :ref:`kvcache-offloading` supports the offloading of KV cache to CPU memory as well by only enabling its DRAM-backed ``L1Cache``. While this approach does not enable KV cache sharing across multiple engines, it eliminates the complexity of distributed KV cache setup and configuration. More importantly, by leveraging the significantly larger capacity of CPU memory, this method delivers substantial performance gains —- making it an ideal solution for use cases that prioritize scalable KV cache capacity over cross-engine KV reuse.
+
+
+L2 Distributed KVCache and Cross-Engine KV Reuse
+------------------------------------------------
+
+The growing demand for large language models has significantly increased the need for expansive KV cache capacity. While CPU memory offloading effectively addresses moderate scaling needs, production environments handling massive-scale, dynamic workloads require even greater scalability -- particularly when memory needs exceed single-node capacities. To address this, AIBrix enables distributed KV cache services as its ``L2Cache`` backends, which can scale horizontally across multiple nodes to meet capacity demands.
+
+In the meantime, as LLM deployments scale across multiple engines in the cluster, the redundancy of KV caches across engines introduces substantial inefficiencies. Repeated computations of common prompt prefixes waste GPU cycles and HBM bandwidth. AIBrix solves this challenge by enabling efficient **cross-engine KV reuse** through a high-performance, shared distributed KV cache, optimizing resource utilization at scale.
+
+.. figure:: ../assets/images/aibrix-infinistore-arch-overview.png
+  :alt: aibrix-infinistore-arch-overview
+  :width: 100%
+  :align: center
+
 
 Adding New KVCache Backends
 ---------------------------
