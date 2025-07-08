@@ -26,12 +26,15 @@ import (
 )
 
 func Test_PrefixHashTableE2E(t *testing.T) {
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
+	prefixCacheBlockSize = 4
+	
 	cache := NewPrefixHashTable()
 	model := "m1"
 	model2 := "m2"
 	targetPod := "p1"
 	targetPod2 := "p2"
-	prefixCacheBlockSize = 4
 
 	matchedPods, prefixHashes := cache.MatchPrefix([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9}, model, getReadyPods())
 	assert.Equal(t, 0, len(matchedPods))
@@ -119,8 +122,10 @@ func getReadyPods() map[string]struct{} {
 	}
 }
 
-func Test_HashChaining(t *testing.T) {
+func TestHashChaining(t *testing.T) {
 	// Test that hash chaining works correctly
+	originalBlockSize := prefixCacheBlockSize
+	defer func() { prefixCacheBlockSize = originalBlockSize }()
 	prefixCacheBlockSize = 4
 	cache := NewPrefixHashTable()
 

@@ -141,11 +141,14 @@ func matchPods(blockPods map[string]time.Time, readyPods map[string]struct{}, pr
 }
 
 func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
-	prefixHashes := []uint64{}
+	numBlocks := len(tokens) / prefixCacheBlockSize
+	prefixHashes := make([]uint64, 0, numBlocks)
 	digest := xxhash.NewWithSeed(seed)
 
 	// Use seed as the initial parent hash (equivalent to NONE_HASH in Python)
 	parentHash := seed
+
+	var parentHashBytes [8]byte
 
 	for i := 0; i < len(tokens); i += prefixCacheBlockSize {
 		end := i + prefixCacheBlockSize
@@ -158,9 +161,8 @@ func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
 		digest.ResetWithSeed(seed)
 
 		// Write parent hash first (as 8 bytes)
-		parentHashBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(parentHashBytes, parentHash)
-		_, _ = digest.Write(parentHashBytes)
+		binary.LittleEndian.PutUint64(parentHashBytes[:], parentHash)
+		_, _ = digest.Write(parentHashBytes[:])
 
 		// Write current block tokens
 		_, _ = digest.Write(tokens[i:end])
