@@ -29,7 +29,7 @@ func Test_PrefixHashTableE2E(t *testing.T) {
 	originalBlockSize := prefixCacheBlockSize
 	defer func() { prefixCacheBlockSize = originalBlockSize }()
 	prefixCacheBlockSize = 4
-	
+
 	cache := NewPrefixHashTable()
 	model := "m1"
 	model2 := "m2"
