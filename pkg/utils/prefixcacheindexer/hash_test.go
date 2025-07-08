@@ -118,3 +118,33 @@ func getReadyPods() map[string]struct{} {
 		"p3": {},
 	}
 }
+
+func Test_HashChaining(t *testing.T) {
+	// Test that hash chaining works correctly
+	prefixCacheBlockSize = 4
+	cache := NewPrefixHashTable()
+
+	// Same prefix should produce same hashes
+	tokens1 := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	tokens2 := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	hashes1 := cache.GetPrefixHashes(tokens1)
+	hashes2 := cache.GetPrefixHashes(tokens2)
+	assert.Equal(t, hashes1, hashes2)
+
+	// Different prefixes should produce different hashes
+	tokens3 := []byte{1, 2, 3, 4, 5, 6, 7, 9} // Last byte different
+	hashes3 := cache.GetPrefixHashes(tokens3)
+	assert.NotEqual(t, hashes1[1], hashes3[1]) // Second block should be different
+
+	// First block same, but second block different should affect all subsequent
+	tokens4 := []byte{1, 2, 3, 4, 9, 10, 11, 12} // Second block different
+	hashes4 := cache.GetPrefixHashes(tokens4)
+	assert.Equal(t, hashes1[0], hashes4[0])    // First block should be same
+	assert.NotEqual(t, hashes1[1], hashes4[1]) // Second block should be different
+
+	// Verify hash chaining - changing early blocks affects later ones
+	tokens5 := []byte{0, 2, 3, 4, 5, 6, 7, 8} // First byte different
+	hashes5 := cache.GetPrefixHashes(tokens5)
+	assert.NotEqual(t, hashes1[0], hashes5[0]) // First block different
+	assert.NotEqual(t, hashes1[1], hashes5[1]) // Second block also different due to chaining
+}

@@ -17,6 +17,7 @@ limitations under the License.
 package prefixcacheindexer
 
 import (
+	"encoding/binary"
 	"math/rand"
 	"sync"
 	"time"
@@ -142,14 +143,34 @@ func matchPods(blockPods map[string]time.Time, readyPods map[string]struct{}, pr
 func getPrefixHashes(seed uint64, tokens []byte) []uint64 {
 	prefixHashes := []uint64{}
 	digest := xxhash.NewWithSeed(seed)
+
+	// Use seed as the initial parent hash (equivalent to NONE_HASH in Python)
+	parentHash := seed
+
 	for i := 0; i < len(tokens); i += prefixCacheBlockSize {
 		end := i + prefixCacheBlockSize
 		if end > len(tokens) {
+			// Don't hash incomplete blocks
 			break
 		}
-		_, _ = digest.Write(tokens[0:end])
-		prefixHashes = append(prefixHashes, digest.Sum64())
+
+		// Reset digest for new block
 		digest.ResetWithSeed(seed)
+
+		// Write parent hash first (as 8 bytes)
+		parentHashBytes := make([]byte, 8)
+		binary.LittleEndian.PutUint64(parentHashBytes, parentHash)
+		_, _ = digest.Write(parentHashBytes)
+
+		// Write current block tokens
+		_, _ = digest.Write(tokens[i:end])
+
+		// Compute hash for this block
+		currentHash := digest.Sum64()
+		prefixHashes = append(prefixHashes, currentHash)
+
+		// Update parent hash for next iteration
+		parentHash = currentHash
 	}
 	return prefixHashes
 }
