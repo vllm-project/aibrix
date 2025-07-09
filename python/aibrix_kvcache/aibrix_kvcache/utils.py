@@ -15,6 +15,7 @@
 import os
 import time
 from contextlib import contextmanager
+from threading import Lock
 
 import torch
 
@@ -108,3 +109,14 @@ def human_readable_bytes(size: float) -> str:
         return f"{size} {units[unit_index]}"
     else:
         return f"{size:.4f} {units[unit_index]}"
+
+
+@contextmanager
+def conditional_lock(lock: Lock, should_lock: bool):
+    if should_lock:
+        lock.acquire()
+    try:
+        yield
+    finally:
+        if should_lock:
+            lock.release()
