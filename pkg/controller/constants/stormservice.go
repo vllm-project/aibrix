@@ -34,4 +34,5 @@ const (
 	RoleSetIndexEnvKey     = "ROLESET_INDEX"
 	RoleNameEnvKey         = "ROLE_NAME"
 	RoleReplicaIndexEnvKey = "ROLE_REPLICA_INDEX"
+	RoleTemplateHashEnvKey = "ROLE_TEMPLATE_HASH"
 )
