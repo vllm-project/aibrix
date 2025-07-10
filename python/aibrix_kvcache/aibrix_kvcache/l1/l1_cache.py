@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import logging
+from threading import Lock
 from typing import Iterator, Sequence, Tuple
 
 import torch
@@ -24,7 +25,7 @@ from ..memory import MemoryRegion, TensorPoolAllocator
 from ..metrics import L1CacheMetrics, MeasurableBase, MetricRecorder
 from ..spec import KVCacheBlockSpec
 from ..status import Status, StatusCodes
-from ..utils import cpu_perf_timer, human_readable_bytes
+from ..utils import conditional_lock, cpu_perf_timer, human_readable_bytes
 from .eviction_policy import BaseEvictionPolicy, Functor
 
 logger = getLogger(__name__)
@@ -41,6 +42,7 @@ class L1Cache(MeasurableBase):
         on_evict: Functor | None = None,
         on_hot_access: Functor | None = None,
         metrics: L1CacheMetrics | None = None,
+        multi_threading: bool = False,
     ) -> None:
         """Create a cache object.
         Args:
@@ -55,6 +57,8 @@ class L1Cache(MeasurableBase):
             on_hot_access(Functor): The callback function to call when a
                                     cache item becomes hot. Defaults to None.
             metrics (L1CacheMetrics): The metrics of the cache.
+            multi_threading (bool): Whether to use kv cache in multi-threading
+                                    mode. Defaults to False.
         """
         super().__init__(metrics)
         self.capacity_nbytes: int = capacity_nbytes
@@ -65,6 +69,8 @@ class L1Cache(MeasurableBase):
         self.block_ntokens: int = self.block_spec.block_ntokens
         self.block_nbytes: int = self.block_spec.block_nbytes
         self.block_shape_token_dim: int = self.block_spec.block_shape_token_dim
+        self.multi_threading: bool = multi_threading
+        self.lock = Lock()
 
         self._eviction_policy: BaseEvictionPolicy = BaseEvictionPolicy.create(
             eviction_policy,
@@ -118,6 +124,20 @@ class L1Cache(MeasurableBase):
         Returns:
             The memory regions.
         """
+        with conditional_lock(self.lock, self.multi_threading):
+            return self._allocate(sizes)
+
+    def _allocate(
+        self,
+        sizes: Sequence[int],
+    ) -> Status[Sequence[MemoryRegion]]:
+        """Allocate a set of memory regions.
+
+        Args:
+            sizes: The sizes of the memory regions.
+        Returns:
+            The memory regions.
+        """
         if self._recorder:
             self._recorder.trace_usage(  # type: ignore[attr-defined]
                 MetricRecorder.Resource.L1_ALLOCATOR,
@@ -157,12 +177,13 @@ class L1Cache(MeasurableBase):
             return Status(StatusCodes.INVALID)
 
         total = 0
-        for key in self._cache_block_keys(prefix, tokens):
-            cache_key = TokenCacheKey(*key)
-            if cache_key in self._eviction_policy:
-                total += 1
-            else:
-                break
+        with conditional_lock(self.lock, self.multi_threading):
+            for key in self._cache_block_keys(prefix, tokens):
+                cache_key = TokenCacheKey(*key)
+                if cache_key in self._eviction_policy:
+                    total += 1
+                else:
+                    break
         return Status.ok(total) if total > 0 else Status(StatusCodes.NOT_FOUND)
 
     @nvtx_range("put", "kv_cache_ol.L1Cache")
@@ -349,19 +370,22 @@ class L1Cache(MeasurableBase):
         assert len(kv_mrs) == num_blocks
 
         bi = 0
-        for block_prefix, block_tokens in self._cache_block_keys(
-            prefix, tokens[: num_blocks * self.block_ntokens]
-        ):
-            if bi >= len(kv_mrs):
-                break
-            block_mr = kv_mrs[bi]
-            if not MemoryRegion.use_compact_layout():
-                block_mr.pack_tokens(prefix=block_prefix, tokens=block_tokens)
-            block_mr.seal()
-            block_key = TokenCacheKey(block_prefix, block_tokens)
-            if not self._eviction_policy.put(block_key, block_mr).is_ok():
-                break
-            bi += 1
+        with conditional_lock(self.lock, self.multi_threading):
+            for block_prefix, block_tokens in self._cache_block_keys(
+                prefix, tokens[: num_blocks * self.block_ntokens]
+            ):
+                if bi >= len(kv_mrs):
+                    break
+                block_mr = kv_mrs[bi]
+                if not MemoryRegion.use_compact_layout():
+                    block_mr.pack_tokens(
+                        prefix=block_prefix, tokens=block_tokens
+                    )
+                block_mr.seal()
+                block_key = TokenCacheKey(block_prefix, block_tokens)
+                if not self._eviction_policy.put(block_key, block_mr).is_ok():
+                    break
+                bi += 1
 
         return Status.ok(bi)
 
@@ -385,12 +409,13 @@ class L1Cache(MeasurableBase):
             return Status(StatusCodes.INVALID)
 
         mrs = []
-        for key in self._cache_block_keys(prefix, tokens):
-            status = self._eviction_policy.get(TokenCacheKey(*key))
-            if status.is_ok():
-                mrs.append(status.value)
-            else:
-                break
+        with conditional_lock(self.lock, self.multi_threading):
+            for key in self._cache_block_keys(prefix, tokens):
+                status = self._eviction_policy.get(TokenCacheKey(*key))
+                if status.is_ok():
+                    mrs.append(status.value)
+                else:
+                    break
 
         if len(mrs) == 0:
             return Status(StatusCodes.NOT_FOUND)
@@ -409,8 +434,9 @@ class L1Cache(MeasurableBase):
         if prefix is not None and len(prefix) % self.block_ntokens != 0:
             return Status(StatusCodes.INVALID)
 
-        for key in self._cache_block_keys(prefix, tokens):
-            self._eviction_policy.delete(TokenCacheKey(*key))
+        with conditional_lock(self.lock, self.multi_threading):
+            for key in self._cache_block_keys(prefix, tokens):
+                self._eviction_policy.delete(TokenCacheKey(*key))
         return Status.ok()
 
     def _cache_block_keys(
