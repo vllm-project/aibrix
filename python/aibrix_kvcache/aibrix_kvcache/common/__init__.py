@@ -14,7 +14,6 @@
 
 from .async_base import AsyncBase
 from .cached_pyobject import CachedPyObjectBase
-from .nvtx import nvtx_range
 from .object_pool import ObjectPool
 
-__all__ = ["AsyncBase", "nvtx_range", "ObjectPool", "CachedPyObjectBase"]
+__all__ = ["AsyncBase", "ObjectPool", "CachedPyObjectBase"]
