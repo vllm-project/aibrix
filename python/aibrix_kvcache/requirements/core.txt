@@ -17,6 +17,9 @@ zstandard
 nvtx
 torch==2.7.0
 
+# profiling
+pyroscope-io
+
 # vendor
 rocksdict
 

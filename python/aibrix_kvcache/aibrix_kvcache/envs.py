@@ -124,6 +124,10 @@ if TYPE_CHECKING:
     # for NVSHMEM. It must be a valid CIDR.
     AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE: str = "::/0"
 
+    # Profiling Env Vars
+    AIBRIX_KV_CACHE_OL_PROFILING_ENABLED: bool = False
+    AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS: str = "http://0.0.0.0:4040"
+
 # The begin-* and end* here are used by the documentation generator
 # to extract the used env vars.
 
@@ -343,6 +347,16 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE": lambda: (
         os.getenv(
             "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE", "::/0"
+        ).strip()
+    ),
+    # ==================== Profiling Env Vars ====================
+    "AIBRIX_KV_CACHE_OL_PROFILING_ENABLED": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_PROFILING_ENABLED", "0").strip().lower()
+        in ("1", "true")
+    ),
+    "AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS": lambda: (
+        os.getenv(
+            "AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS", "http://0.0.0.0:4040"
         ).strip()
     ),
 }
