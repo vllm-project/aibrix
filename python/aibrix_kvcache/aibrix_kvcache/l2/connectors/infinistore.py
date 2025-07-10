@@ -25,7 +25,7 @@ from ...common import AsyncBase
 from ...common.absl_logging import getLogger
 from ...memory import MemoryRegion
 from ...status import Status, StatusCodes
-from ...transport import AddrFamily, DeviceRequest, GIDType, RDMATransport
+from ...transport import HAS_RDMA_TRANSPORT_SUPPORT
 from . import Connector, ConnectorFeature
 
 logger = getLogger(__name__)
@@ -72,52 +72,67 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
             )
             return cls(config, conn_id, executor)
 
-        # RDMA
-        addr_family = (
-            AddrFamily.AF_INET if ipv4(host_addr) else AddrFamily.AF_INET6
-        )
-        gid_type = GIDType.ROCE_V2 if link_type != "IB" else GIDType.IB_ROCE_V1
-        if len(dev_list) == 0:
-            logger.info(
-                "AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST is not set, "
-                "trying to auto-detect visible devices"
+        if HAS_RDMA_TRANSPORT_SUPPORT:
+            from ...transport.rdma import (
+                AddrFamily,
+                DeviceRequest,
+                GIDType,
+                RDMATransport,
             )
-            addr_range = envs.AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE
-            rdma = RDMATransport(
-                addr_range=addr_range,
-                addr_family=addr_family,
-                gid_type=gid_type,
-            )
-            status = rdma.get_device_list()
-            assert status.is_ok(), f"Failed to get device list: {status}"
 
-            devices = status.get()
-            for d in devices:
-                dev_list.append(f"{d.device_name}:{d.port_attrs.gid_index}")
-        else:
-            requests: List[DeviceRequest] = []
-            for dev_name in dev_list:
-                if ":" in dev_name:
-                    splits = dev_name.split(":")
-                    request = DeviceRequest(
-                        device_name=splits[0],
-                        gid_index=int(splits[1]),
-                    )
-                else:
-                    request = DeviceRequest(device_name=dev_name)
-                requests.append(request)
-            rdma = RDMATransport(
-                request=requests,
-                addr_family=addr_family,
-                gid_type=gid_type,
+            # RDMA
+            addr_family = (
+                AddrFamily.AF_INET if ipv4(host_addr) else AddrFamily.AF_INET6
             )
-            status = rdma.get_device_list()
-            # Only update dev_list if we got a new list
-            if status.is_ok():
+            gid_type = (
+                GIDType.ROCE_V2 if link_type != "IB" else GIDType.IB_ROCE_V1
+            )
+            if len(dev_list) == 0:
+                logger.info(
+                    "AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST is not "
+                    "set, trying to auto-detect visible devices"
+                )
+                addr_range = envs.AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE
+                rdma = RDMATransport(
+                    addr_range=addr_range,
+                    addr_family=addr_family,
+                    gid_type=gid_type,
+                )
+                status = rdma.get_device_list()
+                assert status.is_ok(), f"Failed to get device list: {status}"
+
                 devices = status.get()
-                dev_list.clear()
                 for d in devices:
                     dev_list.append(f"{d.device_name}:{d.port_attrs.gid_index}")
+            else:
+                requests: List[DeviceRequest] = []
+                for dev_name in dev_list:
+                    if ":" in dev_name:
+                        splits = dev_name.split(":")
+                        request = DeviceRequest(
+                            device_name=splits[0],
+                            gid_index=int(splits[1]),
+                        )
+                    else:
+                        request = DeviceRequest(device_name=dev_name)
+                    requests.append(request)
+                rdma = RDMATransport(
+                    request=requests,
+                    addr_family=addr_family,
+                    gid_type=gid_type,
+                )
+                status = rdma.get_device_list()
+                # Only update dev_list if we got a new list
+                if status.is_ok():
+                    devices = status.get()
+                    dev_list.clear()
+                    for d in devices:
+                        dev_list.append(
+                            f"{d.device_name}:{d.port_attrs.gid_index}"
+                        )
+        else:
+            assert len(dev_list) > 0, "RDMA auto-detect is not supported, "
+            "AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST MUST be set"
 
         num_visible_gpus = torch.cuda.device_count()
 
