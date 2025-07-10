@@ -1,5 +1,6 @@
 # Git Commit Hash
 GIT_COMMIT_HASH ?= $(shell git rev-parse HEAD)
+IMAGE_TAG ?= ${GIT_COMMIT_HASH}  # Use git commit hash as default image tag
 
 # Image URL to use all building/pushing image targets
 AIBRIX_CONTAINER_REGISTRY_NAMESPACE ?= aibrix
@@ -9,7 +10,8 @@ AIBRIX_IMAGES := $(foreach img,$(IMAGES),$(AIBRIX_CONTAINER_REGISTRY_NAMESPACE)/
 
 
 # note: this is not being used, only for tracking some commands we have not updated yet.
-IMG ?= ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/controller-manager:${GIT_COMMIT_HASH}
+# TODO: Remove this line when all commands are updated to use IMAGE_TAG
+IMG ?= ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/controller-manager:${IMAGE_TAG}
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.29.0
@@ -152,12 +154,12 @@ run: manifests generate fmt vet ## Run a controller from your host.
 IS_MAIN_BRANCH ?= true
 
 define build_and_tag
-	$(CONTAINER_TOOL) build -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} -f ${DOCKERFILE_PATH}/$(2) .
-	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) tag ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):nightly; fi
+	$(CONTAINER_TOOL) build -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG} -f ${DOCKERFILE_PATH}/$(2) .
+	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) tag ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):nightly; fi
 endef
 
 define push_image
-	$(CONTAINER_TOOL) push ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${GIT_COMMIT_HASH}
+	$(CONTAINER_TOOL) push ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG}
 	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) push ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):nightly; fi
 endef
 
