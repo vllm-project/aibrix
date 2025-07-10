@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_S3FIFO_SMALL_FIFO_CAPACITY_RATIO: float = 0.3
 
     AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND: str = ""
-    AIBRIX_KV_CACHE_OL_L2_CACHE_NAMESPACE: str = "dummy"
+    AIBRIX_KV_CACHE_OL_L2_CACHE_NAMESPACE: str = "aibrix"
     AIBRIX_KV_CACHE_OL_L2_CACHE_COMPRESSION: str = ""
     AIBRIX_KV_CACHE_OL_L2_CACHE_OP_BATCH: int = 32
     AIBRIX_KV_CACHE_OL_L2_CACHE_PER_TOKEN_TIMEOUT_MS: int = 20
@@ -303,7 +303,7 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
         .upper()
     ),
     "AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT": lambda: int(
-        os.getenv("AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT", "12345")
+        os.getenv("AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT", "1")
     ),
     "AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE": lambda: (
         os.getenv(
