@@ -235,7 +235,7 @@ For a detailed introduction, refer to the [README.md](../../app/README.md).
 Deploy using the following commands:
 
 ```shell
-kubectl apply -f docs/development/app/deployment.yaml
+kubectl create -k development/app/config/simulator
 kubectl get deployments --all-namespaces |grep llama2
 ```
 
@@ -317,7 +317,7 @@ For a detailed introduction, refer to the [README.md](../../app/README.md).
 Deploy using the following commands:
 
 ```shell
-kubectl apply -f docs/development/app/deployment.yaml
+kubectl create -k development/app/config/simulator
 kubectl get deployments --all-namespaces |grep llama2
 ```
 
