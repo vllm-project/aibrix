@@ -12,6 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .rdma import AddrFamily, DeviceRequest, GIDType, RDMATransport
 
-__all__ = ["AddrFamily", "DeviceRequest", "GIDType", "RDMATransport"]
+# A global flag to indicate whether current platform has RDMA transport support.
+HAS_RDMA_TRANSPORT_SUPPORT = True
+
+__all__ = ["HAS_RDMA_TRANSPORT_SUPPORT"]
+
+try:
+    from .rdma import (  # noqa: F401
+        AddrFamily,
+        DeviceRequest,
+        GIDType,
+        RDMATransport,
+    )
+
+    __all__.extend(["AddrFamily", "DeviceRequest", "GIDType", "RDMATransport"])
+except ImportError:
+    HAS_RDMA_TRANSPORT_SUPPORT = False
