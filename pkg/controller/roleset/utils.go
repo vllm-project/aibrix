@@ -84,8 +84,9 @@ func RemoveRoleSetCondition(status *orchestrationv1alpha1.RoleSetStatus, condTyp
 }
 
 var (
-	ContainerInjectEnv   = sets.NewString(constants.StormServiceNameEnvKey, constants.RoleSetNameEnvKey, constants.RoleSetIndexEnvKey, constants.RoleNameEnvKey, constants.RoleReplicaIndexEnvKey)
+	ContainerInjectEnv   = sets.NewString(constants.RoleTemplateHashEnvKey, constants.StormServiceNameEnvKey, constants.RoleSetNameEnvKey, constants.RoleSetIndexEnvKey, constants.RoleNameEnvKey, constants.RoleReplicaIndexEnvKey)
 	roleSetInheritLabels = map[string]bool{
+		// TODO: move to const
 		"name":           true,
 		"previous-owner": true,
 	}
@@ -135,33 +136,75 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 
 	// inject container env
 	for i := range pod.Spec.Containers {
-		var env []v1.EnvVar
-		for j := range pod.Spec.Containers[i].Env {
-			if ContainerInjectEnv.Has(pod.Spec.Containers[i].Env[j].Name) {
-				continue
-			}
-			env = append(env, pod.Spec.Containers[i].Env[j])
+		injectContainerEnvVars(
+			&pod.Spec.Containers[i],
+			roleSet,
+			role,
+			roleIndex,
+			templateHash,
+		)
+	}
+}
+
+// injectContainerEnvVars injects env variables into container.
+func injectContainerEnvVars(
+	container *v1.Container,
+	roleSet *orchestrationv1alpha1.RoleSet,
+	role *orchestrationv1alpha1.RoleSpec,
+	roleIndex *int,
+	templateHash string,
+) {
+	envMap := make(map[string]v1.EnvVar, len(container.Env)+6)
+
+	// copy existing env
+	for _, e := range container.Env {
+		if !ContainerInjectEnv.Has(e.Name) {
+			envMap[e.Name] = e
 		}
-		env = append(env, v1.EnvVar{
-			Name:  constants.StormServiceNameEnvKey,
-			Value: roleSet.Labels[constants.StormServiceNameLabelKey],
-		}, v1.EnvVar{
-			Name:  constants.RoleSetNameEnvKey,
-			Value: roleSet.Name,
-		}, v1.EnvVar{
-			Name:  constants.RoleSetIndexEnvKey,
-			Value: roleSet.Annotations[constants.RoleSetIndexAnnotationKey],
-		}, v1.EnvVar{
-			Name:  constants.RoleNameEnvKey,
-			Value: role.Name,
-		})
-		if roleIndex != nil {
-			env = append(env, v1.EnvVar{
-				Name:  constants.RoleReplicaIndexEnvKey,
-				Value: fmt.Sprintf("%d", *roleIndex),
-			})
+	}
+
+	envMap[constants.StormServiceNameEnvKey] = v1.EnvVar{
+		Name:  constants.StormServiceNameEnvKey,
+		Value: roleSet.Labels[constants.StormServiceNameLabelKey],
+	}
+
+	envMap[constants.RoleSetNameEnvKey] = v1.EnvVar{
+		Name:  constants.RoleSetNameEnvKey,
+		Value: roleSet.Name,
+	}
+
+	envMap[constants.RoleSetIndexEnvKey] = v1.EnvVar{
+		Name:  constants.RoleSetIndexEnvKey,
+		Value: roleSet.Annotations[constants.RoleSetIndexAnnotationKey],
+	}
+
+	envMap[constants.RoleNameEnvKey] = v1.EnvVar{
+		Name:  constants.RoleNameEnvKey,
+		Value: role.Name,
+	}
+
+	envMap[constants.RoleTemplateHashEnvKey] = v1.EnvVar{
+		Name:  constants.RoleTemplateHashEnvKey,
+		Value: templateHash,
+	}
+
+	if roleIndex != nil {
+		envMap[constants.RoleReplicaIndexEnvKey] = v1.EnvVar{
+			Name:  constants.RoleReplicaIndexEnvKey,
+			Value: fmt.Sprintf("%d", *roleIndex),
 		}
-		pod.Spec.Containers[i].Env = env
+	}
+	keys := make([]string, 0, len(envMap))
+	for k := range envMap {
+		keys = append(keys, k)
+	}
+	// sort the env by name before adding them to the container spec
+	// to ensure deterministic output and prevent unnecessary pod updates
+	sort.Strings(keys)
+
+	container.Env = make([]v1.EnvVar, 0, len(envMap))
+	for _, k := range keys {
+		container.Env = append(container.Env, envMap[k])
 	}
 }
 

@@ -6,3 +6,4 @@ sphinx-togglebutton==0.3.2
 sphinxemoji==0.3.1
 sphinx-autodoc-typehints==2.4.1
 sphinx_design==0.6.1
+sphinxcontrib-mermaid==1.0.0

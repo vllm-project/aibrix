@@ -1,8 +1,8 @@
 .. _heterogeneous-gpu:
 
-==============================================
+==========================================
 Heterogeneous GPU Inference (Experimental)
-==============================================
+==========================================
 
 Heterogeneous GPU Inference is a feature that enables users to utilize different types of GPUs for deploying the same model. This feature addresses two primary challenges associated with Large Language Model (LLM) inference: (1) As the demand for large-scale model inference increases, ensuring consistent GPU availability has become a challenge, particularly within regions where identical GPU types are often unavailable due to capacity constraints. (2) Users may seek to incorporate lower-cost, lower-performance GPUs to reduce overall expenses. 
 

@@ -1,6 +1,6 @@
 
 ```shell
-kubectl apply -f docs/development/app/metadata.yaml
+kubectl apply -f config/metadata/metadata.yaml
 kubectl -n aibrix-system port-forward svc/aibrix-metadata-service 8090:8090 &
 ```
 

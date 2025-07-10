@@ -250,6 +250,9 @@ func (r *StormServiceReconciler) rollout(ctx context.Context, stormService *orch
 		return nil
 	}
 	switch stormService.Spec.UpdateStrategy.Type {
+	case "":
+		// By default use RollingUpdate strategy
+		fallthrough
 	case orchestrationv1alpha1.RollingUpdateStormServiceStrategyType:
 		return r.rollingUpdate(allRoleSets, stormService, currentRevision, updatedRevision)
 	case orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType:
@@ -376,6 +379,10 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 			*utils.NewCondition(orchestrationv1alpha1.StormServiceProgressing, corev1.ConditionTrue, "Processing", ""),
 		}
 	}
+	// support scale sub resources.
+	// TODO: add pod template hash to avoid errors during upgrade.
+	stormService.Status.ScalingTargetSelector = fmt.Sprintf("%s=%s", constants.StormServiceNameLabelKey, stormService.Name)
+
 	if !apiequality.Semantic.DeepEqual(checkpoint, &stormService.Status) {
 		err = utils.UpdateStatus(ctx, r.Scheme, r.Client, stormService)
 		if err != nil {

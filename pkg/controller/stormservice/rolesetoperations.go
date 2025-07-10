@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/klog/v2"
@@ -110,7 +111,12 @@ func (r *StormServiceReconciler) createRoleSet(stormService *orchestrationv1alph
 func (r *StormServiceReconciler) deleteRoleSet(toDelete []*orchestrationv1alpha1.RoleSet) (int, error) {
 	return utils.SlowStartBatch(len(toDelete), ctrlutil.SlowStartInitialBatchSize, func(i int) error {
 		klog.Infof("[rolesetoperation] delete roleset %s", toDelete[i].Name)
-		return r.Client.Delete(context.TODO(), toDelete[i])
+		err := r.Client.Delete(context.TODO(), toDelete[i])
+		if err != nil && apierrors.IsNotFound(err) {
+			// NotFound will be ignored
+			return nil
+		}
+		return err
 	})
 }
 

@@ -4,13 +4,6 @@
 Gateway Routing
 ===============
 
-Gateway is developed as external processing service using envoy's gateway extension policy. Gateway is designed to serve LLM requests and provides features such as dynamic model & lora adapter discovery, user configuration for request count & token usage budgeting, streaming and advanced routing strategies such as prefix-cache aware, heterogeneous GPU hardware. 
-
-.. figure:: ../assets/images/gateway-design.png
-  :alt: gateway-design
-  :width: 70%
-  :align: center
-
 Dynamic Routing
 ---------------
 
