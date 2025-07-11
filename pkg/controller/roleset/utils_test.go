@@ -21,11 +21,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	schedv1alpha1 "github.com/kubewharf/godel-scheduler-api/pkg/apis/scheduling/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 
-	"github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/controller/constants"
 )
 
 func TestGetReadyReplicaCountForRole(t *testing.T) {
@@ -37,11 +39,11 @@ func TestGetReadyReplicaCountForRole(t *testing.T) {
 }
 
 func TestSetAndRemoveRoleSetCondition(t *testing.T) {
-	status := &v1alpha1.RoleSetStatus{}
+	status := &orchestrationv1alpha1.RoleSetStatus{}
 	now := metav1.Now()
 
-	cond := v1alpha1.Condition{
-		Type:               v1alpha1.RoleSetReady,
+	cond := orchestrationv1alpha1.Condition{
+		Type:               orchestrationv1alpha1.RoleSetReady,
 		Status:             corev1.ConditionTrue,
 		Reason:             "AllReplicasReady",
 		LastTransitionTime: &now,
@@ -55,7 +57,7 @@ func TestSetAndRemoveRoleSetCondition(t *testing.T) {
 	assert.Len(t, status.Conditions, 1)
 
 	// Remove condition
-	RemoveRoleSetCondition(status, v1alpha1.RoleSetReady)
+	RemoveRoleSetCondition(status, orchestrationv1alpha1.RoleSetReady)
 	assert.Len(t, status.Conditions, 0)
 }
 
@@ -64,9 +66,9 @@ func TestMaxSurgeAndUnavailable(t *testing.T) {
 	surge := intstrutil.FromString("20%") // should be 2
 	unavail := intstrutil.FromInt(3)      // 3
 
-	role := &v1alpha1.RoleSpec{
+	role := &orchestrationv1alpha1.RoleSpec{
 		Replicas: &replicas,
-		UpdateStrategy: v1alpha1.RoleUpdateStrategy{
+		UpdateStrategy: orchestrationv1alpha1.RoleUpdateStrategy{
 			MaxSurge:       &surge,
 			MaxUnavailable: &unavail,
 		},
@@ -74,6 +76,203 @@ func TestMaxSurgeAndUnavailable(t *testing.T) {
 
 	assert.Equal(t, int32(2), MaxSurge(role))
 	assert.Equal(t, int32(3), MaxUnavailable(role))
+}
+
+func TestRenderStormServicePod_WithRoleIndex(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-role-set",
+			Namespace: "test-ns",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+				"name":                             "test-name",
+				"other-label":                      "should-not-copy",
+			},
+			Annotations: map[string]string{
+				constants.RoleSetIndexAnnotationKey: "1",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "test-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "test-container"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	roleIndex := 0
+	pod := &corev1.Pod{
+		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
+	}
+
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, &roleIndex)
+
+	// Verify labels
+	assert.Equal(t, "test-role-set", pod.Labels[constants.RoleSetNameLabelKey])
+	assert.Equal(t, "test-role", pod.Labels[constants.RoleNameLabelKey])
+	assert.Equal(t, "test-service", pod.Labels[constants.StormServiceNameLabelKey])
+	assert.Equal(t, "0", pod.Labels[constants.RoleReplicaIndexLabelKey])
+	assert.Equal(t, "test-name", pod.Labels["name"])
+	assert.NotContains(t, pod.Labels, "other-label")
+
+	// Verify annotations
+	assert.Equal(t, "1", pod.Annotations[constants.RoleSetIndexAnnotationKey])
+	assert.Equal(t, "0", pod.Annotations[constants.RoleReplicaIndexAnnotationKey])
+
+	// Verify hostname and subdomain
+	assert.Equal(t, pod.Name, pod.Spec.Hostname)
+	assert.Equal(t, pod.Labels[constants.StormServiceNameLabelKey], pod.Spec.Subdomain)
+}
+
+func TestRenderStormServicePod_WithoutRoleIndex(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-role-set",
+			Namespace: "test-ns",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "test-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "test-container"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	pod := &corev1.Pod{
+		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
+	}
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, nil)
+
+	// Verify replica index is not set
+	assert.NotContains(t, pod.Labels, constants.RoleReplicaIndexLabelKey)
+	assert.NotContains(t, pod.Annotations, constants.RoleReplicaIndexAnnotationKey)
+}
+
+func TestRenderStormServicePod_WithPodGroup(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-role-set",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			SchedulingStrategy: orchestrationv1alpha1.SchedulingStrategy{
+				PodGroup: &schedv1alpha1.PodGroupSpec{
+					MinMember: 3,
+				},
+			},
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "test-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "test-container"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	roleIndex := 0
+	pod := &corev1.Pod{
+		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
+	}
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, &roleIndex)
+
+	// Verify pod group labels and annotations
+	assert.Equal(t, "test-role-set", pod.Labels[constants.GodelPodGroupNameAnnotationKey])
+	assert.Equal(t, "test-role-set", pod.Annotations[constants.GodelPodGroupNameAnnotationKey])
+}
+
+func TestRenderStormServicePod_EmptyLabelsAndAnnotations(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-role-set",
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "test-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "test-container"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	pod := &corev1.Pod{}
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, nil)
+
+	// Verify basic labels are set even when roleSet has no labels
+	assert.Equal(t, "test-role-set", pod.Labels[constants.RoleSetNameLabelKey])
+	assert.Equal(t, "test-role", pod.Labels[constants.RoleNameLabelKey])
+	assert.Equal(t, "", pod.Labels[constants.StormServiceNameLabelKey])
+}
+
+func TestRenderStormServicePod_MultipleContainers(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-role-set",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "test-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "container1"},
+								{Name: "container2"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// pod is supposed to be built from the pod template, here, we clone 2 containers from role template.
+	pod := &corev1.Pod{
+		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
+	}
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, nil)
+
+	// Verify all containers get env vars injected
+	assert.Len(t, pod.Spec.Containers, 2)
+	for _, c := range pod.Spec.Containers {
+		assert.Len(t, c.Env, 5)
+	}
 }
 
 func makeReadyPod(name string) *corev1.Pod {
