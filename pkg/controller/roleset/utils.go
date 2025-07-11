@@ -125,6 +125,8 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 	pod.Annotations[constants.RoleSetIndexAnnotationKey] = roleSet.Annotations[constants.RoleSetIndexAnnotationKey]
 	if roleIndex != nil {
 		pod.Annotations[constants.RoleReplicaIndexAnnotationKey] = fmt.Sprintf("%d", *roleIndex)
+		// inject to label as well for routing service discovery (some engines use label selector to find pods only)
+		pod.Labels[constants.RoleReplicaIndexLabelKey] = fmt.Sprintf("%d", *roleIndex)
 	}
 	if roleSet.Spec.SchedulingStrategy.PodGroup != nil {
 		pod.Annotations[constants.GodelPodGroupNameAnnotationKey] = roleSet.Name
