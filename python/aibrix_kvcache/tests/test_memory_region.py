@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+from aibrix_kvcache import TokenListView
 from aibrix_kvcache.memory import MemoryRegion, TensorPoolAllocator
 
 from .conftest import randomize_mrs
@@ -36,11 +37,11 @@ def test_pack_unpack_basic(compact_layout_enabled):
     assert mr.length == expected_mr_nbytes
     mr.block_nbytes = block_nbytes
     randomize_mrs([mr])
-    # mr is not packed with any tokens, should return None, []
+    # mr is not packed with any tokens, should return None, None
     assert mr.unpack_tokens()[0] is None
-    assert len(mr.unpack_tokens()[1]) == 0
+    assert mr.unpack_tokens()[1] is None
     orig_tensor = mr.to_tensor().clone()
-    orig_tokens = tuple(range(16))
+    orig_tokens = TokenListView(tuple(range(16)))
     mr.pack_tokens(tokens=orig_tokens)
     mr.seal()
     prefix_from_mr, tokens_from_mr = mr.unpack_tokens()
@@ -51,8 +52,10 @@ def test_pack_unpack_basic(compact_layout_enabled):
     # check if data is preserved
     assert mr.to_tensor().equal(orig_tensor)
 
-    orig_prefix = tuple(range(128, 128 + 16))
-    orig_tokens = tuple(range(256, 256 + 16))
+    temp = tuple(range(128, 128 + 16)) + tuple(range(256, 256 + 16))
+    all = TokenListView(temp)
+    orig_prefix = all[:16]
+    orig_tokens = all[16:]
     mr.pack_tokens(prefix=orig_prefix, tokens=orig_tokens)
     mr.seal()
     prefix_from_mr, tokens_from_mr = mr.unpack_tokens()
@@ -80,11 +83,11 @@ def test_pack_unpack_max(compact_layout_enabled):
     assert mr.length == expected_mr_nbytes
     mr.block_nbytes = block_nbytes
     randomize_mrs([mr])
-    # mr is not packed with any tokens, should return None, []
+    # mr is not packed with any tokens, should return None, None
     assert mr.unpack_tokens()[0] is None
-    assert len(mr.unpack_tokens()[1]) == 0
+    assert mr.unpack_tokens()[1] is None
     orig_tensor = mr.to_tensor().clone()
-    orig_tokens = tuple(range(max_ntokens))
+    orig_tokens = TokenListView(tuple(range(max_ntokens)))
     mr.pack_tokens(tokens=orig_tokens)
     mr.seal()
     _, tokens_from_mr = mr.unpack_tokens()

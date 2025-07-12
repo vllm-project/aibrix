@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import array
-from typing import Sequence, Tuple
+from typing import Tuple
 
+from ...cache_hashable import TokenListView
 from .key_builder import KeyBuilder
 
 
@@ -27,8 +27,8 @@ class HexKeyBuilder(KeyBuilder):
         return "hex"
 
     def build(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Tuple[Tuple[Tuple[int, ...], bytes], ...]:
+        self, prefix: TokenListView | None, tokens: TokenListView
+    ) -> Tuple[Tuple[TokenListView, bytes], ...]:
         assert prefix is None or len(prefix) % self.block_size == 0
 
         token_size = len(tokens) - len(tokens) % self.block_size
@@ -37,15 +37,18 @@ class HexKeyBuilder(KeyBuilder):
 
         results = []
 
-        all = (tuple(prefix) if prefix is not None else ()) + tuple(tokens)
+        if prefix is not None:
+            all = prefix + tokens
+        else:
+            all = tokens
+
         assert len(all) % self.block_size == 0
         prefix_len = len(prefix) if prefix is not None else 0
 
-        all_bytes = memoryview(array.array("I", all).tobytes())
-        itemsize = array.array("I").itemsize
+        all_bytes = all.memoryview()
         for i in range(0, token_size, self.block_size):
             keys = all[: prefix_len + i + self.block_size]
-            end = (prefix_len + i + self.block_size) * itemsize
+            end = prefix_len + i + self.block_size
             block_hex = all_bytes[:end].hex()
             results.append((keys, block_hex.encode("utf-8")))
 

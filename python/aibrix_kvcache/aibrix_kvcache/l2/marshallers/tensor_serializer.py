@@ -14,10 +14,11 @@
 
 import io
 import struct
-from typing import Sequence, Tuple
+from typing import Tuple
 
 import torch
 
+from ...cache_hashable import TokenListView
 from ...utils import tensor_to_bytes
 from . import BaseMarshaller, Marshaller
 
@@ -27,7 +28,7 @@ class TensorSerializer(BaseMarshaller):
         super().__init__(marshaller)
 
     def _marshal(
-        self, obj: torch.Tensor | Tuple[Sequence[int], torch.Tensor]
+        self, obj: torch.Tensor | Tuple[TokenListView, torch.Tensor]
     ) -> bytes:
         buffer = io.BytesIO()
         if isinstance(obj, torch.Tensor):
@@ -45,7 +46,7 @@ class TensorSerializer(BaseMarshaller):
 
     def _unmarshal(
         self, data: bytes
-    ) -> torch.Tensor | Tuple[Sequence[int], torch.Tensor]:
+    ) -> torch.Tensor | Tuple[TokenListView, torch.Tensor]:
         buffer = io.BytesIO(data)
         have_indices = struct.unpack("i", buffer.read(4))[0]
 
