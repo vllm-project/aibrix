@@ -198,3 +198,241 @@ New KVCache backends can be easily added by implementing the ``Connector`` inter
           raise NotImplementedError
   
 Please refer to the `existing connectors <https://github.com/vllm-project/aibrix/tree/main/python/aibrix_kvcache/aibrix_kvcache/l2/connectors>`_ for more details.
+
+Environment Variables Reference
+-------------------------------
+
+This section describes all available environment variables for AIBrix KVCache Offloading Framework.
+
+Core Configuration
+^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 60
+
+   * - Variable
+     - Default
+     - Description
+   * - AIBRIX_KV_CACHE_OL_CHUNK_SIZE
+     - "512"
+     - Chunk size for operations.
+   * - AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED
+     - "1"
+     - Enable time measurement.
+   * - AIBRIX_KV_CACHE_OL_BREAKDOWN_MEASUREMENT_ENABLED
+     - "1"
+     - Enable breakdown measurement.
+   * - AIBRIX_KV_CACHE_OL_DOUBLE_GET_THRESHOLD
+     - "4,0.1"
+     - Controls when to issue a second get request to L2 cache. First value is minimum missing blocks, second is ratio threshold.
+   * - AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED
+     - "0"
+     - Whether to validate tokens in L2 cache. Disabling uses tighter memory layout.
+   * - AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE
+     - "::/0"
+     - Valid GID range (CIDR format). Similar to NVSHMEM_IB_ADDR_RANGE for NVSHMEM.
+   * - AIBRIX_KV_CACHE_OL_PROFILING_ENABLED
+     - "0"
+     - Enable profiling.
+   * - AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS
+     - "http://0.0.0.0:4040"
+     - Profiling server address. Profiling server is responsible for collecting profiling data and displaying it in a web UI.
+
+L1 Cache Configuration
+^^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 60
+
+   * - Variable
+     - Default
+     - Description
+   * - AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED
+     - "1"
+     - Enable L1 cache.
+   * - AIBRIX_KV_CACHE_OL_L1_CACHE_EVICTION_POLICY
+     - "S3FIFO"
+     - Eviction policy for L1 cache ("S3FIFO", "LRU", or "FIFO")
+   * - AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB
+     - "10"
+     - L1 cache capacity in GB.
+   * - AIBRIX_KV_CACHE_OL_DEVICE
+     - "cpu"
+     - Device to use for cache operations ("cpu" or "cuda")
+   * - AIBRIX_KV_CACHE_OL_S3FIFO_SMALL_TO_MAIN_PROMO_THRESHOLD
+     - "1"
+     - S3FIFO eviction policy: promotion threshold from small to main queue.
+   * - AIBRIX_KV_CACHE_OL_S3FIFO_SMALL_FIFO_CAPACITY_RATIO
+     - 0.3
+     - S3FIFO eviction policy: capacity ratio for small FIFO.
+
+L2 Cache Configuration
+^^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 60
+
+   * - Variable
+     - Default
+     - Description
+   * - AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND
+     - ""
+     - Backend for L2 cache.
+   * - AIBRIX_KV_CACHE_OL_L2_CACHE_NAMESPACE
+     - "aibrix"
+     - Namespace for L2 cache.
+   * - AIBRIX_KV_CACHE_OL_L2_CACHE_OP_BATCH
+     - "32"
+     - Operation batch size.
+   * - AIBRIX_KV_CACHE_OL_L2_CACHE_PER_TOKEN_TIMEOUT_MS
+     - "20"
+     - Per-token timeout in milliseconds.
+   * - AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER
+     - "RAW"
+     - Key builder for L2 cache ("RAW", "ROLLING_HASH", or "SIMPLE_HASH")
+   * - AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_TYPE
+     - "HOT"
+     - Ingestion type ("ALL", "HOT", or "EVICTED").
+   * - AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_MAX_INFLIGHT_TOKENS
+     - "0"
+     - Max inflight writes (0 for synchronous).
+   * - AIBRIX_KV_CACHE_OL_L2_CACHE_NUM_ASYNC_WORKERS
+     - "8"
+     - Number of async workers.
+   * - AIBRIX_KV_CACHE_OL_L2_CACHE_PLACEMENT_POLICY
+     - "SIMPLE"
+     - Placement policy (only applicable if using meta service).
+
+Meta Service Configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 60
+
+   * - Variable
+     - Default
+     - Description
+   * - AIBRIX_KV_CACHE_OL_META_SERVICE_BACKEND
+     - ""
+     - Backend for meta service. If meta service backend is not set, L2 cache backend will use direct mode to access the given cache server. Otherwise, we will get membership information from meta service and construct the L2 cache cluster.
+   * - AIBRIX_KV_CACHE_OL_META_SERVICE_REFRESH_INTERVAL_S
+     - "30"
+     - Refresh interval in seconds.
+   * - AIBRIX_KV_CACHE_OL_META_SERVICE_URL
+     - ""
+     - URL for meta service.
+   * - AIBRIX_KV_CACHE_OL_META_SERVICE_CLUSTER_META_KEY
+     - ""
+     - Cluster meta key.
+
+Connector Configurations
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+InfiniStore Connector Configuration
+"""""""""""""""""""""""""""""""""""
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 60
+
+   * - Variable
+     - Default
+     - Description
+   * - AIBRIX_KV_CACHE_OL_INFINISTORE_HOST_ADDR
+     - "127.0.0.1"
+     - Host address.
+   * - AIBRIX_KV_CACHE_OL_INFINISTORE_SERVICE_PORT
+     - "12345"
+     - Service port.
+   * - AIBRIX_KV_CACHE_OL_INFINISTORE_CONNECTION_TYPE
+     - "RDMA"
+     - Connection type.
+   * - AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT
+     - "1"
+     - IB port.
+   * - AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE
+     - "Ethernet"
+     - Link type.
+   * - AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST
+     - ""
+     - Visible device list. Since 0.2.42, InfiniStore supports RDMA GID index in client config, users can specify the GID index of each device in this format: "mlx5_0:gid0,mlx5_1:gid1,mlx5_2:gid2"
+
+HPKV Connector Configuration
+""""""""""""""""""""""""""""
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 60
+
+   * - Variable
+     - Default
+     - Description
+   * - AIBRIX_KV_CACHE_OL_HPKV_REMOTE_ADDR
+     - "127.0.0.1"
+     - Remote address.
+   * - AIBRIX_KV_CACHE_OL_HPKV_REMOTE_PORT
+     - "12346"
+     - Remote port.
+   * - AIBRIX_KV_CACHE_OL_HPKV_LOCAL_ADDR
+     - "127.0.0.1"
+     - Local address.
+   * - AIBRIX_KV_CACHE_OL_HPKV_LOCAL_PORT
+     - "12345"
+     - Local port.
+
+Mock Connector Configuration
+""""""""""""""""""""""""""""
+
+Mock connector is used for testing and profiling purposes.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 60
+
+   * - Variable
+     - Default
+     - Description
+   * - AIBRIX_KV_CACHE_OL_MOCK_USE_RDMA
+     - "0"
+     - Use RDMA in mock connector.
+   * - AIBRIX_KV_CACHE_OL_MOCK_USE_MPUT_MGET
+     - "0"
+     - Use MPUT/MGET in mock connector.
+
+RocksDB Connector Configuration
+"""""""""""""""""""""""""""""""
+
+RocksDB connector is used for testing purposes.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 60
+
+   * - Variable
+     - Default
+     - Description
+   * - AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT
+     - "~/.kv_cache_ol/rocksdb"
+     - Root directory for RocksDB.
+   * - AIBRIX_KV_CACHE_OL_ROCKSDB_TTL_S
+     - "600"
+     - TTL in seconds.
+   * - AIBRIX_KV_CACHE_OL_ROCKSDB_WRITE_BUFFER_SIZE
+     - "67108864"
+     - Write buffer size. Default 64MB.
+   * - AIBRIX_KV_CACHE_OL_ROCKSDB_TARGET_FILE_SIZE_BASE
+     - "67108864"
+     - Target file size base. Default 64MB.
+   * - AIBRIX_KV_CACHE_OL_ROCKSDB_MAX_WRITE_BUFFER_NUMBER
+     - "3"
+     - Max write buffers.
+   * - AIBRIX_KV_CACHE_OL_ROCKSDB_MAX_TOTAL_WAL_SIZE
+     - "134217728"
+     - Max total WAL size. Default 128MB.
+   * - AIBRIX_KV_CACHE_OL_ROCKSDB_MAX_BACKGROUND_JOBS
+     - "8"
+     - Max background jobs.
