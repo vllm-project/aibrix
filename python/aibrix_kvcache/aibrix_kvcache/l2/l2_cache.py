@@ -21,11 +21,11 @@ import torch
 from more_itertools import batched
 
 from ..cache_handle import KVCacheHandle
-from ..common import nvtx_range
 from ..common.absl_logging import getLogger, log_every_n_seconds
 from ..memory import MemoryRegion
 from ..meta_service import MetaService
 from ..metrics import L2CacheMetrics, MeasurableBase, MetricRecorder
+from ..profiling import nvtx_range
 from ..spec import KVCacheBlockLayout, KVCacheBlockSpec
 from ..status import Status, StatusCodes
 from .connectors import Connector, ConnectorConfig

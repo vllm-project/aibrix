@@ -29,7 +29,6 @@ import uvloop
 from . import envs
 from .cache_handle import KVCacheHandle, MemoryRegionKVCacheHandle
 from .cache_hashable import TokenCacheKey
-from .common import nvtx_range
 from .common.absl_logging import getLogger, log_every_n_seconds
 from .config import KVCacheConfig
 from .l1 import L1Cache
@@ -37,6 +36,7 @@ from .l2 import KeyBuilder, L2Cache
 from .memory import MemoryRegion, TensorPoolAllocator
 from .meta_service import MetaService
 from .metrics import KVCacheMetrics, MeasurableBase, MetricRecorder
+from .profiling import nvtx_range
 from .spec import KVCacheBlockLayout, KVCacheBlockSpec
 from .status import Status, StatusCodes
 

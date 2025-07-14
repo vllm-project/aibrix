@@ -18,10 +18,10 @@ from typing import Iterator, Sequence, Tuple
 import torch
 
 from ..cache_hashable import TokenCacheKey
-from ..common import nvtx_range
 from ..common.absl_logging import getLogger, log_every_n_seconds
 from ..memory import MemoryRegion, TensorPoolAllocator
 from ..metrics import L1CacheMetrics, MeasurableBase, MetricRecorder
+from ..profiling import nvtx_range
 from ..spec import KVCacheBlockSpec
 from ..status import Status, StatusCodes
 from ..utils import cpu_perf_timer, human_readable_bytes
