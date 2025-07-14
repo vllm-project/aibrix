@@ -17,14 +17,14 @@ limitations under the License.
 package stormservice
 
 import (
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 )
 
 func newStormService(replicas int32, surge, unavail string) orchestrationv1alpha1.StormService {
@@ -40,6 +40,40 @@ func newStormService(replicas int32, surge, unavail string) orchestrationv1alpha
 			},
 		},
 	}
+}
+
+// Helper function to create a RoleSet with specified properties
+func createRoleSet(name, revision string, ready bool) *orchestrationv1alpha1.RoleSet {
+	rs := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				constants.StormServiceRevisionLabelKey: revision,
+			},
+		},
+	}
+
+	if ready {
+		rs.Status = orchestrationv1alpha1.RoleSetStatus{
+			Conditions: orchestrationv1alpha1.Conditions{
+				{
+					Type:   "Ready",
+					Status: corev1.ConditionTrue,
+				},
+			},
+		}
+	} else {
+		rs.Status = orchestrationv1alpha1.RoleSetStatus{
+			Conditions: orchestrationv1alpha1.Conditions{
+				{
+					Type:   "Ready",
+					Status: corev1.ConditionFalse,
+				},
+			},
+		}
+	}
+
+	return rs
 }
 
 func TestMaxSurge_MaxUnavailable_MinAvailable_StormService(t *testing.T) {
@@ -133,40 +167,6 @@ func TestSortRoleSetByRevision(t *testing.T) {
 			assert.Equal(t, tt.expectedOrder, actualOrder, "RoleSets should be sorted correctly")
 		})
 	}
-}
-
-// Helper function to create a RoleSet with specified properties
-func createRoleSet(name, revision string, ready bool) *orchestrationv1alpha1.RoleSet {
-	rs := &orchestrationv1alpha1.RoleSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			Annotations: map[string]string{
-				"revision": revision,
-			},
-		},
-	}
-
-	if ready {
-		rs.Status = orchestrationv1alpha1.RoleSetStatus{
-			Conditions: orchestrationv1alpha1.Conditions{
-				{
-					Type:   "Ready",
-					Status: corev1.ConditionTrue,
-				},
-			},
-		}
-	} else {
-		rs.Status = orchestrationv1alpha1.RoleSetStatus{
-			Conditions: orchestrationv1alpha1.Conditions{
-				{
-					Type:   "Ready",
-					Status: corev1.ConditionFalse,
-				},
-			},
-		}
-	}
-
-	return rs
 }
 
 func TestFilterTerminatingRoleSets(t *testing.T) {
@@ -428,7 +428,7 @@ func TestIsRoleSetMatchRevision(t *testing.T) {
 			name: "empty revision should match roleSet with empty annotations",
 			roleSet: &orchestrationv1alpha1.RoleSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Annotations: nil,
+					Labels: nil,
 				},
 			},
 			revision: "",
@@ -619,6 +619,42 @@ func TestIsAllRoleUpdated(t *testing.T) {
 			},
 			expected: true,
 		},
+		{
+			name: "Status role not found in spec",
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				Spec: orchestrationv1alpha1.RoleSetSpec{
+					Roles: []orchestrationv1alpha1.RoleSpec{
+						{
+							Name:     "role1",
+							Replicas: int32Ptr(3),
+						},
+					},
+				},
+				Status: orchestrationv1alpha1.RoleSetStatus{
+					Roles: []orchestrationv1alpha1.RoleStatus{
+						{
+							Name:            "role1",
+							Replicas:        3,
+							UpdatedReplicas: 3,
+						},
+						{
+							Name:            "unknown-role",
+							Replicas:        2,
+							UpdatedReplicas: 2,
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "Empty RoleSet",
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				Spec:   orchestrationv1alpha1.RoleSetSpec{},
+				Status: orchestrationv1alpha1.RoleSetStatus{},
+			},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -627,159 +663,6 @@ func TestIsAllRoleUpdated(t *testing.T) {
 			assert.Equal(t, tt.expected, actual)
 		})
 	}
-}
-
-func TestIsAllRoleUpdated_AllRolesUpdated(t *testing.T) {
-	// Setup: Create a RoleSet where all roles are updated
-	roleSet := &orchestrationv1alpha1.RoleSet{
-		Spec: orchestrationv1alpha1.RoleSetSpec{
-			Roles: []orchestrationv1alpha1.RoleSpec{
-				{
-					Name:     "role1",
-					Replicas: int32Ptr(3),
-				},
-				{
-					Name:     "role2",
-					Replicas: int32Ptr(2),
-				},
-			},
-		},
-		Status: orchestrationv1alpha1.RoleSetStatus{
-			Roles: []orchestrationv1alpha1.RoleStatus{
-				{
-					Name:            "role1",
-					Replicas:        3,
-					UpdatedReplicas: 3,
-				},
-				{
-					Name:            "role2",
-					Replicas:        2,
-					UpdatedReplicas: 2,
-				},
-			},
-		},
-	}
-
-	// Execute
-	result := isAllRoleUpdated(roleSet)
-
-	// Verify
-	assert.True(t, result, "Expected all roles to be updated")
-}
-
-func TestIsAllRoleUpdated_SomeRolesNotUpdated(t *testing.T) {
-	// Setup: Create a RoleSet where some roles are not updated
-	roleSet := &orchestrationv1alpha1.RoleSet{
-		Spec: orchestrationv1alpha1.RoleSetSpec{
-			Roles: []orchestrationv1alpha1.RoleSpec{
-				{
-					Name:     "role1",
-					Replicas: int32Ptr(3),
-				},
-				{
-					Name:     "role2",
-					Replicas: int32Ptr(2),
-				},
-			},
-		},
-		Status: orchestrationv1alpha1.RoleSetStatus{
-			Roles: []orchestrationv1alpha1.RoleStatus{
-				{
-					Name:            "role1",
-					Replicas:        3,
-					UpdatedReplicas: 3,
-				},
-				{
-					Name:            "role2",
-					Replicas:        2,
-					UpdatedReplicas: 1, // Not fully updated
-				},
-			},
-		},
-	}
-
-	// Execute
-	result := isAllRoleUpdated(roleSet)
-
-	// Verify
-	assert.False(t, result, "Expected some roles to not be updated")
-}
-
-func TestIsAllRoleUpdated_StatusRoleNotFoundInSpec(t *testing.T) {
-	// Setup: Role in status not found in spec
-	roleSet := &orchestrationv1alpha1.RoleSet{
-		Spec: orchestrationv1alpha1.RoleSetSpec{
-			Roles: []orchestrationv1alpha1.RoleSpec{
-				{
-					Name:     "role1",
-					Replicas: int32Ptr(3),
-				},
-			},
-		},
-		Status: orchestrationv1alpha1.RoleSetStatus{
-			Roles: []orchestrationv1alpha1.RoleStatus{
-				{
-					Name:            "role1",
-					Replicas:        3,
-					UpdatedReplicas: 3,
-				},
-				{
-					Name:            "unknown-role",
-					Replicas:        2,
-					UpdatedReplicas: 2,
-				},
-			},
-		},
-	}
-
-	// Execute
-	result := isAllRoleUpdated(roleSet)
-
-	// Verify
-	assert.True(t, result, "Unknown roles in status should be ignored")
-}
-
-func TestIsAllRoleUpdated_NoReplicasSpecified(t *testing.T) {
-	// Setup: Role with nil replicas in spec
-	roleSet := &orchestrationv1alpha1.RoleSet{
-		Spec: orchestrationv1alpha1.RoleSetSpec{
-			Roles: []orchestrationv1alpha1.RoleSpec{
-				{
-					Name:     "role1",
-					Replicas: nil, // No replicas specified
-				},
-			},
-		},
-		Status: orchestrationv1alpha1.RoleSetStatus{
-			Roles: []orchestrationv1alpha1.RoleStatus{
-				{
-					Name:            "role1",
-					Replicas:        0,
-					UpdatedReplicas: 0,
-				},
-			},
-		},
-	}
-
-	// Execute
-	result := isAllRoleUpdated(roleSet)
-
-	// Verify
-	assert.True(t, result, "Nil replicas should be treated as 0")
-}
-
-func TestIsAllRoleUpdated_EmptyRoleSet(t *testing.T) {
-	// Setup: Empty RoleSet
-	roleSet := &orchestrationv1alpha1.RoleSet{
-		Spec:   orchestrationv1alpha1.RoleSetSpec{},
-		Status: orchestrationv1alpha1.RoleSetStatus{},
-	}
-
-	// Execute
-	result := isAllRoleUpdated(roleSet)
-
-	// Verify
-	assert.True(t, result, "Empty RoleSet should be considered updated")
 }
 
 func TestIsAllRoleUpdatedAndReady(t *testing.T) {

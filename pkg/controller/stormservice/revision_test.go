@@ -19,16 +19,21 @@ package stormservice
 import (
 	"context"
 	"errors"
-	"github.com/stretchr/testify/mock"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	apps "k8s.io/api/apps/v1"
 	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
@@ -338,6 +343,34 @@ func TestTruncateHistory(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "history exceeds limit with update revision",
+			stormService: &orchestrationv1alpha1.StormService{
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "test"},
+					},
+					RevisionHistoryLimit: func() *int32 { i := int32(1); return &i }(),
+				},
+			},
+			revisions: []*appsv1.ControllerRevision{
+				{ObjectMeta: metav1.ObjectMeta{Name: "rev1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "rev2"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "rev3"}},
+			},
+			current: &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "current"}},
+			update:  &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "update-rev"}},
+			mockSetup: func(m *MockClient) {
+				m.On("List", mock.Anything, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+					list := args.Get(1).(*orchestrationv1alpha1.RoleSetList)
+					list.Items = []orchestrationv1alpha1.RoleSet{
+						{ObjectMeta: metav1.ObjectMeta{UID: types.UID("uid1")}},
+					}
+				}).Return(nil)
+				m.On("Delete", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -363,106 +396,171 @@ func TestTruncateHistory(t *testing.T) {
 	}
 }
 
-//func TestSyncRevision(t *testing.T) {
-//	scheme := runtime.NewScheme()
-//	require.NoError(t, apps.AddToScheme(scheme))
-//	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
-//
-//	tests := []struct {
-//		name           string
-//		stormService   *orchestrationv1alpha1.StormService
-//		revisions      []*apps.ControllerRevision
-//		wantCurrentRev *apps.ControllerRevision
-//		wantUpdateRev  *apps.ControllerRevision
-//		wantCollision  int32
-//		wantErr        bool
-//	}{
-//		{
-//			name: "no existing revisions",
-//			stormService: &orchestrationv1alpha1.StormService{
-//				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
-//			},
-//			revisions:      []*apps.ControllerRevision{},
-//			wantCurrentRev: nil,
-//			wantUpdateRev:  nil,
-//			wantCollision:  0,
-//			wantErr:        false,
-//		},
-//		{
-//			name: "with existing revision matching current",
-//			stormService: &orchestrationv1alpha1.StormService{
-//				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
-//				Status: orchestrationv1alpha1.StormServiceStatus{
-//					CurrentRevision: "test-rev-1",
-//				},
-//			},
-//			revisions: []*apps.ControllerRevision{
-//				{
-//					ObjectMeta: metav1.ObjectMeta{
-//						Name: "test-rev-1",
-//					},
-//					Revision: 1,
-//				},
-//			},
-//			wantCurrentRev: &apps.ControllerRevision{
-//				ObjectMeta: metav1.ObjectMeta{
-//					Name: "test-rev-1",
-//				},
-//				Revision: 1,
-//			},
-//			wantUpdateRev: nil,
-//			wantCollision: 0,
-//			wantErr:       false,
-//		},
-//		{
-//			name: "with collision count",
-//			stormService: &orchestrationv1alpha1.StormService{
-//				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
-//				Status: orchestrationv1alpha1.StormServiceStatus{
-//					CollisionCount: new(int32),
-//				},
-//			},
-//			revisions:      []*apps.ControllerRevision{},
-//			wantCurrentRev: nil,
-//			wantUpdateRev:  nil,
-//			wantCollision:  0,
-//			wantErr:        false,
-//		},
-//	}
-//
-//	for _, tt := range tests {
-//		t.Run(tt.name, func(t *testing.T) {
-//			r := &StormServiceReconciler{
-//				Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-//				Scheme: scheme,
-//			}
-//
-//			currentRev, updateRev, collisionCount, err := r.syncRevision(context.Background(), tt.stormService, tt.revisions)
-//
-//			if tt.wantErr {
-//				assert.Error(t, err)
-//				return
-//			}
-//			assert.NoError(t, err)
-//
-//			if tt.wantCurrentRev == nil {
-//				assert.Nil(t, currentRev)
-//			} else {
-//				assert.Equal(t, tt.wantCurrentRev.Name, currentRev.Name)
-//				assert.Equal(t, tt.wantCurrentRev.Revision, currentRev.Revision)
-//			}
-//
-//			if tt.wantUpdateRev == nil {
-//				assert.Nil(t, updateRev)
-//			} else {
-//				assert.Equal(t, tt.wantUpdateRev.Name, updateRev.Name)
-//				assert.Equal(t, tt.wantUpdateRev.Revision, updateRev.Revision)
-//			}
-//
-//			assert.Equal(t, tt.wantCollision, collisionCount)
-//		})
-//	}
-//}
+func TestSyncRevision(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, apps.AddToScheme(scheme))
+	require.NoError(t, orchestrationv1alpha1.AddToScheme(scheme))
+
+	tests := []struct {
+		name           string
+		stormService   *orchestrationv1alpha1.StormService
+		revisions      []*apps.ControllerRevision
+		wantCurrentRev *apps.ControllerRevision
+		wantUpdateRev  *apps.ControllerRevision
+		wantCollision  int32
+		wantErr        bool
+	}{
+		{
+			name: "no existing revisions, create new revision",
+			stormService: &orchestrationv1alpha1.StormService{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "test-uid"},
+			},
+			revisions: []*apps.ControllerRevision{},
+			wantCurrentRev: &apps.ControllerRevision{
+				Revision: 1,
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Name: "test",
+							UID:  "test-uid",
+						},
+					},
+				},
+			},
+			wantUpdateRev: &apps.ControllerRevision{
+				Revision: 1,
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Name: "test",
+							UID:  "test-uid",
+						},
+					},
+				},
+			},
+			wantCollision: 0,
+			wantErr:       false,
+		},
+		{
+			name: "with existing revision matching current",
+			stormService: &orchestrationv1alpha1.StormService{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "test-uid"},
+				Status: orchestrationv1alpha1.StormServiceStatus{
+					CurrentRevision: "test-rev-1",
+				},
+			},
+			revisions: []*apps.ControllerRevision{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-rev-1",
+						OwnerReferences: []metav1.OwnerReference{
+							{
+								Name: "test",
+								UID:  "test-uid",
+							},
+						},
+					},
+					Revision: 1,
+				},
+			},
+			wantCurrentRev: &apps.ControllerRevision{
+				Revision: 1,
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Name: "test",
+							UID:  "test-uid",
+						},
+					},
+				},
+			},
+			wantUpdateRev: &apps.ControllerRevision{
+				Revision: 2,
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Name: "test",
+							UID:  "test-uid",
+						},
+					},
+				},
+			},
+			wantCollision: 0,
+			wantErr:       false,
+		},
+		{
+			name: "with collision count",
+			stormService: &orchestrationv1alpha1.StormService{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default", UID: "test-uid"},
+				Status: orchestrationv1alpha1.StormServiceStatus{
+					CollisionCount: func() *int32 { i := int32(1); return &i }(),
+				},
+			},
+			revisions: []*apps.ControllerRevision{},
+			wantCurrentRev: &apps.ControllerRevision{
+				Revision: 1,
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Name: "test",
+							UID:  "test-uid",
+						},
+					},
+				},
+			},
+			wantUpdateRev: &apps.ControllerRevision{
+				Revision: 1,
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Name: "test",
+							UID:  "test-uid",
+						},
+					},
+				},
+			},
+			wantCollision: 1,
+			wantErr:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &StormServiceReconciler{
+				Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+				Scheme: scheme,
+			}
+
+			currentRev, updateRev, collisionCount, err := r.syncRevision(context.Background(), tt.stormService, tt.revisions)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+
+			if tt.wantCurrentRev == nil {
+				assert.Nil(t, currentRev)
+			} else {
+				assert.Equal(t, tt.wantCurrentRev.Revision, currentRev.Revision)
+				assert.Equal(t, 1, len(currentRev.OwnerReferences))
+				assert.Equal(t, tt.wantCurrentRev.OwnerReferences[0].Name, currentRev.OwnerReferences[0].Name)
+				assert.Equal(t, tt.wantCurrentRev.OwnerReferences[0].UID, currentRev.OwnerReferences[0].UID)
+			}
+
+			if tt.wantUpdateRev == nil {
+				assert.Nil(t, updateRev)
+			} else {
+				assert.Equal(t, tt.wantUpdateRev.Revision, updateRev.Revision)
+				assert.Equal(t, 1, len(updateRev.OwnerReferences))
+				assert.Equal(t, tt.wantUpdateRev.OwnerReferences[0].Name, updateRev.OwnerReferences[0].Name)
+				assert.Equal(t, tt.wantUpdateRev.OwnerReferences[0].UID, updateRev.OwnerReferences[0].UID)
+			}
+
+			assert.Equal(t, tt.wantCollision, collisionCount)
+		})
+	}
+}
 
 func TestGetControllerRevision(t *testing.T) {
 	tests := []struct {
@@ -648,4 +746,164 @@ func TestGetControllerRevision(t *testing.T) {
 			mockClient.AssertExpectations(t)
 		})
 	}
+}
+
+func TestCreateControllerRevision(t *testing.T) {
+	// Setup common test data
+	name := "test-parent"
+	namespace := "test-ns"
+	qualifiedResource := schema.GroupResource{
+		Group:    "apps",
+		Resource: "controllerrevisions",
+	}
+
+	parent := &metav1.ObjectMeta{
+		Name:      name,
+		Namespace: namespace,
+	}
+	revision := &apps.ControllerRevision{
+		Data: runtime.RawExtension{Raw: []byte("test-data")},
+		ObjectMeta: metav1.ObjectMeta{
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					Name: name,
+				},
+			},
+		},
+	}
+
+	t.Run("successful creation on first attempt", func(t *testing.T) {
+		collisionCount := int32(0)
+		mockClient := &MockClient{}
+		r := &StormServiceReconciler{Client: mockClient}
+
+		// Expect Create to be called once and succeed
+		mockClient.On("Create", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+		result, err := r.createControllerRevision(context.Background(), parent, revision, &collisionCount)
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Equal(t, name, result.OwnerReferences[0].Name)
+		assert.Equal(t, namespace, result.Namespace)
+		assert.Equal(t, int32(0), collisionCount) // Should not be incremented
+		mockClient.AssertExpectations(t)
+	})
+
+	t.Run("returns error when collisionCount is nil", func(t *testing.T) {
+		r := &StormServiceReconciler{}
+		_, err := r.createControllerRevision(context.Background(), parent, revision, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "collisionCount should not be nil")
+	})
+
+	t.Run("handles creation error (non-already-exists)", func(t *testing.T) {
+		collisionCount := int32(0)
+		mockClient := &MockClient{}
+		r := &StormServiceReconciler{Client: mockClient}
+
+		expectedErr := fmt.Errorf("some creation error")
+		mockClient.On("Create", mock.Anything, mock.Anything, mock.Anything).Return(expectedErr)
+
+		_, err := r.createControllerRevision(context.Background(), parent, revision, &collisionCount)
+		require.Error(t, err)
+		assert.Equal(t, expectedErr, err)
+		assert.Equal(t, int32(0), collisionCount) // Should not be incremented
+		mockClient.AssertExpectations(t)
+	})
+
+	t.Run("handles collision with identical revision", func(t *testing.T) {
+		collisionCount := int32(0)
+		mockClient := &MockClient{}
+		r := &StormServiceReconciler{Client: mockClient}
+
+		// First Create fails with AlreadyExists
+		mockClient.On("Create", mock.Anything, mock.Anything, mock.Anything).
+			Return(apierrors.NewAlreadyExists(qualifiedResource, "alreadyExist")).Once()
+
+		// Setup the existing object that will be returned by Get
+		existing := &apps.ControllerRevision{
+			Data: runtime.RawExtension{Raw: []byte("test-data")},
+			ObjectMeta: metav1.ObjectMeta{
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						Name: name,
+					},
+				},
+			},
+		}
+		mockClient.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) {
+				obj := args.Get(2).(*apps.ControllerRevision)
+				*obj = *existing
+			}).
+			Return(nil)
+
+		result, err := r.createControllerRevision(context.Background(), parent, revision, &collisionCount)
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Equal(t, existing, result)
+		assert.Equal(t, int32(0), collisionCount) // Should not be incremented
+		mockClient.AssertExpectations(t)
+	})
+
+	t.Run("handles collision with different revision (retries)", func(t *testing.T) {
+		collisionCount := int32(0)
+		mockClient := &MockClient{}
+		r := &StormServiceReconciler{Client: mockClient}
+
+		// First Create fails with AlreadyExists
+		mockClient.On("Create", mock.Anything, mock.Anything, mock.Anything).
+			Return(apierrors.NewAlreadyExists(qualifiedResource, "alreadyExist")).Once()
+
+		// Setup the existing object that will be returned by Get (with different data)
+		existing := &apps.ControllerRevision{
+			Data: runtime.RawExtension{Raw: []byte("different-data")},
+			ObjectMeta: metav1.ObjectMeta{
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						Name: name,
+					},
+				},
+			},
+		}
+		mockClient.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) {
+				obj := args.Get(2).(*apps.ControllerRevision)
+				*obj = *existing
+			}).
+			Return(nil)
+
+		// Second Create succeeds
+		mockClient.On("Create", mock.Anything, mock.Anything, mock.Anything).
+			Return(nil).Once()
+
+		result, err := r.createControllerRevision(context.Background(), parent, revision, &collisionCount)
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Equal(t, name, result.OwnerReferences[0].Name)
+		assert.Equal(t, namespace, result.Namespace)
+		assert.Equal(t, int32(1), collisionCount) // Should be incremented
+		mockClient.AssertExpectations(t)
+	})
+
+	t.Run("handles error when getting existing revision", func(t *testing.T) {
+		collisionCount := int32(0)
+		mockClient := &MockClient{}
+		r := &StormServiceReconciler{Client: mockClient}
+
+		// First Create fails with AlreadyExists
+		mockClient.On("Create", mock.Anything, mock.Anything, mock.Anything).
+			Return(apierrors.NewAlreadyExists(qualifiedResource, "alreadyExist")).Once()
+
+		// Get fails
+		expectedErr := fmt.Errorf("get error")
+		mockClient.On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Return(expectedErr)
+
+		_, err := r.createControllerRevision(context.Background(), parent, revision, &collisionCount)
+		require.Error(t, err)
+		assert.Equal(t, expectedErr, err)
+		assert.Equal(t, int32(0), collisionCount) // Should not be incremented
+		mockClient.AssertExpectations(t)
+	})
 }
