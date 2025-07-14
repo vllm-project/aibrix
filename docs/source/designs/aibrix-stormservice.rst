@@ -25,7 +25,7 @@ StormService is implemented using several Custom Resource Definitions (CRDs) fol
 .. note::
    Pooled mode (independent scaling of each role) is not yet supported. See Issue `#1260 <https://github.com/vllm-project/aibrix/issues/1260>`_.
 
-Following this layered design, updates to the spec propagates from the StormService to its RoleSets, and then to the individual roles. The reconciler at the StormService level synchronizes the status of RoleSets with the StormService spec (primarily the `Replicas` field), while the reconciler at the RoleSet level synchronizes the status of individual roles with the RoleSet spec.
+Following this layered design, updates to the spec propagate from the StormService to its RoleSets, and then to the individual roles. The reconciler at the StormService level synchronizes the status of RoleSets with the StormService spec (primarily the `Replicas` field), while the reconciler at the RoleSet level synchronizes the status of individual roles with the RoleSet spec.
 
 StormService supports two operational modes at its level: **Rolling Update** and **Inplace Update**. At the RoleSet level, three update modes are supported: **Parallel**, **Sequential**, and **Interleaved**. These are explained in detail below.
 
@@ -35,7 +35,7 @@ StormService supports multiple strategies to update the managed RoleSets:
 
 - **Rolling Update**: Designed for replica mode. This type of update is triggered by intentionally breaking the condition `roleSet count == spec.Replicas`. The reconciler will first delete outdated RoleSets with the previous revision (limited by the `MaxUnavailable` setting), then create new RoleSets with the updated revision. See `StormServiceReconciler.rollingUpdate()`.
 
-- **Inplace Update**: Designed for pooled mode. Instead of deleting and creating RoleSets, this strategy propagate changes from the StormService to all associated RoleSets directly, without deleting and creating new RoleSets. The reconciler at RoleSet level will then sync its status according to the updated spec.
+- **Inplace Update**: Designed for pooled mode. Instead of deleting and creating RoleSets, this strategy propagates changes from the StormService to all associated RoleSets directly, without deleting and creating new RoleSets. The reconciler at RoleSet level will then sync its status according to the updated spec.
 
 Rolling Strategy
 ----------------------
@@ -50,6 +50,6 @@ Stateful vs Stateless
 
 This is determined by the `Stateful` field in both StormService and RoleSet specs. It defines whether the RoleSet uses a `StatefulRoleSyncer` or a `StatelessRoleSyncer` and thus leading to different behaviours.
 
-- **Stateful**: `StatefulRoleSyncer` treats each Pod as a unique, non-interchangeable entity, assigning a stable and unique index to each Pod. There are exactly *n* slots for *N* replicas, and updates are performed slot-by-slot in a controlled manner.
+- **Stateful**: `StatefulRoleSyncer` treats each Pod as a unique, non-interchangeable entity, assigning a stable and unique index to each Pod. There are exactly *n* slots for *n* replicas, and updates are performed slot-by-slot in a controlled manner.
 
 - **Stateless**: `StatelessRoleSyncer` treats all Pods as identical replicas. Any Pod can be replaced without affecting the overall application. Pods are managed as a collective pool, and scaling actions simply add or randomly remove Pods. Updates are performed at the pool level rather than targeting specific Pods.
