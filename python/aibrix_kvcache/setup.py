@@ -508,7 +508,7 @@ ext_modules = []
 
 if _build_custom_ops():
     if _is_cuda():
-        ext_modules.append(CMakeExtension(name="aibrix_kvcache._C"))
+        ext_modules.append(CMakeExtension(name="aibrix_kvcache._aibrix_C"))
 
 package_data = {}
 
