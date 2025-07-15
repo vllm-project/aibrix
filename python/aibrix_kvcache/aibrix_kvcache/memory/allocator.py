@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import dataclass
 from threading import Lock
 from typing import List, Sequence, Tuple
@@ -19,6 +21,7 @@ from typing import List, Sequence, Tuple
 import numpy as np
 import torch
 from sortedcontainers import SortedDict, SortedList
+from tqdm.auto import tqdm
 
 from .. import envs
 from ..cache_hashable import TokenListView
@@ -118,6 +121,8 @@ class MemoryRegion(RefCountedObj):
         self.slab = slab
         self.addr = addr
         self.length = len
+        self.capacity = len
+        self._cached_tensor_view: torch.Tensor | None = None
         self._init_meta()
 
     def _init_meta(self) -> None:
@@ -132,8 +137,8 @@ class MemoryRegion(RefCountedObj):
     def __repr__(self) -> str:
         return (
             f"MemoryRegion(addr={self.slab.data_ptr() + self.addr}, "
-            f"length={self.length}, ref={self.ref_count}, "
-            f"sealed={self._is_sealed})"
+            f"length={self.length}, capacity={self.capacity}, "
+            f"ref={self.ref_count}, sealed={self._is_sealed})"
         )
 
     def __str__(self) -> str:
@@ -187,13 +192,6 @@ class MemoryRegion(RefCountedObj):
                 f"{actual_length} > {self.length}"
             )
 
-            if actual_length < self.length:
-                # return the rest of the MR
-                self.allocator._finalize_mr(
-                    self.slab,
-                    self.addr + actual_length,
-                    self.length - actual_length,
-                )
             self.length = actual_length
 
         self._is_sealed = True
@@ -215,7 +213,7 @@ class MemoryRegion(RefCountedObj):
 
     def destroy_unsafe(self):
         self._init_meta()
-        self.allocator._finalize_mr(self.slab, self.addr, self.length)
+        self.allocator._finalize_mr(self)
 
     def to_tensor(
         self,
@@ -223,11 +221,29 @@ class MemoryRegion(RefCountedObj):
         mr_shape: Tuple[int, ...] | None = None,
     ) -> torch.Tensor:
         """Convert MR to tensor"""
+        # We use a cached view to reduce the overhead of tensor slicing and
+        # view()
+        if (
+            self._cached_tensor_view is not None
+            and mr_dtype is not None
+            and self._cached_tensor_view.dtype != mr_dtype
+        ):
+            self._cached_tensor_view = None
+        if (
+            self._cached_tensor_view is not None
+            and mr_shape is not None
+            and self._cached_tensor_view.shape != mr_shape
+        ):
+            self._cached_tensor_view = None
+        if self._cached_tensor_view is not None:
+            return self._cached_tensor_view
+
         ret = self.slab[self.addr : self.addr + self.block_nbytes]
         if mr_dtype is not None:
             ret = ret.view(mr_dtype)
         if mr_shape is not None:
             ret = ret.view(*mr_shape)
+        self._cached_tensor_view = ret
         return ret
 
     @staticmethod
@@ -373,7 +389,7 @@ class MemoryRegion(RefCountedObj):
             return round_up(size, TensorPoolAllocator.ALLOC_SIZE_ALIGNMENT)
 
 
-class TensorPoolAllocator:
+class TensorPoolAllocator(ABC):
     SLAB_MAX_NBYTES = 1 * 1024**3  # 1GB in bytes
     ALLOC_SIZE_ALIGNMENT = 16
 
@@ -395,30 +411,45 @@ class TensorPoolAllocator:
         self.device: str = "cpu" if device is None else device
         self.pin_memory: bool = pin_memory
 
-        self._mr_list = SortedList([], key=lambda x: x.data_ptr())
-        # Each item is a list of memory regions having the same length
-        self._lookup_table = SortedDict()
-
         self._lock: Lock = Lock()
 
         # Fill slabs
         self._slabs: List[torch.Tensor] = []
         self._grow(capacity_nbytes)
 
+    @staticmethod
+    def create(
+        *,
+        capacity_nbytes: int,
+        device: str = "cpu",
+        pin_memory: bool = False,
+    ) -> "TensorPoolAllocator":
+        """Create an tensor pool allocator.
+        Args:
+            capacity_nbytes: The capacity of the allocator in bytes.
+            device: The device to allocate the memory on.
+            pin_memory: Whether to pin the memory.
+
+        Returns:
+            The tensor pool allocator.
+        """
+        if MR_USE_COMPACT_LAYOUT:
+            return ObjectPoolAllocator(
+                capacity_nbytes=capacity_nbytes,
+                device=device,
+                pin_memory=pin_memory,
+            )
+        else:
+            return CoalescingPoolAllocator(
+                capacity_nbytes=capacity_nbytes,
+                device=device,
+                pin_memory=pin_memory,
+            )
+
     def __len__(self) -> int:
         """Return nbytes allocated by the allocator."""
         with self._lock:
             return self._used_nbytes
-
-    def __repr__(self) -> str:
-        return (
-            f"TensorPoolAllocator(capacity_nbytes={self.capacity_nbytes}, "
-            f"used={self._used_nbytes}, device={self.device}, "
-            f"pin_memory={self.pin_memory})"
-        )
-
-    def __str__(self) -> str:
-        return self.__repr__()
 
     @property
     def slabs(self) -> List[torch.Tensor]:
@@ -432,7 +463,7 @@ class TensorPoolAllocator:
         nslabs = size_nbytes // slab_nbytes
         with self._lock:
             self.capacity_nbytes += nslabs * slab_nbytes
-            for i in range(nslabs):
+            for _ in tqdm(range(nslabs), "Allocating slabs"):
                 slab = torch.empty(
                     slab_nbytes,
                     dtype=torch.uint8,
@@ -440,8 +471,11 @@ class TensorPoolAllocator:
                     pin_memory=self.pin_memory,
                 )
                 self._slabs.append(slab)
-                self._used_nbytes += slab.numel()
-                self._finalize_mr_unsafe(slab, 0, slab.numel())
+                self._grow_unsafe(slab)
+
+    @abstractmethod
+    def _grow_unsafe(self, slab: torch.Tensor) -> None:
+        raise NotImplementedError
 
     def alloc(
         self, sizes: int | Sequence[int]
@@ -462,11 +496,68 @@ class TensorPoolAllocator:
                     value = status.get()
                     mrs.extend(value)
                     offset += len(value)
+                    self._used_nbytes += sum([mr.length for mr in value])
                 else:
                     if len(mrs) == 0:
                         return status
                     return Status.ok(mrs)
             return Status.ok(mrs)
+
+    @abstractmethod
+    def _alloc_unsafe(
+        self, sizes: Sequence[int]
+    ) -> Status[Sequence[MemoryRegion]]:
+        raise NotImplementedError
+
+    def _finalize_mr(self, mr: MemoryRegion) -> None:
+        if mr.capacity <= 0:
+            return
+
+        with self._lock:
+            self._finalize_mr_unsafe(mr)
+            self._used_nbytes -= mr.capacity
+            assert self._used_nbytes >= 0, "double free memory region"
+
+    @abstractmethod
+    def _finalize_mr_unsafe(self, mr: MemoryRegion) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def assert_consistency(self) -> None:
+        """Assert that the allocator is consistent. For test purpose."""
+        raise NotImplementedError
+
+    def __repr__(self) -> str:
+        return (
+            f"Allocator(capacity_nbytes={self.capacity_nbytes}, "
+            f"used={self._used_nbytes}, device={self.device}, "
+            f"pin_memory={self.pin_memory})"
+        )
+
+    def __str__(self) -> str:
+        return self.__repr__()
+
+
+class CoalescingPoolAllocator(TensorPoolAllocator):
+    def __init__(
+        self,
+        *,
+        capacity_nbytes: int,
+        device: str = "cpu",
+        pin_memory: bool = False,
+    ) -> None:
+        self._mr_list = SortedList([], key=lambda x: x.data_ptr())
+        # Each item is a list of memory regions having the same length
+        self._lookup_table = SortedDict()
+
+        super().__init__(
+            capacity_nbytes=capacity_nbytes,
+            device=device,
+            pin_memory=pin_memory,
+        )
+
+    def _grow_unsafe(self, slab: torch.Tensor) -> None:
+        self._finalize_slab_slice_unsafe(slab, 0, slab.numel())
 
     def _alloc_unsafe(
         self, sizes: Sequence[int]
@@ -524,25 +615,18 @@ class TensorPoolAllocator:
                 self, target_mr.slab, target_mr.addr + offset, sizes[i]
             )
             offset += sizes[i]
-        self._used_nbytes += allocated
         return Status.ok(mrs)  # type: ignore
 
-    def _finalize_mr(self, slab: torch.Tensor, addr: int, length: int) -> None:
-        if length <= 0:
-            return
+    def _finalize_mr_unsafe(self, mr: MemoryRegion) -> None:
+        self._finalize_slab_slice_unsafe(mr.slab, mr.addr, mr.capacity)
 
-        with self._lock:
-            return self._finalize_mr_unsafe(slab, addr, length)
-
-    def _finalize_mr_unsafe(
+    def _finalize_slab_slice_unsafe(
         self, slab: torch.Tensor, addr: int, length: int
     ) -> None:
         if length <= 0:
             return
 
         mr = MemoryRegionIntl(slab, addr, length)
-        self._used_nbytes -= mr.length
-        assert self._used_nbytes >= 0, "double free memory region"
         # Find the index of the memory region in the list
         idx = self._mr_list.bisect_right(mr)
         prev = self._mr_list[idx - 1] if idx > 0 else None
@@ -633,4 +717,115 @@ class TensorPoolAllocator:
                 lookup_table_total_nbytes += mr_len * len(mr_list)
             assert lookup_table_total_nbytes == mr_list_total_nbytes, (
                 f"{lookup_table_total_nbytes} != {mr_list_total_nbytes}"
+            )
+
+
+class ObjectPoolAllocator(TensorPoolAllocator):
+    def __init__(
+        self,
+        *,
+        capacity_nbytes: int,
+        device: str = "cpu",
+        pin_memory: bool = False,
+    ) -> None:
+        self._free_pool: deque[MemoryRegionIntl] = deque()
+        self._reuse_pool: deque[MemoryRegion] = deque()
+        self._frag_nbytes: int = 0
+
+        super().__init__(
+            capacity_nbytes=capacity_nbytes,
+            device=device,
+            pin_memory=pin_memory,
+        )
+
+    def _grow_unsafe(self, slab: torch.Tensor) -> None:
+        self._free_pool.append(MemoryRegionIntl(slab, 0, slab.numel()))
+
+    def _alloc_unsafe(
+        self, sizes: Sequence[int]
+    ) -> Status[Sequence[MemoryRegion]]:
+        if len(self._free_pool) == 0 and len(self._reuse_pool) == 0:
+            return Status(StatusCodes.OUT_OF_MEMORY)
+
+        # 1. try to allocate from _free_pool if it is not empty
+        if len(self._free_pool) > 0:
+            status = self._alloc_unsafe_from_free_pool(sizes)
+            if status.is_ok():
+                return status
+
+        # 2. try to allocate from _pool
+        if len(self._reuse_pool) > 0:
+            return self._alloc_unsafe_from_reuse_pool(sizes)
+
+        return Status(StatusCodes.OUT_OF_MEMORY)
+
+    def _alloc_unsafe_from_free_pool(
+        self, sizes: Sequence[int]
+    ) -> Status[Sequence[MemoryRegion]]:
+        # all mrs have uniform size
+        mr_size = sizes[0]
+
+        # Get the first memory region from the list
+        target_mr = self._free_pool.popleft()
+        target_mr_len = target_mr.length
+
+        # Calculate allocated size
+        allocated = 0
+        nmrs = 0
+        for size in sizes:
+            if size > target_mr_len - allocated:
+                break
+            allocated += size
+            nmrs += 1
+
+        # Split the memory region if needed
+        if (target_mr_len - allocated) >= mr_size:
+            left_over_mr = MemoryRegionIntl(
+                slab=target_mr.slab,
+                addr=target_mr.addr + allocated,
+                length=target_mr.length - allocated,
+            )
+            self._free_pool.appendleft(left_over_mr)
+        elif target_mr_len > allocated:
+            self._frag_nbytes += target_mr_len - allocated
+
+        offset = 0
+        mrs = [None] * nmrs
+        for i in range(nmrs):
+            mrs[i] = MemoryRegion(  # type: ignore
+                self, target_mr.slab, target_mr.addr + offset, sizes[i]
+            )
+            offset += sizes[i]
+        return Status.ok(mrs)  # type: ignore
+
+    def _alloc_unsafe_from_reuse_pool(
+        self, sizes: Sequence[int]
+    ) -> Status[Sequence[MemoryRegion]]:
+        nmrs = min(len(self._reuse_pool), len(sizes))
+        mrs: List[MemoryRegion] = []
+        for _ in range(nmrs):
+            target = self._reuse_pool.popleft()
+            target.allocator = self
+            target.ref_up()
+            mrs.append(target)
+        return Status.ok(mrs)
+
+    def _finalize_mr_unsafe(self, mr: MemoryRegion) -> None:
+        if mr.capacity <= 0:
+            return
+
+        mr.allocator = None  # type: ignore
+        self._reuse_pool.append(mr)
+
+    def assert_consistency(self) -> None:
+        with self._lock:
+            free_pool_nbytes = sum(mr.length for mr in self._free_pool)
+            pool_nbytes = sum(mr.length for mr in self._reuse_pool)
+            free_nbytes = free_pool_nbytes + pool_nbytes
+            expected_free_nbytes = (
+                self.capacity_nbytes - self._used_nbytes - self._frag_nbytes
+            )
+            assert free_nbytes == expected_free_nbytes, (
+                f"Free memory ({free_nbytes}) does not match "
+                f"un-used capacity ({expected_free_nbytes})"
             )
