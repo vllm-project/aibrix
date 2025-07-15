@@ -24,6 +24,7 @@ from aibrix_kvcache import (
     KVCacheConfig,
     ModelSpec,
     cache_manager,
+    TokenListView,
 )
 from aibrix_kvcache.memory import TensorPoolAllocator
 
@@ -104,7 +105,7 @@ def test_cache_initialization(cache_mgr_fixture):
 
 def test_put_and_get_aligned(cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
-    tokens = [i for i in range(32)]
+    tokens = TokenListView([i for i in range(32)])
     origin_tokens = copy.deepcopy(tokens)
     status = cache_mgr.allocate_for(None, tokens)
     assert status.is_ok()
@@ -140,6 +141,11 @@ def test_put_and_get_aligned(cache_mgr_fixture):
 def test_put_and_get_with_prefix(cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
     tokens0 = [i for i in range(32)]
+    tokens1 = [i for i in range(100, 132)]
+    all_tokens = TokenListView(tokens0 + tokens1)
+    tokens0 = all_tokens[:32]
+    tokens1 = all_tokens[32:]
+
     status = cache_mgr.allocate_for(None, tokens0)
     assert status.is_ok()
     put_handle0 = status.value
@@ -151,7 +157,6 @@ def test_put_and_get_with_prefix(cache_mgr_fixture):
     put_status = cache_mgr.put(None, tokens0, put_handle0)
     assert put_status.is_ok()
 
-    tokens1 = [i for i in range(100, 132)]
     status = cache_mgr.allocate_for(None, tokens1)
     assert status.is_ok()
     put_handle1 = status.value
@@ -208,7 +213,7 @@ def test_put_and_get_with_prefix(cache_mgr_fixture):
 def test_duplicated_puts(cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
     for _ in range(10):
-        tokens = [i for i in range(32)]
+        tokens = TokenListView([i for i in range(32)])
         status = cache_mgr.allocate_for(None, tokens)
         assert status.is_ok()
         put_handle = status.value
@@ -237,7 +242,7 @@ def test_duplicated_puts(cache_mgr_fixture):
 
 def test_delete(cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
-    tokens = [i for i in range(32)]
+    tokens = TokenListView([i for i in range(32)])
     origin_tokens = copy.deepcopy(tokens)
     status = cache_mgr.allocate_for(None, tokens)
     assert status.is_ok()
@@ -274,8 +279,16 @@ def test_stress_cache(cache_mgr_fixture, compact_layout_enabled):
     query = {}
     for i in range(200):
         num_prefix_blocks = random.randint(0, 10)
+        num_token_blocks = random.randint(1, 64)
+        tokens = [j for j in range(num_token_blocks * 16)]
+        random.shuffle(tokens)
+
         if num_prefix_blocks > 0:
             prefix_tokens = [j for j in range(num_prefix_blocks * 16)]
+            all_tokens = TokenListView(prefix_tokens + tokens)
+            prefix_tokens = all_tokens[: num_prefix_blocks * 16]
+            tokens = all_tokens[num_prefix_blocks * 16 :]
+
             status = cache_mgr.allocate_for(None, prefix_tokens)
             assert status.is_ok()
             prefix_handle = status.value
@@ -295,10 +308,8 @@ def test_stress_cache(cache_mgr_fixture, compact_layout_enabled):
             status.value[1].release()
         else:
             prefix_tokens = None
+            tokens = TokenListView(tokens)
 
-        num_token_blocks = random.randint(1, 64)
-        tokens = [j for j in range(num_token_blocks * 16)]
-        random.shuffle(tokens)
         status = cache_mgr.allocate_for(prefix_tokens, tokens)
         if status.is_out_of_memory():
             continue
@@ -321,7 +332,7 @@ def test_stress_cache(cache_mgr_fixture, compact_layout_enabled):
             continue
 
         status.value[1].release()
-        query[i] = (prefix_tokens or [], tokens, token_tensors)
+        query[i] = (prefix_tokens or tokens[:0], tokens, token_tensors)
 
     if param.endswith("async"):
         cache_mgr.flush()

@@ -20,6 +20,7 @@ from typing import List
 import pytest
 import torch
 
+from aibrix_kvcache import TokenListView
 from aibrix_kvcache.l2 import KeyBuilder, L2Cache
 from aibrix_kvcache.l2.key_builders import Hasher
 from aibrix_kvcache.memory import MemoryRegion, TensorPoolAllocator
@@ -31,7 +32,7 @@ from .conftest import (
 
 
 def build_get_mr(
-    allocator: TensorPoolAllocator, block_nbytes: int, tokens: List[int]
+    allocator: TensorPoolAllocator, block_nbytes: int, tokens: TokenListView
 ) -> MemoryRegion:
     size = MemoryRegion.calculate_size(
         block_nbytes=block_nbytes, ntokens=len(tokens)
@@ -49,12 +50,12 @@ def build_put_mr(
     allocator: TensorPoolAllocator,
     block_nbytes: int,
     block_ntokens: int,
-    tokens: List[int],
+    tokens: TokenListView,
 ) -> MemoryRegion:
     mr = build_get_mr(allocator, block_nbytes, tokens)
     mr.pack_tokens(
-        prefix=tuple(tokens[:-block_ntokens]),
-        tokens=tuple(tokens[-block_ntokens:]),
+        prefix=tokens[:-block_ntokens],
+        tokens=tokens[-block_ntokens:],
     )
     mr.seal()
     randomize_mrs([mr])
@@ -65,13 +66,15 @@ def build_get_mrs(
     allocator: TensorPoolAllocator,
     block_nbytes: int,
     block_ntokens: int,
-    prefix: List[int] | None,
-    tokens: List[int],
+    prefix: TokenListView | None,
+    tokens: TokenListView,
 ) -> List[MemoryRegion]:
     prefix_len = len(prefix) if prefix is not None else 0
     assert prefix_len % block_ntokens == 0
+    if prefix is None:
+        prefix = tokens[:0]
     acc_tokens = [
-        (prefix or []) + tokens[: s + block_ntokens]
+        prefix + tokens[: s + block_ntokens]
         for s in range(0, len(tokens), block_ntokens)
     ]
     return [
@@ -83,13 +86,15 @@ def build_put_mrs(
     allocator: TensorPoolAllocator,
     block_nbytes: int,
     block_ntokens: int,
-    prefix: List[int] | None,
-    tokens: List[int],
+    prefix: TokenListView | None,
+    tokens: TokenListView,
 ) -> List[MemoryRegion]:
     prefix_len = len(prefix) if prefix is not None else 0
     assert prefix_len % block_ntokens == 0
+    if prefix is None:
+        prefix = tokens[:0]
     acc_tokens = [
-        (prefix or []) + tokens[: s + block_ntokens]
+        prefix + tokens[: s + block_ntokens]
         for s in range(0, len(tokens), block_ntokens)
     ]
     return [
@@ -115,7 +120,7 @@ def l2cache_fixture(cache_conf_fixture, request, mocker):
             block_spec=spec,
             executor=ThreadPoolExecutor(max_workers=2),
             key_builder=KeyBuilder.create(
-                "SIMPLE_HASH", block_size=spec.block_ntokens
+                "ROLLING_HASH", block_size=spec.block_ntokens
             ),
         )
         if mputmget_enabled:
@@ -150,7 +155,7 @@ async def test_put_and_get_aligned(l2cache_fixture):
     capacity_nbytes = 128 * spec.block_nbytes
     allocator = TensorPoolAllocator(capacity_nbytes=capacity_nbytes)
 
-    tokens = [i for i in range(32)]
+    tokens = TokenListView([i for i in range(32)])
     put_mrs = build_put_mrs(
         allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
     )
@@ -183,6 +188,11 @@ async def test_put_and_get_with_prefix(l2cache_fixture):
     allocator = TensorPoolAllocator(capacity_nbytes=capacity_nbytes)
 
     tokens0 = [i for i in range(32)]
+    tokens1 = [i for i in range(100, 132)]
+    all_tokens = TokenListView(tokens0 + tokens1)
+    tokens0 = all_tokens[:32]
+    tokens1 = all_tokens[32:]
+
     put_mrs0 = build_put_mrs(
         allocator, spec.block_nbytes, spec.block_ntokens, None, tokens0
     )
@@ -190,7 +200,6 @@ async def test_put_and_get_with_prefix(l2cache_fixture):
     assert put_status.is_ok()
     assert put_status.value == 2
 
-    tokens1 = [i for i in range(100, 132)]
     put_mrs1 = build_put_mrs(
         allocator, spec.block_nbytes, spec.block_ntokens, tokens0, tokens1
     )
@@ -239,7 +248,7 @@ async def test_duplicated_puts(l2cache_fixture):
     allocator = TensorPoolAllocator(capacity_nbytes=capacity_nbytes)
 
     for _ in range(10):
-        tokens = [i for i in range(32)]
+        tokens = TokenListView([i for i in range(32)])
         put_mrs = build_put_mrs(
             allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
         )
@@ -274,6 +283,11 @@ async def test_conflicted_puts(l2cache_fixture, compact_layout_enabled, mocker):
     allocator = TensorPoolAllocator(capacity_nbytes=capacity_nbytes)
 
     tokens0 = [i for i in range(16)]
+    tokens1 = [i * 2 for i in range(16)]
+    all_tokens = TokenListView(tokens0 + tokens1)
+    tokens0 = all_tokens[:16]
+    tokens1 = all_tokens[16:]
+
     put_mrs = build_put_mrs(
         allocator, spec.block_nbytes, spec.block_ntokens, None, tokens0
     )
@@ -282,7 +296,6 @@ async def test_conflicted_puts(l2cache_fixture, compact_layout_enabled, mocker):
     put_status = await l2cache.put(None, tokens0, put_mrs)
     assert put_status.is_ok()
 
-    tokens1 = [i * 2 for i in range(16)]
     get_mrs = build_get_mrs(
         allocator, spec.block_nbytes, spec.block_ntokens, None, tokens1
     )
@@ -314,7 +327,7 @@ async def test_delete(l2cache_fixture):
     capacity_nbytes = 128 * spec.block_nbytes
     allocator = TensorPoolAllocator(capacity_nbytes=capacity_nbytes)
 
-    tokens = [i for i in range(32)]
+    tokens = TokenListView([i for i in range(32)])
     put_mrs = build_put_mrs(
         allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
     )
@@ -352,8 +365,16 @@ async def test_stress_cache(l2cache_fixture):
     query = {}
     for i in range(200):
         num_prefix_blocks = random.randint(0, 10)
+        num_token_blocks = random.randint(1, 64)
+        tokens = [j for j in range(num_token_blocks * 16)]
+        random.shuffle(tokens)
+
         if num_prefix_blocks > 0:
             prefix_tokens = [j for j in range(num_prefix_blocks * 16)]
+            all_tokens = TokenListView(prefix_tokens + tokens)
+            prefix_tokens = all_tokens[: num_prefix_blocks * 16]
+            tokens = all_tokens[num_prefix_blocks * 16 :]
+
             prefix_mrs = build_put_mrs(
                 allocator,
                 spec.block_nbytes,
@@ -372,10 +393,8 @@ async def test_stress_cache(l2cache_fixture):
             release_mrs(prefix_mrs)
         else:
             prefix_tokens = None
+            tokens = TokenListView(tokens)
 
-        num_token_blocks = random.randint(1, 64)
-        tokens = [j for j in range(num_token_blocks * 16)]
-        random.shuffle(tokens)
         token_mrs = build_put_mrs(
             allocator,
             spec.block_nbytes,
@@ -391,7 +410,7 @@ async def test_stress_cache(l2cache_fixture):
         assert put_status.is_ok()
         assert put_status.value >= 0 and put_status.value <= len(token_mrs)
         await l2cache.get(prefix_tokens, tokens, token_mrs)
-        query[i] = (prefix_tokens or [], tokens, token_mrs)
+        query[i] = (prefix_tokens or tokens[:0], tokens, token_mrs)
 
     results = []
     for i in range(200):

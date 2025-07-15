@@ -291,7 +291,7 @@ L2 Cache Configuration
      - "20"
      - Per-token timeout in milliseconds.
    * - AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER
-     - "RAW"
+     - "ROLLING_HASH"
      - Key builder for L2 cache ("RAW", "ROLLING_HASH", or "SIMPLE_HASH")
    * - AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_TYPE
      - "HOT"

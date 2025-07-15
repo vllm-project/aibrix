@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import array
-from typing import Sequence, Tuple
+from typing import Tuple
 
+from ...cache_hashable import TokenListView
 from ...utils import hash_combine_128
 from .hasher import Hasher
 from .key_builder import KeyBuilder
@@ -30,45 +30,48 @@ class RollingHashKeyBuilder(KeyBuilder):
         return "ro"
 
     def build(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Tuple[Tuple[Tuple[int, ...], bytes], ...]:
+        self, prefix: TokenListView | None, tokens: TokenListView
+    ) -> Tuple[Tuple[TokenListView, bytes], ...]:
         assert prefix is None or len(prefix) % self.block_size == 0
 
         token_size = len(tokens) - len(tokens) % self.block_size
         if token_size < self.block_size:
             return tuple()
 
-        results = []
+        if prefix is not None:
+            all = prefix + tokens
+        else:
+            all = tokens
+
+        all_bytes = memoryview(all._data.data)
+        attr_name = f"{self.__class__.__name__}.hash_bytes"
+        if hasattr(all._meta_, attr_name):
+            hash_bytes = getattr(all._meta_, attr_name)
+        else:
+            hash_bytes = []
+            prev_hash = -1
+
+            # calculate hashes for all._data and cache them in all._meta
+            for i in range(0, len(all._data), self.block_size):
+                data = all_bytes[i : i + self.block_size]
+                curr_hash = self.hasher.hash(data)
+
+                if i > 0:
+                    curr_hash = hash_combine_128(prev_hash, curr_hash)
+
+                prev_hash = curr_hash
+                hash_bytes.append(curr_hash.to_bytes(16))
+
+            setattr(all._meta_, attr_name, hash_bytes)
 
         prefix_len = len(prefix) if prefix is not None else 0
-        prefix_hash = -1
-        all = (tuple(prefix) if prefix is not None else ()) + tuple(tokens)
-        all_bytes = memoryview(array.array("I", all).tobytes())
-        itemsize = array.array("I").itemsize
-        for i in range(0, prefix_len, self.block_size):
-            start = i * itemsize
-            end = (i + self.block_size) * itemsize
-            data = all_bytes[start:end]
-            curr_hash = self.hasher.hash(data)
-
-            if prefix_hash != -1:
-                curr_hash = hash_combine_128(prefix_hash, curr_hash)
-
-            prefix_hash = curr_hash
+        results = []
 
         for i in range(0, token_size, self.block_size):
             keys = all[: prefix_len + i + self.block_size]
 
-            start = (prefix_len + i) * itemsize
-            end = (prefix_len + i + self.block_size) * itemsize
-            data = all_bytes[start:end]
-            curr_hash = self.hasher.hash(data)
+            curr_hash_bytes = hash_bytes[(prefix_len + i) // self.block_size]
 
-            if prefix_hash != -1:
-                curr_hash = hash_combine_128(prefix_hash, curr_hash)
-
-            prefix_hash = curr_hash
-
-            results.append((keys, curr_hash.to_bytes(16)))
+            results.append((keys, curr_hash_bytes))
 
         return tuple(results)

@@ -21,6 +21,7 @@ import torch
 from sortedcontainers import SortedDict, SortedList
 
 from .. import envs
+from ..cache_hashable import TokenListView
 from ..status import Status, StatusCodes
 from ..utils import round_up
 from .ref_counted_obj import RefCountedObj
@@ -122,8 +123,8 @@ class MemoryRegion(RefCountedObj):
     def _init_meta(self) -> None:
         self._block_nbytes = -1
         self._is_sealed = False
-        self._prefix: Tuple[int, ...] | None = None
-        self._tokens: Tuple[int, ...] = tuple()
+        self._prefix: TokenListView | None = None
+        self._tokens: TokenListView | None = None
 
     def __len__(self) -> int:
         return self.length
@@ -246,8 +247,8 @@ class MemoryRegion(RefCountedObj):
     def pack_tokens(
         self,
         *,
-        tokens: Tuple[int, ...],
-        prefix: Tuple[int, ...] | None = None,
+        tokens: TokenListView,
+        prefix: TokenListView | None = None,
     ) -> None:
         """Pack tokens into the MR.
         Args:
@@ -291,17 +292,24 @@ class MemoryRegion(RefCountedObj):
             torch.from_numpy(footer.to_numpy()).view(torch.uint8)
         )
         # Pack tokens
-        all = np.array((prefix or tuple()) + tokens, dtype=np.int32)
+        if prefix is not None:
+            all = prefix + tokens
+        else:
+            all = tokens
         start = stop
-        stop = start + bytes_per_token * len(all)
-        self.slab[start:stop].copy_(torch.from_numpy(all).view(torch.uint8))
+        stop = start + all.nbytes()
+        self.slab[start:stop].copy_(
+            torch.from_numpy(all.to_numpy()).view(torch.uint8)
+        )
 
-    def unpack_tokens(self) -> Tuple[Tuple[int, ...] | None, Tuple[int, ...]]:
+    def unpack_tokens(
+        self,
+    ) -> Tuple[TokenListView | None, TokenListView | None]:
         """Unpack tokens from the MR.
         Returns:
             The prefix and tokens.
         """
-        if len(self._tokens) > 0 or MR_USE_COMPACT_LAYOUT:
+        if self._tokens is not None or MR_USE_COMPACT_LAYOUT:
             return self._prefix, self._tokens
 
         bytes_per_token = np.dtype(np.int32).itemsize
@@ -311,7 +319,7 @@ class MemoryRegion(RefCountedObj):
 
         if magic != MemoryRegion.MAGIC:
             # corrupted mr or current mr is not packed with tokens
-            return None, tuple()
+            return None, None
 
         start = stop
         stop = start + MemoryRegionFooter.nbytes()
@@ -322,18 +330,18 @@ class MemoryRegion(RefCountedObj):
         if footer.prefix_length <= 0:
             prefix = None
         else:
-            start = stop
-            stop = start + bytes_per_token * footer.prefix_length
-            prefix = tuple(
-                self.slab[start:stop].view(torch.int32).numpy().tolist()
+            prefix = TokenListView.from_numpy(
+                self.slab[start:stop].view(torch.int32).numpy()
             )
 
         if footer.tokens_length <= 0:
-            return None, tuple()
+            return None, None
 
         start = stop
         stop = start + bytes_per_token * footer.tokens_length
-        tokens = tuple(self.slab[start:stop].view(torch.int32).numpy().tolist())
+        tokens = TokenListView.from_numpy(
+            self.slab[start:stop].view(torch.int32).numpy()
+        )
 
         self._prefix = prefix
         self._tokens = tokens
@@ -358,7 +366,7 @@ class MemoryRegion(RefCountedObj):
             # Layout: [cache block, magic, footer, tokens]
             magic_nbytes = np.dtype(np.int32).itemsize
             footer_nbytes = MemoryRegionFooter.nbytes()
-            tokens_nbytes = np.dtype(np.int32).itemsize * ntokens
+            tokens_nbytes = TokenListView.calculate_size(ntokens)
             size = int(
                 block_nbytes + magic_nbytes + footer_nbytes + tokens_nbytes
             )

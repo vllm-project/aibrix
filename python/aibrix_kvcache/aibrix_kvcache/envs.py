@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_L2_CACHE_PLACEMENT_POLICY: str = "SIMPLE"
 
     # L2 cache key builder. Defaults to raw.
-    AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER: str = "RAW"
+    AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER: str = "ROLLING_HASH"
 
     # If meta service backend is not set, L2 cache backend will use direct
     # mode to access the given cache server.
@@ -232,7 +232,7 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
         .upper()
     ),
     "AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER": lambda: (
-        os.getenv("AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER", "RAW")
+        os.getenv("AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER", "ROLLING_HASH")
         .strip()
         .upper()
     ),
