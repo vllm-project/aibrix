@@ -353,7 +353,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
             allocator_capacity_nbytes += more_capacity_nbytes
 
-        self._allocator = TensorPoolAllocator(
+        self._allocator = TensorPoolAllocator.create(
             capacity_nbytes=allocator_capacity_nbytes,
             device=device,
             pin_memory=pin_memory,

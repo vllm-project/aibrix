@@ -52,7 +52,7 @@ def test_cache_initialization(cache_conf_fixture):
     cache = L1Cache(
         eviction_policy="LRU",
         capacity_nbytes=capacity_nbytes,
-        allocator=TensorPoolAllocator(capacity_nbytes=capacity_nbytes),
+        allocator=TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes),
         block_spec=spec,
     )
 
@@ -67,7 +67,7 @@ def test_put_and_get_aligned(cache_conf_fixture):
     cache = L1Cache(
         eviction_policy="LRU",
         capacity_nbytes=capacity_nbytes,
-        allocator=TensorPoolAllocator(capacity_nbytes=capacity_nbytes),
+        allocator=TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes),
         block_spec=spec,
     )
 
@@ -104,7 +104,7 @@ def test_put_and_get_unaligned(cache_conf_fixture):
     cache = L1Cache(
         eviction_policy="LRU",
         capacity_nbytes=capacity_nbytes,
-        allocator=TensorPoolAllocator(capacity_nbytes=capacity_nbytes),
+        allocator=TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes),
         block_spec=spec,
     )
 
@@ -142,7 +142,7 @@ def test_put_and_get_with_prefix(cache_conf_fixture, eviction_policy):
     cache = L1Cache(
         eviction_policy=eviction_policy,
         capacity_nbytes=capacity_nbytes,
-        allocator=TensorPoolAllocator(capacity_nbytes=capacity_nbytes),
+        allocator=TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes),
         block_spec=spec,
     )
 
@@ -222,7 +222,7 @@ def test_duplicated_puts(cache_conf_fixture, eviction_policy):
     cache = L1Cache(
         eviction_policy=eviction_policy,
         capacity_nbytes=capacity_nbytes,
-        allocator=TensorPoolAllocator(capacity_nbytes=capacity_nbytes),
+        allocator=TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes),
         block_spec=spec,
     )
 
@@ -260,7 +260,7 @@ def test_cache_eviction(cache_conf_fixture, eviction_policy):
     cache = L1Cache(
         eviction_policy=eviction_policy,
         capacity_nbytes=capacity_nbytes,
-        allocator=TensorPoolAllocator(capacity_nbytes=capacity_nbytes),
+        allocator=TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes),
         block_spec=spec,
     )
 
@@ -307,7 +307,7 @@ def test_stress_cache(cache_conf_fixture, eviction_policy):
     cache = L1Cache(
         eviction_policy=eviction_policy,
         capacity_nbytes=capacity_nbytes,
-        allocator=TensorPoolAllocator(capacity_nbytes=capacity_nbytes),
+        allocator=TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes),
         block_spec=spec,
     )
 

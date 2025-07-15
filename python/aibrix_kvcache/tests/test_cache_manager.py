@@ -274,7 +274,7 @@ def test_delete(cache_mgr_fixture):
     assert get_status.is_not_found()
 
 
-def test_stress_cache(cache_mgr_fixture, compact_layout_enabled):
+def test_stress_cache(compact_layout_enabled, cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
     query = {}
     for i in range(200):

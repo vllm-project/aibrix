@@ -28,6 +28,7 @@ from aibrix_kvcache import _custom_ops as ops
 from vllm.platforms import current_platform
 from vllm.utils import get_kv_cache_torch_dtype
 
+
 DTYPES = [torch.half, torch.bfloat16, torch.float]
 NUM_LAYERS = [8]
 NUM_HEADS = [8]

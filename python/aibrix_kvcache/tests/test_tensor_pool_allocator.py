@@ -17,6 +17,7 @@ import random
 import pytest
 
 from aibrix_kvcache.memory import TensorPoolAllocator
+from aibrix_kvcache.memory.allocator import CoalescingPoolAllocator
 
 
 @pytest.fixture
@@ -24,12 +25,13 @@ def allocator(compact_layout_enabled):
     # use a small slab size for testing
     TensorPoolAllocator.SLAB_MAX_NBYTES = 1024
     TensorPoolAllocator.ALLOC_SIZE_ALIGNMENT = 8
-    return TensorPoolAllocator(capacity_nbytes=1024 * 1024)
+    return TensorPoolAllocator.create(capacity_nbytes=1024 * 1024)
 
 
 def test_basic_allocation(allocator):
     """Test basic allocation and deallocation."""
-    assert allocator.num_memory_regions == 1024
+    if hasattr(allocator, "num_memory_regions"):
+        assert allocator.num_memory_regions == 1024
     assert allocator.capacity_nbytes == 1024 * 1024
     sizes = [16] * 64  # 1024
     status = allocator.alloc(sizes)
@@ -39,18 +41,21 @@ def test_basic_allocation(allocator):
     mrs = status.value
     assert len(mrs) == len(sizes)
     assert sum([mr.length for mr in mrs]) == sum(sizes)
-    assert allocator.num_memory_regions == 1023
+    if hasattr(allocator, "num_memory_regions"):
+        assert allocator.num_memory_regions == 1023
     [mr.ref_down() for mr in mrs]  # Trigger garbage collection
     assert len(allocator) == 0
     allocator.assert_consistency()
-    assert allocator.num_memory_regions == 1024
+    if hasattr(allocator, "num_memory_regions"):
+        assert allocator.num_memory_regions == 1024
 
 
 def test_allocating_large(allocator):
     """Test allocating with a set of sizes whose sum is larger than
     the slab size.
     """
-    assert allocator.num_memory_regions == 1024
+    if hasattr(allocator, "num_memory_regions"):
+        assert allocator.num_memory_regions == 1024
     sizes = [16] * 144  # 1024 * 2 + 256
     status = allocator.alloc(sizes)
     allocator.assert_consistency()
@@ -59,16 +64,19 @@ def test_allocating_large(allocator):
     mrs = status.value
     assert len(mrs) == len(sizes)
     assert sum([mr.length for mr in mrs]) == sum(sizes)
-    assert allocator.num_memory_regions == 1022
+    if hasattr(allocator, "num_memory_regions"):
+        assert allocator.num_memory_regions == 1022
     [mr.ref_down() for mr in mrs]  # Trigger garbage collection
     assert len(allocator) == 0
     allocator.assert_consistency()
-    assert allocator.num_memory_regions == 1024
+    if hasattr(allocator, "num_memory_regions"):
+        assert allocator.num_memory_regions == 1024
 
 
 def test_allocating_heterogeneous(allocator):
     """Test allocating with heterogeneous sizes."""
-    assert allocator.num_memory_regions == 1024
+    if hasattr(allocator, "num_memory_regions"):
+        assert allocator.num_memory_regions == 1024
     sizes = [random.randint(8, 1024) for _ in range(31)]
     status = allocator.alloc(sizes)
     allocator.assert_consistency()
@@ -80,11 +88,15 @@ def test_allocating_heterogeneous(allocator):
     [mr.ref_down() for mr in mrs]  # Trigger garbage collection
     assert len(allocator) == 0
     allocator.assert_consistency()
-    assert allocator.num_memory_regions == 1024
+    if hasattr(allocator, "num_memory_regions"):
+        assert allocator.num_memory_regions == 1024
 
 
 def test_coalescing_mechanism(allocator):
     """Test memory coalescing when MRs are deallocated."""
+    if not isinstance(allocator, CoalescingPoolAllocator):
+        pytest.skip("CoalescingPoolAllocator is required")
+
     assert allocator.num_memory_regions == 1024
     u = [16]
     sizes1, sizes2, sizes3 = u * 8, u * 32, u * 8

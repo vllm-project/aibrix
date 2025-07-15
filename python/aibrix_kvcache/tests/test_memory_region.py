@@ -30,7 +30,7 @@ def test_pack_unpack_basic(compact_layout_enabled):
         == expected_mr_nbytes
     )
 
-    allocator = TensorPoolAllocator(capacity_nbytes=1024)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=1024)
     status = allocator.alloc(expected_mr_nbytes)
     assert status.is_ok()
     mr = status.get()[0]
@@ -76,7 +76,7 @@ def test_pack_unpack_max(compact_layout_enabled):
         == expected_mr_nbytes
     )
 
-    allocator = TensorPoolAllocator(capacity_nbytes=1024)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=1024)
     status = allocator.alloc(expected_mr_nbytes)
     assert status.is_ok()
     mr = status.get()[0]

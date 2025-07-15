@@ -153,7 +153,7 @@ async def test_put_and_get_aligned(l2cache_fixture):
     open_status.raise_if_has_exception()
 
     capacity_nbytes = 128 * spec.block_nbytes
-    allocator = TensorPoolAllocator(capacity_nbytes=capacity_nbytes)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes)
 
     tokens = TokenListView([i for i in range(32)])
     put_mrs = build_put_mrs(
@@ -185,7 +185,7 @@ async def test_put_and_get_with_prefix(l2cache_fixture):
     open_status.raise_if_has_exception()
 
     capacity_nbytes = 128 * spec.block_nbytes
-    allocator = TensorPoolAllocator(capacity_nbytes=capacity_nbytes)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes)
 
     tokens0 = [i for i in range(32)]
     tokens1 = [i for i in range(100, 132)]
@@ -245,7 +245,7 @@ async def test_duplicated_puts(l2cache_fixture):
     open_status.raise_if_has_exception()
 
     capacity_nbytes = 128 * spec.block_nbytes
-    allocator = TensorPoolAllocator(capacity_nbytes=capacity_nbytes)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes)
 
     for _ in range(10):
         tokens = TokenListView([i for i in range(32)])
@@ -269,7 +269,7 @@ async def test_duplicated_puts(l2cache_fixture):
 
 
 @pytest.mark.asyncio
-async def test_conflicted_puts(l2cache_fixture, compact_layout_enabled, mocker):
+async def test_conflicted_puts(compact_layout_enabled, l2cache_fixture, mocker):
     # Mock all hashers to build conflicted keys
     hashers = Hasher.__subclasses__()
     for hasher in hashers:
@@ -280,7 +280,7 @@ async def test_conflicted_puts(l2cache_fixture, compact_layout_enabled, mocker):
     open_status.raise_if_has_exception()
 
     capacity_nbytes = 128 * spec.block_nbytes
-    allocator = TensorPoolAllocator(capacity_nbytes=capacity_nbytes)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes)
 
     tokens0 = [i for i in range(16)]
     tokens1 = [i * 2 for i in range(16)]
@@ -325,7 +325,7 @@ async def test_delete(l2cache_fixture):
     open_status.raise_if_has_exception()
 
     capacity_nbytes = 128 * spec.block_nbytes
-    allocator = TensorPoolAllocator(capacity_nbytes=capacity_nbytes)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes)
 
     tokens = TokenListView([i for i in range(32)])
     put_mrs = build_put_mrs(
@@ -360,7 +360,7 @@ async def test_stress_cache(l2cache_fixture):
     open_status.raise_if_has_exception()
 
     capacity_nbytes = 8192 * spec.block_nbytes
-    allocator = TensorPoolAllocator(capacity_nbytes=capacity_nbytes)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes)
 
     query = {}
     for i in range(200):
