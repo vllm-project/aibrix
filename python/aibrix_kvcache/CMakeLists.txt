@@ -10,8 +10,8 @@ cmake_minimum_required(VERSION 3.26)
 # cmake --build . --target install
 #
 # If you want to only build one target, make sure to install it manually:
-# cmake --build . --target _C
-# cmake --install . --component _C
+# cmake --build . --target _aibrix_C
+# cmake --install . --component _aibrix_C
 project(aibrix_extensions LANGUAGES CXX)
 
 set(AIBRIX_TARGET_DEVICE "cuda" CACHE STRING "Target device backend")
@@ -150,7 +150,7 @@ message(STATUS "FetchContent base directory: ${FETCHCONTENT_BASE_DIR}")
 #
 
 #
-# _C extension
+# _aibrix_C extension
 #
 
 set(AIBRIX_EXT_SRC
@@ -159,7 +159,7 @@ set(AIBRIX_EXT_SRC
 
 message(STATUS "Enabling C extension.")
 define_gpu_extension_target(
-  _C
+  _aibrix_C
   DESTINATION aibrix_kvcache
   LANGUAGE ${AIBRIX_GPU_LANG}
   SOURCES ${AIBRIX_EXT_SRC}
