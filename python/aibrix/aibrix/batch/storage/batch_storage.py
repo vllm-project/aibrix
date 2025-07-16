@@ -48,6 +48,7 @@ def upload_input_data(inputDataFileName: str):
     Args:
         inputDataFileName (str): an input file string.
     """
+    assert p_storage is not None
     job_id = uuid.uuid1()
     p_storage.write_job_input_data(job_id, inputDataFileName)
 
@@ -62,11 +63,13 @@ def read_job_requests(job_id: str, start_index: int, num_requests: int):
     in memory with a length of NUM_REQUESTS_PER_READ.
     It also supports random access, if backward read is necessary.
     """
-
+    assert p_storage is not None
     if job_id not in current_job_offsets:
         logger.error(
-            "Create job first. Can not find corresponding job ID", job_id=job_id, current_job_offsets=current_job_offsets.keys()
-        )
+            "Create job first. Can not find corresponding job ID",
+            job_id=job_id,
+            current_job_offsets=current_job_offsets.keys(),
+        )  # type: ignore[call-arg]
         return []
 
     # if no request is cached, this reads a list of requests from storage.

@@ -14,6 +14,7 @@
 
 import uuid
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Dict, Optional
 
 from .batch_job import (
@@ -26,18 +27,22 @@ from .batch_job import (
     TypeMeta,
 )
 
+# Annotation prefix for batch job specifications
+JOB_ANNOTATION_PREFIX = "batch.job.aibrix.ai/"
+
+
+class JobAnnotationKey(str, Enum):
+    """Valid annotation keys for job specifications."""
+
+    SESSION_ID = f"{JOB_ANNOTATION_PREFIX}session-id"
+    INPUT_FILE_ID = f"{JOB_ANNOTATION_PREFIX}input-file-id"
+    ENDPOINT = f"{JOB_ANNOTATION_PREFIX}endpoint"
+    COMPLETION_WINDOW = f"{JOB_ANNOTATION_PREFIX}completion-window"
+    METADATA_PREFIX = f"{JOB_ANNOTATION_PREFIX}metadata."
+
 
 class BatchJobTransformer:
     """Helper class to transform Kubernetes Job objects to BatchJob instances."""
-
-    # Annotation prefix for batch job specifications
-    ANNOTATION_PREFIX = "batch.job.aibrix.ai/"
-
-    # Specific annotation keys
-    INPUT_FILE_ID_KEY = f"{ANNOTATION_PREFIX}input-file-id"
-    ENDPOINT_KEY = f"{ANNOTATION_PREFIX}endpoint"
-    COMPLETION_WINDOW_KEY = f"{ANNOTATION_PREFIX}completion-window"
-    BATCH_METADATA_PREFIX = f"{ANNOTATION_PREFIX}metadata."
 
     @classmethod
     def from_k8s_job(cls, k8s_job: Any) -> BatchJob:
@@ -55,7 +60,10 @@ class BatchJobTransformer:
         """
         # Extract metadata with null safety
         metadata = cls._safe_get_attr(k8s_job, "metadata", {})
-        annotations = cls._safe_get_attr(metadata, "annotations", {})
+        annotations: Dict[str, str] = cls._safe_get_attr(metadata, "annotations", {})
+
+        # Extract SessionID from annotations
+        session_id = annotations.get(JobAnnotationKey.SESSION_ID.value)
 
         # Extract BatchJobSpec from annotations
         spec = cls._extract_batch_job_spec(annotations)
@@ -70,32 +78,41 @@ class BatchJobTransformer:
         status = cls._extract_batch_job_status(k8s_job, spec)
 
         return BatchJob(
-            typeMeta=type_meta, metadata=object_meta, spec=spec, status=status
+            sessionID=session_id,
+            typeMeta=type_meta,
+            metadata=object_meta,
+            spec=spec,
+            status=status,
         )
 
     @classmethod
     def _extract_batch_job_spec(cls, annotations: Dict[str, str]) -> BatchJobSpec:
         """Extract BatchJobSpec from Kubernetes job annotations."""
         # Extract required fields
-        input_file_id = annotations.get(cls.INPUT_FILE_ID_KEY)
+        input_file_id = annotations.get(JobAnnotationKey.INPUT_FILE_ID.value)
         if not input_file_id:
-            raise ValueError(f"Required annotation '{cls.INPUT_FILE_ID_KEY}' not found")
+            raise ValueError(
+                f"Required annotation '{JobAnnotationKey.INPUT_FILE_ID.value}' not found"
+            )
 
-        endpoint_str = annotations.get(cls.ENDPOINT_KEY)
+        endpoint_str = annotations.get(JobAnnotationKey.ENDPOINT.value)
         if not endpoint_str:
-            raise ValueError(f"Required annotation '{cls.ENDPOINT_KEY}' not found")
+            raise ValueError(
+                f"Required annotation '{JobAnnotationKey.ENDPOINT.value}' not found"
+            )
 
         # Extract optional completion window
         completion_window_str = annotations.get(
-            cls.COMPLETION_WINDOW_KEY, CompletionWindow.TWENTY_FOUR_HOURS.value
+            JobAnnotationKey.COMPLETION_WINDOW.value,
+            CompletionWindow.TWENTY_FOUR_HOURS.value,
         )
 
         # Extract batch metadata (key-value pairs with prefix)
         batch_metadata = {}
         for key, value in annotations.items():
-            if key.startswith(cls.BATCH_METADATA_PREFIX):
+            if key.startswith(JobAnnotationKey.METADATA_PREFIX.value):
                 # Remove prefix to get the actual metadata key
-                metadata_key = key[len(cls.BATCH_METADATA_PREFIX) :]
+                metadata_key = key[len(JobAnnotationKey.METADATA_PREFIX.value) :]
                 batch_metadata[metadata_key] = value
 
         # Use BatchJobSpec.from_strings for validation and creation

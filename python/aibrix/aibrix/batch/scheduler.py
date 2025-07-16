@@ -183,7 +183,7 @@ class JobScheduler:
                 time.sleep(1)
             if not self._jobs_queue.empty():
                 job_id = self._jobs_queue.get()
-                logger.info("Job scheduler is scheduling job", job_id=job_id)  # type: ignore[call-arg]
+                logger.debug("Job scheduler is scheduling job", job_id=job_id)  # type: ignore[call-arg]
 
             # Every time when popping a job from queue,
             # we check if this job is in active state and we try starting the job.

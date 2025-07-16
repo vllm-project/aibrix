@@ -23,6 +23,7 @@ from kubernetes.client.rest import ApiException
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobSpec,
+    JobAnnotationKey,
     JobEntityManager,
     k8s_job_to_batch_job,
 )
@@ -57,7 +58,7 @@ class JobCache(JobEntityManager):
     interface to provide standardized job management capabilities.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the job cache."""
         # Cache of BatchJob objects keyed by batch ID (K8s UID)
         self.active_jobs: Dict[str, BatchJob] = {}
@@ -77,13 +78,13 @@ class JobCache(JobEntityManager):
             logger.info(
                 "Kubernetes Job template loaded successfully",
                 template_path=str(template_path),
-            )
+            )  # type: ignore[call-arg]
         except FileNotFoundError:
             logger.error(
                 "Kubernetes Job template not found",
                 template_path=str(template_path),
                 operation="__init__",
-            )
+            )  # type: ignore[call-arg]
             raise RuntimeError(f"Job template not found at {template_path}")
         except yaml.YAMLError as e:
             logger.error(
@@ -91,7 +92,7 @@ class JobCache(JobEntityManager):
                 template_path=str(template_path),
                 error=str(e),
                 operation="__init__",
-            )
+            )  # type: ignore[call-arg]
             raise RuntimeError(f"Invalid YAML in job template: {e}")
 
         # Initialize Kubernetes client
@@ -106,7 +107,7 @@ class JobCache(JobEntityManager):
                 logger.warning(
                     "Failed to load Kubernetes configuration",
                     reason="no_kubeconfig_or_incluster",
-                )
+                )  # type: ignore[call-arg]
                 self.batch_v1_api = None
             else:
                 self.batch_v1_api = client.BatchV1Api()
@@ -142,7 +143,7 @@ class JobCache(JobEntityManager):
         """
         return list(self.active_jobs.values())
 
-    def submit_job(self, job_spec: BatchJobSpec) -> None:
+    def submit_job(self, session_id: str, job_spec: BatchJobSpec) -> None:
         """Submit job by creating a Kubernetes Job.
 
         Args:
@@ -157,7 +158,7 @@ class JobCache(JobEntityManager):
 
         try:
             # Convert BatchJobSpec to Kubernetes Job manifest
-            k8s_job = self._batch_job_to_k8s_job(job_spec)
+            k8s_job = self._batch_job_to_k8s_job(session_id, job_spec)
 
             # Get namespace from k8s_job, use default if not specified
             namespace = k8s_job.metadata.namespace or "default"
@@ -172,7 +173,7 @@ class JobCache(JobEntityManager):
                 k8s_uid=created_job.metadata.uid,
                 input_file_id=job_spec.input_file_id,
                 endpoint=job_spec.endpoint.value,
-            )
+            )  # type: ignore[call-arg]
 
         except ApiException as e:
             logger.error(  # type: ignore[call-arg]
@@ -182,7 +183,7 @@ class JobCache(JobEntityManager):
                 error=str(e),
                 status_code=e.status,
                 reason=e.reason,
-            )
+            )  # type: ignore[call-arg]
             raise
         except Exception as e:
             logger.error(  # type: ignore[call-arg]
@@ -191,7 +192,7 @@ class JobCache(JobEntityManager):
                 endpoint=job_spec.endpoint.value,
                 error=str(e),
                 operation="submit_job",
-            )
+            )  # type: ignore[call-arg]
             raise
 
     def cancel_job(self, job_id: str) -> None:
@@ -260,7 +261,9 @@ class JobCache(JobEntityManager):
             )
             raise
 
-    def _batch_job_to_k8s_job(self, job_spec: BatchJobSpec) -> client.V1Job:
+    def _batch_job_to_k8s_job(
+        self, session_id: str, job_spec: BatchJobSpec
+    ) -> client.V1Job:
         """Convert BatchJobSpec to Kubernetes Job manifest using pre-loaded template.
 
         Args:
@@ -277,15 +280,18 @@ class JobCache(JobEntityManager):
 
         # Create annotations from BatchJobSpec
         batch_annotations = {
-            "batch.job.aibrix.ai/input-file-id": job_spec.input_file_id,
-            "batch.job.aibrix.ai/endpoint": job_spec.endpoint.value,
-            "batch.job.aibrix.ai/completion-window": job_spec.completion_window.value,
+            JobAnnotationKey.SESSION_ID.value: session_id,
+            JobAnnotationKey.INPUT_FILE_ID.value: job_spec.input_file_id,
+            JobAnnotationKey.ENDPOINT.value: job_spec.endpoint.value,
+            JobAnnotationKey.COMPLETION_WINDOW.value: job_spec.completion_window.value,
         }
 
         # Add batch metadata as annotations
         if job_spec.metadata:
             for key, value in job_spec.metadata.items():
-                batch_annotations[f"batch.job.aibrix.ai/metadata.{key}"] = value
+                batch_annotations[f"{JobAnnotationKey.METADATA_PREFIX.value}{key}"] = (
+                    value
+                )
 
         # Merge template annotations with batch annotations
         template_annotations = job_template.get("metadata", {}).get("annotations") or {}

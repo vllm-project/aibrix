@@ -24,6 +24,8 @@ from aibrix.metadata.core.httpx_client import HTTPXClientWrapper
 from aibrix.metadata.logger import init_logger
 from aibrix.metadata.setting import settings
 
+from .cache import JobCache
+
 logger = init_logger(__name__)
 router = APIRouter()
 
@@ -48,20 +50,28 @@ async def lifespan(app: FastAPI):
     yield
 
     # Code executed on shutdown
+    if app.state.hasattr("job_controller"):
+        await app.state.job_controller.close()
     if app.state.hasattr("httpx_client_wrapper"):
         await app.state.httpx_client_wrapper.stop()
 
 
 def build_app(args: argparse.Namespace):
     if args.enable_fastapi_docs:
-        app = FastAPI(debug=False)
+        app = FastAPI(lifespan=lifespan, debug=False)
     else:
-        app = FastAPI(debug=False, openapi_url=None, docs_url=None, redoc_url=None)
+        app = FastAPI(
+            lifespan=lifespan,
+            debug=False,
+            openapi_url=None,
+            docs_url=None,
+            redoc_url=None,
+        )
 
     app.state.httpx_client_wrapper = HTTPXClientWrapper()
     app.include_router(router)
     if not args.disable_batch_api:
-        app.state.job_controller = BatchDriver()
+        app.state.job_controller = BatchDriver(JobCache())
         app.include_router(
             batch.router, prefix=settings.API_V1_STR, tags=["batches"]
         )  # mount batch api at /v1/batches

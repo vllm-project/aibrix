@@ -13,12 +13,14 @@
 # limitations under the License.
 
 import json
-import logging
 from io import StringIO
 
 import tos
 
 from aibrix.batch.storage.generic_storage import PersistentStorage
+from aibrix.metadata.logger import init_logger
+
+logger = init_logger(__name__)
 
 
 class TOSStorage(PersistentStorage):
@@ -35,21 +37,27 @@ class TOSStorage(PersistentStorage):
 
         try:
             self._client = tos.TosClientV2(ak, sk, endpoint, region)
-            logging.info("Finished creating TOS client!!!")
+            logger.info("Finished creating TOS client!!!")
         except tos.exceptions.TosClientError as e:
-            logging.error(
-                f"fail with client error, message:{e.message}, cause: {e.cause}"
-            )
+            logger.error(
+                "Attempting to create TOS client failed with client error",
+                message=e.message,
+                cause=e.cause,
+            )  # type: ignore[call-arg]
         except tos.exceptions.TosServerError as e:
-            logging.error(f"fail with server error, code: {e.code}")
-            logging.error(f"error with request id: {e.request_id}")
-            logging.error(f"error with message: {e.message}")
-            logging.error(f"error with http code: {e.status_code}")
-            logging.error(f"error with ec: {e.ec}".format())
-            logging.error(f"error with request url: {e.request_url}")
+            logger.error(
+                "Attempting to create TOS client failed with server error",
+                code=e.code,
+                request_id=e.request_id,
+                message=e.message,
+                status_code=e.status_code,
+                ec=e.ec,
+                url=e.request_url,
+            )  # type: ignore[call-arg]
         except Exception as e:
-            logging.error(f"fail with unknown error: {e}")
-            logging.error("Attempting to create TOS client failed.")
+            logger.error(
+                "Attempting to create TOS client failed with unknown error", error=e
+            )  # type: ignore[call-arg]
 
     def write_job_input_data(self, job_id, inputDataFileName):
         """
@@ -77,9 +85,11 @@ class TOSStorage(PersistentStorage):
                     self._bucket_name, obj_key, content=string_io_obj
                 )
         except Exception as e:
-            logging.error(f"TOS write fails with unknown error: {e}")
+            logger.error("TOS write fails with unknown error", job_id=job_id, error=e)
 
-        logging.info(f"TOS receives a job with {num_valid_request} request.")
+        logger.info(
+            "TOS receives a job.", job_id=job_id, num_requests=num_valid_request
+        )  # type: ignore[call-arg]
 
     def read_job_input_data(self, job_id, start_index=0, num_requests=-1):
         """Read job input request data"""
@@ -94,7 +104,9 @@ class TOSStorage(PersistentStorage):
                 json_obj = json.loads(object_stream.read())
                 request_inputs.append(json_obj)
         except Exception as e:
-            logging.error(f"TOS reading job input fails with unknown error: {e}")
+            logger.error(
+                "TOS reading job input fails with unknown error", job_id=job_id, error=e
+            )  # type: ignore[call-arg]
         return request_inputs
 
     def write_job_output_data(self, job_id, start_index, output_list):
@@ -115,9 +127,13 @@ class TOSStorage(PersistentStorage):
                     self._bucket_name, obj_key, content=string_io_obj
                 )
         except Exception as e:
-            logging.error("TOS writing output fails with unknown error: {}".format(e))
+            logger.error(
+                "TOS writing output fails with unknown error", job_id=job_id, error=e
+            )  # type: ignore[call-arg]
         num_valid_request = len(output_list)
-        logging.info(f"Write to TOS for job {job_id} with {num_valid_request} request.")
+        logger.info(
+            "Write output to TOS", job_id=job_id, num_requests=num_valid_request
+        )  # type: ignore[call-arg]
 
     def read_job_output_data(self, job_id, start_index, num_requests):
         """Read job results output from TOS bucket."""
@@ -133,7 +149,11 @@ class TOSStorage(PersistentStorage):
                 json_obj = json.loads(object_stream.read())
                 request_results.append(json_obj)
         except Exception as e:
-            logging.error(f"TOS reading request output fails with unknown error: {e}")
+            logger.error(
+                "TOS reading request output fails with unknown error",
+                job_id=job_id,
+                error=e,
+            )  # type: ignore[call-arg]
         return request_results
 
     def delete_job_data(self, job_id):
@@ -153,7 +173,9 @@ class TOSStorage(PersistentStorage):
                 is_truncated = out.is_truncated
                 marker = out.next_marker
         except Exception as e:
-            logging.error(f"Deleting job fails with unknown error: {e}")
+            logger.error(
+                "Deleting job fails with unknown error", job_id=job_id, error=e
+            )  # type: ignore[call-arg]
 
     def get_job_number_requests(self, job_id):
         """
@@ -177,6 +199,10 @@ class TOSStorage(PersistentStorage):
                 # This ignore directory in common_prefixes
                 num_requests += len(out.contents)
         except Exception as e:
-            logging.error(f"Listing number of reqeusts fails with unknown error: {e}")
+            logger.error(
+                "Listing number of reqeusts fails with unknown error",
+                job_id=job_id,
+                error=e,
+            )  # type: ignore[call-arg]
 
         return num_requests

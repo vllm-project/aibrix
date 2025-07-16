@@ -21,7 +21,7 @@ logger = init_logger(__name__)
 
 
 class RequestProxy:
-    def __init__(self, storage, manager):
+    def __init__(self, storage, manager) -> None:
         """ """
         self._storage = storage
         self._job_manager: JobManager = manager

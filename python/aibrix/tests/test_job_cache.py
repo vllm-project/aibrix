@@ -96,9 +96,9 @@ def test_job_cache_manual_operations():
             deletionTimestamp=None,
         ),
         spec=BatchJobSpec(
-            inputFileID="file-123",
+            input_file_id="file-123",
             endpoint=BatchJobEndpoint.CHAT_COMPLETIONS,
-            completionWindow=CompletionWindow.TWENTY_FOUR_HOURS,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS,
         ),
         status=BatchJobStatus(
             jobID="test-uid-123",

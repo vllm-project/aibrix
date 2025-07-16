@@ -48,7 +48,7 @@ def test_batch_job_to_k8s_job_uses_preloaded_template():
     )
 
     # Convert to K8s Job
-    k8s_job = cache._batch_job_to_k8s_job(job_spec)
+    k8s_job = cache._batch_job_to_k8s_job("test-session-id", job_spec)
 
     # Verify job creation
     assert k8s_job is not None
@@ -57,6 +57,8 @@ def test_batch_job_to_k8s_job_uses_preloaded_template():
 
     # Verify annotations are properly merged
     annotations = k8s_job.metadata.annotations
+    assert "batch.job.aibrix.ai/session-id" in annotations
+    assert annotations["batch.job.aibrix.ai/session-id"] == "test-session-id"
     assert "batch.job.aibrix.ai/input-file-id" in annotations
     assert annotations["batch.job.aibrix.ai/input-file-id"] == "test-file-123"
     assert "batch.job.aibrix.ai/endpoint" in annotations
@@ -81,7 +83,7 @@ def test_namespace_from_k8s_job():
         completion_window="24h",
     )
 
-    k8s_job = cache._batch_job_to_k8s_job(job_spec)
+    k8s_job = cache._batch_job_to_k8s_job("test-session-id", job_spec)
 
     # Verify namespace extraction logic would work
     # (The template sets namespace to "default")
@@ -100,8 +102,8 @@ def test_unique_job_names_generated():
     )
 
     # Create multiple jobs
-    k8s_job1 = cache._batch_job_to_k8s_job(job_spec)
-    k8s_job2 = cache._batch_job_to_k8s_job(job_spec)
+    k8s_job1 = cache._batch_job_to_k8s_job("test-session-id-1", job_spec)
+    k8s_job2 = cache._batch_job_to_k8s_job("test-session-id-2", job_spec)
 
     # Verify unique names
     assert k8s_job1.metadata.name != k8s_job2.metadata.name
@@ -121,7 +123,7 @@ def test_environment_variables_populated():
         completion_window="24h",
     )
 
-    k8s_job = cache._batch_job_to_k8s_job(job_spec)
+    k8s_job = cache._batch_job_to_k8s_job("test-session-id", job_spec)
 
     # Get container env vars
     container = k8s_job.spec.template.spec.containers[0]
@@ -147,7 +149,7 @@ def test_template_deep_copy_isolation():
     )
 
     # Create job (this modifies the template copy)
-    k8s_job = cache._batch_job_to_k8s_job(job_spec)
+    k8s_job = cache._batch_job_to_k8s_job("test-session-id", job_spec)
 
     # Verify original template is unchanged
     assert cache.job_template["metadata"]["name"] == original_name
@@ -170,10 +172,11 @@ def test_annotation_merging_with_empty_template_annotations():
         metadata={"test": "value"},
     )
 
-    k8s_job = cache._batch_job_to_k8s_job(job_spec)
+    k8s_job = cache._batch_job_to_k8s_job("test-session-id", job_spec)
 
     # Verify annotations are properly set despite empty template annotations
     annotations = k8s_job.metadata.annotations
-    assert len(annotations) >= 4  # 3 batch annotations + 1 metadata annotation
+    assert len(annotations) >= 5  # 4 batch annotations + 1 metadata annotation
+    assert "batch.job.aibrix.ai/session-id" in annotations
     assert "batch.job.aibrix.ai/input-file-id" in annotations
     assert "batch.job.aibrix.ai/metadata.test" in annotations

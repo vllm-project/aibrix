@@ -15,8 +15,9 @@
 import asyncio
 import copy
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 import aibrix.batch.storage as _storage
 from aibrix.batch.scheduler import JobScheduler
@@ -34,6 +35,32 @@ from .job_entity import (
     RequestCountStats,
     TypeMeta,
 )
+
+
+# Custom exceptions for job creation
+class JobCreationError(Exception):
+    """Base exception for job creation errors."""
+
+    pass
+
+
+class JobCreationTimeoutError(JobCreationError):
+    """Exception raised when job creation times out."""
+
+    pass
+
+
+@dataclass
+class JobCreationRequest:
+    """Request data for job creation."""
+
+    session_id: str
+    input_file_id: str
+    api_endpoint: str
+    completion_window: str
+    metadata: Dict[str, Any]
+    timeout: float = 30.0  # Default 30 second timeout
+
 
 # Initialize logger
 logger = init_logger(__name__)
@@ -113,7 +140,9 @@ class JobMetaInfo(BatchJob):
         """
         # 1. this makes sure the job id is consistent with storage side
         input_num = _storage.get_job_num_request(self.spec.input_file_id)
-        self.status.request_counts.total = input_num
+        self.status.request_counts = RequestCountStats(
+            total=input_num, completed=0, failed=0
+        )
         self._request_progress_bits = [False] * input_num
         if input_num == 0:
             logger.warning("Storage side does not have valid request to process")
@@ -151,6 +180,11 @@ class JobManager:
         self._job_scheduler: Optional[JobScheduler] = None
         self._job_entity_manager: Optional[JobEntityManager] = job_entity_manager
 
+        # Track jobs being created with JobEntityManager
+        self._creating_jobs: Dict[str, asyncio.Future[str]] = {}
+        self._creation_timeouts: Dict[str, asyncio.Task] = {}
+        self._session_metadata: Dict[str, Dict[str, Any]] = {}
+
         # Register job lifecycle handlers if entity manager is available
         if self._job_entity_manager:
             self._job_entity_manager.on_job_committed(self.job_committed_handler)
@@ -160,56 +194,91 @@ class JobManager:
     def set_scheduler(self, scheduler: JobScheduler):
         self._job_scheduler = scheduler
 
-    def create_job(
+    async def create_job(
         self,
         session_id: str,
         input_file_id: str,
         api_endpoint: str,
         completion_window: str,
         meta_data: dict,
+        timeout: float = 30.0,
     ) -> str:
-        """
-        This interface is exposed to users to submit a new job and create
-        a job accordingly.
-        Before calling this, user needs to submit job input to storage first
-        to have job ID ready.
-        This will validate a job with multiple checking steps.
-        """
         job_spec = BatchJobSpec.from_strings(
             input_file_id, api_endpoint, completion_window, meta_data
         )
-        if self._job_entity_manager:
-            self._job_entity_manager.submit_job(
-                job_spec
-            )  # Will trigger job committed handler
-            # Note: When using job_entity_manager, the job_id will be available after the committed handler
-            # For now, we return None since we don't have immediate access to the generated job_id
-            #
-            # [TODO]: Add a self._creating_jobs to track jobs being created. details:
-            # 1. Using session_id as key, and stored meta_data for tracking.
-            # 2. Support asyncio to wait for job_id to be available.
-            # 3. use uvloop if available.
-            return None
-        else:
-            job = BatchJob(
-                typeMeta=TypeMeta(apiVersion="", kind="LocalBatchJob"),
-                metadata=ObjectMeta(
-                    resourceVersion=None,
-                    creationTimestamp=datetime.now(timezone.utc),
-                    deletionTimestamp=None,
-                ),
-                spec=job_spec,
-                status=BatchJobStatus(
-                    jobID=str(uuid.uuid4()),
-                    state=BatchJobState.CREATED,
-                    createdAt=datetime.now(timezone.utc),
-                    requestCounts=RequestCountStats(total=0, completed=0, failed=0),
-                ),
-            )
-            self.job_committed_handler(job)
-            assert job.job_id is not None
+        return await self.create_job_with_spec(session_id, job_spec, timeout)
 
-            return job.job_id
+    async def create_job_with_spec(
+        self,
+        session_id: str,
+        job_spec: BatchJobSpec,
+        timeout: float = 30.0,
+    ) -> str:
+        """
+        Async job creation that waits for job ID to be available.
+        Before calling this, user needs to submit job input to storage first
+        to have input_file_id ready.
+
+        Note: Even create_job is timeout, the job can be successfully created.
+        We do nothing to handle this case. Call list_jobs() for a full list.
+
+        Args:
+            session_id: Unique session identifier for tracking
+            input_file_id: File ID for job input
+            api_endpoint: API endpoint for job execution
+            completion_window: Time window for job completion
+            meta_data: Additional job metadata
+            timeout: Timeout in seconds to wait for job ID
+
+        Returns:
+            str: Job ID when available
+
+        Raises:
+            asyncio.TimeoutError: If job ID not available within timeout
+            Exception: If job submission fails
+        """
+        if self._job_entity_manager:
+            # Create future for job ID
+            job_future = asyncio.Future[str]()
+            self._creating_jobs[session_id] = job_future
+
+            job_id: Optional[str] = None
+            try:
+                # Will trigger job committed handler
+                # Note: When using job_entity_manager, the job_id will be available after the committed handler
+                # For now, we return None since we don't have immediate access to the generated job_id
+                self._job_entity_manager.submit_job(session_id, job_spec)
+                job_id = await asyncio.wait_for(job_future, timeout=timeout)
+                logger.info(
+                    "Job created successfully", session_id=session_id, job_id=job_id
+                )  # type: ignore[call-arg]
+            except Exception:
+                raise
+            finally:
+                # Clean up tracking
+                del self._creating_jobs[session_id]
+
+            return job_id
+
+        # Local job handling.
+        job = BatchJob(
+            typeMeta=TypeMeta(apiVersion="", kind="LocalBatchJob"),
+            metadata=ObjectMeta(
+                resourceVersion=None,
+                creationTimestamp=datetime.now(timezone.utc),
+                deletionTimestamp=None,
+            ),
+            spec=job_spec,
+            status=BatchJobStatus(
+                jobID=str(uuid.uuid4()),
+                state=BatchJobState.CREATED,
+                createdAt=datetime.now(timezone.utc),
+            ),
+        )
+        self.job_committed_handler(job)
+        assert job.job_id is not None
+
+        return job.job_id
 
     def cancel_job(self, job_id: str) -> bool:
         """
@@ -271,7 +340,7 @@ class JobManager:
             job_done.status.state = BatchJobState.CANCELLING
             job_done.status.cancelling_at = datetime.now()
         if job_in_progress:
-            # [TODO][NOW] zhangjyr
+            # [TODO][NEXT] zhangjyr
             # Remove all related requests from scheduler and proxy
             del self._in_progress_jobs[job_id]
 
@@ -284,6 +353,7 @@ class JobManager:
     def job_committed_handler(self, job: BatchJob):
         """
         This is called by job entity manager when a job is committed.
+        Enhanced to resolve pending job creation futures.
         """
         job_id = job.job_id
         if not job_id:
@@ -292,6 +362,19 @@ class JobManager:
 
         category = self._categorize_jobs(job)
         category[job_id] = job
+
+        # Check if this job resolves a pending creation
+        if job.session_id and job.session_id in self._creating_jobs:
+            future = self._creating_jobs[job.session_id]
+            if not future.done():
+                future.set_result(job_id)
+                logger.debug(
+                    "Job creation future resolved",
+                    session_id=job.session_id,
+                    job_id=job_id,
+                )  # type: ignore[call-arg]
+
+        # Add to job schduler if available
         if category is self._pending_jobs and self._job_scheduler:
             created_at: datetime = job.status.created_at
             self._job_scheduler.append_job(
@@ -359,7 +442,26 @@ class JobManager:
     def get_job_status(self, job_id: str) -> Optional[BatchJobState]:
         """Get the current status of a job."""
         job = self.get_job(job_id)
-        return job.status.state if job and job.status else None
+        return job.status.state if job else None
+
+    async def list_jobs(self) -> List[BatchJob]:
+        """List all jobs."""
+        # [TODO][NEXT Load all jobs from persistent store
+        all_jobs: Optional[List[BatchJob]] = None
+        if self._job_entity_manager:
+            all_jobs = self._job_entity_manager.list_jobs()
+        else:
+            # Collect jobs from all states
+            all_jobs = []
+            all_jobs.extend(self._pending_jobs.values())
+            all_jobs.extend(self._in_progress_jobs.values())
+            all_jobs.extend(self._done_jobs.values())
+
+        # Sort by creation time (newest first)
+        assert all_jobs is not None
+        all_jobs.sort(key=lambda job: job.status.created_at, reverse=True)
+
+        return all_jobs
 
     def start_execute_job(self, job_id) -> bool:
         """
@@ -396,13 +498,15 @@ class JobManager:
 
         return True
 
-    def get_job_next_request(self, job_id):
+    def get_job_next_request(self, job_id) -> int:
         request_id = -1
         if job_id not in self._in_progress_jobs:
             logger.info("Job has not been scheduled yet", job_id=job_id)  # type: ignore[call-arg]
             return request_id
 
-        meta_data: JobMetaInfo = self._in_progress_jobs[job_id]
+        job = self._in_progress_jobs[job_id]
+        assert isinstance(job, JobMetaInfo)
+        meta_data: JobMetaInfo = job
         return meta_data.next_request_id()
 
     def get_job_endpoint(self, job_id) -> str:
@@ -415,7 +519,7 @@ class JobManager:
             return ""
         return str(job.spec.endpoint)
 
-    def mark_job_progress(self, job_id, executed_requests):
+    def mark_job_progress(self, job_id, executed_requests) -> bool:
         """
         This is used to sync job's progress, called by execution proxy.
         It is guaranteed that each request is executed at least once.
@@ -424,7 +528,11 @@ class JobManager:
             logger.info("Job has not started yet", job_id=job_id)  # type: ignore[call-arg]
             return False
 
-        meta_data: JobMetaInfo = self._in_progress_jobs[job_id]
+        job = self._in_progress_jobs[job_id]
+        assert isinstance(job, JobMetaInfo)
+        meta_data: JobMetaInfo = job
+
+        assert meta_data.status.request_counts is not None
         request_len = meta_data.status.request_counts.total
         invalid_flag = False
 

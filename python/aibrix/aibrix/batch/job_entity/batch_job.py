@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, List, Optional
@@ -120,7 +121,6 @@ class BatchJobSpec(NoExtraBaseModel):
     """Defines the desired state of a Batch job, which is OpenAI batch compatible."""
 
     input_file_id: str = Field(
-        alias="inputFileID",
         description="The ID of an uploaded file that contains the requests for the batch",
     )
     endpoint: BatchJobEndpoint = Field(
@@ -128,7 +128,6 @@ class BatchJobSpec(NoExtraBaseModel):
     )
     completion_window: CompletionWindow = Field(
         default=CompletionWindow.TWENTY_FOUR_HOURS,
-        alias="completionWindow",
         description="The time window for completion",
     )
     metadata: Optional[Dict[str, str]] = Field(
@@ -170,9 +169,9 @@ class BatchJobSpec(NoExtraBaseModel):
         validated_completion_window = cls._validate_completion_window(completion_window)
 
         return cls(
-            inputFileID=input_file_id,
+            input_file_id=input_file_id,
             endpoint=validated_endpoint,
-            completionWindow=validated_completion_window,
+            completion_window=validated_completion_window,
             metadata=metadata,
         )
 
@@ -228,16 +227,12 @@ class BatchJobSpec(NoExtraBaseModel):
 class RequestCountStats(NoExtraBaseModel):
     """Holds the statistics on the processing of the batch."""
 
-    total: Optional[int] = Field(
-        default=0, description="Total number of requests in the batch"
-    )
-    completed: Optional[int] = Field(
+    total: int = Field(default=0, description="Total number of requests in the batch")
+    completed: int = Field(
         default=0,
         description="Number of requests that have been successfully completed",
     )
-    failed: Optional[int] = Field(
-        default=0, description="Number of requests that have failed"
-    )
+    failed: int = Field(default=0, description="Number of requests that have failed")
 
 
 class BatchJobError(Exception):
@@ -267,24 +262,29 @@ class BatchJobError(Exception):
         """The line number in the input file where the error occurred, if applicable"""
 
     @classmethod
-    def __get_pydantic_core_schema__(
-        cls, source, handler
-    ) -> core_schema.CoreSchema:
+    def __get_pydantic_core_schema__(cls, source, handler) -> core_schema.CoreSchema:
         """
         Returns the pydantic-core schema for this class, allowing it to be
         used directly within Pydantic models.
         """
         # This defines the schema for the arguments to __init__
-        arguments_schema = core_schema.model_fields_schema({
-            'code': core_schema.model_field(core_schema.str_schema()),
-            'message': core_schema.model_field(core_schema.str_schema()),
-            'param': core_schema.model_field(core_schema.nullable_schema(core_schema.str_schema())),
-            'line': core_schema.model_field(core_schema.nullable_schema(core_schema.str_schema())),
-        })
+        arguments_schema = core_schema.model_fields_schema(
+            {
+                "code": core_schema.model_field(core_schema.str_schema()),
+                "message": core_schema.model_field(core_schema.str_schema()),
+                "param": core_schema.model_field(
+                    core_schema.nullable_schema(core_schema.str_schema())
+                ),
+                "line": core_schema.model_field(
+                    core_schema.nullable_schema(core_schema.str_schema())
+                ),
+            }
+        )
         return core_schema.call_schema(
             arguments_schema,
             function=cls,
         )
+
 
 class BatchJobStatus(NoExtraBaseModel):
     """Defines the observed state of BatchJobSpec."""
@@ -365,12 +365,15 @@ class BatchJobStatus(NoExtraBaseModel):
 class BatchJob(NoExtraBaseModel):
     """Schema for the BatchJob API - Kubernetes Custom Resource equivalent."""
 
+    session_id: Optional[str] = Field(
+        default=None,
+        alias="sessionID",
+        description="Session ID used to track job creation",
+    )
     type_meta: TypeMeta = Field(alias="typeMeta", description="Kubernetes TypeMeta")
     metadata: ObjectMeta = Field(description="Kubernetes ObjectMeta")
     spec: BatchJobSpec = Field(description="Desired state of the batch job")
-    status: Optional[BatchJobStatus] = Field(
-        default=None, description="Observed state of the batch job"
-    )
+    status: BatchJobStatus = Field(description="Observed state of the batch job")
 
     @classmethod
     def create_new(
@@ -393,10 +396,15 @@ class BatchJob(NoExtraBaseModel):
                 deletionTimestamp=None,
             ),
             spec=BatchJobSpec(
-                inputFileID=input_file_id,
+                input_file_id=input_file_id,
                 endpoint=endpoint,
-                completionWindow=completion_window,
+                completion_window=completion_window,
                 metadata=metadata,
+            ),
+            status=BatchJobStatus(
+                jobID=str(uuid.uuid4()),
+                state=BatchJobState.CREATED,
+                createdAt=datetime.now(timezone.utc),
             ),
         )
 

@@ -33,7 +33,7 @@ class JobEntityManager(ABC):
                 The callback function. It should accept a single `BatchJob` object
                 representing the committed job and return `None`.
         """
-        self._job_committed_handler = handler
+        self._job_committed_handler: Optional[Callable[[BatchJob], None]] = handler
 
     def on_job_updated(self, handler: Callable[[BatchJob, BatchJob], None]):
         """Register a job updated callback.
@@ -44,7 +44,9 @@ class JobEntityManager(ABC):
                 representing the old job and new job and return `None`.
                 Example: `lambda old_job, new_job: logger.info("Job updated", old_id=old_job.id, new_id=new_job.id)`
         """
-        self._job_updated_handler = handler
+        self._job_updated_handler: Optional[Callable[[BatchJob, BatchJob], None]] = (
+            handler
+        )
 
     def on_job_deleted(self, handler: Callable[[BatchJob], None]):
         """Register a job deleted callback.
@@ -55,14 +57,14 @@ class JobEntityManager(ABC):
                 representing the deleted job and return `None`.
                 Example: `lambda deleted_job: logger.info("Job deleted", job_id=deleted_job.id)`
         """
-        self._job_deleted_handler = handler
+        self._job_deleted_handler: Optional[Callable[[BatchJob], None]] = handler
 
     def is_scheduler_enabled(self) -> bool:
         """Check if JobEntityManager has own scheduler enabled."""
         return False
 
     @abstractmethod
-    def submit_job(self, job: BatchJobSpec):
+    def submit_job(self, session_id: str, job: BatchJobSpec):
         """Submit job by submiting job to the persist store.
 
         Args:

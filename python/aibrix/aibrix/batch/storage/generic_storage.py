@@ -171,7 +171,7 @@ class LocalDiskFiles(PersistentStorage):
             for _ in range(start_index):
                 next(file, None)
                 if not file:
-                    logger.warning("Writing requests is out of index", job_id=job_id)
+                    logger.warning("Writing requests is out of index", job_id=job_id)  # type: ignore[call-arg]
                     return
 
             for obj in output_list:
@@ -187,7 +187,7 @@ class LocalDiskFiles(PersistentStorage):
             logger.error(
                 "Job does not exist for reading output, perhaps need to create Job first",
                 job_id=job_id,
-            )
+            )  # type: ignore[call-arg]
             return output_data
         output_file_path = directory_path + "output.json"
 
@@ -197,7 +197,7 @@ class LocalDiskFiles(PersistentStorage):
                 if not file:
                     logger.warning(
                         "Reading requests output is out of index", job_id=job_id
-                    )
+                    )  # type: ignore[call-arg]
                     return output_data
 
             num_lines = 0
@@ -220,11 +220,11 @@ class LocalDiskFiles(PersistentStorage):
         try:
             os.remove(input_file_path)
         except FileNotFoundError:
-            logger.warning("Job input file does not exist", file_path=input_file_path)
+            logger.warning("Job input file does not exist", file_path=input_file_path)  # type: ignore[call-arg]
         except Exception as e:
             logger.error(
                 "Error removing input file", file_path=input_file_path, error=str(e)
-            )
+            )  # type: ignore[call-arg]
 
         output_file_path = directory_path + "output.json"
         if os.path.exists(output_file_path):
@@ -239,15 +239,15 @@ class LocalDiskFiles(PersistentStorage):
                     "Error removing output file",
                     file_path=output_file_path,
                     error=str(e),
-                )
+                )  # type: ignore[call-arg]
 
         try:
             os.rmdir(directory_path)
         except FileNotFoundError:
-            logger.warning("Job directory does not exist", directory=directory_path)
+            logger.warning("Job directory does not exist", directory=directory_path)  # type: ignore[call-arg]
         except OSError as e:
             logger.error(
                 "Error removing job directory - directory is not empty or can't be deleted",
                 directory=directory_path,
                 error=str(e),
-            )
+            )  # type: ignore[call-arg]

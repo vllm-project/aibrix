@@ -63,7 +63,7 @@ async def test_batch_driver_job_creation():
         print(f"Upload ID: {upload_id} (type: {type(upload_id)})")
 
         # Test job creation using job_manager directly
-        job_id = driver.job_manager.create_job(
+        job_id = await driver.job_manager.create_job(
             session_id="test-session",
             input_file_id=str(upload_id),
             api_endpoint="/v1/chat/completions",
@@ -112,7 +112,7 @@ async def test_batch_driver_integration():
         print(f"Upload ID: {upload_id}")
 
         # 2. Create job and verify initial state
-        job_id = driver.job_manager.create_job(
+        job_id = await driver.job_manager.create_job(
             session_id="test-session-integration",
             input_file_id=str(upload_id),
             api_endpoint="/v1/chat/completions",

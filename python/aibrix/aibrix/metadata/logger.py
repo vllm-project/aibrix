@@ -30,10 +30,7 @@ def _default_logging_basic_config() -> None:
             maxBytes=10 * (2**20),
             backupCount=10,
         )
-    logging.basicConfig(
-        format="%(message)s",
-        handlers=[handler]
-    )
+    logging.basicConfig(format="%(message)s", handlers=[handler])
 
     # 2. Configure structlog processors and renderer
     structlog.configure(
