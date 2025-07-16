@@ -13,6 +13,7 @@ sortedcontainers>=2.4.0
 uvloop
 validators >= 0.35.0
 zstandard
+redis >= 6.0.0
 
 nvtx
 torch==2.7.0
