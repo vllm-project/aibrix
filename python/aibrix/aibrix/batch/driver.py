@@ -13,42 +13,48 @@
 # limitations under the License.
 
 import asyncio
+from typing import Optional
 
 import aibrix.batch.storage as _storage
 from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE
 from aibrix.batch.job_manager import JobManager
 from aibrix.batch.request_proxy import RequestProxy
 from aibrix.batch.scheduler import JobScheduler
+from aibrix.metadata.logger import init_logger
+
+from .job_entity import JobEntityManager
+
+logger = init_logger(__name__)
 
 
 class BatchDriver:
-    def __init__(self):
+    def __init__(self, job_entity_manager: Optional[JobEntityManager] = None):
         """
         This is main entrance to bind all components to serve job requests.
         """
         _storage.initialize_storage()
         self._storage = _storage
-        self._job_manager = JobManager()
-        self._scheduler = JobScheduler(self._job_manager, DEFAULT_JOB_POOL_SIZE)
-        self._proxy = RequestProxy(self._storage, self._job_manager)
-        asyncio.create_task(self.jobs_running_loop())
+        self._job_manager: JobManager = JobManager(job_entity_manager)
+        self._scheduler: Optional[JobScheduler] = None
+        self._scheduling_task: Optional[asyncio.Task] = None
+        self._proxy: RequestProxy = RequestProxy(self._storage, self._job_manager)
+        # Only create jobs_running_loop if JobEntityManager does not have its own sched
+        if not job_entity_manager or not job_entity_manager.is_scheduler_enabled():
+            self._scheduler = JobScheduler(self._job_manager, DEFAULT_JOB_POOL_SIZE)
+            self._job_manager.set_scheduler(self._scheduler)
+            self._scheduling_task = asyncio.create_task(self.jobs_running_loop())
+
+    @property
+    def job_manager(self) -> JobManager:
+        return self._job_manager
 
     def upload_batch_data(self, input_file_name):
-        job_id = self._storage.submit_job_input(input_file_name)
-        return job_id
+        file_id = self._storage.submit_job_input(input_file_name)
+        return file_id
 
-    def create_job(self, job_id, endpoint, window_due_time):
-        self._job_manager.create_job(job_id, endpoint, window_due_time)
-
-        due_time = self._job_manager.get_job_window_due(job_id)
-        self._scheduler.append_job(job_id, due_time)
-
-    def get_job_status(self, job_id):
-        return self._job_manager.get_job_status(job_id)
-
-    def retrieve_job_result(self, job_id):
-        num_requests = _storage.get_job_num_request(job_id)
-        req_results = _storage.get_job_results(job_id, 0, num_requests)
+    def retrieve_job_result(self, file_id):
+        num_requests = _storage.get_job_num_request(file_id)
+        req_results = _storage.get_job_results(file_id, 0, num_requests)
         return req_results
 
     async def jobs_running_loop(self):
@@ -57,11 +63,33 @@ class BatchDriver:
         For now, the executing unit is one request. Later if necessary,
         we can support a batch size of request per execution.
         """
+        logger.info("Starting scheduling...")
         while True:
             one_job = self._scheduler.round_robin_get_job()
             if one_job:
                 await self._proxy.execute_queries(one_job)
             await asyncio.sleep(0)
 
+    async def close(self):
+        """Properly shutdown the driver and cancel running tasks"""
+        if self._scheduling_task and not self._scheduling_task.done():
+            self._scheduling_task.cancel()
+            try:
+                await self._scheduling_task
+            except asyncio.CancelledError:
+                pass
+        if self._scheduler:
+            await self._scheduler.close()
+
     def clear_job(self, job_id):
-        self._storage.delete_job(job_id)
+        job = self._job_manager.get_job(job_id)
+        if job is None:
+            return
+
+        self._job_manager.job_deleted_handler(job)
+        if self._job_manager.get_job(job_id) is None:
+            self._storage.delete_job(job.spec.input_file_id)
+            if job.status.output_file_id is not None:
+                self._storage.delete_job(job.status.output_file_id)
+            if job.status.error_file_id is not None:
+                self._storage.delete_job(job.status.error_file_id)

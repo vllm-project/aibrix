@@ -60,6 +60,11 @@ matplotlib = "^3.9.2"
 filelock = "^3.16.1"
 tiktoken = "^0.7.0"
 transformers = ">=4.38.0"
+structlog = "^24.4.0"
+pydantic-settings = "^2.6.1"
+kopf = {extras = ["uvloop"], version = "^1.37.2"}
+PyYAML = "^6.0.1"
+types-PyYAML = "^6.0.12.20240917"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "1.11.1"
@@ -87,3 +92,6 @@ unfixable = []
 
 # Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"

@@ -14,14 +14,18 @@
 
 import asyncio
 import json
+import tempfile
+from pathlib import Path
+
+import pytest
 
 from aibrix.batch.constant import EXPIRE_INTERVAL
 from aibrix.batch.driver import BatchDriver
-from aibrix.batch.job_manager import JobStatus
+from aibrix.batch.job_entity import BatchJobState
 
 
 def generate_input_data(num_requests, local_file):
-    input_name = "./sample_job_input.json"
+    input_name = "tests/sample_job_input.jsonl"
     data = None
     with open(input_name, "r") as file:
         for line in file.readlines():
@@ -36,41 +40,127 @@ def generate_input_data(num_requests, local_file):
             file.write(json.dumps(data) + "\n")
 
 
-async def driver_proc():
+@pytest.mark.asyncio
+async def test_batch_driver_job_creation():
+    """Test basic BatchDriver operations without async scheduling."""
+    driver = BatchDriver()
+
+    # Test that driver is properly initialized
+    assert driver is not None
+    assert driver.job_manager is not None
+
+    # Create temporary input file
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".jsonl", delete=False
+    ) as temp_file:
+        temp_path = temp_file.name
+        generate_input_data(5, temp_path)
+
+    try:
+        # Test upload
+        upload_id = driver.upload_batch_data(temp_path)
+        assert upload_id is not None
+        print(f"Upload ID: {upload_id} (type: {type(upload_id)})")
+
+        # Test job creation using job_manager directly
+        job_id = driver.job_manager.create_job(
+            session_id="test-session",
+            input_file_id=str(upload_id),
+            api_endpoint="/v1/chat/completions",
+            completion_window="24h",
+            meta_data={},
+        )
+        assert job_id is not None
+        print(f"Created job_id: {job_id}")
+
+        # Test status retrieval
+        job = driver.job_manager.get_job(job_id)
+        assert job is not None
+        print(f"Job status: {job.status.state}")
+        assert job.status.state == BatchJobState.CREATED
+
+        # Test cleanup
+        driver.clear_job(job_id)
+    finally:
+        # Shutdown driver
+        await driver.close()
+
+        # Clean up temporary file
+        Path(temp_path).unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_batch_driver_integration():
     """
-    This is main driver process on how to submit jobs.
+    Integration test for the batch driver workflow.
+    Tests job creation, scheduling, execution, and result retrieval.
     """
-    _driver = BatchDriver()
+    # Initialize driver without job_entity_manager (use local job management)
+    driver = BatchDriver()
 
-    num_request = 10
-    local_file = "./one_job_input.json"
-    generate_input_data(num_request, local_file)
-    job_id = _driver.upload_batch_data("./one_job_input.json")
+    # Create temporary input file
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".jsonl", delete=False
+    ) as temp_file:
+        temp_path = temp_file.name
+        generate_input_data(10, temp_path)
 
-    _driver.create_job(job_id, "sample_endpoint", "20m")
-    status = _driver.get_job_status(job_id)
-    assert status == JobStatus.PENDING
-    print("Current status: ", status)
+    try:
+        # 1. Upload batch data and verify it's stored locally
+        upload_id = driver.upload_batch_data(temp_path)
+        assert upload_id is not None
+        print(f"Upload ID: {upload_id}")
 
-    await asyncio.sleep(5 * EXPIRE_INTERVAL)
-    status = _driver.get_job_status(job_id)
-    print("Current status: ", status)
-    assert status == JobStatus.IN_PROGRESS
+        # 2. Create job and verify initial state
+        job_id = driver.job_manager.create_job(
+            session_id="test-session-integration",
+            input_file_id=str(upload_id),
+            api_endpoint="/v1/chat/completions",
+            completion_window="24h",
+            meta_data={},
+        )
+        assert job_id is not None
+        print(f"Created job_id: {job_id}")
 
-    await asyncio.sleep(6 * EXPIRE_INTERVAL)
-    status = _driver.get_job_status(job_id)
-    print("Current status: ", status)
-    assert status == JobStatus.COMPLETED
+        job = driver.job_manager.get_job(job_id)
+        assert job is not None
+        print(f"Initial status: {job.status.state}")
+        assert job.status.state == BatchJobState.CREATED
 
-    print("Retrieve results")
-    results = _driver.retrieve_job_result(job_id)
-    for i, req_result in enumerate(results):
-        print(i, req_result)
+        # 3. Wait for job to be scheduled and start processing
+        await asyncio.sleep(5 * EXPIRE_INTERVAL)
+        job = driver.job_manager.get_job(job_id)
+        assert job is not None
+        print(f"Status after scheduling: {job.status.state}")
+        assert job.status.state == BatchJobState.IN_PROGRESS
+        assert job.status.output_file_id is not None
 
-    _driver.clear_job(job_id)
-    print(f"Job {job_id} is cleaned.")
-    await asyncio.sleep(2 * EXPIRE_INTERVAL)
+        # 4. Wait for job to complete
+        await asyncio.sleep(6 * EXPIRE_INTERVAL)
+        job = driver.job_manager.get_job(job_id)
+        assert job is not None
+        print(f"Final status: {job.status.state}")
+        assert job.status.state == BatchJobState.COMPLETED
+        assert job.status.output_file_id is not None
 
+        # 5. Retrieve results and verify they exist
+        results = driver.retrieve_job_result(job.status.output_file_id)
+        assert results is not None
+        assert len(results) == 10  # Should match num_requests
+        print(f"Retrieved {len(results)} results")
 
-if __name__ == "__main__":
-    asyncio.run(driver_proc())
+        # 6. Verify results content
+        for i, req_result in enumerate(results):
+            print(f"Result {i}: {req_result}")
+            assert req_result is not None
+
+        # 7. Clean up the job
+        driver.clear_job(job_id)
+        print(f"Job {job_id} cleaned up")
+
+    finally:
+        # Shutdown driver
+        await driver.close()
+
+        # Clean up temporary file
+        Path(temp_path).unlink(missing_ok=True)

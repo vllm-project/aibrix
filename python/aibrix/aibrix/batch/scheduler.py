@@ -18,9 +18,15 @@ import queue
 import time
 from abc import ABC, abstractmethod
 from enum import Enum
+from typing import Optional
 
 from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE, EXPIRE_INTERVAL
-from aibrix.batch.job_manager import JobStatus
+from aibrix.batch.job_entity import BatchJobState
+from aibrix.metadata.logger import init_logger
+
+# JobManager will be passed as parameter to avoid circular import
+
+logger = init_logger(__name__)
 
 
 class SchedulePolicy(Enum):
@@ -106,10 +112,10 @@ class BasicCongestionControl(CCInterface):
 
         # Note that it is still possible that we can not shrink it
         # when there are jobs in progress
-        print(
-            "Shrink job pool size in JobScheduler!",
-            len(self._running_job_pool),
-            self._job_pool_size,
+        logger.info(
+            "Shrink job pool size in JobScheduler",
+            current_pool_size=len(self._running_job_pool),
+            target_pool_size=self._job_pool_size,
         )
 
     def grow_resource(self):
@@ -144,7 +150,7 @@ class JobScheduler:
         self._CC_controller = cc_controller
         self._current_pool_size = self._CC_controller._job_pool_size
         # Start the loop process in an async way
-        asyncio.create_task(self.job_cleanup_loop())
+        self._job_cleanup_task = asyncio.create_task(self.job_cleanup_loop())
         self._policy = policy
 
     def configure_job_pool_size(self, new_pool_size):
@@ -152,7 +158,7 @@ class JobScheduler:
         # we will update appropriate slots correspondingly.
         self._current_pool_size = new_pool_size
 
-    def append_job(self, job_id, due_time_seconds):
+    def append_job(self, job_id: str, due_time: float):
         # This submits a job to scheduler. The scheduler will determine
         # which job gets executed.
         self._jobs_queue.put(job_id)
@@ -160,40 +166,39 @@ class JobScheduler:
         def key_func(x):
             return x[1]
 
-        current_time = time.time()
-        due_time = current_time + due_time_seconds
         item = (job_id, due_time)
         index = bisect.bisect_left(
             [key_func(t) for t in self._due_jobs_list], key_func(item)
         )
         self._due_jobs_list.insert(index, item)
 
-    def schedule_next_job(self):
+    def schedule_next_job(self) -> Optional[str]:
         # Scheduler outputs a job to be processed following the specified policy.
         job_id = None
 
         # [TODO] use class abstraction for SchedulingPolicy
         if self._policy == SchedulePolicy.FIFO:
             if self._jobs_queue.empty():
-                print("Job scheduler is waiting jobs coming ......")
+                logger.debug("Job scheduler is waiting jobs coming")
                 time.sleep(1)
-                return job_id
             if not self._jobs_queue.empty():
                 job_id = self._jobs_queue.get()
+                logger.info("Job scheduler is scheduling job", job_id=job_id)  # type: ignore[call-arg]
 
             # Every time when popping a job from queue,
-            # we check if this job is in active state.
+            # we check if this job is in active state and we try starting the job.
             while (
                 job_id
-                and job_id in self._inactive_jobs
+                and (
+                    job_id in self._inactive_jobs
+                    or not self._job_manager.start_execute_job(job_id)
+                )
                 and not self._jobs_queue.empty()
             ):
                 job_id = self._jobs_queue.get()
-
         else:
-            print("Unsupported scheduling policy!")
+            logger.error("Unsupported scheduling policy", policy=str(self._policy))  # type: ignore[call-arg]
 
-        self._job_manager.start_execute_job(job_id)
         return job_id
 
     def get_inactive_jobs(self):
@@ -210,20 +215,24 @@ class JobScheduler:
             ):
                 idx += 1
 
-            print("Number of expired jobs is ", idx)
+            logger.info("Found expired jobs", count=idx)
             for i in range(idx):
                 # Update job's status to job manager
                 job_id = self._due_jobs_list[i][0]
                 self._inactive_jobs.add(job_id)
-                print("======> ", job_id, "expired.")
+                logger.info("Job expired", job_id=job_id)
             self._due_jobs_list = self._due_jobs_list[idx:]
         else:
-            print("Unsupported scheduling policy!")
+            logger.error(
+                "Unsupported scheduling policy for expire_jobs",
+                policy=str(self._policy),
+            )  # type: ignore[call-arg]
 
     async def job_cleanup_loop(self):
         """
         This is a long-running process to check if jobs have expired or not.
         """
+        # [TODO][NOW] Add a close function to stop this loop
         round_id = 0
         while True:
             start_time = time.time()  # Record start time
@@ -232,9 +241,18 @@ class JobScheduler:
             time_to_next_run = max(
                 0, self.interval - elapsed_time
             )  # Calculate remaining time
-            print("Sliding, round: ", round_id)
+            logger.debug("Job cleanup loop iteration", round_id=round_id)
             round_id += 1
             await asyncio.sleep(time_to_next_run)  # Wait for the remaining time
+
+    async def close(self):
+        """Properly shutdown the driver and cancel running tasks"""
+        if self._job_cleanup_task and not self._job_cleanup_task.done():
+            self._job_cleanup_task.cancel()
+            try:
+                await self._job_cleanup_task
+            except asyncio.CancelledError:
+                pass
 
     def round_robin_get_job(self):
         # Step 1
@@ -246,7 +264,7 @@ class JobScheduler:
             job_id = self._CC_controller._running_job_pool[i]
             # Do not schedule new job in since we need to adjust capacity
             # based on new pool size representing how much underlying resource.
-            if self._job_manager.get_job_status(job_id) == JobStatus.COMPLETED:
+            if self._job_manager.get_job_status(job_id) == BatchJobState.COMPLETED:
                 self._CC_controller._running_job_pool[i] = None
 
         # Step 2, after the jobs' status are updated,
@@ -287,6 +305,6 @@ class JobScheduler:
             start_offset += 1
 
         if not next_job_id:
-            print("No job is found!")
+            logger.debug("No job is found for scheduling")
 
         return next_job_id
