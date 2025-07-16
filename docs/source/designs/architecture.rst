@@ -1,15 +1,10 @@
 .. _architecture:
 
-============
-Architecture
-============
-
-An overview of AIBrix’s architecture
-
-This guide introduces the AIBrix ecosystem and explains how its components integrate into the LLM inference lifecycle.
-
+===================
 AIBrix Architecture
--------------------
+===================
+
+An overview of AIBrix’s architecture. This guide introduces the AIBrix ecosystem and explains how its components integrate into the LLM inference lifecycle.
 
 The following diagram gives an overview of the AIBrix Ecosystem and how it relates to the wider Kubernetes and LLM landscapes.
 

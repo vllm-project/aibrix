@@ -1,0 +1,14 @@
+# Common dependencies
+-r core.txt
+
+pytest
+pytest-asyncio
+pytest-mock
+pytest-timeout
+pytest-rerunfailures
+pytest-benchmark
+pytest-forked
+
+fakeredis >= 2.28.1
+
+vllm

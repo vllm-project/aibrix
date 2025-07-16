@@ -1,0 +1,31 @@
+asyncio >= 3.4.3
+cityhash >= 0.4.8
+more-itertools >= 10.7.0
+msgspec >= 0.19.0
+netifaces
+numpy >= 1.26.4
+requests >= 2.26.0
+tqdm >= 4.67.1
+pydantic >= 2.10
+pyyaml
+setuptools>=77.0.3,<80; python_version > '3.11' # Setuptools is used by triton, we need to ensure a modern version is installed for 3.12+ so that it does not try to import distutils, which was removed in 3.12
+sortedcontainers>=2.4.0
+uvloop
+validators >= 0.35.0
+zstandard
+redis >= 6.0.0
+
+nvtx
+torch==2.7.0
+
+# profiling
+pyroscope-io
+
+# vendor
+rocksdict
+
+# optional
+# infinistore >= 0.2.35
+# --extra-index-url https://scqq9isgq31i0fb8nt4eg.apigateway-cn-beijing.volceapi.com/simple/
+# hpkv >= 0.0.1
+# pyverbs

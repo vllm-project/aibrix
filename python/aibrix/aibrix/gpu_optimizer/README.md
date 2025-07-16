@@ -45,7 +45,7 @@ Replace llama2-7b with your model name.
 
 5. Start workload and see how model scale. Benchmark toolkit can be used to generate workload as:
 ```shell
-# Make sure gateway's local access, see docs/development/simulator/README.md for details.
+# Make sure gateway's local access, see development/app/README.md for details.
 python optimizer/profiling/gpu_benchmark.py --backend=vllm --port 8888 --request-rate=10 --num-prompts=100 --input_len 2000 --output_len 128 --model=llama2-7b
 ```
 

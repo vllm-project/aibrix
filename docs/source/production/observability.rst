@@ -61,9 +61,9 @@ These dashboards offer insights into system performance, request patterns, error
 You can import them into your Grafana instance by uploading the corresponding JSON files.
 Ensure your Prometheus data source is correctly configured before importing. Once imported, the dashboards will begin displaying live metrics as long as `ServiceMonitor` resources are properly set up and the kube-prometheus stack is actively scraping data.
 
-- `AIBrix Control Plane Runtime Dashboard <../../../observability/grafana/AIBrix_Control_Plane_Runtime_Dashboard.json>`_
-- `AIBrix Envoy Gateway Dashboard <../../../observability/grafana/AIBrix_Envoy_Gateway_Dashboard.json>`_
-- `AIBrix vLLM Engine Dashboard <../../../observability/grafana/AIBrix_vLLM_Engine_Dashboard.json>`_
+- `AIBrix Control Plane Runtime Dashboard <https://raw.githubusercontent.com/vllm-project/aibrix/main/observability/grafana/AIBrix_Control_Plane_Runtime_Dashboard.json>`_
+- `AIBrix Envoy Gateway Dashboard <https://raw.githubusercontent.com/vllm-project/aibrix/main/observability/grafana/AIBrix_Envoy_Gateway_Dashboard.json>`_
+- `AIBrix vLLM Engine Dashboard <https://raw.githubusercontent.com/vllm-project/aibrix/main/observability/grafana/AIBrix_vLLM_Engine_Dashboard.json>`_
 
 Production Monitoring
 ---------------------

@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_S3FIFO_SMALL_FIFO_CAPACITY_RATIO: float = 0.3
 
     AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND: str = ""
-    AIBRIX_KV_CACHE_OL_L2_CACHE_NAMESPACE: str = "dummy"
+    AIBRIX_KV_CACHE_OL_L2_CACHE_NAMESPACE: str = "aibrix"
     AIBRIX_KV_CACHE_OL_L2_CACHE_COMPRESSION: str = ""
     AIBRIX_KV_CACHE_OL_L2_CACHE_OP_BATCH: int = 32
     AIBRIX_KV_CACHE_OL_L2_CACHE_PER_TOKEN_TIMEOUT_MS: int = 20
@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_L2_CACHE_PLACEMENT_POLICY: str = "SIMPLE"
 
     # L2 cache key builder. Defaults to raw.
-    AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER: str = "RAW"
+    AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER: str = "ROLLING_HASH"
 
     # If meta service backend is not set, L2 cache backend will use direct
     # mode to access the given cache server.
@@ -123,6 +123,10 @@ if TYPE_CHECKING:
     # Defines the range of valid GIDs. Similar to NVSHMEM_IB_ADDR_RANGE
     # for NVSHMEM. It must be a valid CIDR.
     AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE: str = "::/0"
+
+    # Profiling Env Vars
+    AIBRIX_KV_CACHE_OL_PROFILING_ENABLED: bool = False
+    AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS: str = "http://0.0.0.0:4040"
 
 # The begin-* and end* here are used by the documentation generator
 # to extract the used env vars.
@@ -228,7 +232,7 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
         .upper()
     ),
     "AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER": lambda: (
-        os.getenv("AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER", "RAW")
+        os.getenv("AIBRIX_KV_CACHE_OL_L2_CACHE_KEY_BUILDER", "ROLLING_HASH")
         .strip()
         .upper()
     ),
@@ -303,7 +307,7 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
         .upper()
     ),
     "AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT": lambda: int(
-        os.getenv("AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT", "12345")
+        os.getenv("AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT", "1")
     ),
     "AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE": lambda: (
         os.getenv(
@@ -343,6 +347,16 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE": lambda: (
         os.getenv(
             "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE", "::/0"
+        ).strip()
+    ),
+    # ==================== Profiling Env Vars ====================
+    "AIBRIX_KV_CACHE_OL_PROFILING_ENABLED": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_PROFILING_ENABLED", "0").strip().lower()
+        in ("1", "true")
+    ),
+    "AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS": lambda: (
+        os.getenv(
+            "AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS", "http://0.0.0.0:4040"
         ).strip()
     ),
 }

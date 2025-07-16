@@ -16,6 +16,7 @@ import random
 
 import pytest
 
+from aibrix_kvcache.cache_hashable import TokenListView
 from aibrix_kvcache.l2.key_builders import (
     FarmHasher,
     HexKeyBuilder,
@@ -24,9 +25,31 @@ from aibrix_kvcache.l2.key_builders import (
     SimpleHashKeyBuilder,
 )
 
-# Fixed tokens length
-TOKENS_LENGTH = 512
+CHUNK_SIZE = 512
 BLOCK_SIZE = 16
+
+def cache_chunk_keys(
+    prefix: TokenListView | None, tokens: TokenListView, chunk_size: int,
+    block_size: int,
+):
+    if prefix is not None:
+        all = prefix + tokens
+        prefix_len = len(prefix)
+    else:
+        all = tokens
+        prefix_len = 0
+
+    num_tokens = len(tokens)
+    aligned_num_tokens = num_tokens - num_tokens % block_size
+    num_chunks = -(-aligned_num_tokens // chunk_size)
+    chunk_start = prefix_len
+    for _ in range(num_chunks):
+        chunk_end = chunk_start + chunk_size
+        yield (
+            all[:chunk_start],
+            all[chunk_start:chunk_end],
+        )
+        chunk_start += chunk_size
 
 
 @pytest.fixture(
@@ -48,22 +71,28 @@ def key_builder(request):
 
 
 @pytest.fixture(params=[512, 4 * 1024, 32 * 1024])
-def prefix_length(request):
+def prompt_length(request):
     return request.param
 
+    
+def bench_key_builder(key_builder, all_tokens: TokenListView):
+    for chunk_prefix, chunk_tokens in cache_chunk_keys(
+        None, all_tokens, CHUNK_SIZE, BLOCK_SIZE
+    ):
+        result = key_builder.build(chunk_prefix, chunk_tokens)
+        assert len(result) > 0
+        for key_tuple in result:
+            assert len(key_tuple) == 2
+            assert isinstance(key_tuple[0], TokenListView)
+            assert isinstance(key_tuple[1], bytes)
 
-def test_key_builder(benchmark, key_builder, prefix_length):
+
+def test_key_builder(benchmark, key_builder, prompt_length):
     random.seed(123)
 
-    prefix = [random.randint(0, 99999999) for _ in range(prefix_length)]
-    tokens = [random.randint(0, 99999999) for _ in range(TOKENS_LENGTH)]
+    all = TokenListView(
+        [random.randint(0, 99999999) for _ in range(prompt_length)]
+    )
 
     # Run benchmark
-    benchmark(key_builder.build, prefix, tokens)
-
-    result = key_builder.build(prefix, tokens)
-    assert len(result) > 0
-    for key_tuple in result:
-        assert len(key_tuple) == 2
-        assert isinstance(key_tuple[0], tuple)
-        assert isinstance(key_tuple[1], bytes)
+    benchmark(bench_key_builder, key_builder, all)

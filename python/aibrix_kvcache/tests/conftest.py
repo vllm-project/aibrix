@@ -13,10 +13,12 @@
 # limitations under the License.
 
 import os
+import random
 import sys
 import threading
-from typing import Sequence
+from typing import Sequence, Optional, Union
 
+import numpy as np
 import pytest
 import redis
 import torch
@@ -34,6 +36,15 @@ CACHE_SHAPE_LCND = (8, 2, 16, 2, 32)
 CACHE_DTYPE = torch.bfloat16
 TEMP_ROOT = os.path.join(os.path.expanduser("."), ".test_dir")
 
+STR_DTYPE_TO_TORCH_DTYPE = {
+    "half": torch.half,
+    "bfloat16": torch.bfloat16,
+    "float": torch.float,
+    "fp8": torch.uint8,
+    "fp8_e4m3": torch.uint8,
+    "fp8_e5m2": torch.uint8,
+    "int8": torch.int8,
+}
 
 def discard_all_aibrix_envs():
     # Find all environment variables that start with "AIBRIX_"
@@ -148,3 +159,8 @@ def compact_layout_enabled(request):
     yield request.param == "with_compact_layout"
 
     aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT = origin
+
+@pytest.fixture()
+def kv_cache_factory_flashinfer():
+    from vllm.utils import create_kv_caches_with_random_flash
+    return create_kv_caches_with_random_flash

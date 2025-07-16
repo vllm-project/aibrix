@@ -13,7 +13,9 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from typing import Sequence, Tuple
+from typing import Tuple
+
+from ...cache_hashable import TokenListView
 
 
 class KeyBuilder(ABC):
@@ -52,12 +54,12 @@ class KeyBuilder(ABC):
 
     @abstractmethod
     def build(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Tuple[Tuple[Tuple[int, ...], bytes], ...]:
+        self, prefix: TokenListView | None, tokens: TokenListView
+    ) -> Tuple[Tuple[TokenListView, bytes], ...]:
         """Build a sequence of keys from given tokens.
         Args:
-            prefix (Sequence[int] | None): prefix tokens
-            tokens (Sequence[int]): tokens
+            prefix (TokenListView | None): prefix tokens
+            tokens (TokenListView): tokens
         Returns:
             A sequence of keys.
         """

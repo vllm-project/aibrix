@@ -18,8 +18,9 @@ import functools
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Sequence
+from typing import Any, Callable, Dict, List
 
+from .cache_hashable import TokenListView
 from .status import Status
 from .utils import cpu_perf_timer, human_readable_bytes
 
@@ -870,8 +871,8 @@ class MeasurableBase:
             @functools.wraps(func)
             async def async_wrapper(
                 self,
-                prefix: Sequence[int] | None,
-                tokens: Sequence[int],
+                prefix: TokenListView | None,
+                tokens: TokenListView,
                 *args,
                 **kwargs,
             ):
@@ -892,8 +893,8 @@ class MeasurableBase:
             @functools.wraps(func)
             def wrapper(
                 self,
-                prefix: Sequence[int] | None,
-                tokens: Sequence[int],
+                prefix: TokenListView | None,
+                tokens: TokenListView,
                 *args,
                 **kwargs,
             ):
