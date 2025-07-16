@@ -63,6 +63,10 @@ var (
 			MetricType: MetricType{
 				Raw: Counter,
 			},
+			RawMetricNameMapping: map[string]string{
+				"vllm":   "vllm:num_requests_running",
+				"sglang": "sglang:num_running_reqs",
+			},
 			Description: "Number of running requests",
 		},
 		NumRequestsWaiting: {
@@ -71,6 +75,9 @@ var (
 			MetricType: MetricType{
 				Raw: Counter,
 			},
+			RawMetricNameMapping: map[string]string{
+				"vllm": "vllm:num_requests_waiting",
+			},
 			Description: "Number of waiting requests",
 		},
 		NumRequestsSwapped: {
@@ -78,6 +85,9 @@ var (
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Counter,
+			},
+			RawMetricNameMapping: map[string]string{
+				"vllm": "vllm:num_requests_swapped",
 			},
 			Description: "Number of swapped requests",
 		},
@@ -88,6 +98,9 @@ var (
 			MetricType: MetricType{
 				Raw: Gauge,
 			},
+			RawMetricNameMapping: map[string]string{
+				"vllm": "vllm:avg_prompt_throughput_toks_per_s",
+			},
 			Description: "Average prompt throughput in tokens per second",
 		},
 		AvgGenerationThroughputToksPerS: {
@@ -95,6 +108,9 @@ var (
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Gauge,
+			},
+			RawMetricNameMapping: map[string]string{
+				"vllm": "vllm:avg_generation_throughput_toks_per_s",
 			},
 			Description: "Average generation throughput in tokens per second",
 		},
@@ -105,6 +121,9 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
+			RawMetricNameMapping: map[string]string{
+				"vllm": "vllm:iteration_tokens_total",
+			},
 			Description: "Total iteration tokens",
 		},
 		TimeToFirstTokenSeconds: {
@@ -112,6 +131,10 @@ var (
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Histogram,
+			},
+			RawMetricNameMapping: map[string]string{
+				"vllm":   "vllm:time_to_first_token_seconds",
+				"sglang": "vllm:sglang:time_to_first_token_seconds",
 			},
 			Description: "Time to first token in seconds",
 		},
@@ -121,6 +144,10 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
+			RawMetricNameMapping: map[string]string{
+				"vllm":   "vllm:time_per_output_token_seconds",
+				"sglang": "sglang:inter_token_latency_seconds",
+			},
 			Description: "Time per output token in seconds",
 		},
 		E2ERequestLatencySeconds: {
@@ -128,6 +155,10 @@ var (
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Histogram,
+			},
+			RawMetricNameMapping: map[string]string{
+				"vllm":   "vllm:e2e_request_latency_seconds",
+				"sglang": "sglang:e2e_request_latency_seconds",
 			},
 			Description: "End-to-end request latency in seconds",
 		},
@@ -137,6 +168,9 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
+			RawMetricNameMapping: map[string]string{
+				"vllm": "vllm:request_queue_time_seconds",
+			},
 			Description: "Request queue time in seconds",
 		},
 		RequestInferenceTimeSeconds: {
@@ -144,6 +178,9 @@ var (
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Histogram,
+			},
+			RawMetricNameMapping: map[string]string{
+				"vllm": "vllm:request_inference_time_seconds",
 			},
 			Description: "Request inference time in seconds",
 		},
@@ -153,6 +190,9 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
+			RawMetricNameMapping: map[string]string{
+				"vllm": "vllm:request_decode_time_seconds",
+			},
 			Description: "Request decode time in seconds",
 		},
 		RequestPrefillTimeSeconds: {
@@ -160,6 +200,9 @@ var (
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Histogram,
+			},
+			RawMetricNameMapping: map[string]string{
+				"vllm": "vllm:request_prefill_time_seconds",
 			},
 			Description: "Request prefill time in seconds",
 		},
@@ -233,6 +276,9 @@ var (
 			MetricType: MetricType{
 				Raw: Counter,
 			},
+			RawMetricNameMapping: map[string]string{
+				"vllm": "vllm:gpu_cache_usage_perc",
+			},
 			Description: "GPU cache usage percentage",
 		},
 		CPUCacheUsagePerc: {
@@ -240,6 +286,9 @@ var (
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Counter,
+			},
+			RawMetricNameMapping: map[string]string{
+				"vllm": "vllm:cpu_cache_usage_perc",
 			},
 			Description: "CPU cache usage percentage",
 		},
@@ -286,7 +335,10 @@ var (
 				Query: QueryLabel,
 			},
 			RawMetricName: "lora_requests_info",
-			Description:   "Max count of Lora Adapters",
+			RawMetricNameMapping: map[string]string{
+				"vllm": "vllm:max_lora",
+			},
+			Description: "Max count of Lora Adapters",
 		},
 		RunningLoraAdapters: {
 			MetricScope:  PodMetricScope,
@@ -295,7 +347,10 @@ var (
 				Query: QueryLabel,
 			},
 			RawMetricName: "lora_requests_info",
-			Description:   "Count of running Lora Adapters",
+			RawMetricNameMapping: map[string]string{
+				"vllm": "vllm:running_lora_adapters",
+			},
+			Description: "Count of running Lora Adapters",
 		},
 		WaitingLoraAdapters: {
 			MetricScope:  PodMetricScope,
@@ -304,7 +359,10 @@ var (
 				Query: QueryLabel,
 			},
 			RawMetricName: "lora_requests_info",
-			Description:   "Count of waiting Lora Adapters",
+			RawMetricNameMapping: map[string]string{
+				"vllm": "vllm:waiting_lora_adapters",
+			},
+			Description: "Count of waiting Lora Adapters",
 		},
 		VTCBucketSizeActive: {
 			MetricScope:  PodModelMetricScope,
