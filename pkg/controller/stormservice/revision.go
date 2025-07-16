@@ -110,6 +110,12 @@ func newRevision(stormService *orchestrationv1alpha1.StormService, revision int6
 	return cr, nil
 }
 
+// createControllerRevision attempts to create a new ControllerRevision.
+// If the name already exists, it updates the name with a new hash and retries until successful.
+// real world examples:
+// NAME                  CONTROLLER                                      REVISION   AGE
+// llm-xpyd-69df6b87d8   stormservice.orchestration.aibrix.ai/llm-xpyd   1          73s
+// llm-xpyd-75ddc56d8c   stormservice.orchestration.aibrix.ai/llm-xpyd   2          3s
 func (r *StormServiceReconciler) createControllerRevision(ctx context.Context, parent metav1.Object, revision *apps.ControllerRevision, collisionCount *int32) (*apps.ControllerRevision, error) {
 	if collisionCount == nil {
 		return nil, fmt.Errorf("collisionCount should not be nil")
@@ -128,7 +134,7 @@ func (r *StormServiceReconciler) createControllerRevision(ctx context.Context, p
 		createErr := r.Client.Create(ctx, clone)
 		if errors.IsAlreadyExists(createErr) {
 			exists := &apps.ControllerRevision{}
-			err := r.Client.Get(ctx, client.ObjectKey{Namespace: clone.Namespace, Name: clone.Name}, clone)
+			err := r.Client.Get(ctx, client.ObjectKey{Namespace: clone.Namespace, Name: clone.Name}, exists)
 			if err != nil {
 				return nil, err
 			}
