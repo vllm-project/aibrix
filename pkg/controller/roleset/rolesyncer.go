@@ -42,6 +42,8 @@ type RoleRollingSyncer interface {
 
 type StatefulRoleSyncer struct {
 	cli client.Client
+	// To allow injection for testing.
+	computeHashFunc func(template *v1.PodTemplateSpec, collisionCount *int32) string
 }
 
 func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
@@ -74,8 +76,9 @@ func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1
 			createBudget--
 		} else if len(slots[i]) > 1 {
 			readyPods, notReadyPods := filterReadyPods(slots[i])
-			updatedReadyPods, outdatedReadyPods := filterUpdatedPods(readyPods, ctrlutil.ComputeHash(&role.Template, nil))
-			updatedNotReadyPods, outdatedNotReadyPods := filterUpdatedPods(notReadyPods, ctrlutil.ComputeHash(&role.Template, nil))
+			roleTemplateHash := s.computeHashFunc(&role.Template, nil)
+			updatedReadyPods, outdatedReadyPods := filterUpdatedPods(readyPods, roleTemplateHash)
+			updatedNotReadyPods, outdatedNotReadyPods := filterUpdatedPods(notReadyPods, roleTemplateHash)
 			podsToDelete = append(podsToDelete, outdatedNotReadyPods...)
 			if len(updatedReadyPods) > 0 {
 				// only keep 1 updated ready pod for each slot
@@ -121,7 +124,7 @@ func (s *StatefulRoleSyncer) readySlotNum(role *orchestrationv1alpha1.RoleSpec, 
 func (s *StatefulRoleSyncer) updatedSlotNum(role *orchestrationv1alpha1.RoleSpec, allPods []*v1.Pod) (int32, int32, int32) {
 	activePods, _ := filterActivePods(allPods)
 	slots, _ := s.podSlotForRole(role, activePods)
-	currentHash := ctrlutil.ComputeHash(&role.Template, nil)
+	currentHash := s.computeHashFunc(&role.Template, nil)
 
 	updatedTotal := 0
 	updatedReadyTotal := 0
@@ -158,7 +161,8 @@ func (s *StatefulRoleSyncer) Rollout(ctx context.Context, roleSet *orchestration
 	readySlotNum := s.readySlotNum(role, allPods)
 	deleteBudget := int32(readySlotNum) - expectedReplicas + MaxUnavailable(role)
 	createBudget := expectedReplicas + MaxSurge(role) - int32(len(allPods))
-	klog.Infof("[StatefulRoleSyncer.Rollout] roleset %s/%s role %s expectedReplicas %d, deleteBudget %d, createBudget %d, template hash %s", roleSet.Namespace, roleSet.Name, role.Name, expectedReplicas, deleteBudget, createBudget, ctrlutil.ComputeHash(&role.Template, nil))
+	roleTemplateHash := s.computeHashFunc(&role.Template, nil)
+	klog.Infof("[StatefulRoleSyncer.Rollout] roleset %s/%s role %s expectedReplicas %d, deleteBudget %d, createBudget %d, template hash %s", roleSet.Namespace, roleSet.Name, role.Name, expectedReplicas, deleteBudget, createBudget, roleTemplateHash)
 
 	slots, _ := s.podSlotForRole(role, activePods)
 	for i := range slots {
@@ -166,7 +170,7 @@ func (s *StatefulRoleSyncer) Rollout(ctx context.Context, roleSet *orchestration
 			// wait for scale to handle this slot
 			continue
 		}
-		if slots[i][0].Labels[constants.RoleTemplateHashLabelKey] == ctrlutil.ComputeHash(&role.Template, nil) {
+		if slots[i][0].Labels[constants.RoleTemplateHashLabelKey] == roleTemplateHash {
 			continue
 		}
 		if !podutil.IsPodReady(slots[i][0]) {
@@ -209,7 +213,8 @@ func (s *StatefulRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchest
 	readySlotNum := s.readySlotNum(role, allPods)
 	deleteBudget := int32(readySlotNum) - expectedReplicas + MaxUnavailable(role)
 	createBudget := expectedReplicas + MaxSurge(role) - int32(len(allPods))
-	klog.Infof("[StatefulRoleSyncer.RolloutByStep] Step %d: roleset %s/%s role %s expectedReplicas %d, deleteBudget %d, createBudget %d, template hash %s", currentStep, roleSet.Namespace, roleSet.Name, role.Name, expectedReplicas, deleteBudget, createBudget, ctrlutil.ComputeHash(&role.Template, nil))
+	roleTemplateHash := s.computeHashFunc(&role.Template, nil)
+	klog.Infof("[StatefulRoleSyncer.RolloutByStep] Step %d: roleset %s/%s role %s expectedReplicas %d, deleteBudget %d, createBudget %d, template hash %s", currentStep, roleSet.Namespace, roleSet.Name, role.Name, expectedReplicas, deleteBudget, createBudget, roleTemplateHash)
 
 	updatedTotal, _, outdatedTotal := s.updatedSlotNum(role, allPods)
 
@@ -228,7 +233,7 @@ func (s *StatefulRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchest
 			// wait for scale to handle this slot
 			continue
 		}
-		if slots[i][0].Labels[constants.RoleTemplateHashLabelKey] == ctrlutil.ComputeHash(&role.Template, nil) {
+		if slots[i][0].Labels[constants.RoleTemplateHashLabelKey] == roleTemplateHash {
 			continue
 		}
 		if !podutil.IsPodReady(slots[i][0]) {
@@ -271,7 +276,7 @@ func (s *StatefulRoleSyncer) AllReady(ctx context.Context, roleSet *orchestratio
 	if len(notReady) != 0 {
 		return false, nil
 	}
-	updated, outdated := filterUpdatedPods(ready, ctrlutil.ComputeHash(&role.Template, nil))
+	updated, outdated := filterUpdatedPods(ready, s.computeHashFunc(&role.Template, nil))
 	if len(outdated) != 0 {
 		return false, nil
 	}
@@ -300,7 +305,7 @@ func (s *StatefulRoleSyncer) CheckCurrentStep(ctx context.Context, roleSet *orch
 
 	activePods, inactivePods := filterActivePods(allPods)
 	ready, notReady := filterReadyPods(activePods)
-	_, outdated := filterUpdatedPods(ready, ctrlutil.ComputeHash(&role.Template, nil))
+	_, outdated := filterUpdatedPods(ready, s.computeHashFunc(&role.Template, nil))
 
 	slotsActive, toDelete := s.podSlotForRole(role, activePods)
 	updatedSlots, readySlots, outdatedSlots := s.updatedSlotNum(role, activePods)
@@ -369,6 +374,8 @@ func (s *StatefulRoleSyncer) podSlotForRole(role *orchestrationv1alpha1.RoleSpec
 
 type StatelessRoleSyncer struct {
 	cli client.Client
+	// To allow injection for testing.
+	computeHashFunc func(template *v1.PodTemplateSpec, collisionCount *int32) string
 }
 
 func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (bool, error) {
@@ -386,7 +393,7 @@ func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv
 	expectedReplicas := getRoleReplicas(role)
 	diff := len(activePods) - int(expectedReplicas)
 	if diff > 0 {
-		sortPodsByTemplateHash(activePods, ctrlutil.ComputeHash(&role.Template, nil))
+		sortPodsByTemplateHash(activePods, s.computeHashFunc(&role.Template, nil))
 		readyPods, _ := filterReadyPods(activePods)
 		readyCount := len(readyPods)
 		minAvailable := expectedReplicas - MaxUnavailable(role)
@@ -395,7 +402,7 @@ func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv
 			if diff == 0 {
 				break
 			}
-			if podutil.IsPodReady(activePods[i]) && readyCount <= int(minAvailable) {
+			if readyCount <= int(minAvailable) {
 				break
 			}
 			toDelete = append(toDelete, activePods[i])
@@ -438,8 +445,9 @@ func (s *StatelessRoleSyncer) Rollout(ctx context.Context, roleSet *orchestratio
 	}
 	activePods, _ := filterActivePods(allPods)
 	expectedReplicas := getRoleReplicas(role)
-	updated, outdated := filterUpdatedPods(activePods, ctrlutil.ComputeHash(&role.Template, nil))
-	klog.Infof("[StatelessRoleSyncer.Rollout] roleset %s/%s role %s updated %d, outdated %d, expectedReplicas %d, hash %s", roleSet.Namespace, roleSet.Name, role.Name, len(updated), len(outdated), expectedReplicas, ctrlutil.ComputeHash(&role.Template, nil))
+	roleTemplateHash := s.computeHashFunc(&role.Template, nil)
+	updated, outdated := filterUpdatedPods(activePods, roleTemplateHash)
+	klog.Infof("[StatelessRoleSyncer.Rollout] roleset %s/%s role %s updated %d, outdated %d, expectedReplicas %d, hash %s", roleSet.Namespace, roleSet.Name, role.Name, len(updated), len(outdated), expectedReplicas, roleTemplateHash)
 	ready, _ := filterReadyPods(activePods)
 	deleteBudget := int32(len(ready)) - expectedReplicas + MaxUnavailable(role)
 	sortPodsByActive(outdated)
@@ -488,8 +496,9 @@ func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orches
 	expectedReplicas := getRoleReplicas(role)
 	// Calculate the expected number of updated Pods based on the step size
 	expectedUpdatedReplicas := utils.MinInt32((MaxSurge(role)+MaxUnavailable(role))*currentStep, expectedReplicas)
-	updated, outdated := filterUpdatedPods(activePods, ctrlutil.ComputeHash(&role.Template, nil))
-	klog.Infof("[StatelessRoleSyncer.RolloutByStep] Step %d: roleset %s/%s role %s updated %d, outdated %d, expectedReplicas %d, expectedUpdatedReplicas %d, hash %s", currentStep, roleSet.Namespace, roleSet.Name, role.Name, len(updated), len(outdated), expectedReplicas, expectedUpdatedReplicas, ctrlutil.ComputeHash(&role.Template, nil))
+	roleTemplateHash := s.computeHashFunc(&role.Template, nil)
+	updated, outdated := filterUpdatedPods(activePods, roleTemplateHash)
+	klog.Infof("[StatelessRoleSyncer.RolloutByStep] Step %d: roleset %s/%s role %s updated %d, outdated %d, expectedReplicas %d, expectedUpdatedReplicas %d, hash %s", currentStep, roleSet.Namespace, roleSet.Name, role.Name, len(updated), len(outdated), expectedReplicas, expectedUpdatedReplicas, roleTemplateHash)
 	if int32(len(updated)) >= expectedUpdatedReplicas {
 		return nil
 	}
@@ -550,7 +559,7 @@ func (s *StatelessRoleSyncer) AllReady(ctx context.Context, roleSet *orchestrati
 	if len(notReady) != 0 {
 		return false, nil
 	}
-	updated, outdated := filterUpdatedPods(ready, ctrlutil.ComputeHash(&role.Template, nil))
+	updated, outdated := filterUpdatedPods(ready, s.computeHashFunc(&role.Template, nil))
 	if len(outdated) != 0 {
 		return false, nil
 	}
@@ -575,8 +584,9 @@ func (s *StatelessRoleSyncer) CheckCurrentStep(ctx context.Context, roleSet *orc
 	ready, notReady := filterReadyPods(activePods)
 
 	// 'updated' contains ready Pods with the new version, while 'updatedActive' includes all new Pods regardless of readiness
-	updated, outdated := filterUpdatedPods(ready, ctrlutil.ComputeHash(&role.Template, nil))
-	updatedActive, outdatedActive := filterUpdatedPods(activePods, ctrlutil.ComputeHash(&role.Template, nil))
+	roleTemplateHash := s.computeHashFunc(&role.Template, nil)
+	updated, outdated := filterUpdatedPods(ready, roleTemplateHash)
+	updatedActive, outdatedActive := filterUpdatedPods(activePods, roleTemplateHash)
 	klog.Infof("[StatelessRoleSyncer.CheckCurrentStep] roleset %s/%s role %s updatedReadyTotal: %d, outdatedReadyTotal: %d, updatedTotal: %d, outdatedTotal: %d",
 		roleSet.Namespace, roleSet.Name, role.Name, len(updated), len(outdated), len(updatedActive), len(outdatedActive))
 
@@ -615,10 +625,12 @@ func (s *StatelessRoleSyncer) CheckCurrentStep(ctx context.Context, roleSet *orc
 func GetRoleSyncer(cli client.Client, role *orchestrationv1alpha1.RoleSpec) RoleRollingSyncer {
 	if role.Stateful {
 		return &StatefulRoleSyncer{
-			cli: cli,
+			cli:             cli,
+			computeHashFunc: ctrlutil.ComputeHash,
 		}
 	}
 	return &StatelessRoleSyncer{
-		cli: cli,
+		cli:             cli,
+		computeHashFunc: ctrlutil.ComputeHash,
 	}
 }
