@@ -119,6 +119,12 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_HPKV_LOCAL_PORT: int = 12345
     AIBRIX_KV_CACHE_OL_HPKV_USE_GDR: bool = True
 
+    # Pris Env Vars
+    AIBRIX_KV_CACHE_OL_PRIS_REMOTE_ADDR: str = "127.0.0.1"
+    AIBRIX_KV_CACHE_OL_PRIS_REMOTE_PORT: int = 6379
+    AIBRIX_KV_CACHE_OL_PRIS_USE_MPUT_MGET: bool = False
+    AIBRIX_KV_CACHE_OL_PRIS_PASSWORD: str = ""
+
     # RDMA Auto-Detection Env Vars
     # Defines the range of valid GIDs. Similar to NVSHMEM_IB_ADDR_RANGE
     # for NVSHMEM. It must be a valid CIDR.
@@ -342,6 +348,20 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     "AIBRIX_KV_CACHE_OL_HPKV_USE_GDR": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_HPKV_USE_GDR", "1").strip().lower()
         in ("1", "true")
+    ),
+    # ================== PRIS Env Vars ==================
+    "AIBRIX_KV_CACHE_OL_PRIS_REMOTE_ADDR": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_PRIS_REMOTE_ADDR", "127.0.0.1").strip()
+    ),
+    "AIBRIX_KV_CACHE_OL_PRIS_REMOTE_PORT": lambda: int(
+        os.getenv("AIBRIX_KV_CACHE_OL_PRIS_REMOTE_PORT", "6379")
+    ),
+    "AIBRIX_KV_CACHE_OL_PRIS_USE_MPUT_MGET": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_PRIS_USE_MPUT_MGET", "0").strip().lower()
+        in ("1", "true")
+    ),
+    "AIBRIX_KV_CACHE_OL_PRIS_PASSWORD": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_PRIS_PASSWORD", "").strip()
     ),
     # ================== RDMA Auto-Detection Env Vars ==================
     "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE": lambda: (

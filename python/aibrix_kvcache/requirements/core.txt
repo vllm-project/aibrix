@@ -28,4 +28,5 @@ rocksdict
 # infinistore >= 0.2.35
 # --extra-index-url https://scqq9isgq31i0fb8nt4eg.apigateway-cn-beijing.volceapi.com/simple/
 # hpkv >= 0.0.1
+# pris >= 0.0.4
 # pyverbs
