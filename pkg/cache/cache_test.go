@@ -18,6 +18,7 @@ limitations under the License.
 package cache
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"math/rand"
@@ -557,6 +558,44 @@ var _ = Describe("Cache", func() {
 		// print(duration)
 		meta, _ := cache.metaModels.Load(modelName)
 		Expect(atomic.LoadInt32(&meta.pendingRequests)).To(Equal(int32(0)))
+	})
+
+	It("should multiple calls to AddRequestCount and DoneRequestCount not affect request counting", func() {
+		modelName := "llama-7b"
+		cache := InitWithRequestTrace(cache)
+		pod := getReadyPod("p1", "default", modelName, 0)
+		cache.AddPod(pod)
+
+		// Create a routing context using the proper constructor
+		ctx := types.RoutingAlgorithm("test").NewContext(context.Background(), modelName, "test message", "test-request-123", "")
+
+		// Set the target pod to make HasRouted() return true
+		ctx.SetTargetPod(pod)
+
+		// Call AddRequestCount multiple times with same context
+		cache.AddRequestCount(ctx, ctx.RequestID, modelName)
+
+		// Call AddRequestCount again with same context
+		traceTerm := cache.AddRequestCount(ctx, ctx.RequestID, modelName)
+
+		runningReq, err := cache.GetMetricValueByPod("p1", "default", metrics.RealtimeNumRequestsRunning)
+		Expect(err).To(BeNil())
+
+		// RunningReq should be 1
+		Expect(runningReq.GetSimpleValue()).To(Equal(1.0))
+
+		// Call DoneRequestCount multiple times with same context
+		cache.DoneRequestCount(ctx, ctx.RequestID, modelName, traceTerm)
+
+		// Call DoneRequestCount again with same context
+		cache.DoneRequestCount(ctx, ctx.RequestID, modelName, traceTerm)
+
+		// Get the metric value again after calling DoneRequestCount
+		runningReqAfter, err := cache.GetMetricValueByPod("p1", "default", metrics.RealtimeNumRequestsRunning)
+		Expect(err).To(BeNil())
+
+		// RunningReq should be 0
+		Expect(runningReqAfter.GetSimpleValue()).To(Equal(0.0))
 	})
 })
 
