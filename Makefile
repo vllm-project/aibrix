@@ -321,11 +321,15 @@ dev-stop-port-forward:
 
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
+    ## Install all CRDs using kubectl create to avoid size limitation problems like for Ray CRDs.
+	$(KUBECTL) create -k config/crd/ || true
     ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization
+    ## This target also handles the KubeRay Operator components included in config/dependency
 	$(KUBECTL) apply -k config/dependency --server-side
 
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
+	$(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -k config/crd
 	$(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -k config/dependency
 
 .PHONY: deploy
