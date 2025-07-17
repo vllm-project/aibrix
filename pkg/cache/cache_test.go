@@ -38,6 +38,8 @@ import (
 	"k8s.io/klog/v2"
 )
 
+const llama7b = "llama-7b"
+
 var dummyPod = &v1.Pod{
 	ObjectMeta: metav1.ObjectMeta{
 		Name: "testpod",
@@ -501,7 +503,7 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should basic add request count, add request trace no err", func() {
-		modelName := "llama-7b"
+		modelName := llama7b
 		cache := InitWithRequestTrace(cache)
 		cache.AddPod(getReadyPod("p1", "default", modelName, 0))
 
@@ -534,7 +536,7 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should global pending counter return 0.", func() {
-		modelName := "llama-7b"
+		modelName := llama7b
 		cache := InitWithRequestTrace(cache)
 		cache.AddPod(getReadyPod("p1", "default", modelName, 0))
 
@@ -561,7 +563,7 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should multiple calls to AddRequestCount and DoneRequestCount not affect request counting", func() {
-		modelName := "llama-7b"
+		modelName := llama7b
 		cache := InitWithRequestTrace(cache)
 		pod := getReadyPod("p1", "default", modelName, 0)
 		cache.AddPod(pod)
