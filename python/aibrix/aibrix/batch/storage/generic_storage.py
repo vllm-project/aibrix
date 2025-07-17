@@ -84,6 +84,10 @@ class LocalDiskFiles(PersistentStorage):
         os.makedirs(self.directory_path, exist_ok=True)
         logger.info("Storage path is located", path=self.directory_path)
 
+    def get_base_path(self):
+        """Get base path of storage."""
+        return self.directory_path
+
     def write_job_input_data(self, job_id, inputDataFileName):
         """This writes requests file to local disk."""
         request_list = []
@@ -100,9 +104,9 @@ class LocalDiskFiles(PersistentStorage):
         logger.info("Storage side received requests", count=num_valid_request)
 
         directory_path = self.directory_path + str(job_id) + "/"
-        os.makedirs(directory_path)
+        os.makedirs(directory_path, exist_ok=True)
 
-        inputFileName = "input.json"
+        inputFileName = "input.jsonl"
         inputJsonName = directory_path + inputFileName
         with open(inputJsonName, "w") as file:
             for obj in request_list:
@@ -111,7 +115,7 @@ class LocalDiskFiles(PersistentStorage):
     def read_job_input_data(self, job_id, start_index=0, num_requests=-1):
         """Read job requests input from local disk."""
         directory_path = self.directory_path + str(job_id) + "/"
-        inputFileName = "input.json"
+        inputFileName = "input.jsonl"
         inputJsonName = directory_path + inputFileName
 
         request_inputs = []
@@ -147,7 +151,7 @@ class LocalDiskFiles(PersistentStorage):
     def get_job_number_requests(self, job_id):
         """Get job requests length from local disk."""
         directory_path = self.directory_path + str(job_id) + "/"
-        inputFileName = "input.json"
+        inputFileName = "input.jsonl"
         inputJsonName = directory_path + inputFileName
 
         if not os.path.exists(inputJsonName):
@@ -166,7 +170,7 @@ class LocalDiskFiles(PersistentStorage):
         directory_path = self.directory_path + str(job_id) + "/"
         os.makedirs(directory_path, exist_ok=True)
 
-        output_file_path = directory_path + "output.json"
+        output_file_path = directory_path + "output.jsonl"
         with open(output_file_path, "a+") as file:
             for _ in range(start_index):
                 next(file, None)
@@ -189,7 +193,7 @@ class LocalDiskFiles(PersistentStorage):
                 job_id=job_id,
             )  # type: ignore[call-arg]
             return output_data
-        output_file_path = directory_path + "output.json"
+        output_file_path = directory_path + "output.jsonl"
 
         with open(output_file_path, "r") as file:
             for _ in range(start_index):
@@ -216,7 +220,7 @@ class LocalDiskFiles(PersistentStorage):
         """Delete all input and output files for the job."""
         directory_path = self.directory_path + str(job_id) + "/"
 
-        input_file_path = directory_path + "input.json"
+        input_file_path = directory_path + "input.jsonl"
         try:
             os.remove(input_file_path)
         except FileNotFoundError:
@@ -226,7 +230,7 @@ class LocalDiskFiles(PersistentStorage):
                 "Error removing input file", file_path=input_file_path, error=str(e)
             )  # type: ignore[call-arg]
 
-        output_file_path = directory_path + "output.json"
+        output_file_path = directory_path + "output.jsonl"
         if os.path.exists(output_file_path):
             try:
                 os.remove(output_file_path)

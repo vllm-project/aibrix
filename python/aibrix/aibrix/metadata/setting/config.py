@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # --- External Service URLs (if any) ---
     EXTERNAL_API_URL: Optional[str] = None  # Example: URL for an external microservice
 
+    # --- File API settings ---
+    MAX_FILE_SIZE: int = 1024 * 1024 * 1024  # 1G in bytes
+
 
 # Create an instance of the Settings class
 # Pydantic will automatically try to load values from environment variables

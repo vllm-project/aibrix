@@ -13,13 +13,15 @@
 # limitations under the License.
 import argparse
 from contextlib import asynccontextmanager
+from typing import Optional
 
 import uvicorn
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import JSONResponse
 
 from aibrix.batch import BatchDriver
-from aibrix.metadata.api.v1 import batch
+from aibrix.batch.job_entity import JobEntityManager
+from aibrix.metadata.api.v1 import batch, files
 from aibrix.metadata.core.httpx_client import HTTPXClientWrapper
 from aibrix.metadata.logger import init_logger
 from aibrix.metadata.setting import settings
@@ -45,14 +47,14 @@ async def readiness_check():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Code executed on startup
-    if app.state.hasattr("httpx_client_wrapper"):
+    if hasattr(app.state, "httpx_client_wrapper"):
         app.state.httpx_client_wrapper.start()
     yield
 
     # Code executed on shutdown
-    if app.state.hasattr("job_controller"):
+    if hasattr(app.state, "job_controller"):
         await app.state.job_controller.close()
-    if app.state.hasattr("httpx_client_wrapper"):
+    if hasattr(app.state, "httpx_client_wrapper"):
         await app.state.httpx_client_wrapper.stop()
 
 
@@ -71,10 +73,17 @@ def build_app(args: argparse.Namespace):
     app.state.httpx_client_wrapper = HTTPXClientWrapper()
     app.include_router(router)
     if not args.disable_batch_api:
-        app.state.job_controller = BatchDriver(JobCache())
+        job_entity_manager: Optional[JobEntityManager] = None
+        if args.enable_k8s_job:
+            job_entity_manager = JobCache()
+        app.state.job_controller = BatchDriver(job_entity_manager)
         app.include_router(
-            batch.router, prefix=settings.API_V1_STR, tags=["batches"]
+            batch.router, prefix=f"{settings.API_V1_STR}/batches", tags=["batches"]
         )  # mount batch api at /v1/batches
+        if args.e2e_test:
+            app.include_router(
+                files.router, prefix=f"{settings.API_V1_STR}/files", tags=["files"]
+            )  # mount files api at /v1/files
 
     return app
 
@@ -100,6 +109,18 @@ def main():
         action="store_true",
         default=False,
         help="Disable batch api",
+    )
+    parser.add_argument(
+        "--enable-k8s-job",
+        action="store_true",
+        default=False,
+        help="Enable native kubernetes jobs as the job executor",
+    )
+    parser.add_argument(
+        "--e2e-test",
+        action="store_true",
+        default=False,
+        help="Enable features for e2e test",
     )
     args = parser.parse_args()
 

@@ -41,6 +41,11 @@ def initialize_batch_storage(storage_type=StorageType.LocalDiskFile, params={}):
     else:
         raise ValueError("Unknown storage type")
 
+def get_base_path():
+    """Get base path of storage."""
+
+    assert p_storage is not None
+    return p_storage.get_base_path()
 
 def upload_input_data(inputDataFileName: str):
     """Upload job input data file to storage.
@@ -65,12 +70,7 @@ def read_job_requests(job_id: str, start_index: int, num_requests: int):
     """
     assert p_storage is not None
     if job_id not in current_job_offsets:
-        logger.error(
-            "Create job first. Can not find corresponding job ID",
-            job_id=job_id,
-            current_job_offsets=current_job_offsets.keys(),
-        )  # type: ignore[call-arg]
-        return []
+        current_job_offsets[job_id] = 0
 
     # if no request is cached, this reads a list of requests from storage.
     if job_id not in job_input_requests:

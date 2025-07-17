@@ -150,6 +150,7 @@ class JobScheduler:
         self._CC_controller = cc_controller
         self._current_pool_size = self._CC_controller._job_pool_size
         # Start the loop process in an async way
+        self._job_cleanup_loop = asyncio.get_running_loop()
         self._job_cleanup_task = asyncio.create_task(self.job_cleanup_loop())
         self._policy = policy
 
@@ -232,7 +233,6 @@ class JobScheduler:
         """
         This is a long-running process to check if jobs have expired or not.
         """
-        # [TODO][NOW] Add a close function to stop this loop
         round_id = 0
         while True:
             start_time = time.time()  # Record start time
@@ -247,12 +247,16 @@ class JobScheduler:
 
     async def close(self):
         """Properly shutdown the driver and cancel running tasks"""
+        loop = asyncio.get_running_loop()
+        if self._job_cleanup_loop and loop is not self._job_cleanup_loop:
+            try:
+                asyncio.run_coroutine_threadsafe(self.close(), self._job_cleanup_loop).result(timeout=5)
+            except Exception as e:
+                pass
+            return
+        
         if self._job_cleanup_task and not self._job_cleanup_task.done():
             self._job_cleanup_task.cancel()
-            try:
-                await self._job_cleanup_task
-            except asyncio.CancelledError:
-                pass
 
     def round_robin_get_job(self):
         # Step 1

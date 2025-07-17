@@ -59,6 +59,10 @@ class TOSStorage(PersistentStorage):
                 "Attempting to create TOS client failed with unknown error", error=e
             )  # type: ignore[call-arg]
 
+    def get_base_path(self):
+        """Get base path of storage."""
+        return ""
+
     def write_job_input_data(self, job_id, inputDataFileName):
         """
         Each request is an object.

@@ -65,6 +65,7 @@ pydantic-settings = "^2.6.1"
 kopf = {extras = ["uvloop"], version = "^1.37.2"}
 PyYAML = "^6.0.1"
 types-PyYAML = "^6.0.12.20240917"
+python-multipart = "^0.0.20"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "1.11.1"

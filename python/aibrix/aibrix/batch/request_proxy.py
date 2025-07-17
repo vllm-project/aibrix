@@ -19,7 +19,6 @@ from aibrix.metadata.logger import init_logger
 
 logger = init_logger(__name__)
 
-
 class RequestProxy:
     def __init__(self, storage, manager) -> None:
         """ """
@@ -60,6 +59,10 @@ class RequestProxy:
         requests = self._storage.get_job_input_requests(
             input_id, request_id, num_request
         )
+        if len(requests) == 0:
+            logger.warning(
+                "Can not read inputs from storage", file_id=input_id
+            )
         return requests[0]
 
     def store_output(self, output_id, request_id, result):
