@@ -1,0 +1,167 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: tp-1p1d
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: tp-1p1d
+  template:
+    metadata:
+      labels:
+        app: tp-1p1d
+    spec:
+      roles:
+        - name: routing
+          replicas: 1
+          stateful: true
+          template:
+            spec:
+              containers:
+                - name: mini-lb
+                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang-router:community_v0.4.9.post1-patch.2
+                  command: [ "sh", "-c" ]
+                  args:
+                    - |
+                      python3 -m sglang_router.launch_router \
+                        --pd-disaggregation \
+                        --policy random \
+                        --service-discovery \
+                        --service-discovery-port 30000 \
+                        --prefill-selector storm-service-name=$STORM_SERVICE_NAME role-name=prefill stormservice.orchestration.aibrix.ai/role-replica-index=0 \
+                        --decode-selector storm-service-name=$STORM_SERVICE_NAME role-name=decode stormservice.orchestration.aibrix.ai/role-replica-index=0 \
+                        --service-discovery-namespace default
+        - name: prefill
+          replicas: 2
+          stateful: true
+          template:
+            metadata:
+              annotations:
+                k8s.volcengine.com/pod-networks: |
+                  [
+                    {
+                      "cniConf":{
+                          "name":"rdma"
+                      }
+                    }
+                  ]
+            spec:
+              containers:
+                - name: prefill
+                  image: iaas-gpu-cn-beijing.cr.volces.com/serving/sglang:v0.4.9.post2.iaas.dev.202507161949
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      python3 -m sglang.launch_server \
+                        --model-path /models/Qwen2.5-7B-Instruct \
+                        --host 0.0.0.0 \
+                        --port 30000 \
+                        --disaggregation-mode prefill \
+                        --trust-remote-code \
+                        --dist-init-addr "${ROLESET_NAME}-${ROLE_NAME}-${ROLE_TEMPLATE_HASH}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5000" \
+                        --nnodes 2 \
+                        --node-rank $ROLE_REPLICA_INDEX \
+                        --tp-size 2 \
+                        --mem-fraction-static 0.8 \
+                        --log-level debug
+                  env:
+                    - name: GLOO_SOCKET_IFNAME
+                      value: eth0
+                    - name: NCCL_SOCKET_IFNAME
+                      value: eth0
+                    - name: NCCL_IB_DISABLE
+                      value: "0"
+                    - name: NCCL_IB_GID_INDEX
+                      value: "7"
+                    - name: NCCL_DEBUG
+                      value: "INFO"
+                  volumeMounts:
+                    - name: model-vol
+                      mountPath: /models
+                    - mountPath: /dev/shm
+                      name: shared-mem
+                  resources:
+                    limits:
+                      nvidia.com/gpu: 1
+                      vke.volcengine.com/rdma: "1"
+                  securityContext:
+                    capabilities:
+                      add:
+                        - IPC_LOCK
+              volumes:
+                - name: model-vol
+                  hostPath:
+                    path: /root/models
+                    type: Directory
+                - emptyDir:
+                    medium: Memory
+                  name: shared-mem
+        - name: decode
+          replicas: 2
+          stateful: true
+          template:
+            metadata:
+              annotations:
+                k8s.volcengine.com/pod-networks: |
+                  [
+                    {
+                      "cniConf":{
+                          "name":"rdma"
+                      }
+                    }
+                  ]
+            spec:
+              containers:
+                - name: decode
+                  image: iaas-gpu-cn-beijing.cr.volces.com/serving/sglang:v0.4.9.post2.iaas.dev.202507161949
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      python3 -m sglang.launch_server \
+                        --model-path /models/Qwen2.5-7B-Instruct \
+                        --host 0.0.0.0 \
+                        --port 30000 \
+                        --disaggregation-mode decode \
+                        --trust-remote-code \
+                        --dist-init-addr "${ROLESET_NAME}-${ROLE_NAME}-${ROLE_TEMPLATE_HASH}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5000" \
+                        --nnodes 2 \
+                        --node-rank $ROLE_REPLICA_INDEX \
+                        --tp-size 2 \
+                        --mem-fraction-static 0.8 \
+                        --log-level debug
+                  env:
+                    - name: GLOO_SOCKET_IFNAME
+                      value: eth0
+                    - name: NCCL_SOCKET_IFNAME
+                      value: eth0
+                    - name: NCCL_IB_DISABLE
+                      value: "0"
+                    - name: NCCL_IB_GID_INDEX
+                      value: "7"
+                    - name: NCCL_DEBUG
+                      value: "INFO"
+                  volumeMounts:
+                    - name: model-vol
+                      mountPath: /models
+                    - mountPath: /dev/shm
+                      name: shared-mem
+                  resources:
+                    limits:
+                      nvidia.com/gpu: 1
+                      vke.volcengine.com/rdma: "1"
+                  securityContext:
+                    capabilities:
+                      add:
+                        - IPC_LOCK
+              volumes:
+                - name: model-vol
+                  hostPath:
+                    path: /root/models
+                    type: Directory
+                - emptyDir:
+                    medium: Memory
+                  name: shared-mem
