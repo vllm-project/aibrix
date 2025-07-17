@@ -33,6 +33,12 @@ var (
 	unknownError = errors.New("unknown error")
 )
 
+const (
+	statusInitial = iota // 0: initial state
+	statusAdded          // 1: added
+	statusDone           // 2: done
+)
+
 type RequestFeatures []float64
 
 // RoutingAlgorithms defines the routing algorithms
@@ -216,14 +222,18 @@ func (r *RoutingContext) HasError() bool {
 	return pod == nil && r.getError() != nil
 }
 
-// CanUpdateStats returns true if the first time trying update in-memory realtime statistics.
-func (r *RoutingContext) CanUpdateStats() bool {
-	return atomic.CompareAndSwapInt32(&r.statsUpdated, 0, 1)
+// CanAddStats returns true if the first time trying update in-memory realtime statistics.
+func (r *RoutingContext) CanAddStats() bool {
+	return atomic.CompareAndSwapInt32(&r.statsUpdated, statusInitial, statusAdded)
+}
+
+func (r *RoutingContext) CanDoneStats() bool {
+	return atomic.CompareAndSwapInt32(&r.statsUpdated, statusAdded, statusDone)
 }
 
 // CanAddTrace returns true if the first time trying add trace to cache.
 func (r *RoutingContext) CanAddTrace() bool {
-	return atomic.CompareAndSwapInt32(&r.traceAdded, 0, 1)
+	return atomic.CompareAndSwapInt32(&r.traceAdded, statusInitial, statusAdded)
 }
 
 // GetRoutingDelay returns the time duration used for routing the request.
@@ -265,7 +275,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	// debugDelay will be reset by tests.
 	r.tokens = nil
 	r.predictor = nil
-	r.statsUpdated = 0
+	r.statsUpdated = statusInitial
 }
 
 func (r *RoutingContext) debugWait() {
