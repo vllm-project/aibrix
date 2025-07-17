@@ -16,7 +16,6 @@ import os
 import time
 import uuid
 from enum import Enum
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
@@ -24,8 +23,8 @@ from pydantic import Field
 
 from aibrix.batch.storage import get_base_path as get_storage_bath
 from aibrix.metadata.logger import init_logger
-from aibrix.openapi.protocol import NoExtraBaseModel
 from aibrix.metadata.setting.config import settings
+from aibrix.openapi.protocol import NoExtraBaseModel
 
 logger = init_logger(__name__)
 
@@ -74,6 +73,7 @@ class FileError(NoExtraBaseModel):
     """Error response model."""
 
     error: Dict[str, Any] = Field(description="Error details")
+
 
 def _validate_file_extension(filename: str) -> bool:
     """Validate if file extension is supported."""
@@ -176,7 +176,7 @@ async def create_file(
             id=file_id,
             bytes=file_size,
             created_at=created_at,
-            filename=metadata["filename"],
+            filename=str(metadata["filename"]),
             purpose=purpose,
             status=FileStatus.UPLOADED,
         )
@@ -212,7 +212,7 @@ async def retrieve_file_content(request: Request, file_id: str) -> Response:
         return Response(
             content=file_content,
             media_type=content_type,
-            headers={"Content-Disposition": f"attachment; filename=output.jsonl"},
+            headers={"Content-Disposition": "attachment; filename=output.jsonl"},
         )
 
     except FileNotFoundError:

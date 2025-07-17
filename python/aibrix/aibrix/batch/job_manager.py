@@ -436,7 +436,7 @@ class JobManager:
             return self._in_progress_jobs[job_id]
         elif job_id in self._done_jobs:
             return self._done_jobs[job_id]
-        
+
         return None
 
     def get_job_status(self, job_id: str) -> Optional[BatchJobState]:

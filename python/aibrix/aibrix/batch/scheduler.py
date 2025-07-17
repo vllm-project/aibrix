@@ -250,11 +250,13 @@ class JobScheduler:
         loop = asyncio.get_running_loop()
         if self._job_cleanup_loop and loop is not self._job_cleanup_loop:
             try:
-                asyncio.run_coroutine_threadsafe(self.close(), self._job_cleanup_loop).result(timeout=5)
-            except Exception as e:
+                asyncio.run_coroutine_threadsafe(
+                    self.close(), self._job_cleanup_loop
+                ).result(timeout=5)
+            except Exception:
                 pass
             return
-        
+
         if self._job_cleanup_task and not self._job_cleanup_task.done():
             self._job_cleanup_task.cancel()
 

@@ -41,11 +41,13 @@ def initialize_batch_storage(storage_type=StorageType.LocalDiskFile, params={}):
     else:
         raise ValueError("Unknown storage type")
 
+
 def get_base_path():
     """Get base path of storage."""
 
     assert p_storage is not None
     return p_storage.get_base_path()
+
 
 def upload_input_data(inputDataFileName: str):
     """Upload job input data file to storage.

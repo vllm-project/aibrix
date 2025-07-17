@@ -78,7 +78,9 @@ class BatchDriver:
                 await self._scheduling_task
             except (asyncio.CancelledError, RuntimeError) as e:
                 if isinstance(e, RuntimeError) and "different loop" in str(e):
-                    logger.warning("Task cancellation from different event loop, forcing cancellation")
+                    logger.warning(
+                        "Task cancellation from different event loop, forcing cancellation"
+                    )
                 pass
         if self._scheduler:
             await self._scheduler.close()
