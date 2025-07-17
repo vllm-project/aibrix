@@ -120,7 +120,9 @@ func (q *SimpleQueue[V]) Dequeue(_ time.Time) (c V, err error) {
 			q.mu.RUnlock()
 			dequeuePos = q.expand(dequeueCursor, dequeuePos)
 			q.mu.RLock()
-			// dequeueCursor outdated, so dequeuePos may unsafe
+			// Note that two Dequeue() can run concurrently trying to dequeue the current one.
+			// If the dequeue cursor was modified by another goroutine while we were unlocked,
+			// our local state is stale. We must retry the loop to get the new state.
 			if atomic.LoadInt64(&q.dequeueCursor) != dequeueCursor {
 				continue
 			}
@@ -178,7 +180,9 @@ func (q *SimpleQueue[V]) expand(triggerCursor int64, triggerPos int64) int64 {
 	oldCapacity := int64(cap(q.queue))
 	dequeuePos := q.physicalPosRLocked(q.dequeueCursor) // position before packing/expansion
 	enqueuePos := q.physicalPosRLocked(q.enqueueCursor)
-	used := enqueuePos - 1 - dequeuePos // enqueuePos stores next available position
+	// enqueuePos stores next position to the last one to be inserted, which is two more ahead
+	// of needed space.
+	used := enqueuePos - 1 - dequeuePos
 
 	// Determine new capacity
 	newQueue := q.queue
