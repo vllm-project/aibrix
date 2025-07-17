@@ -65,7 +65,7 @@ class BatchDriver:
         """
         logger.info("Starting scheduling...")
         while True:
-            one_job = self._scheduler.round_robin_get_job()
+            one_job = await self._scheduler.round_robin_get_job()
             if one_job:
                 await self._proxy.execute_queries(one_job)
             await asyncio.sleep(0)

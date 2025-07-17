@@ -173,7 +173,7 @@ class JobScheduler:
         )
         self._due_jobs_list.insert(index, item)
 
-    def schedule_next_job(self) -> Optional[str]:
+    async def schedule_next_job(self) -> Optional[str]:
         # Scheduler outputs a job to be processed following the specified policy.
         job_id = None
 
@@ -181,7 +181,7 @@ class JobScheduler:
         if self._policy == SchedulePolicy.FIFO:
             if self._jobs_queue.empty():
                 logger.debug("Job scheduler is waiting jobs coming")
-                time.sleep(1)
+                await asyncio.sleep(1)
             if not self._jobs_queue.empty():
                 job_id = self._jobs_queue.get()
                 logger.debug("Job scheduler is scheduling job", job_id=job_id)  # type: ignore[call-arg]
@@ -260,7 +260,7 @@ class JobScheduler:
         if self._job_cleanup_task and not self._job_cleanup_task.done():
             self._job_cleanup_task.cancel()
 
-    def round_robin_get_job(self):
+    async def round_robin_get_job(self):
         # Step 1
         # Before scheduling any new jobs, we need to check the status of previous
         # jobs and update it accordingly.
@@ -301,7 +301,7 @@ class JobScheduler:
                 break
 
         while start_offset < len(self._CC_controller._running_job_pool):
-            new_job_id = self.schedule_next_job()
+            new_job_id = await self.schedule_next_job()
             if not new_job_id:
                 break
 

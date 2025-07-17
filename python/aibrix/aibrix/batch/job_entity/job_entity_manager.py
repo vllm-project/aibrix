@@ -82,7 +82,7 @@ class JobEntityManager(ABC):
         pass
 
     @abstractmethod
-    def get_job(self, str) -> Optional[BatchJob]:
+    def get_job(self, job_id: str) -> Optional[BatchJob]:
         """Get cached job detail by batch id.
 
         Args:
