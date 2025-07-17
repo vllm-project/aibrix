@@ -120,6 +120,10 @@ func (q *SimpleQueue[V]) Dequeue(_ time.Time) (c V, err error) {
 			q.mu.RUnlock()
 			dequeuePos = q.expand(dequeueCursor, dequeuePos)
 			q.mu.RLock()
+			// dequeueCursor outdated, so dequeuePos may unsafe
+			if atomic.LoadInt64(&q.dequeueCursor) != dequeueCursor {
+				continue
+			}
 		}
 
 		// Make sure value was completely enqueued, wait if not.
@@ -173,13 +177,18 @@ func (q *SimpleQueue[V]) expand(triggerCursor int64, triggerPos int64) int64 {
 
 	oldCapacity := int64(cap(q.queue))
 	dequeuePos := q.physicalPosRLocked(q.dequeueCursor) // position before packing/expansion
-	used := triggerPos - dequeuePos
+	enqueuePos := q.physicalPosRLocked(q.enqueueCursor)
+	used := enqueuePos - 1 - dequeuePos // enqueuePos stores next available position
 
 	// Determine new capacity
 	newQueue := q.queue
 	if used > oldCapacity/2 {
 		// Expand capacity
-		newQueue = make([]V, oldCapacity*2)
+		newCapacity := oldCapacity << 1
+		for newCapacity < used {
+			newCapacity <<= 1
+		}
+		newQueue = make([]V, newCapacity)
 		// Pack existing elements
 		copy(newQueue, q.queue[dequeuePos:])
 	} else {
