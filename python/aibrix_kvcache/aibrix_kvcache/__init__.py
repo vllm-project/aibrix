@@ -16,6 +16,7 @@
 from .version import __version__, __version_tuple__  # isort:skip
 
 from .cache_handle import KVCacheHandle, MemoryRegionKVCacheHandle
+from .cache_hashable import TokenListView
 from .cache_manager import (
     BaseKVCacheManager,
     GroupAwareKVCacheManager,
@@ -31,6 +32,7 @@ __all__ = [
     "__version_tuple__",
     "KVCacheHandle",
     "MemoryRegionKVCacheHandle",
+    "TokenListView",
     "BaseKVCacheManager",
     "GroupAwareKVCacheManager",
     "KVCacheManager",

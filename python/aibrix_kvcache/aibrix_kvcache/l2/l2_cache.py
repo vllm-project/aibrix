@@ -21,11 +21,12 @@ import torch
 from more_itertools import batched
 
 from ..cache_handle import KVCacheHandle
-from ..common import nvtx_range
+from ..cache_hashable import TokenListView
 from ..common.absl_logging import getLogger, log_every_n_seconds
 from ..memory import MemoryRegion
 from ..meta_service import MetaService
 from ..metrics import L2CacheMetrics, MeasurableBase, MetricRecorder
+from ..profiling import nvtx_range
 from ..spec import KVCacheBlockLayout, KVCacheBlockSpec
 from ..status import Status, StatusCodes
 from .connectors import Connector, ConnectorConfig
@@ -150,13 +151,13 @@ class L2Cache(MeasurableBase):
     @nvtx_range("prefetch", "kv_cache_ol.L2Cache")
     async def prefetch(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        prefix: TokenListView | None,
+        tokens: TokenListView,
     ) -> Status:
         """Prefetch kv tensors from the cache.
         Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
-            tokens (Sequence[int]): The tokens of the kv tensors.
+            prefix (TokenListView | None): The prefix tokens of the kv tensors.
+            tokens (TokenListView): The tokens of the kv tensors.
         Returns:
             The status of the prefetch operation.
         """
@@ -183,13 +184,13 @@ class L2Cache(MeasurableBase):
     @MeasurableBase.measure(MetricRecorder.OP.EXISTS)
     async def exists(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        prefix: TokenListView | None,
+        tokens: TokenListView,
     ) -> Status[int]:
         """Check if kv tensors exist in the cache.
         Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
-            tokens (Sequence[int]): The tokens of the kv tensors.
+            prefix (TokenListView | None): The prefix tokens of the kv tensors.
+            tokens (TokenListView): The tokens of the kv tensors.
         Returns:
             The number of blocks that exist in the cache.
         """
@@ -225,14 +226,14 @@ class L2Cache(MeasurableBase):
     @MeasurableBase.measure(MetricRecorder.OP.PUT)
     async def put(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        prefix: TokenListView | None,
+        tokens: TokenListView,
         kv_tensors: (MemoryRegion | Sequence[MemoryRegion] | KVCacheHandle),
     ) -> Status[int]:
         """Put kv tensors to the cache.
         Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
-            tokens (Sequence[int]): The tokens of the kv tensors.
+            prefix (TokenListView | None): The prefix tokens of the kv tensors.
+            tokens (TokenListView): The tokens of the kv tensors.
             kv_tensors: kv tensors or cache handles.
         Returns:
             The status of the put operation and the number of blocks.
@@ -368,13 +369,13 @@ class L2Cache(MeasurableBase):
         return Status.ok(num_processed_blocks)
 
     async def _backend_put_impl(
-        self, key_pair: Tuple[Tuple[int, ...], str], mr: MemoryRegion
+        self, key_pair: Tuple[TokenListView, bytes], mr: MemoryRegion
     ) -> Status:
         """Put kv tensors to the backend.
         Args:
             key_pair: I.e., real_key and cache_key.
-                real_key (Tuple[int, ...]): The real key of the kv tensors.
-                cache_key (str): The cache key of the kv tensors.
+                real_key (TokenListView): The real key of the kv tensors.
+                cache_key (bytes): The cache key of the kv tensors.
             mr (MemoryRegion): Memory region of kv tensors.
         Returns:
             The status of the put operation.
@@ -393,14 +394,14 @@ class L2Cache(MeasurableBase):
     @MeasurableBase.measure(MetricRecorder.OP.GET)
     async def get(
         self,
-        prefix: Sequence[int] | None,
-        tokens: Sequence[int],
+        prefix: TokenListView | None,
+        tokens: TokenListView,
         mrs: Sequence[MemoryRegion],
     ) -> Status[int]:
         """Get kv tensors from the cache.
         Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
-            tokens (Sequence[int]): The tokens of the kv tensors.
+            prefix (TokenListView | None): The prefix tokens of the kv tensors.
+            tokens (TokenListView): The tokens of the kv tensors.
             mrs (Sequence[MemoryRegion]): Memory regions to place the fetched
                                           kv tensors.
         Returns:
@@ -446,14 +447,14 @@ class L2Cache(MeasurableBase):
 
     async def _backend_mget_impl(
         self,
-        key_pairs: Sequence[Tuple[Tuple[int, ...], str]],
+        key_pairs: Sequence[Tuple[TokenListView, bytes]],
         mrs: Sequence[MemoryRegion],
     ) -> Status[int]:
         """Get kv tensors from the backend using mget.
         Args:
             key_pairs: I.e., a sequence of real_key and cache_key pairs.
-                real_key (Tuple[int, ...]): The real key of the kv tensors.
-                cache_key (str): The cache key of the kv tensors.
+                real_key (TokenListView): The real key of the kv tensors.
+                cache_key (bytes): The cache key of the kv tensors.
             mrs: Memory regions to place the fetched kv tensors.
         Returns:
             Status of the mget operation.
@@ -523,13 +524,13 @@ class L2Cache(MeasurableBase):
         return Status.ok(nr)
 
     async def _backend_get_impl(
-        self, key_pair: Tuple[Tuple[int, ...], str], mr: MemoryRegion
+        self, key_pair: Tuple[TokenListView, bytes], mr: MemoryRegion
     ) -> Status:
         """Get kv tensors from the backend.
         Args:
             key_pair: I.e., real_key and cache_key.
-                real_key (Tuple[int, ...]): The real key of the kv tensors.
-                cache_key (str): The cache key of the kv tensors.
+                real_key (TokenListView): The real key of the kv tensors.
+                cache_key (bytes): The cache key of the kv tensors.
             mr (MemoryRegion): Memory region to place the fetched kv tensors.
         Returns:
             The status of the get operation.
@@ -553,22 +554,25 @@ class L2Cache(MeasurableBase):
 
     def _tokens_match(
         self,
-        real_key: Tuple[int, ...],
-        prefix_in_mr: Tuple[int, ...] | None,
-        tokens_in_mr: Tuple[int, ...],
+        real_key: TokenListView,
+        prefix_in_mr: TokenListView | None,
+        tokens_in_mr: TokenListView | None,
     ) -> bool:
         """Check if the tokens in mr match the real key.
         Args:
-            real_key (Tuple[int, ...]): The real key of the kv tensors.
-            prefix_in_mr (Tuple[int, ...] | None): The prefix in mr.
-            tokens_in_mr (Tuple[int, ...]): The tokens in mr.
+            real_key (TokenListView): The real key of the kv tensors.
+            prefix_in_mr (TokenListView | None): The prefix in mr.
+            tokens_in_mr (TokenListView): The tokens in mr.
         Returns:
             True if the tokens in mr match the real key, False otherwise.
         """
         try:
-            if len(tokens_in_mr) != self.block_ntokens:
+            if tokens_in_mr is None or len(tokens_in_mr) != self.block_ntokens:
                 return False
-            all_tokens = (prefix_in_mr or tuple()) + tokens_in_mr
+            if prefix_in_mr is not None:
+                all_tokens = prefix_in_mr + tokens_in_mr
+            else:
+                all_tokens = tokens_in_mr
             is_identical = all_tokens == real_key
             if is_identical:
                 return True
@@ -579,12 +583,12 @@ class L2Cache(MeasurableBase):
 
     @nvtx_range("delete", "kv_cache_ol.L2Cache")
     async def delete(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
+        self, prefix: TokenListView | None, tokens: TokenListView
     ) -> Status:
         """Delete kv tensors from the cache.
         Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
-            tokens (Sequence[int]): The tokens of the kv tensors.
+            prefix (TokenListView | None): The prefix tokens of the kv tensors.
+            tokens (TokenListView): The tokens of the kv tensors.
         Returns:
             The status of the delete operation.
         """
@@ -596,24 +600,24 @@ class L2Cache(MeasurableBase):
         return Status.ok()
 
     def _cache_block_keys(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Iterator[Tuple[Tuple[int, ...], bytes]]:
+        self, prefix: TokenListView | None, tokens: TokenListView
+    ) -> Iterator[Tuple[TokenListView, bytes]]:
         """Get the cache block keys of the kv tensors.
         Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
-            tokens (Sequence[int]): The tokens of the kv tensors.
+            prefix (TokenListView | None): The prefix tokens of the kv tensors.
+            tokens (TokenListView): The tokens of the kv tensors.
         Returns:
             The cache block keys of the kv tensors.
         """
         return iter(self.key_builder.build(prefix, tokens))
 
     def _cache_block_key_batches(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Iterator[Iterator[Tuple[Tuple[int, ...], bytes]]]:
+        self, prefix: TokenListView | None, tokens: TokenListView
+    ) -> Iterator[Iterator[Tuple[TokenListView, bytes]]]:
         """Get the cache block key batchs.
         Args:
-            prefix (Sequence[int] | None): The prefix tokens of the kv tensors.
-            tokens (Sequence[int]): The tokens of the kv tensors.
+            prefix (TokenListView | None): The prefix tokens of the kv tensors.
+            tokens (TokenListView): The tokens of the kv tensors.
         Returns:
             The cache block key batchs of the kv tensors.
         """

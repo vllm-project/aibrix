@@ -24,9 +24,11 @@ const (
 	StormServiceRevisionLabelKey = "storm-service-revision"
 	RoleNameLabelKey             = "role-name"
 	RoleTemplateHashLabelKey     = "role-template-hash"
+	RoleReplicaIndexLabelKey     = "stormservice.orchestration.aibrix.ai/role-replica-index"
 
-	RoleSetIndexAnnotationKey     = "stormservice.orchestration.aibrix.ai/roleset-index"
-	RoleSetRevisionAnnotationKey  = "stormservice.orchestration.aibrix.ai/revision"
+	RoleSetIndexAnnotationKey    = "stormservice.orchestration.aibrix.ai/roleset-index"
+	RoleSetRevisionAnnotationKey = "stormservice.orchestration.aibrix.ai/revision"
+	// RoleReplicaIndexAnnotationKey is originally used, to support label filter rank 0 pod, we add label support but keep this annotation for backward compatibility.
 	RoleReplicaIndexAnnotationKey = "stormservice.orchestration.aibrix.ai/role-replica-index"
 
 	StormServiceNameEnvKey = "STORM_SERVICE_NAME"

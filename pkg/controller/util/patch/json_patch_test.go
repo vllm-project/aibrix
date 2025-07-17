@@ -18,11 +18,14 @@ package patch
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func TestJSONPatch_NewAppendLen(t *testing.T) {
@@ -59,4 +62,102 @@ func TestFixPathToValid(t *testing.T) {
 	in := "/metadata/labels/app"
 	out := FixPathToValid(in)
 	assert.Equal(t, "~1metadata~1labels~1app", out)
+}
+
+func TestJSONPatch_JsonPatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupPatch  func() *JSONPatch
+		wantPatch   client.Patch
+		wantErr     bool
+		expectedErr error
+	}{
+		{
+			name: "successful json patch creation",
+			setupPatch: func() *JSONPatch {
+				return &JSONPatch{
+					JSONPatchItem{
+						Operation: "add",
+						Path:      "/metadata/labels/test",
+						Value:     "value",
+					},
+				}
+			},
+			wantPatch: client.RawPatch(types.JSONPatchType, []byte(`[{"op":"add","path":"/metadata/labels/test","value":"value"}]`)),
+			wantErr:   false,
+		},
+		{
+			name: "empty json patch",
+			setupPatch: func() *JSONPatch {
+				return &JSONPatch{}
+			},
+			wantPatch: client.RawPatch(types.JSONPatchType, []byte(`[]`)),
+			wantErr:   false,
+		},
+		{
+			name: "multiple operations in patch",
+			setupPatch: func() *JSONPatch {
+				return &JSONPatch{
+					JSONPatchItem{
+						Operation: "add",
+						Path:      "/metadata/labels/test1",
+						Value:     "value1",
+					},
+					JSONPatchItem{
+						Operation: "remove",
+						Path:      "/metadata/labels/test2",
+					},
+				}
+			},
+			// Note: our implementation didn't follow exact RFC 6902 which doesn't include a value for remove operations.
+			// The output is still acceptable in kubernetes, but this should be improved in the future.
+			wantPatch: client.RawPatch(types.JSONPatchType, []byte(`[{"op":"add","path":"/metadata/labels/test1","value":"value1"},{"op":"remove","path":"/metadata/labels/test2","value":null}]`)),
+			wantErr:   false,
+		},
+		{
+			name: "error during marshaling",
+			setupPatch: func() *JSONPatch {
+				// Create a patch with an invalid value that can't be marshaled
+				return &JSONPatch{
+					JSONPatchItem{
+						Operation: "add",
+						Path:      "/metadata/labels/test",
+						Value:     make(chan int), // channels can't be marshaled to JSON
+					},
+				}
+			},
+			wantErr:     true,
+			expectedErr: errors.New("json: unsupported type: chan int"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jp := tt.setupPatch()
+
+			gotPatch, err := jp.JsonPatch()
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.expectedErr != nil {
+					assert.Contains(t, err.Error(), tt.expectedErr.Error())
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantPatch.Type(), gotPatch.Type())
+
+			// Compare the raw data of the patches
+			rawWant, err := tt.wantPatch.Data(nil)
+			require.NoError(t, err)
+
+			rawGot, err := gotPatch.Data(nil)
+			require.NoError(t, err)
+
+			// Ensure the raw data is the same
+			assert.JSONEq(t, string(rawWant), string(rawGot))
+			assert.Equal(t, rawWant, rawGot)
+		})
+	}
 }

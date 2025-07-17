@@ -15,9 +15,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import pytest
+
+pytest.skip(allow_module_level=True)
+
 import random
 
-import pytest
 import torch
 import vllm
 from aibrix_kvcache import _custom_ops as ops
@@ -25,7 +28,6 @@ from aibrix_kvcache import _custom_ops as ops
 from vllm.platforms import current_platform
 from vllm.utils import get_kv_cache_torch_dtype
 
-pytest.skip(allow_module_level=True)
 
 DTYPES = [torch.half, torch.bfloat16, torch.float]
 NUM_LAYERS = [8]

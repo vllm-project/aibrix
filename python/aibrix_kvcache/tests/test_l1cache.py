@@ -19,6 +19,7 @@ from typing import Sequence
 import pytest
 import torch
 
+from aibrix_kvcache import TokenListView
 from aibrix_kvcache.l1 import L1Cache
 from aibrix_kvcache.memory import MemoryRegion, TensorPoolAllocator
 
@@ -27,8 +28,8 @@ from .conftest import CACHE_DTYPE, release_mrs
 
 def check_tokens(
     mrs: Sequence[MemoryRegion],
-    prefix: Sequence[int] | None,
-    tokens: Sequence[int],
+    prefix: TokenListView | None,
+    tokens: TokenListView,
     block_ntokens: int,
 ):
     if MemoryRegion.use_compact_layout():
@@ -51,7 +52,7 @@ def test_cache_initialization(cache_conf_fixture):
     cache = L1Cache(
         eviction_policy="LRU",
         capacity_nbytes=capacity_nbytes,
-        allocator=TensorPoolAllocator(capacity_nbytes=capacity_nbytes),
+        allocator=TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes),
         block_spec=spec,
     )
 
@@ -66,11 +67,11 @@ def test_put_and_get_aligned(cache_conf_fixture):
     cache = L1Cache(
         eviction_policy="LRU",
         capacity_nbytes=capacity_nbytes,
-        allocator=TensorPoolAllocator(capacity_nbytes=capacity_nbytes),
+        allocator=TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes),
         block_spec=spec,
     )
 
-    tokens = [i for i in range(32)]
+    tokens = TokenListView([i for i in range(32)])
     origin_tokens = copy.deepcopy(tokens)
     shape[spec.block_shape_token_dim] = 32
     kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
@@ -103,11 +104,11 @@ def test_put_and_get_unaligned(cache_conf_fixture):
     cache = L1Cache(
         eviction_policy="LRU",
         capacity_nbytes=capacity_nbytes,
-        allocator=TensorPoolAllocator(capacity_nbytes=capacity_nbytes),
+        allocator=TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes),
         block_spec=spec,
     )
 
-    tokens = [i for i in range(35)]
+    tokens = TokenListView([i for i in range(35)])
     shape[spec.block_shape_token_dim] = len(tokens)
     kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
 
@@ -141,11 +142,16 @@ def test_put_and_get_with_prefix(cache_conf_fixture, eviction_policy):
     cache = L1Cache(
         eviction_policy=eviction_policy,
         capacity_nbytes=capacity_nbytes,
-        allocator=TensorPoolAllocator(capacity_nbytes=capacity_nbytes),
+        allocator=TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes),
         block_spec=spec,
     )
 
     tokens0 = [i for i in range(32)]
+    tokens1 = [i for i in range(100, 135)]
+    all_tokens = TokenListView(tokens0 + tokens1)
+    tokens0 = all_tokens[:32]
+    tokens1 = all_tokens[32:]
+
     shape[spec.block_shape_token_dim] = len(tokens0)
     kv_tensors0 = torch.randn(*shape, dtype=CACHE_DTYPE)
 
@@ -153,7 +159,6 @@ def test_put_and_get_with_prefix(cache_conf_fixture, eviction_policy):
     assert put_status.is_ok()
     assert put_status.value == 2
 
-    tokens1 = [i for i in range(100, 135)]
     shape[spec.block_shape_token_dim] = len(tokens1)
     kv_tensors1 = torch.randn(*shape, dtype=CACHE_DTYPE)
 
@@ -217,12 +222,12 @@ def test_duplicated_puts(cache_conf_fixture, eviction_policy):
     cache = L1Cache(
         eviction_policy=eviction_policy,
         capacity_nbytes=capacity_nbytes,
-        allocator=TensorPoolAllocator(capacity_nbytes=capacity_nbytes),
+        allocator=TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes),
         block_spec=spec,
     )
 
     for _ in range(10):
-        tokens = [i for i in range(32)]
+        tokens = TokenListView([i for i in range(32)])
         shape[spec.block_shape_token_dim] = len(tokens)
         kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
 
@@ -255,7 +260,7 @@ def test_cache_eviction(cache_conf_fixture, eviction_policy):
     cache = L1Cache(
         eviction_policy=eviction_policy,
         capacity_nbytes=capacity_nbytes,
-        allocator=TensorPoolAllocator(capacity_nbytes=capacity_nbytes),
+        allocator=TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes),
         block_spec=spec,
     )
 
@@ -264,7 +269,7 @@ def test_cache_eviction(cache_conf_fixture, eviction_policy):
     ) + MemoryRegion.calculate_size(spec.block_nbytes, 32)
     expected_capacity_nbytes = 0
     for i in range(0, capacity_nbytes, per_put_nbytes):
-        tokens = [i * 64 + j for j in range(32)]
+        tokens = TokenListView([i * 64 + j for j in range(32)])
         shape[spec.block_shape_token_dim] = len(tokens)
         kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
 
@@ -282,7 +287,7 @@ def test_cache_eviction(cache_conf_fixture, eviction_policy):
             break
 
     cap = len(cache)
-    tokens = [640 + j for j in range(32)]
+    tokens = TokenListView([640 + j for j in range(32)])
     shape[spec.block_shape_token_dim] = len(tokens)
     kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
     put_status = cache.put(None, tokens, kv_tensors)
@@ -302,7 +307,7 @@ def test_stress_cache(cache_conf_fixture, eviction_policy):
     cache = L1Cache(
         eviction_policy=eviction_policy,
         capacity_nbytes=capacity_nbytes,
-        allocator=TensorPoolAllocator(capacity_nbytes=capacity_nbytes),
+        allocator=TensorPoolAllocator.create(capacity_nbytes=capacity_nbytes),
         block_spec=spec,
     )
 
@@ -312,6 +317,14 @@ def test_stress_cache(cache_conf_fixture, eviction_policy):
         prefix_tokens = [
             j for j in range(num_prefix_blocks * spec.block_ntokens)
         ]
+        ntokens = random.randint(16, 1024)
+        tokens = [j for j in range(ntokens)]
+        random.shuffle(tokens)
+        
+        all_tokens = TokenListView(prefix_tokens + tokens)
+        prefix_tokens = all_tokens[:num_prefix_blocks * spec.block_ntokens]
+        tokens = all_tokens[num_prefix_blocks * spec.block_ntokens:]
+
         shape[spec.block_shape_token_dim] = len(prefix_tokens)
         prefix_kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
         put_status = cache.put(None, prefix_tokens, prefix_kv_tensors)
@@ -328,9 +341,6 @@ def test_stress_cache(cache_conf_fixture, eviction_policy):
         if status.is_ok():
             release_mrs(status.value)
 
-        ntokens = random.randint(16, 1024)
-        tokens = [j for j in range(ntokens)]
-        random.shuffle(tokens)
         shape[spec.block_shape_token_dim] = len(tokens)
         kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
         put_status = cache.put(prefix_tokens, tokens, kv_tensors)

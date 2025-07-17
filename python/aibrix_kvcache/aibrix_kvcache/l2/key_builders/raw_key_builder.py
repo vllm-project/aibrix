@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import array
-from typing import Sequence, Tuple
+from typing import Tuple
 
+from ...cache_hashable import TokenListView
 from .key_builder import KeyBuilder
 
 
@@ -27,8 +27,8 @@ class RawKeyBuilder(KeyBuilder):
         return "raw"
 
     def build(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Tuple[Tuple[Tuple[int, ...], bytes], ...]:
+        self, prefix: TokenListView | None, tokens: TokenListView
+    ) -> Tuple[Tuple[TokenListView, bytes], ...]:
         assert prefix is None or len(prefix) % self.block_size == 0
 
         token_size = len(tokens) - len(tokens) % self.block_size
@@ -37,13 +37,21 @@ class RawKeyBuilder(KeyBuilder):
 
         results = []
 
-        not_none_prefix = tuple() if prefix is None else tuple(prefix)
-        all = tuple(not_none_prefix + tuple(tokens[:token_size]))
+        if prefix is not None:
+            all = prefix + tokens
+        else:
+            all = tokens
         assert len(all) % self.block_size == 0
-        prefix_len = len(not_none_prefix)
+        prefix_len = len(prefix) if prefix is not None else 0
 
-        all_bytes = array.array("I", all).tobytes()
-        itemsize = array.array("I").itemsize
+        attr_name = f"{self.__class__.__name__}.data_bytes"
+        if hasattr(all._meta_, attr_name):
+            all_bytes = getattr(all._meta_, attr_name)
+        else:
+            all_bytes = all._data.tobytes()
+            setattr(all._meta_, attr_name, all_bytes)
+
+        itemsize = all.to_numpy().itemsize
         for i in range(0, token_size, self.block_size):
             keys = all[: prefix_len + i + self.block_size]
             block_bytes = all_bytes[

@@ -108,7 +108,7 @@ def small_capacity_policy(request):
 def test_put_and_get(policy):
     block_nbytes = 16
     assert len(policy) == 0
-    allocator = TensorPoolAllocator(capacity_nbytes=256 * TEST_ALLOC_SIZE)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=256 * TEST_ALLOC_SIZE)
     key = TokenCacheKey(None, tuple(range(24)))
     mr = build_cache_value(allocator, block_nbytes, key)
     assert policy.put(key, mr).is_ok()
@@ -121,7 +121,7 @@ def test_put_and_get(policy):
 def test_put_update_existing(policy):
     block_nbytes = 16
     assert len(policy) == 0
-    allocator = TensorPoolAllocator(capacity_nbytes=256 * TEST_ALLOC_SIZE)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=256 * TEST_ALLOC_SIZE)
     key = TokenCacheKey(None, tuple(range(24)))
     mr0 = build_cache_value(allocator, block_nbytes, key)
     mr1 = build_cache_value(allocator, block_nbytes, key)
@@ -136,7 +136,7 @@ def test_put_update_existing(policy):
 
 
 def test_eviction(small_capacity_policy):
-    allocator = TensorPoolAllocator(capacity_nbytes=256 * TEST_ALLOC_SIZE)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=256 * TEST_ALLOC_SIZE)
     key0 = TokenCacheKey(None, tuple(range(16)))
     mr0 = build_cache_value(allocator, 16, key0)
     key1 = TokenCacheKey(None, tuple(range(24)))
@@ -150,7 +150,7 @@ def test_eviction(small_capacity_policy):
 
 
 def test_multiple_evictions(policy):
-    allocator = TensorPoolAllocator(capacity_nbytes=256 * TEST_ALLOC_SIZE)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=256 * TEST_ALLOC_SIZE)
     key0 = TokenCacheKey(None, tuple(range(16)))
     key1 = TokenCacheKey(None, tuple(range(2, 16)))
     key2 = TokenCacheKey(None, tuple(range(3, 16)))
@@ -169,7 +169,7 @@ def test_multiple_evictions(policy):
 
 
 def test_delete(policy):
-    allocator = TensorPoolAllocator(capacity_nbytes=256 * TEST_ALLOC_SIZE)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=256 * TEST_ALLOC_SIZE)
     key = TokenCacheKey(None, tuple(range(16)))
     mr = build_cache_value(allocator, 16, key)
     assert policy.put(key, mr).is_ok()
@@ -188,7 +188,7 @@ def test_delete_empty(policy):
 
 
 def test_basic(policy):
-    allocator = TensorPoolAllocator(capacity_nbytes=256 * TEST_ALLOC_SIZE)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=256 * TEST_ALLOC_SIZE)
 
     capacity = policy.capacity_nbytes
     ground_truth = []
@@ -241,7 +241,7 @@ def test_basic(policy):
 
 
 def test_on_evict_callback(policy):
-    allocator = TensorPoolAllocator(capacity_nbytes=256 * TEST_ALLOC_SIZE)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=256 * TEST_ALLOC_SIZE)
 
     capacity = policy.capacity_nbytes
     ground_truth = []
@@ -271,7 +271,7 @@ def test_on_evict_callback(policy):
 
 
 def test_on_hot_access_callback(policy):
-    allocator = TensorPoolAllocator(capacity_nbytes=256 * TEST_ALLOC_SIZE)
+    allocator = TensorPoolAllocator.create(capacity_nbytes=256 * TEST_ALLOC_SIZE)
 
     capacity = policy.capacity_nbytes
     ground_truth = []

@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import array
-from typing import Sequence, Tuple
+from typing import Tuple
 
+from ...cache_hashable import TokenListView
 from .hasher import Hasher
 from .key_builder import KeyBuilder
 
@@ -29,8 +29,8 @@ class SimpleHashKeyBuilder(KeyBuilder):
         return "sim"
 
     def build(
-        self, prefix: Sequence[int] | None, tokens: Sequence[int]
-    ) -> Tuple[Tuple[Tuple[int, ...], bytes], ...]:
+        self, prefix: TokenListView | None, tokens: TokenListView
+    ) -> Tuple[Tuple[TokenListView, bytes], ...]:
         assert prefix is None or len(prefix) % self.block_size == 0
 
         token_size = len(tokens) - len(tokens) % self.block_size
@@ -40,13 +40,17 @@ class SimpleHashKeyBuilder(KeyBuilder):
         results = []
 
         prefix_len = len(prefix) if prefix is not None else 0
-        all = (tuple(prefix) if prefix is not None else ()) + tuple(tokens)
-        all_bytes = memoryview(array.array("I", all).tobytes())
-        itemsize = array.array("I").itemsize
+
+        if prefix is not None:
+            all = prefix + tokens
+        else:
+            all = tokens
+
+        all_bytes = all.memoryview()
         for i in range(0, token_size, self.block_size):
             keys = all[: prefix_len + i + self.block_size]
 
-            data = all_bytes[: (prefix_len + i + self.block_size) * itemsize]
+            data = all_bytes[: (prefix_len + i + self.block_size)]
             curr_hash = self.hasher.hash(data)
 
             results.append((keys, curr_hash.to_bytes(16)))

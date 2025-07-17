@@ -19,9 +19,9 @@ from .common.absl_logging import getLogger
 logger = getLogger(__name__)
 
 try:
-    import aibrix_kvcache._C  # noqa: F401
+    import aibrix_kvcache._aibrix_C  # noqa: F401
 except ImportError as e:
-    logger.warning("Failed to import from aibrix_kvcache._C with %r", e)
+    logger.warning("Failed to import from aibrix_kvcache._aibrix_C with %r", e)
 
 
 def reshape_and_cache_multi_layer(
@@ -34,7 +34,7 @@ def reshape_and_cache_multi_layer(
     v_scales: list[torch.Tensor],
     layout: str,
 ) -> None:
-    torch.ops._C_cache_ops.reshape_and_cache_multi_layer(
+    torch.ops._aibrix_C_cache_ops.reshape_and_cache_multi_layer(
         offload_kv_cache_blocks,
         kv_caches,
         slot_mapping,
@@ -56,7 +56,7 @@ def reshape_and_offload_multi_layer(
     v_scales: list[torch.Tensor],
     layout: str,
 ) -> None:
-    torch.ops._C_cache_ops.reshape_and_offload_multi_layer(
+    torch.ops._aibrix_C_cache_ops.reshape_and_offload_multi_layer(
         offload_kv_cache_blocks,
         kv_caches,
         slot_mapping,
