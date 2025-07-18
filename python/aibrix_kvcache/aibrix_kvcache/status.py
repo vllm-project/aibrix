@@ -137,6 +137,9 @@ class Status(Generic[T]):
         def wrapper(*args, **kwargs):
             try:
                 return func(*args, **kwargs)
+            except AssertionError:
+                # Allow assertion error to pass through
+                raise
             except Exception as e:
                 return Status(StatusCodes.ERROR, e)
 
@@ -144,6 +147,9 @@ class Status(Generic[T]):
         async def async_wrapper(*args, **kwargs):
             try:
                 return await func(*args, **kwargs)
+            except AssertionError:
+                # Allow assertion error to pass through
+                raise
             except Exception as e:
                 return Status(StatusCodes.ERROR, e)
 
