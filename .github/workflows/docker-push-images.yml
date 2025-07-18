@@ -6,6 +6,7 @@ on:
     branches: [ "main", "release-*" ]
 jobs:
   build:
+    if: github.repository == 'vllm-project/aibrix'
     runs-on: ubuntu-latest
     permissions:
       packages: write
