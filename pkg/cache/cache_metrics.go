@@ -30,6 +30,7 @@ import (
 const (
 	podPort                             = 8000
 	defaultPodMetricRefreshIntervalInMS = 50
+	engineLabel                         = "model.aibrix.ai/engine"
 )
 
 var (
@@ -168,7 +169,7 @@ func (c *Store) updateSimpleMetricFromRawMetrics(pod *Pod, allMetrics map[string
 		}
 
 		// TODO: we should refact metricName to fit other engine
-		metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", metricName)]
+		metricFamily, exists := c.fetchMetrics(pod, allMetrics, metricName)
 		if !exists {
 			klog.V(4).Infof("Cannot find %v in the pod metrics", metricName)
 			continue
@@ -202,8 +203,7 @@ func (c *Store) updateHistogramMetricFromRawMetrics(pod *Pod, allMetrics map[str
 			klog.V(4).Infof("Cannot find %v in the metric list", metricName)
 			continue
 		}
-
-		metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", metricName)]
+		metricFamily, exists := c.fetchMetrics(pod, allMetrics, metricName)
 		if !exists {
 			klog.V(4).Infof("Cannot find %v in the pod metrics", metricName)
 			continue
@@ -243,7 +243,7 @@ func (c *Store) updateQueryLabelMetricFromRawMetrics(pod *Pod, allMetrics map[st
 		}
 		rawMetricName := metric.RawMetricName
 		scope := metric.MetricScope
-		metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", rawMetricName)]
+		metricFamily, exists := c.fetchMetrics(pod, allMetrics, rawMetricName)
 		if !exists {
 			klog.V(4).Infof("Cannot find %v in the pod metrics", rawMetricName)
 			continue
@@ -300,6 +300,30 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 	}
 }
 
+func (c *Store) fetchMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily, labelMetricName string) (*dto.MetricFamily, bool) {
+	// metricFamily, exists := allMetrics[fmt.Sprintf("vllm:%s", rawMetricName)]
+	metric, exists := metrics.Metrics[labelMetricName]
+	if !exists {
+		klog.V(4).Infof("Cannot find %v in the metric list", labelMetricName)
+		return nil, false
+	}
+	engineType, ok := pod.Labels[engineLabel]
+	if !ok {
+		klog.V(4).InfoS("No engine label, default to vllm", "name", pod.Name)
+		engineType = "vllm"
+	}
+	rawMetricName, ok := metric.RawMetricNameMapping[engineType]
+	if !ok {
+		klog.V(4).Infof("Cannot find %v in the metric list, engine type %v", labelMetricName, engineType)
+		return nil, false
+	}
+	metricFamily, exists := allMetrics[rawMetricName]
+	if !exists {
+		klog.V(4).Infof("Cannot find raw metrics name %v, engine type %v", rawMetricName, engineType)
+		return nil, false
+	}
+	return metricFamily, true
+}
 func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Metric, queryLabels map[string]string, pod *Pod, modelName string, metricName string) error {
 	scope := metric.MetricScope
 	query := metrics.BuildQuery(metric.PromQL, queryLabels)
