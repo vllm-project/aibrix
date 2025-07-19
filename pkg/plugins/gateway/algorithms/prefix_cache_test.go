@@ -47,9 +47,13 @@ func Test_PrefixCacheE2E(t *testing.T) {
 		})
 	podList := podsFromCache(c)
 
+	// Create tokenizer using factory method
+	tokenizerObj, err := tokenizer.NewTokenizer("character", nil)
+	assert.NoError(t, err)
+
 	prefixCacheRouter := prefixCacheRouter{
 		cache:              c,
-		tokenizer:          tokenizer.NewCharacterTokenizer(),
+		tokenizer:          tokenizerObj,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 	}
 

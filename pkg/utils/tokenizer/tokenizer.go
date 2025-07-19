@@ -16,6 +16,34 @@ limitations under the License.
 
 package tokenizer
 
-type Tokenizer interface {
-	TokenizeInputText(string) ([]byte, error)
+import (
+	"fmt"
+)
+
+// Package tokenizer provides a unified interface for text tokenization
+// This file contains the main factory function for creating tokenizer instances
+
+// NewTokenizer creates a tokenizer instance based on the provided type
+// Supports "tiktoken", "character", and "remote" tokenizer types
+func NewTokenizer(tokenizerType string, config interface{}) (Tokenizer, error) {
+	switch tokenizerType {
+	case "tiktoken":
+		// Tiktoken doesn't require configuration
+		return NewTiktokenTokenizer(), nil
+
+	case "character":
+		// Character tokenizer doesn't require configuration
+		return NewCharacterTokenizer(), nil
+
+	case "remote":
+		// Generic remote tokenizer
+		remoteConfig, ok := config.(RemoteTokenizerConfig)
+		if !ok {
+			return nil, fmt.Errorf("invalid config type for remote tokenizer")
+		}
+		return NewRemoteTokenizer(remoteConfig)
+
+	default:
+		return nil, fmt.Errorf("unsupported tokenizer type: %s", tokenizerType)
+	}
 }

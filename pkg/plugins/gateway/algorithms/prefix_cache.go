@@ -54,12 +54,19 @@ type prefixCacheRouter struct {
 }
 
 func NewPrefixCacheRouter() (types.Router, error) {
+	// Create tokenizer based on type
+	// Supported tokenizers: ["character", "tiktoken"]
+	// Default: "character" for any unrecognized type
+	// TODO: Add support for "remote" and "vllm" tokenizer types in a future PR.
+	//       This will require proper configuration handling for remote endpoints.
 	var tokenizerObj tokenizer.Tokenizer
-	// TODO: refactor initilization
-	// supported tokenizers: ["character", "tiktoken"]
 	if tokenizerType == "tiktoken" {
 		tokenizerObj = tokenizer.NewTiktokenTokenizer()
 	} else {
+		// Default to character tokenizer for backward compatibility
+		if tokenizerType != "character" {
+			klog.InfoS("unrecognized tokenizer type, defaulting to character", "type", tokenizerType)
+		}
 		tokenizerObj = tokenizer.NewCharacterTokenizer()
 	}
 
