@@ -95,6 +95,8 @@ func (r *RoleSetReconciler) calculateStatus(ctx context.Context, rs *orchestrati
 	newStatus := rs.Status.DeepCopy()
 	newStatus.Roles = nil
 	var notReadyRoles []string
+	var progressingRoles []string
+	isProgressing := false
 	for _, role := range rs.Spec.Roles {
 		if roleStatus, err := r.calculateStatusForRole(ctx, rs, &role); err != nil {
 			// TODO: add into condition
@@ -105,20 +107,63 @@ func (r *RoleSetReconciler) calculateStatus(ctx context.Context, rs *orchestrati
 			if roleStatus.ReadyReplicas < *role.Replicas {
 				notReadyRoles = append(notReadyRoles, role.Name)
 			}
+			if roleStatus.ReadyReplicas < *role.Replicas ||
+				roleStatus.UpdatedReadyReplicas < roleStatus.UpdatedReplicas ||
+				(roleStatus.UpdatedReplicas > 0 && roleStatus.UpdatedReadyReplicas < roleStatus.UpdatedReplicas) {
+				progressingRoles = append(progressingRoles, role.Name)
+				isProgressing = true
+			}
 		}
 	}
 
 	if len(notReadyRoles) > 0 {
-		notReadyCondition := utils.NewCondition(orchestrationv1alpha1.RoleSetReady, v1.ConditionFalse, "roleset is not ready", fmt.Sprintf("role %s is not ready", strings.Join(notReadyRoles, ",")))
+		notReadyCondition := utils.NewCondition(
+			orchestrationv1alpha1.RoleSetReady,
+			v1.ConditionFalse,
+			orchestrationv1alpha1.RoleSetReasonRolesNotReady,
+			fmt.Sprintf("Roles %s are not ready", strings.Join(notReadyRoles, ",")),
+		)
 		SetRoleSetCondition(newStatus, *notReadyCondition)
 	} else {
-		readyCondition := utils.NewCondition(orchestrationv1alpha1.RoleSetReady, v1.ConditionTrue, "roleset is ready", "")
+		readyCondition := utils.NewCondition(
+			orchestrationv1alpha1.RoleSetReady,
+			v1.ConditionTrue,
+			orchestrationv1alpha1.RoleSetReasonRolesReady,
+			"All roles are ready",
+		)
 		SetRoleSetCondition(newStatus, *readyCondition)
+	}
+
+	if isProgressing {
+		cond := utils.NewCondition(
+			orchestrationv1alpha1.RoleSetProgressing,
+			v1.ConditionTrue,
+			orchestrationv1alpha1.RoleSetReasonRolesProgressing,
+			fmt.Sprintf("Roles %s are progressing", strings.Join(progressingRoles, ", ")),
+		)
+		SetRoleSetCondition(newStatus, *cond)
+	} else {
+		// If all roles are ready, set the Progressing condition to complete.
+		currentProgressingCond := utils.GetCondition(rs.Status.Conditions, orchestrationv1alpha1.RoleSetProgressing)
+		if currentProgressingCond != nil {
+			cond := utils.NewCondition(
+				orchestrationv1alpha1.RoleSetProgressing,
+				v1.ConditionFalse,
+				orchestrationv1alpha1.RoleSetReasonProgressingComplete,
+				"All roles have completed progressing",
+			)
+			SetRoleSetCondition(newStatus, *cond)
+		}
 	}
 
 	failureCond := utils.GetCondition(rs.Status.Conditions, orchestrationv1alpha1.RoleSetReplicaFailure)
 	if len(managedErrors) != 0 && failureCond == nil {
-		cond := utils.NewCondition(orchestrationv1alpha1.RoleSetReplicaFailure, v1.ConditionTrue, "reconcile roleset error", fmt.Sprintf("%+v", managedErrors))
+		cond := utils.NewCondition(
+			orchestrationv1alpha1.RoleSetReplicaFailure,
+			v1.ConditionTrue,
+			orchestrationv1alpha1.RoleSetReasonReconcileError,
+			fmt.Sprintf("%+v", managedErrors),
+		)
 		SetRoleSetCondition(newStatus, *cond)
 	} else if len(managedErrors) == 0 && failureCond != nil {
 		RemoveRoleSetCondition(newStatus, orchestrationv1alpha1.RoleSetReplicaFailure)
