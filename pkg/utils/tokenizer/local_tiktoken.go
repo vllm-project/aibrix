@@ -17,10 +17,7 @@ limitations under the License.
 package tokenizer
 
 import (
-	"bytes"
-	"encoding/binary"
-
-	"k8s.io/klog/v2"
+	"sync"
 
 	"github.com/pkoukk/tiktoken-go"
 	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader"
@@ -29,16 +26,27 @@ import (
 // https://cookbook.openai.com/examples/how_to_count_tokens_with_tiktoken
 const encoding = "cl100k_base"
 
-type tiktokenTokenizer struct{}
+var (
+	tiktokenEncoder     *tiktoken.Tiktoken
+	tiktokenEncoderOnce sync.Once
+	tiktokenEncoderErr  error
+)
 
-func NewTiktokenTokenizer() Tokenizer {
-	return &tiktokenTokenizer{}
+// TiktokenTokenizer implements local tokenization using tiktoken
+type TiktokenTokenizer struct{}
+
+// initEncoder initializes the tiktoken encoder once
+func initEncoder() (*tiktoken.Tiktoken, error) {
+	tiktokenEncoderOnce.Do(func() {
+		// if you don't want download dictionary at runtime, you can use offline loader
+		tiktoken.SetBpeLoader(tiktoken_loader.NewOfflineLoader())
+		tiktokenEncoder, tiktokenEncoderErr = tiktoken.GetEncoding(encoding)
+	})
+	return tiktokenEncoder, tiktokenEncoderErr
 }
 
-func (s tiktokenTokenizer) TokenizeInputText(text string) ([]byte, error) {
-	// if you don't want download dictionary at runtime, you can use offline loader
-	tiktoken.SetBpeLoader(tiktoken_loader.NewOfflineLoader())
-	tke, err := tiktoken.GetEncoding(encoding)
+func (s *TiktokenTokenizer) TokenizeInputText(text string) ([]byte, error) {
+	tke, err := initEncoder()
 	if err != nil {
 		return nil, err
 	}
@@ -46,15 +54,4 @@ func (s tiktokenTokenizer) TokenizeInputText(text string) ([]byte, error) {
 	// encode
 	token := tke.Encode(text, nil, nil)
 	return intToByteArray(token), nil
-}
-
-func intToByteArray(intArray []int) []byte {
-	var buf bytes.Buffer
-	for _, num := range intArray {
-		err := binary.Write(&buf, binary.BigEndian, int32(num))
-		if err != nil {
-			klog.ErrorS(err, "binary.Write failed")
-		}
-	}
-	return buf.Bytes()
 }

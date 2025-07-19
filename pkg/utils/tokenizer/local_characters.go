@@ -16,13 +16,10 @@ limitations under the License.
 
 package tokenizer
 
-type characterTokenizer struct{}
+// CharacterTokenizer implements local tokenization by converting text to bytes
+type CharacterTokenizer struct{}
 
-func NewCharacterTokenizer() Tokenizer {
-	return &characterTokenizer{}
-}
-
-func (s characterTokenizer) TokenizeInputText(text string) ([]byte, error) {
+func (s *CharacterTokenizer) TokenizeInputText(text string) ([]byte, error) {
 	// Note: For some characters such as non-english letters or emoji's, one character may convert to multiple bytes.
 	// which may split across different token blocks. It does not impact prefix-match technically but characters
 	// may loose theoretical meaning.

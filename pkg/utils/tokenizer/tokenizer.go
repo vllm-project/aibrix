@@ -16,6 +16,42 @@ limitations under the License.
 
 package tokenizer
 
-type Tokenizer interface {
-	TokenizeInputText(string) ([]byte, error)
+import (
+	"fmt"
+)
+
+// Factory functions moved to factory.go
+// This file now only contains the backward-compatible NewTokenizer function
+
+// NewTokenizer creates a tokenizer instance based on the provided type
+// Deprecated: Use specific factory functions like NewRemoteTokenizer, NewTiktokenTokenizer, or NewCharacterTokenizer instead
+func NewTokenizer(tokenizerType string, config interface{}) (Tokenizer, error) {
+	switch tokenizerType {
+	case "tiktoken":
+		// Tiktoken doesn't require configuration
+		return NewTiktokenTokenizer(), nil
+
+	case "character":
+		// Character tokenizer doesn't require configuration
+		return NewCharacterTokenizer(), nil
+
+	case "vllm":
+		// For backward compatibility, use VLLMTokenizer
+		vllmConfig, ok := config.(VLLMTokenizerConfig)
+		if !ok {
+			return nil, fmt.Errorf("invalid config type for vLLM tokenizer")
+		}
+		return NewVLLMTokenizer(vllmConfig)
+
+	case "remote":
+		// Generic remote tokenizer
+		remoteConfig, ok := config.(RemoteTokenizerConfig)
+		if !ok {
+			return nil, fmt.Errorf("invalid config type for remote tokenizer")
+		}
+		return NewRemoteTokenizer(remoteConfig)
+
+	default:
+		return nil, fmt.Errorf("unsupported tokenizer type: %s", tokenizerType)
+	}
 }

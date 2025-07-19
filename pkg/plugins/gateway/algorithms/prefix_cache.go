@@ -54,13 +54,12 @@ type prefixCacheRouter struct {
 }
 
 func NewPrefixCacheRouter() (types.Router, error) {
-	var tokenizerObj tokenizer.Tokenizer
-	// TODO: refactor initilization
+	// Create tokenizer using factory method
 	// supported tokenizers: ["character", "tiktoken"]
-	if tokenizerType == "tiktoken" {
-		tokenizerObj = tokenizer.NewTiktokenTokenizer()
-	} else {
-		tokenizerObj = tokenizer.NewCharacterTokenizer()
+	tokenizerObj, err := tokenizer.NewTokenizer(tokenizerType, nil)
+	if err != nil {
+		klog.ErrorS(err, "failed to create tokenizer", "type", tokenizerType)
+		return nil, err
 	}
 
 	c, err := cache.Get()
