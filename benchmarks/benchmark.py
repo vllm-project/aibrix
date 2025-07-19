@@ -286,10 +286,11 @@ class BenchmarkRunner:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run benchmark pipeline")
-    parser.add_argument("--stage", required=True, help="One of the stages [all, dataset, workload, client, analysis]")
+    parser = argparse.ArgumentParser(description="Run benchmark pipeline", add_help=True, formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument("--stage", required=True, help="Specify the benchmark stage to run. Possible stages:\n- all: Run all stages (dataset, workload, client, analysis)\n- dataset: Generate the dataset\n- workload: Generate the workload\n- client: Run the client to dispatch workload\n- analysis: Analyze the trace output")
     parser.add_argument("--config", required=True, help="Path to base config YAML")
-    parser.add_argument("--override", action="append", default=[], help="Override config values, e.g., --override time_scale=2.0 or target_qps=5")
+    parser.add_argument("--override", action="append", default=[], help="Override config values in the config file specified through --config, e.g., --override time_scale=2.0 or target_qps=5")
+    
 
     args = parser.parse_args()
 
