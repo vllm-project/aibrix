@@ -12,28 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from aibrix.batch.storage.batch_storage import (
-    StorageType,
-    download_output_data,
-    finalize_job_output_data,
-    initialize_storage,
-    prepare_job_ouput_files,
-    read_job_input_info,
-    read_job_next_request,
-    remove_job_data,
-    upload_input_data,
-    write_job_output_data,
-)
+from .base import BaseStorage, StorageConfig
+from .factory import StorageType, create_storage, create_storage_from_env
+from .local import LocalStorage
+from .s3 import S3Storage
+from .tos import TOSStorage
+from .utils import ObjectMetadata, Reader
 
 __all__ = [
+    "BaseStorage",
+    "StorageConfig",
     "StorageType",
-    "initialize_storage",
-    "upload_input_data",
-    "read_job_input_info",
-    "read_job_next_request",
-    "prepare_job_ouput_files",
-    "write_job_output_data",
-    "finalize_job_output_data",
-    "download_output_data",
-    "remove_job_data",
+    "create_storage",
+    "create_storage_from_env",
+    "LocalStorage",
+    "S3Storage",
+    "TOSStorage",
+    "Reader",
+    "ObjectMetadata",
 ]

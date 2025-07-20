@@ -211,7 +211,7 @@ class BatchJobTransformer:
             state=state,
             createdAt=creation_timestamp,
             inProgressAt=start_time,
-            completedAt=completion_time,
+            finalizingAt=completion_time,
         )
 
     @classmethod
@@ -228,7 +228,7 @@ class BatchJobTransformer:
 
         # Map based on job status
         if succeeded > 0:
-            return BatchJobState.COMPLETED
+            return BatchJobState.FINALIZING
         elif failed > 0:
             return BatchJobState.FAILED
         elif active > 0:
@@ -244,7 +244,7 @@ class BatchJobTransformer:
                 if condition_type == "Failed" and condition_status == "True":
                     return BatchJobState.FAILED
                 elif condition_type == "Complete" and condition_status == "True":
-                    return BatchJobState.COMPLETED
+                    return BatchJobState.FINALIZING
 
             return BatchJobState.CREATED
 

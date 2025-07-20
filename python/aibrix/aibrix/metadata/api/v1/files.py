@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import time
 import uuid
 from enum import Enum
@@ -21,10 +20,10 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import Field
 
-from aibrix.batch.storage import get_base_path as get_storage_bath
 from aibrix.metadata.logger import init_logger
 from aibrix.metadata.setting.config import settings
 from aibrix.openapi.protocol import NoExtraBaseModel
+from aibrix.storage.base import BaseStorage
 
 logger = init_logger(__name__)
 
@@ -41,8 +40,6 @@ supported_extensions = {
 class FilePurpose(str, Enum):
     """Valid purpose values for OpenAI Files API."""
 
-    FINE_TUNE = "fine-tune"
-    ASSISTANTS = "assistants"
     BATCH = "batch"
 
 
@@ -95,26 +92,6 @@ def _create_error_response(
     return {"error": error_data}
 
 
-def _store_file_content(file_id: str, content: bytes) -> str:
-    """Store file content to disk and return file path, which simulates storage behavior"""
-    directory_path = os.path.join(get_storage_bath(), f"{file_id}")
-    os.makedirs(directory_path, exist_ok=True)
-    file_path = os.path.join(directory_path, "input.jsonl")
-    with open(file_path, "wb") as f:
-        f.write(content)
-    return file_path
-
-
-def _read_file_content(file_id: str) -> bytes:
-    """Read file content from disk, which simulator storage behavior"""
-    file_path = os.path.join(get_storage_bath(), f"{file_id}", "output.jsonl")
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"File not found: {file_id}")
-
-    with open(file_path, "rb") as f:
-        return f.read()
-
-
 @router.post("/")
 async def create_file(
     request: Request,
@@ -150,18 +127,22 @@ async def create_file(
         # Generate unique file ID
         file_id = str(uuid.uuid4())
 
-        # Store file content
-        file_path = _store_file_content(file_id, file_content)
+        # Store file content (using bytes since we already read the content)
+        storage: BaseStorage = request.app.state.storage
+        object_key = f"{file_id}.jsonl"
+        await storage.put_object(
+            object_key, file_content, content_type="application/jsonl"
+        )
 
         # Store file metadata
         created_at = int(time.time())
         metadata = {
-            "filename": file.filename or os.path.basename(file_path),
+            "filename": file.filename or object_key,
             "bytes": file_size,
             "purpose": purpose.value,
             "created_at": created_at,
             "status": FileStatus.UPLOADED.value,
-            "file_path": file_path,
+            "object_key": object_key,
         }
 
         logger.info(
@@ -199,7 +180,11 @@ async def retrieve_file_content(request: Request, file_id: str) -> Response:
     """
     # Read file content from storage
     try:
-        file_content = _read_file_content(file_id)
+        storage: BaseStorage = request.app.state.storage
+
+        object_key = f"{file_id}.jsonl"
+        # head_object = await storage.head_object(f"{file_id}.jsonl")
+        file_content = await storage.get_object(object_key)
         content_type = "application/jsonl"
 
         logger.info(

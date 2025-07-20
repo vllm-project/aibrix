@@ -15,6 +15,8 @@ from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from aibrix.storage import StorageType
+
 
 class Settings(BaseSettings):
     # Model configuration for Pydantic (v2)
@@ -50,6 +52,8 @@ class Settings(BaseSettings):
     EXTERNAL_API_URL: Optional[str] = None  # Example: URL for an external microservice
 
     # --- File API settings ---
+    STORAGE_TYPE: StorageType = StorageType.LOCAL
+    METASTORE_TYPE: StorageType = StorageType.LOCAL
     MAX_FILE_SIZE: int = 1024 * 1024 * 1024  # 1G in bytes
 
 

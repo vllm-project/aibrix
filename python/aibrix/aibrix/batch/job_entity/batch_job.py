@@ -58,6 +58,9 @@ class BatchJobState(str, Enum):
     CANCELLING = "cancelling"
     CANCELED = "canceled"
 
+    def is_finished(self):
+        return self in [BatchJobState.COMPLETED, BatchJobState.FAILED, BatchJobState.CANCELED, BatchJobState.EXPIRED]
+
 
 class BatchJobErrorCode(str, Enum):
     """Error codes for batch job."""
@@ -228,6 +231,9 @@ class RequestCountStats(NoExtraBaseModel):
     """Holds the statistics on the processing of the batch."""
 
     total: int = Field(default=0, description="Total number of requests in the batch")
+    launched: int = Field(
+        default=0, description="Number of requests that have been launched"
+    )
     completed: int = Field(
         default=0,
         description="Number of requests that have been successfully completed",
@@ -299,6 +305,17 @@ class BatchJobStatus(NoExtraBaseModel):
         description="List of errors that occurred during the batch job processing",
     )
 
+    temp_output_file_id: Optional[str] = Field(
+        default=None,
+        alias="tempOutputFileID",
+        description="The ID of the file containing the results of successfully completed requests",
+    )
+    temp_error_file_id: Optional[str] = Field(
+        default=None,
+        alias="tempErrorFileID",
+        description="The ID of the file containing details for any failed requests",
+    )
+
     output_file_id: Optional[str] = Field(
         default=None,
         alias="outputFileID",
@@ -310,8 +327,8 @@ class BatchJobStatus(NoExtraBaseModel):
         description="The ID of the file containing details for any failed requests",
     )
 
-    request_counts: Optional[RequestCountStats] = Field(
-        default=None,
+    request_counts: RequestCountStats = Field(
+        default_factory=RequestCountStats,
         alias="requestCounts",
         description="Statistics on the processing of the batch",
     )

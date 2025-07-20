@@ -22,6 +22,7 @@ import pytest
 from aibrix.batch.constant import EXPIRE_INTERVAL
 from aibrix.batch.driver import BatchDriver
 from aibrix.batch.job_entity import BatchJobState
+from aibrix.storage import StorageType
 
 
 def generate_input_data(num_requests, local_file):
@@ -43,7 +44,9 @@ def generate_input_data(num_requests, local_file):
 @pytest.mark.asyncio
 async def test_batch_driver_job_creation():
     """Test basic BatchDriver operations without async scheduling."""
-    driver = BatchDriver()
+    driver = BatchDriver(
+        storage_type=StorageType.LOCAL, metastore_type=StorageType.LOCAL
+    )
 
     # Test that driver is properly initialized
     assert driver is not None
@@ -58,7 +61,7 @@ async def test_batch_driver_job_creation():
 
     try:
         # Test upload
-        upload_id = driver.upload_batch_data(temp_path)
+        upload_id = await driver.upload_job_data(temp_path)
         assert upload_id is not None
         print(f"Upload ID: {upload_id} (type: {type(upload_id)})")
 
@@ -80,7 +83,7 @@ async def test_batch_driver_job_creation():
         assert job.status.state == BatchJobState.CREATED
 
         # Test cleanup
-        driver.clear_job(job_id)
+        await driver.clear_job(job_id)
     finally:
         # Shutdown driver
         await driver.close()
@@ -96,7 +99,9 @@ async def test_batch_driver_integration():
     Tests job creation, scheduling, execution, and result retrieval.
     """
     # Initialize driver without job_entity_manager (use local job management)
-    driver = BatchDriver()
+    driver = BatchDriver(
+        storage_type=StorageType.LOCAL, metastore_type=StorageType.LOCAL
+    )
 
     # Create temporary input file
     with tempfile.NamedTemporaryFile(
@@ -107,7 +112,7 @@ async def test_batch_driver_integration():
 
     try:
         # 1. Upload batch data and verify it's stored locally
-        upload_id = driver.upload_batch_data(temp_path)
+        upload_id = await driver.upload_job_data(temp_path)
         assert upload_id is not None
         print(f"Upload ID: {upload_id}")
 
@@ -134,17 +139,24 @@ async def test_batch_driver_integration():
         print(f"Status after scheduling: {job.status.state}")
         assert job.status.state == BatchJobState.IN_PROGRESS
         assert job.status.output_file_id is not None
+        assert job.status.error_file_id is not None
 
         # 4. Wait for job to complete
-        await asyncio.sleep(6 * EXPIRE_INTERVAL)
-        job = driver.job_manager.get_job(job_id)
-        assert job is not None
+        for i in range(10):
+            await asyncio.sleep(1 * EXPIRE_INTERVAL)
+            job = driver.job_manager.get_job(job_id)
+            assert job is not None
+            print(f"Progressing: {job.status.state}")
+            if job.status.state.is_finished():
+                break
+     
         print(f"Final status: {job.status.state}")
         assert job.status.state == BatchJobState.COMPLETED
         assert job.status.output_file_id is not None
+        assert job.status.error_file_id is not None
 
         # 5. Retrieve results and verify they exist
-        results = driver.retrieve_job_result(job.status.output_file_id)
+        results = await driver.retrieve_job_result(job.status.output_file_id)
         assert results is not None
         assert len(results) == 10  # Should match num_requests
         print(f"Retrieved {len(results)} results")
@@ -155,7 +167,7 @@ async def test_batch_driver_integration():
             assert req_result is not None
 
         # 7. Clean up the job
-        driver.clear_job(job_id)
+        await driver.clear_job(job_id)
         print(f"Job {job_id} cleaned up")
 
     finally:

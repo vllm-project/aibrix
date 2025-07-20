@@ -13,126 +13,122 @@
 # limitations under the License.
 
 import uuid
+import json
+from typing import Any, AsyncIterator, Dict, List, Tuple
 
-from aibrix.batch.storage.generic_storage import LocalDiskFiles, StorageType
-from aibrix.batch.storage.tos_storage import (
-    TOSStorage,  # [TODO] Add S3 as another storage
-)
+from aibrix.batch.job_entity import BatchJob
+from aibrix.batch.storage.adapter import BatchStorageAdapter
 from aibrix.metadata.logger import init_logger
+from aibrix.storage import StorageType, create_storage
 
 logger = init_logger(__name__)
 
-current_job_offsets = {}
-job_input_requests = {}
 p_storage = None
-NUM_REQUESTS_PER_READ = 1024
 
 
-def initialize_batch_storage(storage_type=StorageType.LocalDiskFile, params={}):
-    """Initialize storage type. Now it support files and TOS.
+def initialize_storage(storage_type=StorageType.AUTO, params={}):
+    """Initialize storage type. Now it supports local files, S3, and TOS.
 
     For some storage type, user needs to pass in other parameters to params.
+
+    Args:
+        storage_type: Legacy storage type enum
+        params: Storage-specific parameters
     """
     global p_storage
-    if storage_type == StorageType.LocalDiskFile:
-        p_storage = LocalDiskFiles()
-    elif storage_type == StorageType.TOS:
-        p_storage = TOSStorage(**params)
-    else:
-        raise ValueError("Unknown storage type")
+
+    # Create new storage instance and wrap with adapter
+    try:
+        storage = create_storage(storage_type, **params)
+        p_storage = BatchStorageAdapter(storage)
+        logger.info(f"Initialized batch storage with type: {storage_type}")
+    except Exception as e:
+        logger.error(f"Failed to initialize storage: {e}")
+        raise
 
 
-def get_base_path():
-    """Get base path of storage."""
-
-    assert p_storage is not None
-    return p_storage.get_base_path()
-
-
-def upload_input_data(inputDataFileName: str):
+async def upload_input_data(inputDataFileName: str) -> str:
     """Upload job input data file to storage.
 
     Args:
         inputDataFileName (str): an input file string.
     """
     assert p_storage is not None
-    job_id = uuid.uuid1()
-    p_storage.write_job_input_data(job_id, inputDataFileName)
+    job_id = str(uuid.uuid1())
+    await p_storage.write_job_input_data(job_id, inputDataFileName)
 
-    current_job_offsets[str(job_id)] = 0
     return job_id
 
 
-def read_job_requests(job_id: str, start_index: int, num_requests: int):
-    """Read job requests starting at index: start_index.
+async def read_job_input_info(job: BatchJob) -> Tuple[int, bool]:
+    """Read job input info from storage.
 
-    Instead of reading from storage per request, this maintains a list of requests
-    in memory with a length of NUM_REQUESTS_PER_READ.
-    It also supports random access, if backward read is necessary.
+    Args:
+        job: BatchJob
+
+    Returns:
+        Tuple of total line number and input existence
     """
     assert p_storage is not None
-    if job_id not in current_job_offsets:
-        current_job_offsets[job_id] = 0
-
-    # if no request is cached, this reads a list of requests from storage.
-    if job_id not in job_input_requests:
-        request_inputs = p_storage.read_job_input_data(job_id, 0, NUM_REQUESTS_PER_READ)
-        job_input_requests[job_id] = request_inputs
-
-    current_start_idx = current_job_offsets[job_id]
-    current_end_idx = current_start_idx + len(job_input_requests[job_id])
-
-    # this reads request backward, so it only reads necessary part.
-    if start_index < current_start_idx:
-        if start_index + num_requests < current_start_idx + 1:
-            temp_len = num_requests
-            diff_requests = p_storage.read_job_input_data(job_id, start_index, temp_len)
-            job_input_requests[job_id] = diff_requests
-        else:
-            temp_len = current_start_idx + 1 - start_index
-            diff_requests = p_storage.read_job_input_data(job_id, start_index, temp_len)
-            job_input_requests[job_id] = diff_requests + job_input_requests[job_id]
-
-        current_job_offsets[job_id], current_start_idx = start_index, start_index
-        current_end_idx = current_start_idx + len(job_input_requests[job_id])
-
-    # the cached parts miss already, this throws away old caches.
-    if start_index >= current_end_idx:
-        current_job_offsets[job_id] = start_index
-        job_input_requests[job_id] = []
-        current_start_idx, current_end_idx = start_index, start_index
-
-    # now this reads necessary requests at least for a length of num_requests.
-    if start_index + num_requests > current_end_idx:
-        temp_len = start_index + num_requests - current_end_idx
-        diff_requests = p_storage.read_job_input_data(job_id, current_end_idx, temp_len)
-        job_input_requests[job_id] = job_input_requests[job_id] + diff_requests
-        current_end_idx = current_job_offsets[job_id] + len(job_input_requests[job_id])
-
-    available_num_req = min(num_requests, current_end_idx - start_index)
-    start_offset = start_index - current_start_idx
-
-    requests = job_input_requests[job_id][
-        start_offset : start_offset + available_num_req
-    ]
-    return requests
+    return await p_storage.read_job_input_info(job)
 
 
-def put_storage_job_results(job_id, start_index, requests_results):
-    """Write job results on a specific index."""
-    p_storage.write_job_output_data(job_id, start_index, requests_results)
+async def read_job_next_request(
+    job: BatchJob, start_index: int = 0
+) -> AsyncIterator[Dict[str, Any]]:
+    """Read next request from job input data.
+
+    Args:
+        job_id: Job identifier
+
+    Returns:
+        Next request dictionary
+    """
+    assert p_storage is not None
+    async for data in p_storage.read_job_next_input_data(job, start_index):
+        yield data
 
 
-def get_storage_job_results(job_id, start_index, num_requests):
-    """Read job requests results."""
-    return p_storage.read_job_output_data(job_id, start_index, num_requests)
+async def prepare_job_ouput_files(job: BatchJob) -> None:
+    """Prepare job output files, including output and error file ids"""
+    assert p_storage is not None
+    await p_storage.prepare_job_ouput_files(job)
 
 
-def remove_storage_job_data(job_id):
-    """Remove job all relevant data."""
-    p_storage.delete_job_data(job_id)
+async def write_job_output_data(
+    job: BatchJob, start_index: int, output_list: List[Dict[str, Any]]
+) -> None:
+    """Write job results to storage.
+
+    Args:
+        job_id: Job identifier
+        start_index: Starting index for the results
+        output_list: List of result dictionaries
+    """
+    assert p_storage is not None
+    await p_storage.write_job_output_data(job, start_index, output_list)
 
 
-def get_job_request_len(job_id):
-    """Get the number of requests for the job_id."""
-    return p_storage.get_job_number_requests(job_id)
+async def finalize_job_output_data(job: BatchJob) -> None:
+    """Finalize job output files, aggregate output and error files"""
+    assert p_storage is not None
+    await p_storage.finalize_job_output_data(job)
+
+
+async def download_output_data(file_id: str) -> List[Dict[str, Any]]:
+    """Get job output data from storage.
+
+    Args:
+        file_id: File identifier
+
+    Returns:
+        List of result dictionaries
+    """
+    assert p_storage is not None
+    return await p_storage.read_job_output_data(file_id)
+
+
+async def remove_job_data(file_id: str) -> None:
+    """Remove file data."""
+    assert p_storage is not None
+    await p_storage.delete_job_data(file_id)

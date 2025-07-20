@@ -13,7 +13,10 @@
 # limitations under the License.
 
 import time
+import json
 
+import aibrix.batch.storage as storage
+from aibrix.batch.job_entity import BatchJobState, BatchJob
 from aibrix.batch.job_manager import JobManager
 from aibrix.metadata.logger import init_logger
 
@@ -21,9 +24,8 @@ logger = init_logger(__name__)
 
 
 class RequestProxy:
-    def __init__(self, storage, manager) -> None:
+    def __init__(self, manager) -> None:
         """ """
-        self._storage = storage
         self._job_manager: JobManager = manager
         self._inference_client = InferenceEngineClient()
 
@@ -33,48 +35,78 @@ class RequestProxy:
         This fetches request input from storage and submit request
         to inference engine. Lastly the result is stored back to storage.
         """
+        # Verify job status and get minimum unfinished request id
         request_id = self._job_manager.get_job_next_request(job_id)
         if request_id == -1:
             logger.warning(
-                "Job has something wrong with metadata in job manager", job_id=job_id
+                "Job has something wrong with metadata in job manager, nothing left to execute",
+                job_id=job_id,
             )
             return
 
         job = self._job_manager.get_job(job_id)
-        request_input = self.fetch_request_input(job.spec.input_file_id, request_id)
 
-        logger.info("Executing job request", job_id=job_id, request_id=request_id)
-        request_output = self._inference_client.inference_request(
-            job.spec.endpoint, request_input
-        )
-        self.store_output(job.status.output_file_id, request_id, request_output)
+        if request_id == 0:
+            logger.debug("Start processing job", job_id=job_id)
+        else:
+            logger.debug("Resuming job", job_id=job_id, request_id=request_id)
 
-        self.sync_job_status(job_id, request_id)
+        # Step 1: Prepare job output files.
+        await storage.prepare_job_ouput_files(job)
 
-    def fetch_request_input(self, input_id, request_id):
-        """
-        Read request input from storage. Now it only reads one request.
-        Later we can add a list as a batch per call.
-        """
-        num_request = 1
-        requests = self._storage.get_job_input_requests(
-            input_id, request_id, num_request
-        )
-        if len(requests) == 0:
-            logger.warning("Can not read inputs from storage", file_id=input_id)
-        return requests[0]
+        # Step 2: Execute requests, resumable.
+        line_no = request_id
+        async for request in storage.read_job_next_request(job, request_id):
+            logger.debug(
+                "Read job request, checking completion status",
+                job_id=job_id,
+                line=line_no,
+                next_unfinished=request_id,
+            )
+            # Skip completed requests
+            if line_no < request_id:
+                continue
+
+            logger.debug("Executing job request", job_id=job_id, request_id=request_id)
+            request_output = self._inference_client.inference_request(
+                job.spec.endpoint, request
+            )
+            await storage.write_job_output_data(job, request_id, [request_output])
+            # Request next id to avoid state becoming FINALIZING by make total > request_id
+            logger.debug(
+                "Job request executed",
+                job_id=job_id,
+                request_id=request_id
+            )
+            job = self.sync_job_status(job_id, request_id)
+
+            request_id = self._job_manager.get_job_next_request(job_id)
+            line_no += 1
+
+        job = self.sync_job_status(job_id, request_id + 1)  # Now that total == request_id
+        logger.debug("Finalizing job", job_id=job_id, total=job.status.request_counts.total, state=job.status.state.value)
+        assert job.status.state == BatchJobState.FINALIZING
+
+        # Step 3: Aggregate outputs.
+        await storage.finalize_job_output_data(job)
+
+        logger.debug("Completed job", job_id=job_id)
+        self.sync_job_status(job_id)
 
     def store_output(self, output_id, request_id, result):
         """
         Write the request result back to storage.
         """
-        self._storage.put_job_results(output_id, request_id, [result])
+        storage.put_job_results(output_id, request_id, [result])
 
-    def sync_job_status(self, job_id, reqeust_id):
+    def sync_job_status(self, job_id, reqeust_id=-1) -> BatchJob:
         """
         Update job's status back to job manager.
         """
-        self._job_manager.mark_job_progress(job_id, [reqeust_id])
+        if reqeust_id < 0:
+            return self._job_manager.mark_job_done(job_id)
+        else:
+            return self._job_manager.mark_job_progress(job_id, [reqeust_id])
 
 
 class InferenceEngineClient:
