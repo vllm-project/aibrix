@@ -30,24 +30,25 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, types.RoutingAlgorithm, string) {
+func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext) {
 	var username, requestPath string
 	var user utils.User
 	var rpm int64
 	var err error
 	var errRes *extProcPb.ProcessingResponse
+	var routingCtx *types.RoutingContext
 
 	h := req.Request.(*extProcPb.ProcessingRequest_RequestHeaders)
+	reqHeaders := map[string]string{}
 	for _, n := range h.RequestHeaders.Headers.Headers {
-		// klog.InfoS("", "key", n.Key, "value", n.RawValue)
 		if strings.ToLower(n.Key) == "user" {
 			username = string(n.RawValue)
 		}
-		if strings.ToLower(n.Key) == "x-request-id" {
-			requestID = string(n.RawValue)
-		}
 		if strings.ToLower(n.Key) == ":path" {
 			requestPath = string(n.RawValue)
+		}
+		if strings.ToLower(n.Key) == "authorization" {
+			reqHeaders[n.Key] = string(n.RawValue)
 		}
 	}
 
@@ -59,7 +60,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorInvalidRouting, RawValue: []byte(routingStrategy),
-			}}}, "incorrect routing strategy"), utils.User{}, rpm, routingAlgorithm, requestPath
+			}}}, "incorrect routing strategy"), utils.User{}, rpm, routingCtx
 	}
 
 	if username != "" {
@@ -71,15 +72,19 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: HeaderErrorUser, RawValue: []byte("true"),
 				}}},
-				err.Error()), utils.User{}, rpm, routingAlgorithm, requestPath
+				err.Error()), utils.User{}, rpm, routingCtx
 		}
 
 		rpm, errRes, err = s.checkLimits(ctx, user)
 		if errRes != nil {
 			klog.ErrorS(err, "error on checking limits", "requestID", requestID, "username", username)
-			return errRes, utils.User{}, rpm, routingAlgorithm, requestPath
+			return errRes, utils.User{}, rpm, routingCtx
 		}
 	}
+
+	routingCtx = types.NewRoutingContext(ctx, routingAlgorithm, "", "", requestID, user.Name)
+	routingCtx.ReqPath = requestPath
+	routingCtx.ReqHeaders = reqHeaders
 
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestHeaders{
@@ -99,5 +104,5 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 				},
 			},
 		},
-	}, user, rpm, routingAlgorithm, requestPath
+	}, user, rpm, routingCtx
 }

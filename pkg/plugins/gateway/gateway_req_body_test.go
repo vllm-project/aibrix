@@ -19,11 +19,10 @@ package gateway
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-
-	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -160,7 +159,6 @@ func Test_handleRequestBody(t *testing.T) {
 				assert.Equal(t, tt.expected.model, model)
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
-				assert.Nil(t, routingCtx)
 			},
 			checkStream: false,
 		},
@@ -401,7 +399,6 @@ func Test_handleRequestBody(t *testing.T) {
 				assert.Equal(t, tt.expected.model, model)
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
-				assert.Nil(t, routingCtx)
 			},
 			checkStream: false,
 		},
@@ -448,7 +445,6 @@ func Test_handleRequestBody(t *testing.T) {
 				assert.Equal(t, tt.expected.model, model)
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
-				assert.Nil(t, routingCtx)
 			},
 			checkStream: false,
 		},
@@ -510,7 +506,6 @@ func Test_handleRequestBody(t *testing.T) {
 				assert.Equal(t, tt.expected.model, model)
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
-				assert.Nil(t, routingCtx)
 			},
 			checkStream: false,
 		},
@@ -569,7 +564,6 @@ func Test_handleRequestBody(t *testing.T) {
 				assert.Equal(t, tt.expected.model, model)
 				assert.Equal(t, tt.expected.stream, stream)
 				assert.Equal(t, tt.expected.term, term)
-				assert.Nil(t, routingCtx)
 			},
 			checkStream: false,
 		},
@@ -609,13 +603,13 @@ func Test_handleRequestBody(t *testing.T) {
 			}
 
 			// Call HandleRequestBody and validate the response
+			routingCtx := types.NewRoutingContext(context.Background(), tt.routingAlgo, tt.expected.model, "", "test-request-id", tt.user.Name)
+			routingCtx.ReqPath = "/v1/chat/completions"
 			resp, model, routingCtx, stream, term := server.HandleRequestBody(
-				context.Background(),
+				routingCtx,
 				"test-request-id",
-				"/v1/chat/completions",
 				req,
 				tt.user,
-				tt.routingAlgo,
 			)
 
 			// Validate response using test-specific validation function
