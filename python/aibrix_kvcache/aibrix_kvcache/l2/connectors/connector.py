@@ -92,6 +92,10 @@ class Connector(Generic[K, V]):
             from .hpkv import HPKVConnector
 
             return HPKVConnector.from_envs(conn_id, executor, **kwargs)
+        elif backend_name == "PRIS":
+            from .pris import PrisConnector
+
+            return PrisConnector.from_envs(conn_id, executor, **kwargs)
         elif backend_name == "MOCK":
             from .mock import MockConnector
 
