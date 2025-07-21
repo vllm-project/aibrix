@@ -17,12 +17,8 @@ from dataclasses import dataclass
 from io import BytesIO, StringIO
 from typing import Any, AsyncIterator, BinaryIO, Optional, TextIO, Union
 
-from aibrix.metadata.logger import init_logger
-
 from .reader import Reader
 from .utils import ObjectMetadata
-
-logger = init_logger(__name__)
 
 
 @dataclass

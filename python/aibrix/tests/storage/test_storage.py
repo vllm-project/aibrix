@@ -186,7 +186,7 @@ class TestStorageFunctionality:
             await storage.put_object(key, f"content of {key}")
 
         # Test listing with prefix
-        listed = await storage.list_objects("test/list/")
+        listed, _ = await storage.list_objects("test/list/")
 
         # Should include files with the prefix
         assert "test/list/file1.txt" in listed
@@ -195,7 +195,7 @@ class TestStorageFunctionality:
         assert "test/other/file4.txt" not in listed
 
         # Test listing with delimiter
-        listed_delimited = await storage.list_objects("test/", "/")
+        listed_delimited, _ = await storage.list_objects("test/", "/")
         # Should include both files and "directories"
         assert len(listed_delimited) > 0
 
