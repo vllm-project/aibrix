@@ -103,8 +103,8 @@ STORAGE_AWS_BUCKET = os.getenv("STORAGE_AWS_BUCKET")
 
 # Storage Redis Envs
 STORAGE_REDIS_HOST = os.getenv("REDIS_HOST")
-STORAGE_REDIS_PORT = _parse_int_or_none(os.getenv("REDIS_PORT", 6379))
-STORAGE_REDIS_DB = _parse_int_or_none(os.getenv("REDIS_DB", 0))
+STORAGE_REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+STORAGE_REDIS_DB = int(os.getenv("REDIS_DB", 0))
 STORAGE_REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 # Metric Standardizing Related Config

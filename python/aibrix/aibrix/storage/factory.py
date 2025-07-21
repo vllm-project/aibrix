@@ -102,7 +102,7 @@ def create_storage(
         )
 
     elif storage_type == StorageType.REDIS:
-        host = kwargs.get("host", "localhost") or envs.STORAGE_REDIS_HOST
+        host = kwargs.get("host", "localhost") or envs.STORAGE_REDIS_HOST or "localhost"
         port = kwargs.get("port", 6379) or envs.STORAGE_REDIS_PORT
         db = kwargs.get("db", 0) or envs.STORAGE_REDIS_DB
         password = kwargs.get("password") or envs.STORAGE_REDIS_PASSWORD

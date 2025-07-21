@@ -26,6 +26,7 @@ requires_redis = pytest.mark.skipif(
     reason="Redis not available - set STORAGE_REDIS_HOST environment variable to enable Redis tests",
 )
 
+
 def get_redis_storage(**kwargs):
     """Helper to create Redis storage with environment-based configuration."""
     return create_storage(StorageType.REDIS, **kwargs)
