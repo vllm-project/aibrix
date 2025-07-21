@@ -107,7 +107,7 @@ class JobMetaInfo(BatchJob):
         are done, we need to update its status to be completed.
         """
         if req_id == self.status.request_counts.total:
-            self.status.request_counts.total -= 1 # Fix total count
+            self.status.request_counts.total -= 1  # Fix total count
             self.status.finalizing_at = datetime.now(timezone.utc)
             self.status.state = BatchJobState.FINALIZING
             return
@@ -543,14 +543,14 @@ class JobManager:
             return ""
         return str(job.spec.endpoint)
 
-    def mark_job_progress(self, job_id, executed_requests) -> BatchJob:
+    def mark_job_progress(self, job_id, executed_requests) -> Optional[BatchJob]:
         """
         This is used to sync job's progress, called by execution proxy.
         It is guaranteed that each request is executed at least once.
         """
         if job_id not in self._in_progress_jobs:
             logger.info("Job has not started yet", job_id=job_id)  # type: ignore[call-arg]
-            return False
+            return None
 
         job = self._in_progress_jobs[job_id]
         assert isinstance(job, JobMetaInfo)
@@ -572,7 +572,7 @@ class JobManager:
         self._in_progress_jobs[job_id] = meta_data
         return meta_data
 
-    def mark_job_done(self, job_id: str) -> BatchJob:
+    def mark_job_done(self, job_id: str) -> Optional[BatchJob]:
         """
         Mark job done.
         """
@@ -580,7 +580,7 @@ class JobManager:
             logger.error(
                 "Unexpected job queue", job_id=job_id, queue="_in_progress_jobs"
             )  # type: ignore[call-arg]
-            return
+            return None
 
         job = self._in_progress_jobs[job_id]
         if job.status.state != BatchJobState.FINALIZING:
@@ -597,7 +597,7 @@ class JobManager:
 
         return job
 
-    def mark_job_failed(self, job_id: str) -> BatchJob:
+    def mark_job_failed(self, job_id: str) -> Optional[BatchJob]:
         """
         Mark job failed.
         """
@@ -605,7 +605,7 @@ class JobManager:
             logger.error(
                 "Unexpected job queue", job_id=job_id, queue="_in_progress_jobs"
             )  # type: ignore[call-arg]
-            return
+            return None
 
         job = self._in_progress_jobs[job_id]
         del self._in_progress_jobs[job_id]
@@ -613,7 +613,7 @@ class JobManager:
         job.status.failed_at = datetime.now(timezone.utc)
         job.status.state = BatchJobState.FAILED
         self._done_jobs[job_id] = job
-        
+
         logger.info("Job failed", job_id=job_id)  # type: ignore[call-arg]
         return job
 

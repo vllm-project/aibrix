@@ -43,16 +43,13 @@ class BatchStorageAdapter:
         """Write job input data from a file to storage.
 
         Reads the JSONL file and stores the entire file content
-        under the key pattern: {file_id}.jsonl
         """
         # Read the entire JSONL file
         with open(input_data_file_name, "r") as file:
             file_content = file.read()
 
         # Store the whole file content
-        await self.storage.put_object(
-            self._get_file_key(file_id), file_content, "application/jsonl"
-        )
+        await self.storage.put_object(file_id, file_content, "application/jsonl")
 
         logger.info(f"Stored complete input file for {file_id}")
 
@@ -65,9 +62,8 @@ class BatchStorageAdapter:
         Returns:
             Tuple of total line number and input existence
         """
-        file_key = self._get_file_key(job.spec.input_file_id)
         try:
-            await self.storage.head_object(file_key)
+            await self.storage.head_object(job.spec.input_file_id)
             return 0, True
         except Exception:
             return 0, False
@@ -85,7 +81,7 @@ class BatchStorageAdapter:
         """
         # Use 'async for' to iterate and 'yield' each item.
         async for line in self.storage.readline_iter(
-            self._get_file_key(job.spec.input_file_id), start_index
+            job.spec.input_file_id, start_index
         ):
             line = line.strip()
             if len(line) == 0:
@@ -111,10 +107,10 @@ class BatchStorageAdapter:
         )
         tasks = [
             self.storage.create_multipart_upload(
-                self._get_file_key(job.status.output_file_id)
+                job.status.output_file_id, "application/jsonl"
             ),
             self.storage.create_multipart_upload(
-                self._get_file_key(job.status.error_file_id)
+                job.status.error_file_id, "application/jsonl"
             ),
         ]
         (
@@ -143,9 +139,7 @@ class BatchStorageAdapter:
             json_str = json.dumps(result_data) + "\n"
             is_error = "error" in result_data
             etag = await self.storage.upload_part(
-                self._get_file_key(job.status.error_file_id)
-                if is_error
-                else self._get_file_key(job.status.output_file_id),
+                job.status.error_file_id if is_error else job.status.output_file_id,
                 job.status.temp_error_file_id
                 if is_error
                 else job.status.temp_output_file_id,
@@ -198,12 +192,12 @@ class BatchStorageAdapter:
         # Aggregate results
         await asyncio.gather(
             self.storage.complete_multipart_upload(
-                self._get_file_key(job.status.output_file_id),
+                job.status.output_file_id,
                 job.status.temp_output_file_id,
                 output,
             ),
             self.storage.complete_multipart_upload(
-                self._get_file_key(job.status.error_file_id),
+                job.status.error_file_id,
                 job.status.temp_error_file_id,
                 error,
             ),
@@ -223,7 +217,7 @@ class BatchStorageAdapter:
         """
         request_results = []
 
-        async for line in self.storage.readline_iter(self._get_file_key(file_id)):
+        async for line in self.storage.readline_iter(file_id):
             json_obj = json.loads(line)
             request_results.append(json_obj)
 
@@ -235,14 +229,11 @@ class BatchStorageAdapter:
         """Delete all data for the given job ID (both input and output)."""
         # List all objects with the job prefix
         try:
-            await self.storage.delete_object(self._get_file_key(file_id))
+            await self.storage.delete_object(file_id)
 
             logger.info(f"Deleted file {file_id}")
         except Exception as e:
             logger.error(f"Failed to delete data for job {file_id}: {e}")
-
-    def _get_file_key(self, file_id: str) -> str:
-        return f"{file_id}.jsonl"
 
     def _get_request_meta_output_key(self, job: BatchJob, idx: int) -> str:
         return f"batch:{job.job_id}:output:{idx}"

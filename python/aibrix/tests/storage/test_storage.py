@@ -310,6 +310,245 @@ class TestStorageFunctionality:
         await storage.delete_object(key)
 
     @pytest.mark.asyncio
+    async def test_head_object_basic(self, storage: BaseStorage):
+        """Test head_object returns correct metadata for basic objects."""
+        key = "test/head_object_basic.txt"
+        content = "Hello, head_object test!"
+
+        # Store object
+        await storage.put_object(key, content)
+
+        try:
+            # Get metadata via head_object
+            metadata = await storage.head_object(key)
+
+            # Verify basic metadata
+            assert metadata.content_length == len(content.encode("utf-8"))
+            assert metadata.etag is not None and metadata.etag != ""
+            assert metadata.last_modified is not None
+            # Storage class varies by implementation (local: "STANDARD", s3: None, tos: enum)
+            assert (
+                metadata.storage_class is not None
+                or storage.__class__.__name__ == "S3Storage"
+            )
+
+        finally:
+            # Cleanup
+            await storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_head_object_with_metadata(self, storage: BaseStorage):
+        """Test head_object preserves custom metadata and content type."""
+        key = "test/head_object_metadata.json"
+        content = '{"message": "test"}'
+        content_type = "application/json"
+        custom_metadata = {
+            "author": "test_user",
+            "version": "1.0",
+            "category": "test_data",
+        }
+
+        # Store object with metadata
+        await storage.put_object(key, content, content_type, custom_metadata)
+
+        try:
+            # Get metadata via head_object
+            metadata = await storage.head_object(key)
+
+            # Verify content type is preserved
+            assert metadata.content_type == content_type
+
+            # Verify custom metadata is preserved
+            assert metadata.metadata == custom_metadata
+
+            # Verify other metadata fields
+            assert metadata.content_length == len(content.encode("utf-8"))
+            assert metadata.etag is not None
+            assert metadata.last_modified is not None
+
+        finally:
+            # Cleanup
+            await storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_head_object_content_type_inference(self, storage: BaseStorage):
+        """Test head_object infers content type from file extension when not explicitly set."""
+        test_cases = [
+            ("test.json", "application/json"),
+            ("test.txt", "text/plain"),
+            ("test.csv", "text/csv"),
+            ("test.html", "text/html"),
+        ]
+
+        for filename, expected_content_type in test_cases:
+            key = f"test/head_object/{filename}"
+            content = "test content"
+
+            # Store without explicit content type
+            await storage.put_object(key, content)
+
+            try:
+                # Get metadata via head_object
+                metadata = await storage.head_object(key)
+
+                # Content type inference varies by storage implementation
+                # Local storage can infer from extension, S3/TOS may not
+                if storage.__class__.__name__ == "LocalStorage":
+                    assert (
+                        metadata.content_type == expected_content_type
+                    ), f"Expected {expected_content_type} for {filename}, got {metadata.content_type}"
+                else:
+                    # For other storage types, just verify content type is set to something
+                    assert (
+                        metadata.content_type is not None
+                    ), f"Content type should be set for {filename}"
+
+            finally:
+                # Cleanup
+                await storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_head_object_binary_files(self, storage: BaseStorage):
+        """Test head_object with binary files."""
+        key = "test/head_object_binary.dat"
+        content = b"\x00\x01\x02\x03\xff\xfe\xfd"  # Binary data
+
+        # Store binary object
+        await storage.put_object(key, content)
+
+        try:
+            # Get metadata via head_object
+            metadata = await storage.head_object(key)
+
+            # Verify binary file metadata
+            assert metadata.content_length == len(content)
+            assert metadata.etag is not None
+            assert metadata.last_modified is not None
+
+        finally:
+            # Cleanup
+            await storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_head_object_large_file(self, storage: BaseStorage):
+        """Test head_object with larger files."""
+        key = "test/head_object_large.txt"
+        content = "A" * 10000  # 10KB file
+
+        # Store large object
+        await storage.put_object(key, content)
+
+        try:
+            # Get metadata via head_object
+            metadata = await storage.head_object(key)
+
+            # Verify large file metadata
+            assert metadata.content_length == len(content.encode("utf-8"))
+            assert metadata.etag is not None
+            assert metadata.last_modified is not None
+
+        finally:
+            # Cleanup
+            await storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_head_object_metadata_persistence(self, storage: BaseStorage):
+        """Test that metadata persists across storage operations."""
+        key = "test/head_object_persistence.txt"
+        content = "Persistent metadata test"
+        content_type = "text/plain"
+        metadata = {"persistent": "true", "test_id": "12345"}
+
+        # Store object with metadata
+        await storage.put_object(key, content, content_type, metadata)
+
+        try:
+            # Get metadata immediately
+            initial_metadata = await storage.head_object(key)
+            assert initial_metadata.content_type == content_type
+            assert initial_metadata.metadata == metadata
+
+            # Simulate some time passing or other operations
+            await asyncio.sleep(0.1)
+
+            # Get metadata again to verify persistence
+            persistent_metadata = await storage.head_object(key)
+            assert persistent_metadata.content_type == content_type
+            assert persistent_metadata.metadata == metadata
+            assert persistent_metadata.content_length == initial_metadata.content_length
+
+        finally:
+            # Cleanup
+            await storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_head_object_error_handling(self, storage: BaseStorage):
+        """Test head_object error handling for non-existent objects."""
+        key = "test/non_existent_object.txt"
+
+        # Ensure object doesn't exist
+        if await storage.object_exists(key):
+            await storage.delete_object(key)
+
+        # head_object should raise FileNotFoundError for non-existent objects
+        with pytest.raises(FileNotFoundError):
+            await storage.head_object(key)
+
+    @pytest.mark.asyncio
+    async def test_local_storage_metadata_file_format(self, storage: BaseStorage):
+        """Test that LocalStorage stores metadata in the correct format."""
+        # Skip test for non-local storage
+        if storage.__class__.__name__ != "LocalStorage":
+            pytest.skip("This test is specific to LocalStorage")
+
+        key = "test/metadata_format_test.txt"
+        content = "Test content for metadata"
+        content_type = "text/plain"
+        custom_metadata = {"key1": "value1", "key2": "value2"}
+
+        # Store object with metadata
+        await storage.put_object(key, content, content_type, custom_metadata)
+
+        try:
+            # Cast to LocalStorage to access private methods
+            from aibrix.storage.local import LocalStorage
+
+            local_storage = storage
+            assert isinstance(local_storage, LocalStorage)
+
+            # Verify the metadata file exists and has correct format
+            metadata_path = local_storage._get_metadata_path(key)
+            assert metadata_path.exists(), "Metadata file should exist"
+
+            # Read and verify metadata file content
+            import json
+
+            with open(metadata_path, "r") as f:
+                stored_metadata = json.load(f)
+
+            assert stored_metadata["content_type"] == content_type
+            assert stored_metadata["metadata"] == custom_metadata
+
+            # Verify head_object returns the same metadata
+            obj_metadata = await storage.head_object(key)
+            assert obj_metadata.content_type == content_type
+            assert obj_metadata.metadata == custom_metadata
+
+        finally:
+            # Cleanup
+            await storage.delete_object(key)
+
+            # Verify metadata file is also deleted
+            from aibrix.storage.local import LocalStorage
+
+            local_storage = storage
+            assert isinstance(local_storage, LocalStorage)
+            metadata_path = local_storage._get_metadata_path(key)
+            assert (
+                not metadata_path.exists()
+            ), "Metadata file should be deleted with object"
+
+    @pytest.mark.asyncio
     async def test_multipart_apis(self, storage: BaseStorage):
         """Test the S3-like multipart APIs directly."""
         key = "test/multipart_api_test.txt"

@@ -149,7 +149,7 @@ async def test_batch_driver_integration():
             print(f"Progressing: {job.status.state}")
             if job.status.state.is_finished():
                 break
-     
+
         print(f"Final status: {job.status.state}")
         assert job.status.state == BatchJobState.COMPLETED
         assert job.status.output_file_id is not None

@@ -15,9 +15,10 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from io import BytesIO, StringIO
-from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
+from typing import Any, AsyncIterator, BinaryIO, Optional, TextIO, Union
 
-from .utils import ObjectMetadata, Reader
+from .reader import Reader
+from .utils import ObjectMetadata
 
 
 @dataclass
@@ -57,7 +58,7 @@ class BaseStorage(ABC):
         key: str,
         data: Union[bytes, str, BinaryIO, TextIO, Reader],
         content_type: Optional[str] = None,
-        metadata: Optional[dict[str, str]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> None:
         """Put an object to storage.
 
@@ -69,6 +70,7 @@ class BaseStorage(ABC):
         """
         pass
 
+    # [TODO][NOW] Should return Reader object
     @abstractmethod
     async def get_object(
         self,

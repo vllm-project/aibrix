@@ -23,7 +23,7 @@ from pydantic import Field
 from aibrix.metadata.logger import init_logger
 from aibrix.metadata.setting.config import settings
 from aibrix.openapi.protocol import NoExtraBaseModel
-from aibrix.storage.base import BaseStorage
+from aibrix.storage import BaseStorage, Reader, SizeExceededError, generate_filename
 
 logger = init_logger(__name__)
 
@@ -34,9 +34,8 @@ supported_extensions = {
     "jsonl",
 }
 
+
 # OpenAI Files API models
-
-
 class FilePurpose(str, Enum):
     """Valid purpose values for OpenAI Files API."""
 
@@ -112,50 +111,44 @@ async def create_file(
             )
             raise HTTPException(status_code=400, detail=error_response)
 
-        # Read file content
-        file_content = await file.read()
-        file_size = len(file_content)
-
-        # Check file size limit (512 MB)
-        if file_size > maxFileSize:
-            error_response = _create_error_response(
-                f"Maximum content size limit exceeded. The content size surpasses the allowed limit of {maxFileSize} bytes.",
-                code="content_size_limit_exceeded",
-            )
-            raise HTTPException(status_code=413, detail=error_response)
+        # Wraps in reader
+        reader = Reader(file, size_limiter=maxFileSize)
 
         # Generate unique file ID
         file_id = str(uuid.uuid4())
 
         # Store file content (using bytes since we already read the content)
         storage: BaseStorage = request.app.state.storage
-        object_key = f"{file_id}.jsonl"
-        await storage.put_object(
-            object_key, file_content, content_type="application/jsonl"
-        )
 
-        # Store file metadata
+        # Generate metadata
         created_at = int(time.time())
         metadata = {
-            "filename": file.filename or object_key,
-            "bytes": file_size,
+            "filename": file.filename,
             "purpose": purpose.value,
             "created_at": created_at,
-            "status": FileStatus.UPLOADED.value,
-            "object_key": object_key,
         }
+        try:
+            await storage.put_object(
+                file_id, reader, content_type=file.content_type, metadata=metadata
+            )
+        except SizeExceededError:
+            error_response = _create_error_response(
+                f"Maximum content size limit exceeded. The content size surpasses the allowed limit of {maxFileSize} bytes.",
+                code="content_size_limit_exceeded",
+            )
+            raise HTTPException(status_code=413, detail=error_response)
 
         logger.info(
             "File uploaded successfully",
             file_id=file_id,
             filename=file.filename,
             purpose=purpose.value,
-            size_bytes=file_size,
+            size_bytes=reader.bytes_read(),
         )  # type: ignore[call-arg]
 
         return FileObject(
             id=file_id,
-            bytes=file_size,
+            bytes=reader.bytes_read(),
             created_at=created_at,
             filename=str(metadata["filename"]),
             purpose=purpose,
@@ -182,10 +175,15 @@ async def retrieve_file_content(request: Request, file_id: str) -> Response:
     try:
         storage: BaseStorage = request.app.state.storage
 
-        object_key = f"{file_id}.jsonl"
-        # head_object = await storage.head_object(f"{file_id}.jsonl")
-        file_content = await storage.get_object(object_key)
-        content_type = "application/jsonl"
+        head_object = await storage.head_object(file_id)
+        file_content = await storage.get_object(file_id)
+        content_type = head_object.content_type
+        if head_object.metadata is not None and "filename" in head_object.metadata:
+            filename = head_object.metadata["filename"]
+        else:
+            filename = generate_filename(
+                file_id, head_object.content_type, head_object.metadata
+            )
 
         logger.info(
             "File content retrieved",
@@ -197,7 +195,7 @@ async def retrieve_file_content(request: Request, file_id: str) -> Response:
         return Response(
             content=file_content,
             media_type=content_type,
-            headers={"Content-Disposition": "attachment; filename=output.jsonl"},
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
         )
 
     except FileNotFoundError:

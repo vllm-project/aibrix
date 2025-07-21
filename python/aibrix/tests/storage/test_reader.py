@@ -26,11 +26,8 @@ from pathlib import Path
 import pytest
 from fastapi import UploadFile
 
-from aibrix.storage.utils import (
-    Reader,
-    init_storage_loop_thread,
-    stop_storage_loop_thread,
-)
+from aibrix.storage.reader import Reader, SizeExceededError
+from aibrix.storage.utils import init_storage_loop_thread, stop_storage_loop_thread
 
 
 class TestReader:
@@ -70,9 +67,15 @@ class TestReader:
         position = reader.tell()
         assert position == 0
 
+        # Test size before reading
+        size = reader.get_size()
+        assert size == len(test_data)
+        assert reader.bytes_read() == 0
+
         # Test partial read
         partial = reader.read(5)
         assert partial == b"Hello"
+        assert reader.bytes_read() == 5
 
         # Test get_size
         size = reader.get_size()
@@ -85,6 +88,7 @@ class TestReader:
     async def test_reader_with_stringio(self):
         """Test Reader with StringIO objects (converts to bytes)."""
         test_data = "Hello, StringIO world! 🌍"
+        expected_bytes = test_data.encode("utf-8")
         string_io = StringIO(test_data)
 
         reader = Reader(string_io)
@@ -93,15 +97,28 @@ class TestReader:
         assert reader.readable() is True
         assert reader.seekable() is True
 
-        # Test reading (should convert to bytes)
-        data = reader.read()
-        expected_bytes = test_data.encode("utf-8")
-        assert data == expected_bytes
+        # Test size before reading - StringIO is seekable and can be reset
+        size = reader.get_size()
+        assert size == len(expected_bytes)
+        assert reader.bytes_read() == 0
+
+        # Test size after partial read (10 bytes)
+        partial = reader.read(10)
+        assert len(partial) == 10
+        assert reader.bytes_read() == 10
+        size_after_read = reader.get_size()
+        assert size_after_read == len(expected_bytes)
 
         # Test seeking
         reader.seek(0)
         partial = reader.read(5)
         assert partial == b"Hello"
+
+        # Test reading (should convert to bytes)
+        reader.seek(0)
+        data = reader.read()
+        assert data == expected_bytes
+        assert reader.get_size() == len(expected_bytes)
 
         reader.close()
 
@@ -122,14 +139,22 @@ class TestReader:
             assert reader.readable() is True
             assert reader.seekable() is True
 
+            # Test size before reading
+            size = reader.get_size()
+            assert size == len(test_data)
+            assert reader.bytes_read() == 0
+
             # Test reading
             data = reader.read()
             assert data == test_data
+            assert reader.get_size() == len(test_data)
 
             # Test seeking
             reader.seek(0)
             partial = reader.read(5)
             assert partial == b"Hello"
+            assert reader.bytes_read() == 5
+            assert reader.get_size() == len(test_data)
 
             # Test filename property
             assert reader.filename == temp_file.name
@@ -140,6 +165,7 @@ class TestReader:
     async def test_reader_with_text_file(self):
         """Test Reader with TextIO (text file objects)."""
         test_data = "Hello, TextIO world! 🌍"
+        expected_bytes = test_data.encode("utf-8")
 
         with tempfile.NamedTemporaryFile(mode="w+", encoding="utf-8") as temp_file:
             # Write test data
@@ -149,15 +175,23 @@ class TestReader:
 
             reader = Reader(temp_file)
 
+            # Test size before reading - text files can be reset after size determination
+            size = reader.get_size()
+            assert size == len(expected_bytes)
+            # After get_size(), position should be reset for seekable text files
+            assert reader.bytes_read() == 0
+
             # Test reading (should convert to bytes)
             data = reader.read()
-            expected_bytes = test_data.encode("utf-8")
             assert data == expected_bytes
+            assert reader.get_size() == len(expected_bytes)
 
             # Test seeking
             reader.seek(0)
             partial = reader.read(5)
             assert partial == b"Hello"
+            assert reader.bytes_read() == 5
+            assert reader.get_size() == len(expected_bytes)
 
             reader.close()
 
@@ -184,20 +218,31 @@ class TestReader:
         assert reader.readable() is True
         assert reader.seekable() is True
         # UploadFile might not support seek consistently
+        assert reader.tellable() is False
 
         # Test filename and content_type properties
         assert reader.filename == test_filename
         assert reader.content_type == test_content_type
 
+        # Test size before reading - UploadFile size is None, so it reads all data
+        with pytest.raises(ValueError):
+            reader.get_size()
+        # Insure nothing read
+        assert reader.bytes_read() == 0
+
         # Test reading
         data = reader.read()
         assert data == test_data
+        assert reader.bytes_read() == len(test_data)
+        # Lenght always work, but this is a good time to test it without extra efficiency
+        assert len(reader) == len(test_data)
 
-        # Test seeking (if supported)
+        # Test seeking (if supported), no storage_loop_thread needed.
         try:
             reader.seek(0)
             partial = reader.read(5)
             assert partial == b"Hello"
+            assert reader.bytes_read() == 5
         except (ValueError, TypeError):
             # Some UploadFile implementations don't support seek with whence
             pass
@@ -413,6 +458,156 @@ class TestReader:
         reader.close()
 
     @pytest.mark.asyncio
+    async def test_reader_get_size_non_seekable(self):
+        """Test Reader get_size with non-seekable objects."""
+
+        class NonSeekableObject:
+            def __init__(self, data: bytes):
+                self.data = data
+                self.position = 0
+
+            def read(self, size: int = -1) -> bytes:
+                if size == -1:
+                    result = self.data[self.position :]
+                    self.position = len(self.data)
+                else:
+                    result = self.data[self.position : self.position + size]
+                    self.position += len(result)
+                return result
+
+            def close(self):
+                pass
+
+        test_data = b"Hello, non-seekable size test!"
+        no_seek_obj = NonSeekableObject(test_data)
+        reader = Reader(no_seek_obj)
+
+        # Should not be seekable
+        assert reader.seekable() is False
+        assert reader.bytes_read() == 0
+
+        # Test size before reading
+        with pytest.raises(ValueError):
+            reader.get_size()
+        assert len(reader) == len(test_data)
+        # After calling len(), all data should be read
+        assert reader.bytes_read() == len(test_data)
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_get_size_non_seekable_partial_read(self):
+        """Test Reader get_size with non-seekable objects after partial reads."""
+
+        class NonSeekableObject:
+            def __init__(self, data: bytes):
+                self.data = data
+                self.position = 0
+
+            def read(self, size: int = -1) -> bytes:
+                if size == -1:
+                    result = self.data[self.position :]
+                    self.position = len(self.data)
+                else:
+                    result = self.data[self.position : self.position + size]
+                    self.position += len(result)
+                return result
+
+            def close(self):
+                pass
+
+        test_data = b"Hello, partial non-seekable test!"
+        no_seek_obj = NonSeekableObject(test_data)
+        reader = Reader(no_seek_obj)
+
+        # Should not be seekable
+        assert reader.seekable() is False
+
+        # Read some data first
+        partial = reader.read(5)
+        assert partial == b"Hello"
+        assert reader.bytes_read() == 5
+
+        # Now get size - should read remaining data
+        with pytest.raises(ValueError):
+            reader.get_size()
+        assert len(reader) == len(test_data)
+        # After calling get_size(), all data should be read
+        assert reader.bytes_read() == len(test_data)
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_get_size_with_size_attribute(self):
+        """Test Reader get_size with objects that have a size attribute."""
+
+        class ObjectWithSize:
+            def __init__(self, data: bytes):
+                self.data = data
+                self.position = 0
+                self.size = len(data)  # This should be used directly
+
+            def read(self, size: int = -1) -> bytes:
+                if size == -1:
+                    result = self.data[self.position :]
+                    self.position = len(self.data)
+                else:
+                    result = self.data[self.position : self.position + size]
+                    self.position += len(result)
+                return result
+
+            def close(self):
+                pass
+
+        test_data = b"Hello, size attribute test!"
+        obj_with_size = ObjectWithSize(test_data)
+        reader = Reader(obj_with_size)
+
+        # Should get size from .size attribute without reading
+        size = reader.get_size()
+        assert size == len(test_data)
+        assert len(reader) == len(test_data)
+        assert reader.bytes_read() == 0  # Should not have read any data
+
+        # Verify we can still read normally
+        partial = reader.read(5)
+        assert partial == b"Hello"
+        assert reader.bytes_read() == 5
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_bytes_read_tracking(self):
+        """Test Reader bytes_read tracking with various operations."""
+        test_data = b"Hello, bytes tracking test!"
+        bytes_io = BytesIO(test_data)
+        reader = Reader(bytes_io)
+
+        # Initially no bytes read
+        assert reader.bytes_read() == 0
+
+        # Read some data
+        chunk1 = reader.read(5)
+        assert chunk1 == b"Hello"
+        assert reader.bytes_read() == 5
+
+        # Read more data
+        chunk2 = reader.read(7)
+        assert chunk2 == b", bytes"
+        assert reader.bytes_read() == 12
+
+        # Seek and check tracking
+        reader.seek(0)
+        assert reader.bytes_read() == 0  # Should reset on seek
+
+        # Read all remaining
+        all_data = reader.read(-1)
+        assert all_data == test_data
+        assert reader.bytes_read() == len(test_data)
+
+        reader.close()
+
+    @pytest.mark.asyncio
     async def test_reader_error_handling(self):
         """Test Reader error handling for various edge cases."""
         test_data = b"Hello, errors!"
@@ -430,6 +625,13 @@ class TestReader:
 
         with pytest.raises(ValueError, match="I/O operation on closed file"):
             reader.tell()
+
+        with pytest.raises(ValueError, match="I/O operation on closed file"):
+            reader.get_size()
+
+        # bytes_read() should still work on closed files since it's just a counter
+        bytes_read = reader.bytes_read()
+        assert isinstance(bytes_read, int)
 
     @pytest.mark.asyncio
     async def test_reader_async_iteration_error(self):
@@ -524,6 +726,341 @@ class TestReader:
 
         data = reader.read()
         assert data == test_bytes
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_size_limiter_basic(self):
+        """Test Reader with basic size limiter functionality."""
+        test_data = b"Hello, size limiter world!"
+        bytes_io = BytesIO(test_data)
+
+        # Create a size limiter that allows up to 10 bytes total
+        def size_limiter(bytes_read, bytes_to_read):
+            if bytes_to_read == -1:  # read_all
+                return bytes_read + len(test_data[bytes_read:]) <= 10
+            return bytes_read + bytes_to_read <= 10
+
+        reader = Reader(bytes_io, size_limiter=size_limiter)
+
+        # Should allow reading 5 bytes
+        data1 = reader.read(5)
+        assert data1 == b"Hello"
+        assert reader.bytes_read() == 5
+
+        # Should allow reading 5 more bytes (total 10)
+        data2 = reader.read(5)
+        assert data2 == b", siz"
+        assert reader.bytes_read() == 10
+
+        # Should reject reading more bytes
+        with pytest.raises(
+            SizeExceededError, match="Read operation rejected by size limiter"
+        ):
+            reader.read(1)
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_size_limiter_read_all(self):
+        """Test Reader size limiter with read_all operation."""
+        test_data = b"Hello, world!"
+        bytes_io = BytesIO(test_data)
+
+        # Create a size limiter that allows up to 5 bytes total
+        def size_limiter(bytes_read, bytes_to_read):
+            if bytes_to_read == -1:  # read_all
+                remaining = len(test_data) - bytes_read
+                return bytes_read + remaining <= 5
+            return bytes_read + bytes_to_read <= 5
+
+        reader = Reader(bytes_io, size_limiter=size_limiter)
+
+        # Should reject read_all since total data exceeds limit
+        with pytest.raises(
+            SizeExceededError, match="Read operation rejected by size limiter"
+        ):
+            reader.read_all()
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_size_limiter_none(self):
+        """Test Reader with no size limiter (default behavior)."""
+        test_data = b"Hello, no limiter!"
+        bytes_io = BytesIO(test_data)
+
+        reader = Reader(bytes_io)  # No size_limiter
+
+        # Should allow reading all data without restrictions
+        data = reader.read_all()
+        assert data == test_data
+        assert reader.bytes_read() == len(test_data)
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_size_limiter_chunks(self):
+        """Test Reader size limiter with chunk reading."""
+        test_data = b"A" * 100  # 100 bytes
+        bytes_io = BytesIO(test_data)
+
+        # Create a size limiter that allows up to 50 bytes total
+        def size_limiter(bytes_read, bytes_to_read):
+            return bytes_read + bytes_to_read <= 50
+
+        reader = Reader(bytes_io, size_limiter=size_limiter)
+
+        # Should allow reading chunks up to limit
+        chunk1 = reader.read_chunk(30)
+        assert len(chunk1) == 30
+        assert reader.bytes_read() == 30
+
+        chunk2 = reader.read_chunk(20)
+        assert len(chunk2) == 20
+        assert reader.bytes_read() == 50
+
+        # Should reject reading more chunks
+        with pytest.raises(
+            SizeExceededError, match="Read operation rejected by size limiter"
+        ):
+            reader.read_chunk(10)
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_size_limiter_iter_chunks(self):
+        """Test Reader size limiter with chunk iteration."""
+        test_data = b"A" * 100  # 100 bytes
+        bytes_io = BytesIO(test_data)
+
+        # Create a size limiter that allows up to 45 bytes total
+        def size_limiter(bytes_read, bytes_to_read):
+            return bytes_read + bytes_to_read <= 45
+
+        reader = Reader(bytes_io, size_limiter=size_limiter)
+
+        chunks = []
+        # Should stop when size limit is reached
+        try:
+            for chunk in reader.iter_chunks(chunk_size=20):
+                chunks.append(chunk)
+        except SizeExceededError as e:
+            assert "Read operation rejected by size limiter" in str(e)
+
+        # Should have read 40 bytes (2 chunks of 20) before hitting limit
+        assert reader.bytes_read() == 40
+        assert len(chunks) == 2
+        assert len(chunks[0]) == 20
+        assert len(chunks[1]) == 20
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_size_limiter_readline(self):
+        """Test Reader size limiter with line reading."""
+        test_data = b"Line 1\nLine 2\nLine 3\nLine 4\n"
+        bytes_io = BytesIO(test_data)
+
+        # Create a size limiter that allows up to 15 bytes total
+        def size_limiter(bytes_read, bytes_to_read):
+            return bytes_read + bytes_to_read <= 15
+
+        reader = Reader(bytes_io, size_limiter=size_limiter)
+
+        # Should allow reading first two lines
+        line1 = reader.readline()
+        assert line1 == b"Line 1\n"
+        assert reader.bytes_read() == 7
+
+        line2 = reader.readline()
+        assert line2 == b"Line 2\n"
+        assert reader.bytes_read() == 14
+
+        # Should reject reading more (would exceed 15 byte limit)
+        with pytest.raises(
+            SizeExceededError, match="Read operation rejected by size limiter"
+        ):
+            reader.readline()
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_size_limiter_with_text_file(self):
+        """Test Reader size limiter with text files."""
+        test_data = "Hello, 世界! 🌍"  # Mix of ASCII and multi-byte characters
+        string_io = StringIO(test_data)
+
+        # Create a size limiter that allows up to 10 bytes
+        def size_limiter(bytes_read, bytes_to_read):
+            return bytes_read + bytes_to_read <= 10
+
+        reader = Reader(string_io, size_limiter=size_limiter)
+
+        # Should allow reading 10 bytes
+        data = reader.read(10)
+        assert len(data) == 10
+        assert reader.bytes_read() == 10
+
+        # Should reject reading more
+        with pytest.raises(
+            SizeExceededError, match="Read operation rejected by size limiter"
+        ):
+            reader.read(1)
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_size_limiter_with_async_file_object(self):
+        """Test Reader with custom async file-like objects."""
+        test_data = b"Hello, async custom world!"
+
+        # Create a size limiter that allows up to 10 bytes
+        def size_limiter(bytes_read, bytes_to_read):
+            return bytes_read + bytes_to_read <= 10
+
+        init_storage_loop_thread()
+
+        class AsyncFileObject:
+            def __init__(self, data: bytes):
+                self.data = data
+                self.position = 0
+                self._closed = False
+
+            async def read(self, size: int = -1) -> bytes:
+                if size == -1:
+                    result = self.data[self.position :]
+                    self.position = len(self.data)
+                else:
+                    result = self.data[self.position : self.position + size]
+                    self.position += len(result)
+                return result
+
+            async def seek(self, offset: int, whence: int = 0) -> int:
+                if whence == 0:
+                    self.position = offset
+                elif whence == 1:
+                    self.position += offset
+                elif whence == 2:
+                    self.position = len(self.data) + offset
+                return self.position
+
+            async def tell(self) -> int:
+                return self.position
+
+            async def close(self) -> None:
+                self._closed = True
+
+        custom_file = AsyncFileObject(test_data)
+        reader = Reader(custom_file, size_limiter=size_limiter)
+
+        # Should allow reading 10 bytes
+        data = reader.read(10)
+        assert len(data) == 10
+        assert reader.bytes_read() == 10
+
+        # Should reject reading more
+        with pytest.raises(
+            SizeExceededError, match="Read operation rejected by size limiter"
+        ):
+            reader.read(1)
+
+        reader.close()
+
+        stop_storage_loop_thread
+
+    @pytest.mark.asyncio
+    async def test_reader_size_limiter_exception_handling(self):
+        """Test Reader size limiter exception handling."""
+        test_data = b"Hello, exception test!"
+        bytes_io = BytesIO(test_data)
+
+        # Create a size limiter that raises an exception
+        def failing_size_limiter(bytes_read, bytes_to_read):
+            raise RuntimeError("Limiter failed!")
+
+        reader = Reader(bytes_io, size_limiter=failing_size_limiter)
+
+        # Should wrap the exception
+        with pytest.raises(
+            SizeExceededError, match="Size limiter check failed: Limiter failed!"
+        ):
+            reader.read(5)
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_size_limiter_dynamic(self):
+        """Test Reader with dynamic size limiter that changes behavior."""
+        test_data = b"Dynamic limiter test data!"
+        bytes_io = BytesIO(test_data)
+
+        # Create a dynamic size limiter that becomes more restrictive
+        class DynamicLimiter:
+            def __init__(self):
+                self.call_count = 0
+
+            def __call__(self, bytes_read, bytes_to_read):
+                self.call_count += 1
+                # First call: allow up to 15 bytes
+                # Second call: allow up to 20 bytes
+                # Third call and beyond: allow up to 10 bytes only
+                if self.call_count <= 2:
+                    return bytes_read + bytes_to_read <= 20
+                else:
+                    return bytes_read + bytes_to_read <= 10
+
+        limiter = DynamicLimiter()
+        reader = Reader(bytes_io, size_limiter=limiter)
+
+        # First read: should succeed (within 20 byte limit)
+        data1 = reader.read(10)
+        assert len(data1) == 10
+
+        # Second read: should succeed (total 15 bytes, within 20 byte limit)
+        data2 = reader.read(5)
+        assert len(data2) == 5
+        assert reader.bytes_read() == 15
+
+        # Third read: should fail (limiter now only allows 10 bytes total)
+        with pytest.raises(
+            SizeExceededError, match="Read operation rejected by size limiter"
+        ):
+            reader.read(1)
+
+        reader.close()
+
+    @pytest.mark.asyncio
+    async def test_reader_size_limiter_seek_reset(self):
+        """Test Reader size limiter behavior with seek operations."""
+        test_data = b"Seek test data!"
+        bytes_io = BytesIO(test_data)
+
+        # Create a size limiter that allows up to 10 bytes total
+        def size_limiter(bytes_read, bytes_to_read):
+            return bytes_read + bytes_to_read <= 10
+
+        reader = Reader(bytes_io, size_limiter=size_limiter)
+
+        # Read some data
+        data1 = reader.read(5)
+        assert len(data1) == 5
+        assert reader.bytes_read() == 5
+
+        # Seek back to beginning (should reset bytes_read counter)
+        reader.seek(0)
+        assert reader.bytes_read() == 0
+
+        # Should now allow reading again from the beginning
+        data2 = reader.read(10)
+        assert len(data2) == 10
+        assert reader.bytes_read() == 10
+
+        # Should reject reading more
+        with pytest.raises(
+            SizeExceededError, match="Read operation rejected by size limiter"
+        ):
+            reader.read(1)
 
         reader.close()
 

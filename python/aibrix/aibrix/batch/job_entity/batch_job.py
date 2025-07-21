@@ -59,7 +59,12 @@ class BatchJobState(str, Enum):
     CANCELED = "canceled"
 
     def is_finished(self):
-        return self in [BatchJobState.COMPLETED, BatchJobState.FAILED, BatchJobState.CANCELED, BatchJobState.EXPIRED]
+        return self in [
+            BatchJobState.COMPLETED,
+            BatchJobState.FAILED,
+            BatchJobState.CANCELED,
+            BatchJobState.EXPIRED,
+        ]
 
 
 class BatchJobErrorCode(str, Enum):

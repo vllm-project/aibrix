@@ -13,10 +13,10 @@
 # limitations under the License.
 
 import time
-import json
+from typing import Optional
 
 import aibrix.batch.storage as storage
-from aibrix.batch.job_entity import BatchJobState, BatchJob
+from aibrix.batch.job_entity import BatchJob, BatchJobState
 from aibrix.batch.job_manager import JobManager
 from aibrix.metadata.logger import init_logger
 
@@ -73,18 +73,22 @@ class RequestProxy:
             )
             await storage.write_job_output_data(job, request_id, [request_output])
             # Request next id to avoid state becoming FINALIZING by make total > request_id
-            logger.debug(
-                "Job request executed",
-                job_id=job_id,
-                request_id=request_id
-            )
+            logger.debug("Job request executed", job_id=job_id, request_id=request_id)
             job = self.sync_job_status(job_id, request_id)
 
             request_id = self._job_manager.get_job_next_request(job_id)
             line_no += 1
 
-        job = self.sync_job_status(job_id, request_id + 1)  # Now that total == request_id
-        logger.debug("Finalizing job", job_id=job_id, total=job.status.request_counts.total, state=job.status.state.value)
+        job = self.sync_job_status(
+            job_id, request_id + 1
+        )  # Now that total == request_id
+        logger.debug(
+            "Finalizing job",
+            job_id=job_id,
+            total=job.status.request_counts.total,
+            state=job.status.state.value,
+        )
+        assert job is not None
         assert job.status.state == BatchJobState.FINALIZING
 
         # Step 3: Aggregate outputs.
@@ -99,7 +103,7 @@ class RequestProxy:
         """
         storage.put_job_results(output_id, request_id, [result])
 
-    def sync_job_status(self, job_id, reqeust_id=-1) -> BatchJob:
+    def sync_job_status(self, job_id, reqeust_id=-1) -> Optional[BatchJob]:
         """
         Update job's status back to job manager.
         """

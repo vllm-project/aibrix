@@ -76,7 +76,12 @@ class BatchDriver:
                     await self._proxy.execute_queries(one_job)
                 except Exception as e:
                     job = self._job_manager.mark_job_failed(one_job)
-                    logger.error("Failed to execute job", job_id=one_job, status=job.status.state.value, error=e)
+                    logger.error(
+                        "Failed to execute job",
+                        job_id=one_job,
+                        status=job.status.state.value,
+                        error=e,
+                    )
                     raise
             await asyncio.sleep(0)
 

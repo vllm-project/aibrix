@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import uuid
-import json
 from typing import Any, AsyncIterator, Dict, List, Tuple
 
 from aibrix.batch.job_entity import BatchJob

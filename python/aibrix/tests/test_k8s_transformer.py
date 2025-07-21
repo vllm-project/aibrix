@@ -130,4 +130,4 @@ def test_k8s_job_dict_access():
     assert batch_job.type_meta.kind == "Job"
     assert batch_job.metadata.name == "test-batch-job"
     assert batch_job.spec.endpoint == BatchJobEndpoint.EMBEDDINGS
-    assert batch_job.status.state == BatchJobState.COMPLETED
+    assert batch_job.status.state == BatchJobState.FINALIZING

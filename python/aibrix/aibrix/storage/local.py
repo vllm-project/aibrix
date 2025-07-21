@@ -21,10 +21,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
-from aibrix.storage.base import BaseStorage, StorageConfig
-from aibrix.storage.utils import ObjectMetadata
-
-from .utils import Reader
+from .base import BaseStorage, StorageConfig
+from .reader import Reader
+from .utils import ObjectMetadata, generate_filename
 
 LOCAL_STORAGE_PATH_VAR = "LOCAL_STORAGE_PATH"
 
@@ -47,9 +46,41 @@ class LocalStorage(BaseStorage):
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
 
-    def _get_full_path(self, key: str) -> Path:
+    def _get_full_path(
+        self,
+        key: str,
+        content_type: Optional[str] = None,
+        metadata: Optional[dict[str, str]] = None,
+    ) -> Path:
         """Get full filesystem path for a key."""
-        return self.base_path / key
+        return self.base_path / generate_filename(key, content_type, metadata)
+
+    def _get_metadata_path(self, key: str) -> Path:
+        """Get metadata file path for a key."""
+        return self.base_path / f"{key}.metadata"
+
+    def _infer_content_type(self, key: str) -> Optional[str]:
+        """Infer content type from file extension."""
+        from pathlib import Path
+
+        suffix = Path(key).suffix.lower()
+        content_type_map = {
+            ".json": "application/json",
+            ".jsonl": "application/jsonl",
+            ".txt": "text/plain",
+            ".csv": "text/csv",
+            ".xml": "application/xml",
+            ".html": "text/html",
+            ".pdf": "application/pdf",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".zip": "application/zip",
+            ".tar": "application/x-tar",
+            ".gz": "application/gzip",
+        }
+        return content_type_map.get(suffix)
 
     async def put_object(
         self,
@@ -59,14 +90,45 @@ class LocalStorage(BaseStorage):
         metadata: Optional[dict[str, str]] = None,
     ) -> None:
         """Put an object to local filesystem."""
-        # [TODO][NOW] content_type should stored in key.metadata
-        full_path = self._get_full_path(key)
+        # Infer content type from file extension if not provided
+        if content_type is None:
+            content_type = self._infer_content_type(key)
+
+        full_path = self._get_full_path(key, content_type, metadata)
         full_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Handle Reader separately since it requires async operations
         reader = self._wrap_data(data)
         await asyncio.get_event_loop().run_in_executor(
             None, self._write_file, full_path, reader
+        )
+
+        # Calculate metadata fields after writing
+        def _get_file_metadata():
+            stat = full_path.stat()
+            content_length = stat.st_size
+
+            # Generate etag based on file size and modification time
+            etag_data = f"{content_length}-{stat.st_mtime}"
+            etag = hashlib.md5(etag_data.encode()).hexdigest()
+
+            last_modified = datetime.fromtimestamp(stat.st_mtime)
+            return content_length, etag, last_modified
+
+        (
+            file_content_length,
+            file_etag,
+            file_last_modified,
+        ) = await asyncio.get_event_loop().run_in_executor(None, _get_file_metadata)
+
+        # Store metadata with file information
+        await self._store_metadata(
+            key,
+            content_type,
+            metadata,
+            file_content_length,
+            file_etag,
+            file_last_modified,
         )
 
     def _write_file(self, path: Path, reader: Reader) -> None:
@@ -80,6 +142,62 @@ class LocalStorage(BaseStorage):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(str(reader))
 
+    async def _store_metadata(
+        self,
+        key: str,
+        content_type: Optional[str] = None,
+        metadata: Optional[dict[str, str]] = None,
+        content_length: Optional[int] = None,
+        etag: Optional[str] = None,
+        last_modified: Optional[datetime] = None,
+    ) -> None:
+        """Store metadata for an object."""
+        metadata_path = self._get_metadata_path(key)
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+
+        metadata_data = {
+            "content_type": content_type,
+            "metadata": metadata or {},
+            "content_length": content_length,
+            "etag": etag,
+            "last_modified": last_modified.isoformat() if last_modified else None,
+        }
+
+        await asyncio.get_event_loop().run_in_executor(
+            None, self._write_json_file, metadata_path, metadata_data
+        )
+
+    async def _load_metadata(
+        self, key: str
+    ) -> tuple[
+        Optional[str], dict[str, str], Optional[int], Optional[str], Optional[datetime]
+    ]:
+        """Load metadata for an object."""
+        metadata_path = self._get_metadata_path(key)
+
+        if not metadata_path.exists():
+            return None, {}, None, None, None
+
+        metadata_data = await asyncio.get_event_loop().run_in_executor(
+            None, self._read_json_file, metadata_path
+        )
+
+        # Parse last_modified from ISO format
+        last_modified = None
+        if last_modified_str := metadata_data.get("last_modified"):
+            try:
+                last_modified = datetime.fromisoformat(last_modified_str)
+            except ValueError:
+                pass
+
+        return (
+            metadata_data.get("content_type"),
+            metadata_data.get("metadata", {}),
+            metadata_data.get("content_length"),
+            metadata_data.get("etag"),
+            last_modified,
+        )
+
     async def get_object(
         self,
         key: str,
@@ -87,7 +205,8 @@ class LocalStorage(BaseStorage):
         range_end: Optional[int] = None,
     ) -> bytes:
         """Get an object from local filesystem."""
-        full_path = self._get_full_path(key)
+        content_type, metadata, _, _, _ = await self._load_metadata(key)
+        full_path = self._get_full_path(key, content_type, metadata)
 
         if not full_path.exists():
             raise FileNotFoundError(f"Object not found: {key}")
@@ -113,10 +232,16 @@ class LocalStorage(BaseStorage):
 
     async def delete_object(self, key: str) -> None:
         """Delete an object from local filesystem."""
-        full_path = self._get_full_path(key)
+        content_type, metadata, _, _, _ = await self._load_metadata(key)
+        full_path = self._get_full_path(key, content_type, metadata)
+        metadata_path = self._get_metadata_path(key)
 
         if full_path.exists():
             await asyncio.get_event_loop().run_in_executor(None, full_path.unlink)
+
+        # Clean up metadata file if it exists
+        if metadata_path.exists():
+            await asyncio.get_event_loop().run_in_executor(None, metadata_path.unlink)
 
     async def list_objects(
         self, prefix: str = "", delimiter: Optional[str] = None
@@ -131,7 +256,10 @@ class LocalStorage(BaseStorage):
                     # List immediate children only
                     for item in prefix_path.iterdir():
                         if item.is_file():
-                            files.append(str(item.relative_to(self.base_path)))
+                            relative_path = str(item.relative_to(self.base_path))
+                            # Filter out metadata files
+                            if not relative_path.endswith(".metadata"):
+                                files.append(relative_path)
                         elif item.is_dir():
                             files.append(
                                 str(item.relative_to(self.base_path)) + delimiter
@@ -140,21 +268,29 @@ class LocalStorage(BaseStorage):
                     # Recursive listing
                     for item in prefix_path.rglob("*"):
                         if item.is_file():
-                            files.append(str(item.relative_to(self.base_path)))
+                            relative_path = str(item.relative_to(self.base_path))
+                            # Filter out metadata files
+                            if not relative_path.endswith(".metadata"):
+                                files.append(relative_path)
             elif prefix_path.is_file():
-                files.append(str(prefix_path.relative_to(self.base_path)))
+                relative_path = str(prefix_path.relative_to(self.base_path))
+                # Filter out metadata files
+                if not relative_path.endswith(".metadata"):
+                    files.append(relative_path)
             return files
 
         return await asyncio.get_event_loop().run_in_executor(None, _list_files)
 
     async def object_exists(self, key: str) -> bool:
         """Check if object exists."""
-        full_path = self._get_full_path(key)
+        content_type, metadata, _, _, _ = await self._load_metadata(key)
+        full_path = self._get_full_path(key, content_type, metadata)
         return full_path.exists() and full_path.is_file()
 
     async def get_object_size(self, key: str) -> int:
         """Get object size in bytes."""
-        full_path = self._get_full_path(key)
+        content_type, metadata, _, _, _ = await self._load_metadata(key)
+        full_path = self._get_full_path(key, content_type, metadata)
 
         if not full_path.exists():
             raise FileNotFoundError(f"Object not found: {key}")
@@ -165,63 +301,63 @@ class LocalStorage(BaseStorage):
 
     async def head_object(self, key: str) -> ObjectMetadata:
         """Get object metadata without downloading the object content."""
-        full_path = self._get_full_path(key)
+        # Load stored metadata only (as per requirement #3)
+        (
+            stored_content_type,
+            stored_metadata,
+            stored_content_length,
+            stored_etag,
+            stored_last_modified,
+        ) = await self._load_metadata(key)
 
-        if not full_path.exists():
+        # Check if metadata exists (which implies object exists)
+        # We consider the object exists if we have content_length, etag, or last_modified
+        if (
+            stored_content_length is None
+            and stored_etag is None
+            and stored_last_modified is None
+        ):
             raise FileNotFoundError(f"Object not found: {key}")
 
-        def _get_metadata():
-            stat = full_path.stat()
-
-            # Generate simple etag based on file size and modification time
-            etag_data = f"{stat.st_size}-{stat.st_mtime}"
-            etag = hashlib.md5(etag_data.encode()).hexdigest()
-
-            # Try to determine content type from file extension
-            content_type = None
-            suffix = full_path.suffix.lower()
-            content_type_map = {
-                ".json": "application/json",
-                ".jsonl": "application/jsonl",
-                ".txt": "text/plain",
-                ".csv": "text/csv",
-                ".xml": "application/xml",
-                ".html": "text/html",
-                ".pdf": "application/pdf",
-                ".png": "image/png",
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".gif": "image/gif",
-                ".zip": "application/zip",
-                ".tar": "application/x-tar",
-                ".gz": "application/gzip",
-            }
-            content_type = content_type_map.get(suffix)
-
-            return ObjectMetadata(
-                content_length=stat.st_size,
-                content_type=content_type,
-                etag=etag,
-                last_modified=datetime.fromtimestamp(stat.st_mtime),
-                metadata={},
-                storage_class="STANDARD",  # Local storage uses standard class
-            )
-
-        return await asyncio.get_event_loop().run_in_executor(None, _get_metadata)
+        return ObjectMetadata(
+            content_length=stored_content_length or 0,
+            content_type=stored_content_type,
+            etag=stored_etag or "",
+            last_modified=stored_last_modified,
+            metadata=stored_metadata,
+            storage_class="STANDARD",  # Local storage uses standard class
+        )
 
     async def copy_object(self, source_key: str, dest_key: str) -> None:
         """Copy an object within local filesystem."""
-        source_path = self._get_full_path(source_key)
-        dest_path = self._get_full_path(dest_key)
+        # Load source metadata first
+        source_content_type, source_metadata, _, _, _ = await self._load_metadata(
+            source_key
+        )
+
+        source_path = self._get_full_path(
+            source_key, source_content_type, source_metadata
+        )
+        dest_path = self._get_full_path(dest_key, source_content_type, source_metadata)
+        source_metadata_path = self._get_metadata_path(source_key)
+        dest_metadata_path = self._get_metadata_path(dest_key)
 
         if not source_path.exists():
             raise FileNotFoundError(f"Source object not found: {source_key}")
 
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Copy the main file
         await asyncio.get_event_loop().run_in_executor(
             None, shutil.copy2, source_path, dest_path
         )
+
+        # Copy metadata file if it exists
+        if source_metadata_path.exists():
+            dest_metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.get_event_loop().run_in_executor(
+                None, shutil.copy2, source_metadata_path, dest_metadata_path
+            )
 
     async def create_multipart_upload(
         self,
@@ -313,21 +449,52 @@ class LocalStorage(BaseStorage):
         if not upload_dir.exists():
             raise ValueError(f"Upload ID {upload_id} not found")
 
-        # Read metadata (not used but validates upload exists)
+        # Read upload metadata to get content_type and metadata
         metadata_file = upload_dir / "metadata.json"
-        await asyncio.get_event_loop().run_in_executor(
+        upload_metadata = await asyncio.get_event_loop().run_in_executor(
             None, self._read_json_file, metadata_file
         )
+
+        content_type = upload_metadata.get("content_type")
+        metadata = upload_metadata.get("metadata", {})
 
         # Sort parts by part number
         sorted_parts = sorted(parts, key=lambda p: p["part_number"])
 
         # Combine all parts into final file
-        final_path = self._get_full_path(key)
+        final_path = self._get_full_path(key, content_type, metadata)
         final_path.parent.mkdir(parents=True, exist_ok=True)
 
         await asyncio.get_event_loop().run_in_executor(
             None, self._combine_parts, upload_dir, sorted_parts, final_path
+        )
+
+        # Calculate metadata fields after file is created
+        def _get_file_metadata():
+            stat = final_path.stat()
+            content_length = stat.st_size
+
+            # Generate etag based on file size and modification time
+            etag_data = f"{content_length}-{stat.st_mtime}"
+            etag = hashlib.md5(etag_data.encode()).hexdigest()
+
+            last_modified = datetime.fromtimestamp(stat.st_mtime)
+            return content_length, etag, last_modified
+
+        (
+            file_content_length,
+            file_etag,
+            file_last_modified,
+        ) = await asyncio.get_event_loop().run_in_executor(None, _get_file_metadata)
+
+        # Store metadata with file information (requirement #2)
+        await self._store_metadata(
+            key,
+            content_type,
+            metadata,
+            file_content_length,
+            file_etag,
+            file_last_modified,
         )
 
         # Clean up upload directory
@@ -376,7 +543,8 @@ class LocalStorage(BaseStorage):
 
     async def readline_iter(self, key: str, start_index: int = 0) -> AsyncIterator[str]:
         """Native readline implementation for local storage using file streaming."""
-        full_path = self._get_full_path(key)
+        content_type, metadata, _, _, _ = await self._load_metadata(key)
+        full_path = self._get_full_path(key, content_type, metadata)
 
         if not full_path.exists():
             return

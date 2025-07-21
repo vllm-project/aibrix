@@ -15,9 +15,10 @@
 from .base import BaseStorage, StorageConfig
 from .factory import StorageType, create_storage, create_storage_from_env
 from .local import LocalStorage
+from .reader import Reader, SizeExceededError
 from .s3 import S3Storage
 from .tos import TOSStorage
-from .utils import ObjectMetadata, Reader
+from .utils import ObjectMetadata, generate_filename
 
 __all__ = [
     "BaseStorage",
@@ -30,4 +31,6 @@ __all__ = [
     "TOSStorage",
     "Reader",
     "ObjectMetadata",
+    "SizeExceededError",
+    "generate_filename",
 ]

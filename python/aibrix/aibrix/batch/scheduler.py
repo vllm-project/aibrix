@@ -21,7 +21,6 @@ from enum import Enum
 from typing import Optional
 
 from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE, EXPIRE_INTERVAL
-from aibrix.batch.job_entity import BatchJobState
 from aibrix.metadata.logger import init_logger
 
 # JobManager will be passed as parameter to avoid circular import

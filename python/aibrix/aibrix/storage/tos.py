@@ -22,7 +22,7 @@ from tos.exceptions import TosClientError, TosServerError
 from aibrix.storage.base import BaseStorage, StorageConfig
 from aibrix.storage.utils import ObjectMetadata
 
-from .utils import Reader
+from .reader import Reader
 
 
 class TOSPart:
