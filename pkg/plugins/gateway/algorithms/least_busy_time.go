@@ -64,7 +64,6 @@ func (r leastBusyTimeRouter) Route(ctx *types.RoutingContext, readyPodList types
 		if busyTimeRatioValue < minBusyTimeRatio {
 			minBusyTimeRatio = busyTimeRatioValue
 			targetPod = pod
-			klog.Infof("select target pod: %v, podIP: %v, GPU busy time ratio: %v", pod.Name, pod.Status.PodIP, busyTimeRatioValue)
 		}
 	}
 
@@ -76,6 +75,9 @@ func (r leastBusyTimeRouter) Route(ctx *types.RoutingContext, readyPodList types
 			return "", err
 		}
 		klog.Infof("select random pod: %v, podIP: %v", targetPod.Name, targetPod.Status.PodIP)
+	}
+	else{
+		klog.Infof("select target pod: %v, podIP: %v, GPU busy time ratio: %v", pod.Name, pod.Status.PodIP, minBusyTimeRatio)
 	}
 
 	ctx.SetTargetPod(targetPod)

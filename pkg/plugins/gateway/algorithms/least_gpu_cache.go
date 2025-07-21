@@ -64,7 +64,7 @@ func (r leastGpuCacheRouter) Route(ctx *types.RoutingContext, readyPodList types
 		}
 		totalCache := gpuCache.GetSimpleValue()
 
-		klog.V(4).Infof("pod: %v, podIP: %v, gpuCache: %v",
+		klog.Infof("pod: %v, podIP: %v, gpuCache: %v",
 			pod.Name, pod.Status.PodIP, gpuCache.GetSimpleValue())
 
 		if totalCache <= minGpuCache {
@@ -80,13 +80,17 @@ func (r leastGpuCacheRouter) Route(ctx *types.RoutingContext, readyPodList types
 		if err != nil {
 			return "", err
 		}
+		klog.Infof("select random targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
+	}
+	else{
+		klog.Infof("select targetPod: %s(%s) gpuCache: %v", targetPod.Name, targetPod.Status.PodIP, gpuCache.GetSimpleValue())
 	}
 
 	if targetPod == nil {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	klog.V(4).Infof("targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
+	klog.Infof("targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
 }
