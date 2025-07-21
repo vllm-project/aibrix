@@ -81,9 +81,8 @@ func (r leastGpuCacheRouter) Route(ctx *types.RoutingContext, readyPodList types
 			return "", err
 		}
 		klog.Infof("select random targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
-	}
-	else{
-		klog.Infof("select targetPod: %s(%s) gpuCache: %v", targetPod.Name, targetPod.Status.PodIP, gpuCache.GetSimpleValue())
+	} else {
+		klog.Infof("select targetPod: %s(%s) gpuCache: %v", targetPod.Name, targetPod.Status.PodIP, minGpuCache)
 	}
 
 	if targetPod == nil {
