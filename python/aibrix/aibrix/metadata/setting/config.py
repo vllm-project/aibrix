@@ -15,7 +15,7 @@ from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from aibrix.storage import StorageType
+from aibrix.storage.types import StorageType
 
 
 class Settings(BaseSettings):

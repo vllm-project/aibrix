@@ -17,8 +17,12 @@ from dataclasses import dataclass
 from io import BytesIO, StringIO
 from typing import Any, AsyncIterator, BinaryIO, Optional, TextIO, Union
 
+from aibrix.metadata.logger import init_logger
+
 from .reader import Reader
 from .utils import ObjectMetadata
+
+logger = init_logger(__name__)
 
 
 @dataclass
@@ -31,7 +35,6 @@ class StorageConfig:
 
     # Upload configuration
     multipart_threshold: int = 5 * 1024 * 1024  # 5MB
-    multipart_chunksize: int = 5 * 1024 * 1024  # 5MB
     max_concurrency: int = 10
 
     # Read configuration
@@ -248,78 +251,268 @@ class BaseStorage(ABC):
 
         Note: Priority order is byline > bysize > parts. Only one strategy is used.
         """
-        upload_id = await self.create_multipart_upload(key, content_type, metadata)
-        upload_parts: list[dict[str, Union[str, int]]] = []
+        if byline <= 0 and bysize <= 0 and parts <= 1:
+            await self.put_object(key, data, content_type, metadata)
+            return
 
-        content: Optional[Union[BinaryIO, TextIO, Reader]] = None
-        if isinstance(data, str):
-            content = StringIO(data)
-        elif isinstance(data, bytes):
-            content = BytesIO(data)
-        else:
-            content = data
+        upload_parts: list[dict[str, Union[str, int]]] = []
+        small_parts = False
+
+        reader = self._wrap_data(data)
 
         try:
             # Priority 1: Upload by lines
             if byline > 0:
+                small_parts = True
+                upload_id = await self._default_create_multipart_upload(
+                    key, content_type, metadata
+                )
                 await self._upload_by_lines(
-                    content, key, upload_id, byline, upload_parts
+                    reader, key, upload_id, byline, upload_parts
                 )
-
-            # Priority 2: Upload by size
-            elif bysize > 0:
-                await self._upload_by_size(
-                    content, key, upload_id, bysize, upload_parts
+                await self._default_complete_multipart_upload(
+                    key, upload_id, upload_parts
                 )
+                return
 
             # Priority 3: Upload by parts (auto-determine chunk size)
+            if bysize <= 0 and parts > 1:
+                bysize = self.config.multipart_threshold
+                try:
+                    file_size = reader.get_size()
+                    bysize = file_size // parts
+                except Exception:
+                    # Use default multipart_threshold
+                    pass
+
+            # Priority 2: Upload by size
+            if bysize >= self.config.multipart_threshold:
+                upload_id = await self.create_multipart_upload(
+                    key, content_type, metadata
+                )
+                await self._upload_by_size(reader, key, upload_id, bysize, upload_parts)
+                await self.complete_multipart_upload(key, upload_id, upload_parts)
             else:
-                await self._upload_by_parts(
-                    content, key, upload_id, parts, upload_parts
+                small_parts = True
+                upload_id = await self._default_create_multipart_upload(
+                    key, content_type, metadata
+                )
+                await self._upload_by_size(reader, key, upload_id, bysize, upload_parts)
+                await self._default_complete_multipart_upload(
+                    key, upload_id, upload_parts
                 )
 
-            # Complete multipart upload
-            await self.complete_multipart_upload(key, upload_id, upload_parts)
+        except Exception:
+            if small_parts:
+                # Abort small parts upload on error
+                await self._default_abort_multipart_upload(key, upload_id)
+            else:
+                # Abort upload on error
+                await self.abort_multipart_upload(key, upload_id)
+            raise
+
+    async def _default_create_multipart_upload(
+        self,
+        key: str,
+        content_type: Optional[str] = None,
+        metadata: Optional[dict[str, str]] = None,
+    ) -> str:
+        """Default implementation for multipart upload creation.
+
+        Creates a unique upload ID and stores upload metadata as a special object.
+        Suitable for S3/TOS backends that don't have native multipart support for small files.
+
+        Args:
+            key: Object key/path
+            content_type: MIME type of the content
+            metadata: Additional metadata to store with object
+
+        Returns:
+            Upload ID for the multipart upload session
+        """
+        import uuid
+
+        upload_id = str(uuid.uuid4())
+
+        # Store upload metadata as a special object
+        from datetime import datetime
+
+        upload_metadata = {
+            "key": key,
+            "content_type": content_type,
+            "metadata": metadata or {},
+            "parts": {},
+            "created_at": datetime.now().isoformat(),
+        }
+
+        metadata_key = f".multipart/{upload_id}/metadata"
+        await self.put_object(
+            metadata_key,
+            str(upload_metadata).encode("utf-8"),
+            content_type="application/json",
+        )
+
+        return upload_id
+
+    async def _default_upload_part(
+        self,
+        key: str,
+        upload_id: str,
+        part_number: int,
+        data: Union[str, bytes, BinaryIO, TextIO, Reader],
+    ) -> str:
+        """Default implementation for uploading a part.
+
+        Stores each part as an individual object for later aggregation.
+        Suitable for S3/TOS backends that don't have native multipart support for small files.
+
+        Args:
+            key: Object key/path
+            upload_id: Upload ID from create_multipart_upload
+            part_number: Part number (1-based)
+            data: Part data
+
+        Returns:
+            ETag for the uploaded part
+        """
+        import hashlib
+
+        # Convert data to bytes for consistent handling
+        if isinstance(data, str):
+            part_data = data.encode("utf-8")
+        elif isinstance(data, bytes):
+            part_data = data
+        else:
+            # File-like object or Reader
+            reader = self._wrap_data(data)
+            part_data = reader.read_all()
+
+        # Store part as individual object
+        part_key = f".multipart/{upload_id}/part_{part_number:05d}"
+        await self.put_object(
+            part_key, part_data, content_type="application/octet-stream"
+        )
+
+        # Calculate ETag (MD5 hash)
+        etag = hashlib.md5(part_data).hexdigest()
+
+        return etag
+
+    async def _default_complete_multipart_upload(
+        self,
+        key: str,
+        upload_id: str,
+        parts: list[dict[str, Union[str, int]]],
+    ) -> None:
+        """Default implementation for completing multipart upload.
+
+        Downloads all part objects, aggregates them locally, and uploads the final object.
+        Suitable for S3/TOS backends that don't have native multipart support for small files.
+
+        Args:
+            key: Object key/path
+            upload_id: Upload ID from create_multipart_upload
+            parts: List of parts with 'part_number' and 'etag' keys
+        """
+        metadata_key = f".multipart/{upload_id}/metadata"
+
+        try:
+            # Get upload metadata
+            metadata_data = await self.get_object(metadata_key)
+            upload_metadata = eval(
+                metadata_data.decode("utf-8")
+            )  # Simple parsing for dict
+        except Exception:
+            raise ValueError(f"Upload ID {upload_id} not found or corrupted")
+
+        content_type = upload_metadata.get("content_type")
+        metadata = upload_metadata.get("metadata", {})
+
+        # Sort parts by part number
+        sorted_parts = sorted(parts, key=lambda p: p["part_number"])
+
+        # Download and aggregate all parts locally
+        aggregated_data = BytesIO()
+
+        for part in sorted_parts:
+            part_number = part["part_number"]
+            part_key = f".multipart/{upload_id}/part_{part_number:05d}"
+
+            try:
+                part_data = await self.get_object(part_key)
+                aggregated_data.write(part_data)
+            except Exception:
+                # Clean up and raise error
+                await self._default_abort_multipart_upload(key, upload_id)
+                raise ValueError(
+                    f"Failed to retrieve part {part_number} for upload {upload_id}"
+                )
+
+        # Upload the final aggregated object
+        aggregated_data.seek(0)
+        await self.put_object(key, aggregated_data, content_type, metadata)
+
+        # Clean up multipart upload objects
+        await self._default_abort_multipart_upload(key, upload_id)
+
+    async def _default_abort_multipart_upload(
+        self,
+        key: str,
+        upload_id: str,
+    ) -> None:
+        """Default implementation for aborting multipart upload.
+
+        Cleans up all part objects and metadata for the upload.
+        Suitable for S3/TOS backends that don't have native multipart support for small files.
+
+        Args:
+            key: Object key/path
+            upload_id: Upload ID from create_multipart_upload
+        """
+        # List and delete all objects related to this upload
+        prefix = f".multipart/{upload_id}/"
+
+        try:
+            objects_to_delete = await self.list_objects(prefix)
+
+            # Delete all related objects
+            for obj_key in objects_to_delete:
+                try:
+                    await self.delete_object(obj_key)
+                except Exception:
+                    # Continue deletion even if some objects fail
+                    pass
 
         except Exception:
-            # Abort upload on error
-            await self.abort_multipart_upload(key, upload_id)
-            raise
+            # If listing fails, try to delete known objects
+            metadata_key = f".multipart/{upload_id}/metadata"
+            try:
+                await self.delete_object(metadata_key)
+            except Exception:
+                pass
 
     async def _upload_by_lines(
         self,
-        data: Union[BinaryIO, TextIO, Reader],
+        reader: Reader,
         key: str,
         upload_id: str,
         lines_per_part: int,
         parts: list[dict[str, Union[str, int]]],
     ) -> None:
         """Upload parts by number of lines per part."""
-        from io import BytesIO, StringIO
+        from io import BytesIO
 
         part_number = 1
         line_count = 0
 
-        # Determine if we're working with text or binary data by checking first line
-        first_line = None
-        for line in data:
-            first_line = line
-            break
-
         # Reset data to beginning if possible
-        if hasattr(data, "seek"):
-            data.seek(0)
-
-        is_binary_data = isinstance(first_line, bytes)
+        if hasattr(reader, "seek"):
+            reader.seek(0)
 
         # Create appropriate buffer for accumulating lines
-        current_buffer: Union[StringIO, BytesIO]
-        if is_binary_data:
-            current_buffer = BytesIO()
-        else:
-            current_buffer = StringIO()
+        current_buffer = BytesIO()
 
-        for line in data:
+        for line in reader.iter_lines():
             # Write line to buffer
             current_buffer.write(line)  # type: ignore
             line_count += 1
@@ -328,7 +521,7 @@ class BaseStorage(ABC):
                 # Create TextIO/BinaryIO object for upload_part
                 current_buffer.seek(0)  # Reset to beginning for reading
 
-                etag = await self.upload_part(
+                etag = await self._default_upload_part(
                     key, upload_id, part_number, current_buffer
                 )
                 parts.append(
@@ -339,10 +532,8 @@ class BaseStorage(ABC):
                 )
 
                 # Reset for next part
-                if is_binary_data:
-                    current_buffer = BytesIO()
-                else:
-                    current_buffer = StringIO()
+                current_buffer = BytesIO()
+
                 line_count = 0
                 part_number += 1
 
@@ -350,7 +541,9 @@ class BaseStorage(ABC):
         if line_count > 0:
             current_buffer.seek(0)  # Reset to beginning for reading
 
-            etag = await self.upload_part(key, upload_id, part_number, current_buffer)
+            etag = await self._default_upload_part(
+                key, upload_id, part_number, current_buffer
+            )
             parts.append(
                 {
                     "part_number": part_number,
@@ -360,7 +553,7 @@ class BaseStorage(ABC):
 
     async def _upload_by_size(
         self,
-        data: Union[BinaryIO, TextIO, Reader],
+        reader: Reader,
         key: str,
         upload_id: str,
         chunk_size: int,
@@ -370,23 +563,17 @@ class BaseStorage(ABC):
         part_number = 1
 
         while True:
-            raw_chunk: Union[bytes, str]
-            # Now Reader is synchronous, so no await needed
-            raw_chunk = data.read(chunk_size)
-
+            raw_chunk = reader.read(chunk_size)
             if not raw_chunk:
                 break
 
-            # Convert string chunks to bytes
-            if isinstance(raw_chunk, str):
-                chunk_bytes = raw_chunk.encode("utf-8")
-            elif isinstance(raw_chunk, bytes):
-                chunk_bytes = raw_chunk
+            if chunk_size >= self.config.multipart_threshold:
+                etag = await self.upload_part(key, upload_id, part_number, raw_chunk)
             else:
-                # Handle other types
-                chunk_bytes = bytes(raw_chunk) if raw_chunk else b""
+                etag = await self._default_upload_part(
+                    key, upload_id, part_number, raw_chunk
+                )
 
-            etag = await self.upload_part(key, upload_id, part_number, chunk_bytes)
             parts.append(
                 {
                     "part_number": part_number,
@@ -394,42 +581,6 @@ class BaseStorage(ABC):
                 }
             )
             part_number += 1
-
-    async def _upload_by_parts(
-        self,
-        data: Union[BinaryIO, TextIO, Reader],
-        key: str,
-        upload_id: str,
-        num_parts: int,
-        parts: list[dict[str, Union[str, int]]],
-    ) -> None:
-        """Upload by automatically determining chunk size based on total parts."""
-        # Try to determine file size to calculate chunk size
-        file_size = None
-        current_pos = None
-
-        try:
-            if hasattr(data, "seek") and hasattr(data, "tell"):
-                # Handle Reader and other file-like objects (now all synchronous)
-                current_pos = data.tell()
-                data.seek(0, 2)  # Seek to end
-                file_size = data.tell()
-                data.seek(current_pos)  # Restore position
-        except (OSError, IOError):
-            # Can't determine size, fall back to default chunk size
-            pass
-
-        if file_size is not None and file_size > 0:
-            # Calculate chunk size based on desired number of parts
-            chunk_size = max(file_size // num_parts, 1)
-            # Ensure minimum chunk size for practical purposes
-            chunk_size = max(chunk_size, 1024)  # At least 1KB per part
-        else:
-            # Fall back to default config chunk size
-            chunk_size = self.config.multipart_chunksize
-
-        # Use the size-based upload with calculated chunk size
-        await self._upload_by_size(data, key, upload_id, chunk_size, parts)
 
     async def readline_iter(self, key: str, start_line: int = 0) -> AsyncIterator[str]:
         """Iterator that reads lines from an object using range gets.

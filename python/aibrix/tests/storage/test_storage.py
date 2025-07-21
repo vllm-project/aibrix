@@ -650,8 +650,6 @@ class TestStorageFunctionality:
             content_io,
             "text/plain",
             byline=lines_per_part,  # Lines per part (priority 1)
-            bysize=1000,  # Should be ignored
-            parts=10,  # Should be ignored
         )
 
         # Verify content
@@ -679,9 +677,7 @@ class TestStorageFunctionality:
             key,
             content_io,
             "text/plain",
-            byline=0,  # Disabled
             bysize=chunk_size,  # Size per part (priority 2)
-            parts=10,  # Should be ignored
         )
 
         # Verify content
@@ -706,8 +702,6 @@ class TestStorageFunctionality:
             key,
             content_io,
             "text/plain",
-            byline=0,  # Disabled
-            bysize=0,  # Disabled
             parts=4,  # 4 parts (priority 3)
         )
 

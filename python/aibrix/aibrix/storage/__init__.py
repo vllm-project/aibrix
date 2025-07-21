@@ -13,11 +13,12 @@
 # limitations under the License.
 
 from .base import BaseStorage, StorageConfig
-from .factory import StorageType, create_storage, create_storage_from_env
+from .factory import create_storage, create_storage_from_env
 from .local import LocalStorage
 from .reader import Reader, SizeExceededError
 from .s3 import S3Storage
 from .tos import TOSStorage
+from .types import StorageType
 from .utils import ObjectMetadata, generate_filename
 
 __all__ = [

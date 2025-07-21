@@ -12,23 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from enum import Enum
 from typing import Dict, Optional, Union
 
 from aibrix import envs
-from aibrix.storage.base import BaseStorage, StorageConfig
-from aibrix.storage.local import LocalStorage
-from aibrix.storage.s3 import S3Storage
-from aibrix.storage.tos import TOSStorage
 
-
-class StorageType(Enum):
-    """Supported storage types."""
-
-    LOCAL = "local"
-    S3 = "s3"
-    TOS = "tos"
-    AUTO = "auto"
+from .base import BaseStorage, StorageConfig
+from .local import LocalStorage
+from .s3 import S3Storage
+from .tos import TOSStorage
+from .types import StorageType
 
 
 def create_storage(
