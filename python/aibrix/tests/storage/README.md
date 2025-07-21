@@ -7,6 +7,7 @@ This directory contains comprehensive tests for the aibrix storage module. The t
 - `test_base_storage.py` - Core storage functionality tests that run against all storage implementations
 - `test_local_storage.py` - LocalStorage specific tests
 - `test_s3_storage.py` - S3Storage specific tests (requires S3 configuration)
+- `test_redis_storage.py` - Redis storage tests (integration tests require Redis server)
 - `test_factory.py` - Storage factory tests
 - `conftest.py` - Pytest fixtures and configuration
 
@@ -30,6 +31,10 @@ pytest tests/storage/ -v
 ### Including S3 Tests
 
 To run S3 tests, you need to configure AWS credentials and specify a test bucket.
+
+### Including Redis Tests
+
+Redis storage tests are conditionally enabled based on environment variables. Integration tests that require a Redis server are automatically skipped unless Redis is configured.
 
 ## S3 Test Configuration
 
@@ -211,7 +216,63 @@ tests/storage/test_base_storage.py::TestBaseStorageFunctionality::test_put_and_g
 tests/storage/test_base_storage.py::TestBaseStorageFunctionality::test_put_and_get_string[s3_storage] PASSED
 tests/storage/test_local_storage.py::TestLocalStorage::test_local_storage_initialization PASSED
 tests/storage/test_s3_storage.py::TestS3Storage::test_s3_storage_initialization PASSED
+tests/storage/test_redis_storage.py::test_redis_storage_creation PASSED
 ...
 ```
 
 This indicates tests are running against both local and S3 storage implementations.
+
+## Redis Test Configuration
+
+### Prerequisites
+
+Redis storage tests include both unit tests and integration tests:
+
+- **Unit Tests**: Always run, test Redis storage creation and configuration
+- **Integration Tests**: Require a running Redis server
+
+### Environment Variables
+
+To enable Redis integration tests, set the following environment variables:
+
+```bash
+# Required - Redis host (enables all Redis integration tests)
+export STORAGE_REDIS_HOST=localhost
+
+# Optional - Redis configuration
+export STORAGE_REDIS_PORT=6379        # Default: 6379
+export STORAGE_REDIS_DB=0             # Default: 0
+export STORAGE_REDIS_PASSWORD=mysecret # Default: None
+```
+
+### Running Redis Tests
+
+```bash
+# Run only unit tests (no Redis server needed)
+pytest tests/storage/test_redis_storage.py -v
+
+# Start a Redis server (using Docker)
+docker run -d --name test-redis -p 6379:6379 redis:7-alpine
+
+# Run all tests including integration tests
+STORAGE_REDIS_HOST=localhost pytest tests/storage/test_redis_storage.py -v
+
+# Run with custom Redis configuration
+STORAGE_REDIS_HOST=localhost STORAGE_REDIS_PORT=6380 STORAGE_REDIS_DB=1 STORAGE_REDIS_PASSWORD=secret pytest tests/storage/test_redis_storage.py -v
+
+# Clean up
+docker stop test-redis && docker rm test-redis
+```
+
+### Redis Test Coverage
+
+Integration tests include:
+- Basic put/get/delete operations
+- Hierarchical key operations (`batch/job_001` creates Redis sets)
+- Timestamp-ordered listing (keys returned in creation order)
+- Token-based pagination with Redis ZRANGE
+- Hierarchical token pagination
+
+### Test Markers
+
+Integration tests are marked with `@requires_redis` which automatically skips tests if `STORAGE_REDIS_HOST` is not configured.
