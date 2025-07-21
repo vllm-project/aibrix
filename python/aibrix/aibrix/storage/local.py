@@ -244,12 +244,24 @@ class LocalStorage(BaseStorage):
             await asyncio.get_event_loop().run_in_executor(None, metadata_path.unlink)
 
     async def list_objects(
-        self, prefix: str = "", delimiter: Optional[str] = None
-    ) -> list[str]:
+        self,
+        prefix: str = "",
+        delimiter: Optional[str] = None,
+        limit: Optional[int] = None,
+        continuation_token: Optional[str] = None,
+    ) -> tuple[list[str], Optional[str]]:
         """List objects with given prefix."""
         prefix_path = self.base_path / prefix if prefix else self.base_path
 
         def _list_files():
+            # Parse continuation token as offset (default to 0)
+            offset = 0
+            if continuation_token:
+                try:
+                    offset = int(continuation_token)
+                except (ValueError, TypeError):
+                    offset = 0
+
             files = []
             if prefix_path.is_dir():
                 if delimiter:
@@ -277,7 +289,21 @@ class LocalStorage(BaseStorage):
                 # Filter out metadata files
                 if not relative_path.endswith(".metadata"):
                     files.append(relative_path)
-            return files
+
+            # Sort files for consistent pagination (by filename)
+            files.sort()
+
+            # Apply pagination
+            remaining_files = files[offset:] if offset > 0 else files
+            paginated_files = (
+                remaining_files[:limit] if limit is not None else remaining_files
+            )
+
+            # Check if there are more files for next page
+            has_more = limit is not None and len(remaining_files) > limit
+            next_token = str(offset + len(paginated_files)) if has_more else None
+
+            return paginated_files, next_token
 
         return await asyncio.get_event_loop().run_in_executor(None, _list_files)
 

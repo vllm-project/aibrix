@@ -18,6 +18,7 @@ from aibrix import envs
 
 from .base import BaseStorage, StorageConfig
 from .local import LocalStorage
+from .redis import RedisStorage
 from .s3 import S3Storage
 from .tos import TOSStorage
 from .types import StorageType
@@ -97,6 +98,20 @@ def create_storage(
             secret_key=secret_key,
             endpoint=endpoint,
             region=region,
+            config=config,
+        )
+
+    elif storage_type == StorageType.REDIS:
+        host = kwargs.get("host", "localhost")
+        port = kwargs.get("port", 6379)
+        db = kwargs.get("db", 0)
+        password = kwargs.get("password")
+
+        return RedisStorage(
+            host=host,
+            port=port,
+            db=db,
+            password=password,
             config=config,
         )
 

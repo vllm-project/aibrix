@@ -112,7 +112,7 @@ class TestLocalStorage:
             await local_storage.put_object(key, f"content of {key}")
 
         # List with delimiter - should show directories
-        result = await local_storage.list_objects("", "/")
+        result, _ = await local_storage.list_objects("", "/")
 
         # Should include files at root and directories
         dir_entries = [item for item in result if item.endswith("/")]
@@ -120,7 +120,7 @@ class TestLocalStorage:
         assert "dir2/" in dir_entries
 
         # List specific directory
-        dir1_contents = await local_storage.list_objects("dir1/", "/")
+        dir1_contents, _ = await local_storage.list_objects("dir1/", "/")
         file_entries = [item for item in dir1_contents if not item.endswith("/")]
 
         assert "dir1/file1.txt" in file_entries

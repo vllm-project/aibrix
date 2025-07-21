@@ -16,6 +16,7 @@ from .base import BaseStorage, StorageConfig
 from .factory import create_storage, create_storage_from_env
 from .local import LocalStorage
 from .reader import Reader, SizeExceededError
+from .redis import RedisStorage
 from .s3 import S3Storage
 from .tos import TOSStorage
 from .types import StorageType
@@ -28,6 +29,7 @@ __all__ = [
     "create_storage",
     "create_storage_from_env",
     "LocalStorage",
+    "RedisStorage",
     "S3Storage",
     "TOSStorage",
     "Reader",

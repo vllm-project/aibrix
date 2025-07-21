@@ -21,4 +21,5 @@ class StorageType(Enum):
     LOCAL = "local"
     S3 = "s3"
     TOS = "tos"
+    REDIS = "redis"
     AUTO = "auto"

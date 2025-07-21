@@ -145,14 +145,16 @@ class TOSStorage(BaseStorage):
         await asyncio.get_event_loop().run_in_executor(None, _delete_object)
 
     async def list_objects(
-        self, prefix: str = "", delimiter: Optional[str] = None
-    ) -> list[str]:
+        self,
+        prefix: str = "",
+        delimiter: Optional[str] = None,
+        limit: Optional[int] = None,
+        continuation_token: Optional[str] = None,
+    ) -> tuple[list[str], Optional[str]]:
         """List objects with given prefix."""
 
         def _list_objects():
             objects = []
-            marker = ""
-            is_truncated = True
 
             kwargs = {
                 "bucket": self.bucket_name,
@@ -162,41 +164,47 @@ class TOSStorage(BaseStorage):
             if delimiter:
                 kwargs["delimiter"] = delimiter
 
+            # Use native TOS continuation token (marker) for pagination
+            if continuation_token:
+                kwargs["marker"] = continuation_token
+
+            # Set max_keys for limit (TOS native pagination)
+            if limit is not None:
+                kwargs["max_keys"] = min(limit, 1000)  # TOS max is typically 1000
+
             try:
-                while is_truncated:
-                    if marker:
-                        kwargs["marker"] = marker
+                if delimiter:
+                    # Use list_objects_type2 for hierarchical listing
+                    response = self.client.list_objects_type2(**kwargs)
 
-                    if delimiter:
-                        # Use list_objects_type2 for hierarchical listing
-                        response = self.client.list_objects_type2(**kwargs)
+                    # Add files
+                    for obj in response.contents:
+                        objects.append(obj.key)
 
-                        # Add files
-                        for obj in response.contents:
-                            objects.append(obj.key)
+                    # Add "directories" (common prefixes)
+                    for prefix_info in getattr(response, "common_prefixes", []):
+                        objects.append(prefix_info.prefix)
 
-                        # Add "directories" (common prefixes)
-                        for prefix_info in getattr(response, "common_prefixes", []):
-                            objects.append(prefix_info.prefix)
+                    # Get next continuation token
+                    next_token = (
+                        response.next_continuation_token
+                        if response.is_truncated
+                        else None
+                    )
+                else:
+                    # Use list_objects for flat listing
+                    response = self.client.list_objects(**kwargs)
 
-                        is_truncated = response.is_truncated
-                        if is_truncated:
-                            marker = response.next_continuation_token
-                    else:
-                        # Use list_objects for flat listing
-                        response = self.client.list_objects(**kwargs)
+                    for obj in response.contents:
+                        objects.append(obj.key)
 
-                        for obj in response.contents:
-                            objects.append(obj.key)
-
-                        is_truncated = response.is_truncated
-                        if is_truncated:
-                            marker = response.next_marker
+                    # Get next continuation token (marker)
+                    next_token = response.next_marker if response.is_truncated else None
 
             except (TosClientError, TosServerError) as e:
                 raise ValueError(f"Failed to list objects with prefix {prefix}: {e}")
 
-            return objects
+            return objects, next_token
 
         return await asyncio.get_event_loop().run_in_executor(None, _list_objects)
 

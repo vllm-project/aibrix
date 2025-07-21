@@ -144,9 +144,13 @@ class S3Storage(BaseStorage):
         )
 
     async def list_objects(
-        self, prefix: str = "", delimiter: Optional[str] = None
-    ) -> list[str]:
-        """List objects with given prefix."""
+        self,
+        prefix: str = "",
+        delimiter: Optional[str] = None,
+        limit: Optional[int] = None,
+        continuation_token: Optional[str] = None,
+    ) -> tuple[list[str], Optional[str]]:
+        """List objects with given prefix using native S3 continuation tokens."""
 
         def _list_objects():
             kwargs = {
@@ -157,20 +161,32 @@ class S3Storage(BaseStorage):
             if delimiter:
                 kwargs["Delimiter"] = delimiter
 
+            # Use native S3 continuation token for pagination
+            if continuation_token:
+                kwargs["ContinuationToken"] = continuation_token
+
+            # Set MaxKeys for limit (S3 native pagination)
+            if limit is not None:
+                kwargs["MaxKeys"] = limit
+
             objects = []
-            paginator = self.client.get_paginator("list_objects_v2")
 
-            for page in paginator.paginate(**kwargs):
-                # Add files
-                for obj in page.get("Contents", []):
-                    objects.append(obj["Key"])
+            # Make single request with continuation token (no paginator needed)
+            response = self.client.list_objects_v2(**kwargs)
 
-                # Add "directories" (common prefixes) if using delimiter
-                if delimiter:
-                    for prefix_info in page.get("CommonPrefixes", []):
-                        objects.append(prefix_info["Prefix"])
+            # Add files
+            for obj in response.get("Contents", []):
+                objects.append(obj["Key"])
 
-            return objects
+            # Add "directories" (common prefixes) if using delimiter
+            if delimiter:
+                for prefix_info in response.get("CommonPrefixes", []):
+                    objects.append(prefix_info["Prefix"])
+
+            # Get next continuation token from response
+            next_token = response.get("NextContinuationToken")
+
+            return objects, next_token
 
         return await asyncio.get_event_loop().run_in_executor(None, _list_objects)
 

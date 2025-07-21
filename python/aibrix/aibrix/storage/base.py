@@ -104,16 +104,24 @@ class BaseStorage(ABC):
 
     @abstractmethod
     async def list_objects(
-        self, prefix: str = "", delimiter: Optional[str] = None
-    ) -> list[str]:
-        """List objects with given prefix.
+        self,
+        prefix: str = "",
+        delimiter: Optional[str] = None,
+        limit: Optional[int] = None,
+        continuation_token: Optional[str] = None,
+    ) -> tuple[list[str], Optional[str]]:
+        """List objects with given prefix using token-based pagination.
 
         Args:
             prefix: Key prefix to filter objects
             delimiter: Delimiter for hierarchical listing
+            limit: Maximum number of objects to return (None for no limit)
+            continuation_token: Token to continue from previous pagination call
 
         Returns:
-            List of object keys
+            Tuple of (object_keys, next_continuation_token)
+            - object_keys: List of object keys
+            - next_continuation_token: Token for next page (None if no more pages)
         """
         pass
 
@@ -473,7 +481,7 @@ class BaseStorage(ABC):
         prefix = f".multipart/{upload_id}/"
 
         try:
-            objects_to_delete = await self.list_objects(prefix)
+            objects_to_delete, _ = await self.list_objects(prefix)
 
             # Delete all related objects
             for obj_key in objects_to_delete:
