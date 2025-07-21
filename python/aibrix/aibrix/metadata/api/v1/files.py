@@ -65,6 +65,27 @@ class FileObject(NoExtraBaseModel):
     status: FileStatus = Field(description="The current status of the file")
 
 
+class FileMetadata(NoExtraBaseModel):
+    """File metadata response model for head_object operations."""
+
+    id: str = Field(description="The file identifier")
+    object: str = Field(
+        default="file", description="The object type, which is always 'file'"
+    )
+    bytes: int = Field(description="The size of the file in bytes")
+    created_at: int = Field(description="The Unix timestamp when the file was created")
+    filename: str = Field(description="The name of the file")
+    purpose: Optional[FilePurpose] = Field(
+        description="The intended purpose of the file"
+    )
+    status: FileStatus = Field(description="The current status of the file")
+    content_type: Optional[str] = Field(description="The MIME type of the file")
+    etag: Optional[str] = Field(description="The entity tag for the file")
+    last_modified: Optional[int] = Field(
+        description="Unix timestamp of last modification"
+    )
+
+
 class FileError(NoExtraBaseModel):
     """Error response model."""
 
@@ -212,4 +233,180 @@ async def retrieve_file_content(request: Request, file_id: str) -> Response:
             error=str(storage_error),
         )  # type: ignore[call-arg]
         error_response = _create_error_response("Failed to retrieve file content")
+        raise HTTPException(status_code=500, detail=error_response)
+
+
+@router.get("/{file_id}")
+async def retrieve_file_metadata(request: Request, file_id: str) -> FileMetadata:
+    """Returns the metadata of the specified file without downloading the content.
+
+    This endpoint provides file information including size, content type, creation time,
+    and other metadata without transferring the actual file content.
+    """
+    try:
+        storage: BaseStorage = request.app.state.storage
+
+        # Get file metadata using head_object
+        head_object = await storage.head_object(file_id)
+
+        # Extract metadata from the stored object
+        metadata = head_object.metadata or {}
+
+        # Get creation timestamp from metadata or use last_modified as fallback
+        created_at = None
+        if "created_at" in metadata:
+            try:
+                created_at = int(metadata["created_at"])
+            except (ValueError, TypeError):
+                pass
+
+        # Fallback to last_modified if created_at is not available
+        if created_at is None and head_object.last_modified:
+            created_at = int(head_object.last_modified.timestamp())
+
+        # Default created_at if still None
+        if created_at is None:
+            created_at = int(time.time())
+
+        # Get filename from metadata or generate from file_id
+        filename = metadata.get(
+            "filename", generate_filename(file_id, head_object.content_type, metadata)
+        )
+
+        # Get purpose from metadata (may be None)
+        purpose = None
+        if "purpose" in metadata:
+            try:
+                purpose = FilePurpose(metadata["purpose"])
+            except ValueError:
+                # Invalid purpose, leave as None
+                pass
+
+        # Get last_modified timestamp
+        last_modified = None
+        if head_object.last_modified:
+            last_modified = int(head_object.last_modified.timestamp())
+
+        logger.info(
+            "File metadata retrieved",
+            file_id=file_id,
+            filename=filename,
+            content_type=head_object.content_type,
+            size_bytes=head_object.content_length,
+        )  # type: ignore[call-arg]
+
+        return FileMetadata(
+            id=file_id,
+            bytes=head_object.content_length,
+            created_at=created_at,
+            filename=filename,
+            purpose=purpose,
+            status=FileStatus.UPLOADED,  # For now, assume all files are uploaded
+            content_type=head_object.content_type,
+            etag=head_object.etag or None,
+            last_modified=last_modified,
+        )
+
+    except FileNotFoundError:
+        logger.error(
+            "File not found in storage",
+            file_id=file_id,
+        )  # type: ignore[call-arg]
+        error_response = _create_error_response("File not found")
+        raise HTTPException(status_code=404, detail=error_response)
+    except Exception as storage_error:
+        logger.error(
+            "Failed to retrieve file metadata from storage",
+            file_id=file_id,
+            error=str(storage_error),
+        )  # type: ignore[call-arg]
+        error_response = _create_error_response("Failed to retrieve file metadata")
+        raise HTTPException(status_code=500, detail=error_response)
+
+
+@router.head("/{file_id}")
+async def head_file_metadata(request: Request, file_id: str) -> Response:
+    """Returns the metadata headers of the specified file without downloading the content.
+
+    This endpoint provides file information in HTTP headers following HTTP HEAD semantics.
+    The response contains no body but includes metadata in headers.
+    """
+    try:
+        storage: BaseStorage = request.app.state.storage
+
+        # Get file metadata using head_object
+        head_object = await storage.head_object(file_id)
+
+        # Extract metadata from the stored object
+        metadata = head_object.metadata or {}
+
+        # Get creation timestamp from metadata or use last_modified as fallback
+        created_at = None
+        if "created_at" in metadata:
+            try:
+                created_at = int(metadata["created_at"])
+            except (ValueError, TypeError):
+                pass
+
+        # Fallback to last_modified if created_at is not available
+        if created_at is None and head_object.last_modified:
+            created_at = int(head_object.last_modified.timestamp())
+
+        # Default created_at if still None
+        if created_at is None:
+            created_at = int(time.time())
+
+        # Get filename from metadata or generate from file_id
+        filename = metadata.get(
+            "filename", generate_filename(file_id, head_object.content_type, metadata)
+        )
+
+        # Build response headers with metadata
+        headers = {
+            "Content-Length": str(head_object.content_length),
+            "X-File-ID": file_id,
+            "X-File-Name": filename,
+            "X-File-Created-At": str(created_at),
+            "X-File-Status": FileStatus.UPLOADED.value,
+        }
+
+        # Add optional headers
+        if head_object.content_type:
+            headers["Content-Type"] = head_object.content_type
+
+        if head_object.etag:
+            headers["ETag"] = head_object.etag
+
+        if head_object.last_modified:
+            headers["Last-Modified"] = head_object.last_modified.strftime(
+                "%a, %d %b %Y %H:%M:%S GMT"
+            )
+
+        if "purpose" in metadata:
+            headers["X-File-Purpose"] = metadata["purpose"]
+
+        logger.info(
+            "File metadata headers retrieved",
+            file_id=file_id,
+            filename=filename,
+            content_type=head_object.content_type,
+            size_bytes=head_object.content_length,
+        )  # type: ignore[call-arg]
+
+        return Response(headers=headers, status_code=200)
+
+    except FileNotFoundError:
+        logger.error(
+            "File not found in storage",
+            file_id=file_id,
+        )  # type: ignore[call-arg]
+        error_response = _create_error_response("File not found")
+        raise HTTPException(status_code=404, detail=error_response)
+    except Exception as storage_error:
+        logger.error(
+            "Failed to retrieve file metadata from storage",
+            file_id=file_id,
+            error=str(storage_error),
+        )  # type: ignore[call-arg]
+        error_response = _create_error_response("Failed to retrieve file metadata")
         raise HTTPException(status_code=500, detail=error_response)
