@@ -45,6 +45,7 @@ var (
 		metrics.AvgGenerationThroughputToksPerS,
 		metrics.GPUCacheUsagePerc,
 		metrics.CPUCacheUsagePerc,
+		metrics.GPUBusyTimeRatio,
 	}
 
 	// histogram metric example - time_to_first_token_seconds, _sum, _bucket _count.

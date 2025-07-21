@@ -277,9 +277,22 @@ var (
 				Raw: Counter,
 			},
 			RawMetricNameMapping: map[string]string{
-				"vllm": "vllm:gpu_cache_usage_perc",
+				"vllm":   "vllm:gpu_cache_usage_perc",
+				"sglang": "sglang:token_usage",
+				"xllm":   "kv_cache_utilization",
 			},
 			Description: "GPU cache usage percentage",
+		},
+		GPUBusyTimeRatio: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			RawMetricNameMapping: map[string]string{
+				"xllm": "engine_utilization",
+			},
+			Description: "GPU busy time ratio",
 		},
 		CPUCacheUsagePerc: {
 			MetricScope:  PodModelMetricScope,
