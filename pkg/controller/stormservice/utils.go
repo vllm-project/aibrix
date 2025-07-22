@@ -19,6 +19,8 @@ package stormservice
 import (
 	"sort"
 
+	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -223,4 +225,11 @@ func sortRoleSetByRevision(roleSets []*orchestrationv1alpha1.RoleSet, updatedRev
 			return !utils.IsRoleSetReady(roleSets[i])
 		}
 	})
+}
+
+// isServiceEqual compares two Kubernetes Service objects for equality
+func isServiceEqual(a, b *corev1.Service) bool {
+	return a.Spec.Type == b.Spec.Type &&
+		apiequality.Semantic.DeepEqual(a.Spec.Selector, b.Spec.Selector) &&
+		a.Spec.ClusterIP == b.Spec.ClusterIP
 }
