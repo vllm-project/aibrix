@@ -144,11 +144,12 @@ func (r *RoleSetReconciler) calculateStatusForRole(ctx context.Context, rs *orch
 	}
 	pods = filterRolePods(role, pods)
 	pods, _ = filterActivePods(pods)
-	readyReplicas := GetReadyReplicaCountForRole(pods)
+	podGroupSize := getRolePodGroupSize(role)
+	readyReplicas := GetReadyReplicaCountForRole(pods) / int32(podGroupSize)
 	updated, _ := filterUpdatedPods(pods, ctrlutil.ComputeHash(&role.Template, nil))
-	updatedReplicas := len(updated)
-	updatedReadyReplicas := GetReadyReplicaCountForRole(updated)
-	totalReplicas := len(pods)
+	updatedReplicas := len(updated) / podGroupSize
+	updatedReadyReplicas := GetReadyReplicaCountForRole(updated) / int32(podGroupSize)
+	totalReplicas := len(pods) / podGroupSize
 	notReadyReplicas := totalReplicas - int(readyReplicas)
 	return &orchestrationv1alpha1.RoleStatus{
 		Name:                 role.Name,
