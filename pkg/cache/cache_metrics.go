@@ -34,6 +34,7 @@ const (
 	MetricPortLabel                     = "model.aibrix.ai/metric-port"
 	defaultPodMetricRefreshIntervalInMS = 50
 	engineLabel                         = "model.aibrix.ai/engine"
+	defaultEngineLabel                  = "vllm"
 )
 
 var (
@@ -334,22 +335,22 @@ func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Met
 func (c *Store) fetchMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily, labelMetricName string) (*dto.MetricFamily, bool) {
 	metric, exists := metrics.Metrics[labelMetricName]
 	if !exists {
-		klog.V(4).Infof("Cannot find %v in the metric list", labelMetricName)
+		klog.V(4).Infof("Cannot find labelMetricName %v in collected metrics names", labelMetricName)
 		return nil, false
 	}
 	engineType, ok := pod.Labels[engineLabel]
 	if !ok {
-		klog.V(4).InfoS("No engine label, default to vllm", "name", pod.Name)
-		engineType = "vllm"
+		klog.V(4).Infof("No engine label pod %v, default to %v", pod.Name, defaultEngineLabel)
+		engineType = defaultEngineLabel
 	}
 	rawMetricName, ok := metric.RawMetricNameMapping[engineType]
 	if !ok {
-		klog.V(4).Infof("Cannot find %v in the metric list, engine type %v", labelMetricName, engineType)
+		klog.V(4).Infof("Cannot find engine type %v mapping for metrics %v", engineType, labelMetricName)
 		return nil, false
 	}
 	metricFamily, exists := allMetrics[rawMetricName]
 	if !exists {
-		klog.V(4).Infof("Cannot find raw metrics name %v, engine type %v", rawMetricName, engineType)
+		klog.V(4).Infof("Cannot find raw metrics %v, engine type %v", rawMetricName, engineType)
 		return nil, false
 	}
 	return metricFamily, true
