@@ -134,7 +134,7 @@ var (
 			},
 			RawMetricNameMapping: map[string]string{
 				"vllm":   "vllm:time_to_first_token_seconds",
-				"sglang": "vllm:sglang:time_to_first_token_seconds",
+				"sglang": "sglang:time_to_first_token_seconds",
 			},
 			Description: "Time to first token in seconds",
 		},
