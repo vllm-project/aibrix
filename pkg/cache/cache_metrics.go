@@ -1,6 +1,5 @@
 /*
 Copyright 2024 The Aibrix Team.
-
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
@@ -18,6 +17,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
@@ -28,7 +28,10 @@ import (
 )
 
 const (
-	podPort                             = 8000
+	defaultMetricPort = 8000
+	// When the engine's HTTP proxy is separated from the engine itself,
+	// the request port and metrics port may differ, so a dedicated metrics port is required.
+	MetricPortLabel                     = "model.aibrix.ai/metric-port"
 	defaultPodMetricRefreshIntervalInMS = 50
 )
 
@@ -130,8 +133,9 @@ func (c *Store) updatePodMetrics() {
 func (c *Store) worker(jobs <-chan *Pod) {
 	for pod := range jobs {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		// We should use the primary container port. In the future, we can decide whether to use sidecar container's port
-		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, podPort)
+		//Use the value of the "model.aibrix.ai/metric-port" label as the metrics port.
+		podMetricPort := getPodMetricPort(pod)
+		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, podMetricPort)
 		allMetrics, err := metrics.ParseMetricsURLWithContext(ctx, url)
 		if err != nil {
 			klog.V(4).Infof("Error parsing metric families: %v\n", err)
@@ -160,6 +164,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 
 func (c *Store) updateSimpleMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
 	podName := pod.Name
+	podMetricPort := getPodMetricPort(pod)
 	for _, metricName := range counterGaugeMetricNames {
 		metric, exists := metrics.Metrics[metricName]
 		if !exists {
@@ -179,23 +184,24 @@ func (c *Store) updateSimpleMetricFromRawMetrics(pod *Pod, allMetrics map[string
 
 			metricValue, err := metrics.GetCounterGaugeValue(familyMetric, metricFamily.GetType())
 			if err != nil {
-				klog.V(4).Infof("failed to parse metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
+				klog.V(4).Infof("failed to parse metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podMetricPort, err)
 				continue
 			}
 
 			err = c.updatePodRecord(pod, modelName, metricName, scope, &metrics.SimpleMetricValue{Value: metricValue})
 			if err != nil {
-				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
+				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podMetricPort, err)
 				continue
 			}
 
-			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
+			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podMetricPort, "metricValue", metricValue)
 		}
 	}
 }
 
 func (c *Store) updateHistogramMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
 	podName := pod.Name
+	podMetricPort := getPodMetricPort(pod)
 	for _, metricName := range histogramMetricNames {
 		metric, exists := metrics.Metrics[metricName]
 		if !exists {
@@ -213,7 +219,7 @@ func (c *Store) updateHistogramMetricFromRawMetrics(pod *Pod, allMetrics map[str
 			modelName, _ := metrics.GetLabelValueForKey(familyMetric, "model_name")
 			metricValue, err := metrics.GetHistogramValue(familyMetric)
 			if err != nil {
-				klog.V(4).Infof("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podPort, err)
+				klog.V(4).Infof("failed to parse metrics %s from pod %s %s %d: %v", metricName, pod.Name, pod.Status.PodIP, podMetricPort, err)
 				continue
 			}
 
@@ -224,17 +230,18 @@ func (c *Store) updateHistogramMetricFromRawMetrics(pod *Pod, allMetrics map[str
 			}
 			err = c.updatePodRecord(pod, modelName, metricName, scope, histogramValue)
 			if err != nil {
-				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
+				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podMetricPort, err)
 				continue
 			}
 
-			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", metricValue)
+			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podMetricPort, "metricValue", metricValue)
 
 		}
 	}
 }
 
 func (c *Store) updateQueryLabelMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
+	podMetricPort := getPodMetricPort(pod)
 	for _, labelMetricName := range labelQueryMetricNames {
 		metric, exists := metrics.Metrics[labelMetricName]
 		if !exists {
@@ -253,21 +260,21 @@ func (c *Store) updateQueryLabelMetricFromRawMetrics(pod *Pod, allMetrics map[st
 			labelValue, _ := metrics.GetLabelValueForKey(familyMetric, labelMetricName)
 			err := c.updatePodRecord(pod, modelName, labelMetricName, scope, &metrics.LabelValueMetricValue{Value: labelValue})
 			if err != nil {
-				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", labelMetricName, pod.Name, pod.Status.PodIP, podPort, err)
+				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", labelMetricName, pod.Name, pod.Status.PodIP, podMetricPort, err)
 				continue
 			}
 
-			klog.V(5).InfoS("Successfully parsed metrics", "metric", labelMetricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podPort, "metricValue", labelValue)
+			klog.V(5).InfoS("Successfully parsed metrics", "metric", labelMetricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podMetricPort, "metricValue", labelValue)
 		}
 	}
 }
 
 func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 	podName := pod.Name
-
+	podMetricPort := getPodMetricPort(pod)
 	for _, metricName := range prometheusMetricNames {
 		queryLabels := map[string]string{
-			"instance": fmt.Sprintf("%s:%d", pod.Status.PodIP, podPort),
+			"instance": fmt.Sprintf("%s:%d", pod.Status.PodIP, podMetricPort),
 		}
 		metric, ok := metrics.Metrics[metricName]
 		if !ok {
@@ -276,7 +283,7 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 		}
 		scope := metric.MetricScope
 		if scope == metrics.PodMetricScope {
-			err := c.queryUpdatePromQLMetrics(ctx, metric, queryLabels, pod, "", metricName)
+			err := c.queryUpdatePromQLMetrics(ctx, metric, queryLabels, pod, "", metricName, podMetricPort)
 			if err != nil {
 				klog.V(4).Infof("Failed to query and update PromQL metrics: %v", err)
 				continue
@@ -285,7 +292,7 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 			if pod.Models.Len() > 0 {
 				for _, modelName := range pod.Models.Array() {
 					queryLabels["model_name"] = modelName
-					err := c.queryUpdatePromQLMetrics(ctx, metric, queryLabels, pod, modelName, metricName)
+					err := c.queryUpdatePromQLMetrics(ctx, metric, queryLabels, pod, modelName, metricName, podMetricPort)
 					if err != nil {
 						klog.V(4).Infof("Failed to query and update PromQL metrics: %v", err)
 						continue
@@ -300,7 +307,7 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 	}
 }
 
-func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Metric, queryLabels map[string]string, pod *Pod, modelName string, metricName string) error {
+func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Metric, queryLabels map[string]string, pod *Pod, modelName string, metricName string, podMetricPort int) error {
 	scope := metric.MetricScope
 	query := metrics.BuildQuery(metric.PromQL, queryLabels)
 	// Querying metrics
@@ -319,7 +326,7 @@ func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Met
 	if err != nil {
 		return fmt.Errorf("failed to update metrics %s from prometheus %s: %v", metricName, pod.Name, err)
 	}
-	klog.V(5).InfoS("Successfully parsed metrics from prometheus", "metric", metricName, "model", modelName, "PodName", pod.Name, "Port", podPort, "metricValue", metricValue)
+	klog.V(5).InfoS("Successfully parsed metrics from prometheus", "metric", metricName, "model", modelName, "PodName", pod.Name, "Port", podMetricPort, "metricValue", metricValue)
 	return nil
 }
 
@@ -358,4 +365,18 @@ func (c *Store) aggregateMetrics() {
 			}
 		}
 	}
+}
+
+func getPodMetricPort(pod *Pod) int {
+	if pod == nil || pod.Labels == nil {
+		return defaultMetricPort
+	}
+	if v, ok := pod.Labels[MetricPortLabel]; ok && v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			return p
+		} else {
+			klog.Warningf("Invalid value for label %s on pod %s/%s: %q. Using default port %d.", MetricPortLabel, pod.Namespace, pod.Name, v, defaultMetricPort)
+		}
+	}
+	return defaultMetricPort
 }
