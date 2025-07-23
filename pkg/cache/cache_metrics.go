@@ -34,7 +34,10 @@ const (
 	MetricPortLabel                     = "model.aibrix.ai/metric-port"
 	defaultPodMetricRefreshIntervalInMS = 50
 	engineLabel                         = "model.aibrix.ai/engine"
+	portLabel                           = "model.aibrix.ai/port"
+	modelLabel                          = "model.aibrix.ai/name"
 	defaultEngineLabel                  = "vllm"
+	defaultModelName                    = ""
 )
 
 var (
@@ -237,7 +240,6 @@ func (c *Store) updateHistogramMetricFromRawMetrics(pod *Pod, allMetrics map[str
 			}
 
 			klog.V(5).InfoS("Successfully parsed metrics", "metric", metricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podMetricPort, "metricValue", metricValue)
-
 		}
 	}
 }
@@ -338,11 +340,7 @@ func (c *Store) fetchMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily, 
 		klog.V(4).Infof("Cannot find labelMetricName %v in collected metrics names", labelMetricName)
 		return nil, false
 	}
-	engineType, ok := pod.Labels[engineLabel]
-	if !ok {
-		klog.V(4).Infof("No engine label pod %v, default to %v", pod.Name, defaultEngineLabel)
-		engineType = defaultEngineLabel
-	}
+	engineType := getPodLabel(pod, engineLabel, defaultEngineLabel)
 	rawMetricName, ok := metric.RawMetricNameMapping[engineType]
 	if !ok {
 		klog.V(4).Infof("Cannot find engine type %v mapping for metrics %v", engineType, labelMetricName)
@@ -363,7 +361,10 @@ func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, s
 		pod.Metrics.Store(metricName, metricValue)
 	} else if scope == metrics.PodModelMetricScope {
 		if modelName == "" {
-			return fmt.Errorf("modelName should not be empty for scope %v", scope)
+			modelName = getPodLabel(pod, modelLabel, defaultModelName)
+			if modelName == "" {
+				return fmt.Errorf("modelName should not be empty for scope %v", scope)
+			}
 		}
 		pod.ModelMetrics.Store(c.getPodModelMetricName(modelName, metricName), metricValue)
 	} else {
@@ -405,4 +406,13 @@ func getPodMetricPort(pod *Pod) int {
 		}
 	}
 	return defaultMetricPort
+}
+
+func getPodLabel(pod *Pod, labelName string, defaultValue string) string {
+	labelTarget, ok := pod.Labels[labelName]
+	if !ok {
+		klog.V(4).Infof("No label %v name for pod %v, default to %v", labelName, pod.Name, defaultEngineLabel)
+		return defaultValue
+	}
+	return labelTarget
 }
