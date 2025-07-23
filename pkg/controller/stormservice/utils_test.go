@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
+	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
@@ -784,4 +785,322 @@ func TestIsAllRoleUpdatedAndReady(t *testing.T) {
 
 func int32Ptr(i int32) *int32 {
 	return &i
+}
+
+func TestFilterRoleSetByRevision(t *testing.T) {
+	tests := []struct {
+		name      string
+		roleSets  []*orchestrationv1alpha1.RoleSet
+		revision  string
+		wantMatch []*orchestrationv1alpha1.RoleSet
+		wantNot   []*orchestrationv1alpha1.RoleSet
+	}{
+		{
+			name:      "empty input",
+			roleSets:  []*orchestrationv1alpha1.RoleSet{},
+			revision:  "rev1",
+			wantMatch: []*orchestrationv1alpha1.RoleSet{},
+			wantNot:   []*orchestrationv1alpha1.RoleSet{},
+		},
+		{
+			name: "all match",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{constants.StormServiceRevisionLabelKey: "rev1"},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{constants.StormServiceRevisionLabelKey: "rev1"},
+					},
+				},
+			},
+			revision: "rev1",
+			wantMatch: []*orchestrationv1alpha1.RoleSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{constants.StormServiceRevisionLabelKey: "rev1"},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{constants.StormServiceRevisionLabelKey: "rev1"},
+					},
+				},
+			},
+			wantNot: []*orchestrationv1alpha1.RoleSet{},
+		},
+		{
+			name: "none match",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{constants.StormServiceRevisionLabelKey: "rev2"},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{constants.StormServiceRevisionLabelKey: "rev3"},
+					},
+				},
+			},
+			revision:  "rev1",
+			wantMatch: []*orchestrationv1alpha1.RoleSet{},
+			wantNot: []*orchestrationv1alpha1.RoleSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{constants.StormServiceRevisionLabelKey: "rev2"},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{constants.StormServiceRevisionLabelKey: "rev3"},
+					},
+				},
+			},
+		},
+		{
+			name: "mixed match",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{constants.StormServiceRevisionLabelKey: "rev1"},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{constants.StormServiceRevisionLabelKey: "rev2"},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{constants.StormServiceRevisionLabelKey: "rev1"},
+					},
+				},
+			},
+			revision: "rev1",
+			wantMatch: []*orchestrationv1alpha1.RoleSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{constants.StormServiceRevisionLabelKey: "rev1"},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{constants.StormServiceRevisionLabelKey: "rev1"},
+					},
+				},
+			},
+			wantNot: []*orchestrationv1alpha1.RoleSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{constants.StormServiceRevisionLabelKey: "rev2"},
+					},
+				},
+			},
+		},
+		{
+			name: "no revision label",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{"other": "label"},
+					},
+				},
+			},
+			revision:  "rev1",
+			wantMatch: []*orchestrationv1alpha1.RoleSet{},
+			wantNot: []*orchestrationv1alpha1.RoleSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{"other": "label"},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotMatch, gotNot := filterRoleSetByRevision(tt.roleSets, tt.revision)
+			assert.Equal(t, tt.wantMatch, gotMatch)
+			assert.Equal(t, tt.wantNot, gotNot)
+		})
+	}
+}
+
+func TestFilterReadyRoleSets(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []*orchestrationv1alpha1.RoleSet
+		expected struct {
+			ready    int
+			notReady int
+		}
+	}{
+		{
+			name: "all ready role sets",
+			input: []*orchestrationv1alpha1.RoleSet{
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Conditions: orchestrationv1alpha1.Conditions{
+							{
+								Type:   orchestrationv1alpha1.RoleSetReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				},
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Conditions: orchestrationv1alpha1.Conditions{
+							{
+								Type:   orchestrationv1alpha1.RoleSetReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				},
+			},
+			expected: struct {
+				ready    int
+				notReady int
+			}{ready: 2, notReady: 0},
+		},
+		{
+			name: "all not ready role sets",
+			input: []*orchestrationv1alpha1.RoleSet{
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Conditions: orchestrationv1alpha1.Conditions{
+							{
+								Type:   orchestrationv1alpha1.RoleSetReady,
+								Status: corev1.ConditionFalse,
+							},
+						},
+					},
+				},
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Conditions: orchestrationv1alpha1.Conditions{
+							{
+								Type:   orchestrationv1alpha1.RoleSetReady,
+								Status: corev1.ConditionFalse,
+							},
+						},
+					},
+				},
+			},
+			expected: struct {
+				ready    int
+				notReady int
+			}{ready: 0, notReady: 2},
+		},
+		{
+			name: "mixed ready and not ready role sets",
+			input: []*orchestrationv1alpha1.RoleSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "ready-1"},
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Conditions: orchestrationv1alpha1.Conditions{
+							{
+								Type:   orchestrationv1alpha1.RoleSetReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "not-ready-1"},
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Conditions: orchestrationv1alpha1.Conditions{
+							{
+								Type:   orchestrationv1alpha1.RoleSetReady,
+								Status: corev1.ConditionFalse,
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "ready-2"},
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Conditions: orchestrationv1alpha1.Conditions{
+							{
+								Type:   orchestrationv1alpha1.RoleSetReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				},
+			},
+			expected: struct {
+				ready    int
+				notReady int
+			}{ready: 2, notReady: 1},
+		},
+		{
+			name:  "empty input",
+			input: []*orchestrationv1alpha1.RoleSet{},
+			expected: struct {
+				ready    int
+				notReady int
+			}{ready: 0, notReady: 0},
+		},
+		{
+			name: "nil input counts as notReady",
+			input: []*orchestrationv1alpha1.RoleSet{
+				nil,
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Conditions: orchestrationv1alpha1.Conditions{
+							{
+								Type:   orchestrationv1alpha1.RoleSetReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				},
+			},
+			expected: struct {
+				ready    int
+				notReady int
+			}{ready: 1, notReady: 1},
+		},
+		{
+			name: "type is not RoleSetReady but condition True",
+			input: []*orchestrationv1alpha1.RoleSet{
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Conditions: orchestrationv1alpha1.Conditions{
+							{
+								Type:   orchestrationv1alpha1.RoleSetReplicaFailure,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				},
+			},
+			expected: struct {
+				ready    int
+				notReady int
+			}{ready: 0, notReady: 1},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ready, notReady := filterReadyRoleSets(tt.input)
+			assert.Equal(t, tt.expected.ready, len(ready))
+			assert.Equal(t, tt.expected.notReady, len(notReady))
+
+			// Verify the actual ready status of returned role sets
+			for _, rs := range ready {
+				assert.True(t, utils.IsRoleSetReady(rs))
+			}
+			for _, rs := range notReady {
+				assert.False(t, utils.IsRoleSetReady(rs))
+			}
+		})
+	}
 }

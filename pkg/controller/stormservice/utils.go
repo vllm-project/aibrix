@@ -176,6 +176,8 @@ func isAllRoleUpdatedAndReady(roleSet *orchestrationv1alpha1.RoleSet) bool {
 }
 
 func filterRoleSetByRevision(roleSets []*orchestrationv1alpha1.RoleSet, revision string) (match, notMatch []*orchestrationv1alpha1.RoleSet) {
+	match = []*orchestrationv1alpha1.RoleSet{}
+	notMatch = []*orchestrationv1alpha1.RoleSet{}
 	for i := range roleSets {
 		if isRoleSetMatchRevision(roleSets[i], revision) {
 			match = append(match, roleSets[i])
@@ -187,6 +189,8 @@ func filterRoleSetByRevision(roleSets []*orchestrationv1alpha1.RoleSet, revision
 }
 
 func filterReadyRoleSets(roleSets []*orchestrationv1alpha1.RoleSet) (ready []*orchestrationv1alpha1.RoleSet, notReady []*orchestrationv1alpha1.RoleSet) {
+	ready = []*orchestrationv1alpha1.RoleSet{}
+	notReady = []*orchestrationv1alpha1.RoleSet{}
 	for i := range roleSets {
 		if utils.IsRoleSetReady(roleSets[i]) {
 			ready = append(ready, roleSets[i])
@@ -198,6 +202,8 @@ func filterReadyRoleSets(roleSets []*orchestrationv1alpha1.RoleSet) (ready []*or
 }
 
 func filterTerminatingRoleSets(roleSets []*orchestrationv1alpha1.RoleSet) (active, terminating []*orchestrationv1alpha1.RoleSet) {
+	terminating = []*orchestrationv1alpha1.RoleSet{}
+	active = []*orchestrationv1alpha1.RoleSet{}
 	for i := range roleSets {
 		if roleSets[i].DeletionTimestamp != nil {
 			terminating = append(terminating, roleSets[i])
