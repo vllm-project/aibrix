@@ -41,13 +41,17 @@ import (
 )
 
 var (
-	grpcAddr    string
-	metricsAddr string
+	grpcAddr        string
+	metricsAddr     string
+	forwardBatchAPI bool
+	forwardFilesAPI bool
 )
 
 func main() {
 	flag.StringVar(&grpcAddr, "grpc-bind-address", ":50052", "The address the gRPC server binds to.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
+	flag.BoolVar(&forwardBatchAPI, "forward-batch-api", false, "Enable forwarding of /v1/batches API to metadata service")
+	flag.BoolVar(&forwardFilesAPI, "forward-files-api", false, "Enable forwarding of /v1/files API to metadata service")
 	klog.InitFlags(flag.CommandLine)
 	defer klog.Flush()
 	flag.Parse()
@@ -94,7 +98,18 @@ func main() {
 		klog.Fatalf("Error on creating gateway k8s client: %v", err)
 	}
 
-	gatewayServer := gateway.NewServer(redisClient, k8sClient, gatewayK8sClient)
+	// Build API forwarding configuration
+
+	metadataServiceURL := utils.LoadEnv("METADATA_SERVICE_URL",
+		"http://aibrix-extend-api.aibrix-system.svc.cluster.local:8100")
+	forwardingConfig := make(map[string]string)
+	if forwardBatchAPI {
+		forwardingConfig["/v1/batches"] = metadataServiceURL
+	}
+	if forwardFilesAPI {
+		forwardingConfig["/v1/files"] = metadataServiceURL
+	}
+	gatewayServer := gateway.NewServer(redisClient, k8sClient, gatewayK8sClient, forwardingConfig)
 
 	if err := gatewayServer.StartMetricsServer(metricsAddr); err != nil {
 		klog.Fatalf("Failed to start metrics server: %v", err)

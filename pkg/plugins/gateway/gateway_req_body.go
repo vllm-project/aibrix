@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"k8s.io/klog/v2"
 
@@ -34,6 +35,30 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, reques
 	user utils.User, routingAlgorithm types.RoutingAlgorithm) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
 	var routingCtx *types.RoutingContext
 	var term int64 // Identify the trace window
+
+	// Check if this is a continued streaming request - if so, skip path check
+	if forwardReq, shouldForward := s.activeForwards.Load(requestID); shouldForward {
+		if forwardReq.writer != nil {
+			klog.InfoS("continuing streaming forward request", "requestID", requestID, "phase", forwardReq.phase)
+			return s.continueForward(ctx, requestID, req, forwardReq), "", routingCtx, false, term
+		}
+
+		klog.InfoS("forward request to extend API server", "requestID", requestID, "requestPath", forwardReq.targetURL, "httpMethod", forwardReq.httpMethod)
+
+		// Check if this should use streaming for large file uploads
+		body := req.Request.(*extProcPb.ProcessingRequest_RequestBody)
+		requestBody := body.RequestBody.GetBody()
+
+		// Use streaming for multipart/form-data (file uploads) or large payloads
+		checkSize := 1024
+		if len(requestBody) < checkSize {
+			checkSize = len(requestBody)
+		}
+		shouldUseStreaming := len(requestBody) > 1024*1024 || // > 1MB
+			strings.Contains(string(requestBody[:checkSize]), "multipart/form-data")
+
+		return s.forwardRequest(ctx, requestID, req, forwardReq, shouldUseStreaming), "", routingCtx, false, term
+	}
 
 	body := req.Request.(*extProcPb.ProcessingRequest_RequestBody)
 	model, message, stream, errRes := validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)

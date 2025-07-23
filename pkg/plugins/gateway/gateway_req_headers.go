@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"net/url"
 	"strings"
 
 	"k8s.io/klog/v2"
@@ -30,8 +31,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, types.RoutingAlgorithm, string) {
-	var username, requestPath string
+func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, types.RoutingAlgorithm, string, string) {
+	var httpMethod, requestPath, targetURL, contentType, username, routingStrategy string
 	var user utils.User
 	var rpm int64
 	var err error
@@ -40,18 +41,46 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	h := req.Request.(*extProcPb.ProcessingRequest_RequestHeaders)
 	for _, n := range h.RequestHeaders.Headers.Headers {
 		// klog.InfoS("", "key", n.Key, "value", n.RawValue)
-		if strings.ToLower(n.Key) == "user" {
-			username = string(n.RawValue)
-		}
-		if strings.ToLower(n.Key) == "x-request-id" {
-			requestID = string(n.RawValue)
-		}
-		if strings.ToLower(n.Key) == ":path" {
+		switch strings.ToLower(n.Key) {
+		case ":path":
 			requestPath = string(n.RawValue)
+			continue
+		case ":method":
+			httpMethod = string(n.RawValue)
+			continue
+		case "content-type":
+			contentType = string(n.RawValue)
+		case "user":
+			username = string(n.RawValue)
+		case "x-request-id":
+			requestID = string(n.RawValue)
+		case HeaderRoutingStrategy:
+			routingStrategy = string(n.RawValue)
 		}
+		// Do anything in common
 	}
 
-	routingStrategy, routingStrategyEnabled := getRoutingStrategy(h.RequestHeaders.Headers.Headers)
+	// Check for if forward needed based on configuration
+	shouldForward := false
+	for prefix, forwardingAddr := range s.forwardingConfig {
+		if strings.HasPrefix(requestPath, prefix) {
+			shouldForward = true
+			targetURL, _ = url.JoinPath(forwardingAddr, requestPath)
+			break
+		}
+	}
+	if shouldForward {
+		fowardingRequest := &forwardingRequest{
+			requestID:   requestID,
+			targetURL:   targetURL,
+			httpMethod:  httpMethod,
+			contentType: contentType,
+			phase:       forwardPreparing,
+		}
+		s.activeForwards.Store(requestID, fowardingRequest)
+	}
+
+	routingStrategy, routingStrategyEnabled := validateRoutingStrategy(routingStrategy)
 	routingAlgorithm, ok := routing.Validate(routingStrategy)
 	if routingStrategyEnabled && !ok {
 		klog.ErrorS(nil, "incorrect routing strategy", "requestID", requestID, "routing-strategy", routingStrategy)
@@ -59,7 +88,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorInvalidRouting, RawValue: []byte(routingStrategy),
-			}}}, "incorrect routing strategy"), utils.User{}, rpm, routingAlgorithm, requestPath
+			}}}, "incorrect routing strategy"), utils.User{}, rpm, routingAlgorithm, requestPath, requestID
 	}
 
 	if username != "" {
@@ -71,13 +100,13 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: HeaderErrorUser, RawValue: []byte("true"),
 				}}},
-				err.Error()), utils.User{}, rpm, routingAlgorithm, requestPath
+				err.Error()), utils.User{}, rpm, routingAlgorithm, requestPath, requestID
 		}
 
 		rpm, errRes, err = s.checkLimits(ctx, user)
 		if errRes != nil {
 			klog.ErrorS(err, "error on checking limits", "requestID", requestID, "username", username)
-			return errRes, utils.User{}, rpm, routingAlgorithm, requestPath
+			return errRes, utils.User{}, rpm, routingAlgorithm, requestPath, requestID
 		}
 	}
 
@@ -99,5 +128,5 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 				},
 			},
 		},
-	}, user, rpm, routingAlgorithm, requestPath
+	}, user, rpm, routingAlgorithm, requestPath, requestID
 }

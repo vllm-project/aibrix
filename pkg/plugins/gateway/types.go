@@ -22,6 +22,7 @@ import (
 )
 
 const (
+	HeaderErrorUnexpected     = "x-error-unexpected"
 	HeaderErrorInvalidRouting = "x-error-invalid-routing-strategy"
 
 	// General Error Headers
@@ -40,12 +41,16 @@ const (
 	HeaderErrorStreaming                 = "x-error-streaming"
 	HeaderErrorStreamOptionsIncludeUsage = "x-error-no-stream-options-include-usage"
 
+	// Extend API Error Headers
+	HeaderErrorExtendAPI = "x-error-extend-api"
+
 	// Request & Target Headers
 	HeaderWentIntoReqHeaders = "x-went-into-req-headers"
 	HeaderTargetPod          = "target-pod"
 	HeaderRoutingStrategy    = "routing-strategy"
 	HeaderRequestID          = "request-id"
 	HeaderModel              = "model"
+	HeaderStatus             = ":status"
 
 	// RPM & TPM Update Errors
 	HeaderUpdateTPM        = "x-update-tpm"

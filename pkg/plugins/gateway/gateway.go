@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
+	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/vllm-project/aibrix/pkg/cache"
@@ -56,9 +58,14 @@ type Server struct {
 	requestCountTracker map[string]int
 	cache               cache.Cache
 	metricsServer       *metrics.Server
+	httpClient          *http.Client
+	forwardingConfig    map[string]string
+
+	// Stream management for forwarding requests
+	activeForwards utils.SyncMap[string, *forwardingRequest]
 }
 
-func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient *gatewayapi.Clientset) *Server {
+func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient *gatewayapi.Clientset, forwardingAPIs map[string]string) *Server {
 	c, err := cache.Get()
 	if err != nil {
 		panic(err)
@@ -68,6 +75,11 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 	// Initialize the routers
 	routing.Init()
 
+	// Initialize HTTP client with timeout
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
 	return &Server{
 		redisClient:         redisClient,
 		ratelimiter:         r,
@@ -76,6 +88,8 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		requestCountTracker: map[string]int{},
 		cache:               c,
 		metricsServer:       nil,
+		httpClient:          httpClient,
+		forwardingConfig:    forwardingAPIs,
 	}
 }
 
@@ -92,35 +106,73 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	requestID := uuid.New().String()
 	completed := false
 	resp := &extProcPb.ProcessingResponse{}
+	var chanStreamingResponse <-chan *extProcPb.ProcessingResponse
 
 	klog.InfoS("processing request", "requestID", requestID)
+
+	defer func() {
+		// Clean up forward requests
+		if streamReq, ok := s.activeForwards.LoadAndDelete(requestID); ok {
+			streamReq.DoneForward(ctx.Err())
+			return
+		}
+		if len(model) == 0 {
+			return
+		}
+
+		// Clean up model requests
+		s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
+		if routerCtx != nil {
+			routerCtx.Delete()
+		}
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
 			return ctx.Err()
 		default:
 		}
 
+		if chanStreamingResponse != nil {
+			// Stream started, we need to stream all response.
+			for resp := range chanStreamingResponse {
+				if err := srv.Send(resp); err != nil {
+					klog.ErrorS(err, "Error on streaming response", "requestID", requestID)
+
+					// Optional: if it's context or connection-related, don’t retry
+					if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "EOF") {
+						klog.Warning("Stream already closed by client", "requestID", requestID)
+					}
+					return err
+				}
+			}
+		}
+
 		req, err := srv.Recv()
 		if err == io.EOF {
-			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
 			return nil
-		}
-		if err != nil {
-			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
+		} else if err != nil {
 			return status.Errorf(codes.Unknown, "cannot receive stream request: %v", err)
 		}
 
 		switch v := req.Request.(type) {
-
 		case *extProcPb.ProcessingRequest_RequestHeaders:
-			resp, user, rpm, routingAlgorithm, requestPath = s.HandleRequestHeaders(ctx, requestID, req)
+			resp, user, rpm, routingAlgorithm, requestPath, requestID = s.HandleRequestHeaders(ctx, requestID, req)
 
 		case *extProcPb.ProcessingRequest_RequestBody:
 			resp, model, routerCtx, stream, traceTerm = s.HandleRequestBody(ctx, requestID, requestPath, req, user, routingAlgorithm)
-			if routerCtx != nil {
+			if s.isContinueAndReplaceResponse(resp) {
+				// Response of forwarded request will be streamed.
+				if streamingRequest, ok := s.activeForwards.Load(requestID); !ok {
+					resp = generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+						[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+							Key: HeaderErrorExtendAPI, RawValue: []byte("true")}}},
+						"can not load streaming request")
+				} else {
+					chanStreamingResponse = streamingRequest.responseChan
+				}
+			} else if routerCtx != nil {
 				ctx = routerCtx
 			}
 
@@ -145,19 +197,21 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			}
 		default:
 			klog.Infof("Unknown Request type %+v\n", v)
+			resp = generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+					Key: HeaderErrorUnexpected, RawValue: []byte("true")}}},
+				fmt.Sprintf("Unknown extProcPb request type %v", v))
 		}
 
 		if err := srv.Send(resp); err != nil && len(model) > 0 {
 			klog.ErrorS(nil, err.Error(), "requestID", requestID)
-			s.cache.DoneRequestCount(routerCtx, requestID, model, traceTerm)
-			if routerCtx != nil {
-				routerCtx.Delete()
-			}
 
 			// Optional: if it's context or connection-related, don’t retry
 			if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "EOF") {
 				klog.Warning("Stream already closed by client", "requestID", requestID)
 			}
+
+			return err
 		}
 	}
 }
@@ -244,4 +298,20 @@ func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.Pr
 		envoyTypePb.StatusCode(respErrorCode),
 		resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders(),
 		errMsg)
+}
+
+func (s *Server) isContinueAndReplaceResponse(resp *extProcPb.ProcessingResponse) bool {
+	// First, get the RequestHeaders message from the "oneof" response.
+	// The generated GetRequestHeaders() returns nil if the response is
+	// not of this type.
+	if rh := resp.GetRequestHeaders(); rh != nil {
+		// Next, get the CommonResponse from within the HeadersResponse.
+		if cr := rh.GetResponse(); cr != nil {
+			// Finally, check the status enum.
+			return cr.GetStatus() == extProcPb.CommonResponse_CONTINUE_AND_REPLACE
+		}
+	}
+	// If any of the nested fields were nil, or if the status did not match,
+	// it's not the response we're looking for.
+	return false
 }

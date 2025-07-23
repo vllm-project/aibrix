@@ -142,9 +142,17 @@ lint-all: licensecheck lint
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/controllers/main.go
 
+.PHONY: build-gateway
+build-gateway: fmt vet ## Build gateway plugin binary.
+	go build -o bin/gateway-plugin cmd/plugins/main.go
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/controllers/main.go
+
+.PHONY: run-gateway
+run-gateway: fmt vet ## Run gateway plugin from your host using local kubeconfig.
+	go run ./cmd/plugins/main.go --kubeconfig=${HOME}/.kube/config --grpc-bind-address=:50052 --metrics-bind-address=:8080 --forward-batch-api --forward-files-api
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.

@@ -31,14 +31,6 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, mo
 
 	var isProcessingError bool
 	var processingErrorCode int
-	defer func() {
-		if isProcessingError {
-			s.cache.DoneRequestCount(routerCtx, requestID, model, 0)
-			if routerCtx != nil {
-				routerCtx.Delete()
-			}
-		}
-	}()
 
 	headers := []*configPb.HeaderValueOption{}
 	headers = buildEnvoyProxyHeaders(headers, HeaderWentIntoReqHeaders, "true", HeaderRequestID, requestID)
@@ -47,7 +39,7 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, mo
 	}
 
 	for _, headerValue := range b.ResponseHeaders.Headers.Headers {
-		if headerValue.Key == ":status" {
+		if headerValue.Key == HeaderStatus {
 			code, _ := strconv.Atoi(string(headerValue.RawValue))
 			if code != 200 {
 				isProcessingError = true

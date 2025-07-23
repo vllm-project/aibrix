@@ -104,15 +104,24 @@ var defaultRoutingStrategy, defaultRoutingStrategyEnabled = utils.LookupEnv(EnvR
 
 // getRoutingStrategy retrieves the routing strategy from the headers or environment variable
 // It returns the routing strategy value and whether custom routing strategy is enabled.
-func getRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
+func getRoutingStrategy(headers []*configPb.HeaderValue) (strategy string, enabled bool) {
 	// Check headers for routing strategy
 	for _, header := range headers {
 		if strings.ToLower(header.Key) == HeaderRoutingStrategy {
-			return string(header.RawValue), true
+			strategy = string(header.RawValue)
+			break
 		}
 	}
 
 	// If header not set, use default routing strategy from environment variable
+	return validateRoutingStrategy(strategy)
+}
+
+// validateRouringStrategy validate if routing strategy is valid or return default value.
+func validateRoutingStrategy(strategy string) (string, bool) {
+	if len(strategy) > 0 {
+		return strategy, true
+	}
 	return defaultRoutingStrategy, defaultRoutingStrategyEnabled
 }
 
