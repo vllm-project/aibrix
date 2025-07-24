@@ -31,6 +31,9 @@ if TYPE_CHECKING:
     # AIBRIX_KV_CACHE_OL_DOUBLE_GET_THRESHOLD is set to "4", we will ignore the
     # second rule.
     AIBRIX_KV_CACHE_OL_DOUBLE_GET_THRESHOLD: Tuple[int, float] = (4, 0.1)
+    # Number of tokens in a kvcache block (the finest IO granularity). Defaults
+    # to -1, which means we will use engine's block size.
+    AIBRIX_KV_CACHE_OL_BLOCK_SIZE: int = -1
     AIBRIX_KV_CACHE_OL_CHUNK_SIZE: int = 512
     AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED: bool = True
     AIBRIX_KV_CACHE_OL_BREAKDOWN_MEASUREMENT_ENABLED: bool = True
@@ -151,6 +154,9 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
             ),
             (int, float),
         )
+    ),
+    "AIBRIX_KV_CACHE_OL_BLOCK_SIZE": lambda: int(
+        os.getenv("AIBRIX_KV_CACHE_OL_BLOCK_SIZE", "-1")
     ),
     "AIBRIX_KV_CACHE_OL_CHUNK_SIZE": lambda: int(
         os.getenv("AIBRIX_KV_CACHE_OL_CHUNK_SIZE", "512")

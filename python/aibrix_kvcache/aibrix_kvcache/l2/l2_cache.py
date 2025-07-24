@@ -91,6 +91,7 @@ class L2Cache(MeasurableBase):
             ]
         )
         partition_id = f"h{cat_head_ids}_l{cat_layer_ids}"
+        block_spec_signature = self.block_spec.signature
         key_builder_signature = self.key_builder.signature
         layout_signature = "c" if MemoryRegion.use_compact_layout() else "ex"
         backend_config = ConnectorConfig(
@@ -98,6 +99,7 @@ class L2Cache(MeasurableBase):
             namespace=namespace,
             partition_id=partition_id,
             executor=executor,
+            block_spec_signature=block_spec_signature,
             key_builder_signature=key_builder_signature,
             layout_signature=layout_signature,
         )
