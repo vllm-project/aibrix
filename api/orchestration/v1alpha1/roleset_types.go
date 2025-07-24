@@ -64,6 +64,10 @@ type RoleSpec struct {
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
 
+	// PodGroupSize is the number of pods to form a minimum role instance.
+	// +optional
+	PodGroupSize *int32 `json:"podGroupSize,omitempty"`
+
 	// +optional
 	// +patchStrategy=retainKeys
 	UpdateStrategy RoleUpdateStrategy `json:"updateStrategy,omitempty"`

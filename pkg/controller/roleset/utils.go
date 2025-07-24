@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -92,11 +93,15 @@ var (
 	}
 )
 
-func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, pod *v1.Pod, roleIndex *int) {
+func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, pod *v1.Pod, roleIndex *int, podGroupIndex *int) {
 	templateHash := ctrlutil.ComputeHash(&role.Template, nil)
 	if roleIndex != nil {
-		// add role template hash to pod name, to avoid pod name duplication during rollout
-		pod.Name = fmt.Sprintf("%s-%s-%s-%d", roleSet.Name, role.Name, templateHash, *roleIndex)
+		if podGroupIndex == nil {
+			// add role template hash to pod name, to avoid pod name duplication during rollout
+			pod.Name = fmt.Sprintf("%s-%s-%s-%d", roleSet.Name, role.Name, templateHash, *roleIndex)
+		} else {
+			pod.Name = fmt.Sprintf("%s-%s-%s-%d-%d", roleSet.Name, role.Name, templateHash, *roleIndex, *podGroupIndex)
+		}
 	} else {
 		pod.GenerateName = fmt.Sprintf("%s-%s-", roleSet.Name, role.Name)
 	}
@@ -128,6 +133,9 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 		// inject to label as well for routing service discovery (some engines use label selector to find pods only)
 		pod.Labels[constants.RoleReplicaIndexLabelKey] = fmt.Sprintf("%d", *roleIndex)
 	}
+	if podGroupIndex != nil {
+		pod.Labels[constants.RolePodGroupIndexLabelKey] = fmt.Sprintf("%d", *podGroupIndex)
+	}
 	if roleSet.Spec.SchedulingStrategy.PodGroup != nil {
 		pod.Annotations[constants.GodelPodGroupNameAnnotationKey] = roleSet.Name
 	}
@@ -143,19 +151,14 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 			roleSet,
 			role,
 			roleIndex,
+			podGroupIndex,
 			templateHash,
 		)
 	}
 }
 
 // injectContainerEnvVars injects env variables into container.
-func injectContainerEnvVars(
-	container *v1.Container,
-	roleSet *orchestrationv1alpha1.RoleSet,
-	role *orchestrationv1alpha1.RoleSpec,
-	roleIndex *int,
-	templateHash string,
-) {
+func injectContainerEnvVars(container *v1.Container, roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, roleIndex *int, podGroupIndex *int, templateHash string) {
 	envMap := make(map[string]v1.EnvVar, len(container.Env)+6)
 
 	// copy existing env
@@ -196,6 +199,14 @@ func injectContainerEnvVars(
 			Value: fmt.Sprintf("%d", *roleIndex),
 		}
 	}
+
+	if podGroupIndex != nil {
+		envMap[constants.RolePodGroupIndexEnvKey] = v1.EnvVar{
+			Name:  constants.RolePodGroupIndexEnvKey,
+			Value: fmt.Sprintf("%d", *podGroupIndex),
+		}
+	}
+
 	keys := make([]string, 0, len(envMap))
 	for k := range envMap {
 		keys = append(keys, k)
@@ -270,7 +281,41 @@ func filterUpdatedPods(pods []*v1.Pod, templateHash string) (updated []*v1.Pod, 
 			outdated = append(outdated, pods[i])
 		}
 	}
+
+	sortFunc := func(pods []*v1.Pod) {
+		sort.Slice(pods, func(i, j int) bool {
+			// compare role-replica-index
+			indexI := getLabelInt(pods[i], constants.RoleReplicaIndexAnnotationKey)
+			indexJ := getLabelInt(pods[j], constants.RoleReplicaIndexAnnotationKey)
+			if indexI != indexJ {
+				return indexI < indexJ
+			}
+
+			// if role-replica-index is same，compare pod-group-index
+			groupIndexI := getLabelInt(pods[i], constants.RolePodGroupIndexLabelKey)
+			groupIndexJ := getLabelInt(pods[j], constants.RolePodGroupIndexLabelKey)
+			return groupIndexI < groupIndexJ
+		})
+	}
+
+	// sort updated and outdated slice
+	sortFunc(updated)
+	sortFunc(outdated)
+
 	return
+}
+
+// getLabelInt read int value from the labels
+func getLabelInt(pod *v1.Pod, key string) int {
+	valueStr, ok := pod.Labels[key]
+	if !ok {
+		return -1
+	}
+	value, err := strconv.Atoi(valueStr)
+	if err != nil {
+		return -1
+	}
+	return value
 }
 
 func sortPodsByActive(pods []*v1.Pod) {
@@ -376,4 +421,14 @@ func deletePodsInBatch(ctx context.Context, cli client.Client, podsToDelete []*v
 	return utils.SlowStartBatch(len(podsToDelete), PodOperationInitBatchSize, func(index int) error {
 		return cli.Delete(ctx, podsToDelete[index])
 	})
+}
+
+func getRolePodGroupSize(role *orchestrationv1alpha1.RoleSpec) int {
+	var podGroupSize int
+	if role.PodGroupSize == nil {
+		podGroupSize = 1
+	} else {
+		podGroupSize = int(*role.PodGroupSize)
+	}
+	return podGroupSize
 }

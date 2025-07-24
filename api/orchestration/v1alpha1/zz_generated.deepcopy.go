@@ -671,6 +671,11 @@ func (in *RoleSpec) DeepCopyInto(out *RoleSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.PodGroupSize != nil {
+		in, out := &in.PodGroupSize, &out.PodGroupSize
+		*out = new(int32)
+		**out = **in
+	}
 	in.UpdateStrategy.DeepCopyInto(&out.UpdateStrategy)
 	in.Template.DeepCopyInto(&out.Template)
 	in.DisruptionTolerance.DeepCopyInto(&out.DisruptionTolerance)

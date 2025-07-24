@@ -106,6 +106,9 @@ spec:
                               type: object
                             name:
                               type: string
+                            podGroupSize:
+                              format: int32
+                              type: integer
                             replicas:
                               format: int32
                               type: integer
