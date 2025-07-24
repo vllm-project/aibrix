@@ -168,12 +168,6 @@ var _ = BeforeSuite(func() {
 
 	// --- 4. Create the gRPC client (simulates Envoy) ---
 	var err error
-	// grpcConn, err = grpc.DialContext(ctx, "",
-	// 	grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
-	// 		return listener.Dial()
-	// 	}),
-	// 	grpc.WithTransportCredentials(insecure.NewCredentials()),
-	// )
 	grpcConn, err = grpc.NewClient("localhost", // Provide a dummy target that pass dns check
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 			return listener.Dial()
