@@ -70,14 +70,23 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		}
 	}
 	if shouldForward {
-		fowardingRequest := &forwardingRequest{
+		// Store headers for later use in forwardRequest
+		headers := make([]*configPb.HeaderValue, 0, len(h.RequestHeaders.Headers.Headers))
+		for _, header := range h.RequestHeaders.Headers.Headers {
+			if !strings.HasPrefix(header.Key, ":") {
+				headers = append(headers, header)
+			}
+		}
+
+		forwardingRequest := &forwardingRequest{
 			requestID:   requestID,
 			targetURL:   targetURL,
 			httpMethod:  httpMethod,
 			contentType: contentType,
+			headers:     headers,
 			phase:       forwardPreparing,
 		}
-		s.activeForwards.Store(requestID, fowardingRequest)
+		s.activeForwards.Store(requestID, forwardingRequest)
 	}
 
 	routingStrategy, routingStrategyEnabled := validateRoutingStrategy(routingStrategy)

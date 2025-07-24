@@ -50,13 +50,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, reques
 		requestBody := body.RequestBody.GetBody()
 
 		// Use streaming for multipart/form-data (file uploads) or large payloads
-		checkSize := 1024
-		if len(requestBody) < checkSize {
-			checkSize = len(requestBody)
-		}
-		shouldUseStreaming := len(requestBody) > 1024*1024 || // > 1MB
-			strings.Contains(string(requestBody[:checkSize]), "multipart/form-data")
-
+		// Check content type rather than body content for multipart detection
+		isMultipart := strings.Contains(forwardReq.contentType, "multipart/form-data")
+		shouldUseStreaming := len(requestBody) > 1024*1024 || isMultipart // > 1MB or multipart
 		return s.forwardRequest(ctx, requestID, req, forwardReq, shouldUseStreaming), "", routingCtx, false, term
 	}
 

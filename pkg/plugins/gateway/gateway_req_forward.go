@@ -60,6 +60,7 @@ type forwardingRequest struct {
 	targetURL    string
 	httpMethod   string
 	contentType  string
+	headers      []*configPb.HeaderValue // Store headers from RequestHeaders for later use
 	responseChan chan *extProcPb.ProcessingResponse
 	writer       *io.PipeWriter // For request streaming
 	phase        forwardingPhase
@@ -101,22 +102,26 @@ func (s *Server) forwardRequest(ctx context.Context, requestID string, req *extP
 	httpReq, err := http.NewRequestWithContext(ctx, forward.httpMethod, forward.targetURL, reader)
 	if err != nil {
 		klog.ErrorS(err, "failed to create HTTP request for forwarding", "requestID", requestID)
-		forward.DoneForward(err)
+		forward.DoneForward(nil)
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorExtendAPI, RawValue: []byte("true")}}},
 			"failed to create streaming request to metadata service")
 	}
 
-	// Copy headers
-	for _, header := range req.GetRequestHeaders().GetHeaders().Headers {
-		httpReq.Header.Add(header.Key, header.Value)
+	// Copy headers from stored headers map, preferring headers from req for it can be override.
+	headers := req.GetRequestHeaders().GetHeaders().GetHeaders() // GetHeaders() to avoid nil check.
+	if len(headers) == 0 {
+		headers = forward.headers
+	}
+	for _, header := range headers {
+		httpReq.Header.Add(header.Key, string(header.RawValue))
 	}
 
 	// Start the forward in background
 	go s.initiateForward(ctx, requestID, req, forward, httpReq)
 
-	// Process first chunk
+	// Process first chunk and start forward in background
 	if streaming {
 		// ProcessingResponse_ResponseBody for continuing request stream.
 		return s.continueForward(ctx, requestID, req, forward)
@@ -215,6 +220,11 @@ func (s *Server) continueForward(ctx context.Context, requestID string, req *ext
 	if body.RequestBody.EndOfStream {
 		forward.phase = forwarded
 		forward.DoneForward(nil)
+
+		// Could be:
+		// 1. ProcessingResponse_ResponseHeaders for initated response stream
+		// 2. ProcessingResponse_ImmediateResponse for error and short response.
+		return <-forward.responseChan
 	}
 
 	// Return intermediate response to continue receiving chunks
