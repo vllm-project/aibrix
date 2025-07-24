@@ -86,6 +86,15 @@ class KVCacheManager(ABC):
 
     @property
     @abstractmethod
+    def block_size(self) -> int:
+        """Get the block size of the kv cache.
+        Returns:
+            The block size of the kv cache.
+        """
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
     def chunk_size(self) -> int:
         """Get the chunk size of the kv cache.
         Returns:
@@ -458,6 +467,14 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             The feature of the kv cache.
         """
         return KVCacheFeature(zero_copy=True)
+
+    @property
+    def block_size(self) -> int:
+        """Get the block size of the kv cache.
+        Returns:
+            The block size of the kv cache.
+        """
+        return self.block_ntokens
 
     @property
     def chunk_size(self) -> int:
@@ -1213,7 +1230,6 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
         Args:
             prefix: The prefix of the kv cache. E.g., [1, 2, 3]
             tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
-            zero_copy: Whether to use zero-copy.
         Returns:
             Number of tokens have been fetched from the kv cache service.
             The memory regions corresponding to the given tokens.
