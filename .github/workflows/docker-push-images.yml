@@ -12,6 +12,19 @@ jobs:
     permissions:
       packages: write
       contents: read
+    strategy:
+      matrix:
+        component:
+          - name: controller-manager
+            file: build/container/Dockerfile
+          - name: gateway-plugins
+            file: build/container/Dockerfile.gateway
+          - name: metadata-service
+            file: build/container/Dockerfile.metadata
+          - name: runtime
+            file: build/container/Dockerfile.runtime
+          - name: kvcache-watcher
+            file: build/container/Dockerfile.kvcache
     steps:
       - uses: actions/checkout@v3
         with:
@@ -25,51 +38,15 @@ jobs:
         uses: docker/setup-buildx-action@v3
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-      - name: Build and push controller-manager
+      - name: Build and push ${{ matrix.component.name }}
         uses: docker/build-push-action@v6
         with:
           platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile
+          file: ${{ matrix.component.file }}
           push: true
           tags: |
-            aibrix/controller-manager:${{ github.sha }}
-            aibrix/controller-manager:nightly
-      - name: Build and push gateway-plugins
-        uses: docker/build-push-action@v6
-        with:
-          platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile.gateway
-          push: true
-          tags: |
-            aibrix/gateway-plugins:${{ github.sha }}
-            aibrix/gateway-plugins:nightly
-      - name: Build and push metadata-service
-        uses: docker/build-push-action@v6
-        with:
-          platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile.metadata
-          push: true
-          tags: |
-            aibrix/metadata-service:${{ github.sha }}
-            aibrix/metadata-service:nightly
-      - name: Build and push runtime
-        uses: docker/build-push-action@v6
-        with:
-          platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile.runtime
-          push: true
-          tags: |
-            aibrix/runtime:${{ github.sha }}
-            aibrix/runtime:nightly
-      - name: Build and push kvcache-watcher
-        uses: docker/build-push-action@v6
-        with:
-          platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile.kvcache
-          push: true
-          tags: |
-            aibrix/kvcache-watcher:${{ github.sha }}
-            aibrix/kvcache-watcher:nightly
+            aibrix/${{ matrix.component.name }}:${{ github.sha }}
+            aibrix/${{ matrix.component.name }}:nightly
 
   build-push-ghcr:
     if: github.repository == 'vllm-project/aibrix'
@@ -77,6 +54,19 @@ jobs:
     permissions:
       packages: write
       contents: read
+    strategy:
+      matrix:
+        component:
+          - name: controller-manager
+            file: build/container/Dockerfile
+          - name: gateway-plugins
+            file: build/container/Dockerfile.gateway
+          - name: metadata-service
+            file: build/container/Dockerfile.metadata
+          - name: runtime
+            file: build/container/Dockerfile.runtime
+          - name: kvcache-watcher
+            file: build/container/Dockerfile.kvcache
     steps:
       - uses: actions/checkout@v3
         with:
@@ -91,48 +81,12 @@ jobs:
         uses: docker/setup-buildx-action@v3
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-      - name: Build and push controller-manager
+      - name: Build and push ${{ matrix.component.name }}
         uses: docker/build-push-action@v6
         with:
           platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile
+          file: ${{ matrix.component.file }}
           push: true
           tags: |
-            ghcr.io/aibrix/controller-manager:${{ github.sha }}
-            ghcr.io/aibrix/controller-manager:nightly
-      - name: Build and push gateway-plugins
-        uses: docker/build-push-action@v6
-        with:
-          platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile.gateway
-          push: true
-          tags: |
-            ghcr.io/aibrix/gateway-plugins:${{ github.sha }}
-            ghcr.io/aibrix/gateway-plugins:nightly
-      - name: Build and push metadata-service
-        uses: docker/build-push-action@v6
-        with:
-          platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile.metadata
-          push: true
-          tags: |
-            ghcr.io/aibrix/metadata-service:${{ github.sha }}
-            ghcr.io/aibrix/metadata-service:nightly
-      - name: Build and push runtime
-        uses: docker/build-push-action@v6
-        with:
-          platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile.runtime
-          push: true
-          tags: |
-            ghcr.io/aibrix/runtime:${{ github.sha }}
-            ghcr.io/aibrix/runtime:nightly
-      - name: Build and push kvcache-watcher
-        uses: docker/build-push-action@v6
-        with:
-          platforms: linux/amd64,linux/arm64
-          file: build/container/Dockerfile.kvcache
-          push: true
-          tags: |
-            ghcr.io/aibrix/kvcache-watcher:${{ github.sha }}
-            ghcr.io/aibrix/kvcache-watcher:nightly
+            ghcr.io/aibrix/${{ matrix.component.name }}:${{ github.sha }}
+            ghcr.io/aibrix/${{ matrix.component.name }}:nightly
