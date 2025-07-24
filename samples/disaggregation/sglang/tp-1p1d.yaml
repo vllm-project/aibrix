@@ -23,7 +23,7 @@ spec:
             spec:
               containers:
                 - name: mini-lb
-                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang-router:community_v0.4.9.post1-patch.2
+                  image: aibrix/sglang-router:v0.1.6
                   command: [ "sh", "-c" ]
                   args:
                     - |
@@ -52,7 +52,7 @@ spec:
             spec:
               containers:
                 - name: prefill
-                  image: iaas-gpu-cn-beijing.cr.volces.com/serving/sglang:v0.4.9.post2.iaas.dev.202507161949
+                  image: aibrix/sglang:v0.4.9.post3-cu126-nixl-v0.4.1
                   command: ["sh", "-c"]
                   args:
                     - |
@@ -61,6 +61,7 @@ spec:
                         --host 0.0.0.0 \
                         --port 30000 \
                         --disaggregation-mode prefill \
+                        --disaggregation-transfer-backend=nixl \
                         --trust-remote-code \
                         --dist-init-addr "${ROLESET_NAME}-${ROLE_NAME}-${ROLE_TEMPLATE_HASH}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5000" \
                         --nnodes 2 \
@@ -117,7 +118,7 @@ spec:
             spec:
               containers:
                 - name: decode
-                  image: iaas-gpu-cn-beijing.cr.volces.com/serving/sglang:v0.4.9.post2.iaas.dev.202507161949
+                  image: aibrix/sglang:v0.4.9.post3-cu126-nixl-v0.4.1
                   command: ["sh", "-c"]
                   args:
                     - |
@@ -126,6 +127,7 @@ spec:
                         --host 0.0.0.0 \
                         --port 30000 \
                         --disaggregation-mode decode \
+                        --disaggregation-transfer-backend=nixl \
                         --trust-remote-code \
                         --dist-init-addr "${ROLESET_NAME}-${ROLE_NAME}-${ROLE_TEMPLATE_HASH}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5000" \
                         --nnodes 2 \
