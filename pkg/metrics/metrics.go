@@ -279,7 +279,7 @@ var (
 			},
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:gpu_cache_usage_perc",
-				"sglang": "sglang:token_usage",
+				"sglang": "sglang:token_usage", // Based on https://github.com/sgl-project/sglang/issues/5979
 				"xllm":   "kv_cache_utilization",
 			},
 			Description: "GPU cache usage percentage",
