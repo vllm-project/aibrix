@@ -64,7 +64,7 @@ var (
 			MetricType: MetricType{
 				Raw: Counter,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:num_requests_running",
 				"sglang": "sglang:num_running_reqs",
 			},
@@ -76,7 +76,7 @@ var (
 			MetricType: MetricType{
 				Raw: Counter,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:num_requests_waiting",
 			},
 			Description: "Number of waiting requests",
@@ -87,7 +87,7 @@ var (
 			MetricType: MetricType{
 				Raw: Counter,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:num_requests_swapped",
 			},
 			Description: "Number of swapped requests",
@@ -99,7 +99,7 @@ var (
 			MetricType: MetricType{
 				Raw: Gauge,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:avg_prompt_throughput_toks_per_s",
 			},
 			Description: "Average prompt throughput in tokens per second",
@@ -110,7 +110,7 @@ var (
 			MetricType: MetricType{
 				Raw: Gauge,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:avg_generation_throughput_toks_per_s",
 			},
 			Description: "Average generation throughput in tokens per second",
@@ -122,7 +122,7 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:iteration_tokens_total",
 			},
 			Description: "Total iteration tokens",
@@ -133,7 +133,7 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:time_to_first_token_seconds",
 				"sglang": "sglang:time_to_first_token_seconds",
 			},
@@ -145,7 +145,7 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:time_per_output_token_seconds",
 				"sglang": "sglang:inter_token_latency_seconds",
 			},
@@ -157,7 +157,7 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:e2e_request_latency_seconds",
 				"sglang": "sglang:e2e_request_latency_seconds",
 			},
@@ -169,7 +169,7 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:request_queue_time_seconds",
 			},
 			Description: "Request queue time in seconds",
@@ -180,7 +180,7 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:request_inference_time_seconds",
 			},
 			Description: "Request inference time in seconds",
@@ -191,7 +191,7 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:request_decode_time_seconds",
 			},
 			Description: "Request decode time in seconds",
@@ -202,7 +202,7 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:request_prefill_time_seconds",
 			},
 			Description: "Request prefill time in seconds",
@@ -277,7 +277,7 @@ var (
 			MetricType: MetricType{
 				Raw: Counter,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:gpu_cache_usage_perc",
 				"sglang": "sglang:token_usage",
 				"xllm":   "kv_cache_utilization",
@@ -290,7 +290,7 @@ var (
 			MetricType: MetricType{
 				Raw: Gauge,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"xllm": "engine_utilization",
 			},
 			Description: "GPU busy time ratio",
@@ -301,7 +301,7 @@ var (
 			MetricType: MetricType{
 				Raw: Counter,
 			},
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:cpu_cache_usage_perc",
 			},
 			Description: "CPU cache usage percentage",
@@ -349,7 +349,7 @@ var (
 				Query: QueryLabel,
 			},
 			RawMetricName: "lora_requests_info",
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:max_lora",
 			},
 			Description: "Max count of Lora Adapters",
@@ -361,7 +361,7 @@ var (
 				Query: QueryLabel,
 			},
 			RawMetricName: "lora_requests_info",
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:running_lora_adapters",
 			},
 			Description: "Count of running Lora Adapters",
@@ -373,7 +373,7 @@ var (
 				Query: QueryLabel,
 			},
 			RawMetricName: "lora_requests_info",
-			RawMetricNameMapping: map[string]string{
+			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:waiting_lora_adapters",
 			},
 			Description: "Count of waiting Lora Adapters",

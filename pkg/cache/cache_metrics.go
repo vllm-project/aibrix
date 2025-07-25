@@ -339,7 +339,7 @@ func (c *Store) fetchMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily, 
 		return nil, false
 	}
 	engineType := getPodLabel(pod, engineLabel, defaultEngineLabelValue)
-	rawMetricName, ok := metric.RawMetricNameMapping[engineType]
+	rawMetricName, ok := metric.EngineMetricsNameMapping[engineType]
 	if !ok {
 		klog.V(4).Infof("Cannot find engine type %v mapping for metrics %v", engineType, labelMetricName)
 		return nil, false
