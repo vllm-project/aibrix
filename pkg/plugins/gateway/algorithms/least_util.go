@@ -53,7 +53,7 @@ func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 	minUtilization := math.MaxFloat64 // <= 1 in general
 
 	for _, pod := range readyPodList.All() {
-		utilization, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.EngineUtilization) // todo: replace mock
+		utilization, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.EngineUtilization)
 		if err != nil {
 			klog.Error(err)
 			continue

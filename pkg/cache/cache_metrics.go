@@ -37,6 +37,7 @@ const (
 	defaultEngineLabelValue             = "vllm"
 	defaultModelName                    = ""
 	defaultPodMetricRefreshIntervalInMS = 50
+	defaultPodMetricsWorkerCount        = 10
 )
 
 var (
@@ -121,8 +122,6 @@ func (c *Store) getPodMetricImpl(podName string, metricStore *utils.SyncMap[stri
 func (c *Store) getPodModelMetricName(modelName string, metricName string) string {
 	return fmt.Sprintf("%s/%s", modelName, metricName)
 }
-
-const defaultPodMetricsWorkerCount = 10
 
 func (c *Store) updatePodMetrics() {
 	c.metaPods.Range(func(key string, metaPod *Pod) bool {
