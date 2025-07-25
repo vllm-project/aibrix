@@ -81,19 +81,11 @@ func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (
 		return "", err
 	}
 
-	prefixMatchPrefillPods, prefixHashes, err := r.evaluatePrefixCache(ctx, prefillPods)
-	if err != nil {
-		return "", err
-	}
-
-	if err = r.doPrefillRequest(ctx, prefillPods, prefixMatchPrefillPods); err != nil {
+	if err = r.doPrefillRequest(ctx, prefillPods); err != nil {
 		return "", fmt.Errorf("prefill request failed: %w", err)
 	}
 
 	decodePod := r.selectDecodePod(decodePods)
-	if len(prefixHashes) > 0 {
-		r.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, decodePod.Name)
-	}
 
 	ctx.SetTargetPod(decodePod)
 	return ctx.TargetAddress(), nil
@@ -137,30 +129,35 @@ func (r *pdRouter) evaluatePrefixCache(ctx *types.RoutingContext, decodePods []*
 	return matchedPods, prefixHashes, nil
 }
 
-func (r *pdRouter) selectPrefillPod(prefillPods []*v1.Pod, prefixMatchPrefillPods map[string]int) *v1.Pod {
-	var targetPod *v1.Pod
-	if len(prefixMatchPrefillPods) > 0 {
-		targetPod = getTargetPodFromMatchedPods(r.cache, prefillPods, prefixMatchPrefillPods)
-	}
-
-	if targetPod == nil {
-		targetPod = selectTargetPodWithLeastRequestCount(r.cache, prefillPods)
-	}
-
-	return targetPod
-}
-
 func (r *pdRouter) selectDecodePod(decodePods []*v1.Pod) *v1.Pod {
 	decodePod, _ := utils.SelectRandomPod(decodePods, rand.Intn)
 	return decodePod
 }
 
-func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, prefixMatchPrefillPods map[string]int) error {
-	prefillPod := r.selectPrefillPod(prefillPods, prefixMatchPrefillPods)
+func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPods []*v1.Pod) error {
 	// TODO: refactor constants post PR: 1293 merge
-	if getLLMEngine(prefillPod, LLMEngineLabel, "vllm") == "xllm" {
+	if getLLMEngine(prefillPods[0], LLMEngineLabel, "vllm") == "xllm" {
 		return nil
 	}
+
+	var prefillPod *v1.Pod
+	prefixMatchPrefillPods, prefixHashes, err := r.evaluatePrefixCache(routingCtx, prefillPods)
+	if err != nil {
+		return err
+	}
+
+	if len(prefixMatchPrefillPods) > 0 {
+		prefillPod = getTargetPodFromMatchedPods(r.cache, prefillPods, prefixMatchPrefillPods)
+	}
+	if prefillPod == nil {
+		prefillPod = selectTargetPodWithLeastRequestCount(r.cache, prefillPods)
+	}
+
+	defer func() {
+		if len(prefixHashes) > 0 {
+			r.prefixCacheIndexer.AddPrefix(prefixHashes, routingCtx.Model, prefillPod.Name)
+		}
+	}()
 
 	klog.InfoS("doPrefillRequest", "prefill_pod_ip", prefillPod.Status.PodIP)
 
