@@ -50,19 +50,19 @@ func NewLeastUtilRouter() (types.Router, error) {
 
 func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	var targetPod *v1.Pod
-	minBusyTimeRatio := math.MaxFloat64 // <= 1 in general
+	minUtilization := math.MaxFloat64 // <= 1 in general
 
 	for _, pod := range readyPodList.All() {
-		busyTimeRatio, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.EngineUtilization) // todo: replace mock
+		utilization, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.EngineUtilization) // todo: replace mock
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		busyTimeRatioValue := busyTimeRatio.GetSimpleValue()
-		klog.V(4).Infof("pod: %v, podIP: %v, GPU busy time ratio: %v", pod.Name, pod.Status.PodIP, busyTimeRatioValue)
+		utilizationValue := utilization.GetSimpleValue()
+		klog.V(4).Infof("pod: %v, podIP: %v, engine utilization: %v", pod.Name, pod.Status.PodIP, utilizationValue)
 
-		if busyTimeRatioValue < minBusyTimeRatio {
-			minBusyTimeRatio = busyTimeRatioValue
+		if utilizationValue < minUtilization {
+			minUtilization = utilizationValue
 			targetPod = pod
 		}
 	}
@@ -76,7 +76,7 @@ func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 		}
 		klog.V(4).Infof("select random pod: %v, podIP: %v", targetPod.Name, targetPod.Status.PodIP)
 	} else {
-		klog.V(4).Infof("select target pod: %v, podIP: %v, GPU busy time ratio: %v", targetPod.Name, targetPod.Status.PodIP, minBusyTimeRatio)
+		klog.V(4).Infof("select target pod: %v, podIP: %v, engine utilization: %v", targetPod.Name, targetPod.Status.PodIP, minUtilization)
 	}
 
 	ctx.SetTargetPod(targetPod)
