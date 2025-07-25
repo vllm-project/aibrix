@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The Aibrix Team.
+Copyright 2025 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ limitations under the License.
 package cache
 
 import (
+	"fmt"
 	"strconv"
 
 	"k8s.io/klog/v2"
@@ -36,11 +37,12 @@ func getPodMetricPort(pod *Pod) int {
 	return defaultMetricPort
 }
 
-func getPodLabel(pod *Pod, labelName string, defaultValue string) string {
+func getPodLabel(pod *Pod, labelName string) (string, error) {
 	labelTarget, ok := pod.Labels[labelName]
 	if !ok {
 		klog.V(4).Infof("No label %v name for pod %v, default to %v", labelName, pod.Name, defaultEngineLabelValue)
-		return defaultValue
+		err := fmt.Errorf("error executing query: no label %v found for pod %v", labelName, pod.Name)
+		return "", err
 	}
-	return labelTarget
+	return labelTarget, nil
 }

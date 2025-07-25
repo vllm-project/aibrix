@@ -111,7 +111,8 @@ var (
 				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:avg_generation_throughput_toks_per_s",
+				"vllm":   "vllm:avg_generation_throughput_toks_per_s",
+				"sglang": "sglang:gen_throughput",
 			},
 			Description: "Average generation throughput in tokens per second",
 		},

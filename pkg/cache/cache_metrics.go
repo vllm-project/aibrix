@@ -35,7 +35,6 @@ const (
 	modelLabel                          = "model.aibrix.ai/name"
 	defaultMetricPort                   = 8000
 	defaultEngineLabelValue             = "vllm"
-	defaultModelName                    = ""
 	defaultPodMetricRefreshIntervalInMS = 50
 	defaultPodMetricsWorkerCount        = 10
 )
@@ -338,7 +337,11 @@ func (c *Store) fetchMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily, 
 		klog.V(4).Infof("Cannot find labelMetricName %v in collected metrics names", labelMetricName)
 		return nil, false
 	}
-	engineType := getPodLabel(pod, engineLabel, defaultEngineLabelValue)
+	engineType, err := getPodLabel(pod, engineLabel)
+	if engineType == "" {
+		klog.V(4).Infof(err.Error())
+		engineType = defaultEngineLabelValue
+	}
 	rawMetricName, ok := metric.EngineMetricsNameMapping[engineType]
 	if !ok {
 		klog.V(4).Infof("Cannot find engine type %v mapping for metrics %v", engineType, labelMetricName)
@@ -358,9 +361,10 @@ func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, s
 	if scope == metrics.PodMetricScope {
 		pod.Metrics.Store(metricName, metricValue)
 	} else if scope == metrics.PodModelMetricScope {
+		var err error
 		if modelName == "" {
-			modelName = getPodLabel(pod, modelLabel, defaultModelName)
-			if modelName == "" {
+			modelName, err = getPodLabel(pod, modelLabel)
+			if err != nil {
 				return fmt.Errorf("modelName should not be empty for scope %v", scope)
 			}
 		}
