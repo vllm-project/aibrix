@@ -1,0 +1,4 @@
+resources:
+- ray.io_rayclusters.yaml
+- ray.io_rayjobs.yaml
+- ray.io_rayservices.yaml
