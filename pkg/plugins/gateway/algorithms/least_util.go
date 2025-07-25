@@ -27,7 +27,7 @@ import (
 	klog "k8s.io/klog/v2"
 )
 
-const RouterUtil types.RoutingAlgorithm = "least-util"
+const RouterUtil types.RoutingAlgorithm = "least-utilization"
 
 func init() {
 	Register(RouterUtil, NewLeastUtilRouter)
@@ -53,7 +53,7 @@ func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 	minBusyTimeRatio := math.MaxFloat64 // <= 1 in general
 
 	for _, pod := range readyPodList.All() {
-		busyTimeRatio, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.GPUBusyTimeRatio) // todo: replace mock
+		busyTimeRatio, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.EngineUtilization) // todo: replace mock
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -74,6 +74,9 @@ func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 		if err != nil {
 			return "", err
 		}
+		klog.V(4).Infof("select random pod: %v, podIP: %v", targetPod.Name, targetPod.Status.PodIP)
+	} else {
+		klog.V(4).Infof("select target pod: %v, podIP: %v, GPU busy time ratio: %v", targetPod.Name, targetPod.Status.PodIP, minBusyTimeRatio)
 	}
 
 	ctx.SetTargetPod(targetPod)

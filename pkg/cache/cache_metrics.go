@@ -17,7 +17,6 @@ package cache
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
@@ -28,16 +27,16 @@ import (
 )
 
 const (
-	defaultMetricPort = 8000
 	// When the engine's HTTP proxy is separated from the engine itself,
 	// the request port and metrics port may differ, so a dedicated metrics port is required.
 	MetricPortLabel                     = "model.aibrix.ai/metric-port"
-	defaultPodMetricRefreshIntervalInMS = 50
 	engineLabel                         = "model.aibrix.ai/engine"
 	portLabel                           = "model.aibrix.ai/port"
 	modelLabel                          = "model.aibrix.ai/name"
-	defaultEngineLabel                  = "vllm"
+	defaultMetricPort                   = 8000
+	defaultEngineLabelValue             = "vllm"
 	defaultModelName                    = ""
+	defaultPodMetricRefreshIntervalInMS = 50
 )
 
 var (
@@ -49,7 +48,7 @@ var (
 		metrics.AvgGenerationThroughputToksPerS,
 		metrics.GPUCacheUsagePerc,
 		metrics.CPUCacheUsagePerc,
-		metrics.GPUBusyTimeRatio,
+		metrics.EngineUtilization,
 	}
 
 	// histogram metric example - time_to_first_token_seconds, _sum, _bucket _count.
@@ -340,7 +339,7 @@ func (c *Store) fetchMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily, 
 		klog.V(4).Infof("Cannot find labelMetricName %v in collected metrics names", labelMetricName)
 		return nil, false
 	}
-	engineType := getPodLabel(pod, engineLabel, defaultEngineLabel)
+	engineType := getPodLabel(pod, engineLabel, defaultEngineLabelValue)
 	rawMetricName, ok := metric.RawMetricNameMapping[engineType]
 	if !ok {
 		klog.V(4).Infof("Cannot find engine type %v mapping for metrics %v", engineType, labelMetricName)
@@ -392,27 +391,4 @@ func (c *Store) aggregateMetrics() {
 			}
 		}
 	}
-}
-
-func getPodMetricPort(pod *Pod) int {
-	if pod == nil || pod.Labels == nil {
-		return defaultMetricPort
-	}
-	if v, ok := pod.Labels[MetricPortLabel]; ok && v != "" {
-		if p, err := strconv.Atoi(v); err == nil {
-			return p
-		} else {
-			klog.Warningf("Invalid value for label %s on pod %s/%s: %q. Using default port %d.", MetricPortLabel, pod.Namespace, pod.Name, v, defaultMetricPort)
-		}
-	}
-	return defaultMetricPort
-}
-
-func getPodLabel(pod *Pod, labelName string, defaultValue string) string {
-	labelTarget, ok := pod.Labels[labelName]
-	if !ok {
-		klog.V(4).Infof("No label %v name for pod %v, default to %v", labelName, pod.Name, defaultEngineLabel)
-		return defaultValue
-	}
-	return labelTarget
 }

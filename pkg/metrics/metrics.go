@@ -40,6 +40,7 @@ const (
 	GPUCacheUsagePerc                    = "gpu_cache_usage_perc"
 	GPUBusyTimeRatio                     = "gpu_busy_time_ratio"
 	CPUCacheUsagePerc                    = "cpu_cache_usage_perc"
+	EngineUtilization                    = "engine_utilization"
 	AvgE2ELatencyPod                     = "avg_e2e_latency_pod"
 	AvgRequestsPerMinPod                 = "avg_requests_per_min_pod"
 	AvgPromptThroughputToksPerMinPod     = "avg_prompt_throughput_toks_per_min_pod"
@@ -283,7 +284,7 @@ var (
 			},
 			Description: "GPU cache usage percentage",
 		},
-		GPUBusyTimeRatio: {
+		EngineUtilization: {
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
