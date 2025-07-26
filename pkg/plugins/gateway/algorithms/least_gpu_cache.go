@@ -52,11 +52,9 @@ func NewLeastGpuCacheRouter() (types.Router, error) {
 func (r leastGpuCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	var targetPod *v1.Pod
 	minGpuCache := math.MaxFloat64
+	var candidatePods []*v1.Pod
 
 	for _, pod := range readyPodList.All() {
-		// Due to metric refactor (pull/543) to better support lora and multi models,
-		// we change to use PodModelMetrics instead of PodMetrics in some scenarios.
-		// This works but doesn't look very promising, we can revisit this part later.
 		gpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.GPUCacheUsagePerc)
 		if err != nil {
 			klog.Error(err)
@@ -67,10 +65,16 @@ func (r leastGpuCacheRouter) Route(ctx *types.RoutingContext, readyPodList types
 		klog.V(4).Infof("pod: %v, podIP: %v, gpuCache: %v",
 			pod.Name, pod.Status.PodIP, gpuCache.GetSimpleValue())
 
-		if totalCache <= minGpuCache {
+		if totalCache < minGpuCache {
 			minGpuCache = totalCache
-			targetPod = pod
+			candidatePods = []*v1.Pod{pod}
+		} else if totalCache == minGpuCache {
+			candidatePods = append(candidatePods, pod)
 		}
+	}
+
+	if len(candidatePods) > 0 {
+		targetPod = candidatePods[rand.Intn(len(candidatePods))]
 	}
 
 	// Use fallback if no valid metrics
@@ -80,7 +84,7 @@ func (r leastGpuCacheRouter) Route(ctx *types.RoutingContext, readyPodList types
 		if err != nil {
 			return "", err
 		}
-		klog.V(4).Infof("select random targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
+		klog.V(4).Infof("select targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
 	} else {
 		klog.V(4).Infof("select targetPod: %s(%s) gpuCache: %v", targetPod.Name, targetPod.Status.PodIP, minGpuCache)
 	}

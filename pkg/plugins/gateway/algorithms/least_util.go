@@ -51,6 +51,7 @@ func NewLeastUtilRouter() (types.Router, error) {
 func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	var targetPod *v1.Pod
 	minUtilization := math.MaxFloat64 // <= 1 in general
+	var candidatePods []*v1.Pod
 
 	for _, pod := range readyPodList.All() {
 		utilization, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.EngineUtilization)
@@ -63,8 +64,14 @@ func (r leastUtilRouter) Route(ctx *types.RoutingContext, readyPodList types.Pod
 
 		if utilizationValue < minUtilization {
 			minUtilization = utilizationValue
-			targetPod = pod
+			candidatePods = []*v1.Pod{pod}
+		} else if utilizationValue == minUtilization {
+			candidatePods = append(candidatePods, pod)
 		}
+	}
+
+	if len(candidatePods) > 0 {
+		targetPod = candidatePods[rand.Intn(len(candidatePods))]
 	}
 
 	// Use fallback if no valid metrics
