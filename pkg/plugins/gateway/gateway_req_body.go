@@ -30,16 +30,21 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-func (s *Server) HandleRequestBody(ctx context.Context, requestID string, requestPath string, req *extProcPb.ProcessingRequest,
-	user utils.User, routingAlgorithm types.RoutingAlgorithm) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
-	var routingCtx *types.RoutingContext
+func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
 	var term int64 // Identify the trace window
+
+	routingCtx, _ := ctx.(*types.RoutingContext)
+	requestPath := routingCtx.ReqPath
+	routingAlgorithm := routingCtx.Algorithm
 
 	body := req.Request.(*extProcPb.ProcessingRequest_RequestBody)
 	model, message, stream, errRes := validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)
 	if errRes != nil {
 		return errRes, model, routingCtx, stream, term
 	}
+	routingCtx.Model = model
+	routingCtx.Message = message
+	routingCtx.ReqBody = body.RequestBody.GetBody()
 
 	// early reject the request if model doesn't exist.
 	if !s.cache.HasModel(model) {
@@ -60,7 +65,6 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, reques
 			fmt.Sprintf("error on getting pods for model %s", model)), model, routingCtx, stream, term
 	}
 
-	routingCtx = types.NewRoutingContext(ctx, routingAlgorithm, model, message, requestID, user.Name)
 	headers := []*configPb.HeaderValueOption{}
 	if routingAlgorithm == routing.RouterNotSet {
 		headers = buildEnvoyProxyHeaders(headers, HeaderModel, model)
