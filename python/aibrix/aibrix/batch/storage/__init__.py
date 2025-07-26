@@ -13,6 +13,9 @@
 # limitations under the License.
 
 from aibrix.batch.storage.batch_storage import (
+    get_base_path as get_storage_base_path,
+)
+from aibrix.batch.storage.batch_storage import (
     get_job_request_len,
     get_storage_job_results,
     initialize_batch_storage,
@@ -31,6 +34,11 @@ def initialize_storage(storage_type=StorageType.LocalDiskFile, params={}):
         storage_type: the storage type, such files or TOS
     """
     initialize_batch_storage(storage_type, params)
+
+
+def get_base_path():
+    """Get base path of storage."""
+    return get_storage_base_path()
 
 
 def submit_job_input(inputDataFile):

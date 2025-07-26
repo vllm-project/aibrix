@@ -15,9 +15,12 @@
 import uuid
 
 from aibrix.batch.storage.generic_storage import LocalDiskFiles, StorageType
+from aibrix.batch.storage.tos_storage import (
+    TOSStorage,  # [TODO] Add S3 as another storage
+)
+from aibrix.metadata.logger import init_logger
 
-# [TODO] Add S3 as another storage
-from aibrix.batch.storage.tos_storage import TOSStorage
+logger = init_logger(__name__)
 
 current_job_offsets = {}
 job_input_requests = {}
@@ -39,30 +42,37 @@ def initialize_batch_storage(storage_type=StorageType.LocalDiskFile, params={}):
         raise ValueError("Unknown storage type")
 
 
-def upload_input_data(inputDataFileName):
+def get_base_path():
+    """Get base path of storage."""
+
+    assert p_storage is not None
+    return p_storage.get_base_path()
+
+
+def upload_input_data(inputDataFileName: str):
     """Upload job input data file to storage.
 
     Args:
         inputDataFileName (str): an input file string.
     """
+    assert p_storage is not None
     job_id = uuid.uuid1()
     p_storage.write_job_input_data(job_id, inputDataFileName)
 
-    current_job_offsets[job_id] = 0
+    current_job_offsets[str(job_id)] = 0
     return job_id
 
 
-def read_job_requests(job_id, start_index, num_requests):
+def read_job_requests(job_id: str, start_index: int, num_requests: int):
     """Read job requests starting at index: start_index.
 
     Instead of reading from storage per request, this maintains a list of requests
     in memory with a length of NUM_REQUESTS_PER_READ.
     It also supports random access, if backward read is necessary.
     """
-
+    assert p_storage is not None
     if job_id not in current_job_offsets:
-        print(f"Create job {job_id} first. Can not find corresponding job ID!!")
-        return []
+        current_job_offsets[job_id] = 0
 
     # if no request is cached, this reads a list of requests from storage.
     if job_id not in job_input_requests:
@@ -105,7 +115,6 @@ def read_job_requests(job_id, start_index, num_requests):
     requests = job_input_requests[job_id][
         start_offset : start_offset + available_num_req
     ]
-    # print("debug", len(requests))
     return requests
 
 
