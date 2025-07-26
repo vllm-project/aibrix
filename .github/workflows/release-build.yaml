@@ -82,19 +82,9 @@ jobs:
           pushd python/aibrix
           poetry publish --build
           popd
-
-          pushd python/aibrix_kvcache
-          pip install -r requirements/build.txt -r requirements/dev.txt -r requirements/core.txt
-          python -m build --sdist --wheel --no-isolation
-          popd
       - name: Add package to release artifact
         run: |
           pushd python/aibrix
-          poetry build
-          ls -al dist/*
-          popd
-
-          pushd python/aibrix_kvcache
           poetry build
           ls -al dist/*
           popd
@@ -104,6 +94,46 @@ jobs:
           name: aibrix-python-packages-${{ matrix.python-version }}
           path: |
             python/aibrix/dist/*.whl
+
+  kvcache-wheel-release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+    environment:
+      name: pypi
+      url: https://pypi.org/p/aibrix_kvcache
+    permissions:
+      id-token: write
+    name: publish
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v4
+      - name: Set up Python environment ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          cd python/aibrix_kvcache
+          python -m pip install --upgrade pip
+          pip install -U pip cibuildwheel
+          pip install -r requirements/build.txt
+      - name: Build
+        run: |
+          python -m cibuildwheel --output-dir python/aibrix_kvcache/dist python/aibrix_kvcache/
+          ls -al python/aibrix_kvcache/dist/*
+      - name: Upload release to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          verbose: true
+          password: ${{ secrets.PYPI_TOKEN }}
+          packages-dir: python/aibrix_kvcache/dist
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aibrix-kvcache-python-packages
+          path: |
             python/aibrix_kvcache/dist/*.whl
 
   artifact-release:
