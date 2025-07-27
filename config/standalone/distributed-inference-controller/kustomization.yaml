@@ -24,7 +24,7 @@ images:
     newTag: v0.3.0
   - name: quay.io/kuberay/operator
     newName: aibrix/kuberay-operator
-    newTag: v1.2.1-patch
+    newTag: v1.2.1-patch-20250726
 
 patches:
   - path: patch.yaml
