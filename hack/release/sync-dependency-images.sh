@@ -15,7 +15,7 @@ IMAGES=(
     "redis:latest ${TARGET_REGISTRY}/aibrix/redis:latest"
     "envoyproxy/envoy:v1.33.2 ${TARGET_REGISTRY}/aibrix/envoy:v1.33.2"
     "envoyproxy/gateway:v1.2.8 ${TARGET_REGISTRY}/aibrix/gateway:v1.2.8"
-    "aibrix/kuberay-operator:v1.2.1-patch ${TARGET_REGISTRY}/aibrix/kuberay-operator:v1.2.1-patch"
+    "aibrix/kuberay-operator:v1.2.1-patch-20250726 ${TARGET_REGISTRY}/aibrix/kuberay-operator:v1.2.1-patch-20250726"
     "busybox:stable ${TARGET_REGISTRY}/aibrix/busybox:stable"
 )
 

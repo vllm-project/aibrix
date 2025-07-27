@@ -18,5 +18,5 @@ resources:
 
 images:
   - name: quay.io/kuberay/operator
-    newName: quay.io/kuberay/operator
-    newTag: v1.2.1
+    newName: aibrix/kuberay-operator
+    newTag: v1.2.1-patch-20250726

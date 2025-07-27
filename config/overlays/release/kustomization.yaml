@@ -14,7 +14,7 @@ patches:
 images:
 - name: quay.io/kuberay/operator
   newName: aibrix/kuberay-operator
-  newTag: v1.2.1-patch
+  newTag: v1.2.1-patch-20250726
 - name: busybox
   newTag: stable
 - name: redis
