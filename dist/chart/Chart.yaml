@@ -1,0 +1,7 @@
+apiVersion: v2
+name: aibrix
+description: A Helm chart to distribute the project aibrix
+type: application
+version: 0.3.0
+appVersion: "0.3.0"
+icon: "https://example.com/icon.png"

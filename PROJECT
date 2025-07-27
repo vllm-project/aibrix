@@ -6,6 +6,8 @@ domain: aibrix.ai
 layout:
 - go.kubebuilder.io/v4
 multigroup: true
+plugins:
+  helm.kubebuilder.io/v1-alpha: {}
 projectName: aibrix
 repo: github.com/vllm-project/aibrix
 resources:
