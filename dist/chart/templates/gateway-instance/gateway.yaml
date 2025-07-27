@@ -1,0 +1,138 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: aibrix-eg
+  namespace: {{ .Release.Namespace }}
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: aibrix-custom-proxy-config
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: aibrix-eg
+  namespace: {{ .Release.Namespace }}
+spec:
+  gatewayClassName: aibrix-eg
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      port: 80
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: aibrix-custom-proxy-config
+  namespace: {{ .Release.Namespace }}
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        replicas:  {{ .Values.gateway.envoyProxy.replicas }}
+        strategy:
+          type: RollingUpdate
+          rollingUpdate:
+            maxUnavailable: 1
+            maxSurge: 1
+        pod:
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    labelSelector:
+                      matchExpressions:
+                        - key: app.kubernetes.io/name
+                          operator: In
+                          values:
+                            - envoy
+                    topologyKey: "kubernetes.io/hostname"
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: nvidia.com/gpu.present
+                        operator: NotIn
+                        values:
+                          - "true"
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: envoy
+                      image: {{ .Values.gateway.envoyProxy.container.envoy.image }}
+                      resources: {{ toYaml .Values.gateway.envoyProxy.container.envoy.resources | nindent 24 }}
+                    - name: shutdown-manager
+                      image: {{ .Values.gateway.envoyProxy.container.shutdownManager.image }}
+                      resources: {{ toYaml .Values.gateway.envoyProxy.container.shutdownManager.resources | nindent 24 }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: aibrix-client-connection-buffersize
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: aibrix-eg
+  connection:
+    bufferLimit: {{ .Values.gateway.clientTrafficPolicy.connection.bufferLimit }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: aibrix-epp
+  namespace: {{ .Release.Namespace }}
+spec:
+  type: "JSONPatch"
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: aibrix-eg
+  jsonPatches:
+    - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+      name: "{{ .Release.Namespace }}/aibrix-eg/http"
+      operation:
+        op: add
+        path: "/virtual_hosts/0/routes/0"
+        value:
+          name: original_route
+          match:
+            prefix: "/v1"
+            headers:
+              - name: "routing-strategy"
+                string_match:
+                  safe_regex:
+                    regex: ".*"
+          route:
+            cluster: original_destination_cluster
+            timeout: {{ .Values.gateway.envoyPatchPolicy.route.timeout }}
+          typed_per_filter_config:
+            "envoy.filters.http.ext_proc/envoyextensionpolicy/{{ .Release.Namespace }}/aibrix-gateway-plugins-extension-policy/extproc/0":
+              "@type": "type.googleapis.com/envoy.config.route.v3.FilterConfig"
+              config: {}
+    - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
+      name: "envoy-patch-policy-override2"
+      operation:
+        op: add
+        path: ""
+        value:
+          name: original_destination_cluster
+          type: ORIGINAL_DST
+          original_dst_lb_config:
+            use_http_header: true
+            http_header_name: "target-pod"
+          connect_timeout: {{ .Values.gateway.envoyPatchPolicy.route.connectTimeout }}
+          lb_policy: CLUSTER_PROVIDED
+          dns_lookup_family: V4_ONLY
