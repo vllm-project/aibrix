@@ -157,4 +157,4 @@ If you meet problems exposing external IPs, feel free to debug with following co
     envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   10.96.239.246   101.18.0.4    80:32079/TCP                              10d
     envoy-gateway                            ClusterIP      10.96.166.226   <none>        18000/TCP,18001/TCP,18002/TCP,19001/TCP   10d
 
-For advanced development usage, please refer to :ref:`development` section.
+For advanced development usage, please refer to the :ref:`development` section.
