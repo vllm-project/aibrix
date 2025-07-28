@@ -1,0 +1,225 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: example-app-canary
+  namespace: default
+  annotations:
+    deployment.kubernetes.io/change-cause: "Deploy with canary rollout strategy"
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: example-app
+  template:
+    metadata:
+      labels:
+        app: example-app
+    spec:
+      roles:
+      - name: web-server
+        spec:
+          template:
+            spec:
+              containers:
+              - name: app
+                image: nginx:1.21
+                ports:
+                - containerPort: 80
+          replicas: 1
+  
+  # Advanced rollout strategy configuration
+  rolloutStrategy:
+    type: Canary
+    canary:
+      # Define canary steps for gradual rollout
+      steps:
+      - weight: 10  # Route 10% traffic to canary
+        pause:
+          duration: 5m  # Wait 5 minutes
+      - weight: 25  # Route 25% traffic to canary
+        pause:
+          untilApproval: true  # Wait for manual approval
+        analysis:
+          templates:
+          - name: success-rate
+          - name: latency-check
+          args:
+          - name: service-name
+            value: example-app
+      - weight: 50  # Route 50% traffic to canary
+        pause:
+          duration: 10m
+      - weight: 75  # Route 75% traffic to canary
+        analysis:
+          templates:
+          - name: error-rate-check
+          args:
+          - name: threshold
+            value: "1%"
+      # Final step: 100% traffic (promotion)
+
+      # Traffic routing configuration
+      trafficRouting:
+        nginx:
+          ingress: example-app-ingress
+          servicePort: 80
+
+      # Service configuration
+      stableService: example-app-stable
+      canaryService: example-app-canary
+
+      # Rollout constraints
+      maxSurge: 25%
+      maxUnavailable: 1
+
+    # Automatic rollback configuration
+    autoRollback:
+      enabled: true
+      onFailure:
+        analysisFailure: true
+        healthCheckFailure: true
+        errorThreshold: 5%
+      onTimeout: 30m
+
+  updateStrategy:
+    type: RollingUpdate
+    maxUnavailable: 1
+    maxSurge: 25%
+
+---
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: example-app-bluegreen
+  namespace: default
+  annotations:
+    deployment.kubernetes.io/change-cause: "Deploy with blue-green strategy"
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: example-app-bg
+  template:
+    metadata:
+      labels:
+        app: example-app-bg
+    spec:
+      roles:
+      - name: api-server
+        spec:
+          template:
+            spec:
+              containers:
+              - name: app
+                image: myapp:v2.0
+                ports:
+                - containerPort: 8080
+          replicas: 1
+
+  # Blue-Green deployment strategy
+  rolloutStrategy:
+    type: BlueGreen
+    blueGreen:
+      # Service configuration
+      activeService: example-app-active    # Production traffic
+      previewService: example-app-preview  # Preview environment
+
+      # Automatic promotion settings
+      autoPromotionEnabled: false  # Require manual promotion
+      scaleDownDelaySeconds: 600   # Keep old version for 10 minutes
+
+      # Analysis configuration
+      prePromotionAnalysis:
+        templates:
+        - name: integration-tests
+        - name: smoke-tests
+        args:
+        - name: preview-url
+          value: http://example-app-preview
+
+      postPromotionAnalysis:
+        templates:
+        - name: monitoring-check
+        args:
+        - name: duration
+          value: 5m
+
+    # Automatic rollback for blue-green
+    autoRollback:
+      enabled: true
+      onFailure:
+        analysisFailure: true
+        healthCheckFailure: true
+      onTimeout: 45m
+
+---
+# Example of manual rollout control annotations
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rollout-operations-guide
+  namespace: default
+data:
+  operations.md: |
+    # Storm Service Rollout Operations Guide
+
+    ## Manual Rollout Control
+
+    ### Pause a rollout
+    ```bash
+    kubectl annotate stormservice example-app-canary stormservice.aibrix.ai/rollout-pause=true
+    ```
+
+    ### Resume a paused rollout
+    ```bash
+    kubectl annotate stormservice example-app-canary stormservice.aibrix.ai/rollout-resume=true
+    ```
+
+    ### Approve a rollout waiting for manual approval
+    ```bash
+    kubectl annotate stormservice example-app-canary stormservice.aibrix.ai/rollout-approval=true
+    ```
+
+    ### Abort a rollout and trigger rollback
+    ```bash
+    kubectl annotate stormservice example-app-canary stormservice.aibrix.ai/rollout-abort=true
+    ```
+
+    ### Retry a failed rollout
+    ```bash
+    kubectl annotate stormservice example-app-canary stormservice.aibrix.ai/rollout-retry=true
+    ```
+
+    ## Monitoring Rollout Status
+
+    ### Check rollout status
+    ```bash
+    kubectl get stormservice example-app-canary -o jsonpath='{.status.rolloutStatus}'
+    ```
+
+    ### Watch rollout progress
+    ```bash
+    kubectl get stormservice example-app-canary -w
+    ```
+
+    ### Check rollout conditions
+    ```bash
+    kubectl describe stormservice example-app-canary
+    ```
+
+    ## Rollout Phases
+
+    - **Healthy**: Rollout is stable and healthy
+    - **Progressing**: Rollout is actively progressing through steps
+    - **Paused**: Rollout is paused (manually or automatically)
+    - **Completed**: Rollout has completed successfully
+    - **Degraded**: Rollout has encountered issues
+    - **Aborted**: Rollout was manually aborted
+
+    ## Traffic Routing
+
+    For canary deployments, traffic is automatically routed based on the configured weights:
+    - Nginx Ingress: Uses canary annotations
+    - Istio: Updates VirtualService weights
+    - SMI: Updates TrafficSplit weights
+    - Default: Service selector updates

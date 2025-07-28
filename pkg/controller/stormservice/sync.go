@@ -54,7 +54,14 @@ func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchest
 		reconcileErr = err
 	} else if !stormService.Spec.Paused && !scaling { // skip rollout when paused and in scaling
 		// 2. check the rollout progress
-		reconcileErr = r.rollout(ctx, stormService, currentRevision.Name, updateRevision.Name)
+		if stormService.Spec.RolloutStrategy != nil {
+			// Use advanced rollout manager for canary/blue-green deployments
+			rolloutManager := NewRolloutManager(r)
+			reconcileErr = rolloutManager.ProcessRollout(ctx, stormService, currentRevision.Name, updateRevision.Name)
+		} else {
+			// Use standard rollout for simple rolling updates
+			reconcileErr = r.rollout(ctx, stormService, currentRevision.Name, updateRevision.Name)
+		}
 		if reconcileErr != nil {
 			r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, RolloutEventType, "rollout error %s", reconcileErr.Error())
 		}

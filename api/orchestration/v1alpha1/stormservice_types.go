@@ -44,15 +44,18 @@ type StormServiceSpec struct {
 	// +patchStrategy=retainKeys
 	UpdateStrategy StormServiceUpdateStrategy `json:"updateStrategy,omitempty"`
 
-	// The number of old ReplicaSets to retain to allow rollback.
-	// This is a pointer to distinguish between explicit zero and not specified.
-	// Defaults to 10.
-	// +optional
-	RevisionHistoryLimit *int32 `json:"revisionHistoryLimit,omitempty" protobuf:"varint,6,opt,name=revisionHistoryLimit"`
-
 	// Indicates that the stormService is paused.
 	// +optional
 	Paused bool `json:"paused,omitempty" protobuf:"varint,7,opt,name=paused"`
+
+	// The number of old revisions to retain to allow rollback.
+	// +optional
+	RevisionHistoryLimit *int32 `json:"revisionHistoryLimit,omitempty" protobuf:"varint,8,opt,name=revisionHistoryLimit"`
+
+	// RolloutStrategy configures advanced rollout capabilities
+	// including canary releases, blue-green deployments, analysis, and automatic rollback
+	// +optional
+	RolloutStrategy *RolloutStrategy `json:"rolloutStrategy,omitempty"`
 
 	// DisruptionTolerance indicates how many roleSets can be unavailable during the preemption/eviction.
 	// +optional
@@ -119,6 +122,10 @@ type StormServiceStatus struct {
 
 	// The label selector information of the pods belonging to the StormService object.
 	ScalingTargetSelector string `json:"scalingTargetSelector,omitempty"`
+
+	// RolloutStatus provides information about the rollout process
+	// +optional
+	RolloutStatus *RolloutStatus `json:"rolloutStatus,omitempty"`
 }
 
 // These are valid conditions of a stormService.
@@ -156,7 +163,7 @@ const (
 	InPlaceUpdateStormServiceStrategyType StormServiceUpdateStrategyType = "InPlaceUpdate"
 )
 
-//+kubebuilder:object:root=true
+// +kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.scalingTargetSelector
 
