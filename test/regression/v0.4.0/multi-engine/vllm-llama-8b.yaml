@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    model.aibrix.ai/name: deepseek-r1-distill-llama-8b # Note: The label value `model.aibrix.ai/name` here must match with the service name.
+    model.aibrix.ai/engine: vllm
+    model.aibrix.ai/port: "8000"
+  name: deepseek-r1-distill-llama-8b
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+      model.aibrix.ai/engine: vllm
+      model.aibrix.ai/port: "8000"
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+        model.aibrix.ai/engine: vllm
+        model.aibrix.ai/port: "8000"
+    spec:
+      containers:
+        - command:
+            - python3
+            - -m
+            - vllm.entrypoints.openai.api_server
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --uvicorn-log-level
+            - warning
+            - --model
+            - deepseek-ai/DeepSeek-R1-Distill-Llama-8B
+            - --served-model-name
+            - deepseek-r1-distill-llama-8b
+            - --max-model-len
+            - "12288"
+          image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.9.2-cu128-nixl-v0.4.1-lmcache-0.3.1.post1
+          imagePullPolicy: IfNotPresent
+          name: vllm-openai
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: model-vol
+              mountPath: /root/models
+      volumes:
+        - name: model-vol
+          hostPath:
+            path: /root/models
+            type: Directory
