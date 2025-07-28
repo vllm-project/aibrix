@@ -3,8 +3,8 @@ controllerManager:
   replicas: 1
   container:
     image:
-      repository: aibrix/controller-manager
-      tag: nightly
+      repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
+      tag: d5ca8d6b58520edc221eabf22b0cb35a8c651051
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -19,12 +19,12 @@ gatewayPlugin:
   replicaCount: 1
   initContainer:
     image:
-      repository: busybox
+      repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/busybox
       tag: stable
   container:
     image:
-      repository: aibrix/gateway-plugins
-      tag: nightly
+      repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      tag: d5ca8d6b58520edc221eabf22b0cb35a8c651051
       pullPolicy: IfNotPresent
 
     resources:
@@ -51,8 +51,8 @@ gpuOptimizer:
   replicaCount: 1
   container:
     image:
-      repository: aibrix/runtime
-      tag: nightly
+      repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
+      tag: d5ca8d6b58520edc221eabf22b0cb35a8c651051
 
     resources:
       limits:
@@ -72,7 +72,7 @@ gateway:
     replicas: 1
     container:
       envoy:
-        image: envoyproxy/envoy:v1.33.2
+        image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy:v1.33.2
         resources:
           requests:
             cpu: 1
@@ -81,7 +81,7 @@ gateway:
             cpu: 1
             memory: 1Gi
       shutdownManager:
-        image: envoyproxy/gateway:v1.2.8
+        image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/gateway:v1.2.8
         resources:
           requests:
             cpu: 10m
@@ -100,12 +100,12 @@ metadata:
     replicas: 1
     initContainer:
       image:
-        repository: busybox
+        repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/busybox
         tag: stable
     container:
       image:
-        repository: aibrix/metadata-service
-        tag: nightly
+        repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/metadata-service
+        tag: d5ca8d6b58520edc221eabf22b0cb35a8c651051
         pullPolicy: IfNotPresent
       resources:
         limits:
@@ -122,7 +122,7 @@ metadata:
     replicas: 1
     container:
       image:
-        repository: redis
+        repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/redis
         tag: 7.4
       resources:
         requests:
