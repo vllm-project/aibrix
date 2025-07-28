@@ -27,7 +27,7 @@ With multi-engine support, AIBrix enables:
 System Overview
 ---------------
 
-Incoming requests will use the deployment label to determine correct ways of interpreting metrics retrieved from Prometheus API, which later used by the `Router` to delegate execution. To configure a specific engine, apply the following labels in the deployment YAML file
+Incoming requests will use the deployment label to determine correct ways of interpreting metrics retrieved from Prometheus API, which are later used by the `Router` to delegate execution. To configure a specific engine, apply the following labels in the deployment YAML file:
 
 .. code-block:: yaml
 
@@ -42,7 +42,7 @@ AIBrix will use the `model.aibrix.ai/engine` label to determine which engine to 
 Supported Metrics
 -----------------
 
-We only support limited number of metrics from different engines and we will continuously add more metrics -- for routing algorithms implemented through `routing policy API <https://github.com/vllm-project/aibrix/tree/main/pkg/plugins/gateway/algorithms>`_, make sure you use metrics that is supported by your target engine. For existing AIBrix routing policies, the router will fall back to default (i.e., random) policy if it fails to fetch a target metrics. 
+We only support limited number of metrics from different engines and we will continuously add more metrics -- for routing algorithms implemented through `routing policy API <https://github.com/vllm-project/aibrix/tree/main/pkg/plugins/gateway/algorithms>`_, make sure you use metrics that is supported by your target engine. For existing AIBrix routing policies, the router will fall back to default (i.e., random) policy if it fails to fetch a target metric. 
 
 .. list-table::
    :header-rows: 1
@@ -129,7 +129,7 @@ To support a new engine or metrics type:
 
 For more details, see the `cache_metrics.go` and `metrics.go` in:
 
-- `aibrix/pkg/cache/cache_metrics.py <https://github.com/vllm-project/aibrix/blob/main/pkg/cache/cache_metrics.go>`_
+- `aibrix/pkg/cache/cache_metrics.go <https://github.com/vllm-project/aibrix/blob/main/pkg/cache/cache_metrics.go>`_
 - `aibrix/pkg/metrics/metrics.go <https://github.com/vllm-project/aibrix/blob/main/pkg/metrics/metrics.go>`_
 
 
