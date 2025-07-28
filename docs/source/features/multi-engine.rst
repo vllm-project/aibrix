@@ -125,7 +125,7 @@ Adding New Engines
 To support a new engine or metrics type:
 
 1. Adding engine type to metrics name mapping at `aibrix/pkg/metrics/metrics.go`.
-3. Adding engine name to `model.aibrix.ai/engine` label in the deployment YAML file.
+2. Adding engine name to `model.aibrix.ai/engine` label in the deployment YAML file.
 
 For more details, see the `cache_metrics.go` and `metrics.go` in:
 
