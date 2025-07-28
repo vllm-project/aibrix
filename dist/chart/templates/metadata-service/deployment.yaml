@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aibrix-metadata-service
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.metadata.service.replicas }}
+  selector:
+    matchLabels:
+      app: aibrix-metadata-service
+  template:
+    metadata:
+      labels:
+        app: aibrix-metadata-service
+    spec:
+      initContainers:
+        - name: init-c
+          image: {{ .Values.metadata.service.initContainer.image.repository }}:{{ .Values.metadata.service.initContainer.image.tag }}
+          command:
+            - 'sh'
+            - '-c'
+            - 'until echo "ping" | nc {{ .Values.metadata.service.redis.host }} {{ .Values.metadata.service.redis.port }} -w 1 | grep -c PONG; do echo waiting for service {{ .Values.metadata.service.redis.host }}; sleep 2; done'
+      containers:
+        - name: metadata-service
+          image: {{ .Values.metadata.service.container.image.repository }}:{{ .Values.metadata.service.container.image.tag }}
+          imagePullPolicy: {{ .Values.metadata.service.container.image.pullPolicy | default "IfNotPresent" }}
+          ports:
+            - containerPort: 8090
+          resources: {{ toYaml .Values.metadata.service.container.resources | nindent 12 }}
+          env:
+            - name: REDIS_HOST
+              value: {{ .Values.metadata.service.redis.host }}
+            - name: REDIS_PORT
+              value: "{{ .Values.metadata.service.redis.port }}"
+            - name: AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS
+              value: "{{ .Values.metadata.service.metricRefreshIntervalMs }}"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+      serviceAccountName: aibrix-gateway-plugins
