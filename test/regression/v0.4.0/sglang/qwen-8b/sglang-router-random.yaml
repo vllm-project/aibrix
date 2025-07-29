@@ -80,6 +80,7 @@ spec:
                   volumeMounts:
                     - name: model-vol
                       mountPath: /models
+                      readOnly: true
                     - mountPath: /dev/shm
                       name: shared-mem
                   resources:
@@ -93,7 +94,7 @@ spec:
               volumes:
                 - name: model-vol
                   hostPath:
-                    path: /root/models
+                    path: /data01/models
                     type: Directory
                 - emptyDir:
                     medium: Memory
@@ -143,6 +144,7 @@ spec:
                   volumeMounts:
                     - name: model-vol
                       mountPath: /models
+                      readOnly: true
                     - mountPath: /dev/shm
                       name: shared-mem
                   resources:
@@ -156,7 +158,7 @@ spec:
               volumes:
                 - name: model-vol
                   hostPath:
-                    path: /root/models
+                    path: /data01/models
                     type: Directory
                 - emptyDir:
                     medium: Memory

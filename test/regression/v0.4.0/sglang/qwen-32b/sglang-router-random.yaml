@@ -1,7 +1,7 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: sglang-router-cache
+  name: sglang-router-random
 spec:
   replicas: 1
   updateStrategy:
@@ -24,19 +24,19 @@ spec:
               containers:
                 - name: mini-lb
                   image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang-router:v0.1.6
-                  command: [ "sh", "-c" ]
+                  command: ["sh", "-c"]
                   args:
                     - |
                       python3 -m sglang_router.launch_router \
                         --pd-disaggregation \
-                        --policy cache_aware \
+                        --policy random \
                         --service-discovery \
                         --service-discovery-port 30000 \
                         --prefill-selector storm-service-name=$STORM_SERVICE_NAME role-name=prefill \
                         --decode-selector storm-service-name=$STORM_SERVICE_NAME role-name=decode \
                         --service-discovery-namespace default
         - name: prefill
-          replicas: 4
+          replicas: 2
           stateful: true
           template:
             metadata:
@@ -57,8 +57,8 @@ spec:
                   args:
                     - |
                       python3 -m sglang.launch_server \
-                        --model-path /models/Qwen3-8B \
-                        --served-model-name qwen3-8b \
+                        --model-path /models/Qwen3-32B \
+                        --served-model-name qwen3-32b \
                         --host 0.0.0.0 \
                         --port 30000 \
                         --disaggregation-mode prefill \
@@ -100,7 +100,7 @@ spec:
                     medium: Memory
                   name: shared-mem
         - name: decode
-          replicas: 3
+          replicas: 2
           stateful: true
           template:
             metadata:
@@ -121,8 +121,8 @@ spec:
                   args:
                     - |
                       python3 -m sglang.launch_server \
-                        --model-path /models/Qwen3-8B \
-                        --served-model-name qwen3-8b \
+                        --model-path /models/Qwen3-32B \
+                        --served-model-name qwen3-32b \
                         --host 0.0.0.0 \
                         --port 30000 \
                         --disaggregation-mode decode \
