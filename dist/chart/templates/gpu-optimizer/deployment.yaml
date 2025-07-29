@@ -3,14 +3,19 @@ kind: Deployment
 metadata:
   name: aibrix-gpu-optimizer
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gpu-optimizer
 spec:
   replicas: {{ .Values.gpuOptimizer.replicaCount }}
   selector:
     matchLabels:
+      {{- include "chart.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: aibrix-gpu-optimizer
   template:
     metadata:
       labels:
+        {{- include "chart.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-gpu-optimizer
     spec:
       serviceAccountName: aibrix-gpu-optimizer
@@ -22,6 +27,7 @@ spec:
           ports:
             - containerPort: 8080
           resources: {{ toYaml .Values.gpuOptimizer.container.resources | nindent 12 }}
+          # TODO: add liveness and readiness probes
           env:
             - name: REDIS_HOST
               value: {{ .Values.gpuOptimizer.dependencies.redis.host }}

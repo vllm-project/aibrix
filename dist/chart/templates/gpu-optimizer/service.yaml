@@ -3,6 +3,9 @@ kind: Service
 metadata:
   name: aibrix-gpu-optimizer
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gpu-optimizer
 spec:
   selector:
     app.kubernetes.io/component: aibrix-gpu-optimizer

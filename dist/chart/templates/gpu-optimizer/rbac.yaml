@@ -3,11 +3,17 @@ kind: ServiceAccount
 metadata:
   name: aibrix-gpu-optimizer
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gpu-optimizer
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: aibrix-gpu-optimizer-clusterrole
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gpu-optimizer
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
@@ -17,6 +23,9 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: aibrix-gpu-optimizer-clusterrole-binding
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gpu-optimizer
 subjects:
   - kind: ServiceAccount
     name: aibrix-gpu-optimizer

@@ -4,6 +4,9 @@ kind: EnvoyExtensionPolicy
 metadata:
   name: aibrix-gateway-plugins-extension-policy
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gateway-plugin
 spec:
   targetRef:
     group: gateway.networking.k8s.io
@@ -25,6 +28,9 @@ kind: EnvoyExtensionPolicy
 metadata:
   name: aibrix-skip-ext-proc
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gateway-plugin
 spec:
   targetRef:
     group: gateway.networking.k8s.io
