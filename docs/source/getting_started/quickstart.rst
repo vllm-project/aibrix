@@ -110,7 +110,7 @@ Depending on where you deployed the AIBrix, you can use either of the following 
 
 .. code-block:: go
 
-    # multiturn conversation
+    // multiturn conversation
     package main
 
     import (
