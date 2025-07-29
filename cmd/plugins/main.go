@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"google.golang.org/grpc"
@@ -78,7 +79,15 @@ func main() {
 		panic(err)
 	}
 
-	cache.InitForGateway(config, stopCh, redisClient, routing.ModelRouterFactory)
+	// Initialize cache with KV sync enabled for gateway
+	kvSyncEnabled, _ := strconv.ParseBool(utils.LoadEnv("AIBRIX_KV_EVENT_SYNC_ENABLED", "false"))
+	remoteTokenizerEnabled, _ := strconv.ParseBool(utils.LoadEnv("AIBRIX_USE_REMOTE_TOKENIZER", "false"))
+
+	cache.InitWithOptions(config, stopCh, cache.InitOptions{
+		EnableKVSync:        kvSyncEnabled && remoteTokenizerEnabled,
+		RedisClient:         redisClient,
+		ModelRouterProvider: routing.ModelRouterFactory,
+	})
 
 	k8sClient, err := kubernetes.NewForConfig(config)
 	if err != nil {

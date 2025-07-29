@@ -54,6 +54,7 @@ Documentation
    features/autoscaling/autoscaling.rst
    features/runtime.rst
    features/kvcache-offloading.rst
+   features/kv-event-sync.rst
    features/benchmark-and-generator.rst
    features/multi-engine.rst
 
@@ -69,6 +70,13 @@ Documentation
    :caption: Production Readiness
 
    production/observability.rst
+
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Testing
+
+   testing/kv-event-sync-e2e.rst
 
 .. toctree::
    :maxdepth: 1
