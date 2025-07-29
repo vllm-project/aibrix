@@ -1,0 +1,287 @@
+name: Nightly Performance Tests
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # Run at 3 AM UTC daily
+  workflow_dispatch:
+    inputs:
+      baseline_sha:
+        description: 'Git SHA to use as baseline for comparison'
+        required: false
+        default: ''
+
+env:
+  GO_VERSION: '1.23'
+  RESULTS_RETENTION_DAYS: 90
+
+jobs:
+  performance-benchmarks:
+    name: Run Performance Benchmarks
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        benchmark:
+          - name: "KVEventProcessingLatency"
+            test: "BenchmarkKVEventProcessingLatency"
+          - name: "KVEventThroughput"
+            test: "BenchmarkKVEventThroughput"
+          - name: "KVEventMemoryUsage"
+            test: "BenchmarkKVEventMemoryUsage"
+          - name: "KVEventConcurrency"
+            test: "BenchmarkKVEventConcurrency"
+          - name: "KVEventLargePrefix"
+            test: "BenchmarkKVEventLargePrefix"
+          - name: "KVEventBurstLoad"
+            test: "BenchmarkKVEventBurstLoad"
+          - name: "KVEventRoutingDecision"
+            test: "BenchmarkKVEventRoutingDecision"
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ env.GO_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libzmq3-dev pkg-config
+    
+    - name: Run benchmark
+      run: |
+        cd test/benchmark
+        go test -bench=${{ matrix.benchmark.test }} -benchmem -benchtime=30s -count=5 -cpu=1,2,4,8 -tags="zmq" \
+          -timeout=30m | tee ${{ matrix.benchmark.name }}-results.txt
+    
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-${{ matrix.benchmark.name }}-${{ github.sha }}
+        path: test/benchmark/${{ matrix.benchmark.name }}-results.txt
+        retention-days: ${{ env.RESULTS_RETENTION_DAYS }}
+
+  compare-results:
+    name: Compare with Baseline
+    runs-on: ubuntu-latest
+    needs: performance-benchmarks
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ env.GO_VERSION }}
+    
+    - name: Install benchstat
+      run: go install golang.org/x/perf/cmd/benchstat@latest
+    
+    - name: Download current results
+      uses: actions/download-artifact@v4
+      with:
+        pattern: benchmark-*-${{ github.sha }}
+        path: current-results
+    
+    - name: Determine baseline SHA
+      id: baseline
+      run: |
+        if [ -n "${{ github.event.inputs.baseline_sha }}" ]; then
+          echo "sha=${{ github.event.inputs.baseline_sha }}" >> $GITHUB_OUTPUT
+        else
+          # Get SHA from 7 days ago
+          echo "sha=$(git rev-list -n 1 --before='7 days ago' HEAD)" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Download baseline results
+      uses: dawidd6/action-download-artifact@v3
+      with:
+        workflow: nightly-performance.yml
+        commit: ${{ steps.baseline.outputs.sha }}
+        path: baseline-results
+      continue-on-error: true
+    
+    - name: Compare results
+      run: |
+        mkdir -p comparison-reports
+        
+        for bench in KVEventProcessingLatency KVEventThroughput KVEventMemoryUsage KVEventConcurrency KVEventLargePrefix KVEventBurstLoad KVEventRoutingDecision; do
+          if [ -f "baseline-results/benchmark-${bench}-${{ steps.baseline.outputs.sha }}/${bench}-results.txt" ] && \
+             [ -f "current-results/benchmark-${bench}-${{ github.sha }}/${bench}-results.txt" ]; then
+            benchstat \
+              "baseline-results/benchmark-${bench}-${{ steps.baseline.outputs.sha }}/${bench}-results.txt" \
+              "current-results/benchmark-${bench}-${{ github.sha }}/${bench}-results.txt" \
+              > "comparison-reports/${bench}-comparison.txt"
+            
+            echo "## ${bench} Comparison" >> comparison-reports/summary.md
+            echo '```' >> comparison-reports/summary.md
+            cat "comparison-reports/${bench}-comparison.txt" >> comparison-reports/summary.md
+            echo '```' >> comparison-reports/summary.md
+            echo "" >> comparison-reports/summary.md
+          else
+            echo "## ${bench} Comparison" >> comparison-reports/summary.md
+            echo "No baseline data available for comparison" >> comparison-reports/summary.md
+            echo "" >> comparison-reports/summary.md
+          fi
+        done
+    
+    - name: Check for regressions
+      id: regression-check
+      run: |
+        cd comparison-reports
+        regression_found=false
+        
+        for file in *-comparison.txt; do
+          if [ -f "$file" ]; then
+            # Check for significant regression (>10% slower)
+            if grep -E "\\+[1-9][0-9]\\..*%" "$file" > /dev/null; then
+              regression_found=true
+              echo "Performance regression detected in $file"
+            fi
+          fi
+        done
+        
+        echo "regression_found=$regression_found" >> $GITHUB_OUTPUT
+    
+    - name: Upload comparison report
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-comparison-${{ github.sha }}
+        path: comparison-reports/
+        retention-days: ${{ env.RESULTS_RETENTION_DAYS }}
+
+  generate-dashboard:
+    name: Generate Performance Dashboard
+    runs-on: ubuntu-latest
+    needs: [performance-benchmarks, compare-results]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download all results
+      uses: actions/download-artifact@v4
+      with:
+        path: all-results
+    
+    - name: Generate dashboard data
+      run: |
+        mkdir -p dashboard
+        
+        # Create JSON data for visualization
+        cat > dashboard/performance-data.json << 'EOF'
+        {
+          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "commit": "${{ github.sha }}",
+          "benchmarks": []
+        }
+        EOF
+        
+        # Process benchmark results and add to JSON
+        # This is a placeholder - implement actual data processing
+    
+    - name: Create dashboard HTML
+      run: |
+        cat > dashboard/index.html << 'EOF'
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>KV Sync Performance Dashboard</title>
+            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                .chart-container { width: 80%; margin: 20px auto; }
+                h1, h2 { text-align: center; }
+                .metric { background: #f0f0f0; padding: 10px; margin: 10px; border-radius: 5px; }
+            </style>
+        </head>
+        <body>
+            <h1>KV Event Sync Performance Dashboard</h1>
+            <p>Last updated: ${{ github.sha }} at $(date -u)</p>
+            
+            <div class="metric">
+                <h2>Event Processing Latency</h2>
+                <canvas id="latencyChart"></canvas>
+            </div>
+            
+            <div class="metric">
+                <h2>Throughput (Events/sec)</h2>
+                <canvas id="throughputChart"></canvas>
+            </div>
+            
+            <div class="metric">
+                <h2>Memory Usage</h2>
+                <canvas id="memoryChart"></canvas>
+            </div>
+            
+            <script>
+                // Placeholder for chart initialization
+                // Would load actual data from performance-data.json
+            </script>
+        </body>
+        </html>
+        EOF
+    
+    - name: Deploy dashboard to GitHub Pages
+      if: github.ref == 'refs/heads/main'
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./dashboard
+        destination_dir: performance/${{ github.sha }}
+
+  notify-regressions:
+    name: Notify Performance Regressions
+    runs-on: ubuntu-latest
+    needs: compare-results
+    if: needs.compare-results.outputs.regression_found == 'true'
+    steps:
+    - name: Create issue for regression
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const title = `Performance Regression Detected - ${new Date().toISOString().split('T')[0]}`;
+          const body = `A performance regression was detected in the nightly benchmarks.
+          
+          **Commit:** ${{ github.sha }}
+          **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          
+          Please review the [performance comparison report](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
+          
+          cc @vllm-project/aibrix-performance`;
+          
+          await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: title,
+            body: body,
+            labels: ['performance', 'regression']
+          });
+
+  cleanup-old-results:
+    name: Cleanup Old Results
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+    - name: Delete old artifacts
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const days = 90;
+          const ms_per_day = 24 * 60 * 60 * 1000;
+          const cutoff_date = new Date(Date.now() - days * ms_per_day);
+          
+          const artifacts = await github.rest.actions.listArtifactsForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            per_page: 100
+          });
+          
+          for (const artifact of artifacts.data.artifacts) {
+            if (artifact.name.startsWith('benchmark-') && new Date(artifact.created_at) < cutoff_date) {
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: artifact.id
+              });
+              console.log(`Deleted old artifact: ${artifact.name}`);
+            }
+          }
