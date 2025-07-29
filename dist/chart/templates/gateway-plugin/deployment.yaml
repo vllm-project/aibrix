@@ -4,11 +4,13 @@ metadata:
   name: aibrix-gateway-plugins
   namespace: {{ .Release.Namespace }}
   labels:
+    {{- include "chart.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway-plugin
 spec:
   replicas: {{ .Values.gatewayPlugin.replicaCount }}
   selector:
     matchLabels:
+      {{- include "chart.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: aibrix-gateway-plugin
   strategy:
     type: RollingUpdate
@@ -18,6 +20,7 @@ spec:
   template:
     metadata:
       labels:
+        {{- include "chart.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-gateway-plugin
     spec:
       affinity:
@@ -27,10 +30,14 @@ spec:
               podAffinityTerm:
                 labelSelector:
                   matchExpressions:
-                    - key: app
+                    - key: app.kubernetes.io/name
                       operator: In
                       values:
-                        - gateway-plugins
+                        - {{ include "chart.name" . }}
+                    - key: app.kubernetes.io/component
+                      operator: In
+                      values:
+                        - aibrix-gateway-plugin
                 topologyKey: "kubernetes.io/hostname"
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -75,13 +82,7 @@ spec:
 {{- end }}
           resources: {{ toYaml .Values.gatewayPlugin.resources | nindent 12 }}
           livenessProbe:
-            grpc:
-              port: 50052
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            {{- toYaml .Values.gatewayPlugin.container.probes.liveness | nindent 12 }}
           readinessProbe:
-            grpc:
-              port: 50052
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            {{- toYaml .Values.gatewayPlugin.container.probes.readiness | nindent 12 }}
       serviceAccountName: aibrix-gateway-plugins

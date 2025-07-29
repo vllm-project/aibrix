@@ -1,17 +1,15 @@
 apiVersion: v1
 kind: Service
 metadata:
+  name: aibrix-controller-manager-metrics-service
+  namespace: {{ .Release.Namespace }}
   annotations:
     prometheus.io/path: /metrics
     prometheus.io/port: "8080"
     prometheus.io/scrape: "true"
   labels:
+    {{- include "chart.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-controller-manager
-    app.kubernetes.io/managed-by: kubectl
-    app.kubernetes.io/name: aibrix
-    app.kubernetes.io/version: nightly
-  name: aibrix-controller-manager-metrics-service
-  namespace: {{ .Release.Namespace }}
 spec:
   ports:
   - name: http
@@ -19,4 +17,5 @@ spec:
     protocol: TCP
     targetPort: 8080
   selector:
+    {{- include "chart.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-controller-manager

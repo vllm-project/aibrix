@@ -3,23 +3,22 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    app: redis
-    app.kubernetes.io/component: aibrix-metadata-service
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-metadata-redis
   name: aibrix-redis-master
   namespace: {{ .Release.Namespace }}
 spec:
   replicas: {{ .Values.metadata.redis.replicas }}
   selector:
     matchLabels:
-      app: redis
-      role: master
-      tier: backend
+      {{- include "chart.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: aibrix-metadata-redis
   template:
     metadata:
       labels:
-        app: redis
-        role: master
-        tier: backend
+        {{- include "chart.labels" . | nindent 8 }}
+        {{- include "chart.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: aibrix-metadata-redis
     spec:
       containers:
         - name: master
@@ -32,10 +31,8 @@ apiVersion: v1
 kind: Service
 metadata:
   labels:
-    app: redis
-    app.kubernetes.io/component: aibrix-metadata-service
-    role: master
-    tier: backend
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-metadata-service  
   name: aibrix-redis-master
   namespace: {{ .Release.Namespace }}
 spec:
@@ -43,6 +40,5 @@ spec:
     - port: 6379
       targetPort: 6379
   selector:
-    app: redis
-    role: master
-    tier: backend
+    {{- include "chart.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-metadata-redis
