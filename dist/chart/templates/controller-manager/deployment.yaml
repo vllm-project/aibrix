@@ -16,7 +16,6 @@ spec:
     metadata:
       labels:
         {{- include "chart.labels" . | nindent 8 }}
-        {{- include "chart.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-controller-manager
     spec:
       containers:

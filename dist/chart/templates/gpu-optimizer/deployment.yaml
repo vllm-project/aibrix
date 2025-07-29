@@ -16,7 +16,6 @@ spec:
     metadata:
       labels:
         {{- include "chart.labels" . | nindent 8 }}
-        {{- include "chart.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-gpu-optimizer
     spec:
       serviceAccountName: aibrix-gpu-optimizer
