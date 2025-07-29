@@ -78,11 +78,15 @@ class S3Storage(BaseStorage):
 
         # Check if we should use multipart upload
         try:
-            size = len(reader)
+            if isinstance(reader, Reader):
+                size = reader.get_size()
+            else:
+                size = len(reader)
             if size >= self.config.multipart_threshold:
                 await self.multipart_upload(key, reader, content_type, metadata)
                 return
         except (OSError, IOError, ValueError):
+            # Can't determine size, give up multipart upload
             pass
 
         # Prepare kwargs
@@ -260,7 +264,15 @@ class S3Storage(BaseStorage):
 
         return await asyncio.get_event_loop().run_in_executor(None, _head_object)
 
-    async def create_multipart_upload(
+    def is_native_multipart_supported(self) -> bool:
+        """Check if native multipart upload is supported.
+
+        Returns:
+            True for S3 Storage
+        """
+        return True
+
+    async def _native_create_multipart_upload(
         self,
         key: str,
         content_type: Optional[str] = None,
@@ -287,7 +299,7 @@ class S3Storage(BaseStorage):
             None, _create_multipart_upload
         )
 
-    async def upload_part(
+    async def _native_upload_part(
         self,
         key: str,
         upload_id: str,
@@ -316,7 +328,7 @@ class S3Storage(BaseStorage):
             if isinstance(reader, Reader) and not isinstance(data, Reader):
                 reader.close()
 
-    async def complete_multipart_upload(
+    async def _native_complete_multipart_upload(
         self,
         key: str,
         upload_id: str,
@@ -344,7 +356,7 @@ class S3Storage(BaseStorage):
 
         await asyncio.get_event_loop().run_in_executor(None, _complete_multipart_upload)
 
-    async def abort_multipart_upload(
+    async def _native_abort_multipart_upload(
         self,
         key: str,
         upload_id: str,
@@ -381,11 +393,11 @@ class S3Storage(BaseStorage):
 
     def _wrap_s3_data(
         self, data: Union[bytes, str, BinaryIO, TextIO, Reader]
-    ) -> Union[bytes, str, Reader]:
+    ) -> Union[bytes, Reader]:
         """Wrap data in Reader if necessary."""
         # Wrap non-Reader objects in Reader for consistent handling
         if isinstance(data, str):
-            return data
+            return data.encode("utf-8")
         elif isinstance(data, TextIOBase):
             reader = Reader(data)
             ret = reader.read_all()

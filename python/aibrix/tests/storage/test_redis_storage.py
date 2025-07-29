@@ -90,17 +90,19 @@ async def test_multipart_not_supported():
     """Test that multipart operations raise NotImplementedError."""
     storage = RedisStorage()
 
-    with pytest.raises(NotImplementedError):
-        await storage.create_multipart_upload("test", None, None)
+    assert not storage.is_native_multipart_supported()
 
     with pytest.raises(NotImplementedError):
-        await storage.upload_part("test", "upload_id", 1, b"data")
+        await storage._native_create_multipart_upload("test", None, None)
 
     with pytest.raises(NotImplementedError):
-        await storage.complete_multipart_upload("test", "upload_id", [])
+        await storage._native_upload_part("test", "upload_id", 1, b"data")
 
     with pytest.raises(NotImplementedError):
-        await storage.abort_multipart_upload("test", "upload_id")
+        await storage._native_complete_multipart_upload("test", "upload_id", [])
+
+    with pytest.raises(NotImplementedError):
+        await storage._native_abort_multipart_upload("test", "upload_id")
 
 
 @pytest.mark.asyncio
@@ -254,6 +256,11 @@ async def test_redis_token_pagination():
     """Test Redis token-based pagination functionality (requires Redis running)."""
     storage = get_redis_storage()
     try:
+        # Clean up any existing keys first to ensure clean state
+        all_existing, _ = await storage.list_objects()
+        for key in all_existing:
+            await storage.delete_object(key)
+
         # Create test objects
         for i in range(10):
             await storage.put_object(f"test_key_{i:02d}", f"data_{i}".encode())

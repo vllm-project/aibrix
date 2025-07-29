@@ -71,9 +71,8 @@ class TOSStorage(BaseStorage):
                 await self.multipart_upload(key, reader, content_type, metadata)
                 return
         except (OSError, IOError, ValueError):
-            # Can't determine size, use multipart upload for safety to avoid loading all data
-            await self.multipart_upload(key, reader, content_type, metadata)
-            return
+            # Can't determine size, give up multipart upload
+            pass
 
         # For small files, read all data and upload directly as BytesIO
         # TOS client has issues with custom file-like objects for CRC calculation
@@ -288,7 +287,15 @@ class TOSStorage(BaseStorage):
 
         return await asyncio.get_event_loop().run_in_executor(None, _head_object)
 
-    async def create_multipart_upload(
+    def is_native_multipart_supported(self) -> bool:
+        """Check if native multipart upload is supported.
+
+        Returns:
+            True for TOS Storage
+        """
+        return True
+
+    async def _native_create_multipart_upload(
         self,
         key: str,
         content_type: Optional[str] = None,
@@ -318,7 +325,7 @@ class TOSStorage(BaseStorage):
             None, _create_multipart_upload
         )
 
-    async def upload_part(
+    async def _native_upload_part(
         self,
         key: str,
         upload_id: str,
@@ -350,7 +357,7 @@ class TOSStorage(BaseStorage):
             if not isinstance(data, Reader):
                 reader.close()
 
-    async def complete_multipart_upload(
+    async def _native_complete_multipart_upload(
         self,
         key: str,
         upload_id: str,
@@ -381,7 +388,7 @@ class TOSStorage(BaseStorage):
 
         await asyncio.get_event_loop().run_in_executor(None, _complete_multipart_upload)
 
-    async def abort_multipart_upload(
+    async def _native_abort_multipart_upload(
         self,
         key: str,
         upload_id: str,

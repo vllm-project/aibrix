@@ -107,10 +107,10 @@ class BatchStorageAdapter:
         )
         tasks = [
             self.storage.create_multipart_upload(
-                job.status.output_file_id, "application/jsonl"
+                job.status.output_file_id, "application/jsonl", small_parts=True
             ),
             self.storage.create_multipart_upload(
-                job.status.error_file_id, "application/jsonl"
+                job.status.error_file_id, "application/jsonl", small_parts=True
             ),
         ]
         (
@@ -149,7 +149,7 @@ class BatchStorageAdapter:
             # Store metadata
             await set_metadata(
                 self._get_request_meta_output_key(job, idx),
-                f"{"error" if is_error else "output"}:{etag}",
+                self._get_request_meta_output_val(is_error, etag),
             )
 
         logger.debug(
@@ -239,7 +239,7 @@ class BatchStorageAdapter:
         return f"batch:{job.job_id}:output:{idx}"
 
     def _get_request_meta_output_val(self, is_error: bool, etag: str) -> str:
-        return f"{"error" if is_error else "output"}:{etag}"
+        return f"{'error' if is_error else 'output'}:{etag}"
 
     def _parse_request_meta_output_val(self, meta_val: str) -> Tuple[str, bool]:
         is_error, etag = meta_val.split(":", 1)
