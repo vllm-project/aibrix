@@ -4,6 +4,7 @@ kind: MutatingWebhookConfiguration
 metadata:
   labels:
     {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-controller-manager
   name: aibrix-mutating-webhook-configuration
   namespace: {{ .Release.Namespace }}
 webhooks:
@@ -73,6 +74,7 @@ kind: ValidatingWebhookConfiguration
 metadata:
   labels:
     {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-controller-manager
   name: aibrix-validating-webhook-configuration
   namespace: {{ .Release.Namespace }}
 webhooks:

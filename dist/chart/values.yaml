@@ -1,6 +1,6 @@
 # [Core]: AIBrix Deployment Configurations
 controllerManager:
-  replicas: 1
+  replicaCount: 1
   container:
     image:
       repository: aibrix/controller-manager
@@ -13,6 +13,19 @@ controllerManager:
       requests:
         cpu: 10m
         memory: 64Mi
+    probes:
+      liveness:
+        httpGet:
+          path: /healthz
+          port: health
+        initialDelaySeconds: 15
+        periodSeconds: 20
+      readiness:
+        httpGet:
+          path: /readyz
+          port: health
+        initialDelaySeconds: 5
+        periodSeconds: 10
   gatewayTimeoutSeconds: 120
 
 gatewayPlugin:
@@ -26,7 +39,6 @@ gatewayPlugin:
       repository: aibrix/gateway-plugins
       tag: nightly
       pullPolicy: IfNotPresent
-
     resources:
       limits:
         cpu: 1
@@ -34,6 +46,21 @@ gatewayPlugin:
       requests:
         cpu: 1
         memory: 1Gi
+    probes:
+      liveness:
+        grpc:
+          port: 50052
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 3
+      readiness:
+        grpc:
+          port: 50052
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 3
     envs:
       AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"
       AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE: "character"
@@ -53,7 +80,6 @@ gpuOptimizer:
     image:
       repository: aibrix/runtime
       tag: nightly
-
     resources:
       limits:
         cpu: 500m
@@ -61,7 +87,6 @@ gpuOptimizer:
       requests:
         cpu: 10m
         memory: 64Mi
-
   dependencies:
     redis:
       host: aibrix-redis-master

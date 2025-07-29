@@ -3,15 +3,21 @@ kind: Deployment
 metadata:
   name: aibrix-metadata-service
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-metadata-service
 spec:
   replicas: {{ .Values.metadata.service.replicas }}
   selector:
     matchLabels:
-      app: aibrix-metadata-service
+      {{- include "chart.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: aibrix-metadata-service
   template:
     metadata:
       labels:
-        app: aibrix-metadata-service
+        {{- include "chart.labels" . | nindent 8 }}
+        {{- include "chart.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: aibrix-metadata-service
     spec:
       initContainers:
         - name: init-c
@@ -27,6 +33,7 @@ spec:
           ports:
             - containerPort: 8090
           resources: {{ toYaml .Values.metadata.service.container.resources | nindent 12 }}
+          # TODO: add liveness and readiness probes
           env:
             - name: REDIS_HOST
               value: {{ .Values.metadata.service.redis.host }}

@@ -3,17 +3,20 @@ kind: Deployment
 metadata:
   labels:
     app.kubernetes.io/component: aibrix-controller-manager
-    app.kubernetes.io/name: aibrix
+    {{- include "chart.labels" . | nindent 4 }}
   name: aibrix-controller-manager
   namespace: {{ .Release.Namespace }}
 spec:
   replicas: {{ .Values.controllerManager.replicaCount }}
   selector:
     matchLabels:
+      {{- include "chart.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: aibrix-controller-manager
   template:
     metadata:
       labels:
+        {{- include "chart.labels" . | nindent 8 }}
+        {{- include "chart.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-controller-manager
     spec:
       containers:
@@ -36,17 +39,9 @@ spec:
           protocol: TCP
         resources: {{ toYaml .Values.controllerManager.container.resources | nindent 10 }}
         livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8081
-          initialDelaySeconds: 15
-          periodSeconds: 20
+          {{- toYaml .Values.controllerManager.container.probes.liveness | nindent 12 }}
         readinessProbe:
-          httpGet:
-            path: /readyz
-            port: 8081
-          initialDelaySeconds: 5
-          periodSeconds: 10
+          {{- toYaml .Values.controllerManager.container.probes.readiness | nindent 12 }}
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
