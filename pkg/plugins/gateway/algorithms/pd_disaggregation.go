@@ -242,7 +242,9 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 	if err != nil {
 		return fmt.Errorf("failed to execute http prefill request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
