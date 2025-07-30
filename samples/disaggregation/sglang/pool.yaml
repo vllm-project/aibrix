@@ -118,7 +118,7 @@ spec:
                   ]
               labels:
                 model.aibrix.ai/name: qwen2.5-7B
-                model.aibrix.ai/port: "30001"
+                model.aibrix.ai/port: "30000"
                 model.aibrix.ai/engine: sglang
             spec:
               containers:
@@ -131,7 +131,7 @@ spec:
                         --model-path /models/Qwen2.5-7B-Instruct \
                         --served-model-name qwen2.5-7B \
                         --host 0.0.0.0 \
-                        --port 30001 \
+                        --port 30000 \
                         --disaggregation-mode decode \
                         --disaggregation-transfer-backend=mooncake \
                         --trust-remote-code \
