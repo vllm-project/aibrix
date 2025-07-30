@@ -49,6 +49,10 @@ spec:
                       }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen2.5-7B
+                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/engine: sglang
             spec:
               containers:
                 - name: prefill
@@ -58,10 +62,11 @@ spec:
                     - |
                       python3 -m sglang.launch_server \
                         --model-path /models/Qwen2.5-7B-Instruct \
+                        --served-model-name qwen2.5-7B \
                         --host 0.0.0.0 \
                         --port 30000 \
                         --disaggregation-mode prefill \
-                        --disaggregation-transfer-backend=nixl \
+                        --disaggregation-transfer-backend=mooncake \
                         --trust-remote-code \
                         --mem-fraction-static 0.8 \
                         --log-level debug
@@ -111,6 +116,10 @@ spec:
                       }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen2.5-7B
+                model.aibrix.ai/port: "30001"
+                model.aibrix.ai/engine: sglang
             spec:
               containers:
                 - name: decode
@@ -120,10 +129,11 @@ spec:
                     - |
                       python3 -m sglang.launch_server \
                         --model-path /models/Qwen2.5-7B-Instruct \
+                        --served-model-name qwen2.5-7B \
                         --host 0.0.0.0 \
-                        --port 30000 \
+                        --port 30001 \
                         --disaggregation-mode decode \
-                        --disaggregation-transfer-backend=nixl \
+                        --disaggregation-transfer-backend=mooncake \
                         --trust-remote-code \
                         --mem-fraction-static 0.8 \
                         --log-level debug

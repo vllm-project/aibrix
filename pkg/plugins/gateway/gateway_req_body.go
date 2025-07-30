@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"k8s.io/klog/v2"
 
@@ -81,7 +82,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		}
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
-			HeaderTargetPod, targetPodIP)
+			HeaderTargetPod, targetPodIP,
+			"content-length", strconv.Itoa(len(routingCtx.ReqBody)))
 		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream, "routingAlgorithm", routingAlgorithm, "targetPodIP", targetPodIP, "routingDuration", routingCtx.GetRoutingDelay())
 	}
 
@@ -93,6 +95,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 				Response: &extProcPb.CommonResponse{
 					HeaderMutation: &extProcPb.HeaderMutation{
 						SetHeaders: headers,
+					},
+					BodyMutation: &extProcPb.BodyMutation{
+						Mutation: &extProcPb.BodyMutation_Body{
+							Body: routingCtx.ReqBody,
+						},
 					},
 				},
 			},
