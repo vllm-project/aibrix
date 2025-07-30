@@ -31,7 +31,7 @@ spec:
                       python3 -m sglang_router.launch_router \
                         --pd-disaggregation \
                         --host 0.0.0.0 \
-                        --policy cache_aware \
+                        --policy random \
                         --service-discovery \
                         --service-discovery-port 30000 \
                         --prefill-selector storm-service-name=$STORM_SERVICE_NAME role-name=prefill \
