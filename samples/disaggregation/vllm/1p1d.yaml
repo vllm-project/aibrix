@@ -30,6 +30,10 @@ spec:
                       }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen3-8B
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
             spec:
               containers:
                 - name: prefill
@@ -101,6 +105,10 @@ spec:
                       }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen3-8B
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
             spec:
               containers:
                 - name: decode
