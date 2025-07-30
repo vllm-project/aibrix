@@ -16,25 +16,25 @@ spec:
         app: tp-1p1d
     spec:
       roles:
-        # - name: routing
-        #   replicas: 1
-        #   stateful: true
-        #   template:
-        #     spec:
-        #       containers:
-        #         - name: mini-lb
-        #           image: aibrix/sglang-router:v0.1.6
-        #           command: [ "sh", "-c" ]
-        #           args:
-        #             - |
-        #               python3 -m sglang_router.launch_router \
-        #                 --pd-disaggregation \
-        #                 --policy random \
-        #                 --service-discovery \
-        #                 --service-discovery-port 30000 \
-        #                 --prefill-selector storm-service-name=$STORM_SERVICE_NAME role-name=prefill stormservice.orchestration.aibrix.ai/role-replica-index=0 \
-        #                 --decode-selector storm-service-name=$STORM_SERVICE_NAME role-name=decode stormservice.orchestration.aibrix.ai/role-replica-index=0 \
-        #                 --service-discovery-namespace default
+        - name: routing
+          replicas: 1
+          stateful: true
+          template:
+            spec:
+              containers:
+                - name: mini-lb
+                  image: aibrix/sglang-router:v0.1.6
+                  command: [ "sh", "-c" ]
+                  args:
+                    - |
+                      python3 -m sglang_router.launch_router \
+                        --pd-disaggregation \
+                        --policy random \
+                        --service-discovery \
+                        --service-discovery-port 30000 \
+                        --prefill-selector storm-service-name=$STORM_SERVICE_NAME role-name=prefill stormservice.orchestration.aibrix.ai/role-replica-index=0 \
+                        --decode-selector storm-service-name=$STORM_SERVICE_NAME role-name=decode stormservice.orchestration.aibrix.ai/role-replica-index=0 \
+                        --service-discovery-namespace default
         - name: prefill
           replicas: 2
           stateful: true
