@@ -52,13 +52,13 @@ type Server struct {
 	redisClient         *redis.Client
 	ratelimiter         ratelimiter.RateLimiter
 	client              kubernetes.Interface
-	gatewayClient       *gatewayapi.Clientset
+	gatewayClient       gatewayapi.Interface
 	requestCountTracker map[string]int
 	cache               cache.Cache
 	metricsServer       *metrics.Server
 }
 
-func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient *gatewayapi.Clientset) *Server {
+func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient gatewayapi.Interface) *Server {
 	c, err := cache.Get()
 	if err != nil {
 		panic(err)
@@ -205,6 +205,11 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 			}
 		}
 	}
+
+	if len(errMsg) == 0 {
+		return nil
+	}
+
 	return errors.New(strings.Join(errMsg, ", "))
 }
 
