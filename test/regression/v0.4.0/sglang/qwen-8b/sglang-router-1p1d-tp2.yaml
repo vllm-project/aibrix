@@ -1,7 +1,7 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: sglang-router-1p1d
+  name: sglang-router-1p1d-tp2
   namespace: default
 spec:
   replicas: 1
@@ -39,7 +39,7 @@ spec:
                         --decode-selector storm-service-name=$STORM_SERVICE_NAME role-name=decode \
                         --service-discovery-namespace default
         - name: prefill
-          replicas: 1
+          replicas: 2
           stateful: true
           template:
             metadata:
@@ -60,12 +60,16 @@ spec:
                   args:
                     - |
                       python3 -m sglang.launch_server \
-                        --model-path /models/Qwen3-8B \
-                        --served-model-name qwen3-8b \
+                        --model-path /models/Qwen3-32B \
+                        --served-model-name qwen3-32b \
                         --host 0.0.0.0 \
                         --port 30000 \
                         --disaggregation-mode prefill \
                         --disaggregation-transfer-backend=mooncake \
+                        --dist-init-addr "${ROLESET_NAME}-${ROLE_NAME}-${ROLE_TEMPLATE_HASH}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5000" \
+                        --nnodes 2 \
+                        --node-rank $ROLE_REPLICA_INDEX \
+                        --tp-size 2 \
                         --trust-remote-code \
                         --mem-fraction-static 0.8 \
                         --log-level debug
@@ -103,7 +107,7 @@ spec:
                     medium: Memory
                   name: shared-mem
         - name: decode
-          replicas: 1
+          replicas: 2
           stateful: true
           template:
             metadata:
@@ -124,12 +128,16 @@ spec:
                   args:
                     - |
                       python3 -m sglang.launch_server \
-                        --model-path /models/Qwen3-8B \
-                        --served-model-name qwen3-8b \
+                        --model-path /models/Qwen3-32B \
+                        --served-model-name qwen3-32b \
                         --host 0.0.0.0 \
                         --port 30000 \
                         --disaggregation-mode decode \
                         --disaggregation-transfer-backend=mooncake \
+                        --dist-init-addr "${ROLESET_NAME}-${ROLE_NAME}-${ROLE_TEMPLATE_HASH}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5000" \
+                        --nnodes 2 \
+                        --node-rank $ROLE_REPLICA_INDEX \
+                        --tp-size 2 \
                         --trust-remote-code \
                         --mem-fraction-static 0.8 \
                         --log-level debug

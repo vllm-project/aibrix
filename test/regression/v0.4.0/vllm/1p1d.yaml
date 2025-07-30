@@ -1,8 +1,7 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: sglang-router-1p1d
-  namespace: default
+  name: vllm-1p1d
 spec:
   replicas: 1
   updateStrategy:
@@ -10,34 +9,13 @@ spec:
   stateful: true
   selector:
     matchLabels:
-      app: replica-xpyd
+      app: vllm-1p1d
   template:
     metadata:
       labels:
-        app: replica-xpyd
+        app: vllm-1p1d
     spec:
       roles:
-        - name: routing
-          replicas: 1
-          stateful: true
-          template:
-            spec:
-              hostNetwork: true
-              containers:
-                - name: mini-lb
-                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang-router:v0.1.6
-                  command: ["sh", "-c"]
-                  args:
-                    - |
-                      python3 -m sglang_router.launch_router \
-                        --pd-disaggregation \
-                        --host 0.0.0.0 \
-                        --policy random \
-                        --service-discovery \
-                        --service-discovery-port 30000 \
-                        --prefill-selector storm-service-name=$STORM_SERVICE_NAME role-name=prefill \
-                        --decode-selector storm-service-name=$STORM_SERVICE_NAME role-name=decode \
-                        --service-discovery-namespace default
         - name: prefill
           replicas: 1
           stateful: true
@@ -55,21 +33,28 @@ spec:
             spec:
               containers:
                 - name: prefill
-                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang:v0.4.9.post3-cu126-nixl-v0.4.1
+                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.9.2-cu128-nixl-v0.4.1-lmcache-0.3.1.post1
                   command: ["sh", "-c"]
                   args:
                     - |
-                      python3 -m sglang.launch_server \
-                        --model-path /models/Qwen3-8B \
-                        --served-model-name qwen3-8b \
-                        --host 0.0.0.0 \
-                        --port 30000 \
-                        --disaggregation-mode prefill \
-                        --disaggregation-transfer-backend=mooncake \
-                        --trust-remote-code \
-                        --mem-fraction-static 0.8 \
-                        --log-level debug
+                      python3 -m vllm.entrypoints.openai.api_server \
+                      --host "0.0.0.0" \
+                      --port "8000" \
+                      --uvicorn-log-level warning \
+                      --model /models/Qwen3-8B \
+                      --served-model-name qwen3-8B \
+                      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
+                    - name: UCX_TLS
+                      value: cuda_ipc,cuda_copy,tcp
+                    - name: VLLM_SERVER_DEV_MODE
+                      value: "1"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+                      value: "5558"
+                    - name: VLLM_WORKER_MULTIPROC_METHOD
+                      value: spawn
+                    - name: VLLM_ENABLE_V1_MULTIPROCESSING
+                      value: "0"
                     - name: GLOO_SOCKET_IFNAME
                       value: eth0
                     - name: NCCL_SOCKET_IFNAME
@@ -119,21 +104,28 @@ spec:
             spec:
               containers:
                 - name: decode
-                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang:v0.4.9.post3-cu126-nixl-v0.4.1
+                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.9.2-cu128-nixl-v0.4.1-lmcache-0.3.1.post1
                   command: ["sh", "-c"]
                   args:
                     - |
-                      python3 -m sglang.launch_server \
-                        --model-path /models/Qwen3-8B \
-                        --served-model-name qwen3-8b \
-                        --host 0.0.0.0 \
-                        --port 30000 \
-                        --disaggregation-mode decode \
-                        --disaggregation-transfer-backend=mooncake \
-                        --trust-remote-code \
-                        --mem-fraction-static 0.8 \
-                        --log-level debug
+                      python3 -m vllm.entrypoints.openai.api_server \
+                      --host "0.0.0.0" \
+                      --port "8000" \
+                      --uvicorn-log-level warning \
+                      --model /models/Qwen3-8B \
+                      --served-model-name qwen3-8B \
+                      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
+                    - name: UCX_TLS
+                      value: cuda_ipc,cuda_copy,tcp
+                    - name: VLLM_SERVER_DEV_MODE
+                      value: "1"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+                      value: "5558"
+                    - name: VLLM_WORKER_MULTIPROC_METHOD
+                      value: spawn
+                    - name: VLLM_ENABLE_V1_MULTIPROCESSING
+                      value: "0"
                     - name: GLOO_SOCKET_IFNAME
                       value: eth0
                     - name: NCCL_SOCKET_IFNAME

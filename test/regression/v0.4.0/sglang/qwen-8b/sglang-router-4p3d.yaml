@@ -1,7 +1,7 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: sglang-router-1p1d
+  name: sglang-router-4p3d
   namespace: default
 spec:
   replicas: 1
@@ -39,7 +39,7 @@ spec:
                         --decode-selector storm-service-name=$STORM_SERVICE_NAME role-name=decode \
                         --service-discovery-namespace default
         - name: prefill
-          replicas: 1
+          replicas: 4
           stateful: true
           template:
             metadata:
@@ -103,7 +103,7 @@ spec:
                     medium: Memory
                   name: shared-mem
         - name: decode
-          replicas: 1
+          replicas: 3
           stateful: true
           template:
             metadata:
