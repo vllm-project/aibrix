@@ -79,7 +79,7 @@ func TestMutexCache_UpdateState_Concurrent(t *testing.T) {
 	assert.Equal(t, 1000*time.Millisecond, state.CriticalPathServiceTime)
 
 	// Total wait time should be the sum of all wait times:
-	// 100 * 100ms = 10000ms
+	// 1000 * 10ms = 10000ms
 	assert.Equal(t, 10000*time.Millisecond, state.TotalWaitTime)
 }
 
@@ -106,4 +106,33 @@ func TestMutexCache_UpdateAffinity_Concurrent(t *testing.T) {
 	assert.Contains(t, []string{"pod0", "pod1", "pod2", "pod3",
 		"pod4", "pod5", "pod6", "pod7", "pod8", "pod9"},
 		state.PodAffinity)
+}
+
+// TestMutexCache_Cleanup tests the Cleanup method.
+func TestMutexCache_Cleanup(t *testing.T) {
+	cache := NewMutexSessionCache()
+
+	// Create session1
+	cache.UpdateState("session1", 0, 1*time.Second, 0)
+	// state1, _ := cache.GetState("session1")
+	// t.Logf("Session 1 LastActivity: %v", state1.LastActivityTimestamp)
+
+	// Wait for 2 seconds, making session1 stale relative to a 1.5s timeout
+	time.Sleep(2 * time.Second)
+
+	// Create/update session2, making it fresh
+	cache.UpdateState("session2", 0, 1*time.Second, 0)
+	// state2, _ := cache.GetState("session2")
+	// t.Logf("Session 2 LastActivity: %v", state2.LastActivityTimestamp)
+
+	// Now, cleanup sessions older than 1.5 seconds
+	cache.cleanup(1500 * time.Millisecond)
+
+	// session1 should be gone because it's ~2 seconds old
+	_, exists := cache.GetState("session1")
+	assert.False(t, exists, "session1 should be stale and cleaned up")
+
+	// session2 should still exist because it's very fresh
+	_, exists = cache.GetState("session2")
+	assert.True(t, exists, "session2 should be fresh and remain")
 }

@@ -100,3 +100,58 @@ func TestShardedCache_UpdateAffinity_Concurrent(t *testing.T) {
 	// This test mainly serves to ensure no deadlocks occur.
 	t.Log("Concurrent affinity update test completed without deadlock.")
 }
+
+func TestShardedCache_GetFullState(t *testing.T) {
+	cache := NewShardedSessionCache()
+	defer cache.Close()
+
+	cache.UpdateState("session1", 0, 5*time.Second, 2*time.Second)
+	state, exists := cache.GetState("session1")
+	assert.True(t, exists)
+	assert.Equal(t, "session1", state.SessionID)
+	assert.Equal(t, 5*time.Second, state.CriticalPathServiceTime)
+	assert.Equal(t, 2*time.Second, state.TotalWaitTime)
+}
+
+func TestShardedCache_Cleanup(t *testing.T) {
+	cache := NewShardedSessionCache()
+	defer cache.Close()
+
+	// Ensure session1 and session2 hash to different shards if possible, or test with one
+	// For simplicity, we assume they might hash to the same shard, which is a valid test case.
+
+	// Create session1
+	cache.UpdateState("session1", 0, 1*time.Second, 0)
+	time.Sleep(10 * time.Millisecond) // wait for channel to process
+
+	// Wait to make session1 stale
+	time.Sleep(2 * time.Second)
+
+	// Create session2, making it fresh
+	cache.UpdateState("session2", 0, 1*time.Second, 0)
+	time.Sleep(10 * time.Millisecond)
+
+	// Trigger cleanup on all shards
+	cache.StartCleanupRoutine(1500 * time.Millisecond)
+
+	// Wait for the cleanup commands to be processed by all shards
+	time.Sleep(100 * time.Millisecond)
+
+	// To check existence, we need a GetState that returns a bool
+	// Let's assume we have implemented opGetFullState as discussed
+
+	// opGetFullState for session1
+	shard1 := cache.getShard("session1")
+	respChan1 := make(chan fullStateResponse, 1)
+	shard1.requests <- cacheRequest{op: opGetFullState, sessionID: "session1", fullStateResponseChan: respChan1}
+	response1 := <-respChan1
+	// The manager should have created a new empty state, because the old one was deleted.
+	assert.Equal(t, time.Duration(0), response1.state.CriticalPathServiceTime, "session1 should have been cleaned and recreated as empty")
+
+	// opGetFullState for session2
+	shard2 := cache.getShard("session2")
+	respChan2 := make(chan fullStateResponse, 1)
+	shard2.requests <- cacheRequest{op: opGetFullState, sessionID: "session2", fullStateResponseChan: respChan2}
+	response2 := <-respChan2
+	assert.NotEqual(t, time.Duration(0), response2.state.CriticalPathServiceTime, "session2 should be fresh and remain")
+}
