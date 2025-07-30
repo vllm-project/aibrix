@@ -223,6 +223,12 @@ func Test_handleRequestBody(t *testing.T) {
 							RawValue: []byte("1.2.3.4:8000"),
 						},
 					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:      "content-length",
+							RawValue: []byte("74"),
+						},
+					},
 				},
 				model:      "test-model",
 				stream:     false,

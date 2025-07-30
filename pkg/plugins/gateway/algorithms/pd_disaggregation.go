@@ -36,12 +36,14 @@ import (
 )
 
 const (
-	RouterPD                    types.RoutingAlgorithm = "pd"
-	LLMEngineLabel              string                 = "model.aibrix.ai/engine"
-	PDRoleIdentifier            string                 = "role-name"
-	RoleReplicaIndex            string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
-	PodGroupIndex               string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
-	defaultDecodeOnlyTokenLimit int                    = 256
+	RouterPD                         types.RoutingAlgorithm = "pd"
+	VLLMEngine                       string                 = "vllm"
+	SGLangEngine                     string                 = "sglang"
+	getSGLangBootstrapPortIdentifier string                 = "model.aibrix.ai/sglang-bootstrap-port"
+	LLMEngineLabel                   string                 = "model.aibrix.ai/engine"
+	PDRoleIdentifier                 string                 = "role-name"
+	RoleReplicaIndex                 string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
+	PodGroupIndex                    string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
 )
 
 func init() {
@@ -81,8 +83,9 @@ func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (
 		return "", err
 	}
 
-	if err = r.doPrefillRequest(ctx, prefillPods); err != nil {
-		return "", fmt.Errorf("prefill request failed: %w", err)
+	if err = r.doPrefillRequest(ctx, prefillPods, getLLMEngine(prefillPods[0], LLMEngineLabel, VLLMEngine)); err != nil {
+		klog.ErrorS(err, "prefill request failed", "request_id", ctx.RequestID)
+		return "", err
 	}
 
 	decodePod := r.selectDecodePod(decodePods)
@@ -93,16 +96,18 @@ func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (
 
 func (r *pdRouter) filterPrefillDecodePods(readyPods []*v1.Pod) ([]*v1.Pod, []*v1.Pod, error) {
 	prefillPods, decodePods := []*v1.Pod{}, []*v1.Pod{}
-	var rolename string
-	var ok bool
 	for _, pod := range readyPods {
-		if rolename, ok = pod.Labels[PDRoleIdentifier]; !ok {
+		if _, ok := pod.Labels[PDRoleIdentifier]; !ok {
+			continue
+		}
+		if podGroupIndex, ok := pod.Labels[PodGroupIndex]; ok && podGroupIndex != "0" {
 			continue
 		}
 
-		if rolename == "prefill" {
+		switch pod.Labels[PDRoleIdentifier] {
+		case "prefill":
 			prefillPods = append(prefillPods, pod)
-		} else if rolename == "decode" {
+		case "decode":
 			decodePods = append(decodePods, pod)
 		}
 	}
@@ -110,23 +115,30 @@ func (r *pdRouter) filterPrefillDecodePods(readyPods []*v1.Pod) ([]*v1.Pod, []*v
 	if len(prefillPods) == 0 || len(decodePods) == 0 {
 		return nil, nil, fmt.Errorf("prefill or decodes pods are not ready")
 	}
-
 	return prefillPods, decodePods, nil
 }
 
-func (r *pdRouter) evaluatePrefixCache(ctx *types.RoutingContext, decodePods []*v1.Pod) (map[string]int, []uint64, error) {
+func (r *pdRouter) evaluatePrefixCache(ctx *types.RoutingContext, prefillPods []*v1.Pod) (*v1.Pod, []uint64, error) {
 	tokens, err := r.tokenizer.TokenizeInputText(ctx.Message)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	readyPodsMap := map[string]struct{}{}
-	for _, pod := range decodePods {
+	for _, pod := range prefillPods {
 		readyPodsMap[pod.Name] = struct{}{}
 	}
 	matchedPods, prefixHashes := r.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
 
-	return matchedPods, prefixHashes, nil
+	var prefillPod *v1.Pod
+	if len(matchedPods) > 0 {
+		prefillPod = getTargetPodFromMatchedPods(r.cache, prefillPods, matchedPods)
+	}
+	if prefillPod == nil {
+		prefillPod = selectTargetPodWithLeastRequestCount(r.cache, prefillPods)
+	}
+
+	return prefillPod, prefixHashes, err
 }
 
 func (r *pdRouter) selectDecodePod(decodePods []*v1.Pod) *v1.Pod {
@@ -134,37 +146,71 @@ func (r *pdRouter) selectDecodePod(decodePods []*v1.Pod) *v1.Pod {
 	return decodePod
 }
 
-func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPods []*v1.Pod) error {
-	// TODO: refactor constants post PR: 1293 merge
-	if getLLMEngine(prefillPods[0], LLMEngineLabel, "vllm") == "xllm" {
-		return nil
-	}
-
-	var prefillPod *v1.Pod
-	prefixMatchPrefillPods, prefixHashes, err := r.evaluatePrefixCache(routingCtx, prefillPods)
+func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, llmEngine string) error {
+	prefillPod, prefixHashes, err := r.evaluatePrefixCache(routingCtx, prefillPods)
 	if err != nil {
 		return err
 	}
-
-	if len(prefixMatchPrefillPods) > 0 {
-		prefillPod = getTargetPodFromMatchedPods(r.cache, prefillPods, prefixMatchPrefillPods)
-	}
-	if prefillPod == nil {
-		prefillPod = selectTargetPodWithLeastRequestCount(r.cache, prefillPods)
-	}
-
 	defer func() {
 		if len(prefixHashes) > 0 {
 			r.prefixCacheIndexer.AddPrefix(prefixHashes, routingCtx.Model, prefillPod.Name)
 		}
 	}()
 
-	klog.InfoS("doPrefillRequest", "prefill_pod_ip", prefillPod.Status.PodIP)
+	// Prepare prefill request payload
+	payload, err := r.preparePrefillPayload(routingCtx, prefillPod, llmEngine)
+	if err != nil {
+		return fmt.Errorf("failed to prepare prefill payload: %w", err)
+	}
 
-	// Prepare request payload
+	// Execute HTTP request
+	apiURL := fmt.Sprintf("http://%s:%d%s",
+		prefillPod.Status.PodIP,
+		utils.GetModelPortForPod(routingCtx.RequestID, prefillPod),
+		routingCtx.ReqPath)
+
+	klog.InfoS("start_prefill_request",
+		"request_id", routingCtx.RequestID,
+		"llm_engine", llmEngine,
+		"prefill_url", apiURL)
+
+	if llmEngine == SGLangEngine {
+		go func() {
+			if err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
+				klog.ErrorS(err, "prefill request for sglang failed", "request_id", routingCtx.RequestID)
+			}
+			klog.InfoS("prefill_request_complete", "request_id", routingCtx.RequestID)
+		}()
+	} else {
+		if err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
+			return fmt.Errorf("failed to execute prefill request: %w", err)
+		}
+		klog.InfoS("prefill_request_complete", "request_id", routingCtx.RequestID)
+	}
+
+	return nil
+}
+
+func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *v1.Pod, llmEngine string) ([]byte, error) {
 	var completionRequest map[string]any
 	if err := json.Unmarshal(routingCtx.ReqBody, &completionRequest); err != nil {
-		return fmt.Errorf("failed to unmarshal request body for prefill: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal prefill request body: %w", err)
+	}
+
+	// Handle SGLang specific configuration
+	if llmEngine == SGLangEngine {
+		completionRequest["bootstrap_host"] = pod.Status.PodIP
+		completionRequest["bootstrap_port"] = getSGLangBootstrapPort(pod)
+		completionRequest["bootstrap_room"] = rand.Int63n(1<<63 - 1)
+
+		// Create a copy of the request body
+		reqBody, err := json.Marshal(completionRequest)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal post prefill request body: %w", err)
+		}
+		bodyCopy := make([]byte, len(reqBody))
+		copy(bodyCopy, reqBody)
+		routingCtx.ReqBody = bodyCopy
 	}
 
 	// Set prefill-specific parameters
@@ -172,16 +218,15 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 	completionRequest["max_completion_tokens"] = 1
 	completionRequest["stream"] = false
 
-	payloadBytes, err := json.Marshal(completionRequest)
-	if err != nil {
-		return fmt.Errorf("failed to marshal for prefill request: %w", err)
-	}
+	return json.Marshal(completionRequest)
+}
 
-	// Create HTTP request
-	apiURL := fmt.Sprintf("http://%s:%d%s", prefillPod.Status.PodIP, utils.GetModelPortForPod(routingCtx.RequestID, prefillPod), routingCtx.ReqPath)
-	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(payloadBytes))
+func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingContext, payload []byte) error {
+	// Create request with context
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payload))
 	if err != nil {
-		return fmt.Errorf("failed to create prefill request: %w", err)
+		klog.ErrorS(err, "request_id", routingCtx.RequestID, "failed to create request")
+		return fmt.Errorf("failed to create http prefill request: %w", err)
 	}
 
 	// Set headers
@@ -189,13 +234,13 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		req.Header.Set(key, value)
 	}
 	req.Header.Set("content-type", "application/json")
-	req.Header.Set("content-length", strconv.Itoa(len(payloadBytes)))
+	req.Header.Set("content-length", strconv.Itoa(len(payload)))
 
-	// Execute request with timeout
+	// Execute with timeout
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("prefill request failed: %w", err)
+		return fmt.Errorf("failed to execute http prefill request: %w", err)
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -204,7 +249,7 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("prefill request failed with status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	return nil
@@ -220,4 +265,13 @@ func getLLMEngine(pod *v1.Pod, labelName string, defaultValue string) string {
 		return defaultValue
 	}
 	return labelTarget
+}
+
+func getSGLangBootstrapPort(pod *v1.Pod) int64 {
+	if portStr, exists := pod.Annotations[getSGLangBootstrapPortIdentifier]; exists {
+		if port, err := strconv.ParseInt(portStr, 10, 32); err == nil {
+			return port
+		}
+	}
+	return 8998 // Default port
 }

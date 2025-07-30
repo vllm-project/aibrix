@@ -3,7 +3,7 @@ kind: StormService
 metadata:
   name: vllm-replica-2p1d
 spec:
-  replicas: 2
+  replicas: 1
   updateStrategy:
     type: InPlaceUpdate
   stateful: true
@@ -30,6 +30,10 @@ spec:
                       }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen3-8B
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
             spec:
               containers:
                 - name: prefill
@@ -101,6 +105,10 @@ spec:
                       }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen3-8B
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
             spec:
               containers:
                 - name: decode
