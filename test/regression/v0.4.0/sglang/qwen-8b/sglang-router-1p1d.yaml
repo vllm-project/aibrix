@@ -22,7 +22,6 @@ spec:
           stateful: true
           template:
             spec:
-              hostNetwork: true
               containers:
                 - name: mini-lb
                   image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang-router:v0.1.6

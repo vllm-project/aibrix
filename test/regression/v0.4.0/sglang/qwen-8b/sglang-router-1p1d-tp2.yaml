@@ -39,7 +39,7 @@ spec:
                         --decode-selector storm-service-name=$STORM_SERVICE_NAME role-name=decode \
                         --service-discovery-namespace default
         - name: prefill
-          replicas: 2
+          replicas: 1
           stateful: true
           template:
             metadata:
@@ -66,9 +66,6 @@ spec:
                         --port 30000 \
                         --disaggregation-mode prefill \
                         --disaggregation-transfer-backend=mooncake \
-                        --dist-init-addr "${ROLESET_NAME}-${ROLE_NAME}-${ROLE_TEMPLATE_HASH}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5000" \
-                        --nnodes 2 \
-                        --node-rank $ROLE_REPLICA_INDEX \
                         --tp-size 2 \
                         --trust-remote-code \
                         --mem-fraction-static 0.8 \
@@ -92,7 +89,7 @@ spec:
                       name: shared-mem
                   resources:
                     limits:
-                      nvidia.com/gpu: 1
+                      nvidia.com/gpu: 2
                       vke.volcengine.com/rdma: "1"
                   securityContext:
                     capabilities:
@@ -107,7 +104,7 @@ spec:
                     medium: Memory
                   name: shared-mem
         - name: decode
-          replicas: 2
+          replicas: 1
           stateful: true
           template:
             metadata:
@@ -134,9 +131,6 @@ spec:
                         --port 30000 \
                         --disaggregation-mode decode \
                         --disaggregation-transfer-backend=mooncake \
-                        --dist-init-addr "${ROLESET_NAME}-${ROLE_NAME}-${ROLE_TEMPLATE_HASH}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5000" \
-                        --nnodes 2 \
-                        --node-rank $ROLE_REPLICA_INDEX \
                         --tp-size 2 \
                         --trust-remote-code \
                         --mem-fraction-static 0.8 \
@@ -160,7 +154,7 @@ spec:
                       name: shared-mem
                   resources:
                     limits:
-                      nvidia.com/gpu: 1
+                      nvidia.com/gpu: 2
                       vke.volcengine.com/rdma: "1"
                   securityContext:
                     capabilities:
