@@ -116,3 +116,42 @@ func (sc *MutexSessionCache) UpdateAffinity(sessionID, podName string) {
 	state := sc.getState(sessionID)
 	state.PodAffinity = podName
 }
+
+// StartCleanupRoutine starts a background goroutine that periodically
+// cleans up stale sessions.
+// It returns a function that can be called to stop the routine.
+func (sc *MutexSessionCache) StartCleanupRoutine(interval,
+	timeout time.Duration) (stop func()) {
+	ticker := time.NewTicker(interval)
+	done := make(chan struct{})
+
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				sc.cleanup(timeout)
+			case <-done:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+
+	return func() {
+		close(done)
+	}
+}
+
+// cleanup removes sessions that have been inactive for longer than the timeout.
+// This is a private method that assumes the caller handles locking.
+func (sc *MutexSessionCache) cleanup(timeout time.Duration) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+	now := time.Now()
+	for sessionID, state := range sc.sessions {
+		if now.Sub(state.LastActivityTimestamp) > timeout {
+			delete(sc.sessions, sessionID)
+		}
+	}
+}
