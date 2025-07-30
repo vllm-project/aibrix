@@ -3,10 +3,15 @@ kind: Service
 metadata:
   name: aibrix-metadata-service
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-metadata-service
 spec:
   selector:
-    app: aibrix-metadata-service
+    {{- include "chart.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-metadata-service
   ports:
-    - protocol: TCP
+    - name: http
+      protocol: TCP
       port: 8090
       targetPort: 8090

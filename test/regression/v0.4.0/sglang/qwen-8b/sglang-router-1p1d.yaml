@@ -1,7 +1,8 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: sglang-router-cache
+  name: sglang-router-1p1d
+  namespace: default
 spec:
   replicas: 1
   updateStrategy:
@@ -9,11 +10,11 @@ spec:
   stateful: true
   selector:
     matchLabels:
-      app: pool-xpyd
+      app: replica-xpyd
   template:
     metadata:
       labels:
-        app: pool-xpyd
+        app: replica-xpyd
     spec:
       roles:
         - name: routing
@@ -24,7 +25,7 @@ spec:
               containers:
                 - name: mini-lb
                   image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang-router:v0.1.6
-                  command: [ "sh", "-c" ]
+                  command: ["sh", "-c"]
                   args:
                     - |
                       python3 -m sglang_router.launch_router \
@@ -36,7 +37,7 @@ spec:
                         --decode-selector storm-service-name=$STORM_SERVICE_NAME role-name=decode \
                         --service-discovery-namespace default
         - name: prefill
-          replicas: 4
+          replicas: 1
           stateful: true
           template:
             metadata:
@@ -100,7 +101,7 @@ spec:
                     medium: Memory
                   name: shared-mem
         - name: decode
-          replicas: 3
+          replicas: 1
           stateful: true
           template:
             metadata:

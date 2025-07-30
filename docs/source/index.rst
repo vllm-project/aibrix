@@ -55,6 +55,7 @@ Documentation
    features/runtime.rst
    features/kvcache-offloading.rst
    features/benchmark-and-generator.rst
+   features/multi-engine.rst
 
 .. toctree::
    :maxdepth: 1
