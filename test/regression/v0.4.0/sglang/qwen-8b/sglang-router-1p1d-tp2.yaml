@@ -50,6 +50,11 @@ spec:
                       "cniConf":{
                           "name":"rdma"
                       }
+                    },
+                    {
+                      "cniConf":{
+                          "name":"rdma"
+                      }
                     }
                   ]
             spec:
@@ -90,7 +95,7 @@ spec:
                   resources:
                     limits:
                       nvidia.com/gpu: 2
-                      vke.volcengine.com/rdma: "1"
+                      vke.volcengine.com/rdma: "2"
                   securityContext:
                     capabilities:
                       add:
@@ -111,6 +116,11 @@ spec:
               annotations:
                 k8s.volcengine.com/pod-networks: |
                   [
+                    {
+                      "cniConf":{
+                          "name":"rdma"
+                      }
+                    },
                     {
                       "cniConf":{
                           "name":"rdma"
@@ -155,7 +165,7 @@ spec:
                   resources:
                     limits:
                       nvidia.com/gpu: 2
-                      vke.volcengine.com/rdma: "1"
+                      vke.volcengine.com/rdma: "2"
                   securityContext:
                     capabilities:
                       add:
