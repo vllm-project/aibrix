@@ -1,7 +1,7 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: sglang-router-1p1d
+  name: sglang-router-1p1d-tp2
   namespace: default
 spec:
   replicas: 1
@@ -22,6 +22,7 @@ spec:
           stateful: true
           template:
             spec:
+              hostNetwork: true
               containers:
                 - name: mini-lb
                   image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang-router:v0.1.6
@@ -31,7 +32,7 @@ spec:
                       python3 -m sglang_router.launch_router \
                         --pd-disaggregation \
                         --host 0.0.0.0 \
-                        --policy cache_aware \
+                        --policy random \
                         --service-discovery \
                         --service-discovery-port 30000 \
                         --prefill-selector storm-service-name=$STORM_SERVICE_NAME role-name=prefill \
@@ -49,6 +50,11 @@ spec:
                       "cniConf":{
                           "name":"rdma"
                       }
+                    },
+                    {
+                      "cniConf":{
+                          "name":"rdma"
+                      }
                     }
                   ]
             spec:
@@ -59,14 +65,14 @@ spec:
                   args:
                     - |
                       python3 -m sglang.launch_server \
-                        --model-path /models/Qwen3-8B \
-                        --served-model-name qwen3-8b \
+                        --model-path /models/Qwen3-32B \
+                        --served-model-name qwen3-32b \
                         --host 0.0.0.0 \
                         --port 30000 \
                         --disaggregation-mode prefill \
                         --disaggregation-transfer-backend=mooncake \
+                        --tp-size 2 \
                         --trust-remote-code \
-                        --enable-metrics \
                         --mem-fraction-static 0.8 \
                         --log-level debug
                   env:
@@ -88,8 +94,8 @@ spec:
                       name: shared-mem
                   resources:
                     limits:
-                      nvidia.com/gpu: 1
-                      vke.volcengine.com/rdma: "1"
+                      nvidia.com/gpu: 2
+                      vke.volcengine.com/rdma: "2"
                   securityContext:
                     capabilities:
                       add:
@@ -114,6 +120,11 @@ spec:
                       "cniConf":{
                           "name":"rdma"
                       }
+                    },
+                    {
+                      "cniConf":{
+                          "name":"rdma"
+                      }
                     }
                   ]
             spec:
@@ -124,14 +135,14 @@ spec:
                   args:
                     - |
                       python3 -m sglang.launch_server \
-                        --model-path /models/Qwen3-8B \
-                        --served-model-name qwen3-8b \
+                        --model-path /models/Qwen3-32B \
+                        --served-model-name qwen3-32b \
                         --host 0.0.0.0 \
                         --port 30000 \
                         --disaggregation-mode decode \
                         --disaggregation-transfer-backend=mooncake \
+                        --tp-size 2 \
                         --trust-remote-code \
-                        --enable-metrics \
                         --mem-fraction-static 0.8 \
                         --log-level debug
                   env:
@@ -153,8 +164,8 @@ spec:
                       name: shared-mem
                   resources:
                     limits:
-                      nvidia.com/gpu: 1
-                      vke.volcengine.com/rdma: "1"
+                      nvidia.com/gpu: 2
+                      vke.volcengine.com/rdma: "2"
                   securityContext:
                     capabilities:
                       add:
