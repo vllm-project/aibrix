@@ -37,13 +37,13 @@ import (
 
 const (
 	RouterPD                         types.RoutingAlgorithm = "pd"
+	VLLMEngine                       string                 = "vllm"
 	SGLangEngine                     string                 = "sglang"
 	getSGLangBootstrapPortIdentifier string                 = "model.aibrix.ai/sglang-bootstrap-port"
 	LLMEngineLabel                   string                 = "model.aibrix.ai/engine"
 	PDRoleIdentifier                 string                 = "role-name"
 	RoleReplicaIndex                 string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	PodGroupIndex                    string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
-	defaultDecodeOnlyTokenLimit      int                    = 256
 )
 
 func init() {
@@ -83,7 +83,7 @@ func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (
 		return "", err
 	}
 
-	if err = r.doPrefillRequest(ctx, prefillPods, getLLMEngine(prefillPods[0], LLMEngineLabel, "vllm")); err != nil {
+	if err = r.doPrefillRequest(ctx, prefillPods, getLLMEngine(prefillPods[0], LLMEngineLabel, VLLMEngine)); err != nil {
 		klog.ErrorS(err, "prefill request failed", "request_id", ctx.RequestID)
 		return "", err
 	}
