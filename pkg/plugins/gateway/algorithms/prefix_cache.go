@@ -20,7 +20,6 @@ import (
 	"math"
 	"math/rand"
 	"sort"
-	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -42,14 +41,6 @@ var (
 	tokenizerType                                             = utils.LoadEnv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "character")
 	podRunningRequestImbalanceAbsCount int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT", defaultPodRunningRequestImbalanceAbsCount)
 	standardDeviationFactor            int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR", defaultStandardDeviationFactor)
-
-	// vLLM Remote Tokenizer configuration
-	enableVLLMRemoteTokenizer     = utils.LoadEnvBool("AIBRIX_ENABLE_VLLM_REMOTE_TOKENIZER", false)
-	vllmTokenizerEndpointTemplate = utils.LoadEnv("AIBRIX_VLLM_TOKENIZER_ENDPOINT_TEMPLATE", "http://%s:8000")
-	tokenizerHealthCheckPeriod    = utils.LoadEnvDuration("AIBRIX_TOKENIZER_HEALTH_CHECK_PERIOD", 30*time.Second)
-	tokenizerTTL                  = utils.LoadEnvDuration("AIBRIX_TOKENIZER_TTL", 5*time.Minute)
-	maxTokenizersPerPool          = utils.LoadEnvInt("AIBRIX_MAX_TOKENIZERS_PER_POOL", 100)
-	tokenizerRequestTimeout       = utils.LoadEnvDuration("AIBRIX_TOKENIZER_REQUEST_TIMEOUT", 10*time.Second)
 )
 
 func init() {
@@ -58,60 +49,41 @@ func init() {
 
 type prefixCacheRouter struct {
 	cache              cache.Cache
-	tokenizer          tokenizer.Tokenizer // Fallback tokenizer for backward compatibility
-	tokenizerPool      *TokenizerPool      // Model-aware tokenizer pool
+	tokenizer          tokenizer.Tokenizer
 	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
 }
 
 func NewPrefixCacheRouter() (types.Router, error) {
+	// Create tokenizer based on type
+	// Supported tokenizers: ["character", "tiktoken"]
+	// Default: "character" for any unrecognized type
+	// TODO: Add support for "remote" and "vllm" tokenizer types in a future PR.
+	//       This will require proper configuration handling for remote endpoints.
+	var tokenizerObj tokenizer.Tokenizer
+	if tokenizerType == "tiktoken" {
+		tokenizerObj = tokenizer.NewTiktokenTokenizer()
+	} else {
+		// Default to character tokenizer for backward compatibility
+		if tokenizerType != "character" {
+			klog.InfoS("unrecognized tokenizer type, defaulting to character", "type", tokenizerType)
+		}
+		tokenizerObj = tokenizer.NewCharacterTokenizer()
+	}
+
 	c, err := cache.Get()
 	if err != nil {
 		klog.Error("fail to get cache store in prefix cache router")
 		return nil, err
 	}
 
-	// Create fallback tokenizer based on type
-	// Supported tokenizers: ["character", "tiktoken"]
-	// Default: "character" for any unrecognized type
-	var fallbackTokenizer tokenizer.Tokenizer
-	if tokenizerType == "tiktoken" {
-		fallbackTokenizer = tokenizer.NewTiktokenTokenizer()
-	} else {
-		// Default to character tokenizer for backward compatibility
-		if tokenizerType != "character" {
-			klog.InfoS("unrecognized tokenizer type, defaulting to character", "type", tokenizerType)
-		}
-		fallbackTokenizer = tokenizer.NewCharacterTokenizer()
-	}
-
-	// Initialize TokenizerPool for vLLM remote tokenizer support
-	poolConfig := TokenizerPoolConfig{
-		EnableVLLMRemote:     enableVLLMRemoteTokenizer,
-		EndpointTemplate:     vllmTokenizerEndpointTemplate,
-		HealthCheckPeriod:    tokenizerHealthCheckPeriod,
-		TokenizerTTL:         tokenizerTTL,
-		MaxTokenizersPerPool: maxTokenizersPerPool,
-		FallbackTokenizer:    fallbackTokenizer,
-		Timeout:              tokenizerRequestTimeout,
-		ModelServiceMap:      make(map[string]string), // Can be populated from config later
-	}
-
-	pool := NewTokenizerPool(poolConfig, c)
-
 	klog.InfoS("prefix_cache_configurations",
 		"tokenizer_type", tokenizerType,
 		"pod_running_request_imbalance_abs_count", podRunningRequestImbalanceAbsCount,
-		"matched_pods_running_requests_standard_deviation_factor", standardDeviationFactor,
-		"enable_vllm_remote_tokenizer", enableVLLMRemoteTokenizer,
-		"vllm_tokenizer_endpoint_template", vllmTokenizerEndpointTemplate,
-		"tokenizer_health_check_period", tokenizerHealthCheckPeriod,
-		"tokenizer_ttl", tokenizerTTL,
-		"max_tokenizers_per_pool", maxTokenizersPerPool)
+		"matched_pods_running_requests_standard_deviation_factor", standardDeviationFactor)
 
 	return prefixCacheRouter{
 		cache:              c,
-		tokenizer:          fallbackTokenizer, // Keep for backward compatibility
-		tokenizerPool:      pool,
+		tokenizer:          tokenizerObj,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 	}, nil
 }
@@ -121,22 +93,12 @@ func (p prefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.P
 	var matchedPods map[string]int
 	var targetPod *v1.Pod
 
-	readyPods := readyPodList.All()
-
-	// Get tokenizer - use pool only if vLLM remote tokenizer is enabled
-	var tokenizerObj tokenizer.Tokenizer
-	if enableVLLMRemoteTokenizer {
-		tokenizerObj = p.tokenizerPool.GetTokenizer(ctx.Model, readyPods)
-	} else {
-		// Use the original tokenizer for backward compatibility
-		tokenizerObj = p.tokenizer
-	}
-
-	tokens, err := tokenizerObj.TokenizeInputText(ctx.Message)
+	tokens, err := p.tokenizer.TokenizeInputText(ctx.Message)
 	if err != nil {
 		return "", err
 	}
 
+	readyPods := readyPodList.All()
 	readyPodsMap := map[string]struct{}{}
 	for _, pod := range readyPods {
 		readyPodsMap[pod.Name] = struct{}{}
