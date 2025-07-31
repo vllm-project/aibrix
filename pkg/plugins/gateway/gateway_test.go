@@ -31,6 +31,8 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 func Test_ValidateRoutingStrategy(t *testing.T) {
@@ -314,6 +316,100 @@ func Test_selectTargetPod(t *testing.T) {
 
 			// Ensure all mock expectations are met
 			mockRouter.AssertExpectations(subtest)
+		})
+	}
+}
+
+func TestValidateHTTPRouteStatus(t *testing.T) {
+	tests := []struct {
+		name        string
+		model       string
+		setupMock   func(*MockGatewayClient, *MockGatewayV1Client, *MockHTTPRouteClient)
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:  "successful validation",
+			model: "test-model",
+			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
+				gw.On("GatewayV1").Return(gwv1)
+				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+
+				route := &gatewayv1.HTTPRoute{
+					Status: gatewayv1.HTTPRouteStatus{
+						RouteStatus: gatewayv1.RouteStatus{
+							Parents: []gatewayv1.RouteParentStatus{{
+								Conditions: []metav1.Condition{{
+									Type:   string(gatewayv1.RouteConditionAccepted),
+									Reason: string(gatewayv1.RouteReasonAccepted),
+									Status: metav1.ConditionTrue,
+								}, {
+									Type:   string(gatewayv1.RouteConditionResolvedRefs),
+									Reason: string(gatewayv1.RouteReasonResolvedRefs),
+									Status: metav1.ConditionTrue,
+								}},
+							}},
+						},
+					},
+				}
+				http.On("Get", mock.Anything, "test-model-router", mock.Anything).Return(route, nil)
+			},
+			wantErr: false,
+		},
+		{
+			name:  "invalid route status",
+			model: "invalid-model",
+			setupMock: func(gw *MockGatewayClient, gwv1 *MockGatewayV1Client, http *MockHTTPRouteClient) {
+				gw.On("GatewayV1").Return(gwv1)
+				gwv1.On("HTTPRoutes", "aibrix-system").Return(http)
+
+				route := &gatewayv1.HTTPRoute{
+					Status: gatewayv1.HTTPRouteStatus{
+						RouteStatus: gatewayv1.RouteStatus{
+							Parents: []gatewayv1.RouteParentStatus{{
+								Conditions: []metav1.Condition{{
+									Type:   string(gatewayv1.RouteConditionAccepted),
+									Reason: "InvalidReason",
+								}},
+							}},
+						},
+					},
+				}
+				http.On("Get", mock.Anything, "invalid-model-router", mock.Anything).Return(route, nil)
+			},
+			wantErr:     true,
+			errContains: "route is not accepted",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup mocks
+			mockGW := &MockGatewayClient{}
+			mockGWV1 := &MockGatewayV1Client{}
+			mockHTTP := &MockHTTPRouteClient{}
+			tt.setupMock(mockGW, mockGWV1, mockHTTP)
+
+			// Create test server with mock client
+			s := &Server{
+				gatewayClient: mockGW,
+			}
+
+			// Run test
+			err := s.validateHTTPRouteStatus(context.Background(), tt.model)
+
+			// Verify results
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			// Verify mock expectations
+			mockGW.AssertExpectations(t)
+			mockGWV1.AssertExpectations(t)
+			mockHTTP.AssertExpectations(t)
 		})
 	}
 }

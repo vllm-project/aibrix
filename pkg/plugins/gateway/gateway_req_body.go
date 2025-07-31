@@ -68,6 +68,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 	headers := []*configPb.HeaderValueOption{}
 	if routingAlgorithm == routing.RouterNotSet {
+		if err := s.validateHTTPRouteStatus(ctx, model); err != nil {
+			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, err.Error(), HeaderErrorRouting, "true"), model, routingCtx, stream, term
+		}
 		headers = buildEnvoyProxyHeaders(headers, HeaderModel, model)
 		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream)
 	} else {
