@@ -1,7 +1,7 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: aibrix-router-4p3d
+  name: aibrix-sglang-4p3d
   namespace: default
 spec:
   replicas: 1
@@ -10,11 +10,11 @@ spec:
   stateful: true
   selector:
     matchLabels:
-      app: aibrix-router-4p3d
+      app: aibrix-sglang-4p3d
   template:
     metadata:
       labels:
-        app: aibrix-router-4p3d
+        app: aibrix-sglang-4p3d
     spec:
       roles:
         - name: prefill
