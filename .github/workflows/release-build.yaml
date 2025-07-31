@@ -140,6 +140,10 @@ jobs:
       id-token: write
     name: publish
     steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
       - name: Check out source repository
         uses: actions/checkout@v4
       - name: Set up Python environment ${{ matrix.python-version }}
