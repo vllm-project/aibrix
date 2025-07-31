@@ -28,13 +28,15 @@ docker build -t aibrix/vllm-openai:v0.9.2-cu128-nixl-v0.4.1
 Currently, the router is very simple and it relies on user to pass the prefill and decode IPs.
 Launch the router `kubectl apply -f router.yaml`, ssh to the pod and launch the process.
 
+Copy `disagg_proxy_server.py` into the container.
+
 ```bash
-python3 examples/others/lmcache/disagg_prefill_lmcache_v1/disagg_proxy_server.py \
+python3 disagg_proxy_server.py \
     --host localhost \
     --port 8000 \
-    --prefiller-host 192.168.0.125 \
+    --prefiller-host 192.168.0.125,192.168.0.127 \
     --prefiller-port 8000 \
-    --decoder-host 192.168.0.129 \
+    --decoder-host 192.168.0.129,192.168.0.149 \
     --decoder-port 8000
 ```
 
