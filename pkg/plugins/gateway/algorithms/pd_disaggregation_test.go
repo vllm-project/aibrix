@@ -17,6 +17,7 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -28,11 +29,74 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func TestPDRouter_Route(t *testing.T) {
+	tests := []struct {
+		name        string
+		readyPods   []*v1.Pod
+		serverCode  int
+		serverResp  string
+		llmEngine   string
+		expectError bool
+		expectMsg   string
+	}{
+		{
+			name: "successful routing with both prefill and decode pods",
+			readyPods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "prefill"}, Name: "prefill-1"}, Status: v1.PodStatus{PodIP: "127.0.0.1"}},
+				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "decode"}, Name: "decode-1"}, Status: v1.PodStatus{PodIP: "127.0.0.2",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
+			},
+			serverCode:  http.StatusOK,
+			serverResp:  "success",
+			llmEngine:   "vllm",
+			expectError: false,
+			expectMsg:   "127.0.0.2:8000",
+		},
+		{
+			name: "missing prefill pod",
+			readyPods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "decode"}, Name: "decode-1"}, Status: v1.PodStatus{PodIP: "127.0.0.2"}},
+			},
+			serverCode:  http.StatusOK,
+			serverResp:  "",
+			llmEngine:   "vllm",
+			expectError: true,
+			expectMsg:   "",
+		},
+	}
+
+	r := pdRouter{
+		cache:              cache.NewForTest(),
+		tokenizer:          tokenizer.NewCharacterTokenizer(),
+		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := setupTestServer(t, tt.serverCode, tt.serverResp, tt.llmEngine)
+			defer ts.Close()
+
+			ctx := types.NewRoutingContext(context.Background(), "test", "model", "message", "request", "user")
+			ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
+
+			result, err := r.Route(ctx, &utils.PodArray{Pods: tt.readyPods})
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectMsg, result)
+			}
+		})
+	}
+}
 
 func TestFilterPrefillDecodePods(t *testing.T) {
 	tests := []struct {
@@ -67,47 +131,6 @@ func TestFilterPrefillDecodePods(t *testing.T) {
 }
 
 func TestDoPrefillRequest(t *testing.T) {
-	// Test server setup
-	setupTestServer := func(code int, resp string, llmEngine string) *httptest.Server {
-		l, err := net.Listen("tcp", "127.0.0.1:8000")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				t.Fatalf("Failed to read request body: %v", err)
-			}
-
-			var completionRequest map[string]any
-			if err := json.Unmarshal(body, &completionRequest); err != nil {
-				assert.NoError(t, err)
-			}
-
-			assert.Equal(t, float64(1), completionRequest["max_tokens"])
-			assert.Equal(t, float64(1), completionRequest["max_completion_tokens"])
-			assert.Equal(t, false, completionRequest["stream"])
-			_, exists := completionRequest["stream_options"]
-			assert.False(t, exists, "completionRequest should not have 'stream_options' key")
-
-			if llmEngine == SGLangEngine {
-				assert.Equal(t, "127.0.0.1", completionRequest["bootstrap_host"])
-				assert.Equal(t, float64(8998), completionRequest["bootstrap_port"])
-			}
-
-			w.WriteHeader(code)
-			if resp != "" {
-				_, _ = w.Write([]byte(resp))
-			}
-		}))
-
-		_ = ts.Listener.Close()
-		ts.Listener = l
-		ts.Start()
-		return ts
-	}
-
 	// Common test data
 	createPrefillPod := func(name, engine string) *v1.Pod {
 		return &v1.Pod{
@@ -180,7 +203,7 @@ func TestDoPrefillRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ts := setupTestServer(tt.serverCode, tt.serverResp, tt.llmEngine)
+			ts := setupTestServer(t, tt.serverCode, tt.serverResp, tt.llmEngine)
 			defer ts.Close()
 
 			prefillPods := []*v1.Pod{
@@ -205,9 +228,43 @@ func TestDoPrefillRequest(t *testing.T) {
 	}
 }
 
-// Additional tests would cover:
-// - evaluatePrefixCache
-// - doPrefillRequest
-// - preparePrefillPayload
-// - executeHTTPRequest
-// With mock HTTP server and test cases for different LLM engines
+// Common test utilities
+func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *httptest.Server {
+	l, err := net.Listen("tcp", "127.0.0.1:8000")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("Failed to read request body: %v", err)
+		}
+
+		var completionRequest map[string]any
+		if err := json.Unmarshal(body, &completionRequest); err != nil {
+			assert.NoError(t, err)
+		}
+
+		assert.Equal(t, float64(1), completionRequest["max_tokens"])
+		assert.Equal(t, float64(1), completionRequest["max_completion_tokens"])
+		assert.Equal(t, false, completionRequest["stream"])
+		_, exists := completionRequest["stream_options"]
+		assert.False(t, exists, "completionRequest should not have 'stream_options' key")
+
+		if llmEngine == SGLangEngine {
+			assert.Equal(t, "127.0.0.1", completionRequest["bootstrap_host"])
+			assert.Equal(t, float64(8998), completionRequest["bootstrap_port"])
+		}
+
+		w.WriteHeader(code)
+		if resp != "" {
+			_, _ = w.Write([]byte(resp))
+		}
+	}))
+
+	_ = ts.Listener.Close()
+	ts.Listener = l
+	ts.Start()
+	return ts
+}
