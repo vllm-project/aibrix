@@ -33,7 +33,7 @@ spec:
                   ]
               labels:
                 model.aibrix.ai/name: qwen3-8b
-                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/port: "8000"
                 model.aibrix.ai/engine: vllm
             spec:
               containers:
@@ -108,7 +108,7 @@ spec:
                   ]
               labels:
                 model.aibrix.ai/name: qwen3-8b
-                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/port: "8000"
                 model.aibrix.ai/engine: vllm
             spec:
               containers:
