@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aibrix-kvcache-profiling
+  labels:
+    model.aibrix.ai/name: aibrix-kvcache-profiling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: aibrix-kvcache-profiling
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: aibrix-kvcache-profiling
+    spec:
+      containers:
+        - name: pyroscope
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/pyroscope:latest
+          imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: "2000m"
+              memory: "4Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: aibrix-kvcache-profiling
+  namespace: default
+spec:
+  ports:
+    - name: http
+      port: 4040
+      protocol: TCP
+      targetPort: 4040
+  selector:
+    model.aibrix.ai/name: aibrix-kvcache-profiling
+  type: ClusterIP
