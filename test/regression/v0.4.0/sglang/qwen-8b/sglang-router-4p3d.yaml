@@ -10,11 +10,11 @@ spec:
   stateful: true
   selector:
     matchLabels:
-      app: replica-xpyd
+      app: sglang-router-4p3d
   template:
     metadata:
       labels:
-        app: replica-xpyd
+        app: sglang-router-4p3d
     spec:
       roles:
         - name: routing
