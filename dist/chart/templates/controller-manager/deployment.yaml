@@ -7,7 +7,7 @@ metadata:
   name: aibrix-controller-manager
   namespace: {{ .Release.Namespace }}
 spec:
-  replicas: {{ .Values.controllerManager.replicaCount }}
+  replicas: {{ .Values.controllerManager.replicas }}
   selector:
     matchLabels:
       {{- include "chart.selectorLabels" . | nindent 6 }}

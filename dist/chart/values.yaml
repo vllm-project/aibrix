@@ -1,6 +1,6 @@
 # [Core]: AIBrix Deployment Configurations
 controllerManager:
-  replicaCount: 1
+  replicas: 1
   container:
     image:
       repository: aibrix/controller-manager
@@ -17,13 +17,13 @@ controllerManager:
       liveness:
         httpGet:
           path: /healthz
-          port: health
+          port: 8081
         initialDelaySeconds: 15
         periodSeconds: 20
       readiness:
         httpGet:
           path: /readyz
-          port: health
+          port: 8081
         initialDelaySeconds: 5
         periodSeconds: 10
   gatewayTimeoutSeconds: 120
