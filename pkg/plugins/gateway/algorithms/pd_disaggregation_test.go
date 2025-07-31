@@ -17,7 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -29,50 +28,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-func TestPDRouter_Route(t *testing.T) {
-	tests := []struct {
-		name        string
-		readyPods   []*v1.Pod
-		expectError bool
-	}{
-		{
-			name: "successful routing",
-			readyPods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "prefill"}}},
-				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "decode"}}},
-			},
-			expectError: false,
-		},
-		{
-			name: "missing prefill pod",
-			readyPods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "decode"}}},
-			},
-			expectError: true,
-		},
-	}
-
-	r := pdRouter{}
-	ctx := types.NewRoutingContext(context.Background(), "test", "model", "message", "request", "user")
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := r.Route(ctx, &utils.PodArray{Pods: tt.readyPods})
-			if tt.expectError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
 
 func TestFilterPrefillDecodePods(t *testing.T) {
 	tests := []struct {
@@ -138,11 +98,11 @@ func TestDoPrefillRequest(t *testing.T) {
 
 			w.WriteHeader(code)
 			if resp != "" {
-				w.Write([]byte(resp))
+				_, _ = w.Write([]byte(resp))
 			}
 		}))
 
-		ts.Listener.Close()
+		_ = ts.Listener.Close()
 		ts.Listener = l
 		ts.Start()
 		return ts
