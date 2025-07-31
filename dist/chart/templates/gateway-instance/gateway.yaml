@@ -34,9 +34,6 @@ kind: EnvoyProxy
 metadata:
   name: aibrix-custom-proxy-config
   namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "chart.labels" . | nindent 4 }}
-    app.kubernetes.io/component: aibrix-gateway
 spec:
   provider:
     type: Kubernetes
@@ -59,11 +56,7 @@ spec:
                         - key: app.kubernetes.io/name
                           operator: In
                           values:
-                          - {{ include "chart.name" . }}
-                        - key: app.kubernetes.io/component
-                          operator: In
-                          values:
-                          - aibrix-gateway
+                          - envoy
                     topologyKey: "kubernetes.io/hostname"
             nodeAffinity:
               preferredDuringSchedulingIgnoredDuringExecution:
