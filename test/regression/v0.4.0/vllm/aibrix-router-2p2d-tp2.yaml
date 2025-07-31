@@ -1,7 +1,7 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: vllm-1p1d
+  name: aibirx-vllm-2p2d-tp2
   namespace: default
 spec:
   replicas: 1
@@ -10,15 +10,15 @@ spec:
   stateful: true
   selector:
     matchLabels:
-      app: vllm-1p1d
+      app: aibirx-vllm-2p2d-tp2
   template:
     metadata:
       labels:
-        app: vllm-1p1d
+        app: aibirx-vllm-2p2d-tp2
     spec:
       roles:
         - name: prefill
-          replicas: 1
+          replicas: 2
           stateful: true
           template:
             metadata:
@@ -29,8 +29,17 @@ spec:
                       "cniConf":{
                           "name":"rdma"
                       }
+                    },
+                    {
+                      "cniConf":{
+                          "name":"rdma"
+                      }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen3-32b
+                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/engine: vllm
             spec:
               containers:
                 - name: prefill
@@ -42,8 +51,9 @@ spec:
                       --host "0.0.0.0" \
                       --port "8000" \
                       --uvicorn-log-level warning \
-                      --model /models/Qwen3-8B \
-                      --served-model-name qwen3-8b \
+                      --model /models/Qwen3-32B \
+                      --served-model-name qwen3-32b \
+                      --tensor-parallel-size 2 \
                       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
                     - name: UCX_TLS
@@ -74,8 +84,8 @@ spec:
                       name: shared-mem
                   resources:
                     limits:
-                      nvidia.com/gpu: 1
-                      vke.volcengine.com/rdma: "1"
+                      nvidia.com/gpu: 2
+                      vke.volcengine.com/rdma: "2"
                   securityContext:
                     capabilities:
                       add:
@@ -88,10 +98,8 @@ spec:
                 - emptyDir:
                     medium: Memory
                   name: shared-mem
-              nodeSelector:
-                kubernetes.io/hostname: 192.168.0.6
         - name: decode
-          replicas: 1
+          replicas: 2
           stateful: true
           template:
             metadata:
@@ -102,8 +110,17 @@ spec:
                       "cniConf":{
                           "name":"rdma"
                       }
+                    },
+                    {
+                      "cniConf":{
+                          "name":"rdma"
+                      }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen3-32b
+                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/engine: vllm
             spec:
               containers:
                 - name: decode
@@ -115,8 +132,9 @@ spec:
                       --host "0.0.0.0" \
                       --port "8000" \
                       --uvicorn-log-level warning \
-                      --model /models/Qwen3-8B \
-                      --served-model-name qwen3-8b \
+                      --model /models/Qwen3-32B \
+                      --served-model-name qwen3-32b \
+                      --tensor-parallel-size 2 \
                       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
                     - name: UCX_TLS
@@ -147,8 +165,8 @@ spec:
                       name: shared-mem
                   resources:
                     limits:
-                      nvidia.com/gpu: 1
-                      vke.volcengine.com/rdma: "1"
+                      nvidia.com/gpu: 2
+                      vke.volcengine.com/rdma: "2"
                   securityContext:
                     capabilities:
                       add:
@@ -161,5 +179,3 @@ spec:
                 - emptyDir:
                     medium: Memory
                   name: shared-mem
-              nodeSelector:
-                kubernetes.io/hostname: 192.168.0.6

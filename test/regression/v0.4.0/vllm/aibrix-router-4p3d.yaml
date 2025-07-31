@@ -1,7 +1,7 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: vllm-1p1d
+  name: aibirx-vllm-4p3d
   namespace: default
 spec:
   replicas: 1
@@ -10,15 +10,15 @@ spec:
   stateful: true
   selector:
     matchLabels:
-      app: vllm-1p1d
+      app: aibirx-vllm-4p3d
   template:
     metadata:
       labels:
-        app: vllm-1p1d
+        app: aibirx-vllm-4p3d
     spec:
       roles:
         - name: prefill
-          replicas: 1
+          replicas: 4
           stateful: true
           template:
             metadata:
@@ -31,6 +31,10 @@ spec:
                       }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen3-8b
+                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/engine: vllm
             spec:
               containers:
                 - name: prefill
@@ -88,10 +92,8 @@ spec:
                 - emptyDir:
                     medium: Memory
                   name: shared-mem
-              nodeSelector:
-                kubernetes.io/hostname: 192.168.0.6
         - name: decode
-          replicas: 1
+          replicas: 3
           stateful: true
           template:
             metadata:
@@ -104,6 +106,10 @@ spec:
                       }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen3-8b
+                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/engine: vllm
             spec:
               containers:
                 - name: decode
@@ -161,5 +167,4 @@ spec:
                 - emptyDir:
                     medium: Memory
                   name: shared-mem
-              nodeSelector:
-                kubernetes.io/hostname: 192.168.0.6
+
