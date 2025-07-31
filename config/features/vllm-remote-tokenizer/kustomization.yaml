@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: aibrix-system
+
+# This overlay enables vLLM remote tokenizer support
+# Apply with: kubectl apply -k config/features/vllm-remote-tokenizer/
+
+resources:
+- ../../gateway/gateway-plugin
+
+patches:
+- path: gateway-plugins-env-patch.yaml
+  target:
+    kind: Deployment
+    name: gateway-plugins
