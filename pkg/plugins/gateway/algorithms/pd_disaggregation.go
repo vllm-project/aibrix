@@ -36,14 +36,15 @@ import (
 )
 
 const (
-	RouterPD                         types.RoutingAlgorithm = "pd"
-	VLLMEngine                       string                 = "vllm"
-	SGLangEngine                     string                 = "sglang"
-	getSGLangBootstrapPortIdentifier string                 = "model.aibrix.ai/sglang-bootstrap-port"
-	LLMEngineLabel                   string                 = "model.aibrix.ai/engine"
-	PDRoleIdentifier                 string                 = "role-name"
-	RoleReplicaIndex                 string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
-	PodGroupIndex                    string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
+	RouterPD                      types.RoutingAlgorithm = "pd"
+	VLLMEngine                    string                 = "vllm"
+	SGLangEngine                  string                 = "sglang"
+	SGLangBootstrapPort           int64                  = 8998
+	SGLangBootstrapPortIdentifier string                 = "model.aibrix.ai/sglang-bootstrap-port"
+	LLMEngineIdentifier           string                 = "model.aibrix.ai/engine"
+	PDRoleIdentifier              string                 = "role-name"
+	RoleReplicaIndex              string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
+	PodGroupIndex                 string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
 )
 
 func init() {
@@ -83,7 +84,7 @@ func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (
 		return "", err
 	}
 
-	if err = r.doPrefillRequest(ctx, prefillPods, getLLMEngine(prefillPods[0], LLMEngineLabel, VLLMEngine)); err != nil {
+	if err = r.doPrefillRequest(ctx, prefillPods, getLLMEngine(prefillPods[0], LLMEngineIdentifier, VLLMEngine)); err != nil {
 		klog.ErrorS(err, "prefill request failed", "request_id", ctx.RequestID)
 		return "", err
 	}
@@ -178,6 +179,7 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		go func() {
 			if err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
 				klog.ErrorS(err, "prefill request for sglang failed", "request_id", routingCtx.RequestID)
+				return
 			}
 			klog.InfoS("prefill_request_complete", "request_id", routingCtx.RequestID)
 		}()
@@ -217,6 +219,7 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 	completionRequest["max_tokens"] = 1
 	completionRequest["max_completion_tokens"] = 1
 	completionRequest["stream"] = false
+	delete(completionRequest, "stream_options")
 
 	return json.Marshal(completionRequest)
 }
@@ -225,7 +228,6 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 	// Create request with context
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payload))
 	if err != nil {
-		klog.ErrorS(err, "request_id", routingCtx.RequestID, "failed to create request")
 		return fmt.Errorf("failed to create http prefill request: %w", err)
 	}
 
@@ -268,10 +270,10 @@ func getLLMEngine(pod *v1.Pod, labelName string, defaultValue string) string {
 }
 
 func getSGLangBootstrapPort(pod *v1.Pod) int64 {
-	if portStr, exists := pod.Annotations[getSGLangBootstrapPortIdentifier]; exists {
+	if portStr, exists := pod.Annotations[SGLangBootstrapPortIdentifier]; exists {
 		if port, err := strconv.ParseInt(portStr, 10, 32); err == nil {
 			return port
 		}
 	}
-	return 8998 // Default port
+	return SGLangBootstrapPort // Default port
 }
