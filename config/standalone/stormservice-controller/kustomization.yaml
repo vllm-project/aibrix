@@ -20,7 +20,7 @@ namePrefix: aibrix-
 images:
   - name: controller
     newName: aibrix/controller-manager
-    newTag: nightly
+    newTag: v0.4.0.rc.1
 
 patches:
   - path: patch.yaml
