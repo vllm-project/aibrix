@@ -13,6 +13,19 @@ controllerManager:
       requests:
         cpu: 10m
         memory: 64Mi
+    probes:
+      liveness:
+        httpGet:
+          path: /healthz
+          port: 8081
+        initialDelaySeconds: 15
+        periodSeconds: 20
+      readiness:
+        httpGet:
+          path: /readyz
+          port: 8081
+        initialDelaySeconds: 5
+        periodSeconds: 10
   gatewayTimeoutSeconds: 120
 
 gatewayPlugin:
