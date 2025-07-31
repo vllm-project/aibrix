@@ -268,10 +268,3 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 	ts.Start()
 	return ts
 }
-
-// Additional tests would cover:
-// - evaluatePrefixCache
-// - doPrefillRequest
-// - preparePrefillPayload
-// - executeHTTPRequest
-// With mock HTTP server and test cases for different LLM engines
