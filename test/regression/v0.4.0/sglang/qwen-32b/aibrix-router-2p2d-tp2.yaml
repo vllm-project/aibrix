@@ -1,7 +1,7 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: sglang-router-1p1d
+  name: aibrix-router-2p2d-tp2
   namespace: default
 spec:
   replicas: 1
@@ -10,35 +10,15 @@ spec:
   stateful: true
   selector:
     matchLabels:
-      app: sglang-router-1p1d
+      app: aibrix-router-2p2d-tp2
   template:
     metadata:
       labels:
-        app: sglang-router-1p1d
+        app: aibrix-router-2p2d-tp2
     spec:
       roles:
-        - name: routing
-          replicas: 1
-          stateful: true
-          template:
-            spec:
-              containers:
-                - name: mini-lb
-                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang-router:v0.1.6
-                  command: ["sh", "-c"]
-                  args:
-                    - |
-                      python3 -m sglang_router.launch_router \
-                        --pd-disaggregation \
-                        --host 0.0.0.0 \
-                        --policy random \
-                        --service-discovery \
-                        --service-discovery-port 30000 \
-                        --prefill-selector storm-service-name=$STORM_SERVICE_NAME role-name=prefill \
-                        --decode-selector storm-service-name=$STORM_SERVICE_NAME role-name=decode \
-                        --service-discovery-namespace default
         - name: prefill
-          replicas: 1
+          replicas: 2
           stateful: true
           template:
             metadata:
@@ -49,8 +29,17 @@ spec:
                       "cniConf":{
                           "name":"rdma"
                       }
+                    },
+                    {
+                      "cniConf":{
+                          "name":"rdma"
+                      }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen3-32b
+                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/engine: sglang
             spec:
               containers:
                 - name: prefill
@@ -59,14 +48,14 @@ spec:
                   args:
                     - |
                       python3 -m sglang.launch_server \
-                        --model-path /models/Qwen3-8B \
-                        --served-model-name qwen3-8b \
+                        --model-path /models/Qwen3-32B \
+                        --served-model-name qwen3-32b \
                         --host 0.0.0.0 \
                         --port 30000 \
                         --disaggregation-mode prefill \
                         --disaggregation-transfer-backend=mooncake \
+                        --tp-size 2 \
                         --trust-remote-code \
-                        --enable-metrics \
                         --mem-fraction-static 0.8 \
                         --log-level debug
                   env:
@@ -88,8 +77,8 @@ spec:
                       name: shared-mem
                   resources:
                     limits:
-                      nvidia.com/gpu: 1
-                      vke.volcengine.com/rdma: "1"
+                      nvidia.com/gpu: 2
+                      vke.volcengine.com/rdma: "2"
                   securityContext:
                     capabilities:
                       add:
@@ -103,7 +92,7 @@ spec:
                     medium: Memory
                   name: shared-mem
         - name: decode
-          replicas: 1
+          replicas: 2
           stateful: true
           template:
             metadata:
@@ -114,8 +103,17 @@ spec:
                       "cniConf":{
                           "name":"rdma"
                       }
+                    },
+                    {
+                      "cniConf":{
+                          "name":"rdma"
+                      }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen3-32b
+                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/engine: sglang
             spec:
               containers:
                 - name: decode
@@ -124,14 +122,14 @@ spec:
                   args:
                     - |
                       python3 -m sglang.launch_server \
-                        --model-path /models/Qwen3-8B \
-                        --served-model-name qwen3-8b \
+                        --model-path /models/Qwen3-32B \
+                        --served-model-name qwen3-32b \
                         --host 0.0.0.0 \
                         --port 30000 \
                         --disaggregation-mode decode \
                         --disaggregation-transfer-backend=mooncake \
+                        --tp-size 2 \
                         --trust-remote-code \
-                        --enable-metrics \
                         --mem-fraction-static 0.8 \
                         --log-level debug
                   env:
@@ -153,8 +151,8 @@ spec:
                       name: shared-mem
                   resources:
                     limits:
-                      nvidia.com/gpu: 1
-                      vke.volcengine.com/rdma: "1"
+                      nvidia.com/gpu: 2
+                      vke.volcengine.com/rdma: "2"
                   securityContext:
                     capabilities:
                       add:
