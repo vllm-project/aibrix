@@ -53,6 +53,7 @@ spec:
                       --uvicorn-log-level warning \
                       --model /models/Qwen3-32B \
                       --served-model-name qwen3-32b \
+                      --disable-log-requests \
                       --tensor-parallel-size 2 \
                       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
@@ -98,6 +99,8 @@ spec:
                 - emptyDir:
                     medium: Memory
                   name: shared-mem
+              nodeSelector:
+                kubernetes.io/hostname: 192.168.0.6      
         - name: decode
           replicas: 2
           stateful: true
@@ -134,6 +137,7 @@ spec:
                       --uvicorn-log-level warning \
                       --model /models/Qwen3-32B \
                       --served-model-name qwen3-32b \
+                      --disable-log-requests \
                       --tensor-parallel-size 2 \
                       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
@@ -179,3 +183,5 @@ spec:
                 - emptyDir:
                     medium: Memory
                   name: shared-mem
+              nodeSelector:
+                kubernetes.io/hostname: 192.168.0.6      

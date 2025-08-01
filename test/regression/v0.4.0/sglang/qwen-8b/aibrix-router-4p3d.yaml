@@ -86,6 +86,8 @@ spec:
                 - emptyDir:
                     medium: Memory
                   name: shared-mem
+              nodeSelector:
+                kubernetes.io/hostname: 192.168.0.6
         - name: decode
           replicas: 3
           stateful: true
@@ -155,3 +157,5 @@ spec:
                 - emptyDir:
                     medium: Memory
                   name: shared-mem
+              nodeSelector:
+                kubernetes.io/hostname: 192.168.0.6

@@ -48,6 +48,7 @@ spec:
                       --uvicorn-log-level warning \
                       --model /models/Qwen3-8B \
                       --served-model-name qwen3-8b \
+                      --disable-log-requests \
                       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
                     - name: UCX_TLS
@@ -92,6 +93,8 @@ spec:
                 - emptyDir:
                     medium: Memory
                   name: shared-mem
+              nodeSelector:
+                kubernetes.io/hostname: 192.168.0.6      
         - name: decode
           replicas: 1
           stateful: true
@@ -123,6 +126,7 @@ spec:
                       --uvicorn-log-level warning \
                       --model /models/Qwen3-8B \
                       --served-model-name qwen3-8b \
+                      --disable-log-requests \
                       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
                     - name: UCX_TLS
@@ -167,4 +171,6 @@ spec:
                 - emptyDir:
                     medium: Memory
                   name: shared-mem
+              nodeSelector:
+                kubernetes.io/hostname: 192.168.0.6      
 

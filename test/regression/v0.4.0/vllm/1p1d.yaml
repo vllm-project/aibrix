@@ -43,6 +43,7 @@ spec:
                       --port "8000" \
                       --uvicorn-log-level warning \
                       --model /models/Qwen3-8B \
+                      --disable-log-requests \
                       --served-model-name qwen3-8b \
                       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
@@ -116,6 +117,7 @@ spec:
                       --port "8000" \
                       --uvicorn-log-level warning \
                       --model /models/Qwen3-8B \
+                      --disable-log-requests \
                       --served-model-name qwen3-8b \
                       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
