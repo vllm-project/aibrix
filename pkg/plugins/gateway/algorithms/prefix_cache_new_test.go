@@ -19,7 +19,6 @@ package routingalgorithms
 import (
 	"context"
 	"fmt"
-	"os"
 	"strconv"
 	"sync"
 	"testing"
@@ -354,8 +353,7 @@ func TestPrefixCacheRouterMetrics(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Initialize metrics for testing
-	_ = os.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
-	defer func() { _ = os.Unsetenv(constants.EnvPrefixCacheMetricsEnabled) }()
+	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
 	_ = initializePrefixCacheMetrics()
 	// Create test pods
 	readyPods := []*v1.Pod{
@@ -480,8 +478,7 @@ func TestRecordRoutingDecision(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Initialize metrics for testing
-	_ = os.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
-	defer func() { _ = os.Unsetenv(constants.EnvPrefixCacheMetricsEnabled) }()
+	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
 	_ = initializePrefixCacheMetrics()
 	tests := []struct {
 		matchPercent   int
@@ -525,8 +522,7 @@ func TestPrefixCacheRouterLatencyMetric(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Initialize metrics for testing
-	_ = os.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
-	defer func() { _ = os.Unsetenv(constants.EnvPrefixCacheMetricsEnabled) }()
+	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
 	_ = initializePrefixCacheMetrics()
 	// Create simple test setup
 	readyPods := []*v1.Pod{
