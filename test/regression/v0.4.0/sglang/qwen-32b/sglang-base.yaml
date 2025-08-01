@@ -2,19 +2,19 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    model.aibrix.ai/name: qwen3-8b
+    model.aibrix.ai/name: qwen3-32b
     model.aibrix.ai/port: "8000"
-  name: qwen3-8b
+  name: qwen3-32b
   namespace: default
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
-      model.aibrix.ai/name: qwen3-8b
+      model.aibrix.ai/name: qwen3-32b
   template:
     metadata:
       labels:
-        model.aibrix.ai/name: qwen3-8b
+        model.aibrix.ai/name: qwen3-32b
     spec:
       containers:
         - name: sglang-server
@@ -52,4 +52,3 @@ spec:
         - emptyDir:
             medium: Memory
           name: shared-mem
-

@@ -2,19 +2,19 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    model.aibrix.ai/name: qwen3-8b
+    model.aibrix.ai/name: qwen3-235b
     model.aibrix.ai/port: "8000"
-  name: qwen3-8b
+  name: qwen3-235b
   namespace: default
 spec:
   replicas: 2
   selector:
     matchLabels:
-      model.aibrix.ai/name: qwen3-8b
+      model.aibrix.ai/name: qwen3-235b
   template:
     metadata:
       labels:
-        model.aibrix.ai/name: qwen3-8b
+        model.aibrix.ai/name: qwen3-235b
     spec:
       containers:
         - name: sglang-server
@@ -23,8 +23,8 @@ spec:
           args:
             - |
               python3 -m sglang.launch_server \
-                --model-path /models/Qwen3-8B \
-                --served-model-name qwen3-8b \
+                --model-path models/Qwen3-235B-A22B \
+                --served-model-name qwen3-235b \
                 --host 0.0.0.0 \
                 --port 8000 \
                 --trust-remote-code \
