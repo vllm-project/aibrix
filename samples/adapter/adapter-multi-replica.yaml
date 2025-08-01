@@ -1,0 +1,20 @@
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelAdapter
+metadata:
+  name: sample-lora-multi-replica
+  namespace: default
+spec:
+  # Specify the number of replicas for the adapter
+  # The adapter will be loaded on this many pods matching the selector
+  replicas: 3
+  # Pod selector to identify which pods can host this adapter
+  podSelector:
+    matchLabels:
+      model.aibrix.ai/name: qwen-coder-1-5b-instruct
+      adapter.model.aibrix.ai/enabled: "true"
+  # URL for the LoRA adapter artifact
+  artifactURL: "huggingface://SomethingNew/lora-adapter-demo"
+  # Optional: Additional configuration
+  additionalConfig:
+    rank: "16"
+    alpha: "32"

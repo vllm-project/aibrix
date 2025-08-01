@@ -7,6 +7,9 @@ metadata:
     model.aibrix.ai/name: "qwen-code-lora"
     model.aibrix.ai/port: "8000"
 spec:
+  # Optional: Number of replicas for the adapter (default: 1)
+  # Uncomment to load adapter on multiple pods
+  # replicas: 3
   baseModel: qwen-coder-1-5b-instruct
   podSelector:
     matchLabels:
