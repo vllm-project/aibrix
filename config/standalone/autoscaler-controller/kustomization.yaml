@@ -20,7 +20,7 @@ namePrefix: aibrix-autoscaling-
 images:
   - name: controller
     newName: aibrix/controller-manager
-    newTag: v0.4.0.rc.1
+    newTag: v0.4.0.rc.2
 
 patches:
   - path: patch.yaml
