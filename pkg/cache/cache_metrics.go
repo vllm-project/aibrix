@@ -21,7 +21,6 @@ import (
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	dto "github.com/prometheus/client_model/go"
-	"github.com/vllm-project/aibrix/pkg/apis/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
@@ -30,8 +29,10 @@ import (
 const (
 	// When the engine's HTTP proxy is separated from the engine itself,
 	// the request port and metrics port may differ, so a dedicated metrics port is required.
-	// Note: Using MetricPortLabel for backward compatibility, but it's the same as constants.ModelMetricPortLabel
-	MetricPortLabel                     = constants.ModelMetricPortLabel
+	MetricPortLabel                     = "model.aibrix.ai/metric-port"
+	engineLabel                         = "model.aibrix.ai/engine"
+	portLabel                           = "model.aibrix.ai/port"
+	modelLabel                          = "model.aibrix.ai/name"
 	defaultMetricPort                   = 8000
 	defaultEngineLabelValue             = "vllm"
 	defaultPodMetricRefreshIntervalInMS = 50
@@ -336,7 +337,7 @@ func (c *Store) fetchMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily, 
 		klog.V(4).Infof("Cannot find labelMetricName %v in collected metrics names", labelMetricName)
 		return nil, false
 	}
-	engineType, err := getPodLabel(pod, constants.ModelEngineLabel)
+	engineType, err := getPodLabel(pod, engineLabel)
 	if engineType == "" {
 		klog.V(4).Infof(err.Error())
 		engineType = defaultEngineLabelValue
@@ -362,7 +363,7 @@ func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, s
 	} else if scope == metrics.PodModelMetricScope {
 		var err error
 		if modelName == "" {
-			modelName, err = getPodLabel(pod, constants.ModelNameLabel)
+			modelName, err = getPodLabel(pod, modelLabel)
 			if err != nil {
 				return fmt.Errorf("modelName should not be empty for scope %v", scope)
 			}

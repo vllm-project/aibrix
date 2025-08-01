@@ -59,7 +59,7 @@ type pdRouter struct {
 
 func NewPDRouter() (types.Router, error) {
 	var tokenizerObj tokenizer.Tokenizer
-	if tokenizerType == "tiktoken" {
+	if tokenizerType == tokenizerTypeTiktoken {
 		tokenizerObj = tokenizer.NewTiktokenTokenizer()
 	} else {
 		tokenizerObj = tokenizer.NewCharacterTokenizer()

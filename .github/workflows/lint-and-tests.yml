@@ -67,6 +67,8 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version: '1.22'
+      - name: Install ZMQ dependencies
+        run: sudo apt-get update && sudo apt-get install -y libzmq3-dev
 
       # github action has errors, requires debugging
       # - name: Cache Go modules

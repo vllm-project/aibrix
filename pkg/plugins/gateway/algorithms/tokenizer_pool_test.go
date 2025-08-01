@@ -327,9 +327,9 @@ func resetPrometheusRegistry() {
 func TestTokenizerPoolGetTokenizer(t *testing.T) {
 	resetPrometheusRegistry()
 
-	// Create a mock fallback tokenizer
-	fallbackTokenizer := &mockTokenizer{}
-	fallbackTokenizer.On("TokenizeInputText", mock.Anything).Return([]byte("fallback"), nil)
+	// Create a mock default tokenizer
+	defaultTokenizer := &mockTokenizer{}
+	defaultTokenizer.On("TokenizeInputText", mock.Anything).Return([]byte("default"), nil)
 
 	// Create test cache
 	testCache := createTestCache()
@@ -340,7 +340,7 @@ func TestTokenizerPoolGetTokenizer(t *testing.T) {
 		HealthCheckPeriod:    30 * time.Second,
 		TokenizerTTL:         5 * time.Minute,
 		MaxTokenizersPerPool: 100,
-		FallbackTokenizer:    fallbackTokenizer,
+		DefaultTokenizer:     defaultTokenizer,
 		Timeout:              10 * time.Second,
 		ModelServiceMap:      map[string]string{},
 	}
@@ -352,22 +352,22 @@ func TestTokenizerPoolGetTokenizer(t *testing.T) {
 		}
 	}()
 
-	t.Run("remote disabled returns fallback", func(t *testing.T) {
+	t.Run("remote disabled returns default", func(t *testing.T) {
 		pod := createTestPod("pod1", "llama2-7b", "vllm", true)
 		pods := []*v1.Pod{&pod}
 
 		tok := pool.GetTokenizer("llama2-7b", pods)
-		assert.Equal(t, fallbackTokenizer, tok)
+		assert.Equal(t, defaultTokenizer, tok)
 	})
 
-	t.Run("no matching pod returns fallback", func(t *testing.T) {
+	t.Run("no matching pod returns default", func(t *testing.T) {
 		pool.config.EnableVLLMRemote = true
 
 		pod := createTestPod("pod1", "different-model", "vllm", true)
 		pods := []*v1.Pod{&pod}
 
 		tok := pool.GetTokenizer("llama2-7b", pods)
-		assert.Equal(t, fallbackTokenizer, tok)
+		assert.Equal(t, defaultTokenizer, tok)
 	})
 
 	t.Run("service map takes precedence", func(t *testing.T) {
@@ -396,7 +396,7 @@ func TestTokenizerPoolHealthCheck(t *testing.T) {
 	unhealthyTokenizer.On("IsHealthy", mock.Anything).Return(false)
 	unhealthyTokenizer.On("Close").Return(nil)
 
-	fallbackTokenizer := &mockTokenizer{}
+	defaultTokenizer := &mockTokenizer{}
 
 	testCache := createTestCache()
 
@@ -405,7 +405,7 @@ func TestTokenizerPoolHealthCheck(t *testing.T) {
 		HealthCheckPeriod:    100 * time.Millisecond,
 		TokenizerTTL:         200 * time.Millisecond,
 		MaxTokenizersPerPool: 100,
-		FallbackTokenizer:    fallbackTokenizer,
+		DefaultTokenizer:     defaultTokenizer,
 	}
 
 	pool := NewTokenizerPool(config, testCache)
@@ -457,15 +457,15 @@ func TestTokenizerPoolHealthCheck(t *testing.T) {
 func TestTokenizerPoolMaxSize(t *testing.T) {
 	resetPrometheusRegistry()
 
-	fallbackTokenizer := &mockTokenizer{}
-	fallbackTokenizer.On("TokenizeInputText", mock.Anything).Return([]byte("fallback"), nil)
+	defaultTokenizer := &mockTokenizer{}
+	defaultTokenizer.On("TokenizeInputText", mock.Anything).Return([]byte("default"), nil)
 
 	testCache := createTestCache()
 
 	config := TokenizerPoolConfig{
 		EnableVLLMRemote:     true,
 		MaxTokenizersPerPool: 2,
-		FallbackTokenizer:    fallbackTokenizer,
+		DefaultTokenizer:     defaultTokenizer,
 		EndpointTemplate:     "http://%s:8000",
 		HealthCheckPeriod:    30 * time.Second,
 		TokenizerTTL:         5 * time.Minute,
@@ -495,7 +495,7 @@ func TestTokenizerPoolMaxSize(t *testing.T) {
 	pods := []*v1.Pod{&pod}
 
 	tok := pool.GetTokenizer("model3", pods)
-	assert.Equal(t, fallbackTokenizer, tok)
+	assert.Equal(t, defaultTokenizer, tok)
 
 	// Verify pool size didn't increase
 	pool.mu.RLock()
@@ -506,8 +506,8 @@ func TestTokenizerPoolMaxSize(t *testing.T) {
 func TestTokenizerPoolConcurrency(t *testing.T) {
 	resetPrometheusRegistry()
 
-	fallbackTokenizer := &mockTokenizer{}
-	fallbackTokenizer.On("TokenizeInputText", mock.Anything).Return([]byte("fallback"), nil)
+	defaultTokenizer := &mockTokenizer{}
+	defaultTokenizer.On("TokenizeInputText", mock.Anything).Return([]byte("default"), nil)
 
 	testCache := createTestCache()
 
@@ -517,7 +517,7 @@ func TestTokenizerPoolConcurrency(t *testing.T) {
 		HealthCheckPeriod:    100 * time.Millisecond,
 		TokenizerTTL:         200 * time.Millisecond,
 		MaxTokenizersPerPool: 100,
-		FallbackTokenizer:    fallbackTokenizer,
+		DefaultTokenizer:     defaultTokenizer,
 		Timeout:              1 * time.Second,
 	}
 
@@ -550,8 +550,8 @@ func TestTokenizerPoolConcurrency(t *testing.T) {
 func TestTokenizerPoolRaceCondition(t *testing.T) {
 	resetPrometheusRegistry()
 
-	fallbackTokenizer := &mockTokenizer{}
-	fallbackTokenizer.On("TokenizeInputText", mock.Anything).Return([]byte("fallback"), nil)
+	defaultTokenizer := &mockTokenizer{}
+	defaultTokenizer.On("TokenizeInputText", mock.Anything).Return([]byte("default"), nil)
 
 	testCache := createTestCache()
 
@@ -561,7 +561,7 @@ func TestTokenizerPoolRaceCondition(t *testing.T) {
 		HealthCheckPeriod:    10 * time.Millisecond,
 		TokenizerTTL:         50 * time.Millisecond,
 		MaxTokenizersPerPool: 100,
-		FallbackTokenizer:    fallbackTokenizer,
+		DefaultTokenizer:     defaultTokenizer,
 		Timeout:              1 * time.Second,
 	}
 
@@ -624,8 +624,8 @@ func TestTokenizerPoolRaceCondition(t *testing.T) {
 func TestCreateOrUpdateConcurrency(t *testing.T) {
 	resetPrometheusRegistry()
 
-	fallbackTokenizer := &mockTokenizer{}
-	fallbackTokenizer.On("TokenizeInputText", mock.Anything).Return([]byte("fallback"), nil)
+	defaultTokenizer := &mockTokenizer{}
+	defaultTokenizer.On("TokenizeInputText", mock.Anything).Return([]byte("default"), nil)
 
 	testCache := createTestCache()
 
@@ -635,7 +635,7 @@ func TestCreateOrUpdateConcurrency(t *testing.T) {
 		HealthCheckPeriod:    30 * time.Second,
 		TokenizerTTL:         5 * time.Minute,
 		MaxTokenizersPerPool: 100,
-		FallbackTokenizer:    fallbackTokenizer,
+		DefaultTokenizer:     defaultTokenizer,
 		Timeout:              10 * time.Second,
 	}
 
@@ -683,8 +683,8 @@ func TestCreateOrUpdateConcurrency(t *testing.T) {
 func BenchmarkTokenizerPoolConcurrentCreation(b *testing.B) {
 	resetPrometheusRegistry()
 
-	fallbackTokenizer := &mockTokenizer{}
-	fallbackTokenizer.On("TokenizeInputText", mock.Anything).Return([]byte("fallback"), nil)
+	defaultTokenizer := &mockTokenizer{}
+	defaultTokenizer.On("TokenizeInputText", mock.Anything).Return([]byte("default"), nil)
 
 	testCache := createTestCache()
 
@@ -694,7 +694,7 @@ func BenchmarkTokenizerPoolConcurrentCreation(b *testing.B) {
 		HealthCheckPeriod:    30 * time.Second,
 		TokenizerTTL:         5 * time.Minute,
 		MaxTokenizersPerPool: 100,
-		FallbackTokenizer:    fallbackTokenizer,
+		DefaultTokenizer:     defaultTokenizer,
 		Timeout:              10 * time.Second,
 	}
 

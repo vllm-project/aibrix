@@ -55,6 +55,7 @@ func Test_PrefixCacheE2E(t *testing.T) {
 		cache:              c,
 		tokenizer:          tokenizerObj,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+		// No KV sync router, uses original implementation
 	}
 
 	// no prefix match -> select least request pod
