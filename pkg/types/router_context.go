@@ -58,6 +58,10 @@ type RoutingContext struct {
 	TraceTerm   int64     // Trace term identifier, available after AddRequestCount call.
 	RoutedTime  time.Time // Time consumed during routing.
 
+	ReqHeaders map[string]string
+	ReqBody    []byte
+	ReqPath    string
+
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
 	lastError    atomic.Pointer[error]
@@ -267,6 +271,10 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.RequestTime = time.Now()
 	r.PendingLoad = 0
 	r.TraceTerm = 0
+
+	r.ReqHeaders = map[string]string{}
+	r.ReqPath = ""
+	r.ReqBody = []byte{}
 	// RoutedTime will not be reset, it must before ReqeustTime at this time.
 
 	r.targetPodSet = make(chan struct{}) // Initialize channel

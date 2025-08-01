@@ -7,55 +7,88 @@ on:
       - "v*.*.*"  # This triggers the workflow on any new tag
 
 jobs:
-  image-release:
+  image-release-dockerhub:
     runs-on: ubuntu-latest
     needs: [cut-github-release]
     permissions:
       packages: write
       contents: read
+    strategy:
+      matrix:
+        component:
+          - name: controller-manager
+            file: build/container/Dockerfile
+          - name: gateway-plugins
+            file: build/container/Dockerfile.gateway
+          - name: metadata-service
+            file: build/container/Dockerfile.metadata
+          - name: runtime
+            file: build/container/Dockerfile.runtime
+          - name: kvcache-watcher
+            file: build/container/Dockerfile.kvcache
     steps:
-      # Checkout the repository
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      # Set up Docker Buildx (optional but allows advanced Docker building)
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      # Log in to Docker Hub
-      - name: Log in to Docker Hub
+      - uses: actions/checkout@v3
+        with:
+          submodules: 'true'
+      - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Build and push ${{ matrix.component.name }}
+        uses: docker/build-push-action@v6
+        with:
+          platforms: linux/amd64,linux/arm64
+          file: ${{ matrix.component.file }}
+          push: true
+          tags: |
+            aibrix/${{ matrix.component.name }}:${{ github.ref_name }}
 
-      # Log in to Github Registry
-      - name: Login to the Container registry
+  image-release-ghcr:
+    runs-on: ubuntu-latest
+    needs: [cut-github-release]
+    permissions:
+      packages: write
+      contents: read
+    strategy:
+      matrix:
+        component:
+          - name: controller-manager
+            file: build/container/Dockerfile
+          - name: gateway-plugins
+            file: build/container/Dockerfile.gateway
+          - name: metadata-service
+            file: build/container/Dockerfile.metadata
+          - name: runtime
+            file: build/container/Dockerfile.runtime
+          - name: kvcache-watcher
+            file: build/container/Dockerfile.kvcache
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: 'true'
+      - name: Login to Github Container registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.AIBRIX_ORG_PACKAGE_UPDATE_GITHUB_TOKEN }}
-
-      # Build container images with docker registry namespace
-      - name: Build Container Images
-        run: |
-          IS_MAIN_BRANCH=false GIT_COMMIT_HASH=${{ github.ref_name }} make docker-build-all
-
-      # Push container image to DockerHub
-      - name: Push container image to container registry
-        run: |
-          IS_MAIN_BRANCH=false GIT_COMMIT_HASH=${{ github.ref_name }} make docker-push-all
-
-      # Build container images with Github registry namespace
-      - name: Build Container Images with Github Container Registry prefix
-        run: |
-          IS_MAIN_BRANCH=false GIT_COMMIT_HASH=${{ github.ref_name }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-build-all
-
-      # Push container image to Github container registry
-      - name: Push Container Images to Github Container Registry
-        run: |
-          IS_MAIN_BRANCH=false GIT_COMMIT_HASH=${{ github.ref_name }} AIBRIX_CONTAINER_REGISTRY_NAMESPACE=ghcr.io/aibrix make docker-push-all
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Build and push ${{ matrix.component.name }}
+        uses: docker/build-push-action@v6
+        with:
+          platforms: linux/amd64,linux/arm64
+          file: ${{ matrix.component.file }}
+          push: true
+          tags: |
+            ghcr.io/aibrix/${{ matrix.component.name }}:${{ github.ref_name }}
 
   python-wheel-release:
     runs-on: ubuntu-latest
@@ -82,19 +115,9 @@ jobs:
           pushd python/aibrix
           poetry publish --build
           popd
-
-          pushd python/aibrix_kvcache
-          pip install -r requirements/build.txt -r requirements/dev.txt -r requirements/core.txt
-          python -m build --sdist --wheel --no-isolation
-          popd
       - name: Add package to release artifact
         run: |
           pushd python/aibrix
-          poetry build
-          ls -al dist/*
-          popd
-
-          pushd python/aibrix_kvcache
           poetry build
           ls -al dist/*
           popd
@@ -104,6 +127,50 @@ jobs:
           name: aibrix-python-packages-${{ matrix.python-version }}
           path: |
             python/aibrix/dist/*.whl
+
+  kvcache-wheel-release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+    environment:
+      name: pypi
+      url: https://pypi.org/p/aibrix_kvcache
+    permissions:
+      id-token: write
+    name: publish
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+      - name: Check out source repository
+        uses: actions/checkout@v4
+      - name: Set up Python environment ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          cd python/aibrix_kvcache
+          python -m pip install --upgrade pip
+          pip install -U pip cibuildwheel
+          pip install -r requirements/build.txt
+      - name: Build
+        run: |
+          python -m cibuildwheel --output-dir python/aibrix_kvcache/dist python/aibrix_kvcache/
+          ls -al python/aibrix_kvcache/dist/*
+      - name: Upload release to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          verbose: true
+          password: ${{ secrets.PYPI_TOKEN }}
+          packages-dir: python/aibrix_kvcache/dist
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aibrix-kvcache-python-packages
+          path: |
             python/aibrix_kvcache/dist/*.whl
 
   artifact-release:

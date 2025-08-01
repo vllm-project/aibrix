@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -35,6 +36,9 @@ import (
 )
 
 func Test_PrefixCacheE2E(t *testing.T) {
+	// Ensure metrics are not enabled
+	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
+
 	readyPods := getReadyPods()
 	c := cache.NewWithPodsMetricsForTest(
 		readyPods,
@@ -47,10 +51,15 @@ func Test_PrefixCacheE2E(t *testing.T) {
 		})
 	podList := podsFromCache(c)
 
+	// Create tokenizer using factory method
+	tokenizerObj, err := tokenizer.NewTokenizer("character", nil)
+	assert.NoError(t, err)
+
 	prefixCacheRouter := prefixCacheRouter{
 		cache:              c,
-		tokenizer:          tokenizer.NewCharacterTokenizer(),
+		tokenizer:          tokenizerObj,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+		// No KV sync router, uses original implementation
 	}
 
 	// no prefix match -> select least request pod
@@ -205,6 +214,9 @@ func getReadyPods() []*v1.Pod {
 }
 
 func Test_ValidatePrePrefixMatchLoadBalance(t *testing.T) {
+	// Ensure metrics are not enabled
+	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
+
 	// no imbalance
 	readyPods := getReadyPods()
 	c := cache.NewWithPodsMetricsForTest(
@@ -236,6 +248,9 @@ func Test_ValidatePrePrefixMatchLoadBalance(t *testing.T) {
 }
 
 func Test_ValidatePostPrefixMatchLoadBalance(t *testing.T) {
+	// Ensure metrics are not enabled
+	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
+
 	readyPods := getReadyPods()
 	testcases := []struct {
 		name        string

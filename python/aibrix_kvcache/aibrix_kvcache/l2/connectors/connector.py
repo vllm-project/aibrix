@@ -48,6 +48,7 @@ class ConnectorConfig:
     namespace: str
     partition_id: str
     executor: Executor
+    block_spec_signature: str = ""
     key_builder_signature: str = ""
     layout_signature: str = ""
 
@@ -72,11 +73,14 @@ class Connector(Generic[K, V]):
         namespace = config.namespace
         partition_id = config.partition_id
         executor = config.executor
+        block_spec_signature = config.block_spec_signature
         key_builder_signature = config.key_builder_signature
         layout_signature = config.layout_signature
 
         conn_id = f"{namespace}_{partition_id}"
-        signatures = f"{key_builder_signature}{layout_signature}"
+        signatures = (
+            f"{block_spec_signature}{key_builder_signature}{layout_signature}"
+        )
         if len(signatures) > 0:
             conn_id = f"{conn_id}_{signatures}"
 
@@ -92,6 +96,10 @@ class Connector(Generic[K, V]):
             from .hpkv import HPKVConnector
 
             return HPKVConnector.from_envs(conn_id, executor, **kwargs)
+        elif backend_name == "PRIS":
+            from .pris import PrisConnector
+
+            return PrisConnector.from_envs(conn_id, executor, **kwargs)
         elif backend_name == "MOCK":
             from .mock import MockConnector
 

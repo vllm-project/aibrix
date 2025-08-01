@@ -37,8 +37,10 @@ Documentation
    :caption: Architecture
 
    designs/architecture.rst
+   designs/aibrix-stormservice.rst
    designs/aibrix-router.rst
    designs/aibrix-kvcache-offloading-framework.rst
+   designs/aibrix-autoscaler.rst
    designs/aibrix-engine-runtime.rst
 
 .. toctree::
@@ -52,7 +54,9 @@ Documentation
    features/autoscaling/autoscaling.rst
    features/runtime.rst
    features/kvcache-offloading.rst
+   features/kv-event-sync.rst
    features/benchmark-and-generator.rst
+   features/multi-engine.rst
 
 .. toctree::
    :maxdepth: 1

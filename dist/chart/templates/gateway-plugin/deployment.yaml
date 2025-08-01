@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aibrix-gateway-plugins
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gateway-plugin
+spec:
+  replicas: {{ .Values.gatewayPlugin.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "chart.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: aibrix-gateway-plugin
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "chart.labels" . | nindent 8 }}
+        app.kubernetes.io/component: aibrix-gateway-plugin
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - {{ include "chart.name" . }}
+                    - key: app.kubernetes.io/component
+                      operator: In
+                      values:
+                        - aibrix-gateway-plugin
+                topologyKey: "kubernetes.io/hostname"
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: nvidia.com/gpu.present
+                    operator: NotIn
+                    values:
+                      - "true"
+      initContainers:
+        - name: init-c
+          image: {{ .Values.gatewayPlugin.initContainer.image.repository }}:{{ .Values.gatewayPlugin.initContainer.image.tag }}
+          command: ['sh', '-c', 'until echo "ping" | nc {{ .Values.gatewayPlugin.dependencies.redis.host }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
+      containers:
+        - name: gateway-plugin
+          image: {{ .Values.gatewayPlugin.container.image.repository }}:{{ .Values.gatewayPlugin.container.image.tag }}
+          imagePullPolicy: {{ .Values.gatewayPlugin.container.image.pullPolicy }}
+          ports:
+            - name: gateway
+              containerPort: 50052
+            - name: profiling
+              containerPort: 6060
+            - name: metrics
+              containerPort: 8080
+          env:
+            - name: REDIS_HOST
+              value: {{ .Values.gatewayPlugin.dependencies.redis.host }}
+            - name: REDIS_PORT
+              value: "{{ .Values.gatewayPlugin.dependencies.redis.port }}"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+{{- range $key, $val := .Values.gatewayPlugin.container.envs }}
+            - name: {{ $key }}
+              value: "{{ $val }}"
+{{- end }}
+          resources: {{ toYaml .Values.gatewayPlugin.resources | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.gatewayPlugin.container.probes.liveness | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.gatewayPlugin.container.probes.readiness | nindent 12 }}
+      serviceAccountName: aibrix-gateway-plugins

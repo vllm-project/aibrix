@@ -31,6 +31,9 @@ if TYPE_CHECKING:
     # AIBRIX_KV_CACHE_OL_DOUBLE_GET_THRESHOLD is set to "4", we will ignore the
     # second rule.
     AIBRIX_KV_CACHE_OL_DOUBLE_GET_THRESHOLD: Tuple[int, float] = (4, 0.1)
+    # Number of tokens in a kvcache block (the finest IO granularity). Defaults
+    # to -1, which means we will use engine's block size.
+    AIBRIX_KV_CACHE_OL_BLOCK_SIZE: int = -1
     AIBRIX_KV_CACHE_OL_CHUNK_SIZE: int = 512
     AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED: bool = True
     AIBRIX_KV_CACHE_OL_BREAKDOWN_MEASUREMENT_ENABLED: bool = True
@@ -119,6 +122,12 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_HPKV_LOCAL_PORT: int = 12345
     AIBRIX_KV_CACHE_OL_HPKV_USE_GDR: bool = True
 
+    # Pris Env Vars
+    AIBRIX_KV_CACHE_OL_PRIS_REMOTE_ADDR: str = "127.0.0.1"
+    AIBRIX_KV_CACHE_OL_PRIS_REMOTE_PORT: int = 6379
+    AIBRIX_KV_CACHE_OL_PRIS_USE_MPUT_MGET: bool = False
+    AIBRIX_KV_CACHE_OL_PRIS_PASSWORD: str = ""
+
     # RDMA Auto-Detection Env Vars
     # Defines the range of valid GIDs. Similar to NVSHMEM_IB_ADDR_RANGE
     # for NVSHMEM. It must be a valid CIDR.
@@ -145,6 +154,9 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
             ),
             (int, float),
         )
+    ),
+    "AIBRIX_KV_CACHE_OL_BLOCK_SIZE": lambda: int(
+        os.getenv("AIBRIX_KV_CACHE_OL_BLOCK_SIZE", "-1")
     ),
     "AIBRIX_KV_CACHE_OL_CHUNK_SIZE": lambda: int(
         os.getenv("AIBRIX_KV_CACHE_OL_CHUNK_SIZE", "512")
@@ -342,6 +354,20 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     "AIBRIX_KV_CACHE_OL_HPKV_USE_GDR": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_HPKV_USE_GDR", "1").strip().lower()
         in ("1", "true")
+    ),
+    # ================== PRIS Env Vars ==================
+    "AIBRIX_KV_CACHE_OL_PRIS_REMOTE_ADDR": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_PRIS_REMOTE_ADDR", "127.0.0.1").strip()
+    ),
+    "AIBRIX_KV_CACHE_OL_PRIS_REMOTE_PORT": lambda: int(
+        os.getenv("AIBRIX_KV_CACHE_OL_PRIS_REMOTE_PORT", "6379")
+    ),
+    "AIBRIX_KV_CACHE_OL_PRIS_USE_MPUT_MGET": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_PRIS_USE_MPUT_MGET", "0").strip().lower()
+        in ("1", "true")
+    ),
+    "AIBRIX_KV_CACHE_OL_PRIS_PASSWORD": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_PRIS_PASSWORD", "").strip()
     ),
     # ================== RDMA Auto-Detection Env Vars ==================
     "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE": lambda: (

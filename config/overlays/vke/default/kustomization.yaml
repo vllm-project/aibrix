@@ -11,7 +11,7 @@ patches:
 images:
 - name: quay.io/kuberay/operator
   newName: aibrix-cn-beijing.cr.volces.com/aibrix/kuberay-operator
-  newTag: v1.2.1-patch
+  newTag: v1.2.1-patch-20250726
 - name: busybox
   newName: aibrix-cn-beijing.cr.volces.com/aibrix/busybox
   newTag: stable
@@ -20,13 +20,13 @@ images:
   newTag: latest
 - name: aibrix/gateway-plugins
   newName: aibrix-cn-beijing.cr.volces.com/aibrix/gateway-plugins
-  newTag: v0.3.0
+  newTag: v0.4.0.rc.2
 - name: aibrix/metadata-service
   newName: aibrix-cn-beijing.cr.volces.com/aibrix/metadata-service
-  newTag: v0.3.0
+  newTag: v0.4.0.rc.2
 - name: aibrix/controller-manager
   newName: aibrix-cn-beijing.cr.volces.com/aibrix/controller-manager
-  newTag: v0.3.0
+  newTag: v0.4.0.rc.2
 - name: aibrix/runtime
   newName: aibrix-cn-beijing.cr.volces.com/aibrix/runtime
-  newTag: v0.3.0
+  newTag: v0.4.0.rc.2

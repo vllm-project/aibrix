@@ -19,6 +19,8 @@ package cache
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,12 +33,25 @@ import (
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	syncindexer "github.com/vllm-project/aibrix/pkg/utils/syncprefixcacheindexer"
 )
 
 var (
 	store = &Store{} // Global cache store instance
 	once  sync.Once  // Singleton pattern control lock
 )
+
+// InitOptions configures the cache initialization behavior
+type InitOptions struct {
+	// EnableKVSync configures whether to start the ZMQ KV event sync
+	EnableKVSync bool
+
+	// RedisClient is required for KVSync and other features. Can be nil.
+	RedisClient *redis.Client
+
+	// ModelRouterProvider is needed only by the gateway. Can be nil.
+	ModelRouterProvider ModelRouterProviderFunc
+}
 
 const (
 	// For output predictor
@@ -83,6 +98,12 @@ type Store struct {
 
 	// podMetricsJobs Channel for sending Pod metrics update jobs to workers
 	podMetricsJobs chan *Pod
+
+	// Sync prefix indexer - only created when KV sync is enabled
+	syncPrefixIndexer *syncindexer.SyncPrefixHashTable
+
+	// KV event management - optional enhancement
+	kvEventManager *KVEventManager
 }
 
 // Get retrieves the cache instance
@@ -237,47 +258,70 @@ func InitForTest() *Store {
 	return store
 }
 
-// Init initializes the cache store (singleton pattern)
+// InitWithOptions initializes the cache store with configurable behavior
 // Parameters:
 //
 //	config: Kubernetes configuration
 //	stopCh: Stop signal channel
-//	redisClient: Redis client instance
+//	opts: Configuration options for initialization
 //
 // Returns:
 //
 //	*Store: Pointer to initialized store instance
-func Init(config *rest.Config, stopCh <-chan struct{}) *Store {
-	// Configure cache components
-	enableGPUOptimizerTracing = false
-	enableModelGPUProfileCaching = false
-	return InitForGateway(config, stopCh, nil, nil)
-}
-
-func InitForMetadata(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Store {
-	// Configure cache components
-	enableGPUOptimizerTracing = false
-	enableModelGPUProfileCaching = false
-	return InitForGateway(config, stopCh, redisClient, nil)
-}
-
-func InitForGateway(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client, modelRouterProvider ModelRouterProviderFunc) *Store {
+func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptions) *Store {
 	once.Do(func() {
-		klog.InfoS("initialize cache for gateway",
+		// Log initialization based on configuration
+		var service string
+		if opts.EnableKVSync {
+			service = "gateway"
+		} else if opts.RedisClient != nil {
+			service = "metadata"
+		} else {
+			service = "controllers"
+		}
+
+		klog.InfoS("initialize cache",
+			"service", service,
+			"enableKVSync", opts.EnableKVSync,
+			"hasRedisClient", opts.RedisClient != nil,
+			"hasModelRouterProvider", opts.ModelRouterProvider != nil,
 			"enableModelGPUProfileCaching", enableModelGPUProfileCaching,
 			"enableGPUOptimizerTracing", enableGPUOptimizerTracing)
-		store = New(redisClient, initPrometheusAPI(), modelRouterProvider)
+
+		// Configure cache components based on service needs
+		if service == "metadata" || service == "controllers" {
+			enableGPUOptimizerTracing = false
+			enableModelGPUProfileCaching = false
+		}
+
+		// Create store with provided dependencies
+		store = New(opts.RedisClient, initPrometheusAPI(), opts.ModelRouterProvider)
 
 		// Initialize cache components
 		if err := initCacheInformers(store, config, stopCh); err != nil {
 			panic(err)
 		}
 		initMetricsCache(store, stopCh)
+
+		// Initialize profile cache if enabled
 		if store.enableProfileCaching {
 			initProfileCache(store, stopCh, false)
 		}
-		if store.enableTracing {
-			initTraceCache(redisClient, stopCh)
+
+		// Initialize trace cache if enabled and Redis is available
+		if store.enableTracing && opts.RedisClient != nil {
+			initTraceCache(opts.RedisClient, stopCh)
+		}
+
+		// Initialize KV event sync if enabled
+		if opts.EnableKVSync {
+			if opts.RedisClient == nil {
+				klog.Fatalf("InitOptions: EnableKVSync is true but RedisClient is nil")
+			}
+			if err := store.initKVEventSync(); err != nil {
+				klog.Errorf("Failed to initialize KV event sync: %v", err)
+				// Continue without KV sync - this is not a fatal error
+			}
 		}
 	})
 
@@ -380,4 +424,96 @@ func initTraceCache(redisClient *redis.Client, stopCh <-chan struct{}) {
 			}
 		}
 	}()
+}
+
+// initKVEventSync initializes the KV event synchronization system
+func (s *Store) initKVEventSync() error {
+	klog.Info("Initializing KV event synchronization")
+
+	// Check if KV sync should be enabled
+	kvSyncValue := utils.LoadEnv("AIBRIX_KV_EVENT_SYNC_ENABLED", "false")
+	kvSyncEnabled, _ := strconv.ParseBool(kvSyncValue)
+	remoteTokenValue := utils.LoadEnv("AIBRIX_USE_REMOTE_TOKENIZER", "false")
+	remoteTokenizerEnabled, _ := strconv.ParseBool(remoteTokenValue)
+
+	// Early return if not enabled
+	if !kvSyncEnabled {
+		klog.Info("KV event sync is disabled")
+		return nil
+	}
+
+	if !remoteTokenizerEnabled {
+		klog.Warning("KV sync requires remote tokenizer, feature disabled")
+		return nil
+	}
+
+	// Track initialization state for cleanup
+	var initialized bool
+	defer func() {
+		if !initialized {
+			s.cleanupKVEventSync()
+		}
+	}()
+
+	// Create and validate event manager first
+	s.kvEventManager = NewKVEventManager(s)
+	if s.kvEventManager == nil {
+		return fmt.Errorf("failed to create KV event manager")
+	}
+
+	// Validate configuration before allocating more resources
+	if err := s.kvEventManager.validateConfiguration(); err != nil {
+		return fmt.Errorf("invalid KV event sync configuration: %w", err)
+	}
+
+	// Create sync indexer after validation passes
+	s.syncPrefixIndexer = syncindexer.NewSyncPrefixHashTable()
+	if s.syncPrefixIndexer == nil {
+		return fmt.Errorf("failed to create sync prefix indexer")
+	}
+
+	// Start event manager
+	if err := s.kvEventManager.Start(); err != nil {
+		return fmt.Errorf("failed to start KV event sync: %w", err)
+	}
+
+	// Mark as successfully initialized
+	initialized = true
+	klog.Info("KV event synchronization initialized successfully")
+
+	return nil
+}
+
+// cleanupKVEventSync cleans up partially initialized KV event sync resources
+func (s *Store) cleanupKVEventSync() {
+	klog.Info("Cleaning up KV event sync resources")
+
+	// Stop event manager if it exists
+	if s.kvEventManager != nil {
+		s.kvEventManager.Stop()
+		s.kvEventManager = nil
+	}
+
+	// Clear sync indexer
+	if s.syncPrefixIndexer != nil {
+		s.syncPrefixIndexer.Close()
+		s.syncPrefixIndexer = nil
+	}
+}
+
+// GetSyncPrefixIndexer returns the sync prefix hash indexer
+func (s *Store) GetSyncPrefixIndexer() *syncindexer.SyncPrefixHashTable {
+	// Return sync indexer only if KV sync is enabled
+	// Router will fall back to original indexer if this returns nil
+	return s.syncPrefixIndexer
+}
+
+// Close gracefully shuts down the cache store
+func (s *Store) Close() {
+	klog.Info("Closing cache store")
+
+	// Clean up KV event sync resources
+	s.cleanupKVEventSync()
+
+	// Other cleanup can be added here in the future
 }

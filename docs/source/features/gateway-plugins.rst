@@ -155,6 +155,20 @@ Below are routing strategies gateway supports:
     }'
 
 
+* ``pd``: routes request for prefill-decode disaggregation, splitting processing between prefill and decode pods for optimized performance.
+
+.. code-block:: bash
+
+    curl -v http://${ENDPOINT}/v1/chat/completions \
+    -H "routing-strategy: pd" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "your-model-name",
+        "messages": [{"role": "user", "content": "Say this is a test!"}],
+        "temperature": 0.7
+    }'
+
+
 Rate Limiting
 -------------
 

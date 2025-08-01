@@ -16,7 +16,7 @@ ENTRYPOINT [""]
 > Note: No need to downgrade ray to v2.10.0. Seem only ray-project/ray image has issues.
 
 Container Image Combination which supports the distributed multi-host inference.
-- aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/kuberay-operator:v1.2.1-patch
+- aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/kuberay-operator:v1.2.1-patch-20250726
 - aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.6.2-distributed
 
 ## Environment Setup

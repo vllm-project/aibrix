@@ -19,6 +19,8 @@ package stormservice
 import (
 	"sort"
 
+	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -174,6 +176,8 @@ func isAllRoleUpdatedAndReady(roleSet *orchestrationv1alpha1.RoleSet) bool {
 }
 
 func filterRoleSetByRevision(roleSets []*orchestrationv1alpha1.RoleSet, revision string) (match, notMatch []*orchestrationv1alpha1.RoleSet) {
+	match = []*orchestrationv1alpha1.RoleSet{}
+	notMatch = []*orchestrationv1alpha1.RoleSet{}
 	for i := range roleSets {
 		if isRoleSetMatchRevision(roleSets[i], revision) {
 			match = append(match, roleSets[i])
@@ -185,6 +189,8 @@ func filterRoleSetByRevision(roleSets []*orchestrationv1alpha1.RoleSet, revision
 }
 
 func filterReadyRoleSets(roleSets []*orchestrationv1alpha1.RoleSet) (ready []*orchestrationv1alpha1.RoleSet, notReady []*orchestrationv1alpha1.RoleSet) {
+	ready = []*orchestrationv1alpha1.RoleSet{}
+	notReady = []*orchestrationv1alpha1.RoleSet{}
 	for i := range roleSets {
 		if utils.IsRoleSetReady(roleSets[i]) {
 			ready = append(ready, roleSets[i])
@@ -196,6 +202,8 @@ func filterReadyRoleSets(roleSets []*orchestrationv1alpha1.RoleSet) (ready []*or
 }
 
 func filterTerminatingRoleSets(roleSets []*orchestrationv1alpha1.RoleSet) (active, terminating []*orchestrationv1alpha1.RoleSet) {
+	terminating = []*orchestrationv1alpha1.RoleSet{}
+	active = []*orchestrationv1alpha1.RoleSet{}
 	for i := range roleSets {
 		if roleSets[i].DeletionTimestamp != nil {
 			terminating = append(terminating, roleSets[i])
@@ -223,4 +231,11 @@ func sortRoleSetByRevision(roleSets []*orchestrationv1alpha1.RoleSet, updatedRev
 			return !utils.IsRoleSetReady(roleSets[i])
 		}
 	})
+}
+
+// isServiceEqual compares two Kubernetes Service objects for equality
+func isServiceEqual(a, b *corev1.Service) bool {
+	return a.Spec.Type == b.Spec.Type &&
+		apiequality.Semantic.DeepEqual(a.Spec.Selector, b.Spec.Selector) &&
+		a.Spec.ClusterIP == b.Spec.ClusterIP
 }

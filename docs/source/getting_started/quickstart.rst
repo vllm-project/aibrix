@@ -110,7 +110,7 @@ Depending on where you deployed the AIBrix, you can use either of the following 
 
 .. code-block:: go
 
-    # multiturn conversation
+    // multiturn conversation
     package main
 
     import (
@@ -157,119 +157,4 @@ If you meet problems exposing external IPs, feel free to debug with following co
     envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   10.96.239.246   101.18.0.4    80:32079/TCP                              10d
     envoy-gateway                            ClusterIP      10.96.166.226   <none>        18000/TCP,18001/TCP,18002/TCP,19001/TCP   10d
 
-Local Development with CPU-only vLLM
-------------------------------------
-
-This section explains how to run vLLM in a local Kubernetes cluster using CPU-only environments (e.g., for macOS or Linux dev).
-
-Download model locally
-~~~~~~~~~~~~~~~~~~~~~~
-
-Use Hugging Face CLI:
-
-.. code-block:: bash
-
-   huggingface-cli download facebook/opt-125m
-
-Start local cluster with kind
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Edit ``kind-config.yaml`` to mount your model cache, then:
-
-.. code-block:: bash
-
-   kind create cluster --config=./development/vllm/kind-config.yaml
-
-For Dev & Testing Local Setup with Monitoring
----------------------------------------------
-
-.. code-block:: bash
-
-    make dev-install-in-kind
-    make dev-port-forward
-    make dev-stop-port-forward
-    make dev-uninstall-from-kind
-
-
-Build and load images
-~~~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: bash
-
-   make docker-build-all
-   kind load docker-image aibrix/runtime:nightly
-
-Load CPU environment image
-~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-**For macOS:**
-
-.. code-block:: bash
-
-   docker pull aibrix/vllm-cpu-env:macos
-   kind load docker-image aibrix/vllm-cpu-env:macos
-
-**For Linux:**
-
-.. code-block:: bash
-
-   docker pull aibrix/vllm-cpu-env:linux-amd64
-   kind load docker-image aibrix/vllm-cpu-env:linux-amd64
-
-Deploy vLLM model in kind cluster
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-**For macOS:**
-
-.. code-block:: bash
-
-   kubectl create -k development/vllm/macos
-
-**For Linux:**
-
-.. code-block:: bash
-
-   kubectl create -k development/vllm/linux
-
-Access model endpoint
-~~~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: bash
-
-   kubectl port-forward svc/facebook-opt-125m 8000:8000 &
-
-Query locally:
-
-.. code-block:: bash
-
-   curl -v http://localhost:8000/v1/completions \
-     -H "Content-Type: application/json" \
-     -H "Authorization: Bearer test-key-1234567890" \
-     -d '{
-        "model": "facebook-opt-125m",
-        "prompt": "Say this is a test",
-        "temperature": 0.5,
-        "max_tokens": 512
-      }'
-
-Practical Notes
-~~~~~~~~~~~~~~~
-
-- ``vllm-cpu-env`` is ideal for development and debugging. Inference latency will be high due to CPU-only backend.
-- Be sure to mount your Hugging Face model cache directory, or the container will re-download it online.
-- Confirm both ``runtime`` and ``env`` images are loaded into kind.
-- Use ``kubectl logs`` or ``kubectl exec`` to debug model pod issues.
-
-Debugging Gateway IPs
-~~~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: bash
-
-   kubectl get svc -n envoy-gateway-system
-
-.. code-block::
-
-   NAME                                     TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)                                   AGE
-   envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   10.96.239.246   101.18.0.4    80:32079/TCP                              10d
-
-Please also follow `debugging guidelines <https://aibrix.readthedocs.io/latest/features/gateway-plugins.html#debugging-guidelines>`_.
+For advanced development usage, please refer to the :ref:`development` section.

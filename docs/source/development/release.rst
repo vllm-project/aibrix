@@ -16,18 +16,18 @@ Prepare the code
 Option 1 RC version release
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-For RC release like ``v0.2.0-rc.2``, there's no need to checkout a new branch, Let's cut the tag & release
+For RC release like ``v0.4.0-rc.2``, there's no need to checkout a new branch, Let's cut the tag & release
 directly against ``main`` branch.
 
 
 Option 2 minor version release
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-For new minor version release like ``v0.1.0``, please checkout a new branch named ``release-0.1``.
+For new minor version release like ``v0.3.0``, please checkout a new branch named ``release-0.3``.
 
 .. code-block:: bash
 
-    git checkout main && git fetch origin main && git rebase origin/main
+    git checkout main && git fetch upstream main && git rebase upstream/main
     git checkout -b release-0.1 # cut from main branch
     git push origin release-0.1
 
@@ -37,15 +37,15 @@ For new minor version release like ``v0.1.0``, please checkout a new branch name
 Option 3: patch version release
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Bug fixes should be merged on ``main`` first. Then cherry-pick the bugfix to target release branch like ``release-0.1``.
-Due to ``main`` changes, the fix may not able to be cherry-picked to ``release-0.1``. If that's the case, cut PR to release branch directly.
-For patch version like ``v0.1.1``, please reuse the release branch ``release-0.1``, it should be created earlier from the minor version release.
-for patch release, we do not rebase ``main`` because it will introduce new features. All fixes have to be cherry-picked or cut PR against ``release-0.1`` directly.
+Bug fixes should be merged on ``main`` first. Then cherry-pick the bugfix to target release branch like ``release-0.3``.
+However, the fix may not able to be cherry-picked to ``release-0.3`` due to conflicts. If that's the case, cut PR to release branch directly.
+For patch version like ``v0.3.1``, please reuse the release branch ``release-0.3``, it should be created earlier from the minor version release.
+for patch release, we do not rebase ``main`` because it will introduce new features. All fixes have to be cherry-picked or cut PR against ``release-0.3`` directly.
 
-Cut a PR
---------
+Release new version
+-------------------
 
-Make sure the manifest images tags and updated and python version is updated. A sample PR is `Cut v0.1.0-rc.5 release <https://github.com/vllm-project/aibrix/pull/376>`_.
+Make sure the manifest images tags and updated and python version is updated. A sample PR is `Cut v0.4.0-rc.2 release <https://github.com/vllm-project/aibrix/pull/1373>`_.
 Merge the PR.
 
 .. note::
@@ -53,22 +53,38 @@ Merge the PR.
 
 
 Create the tag and push to remote
----------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+for rc release:
 
 .. code-block:: bash
 
     # make sure you fetch the earlier PR locally
-    git fetch origin release-0.1
-    git rebase origin/release-0.1
+    git fetch upstream main
+    git rebase upstream/main
 
     # create the tag
-    git tag v0.1.0
+    git tag v0.4.0-rc.2
 
     # push the tag
-    git push origin v0.1.0
+    git push upstream v0.4.0-rc.2
+
+for official release:
+
+.. code-block:: bash
+
+    # make sure you fetch the earlier PR locally
+    git fetch upstream release-0.4
+    git rebase upstream/release-0.4
+
+    # create the tag
+    git tag v0.4.0
+
+    # push the tag
+    git push upstream v0.4.0
 
 Monitor the release pipeline
-----------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 After pushing the tag, the release pipeline (e.g., CI/CD workflows) should automatically begin. This may include:
 - Running tests and validations
@@ -89,7 +105,7 @@ Monitor the pipeline's progress to ensure it completes successfully
   :align: center
 
 Publish the release on Github
------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Release pipeline will cut a draft pre-release in `Github Releases <https://github.com/vllm-project/aibrix/releases>`_.
 Go to the "Releases" section in the repository, select the draft release corresponding to the tag you created.

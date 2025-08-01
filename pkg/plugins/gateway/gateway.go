@@ -52,13 +52,13 @@ type Server struct {
 	redisClient         *redis.Client
 	ratelimiter         ratelimiter.RateLimiter
 	client              kubernetes.Interface
-	gatewayClient       *gatewayapi.Clientset
+	gatewayClient       gatewayapi.Interface
 	requestCountTracker map[string]int
 	cache               cache.Cache
 	metricsServer       *metrics.Server
 }
 
-func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient *gatewayapi.Clientset) *Server {
+func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient gatewayapi.Interface) *Server {
 	c, err := cache.Get()
 	if err != nil {
 		panic(err)
@@ -84,8 +84,6 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var rpm, traceTerm int64
 	var respErrorCode int
 	var model string
-	var requestPath string
-	var routingAlgorithm types.RoutingAlgorithm
 	var routerCtx *types.RoutingContext
 	var stream, isRespError bool
 	ctx := srv.Context()
@@ -116,13 +114,13 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		switch v := req.Request.(type) {
 
 		case *extProcPb.ProcessingRequest_RequestHeaders:
-			resp, user, rpm, routingAlgorithm, requestPath = s.HandleRequestHeaders(ctx, requestID, req)
-
-		case *extProcPb.ProcessingRequest_RequestBody:
-			resp, model, routerCtx, stream, traceTerm = s.HandleRequestBody(ctx, requestID, requestPath, req, user, routingAlgorithm)
+			resp, user, rpm, routerCtx = s.HandleRequestHeaders(ctx, requestID, req)
 			if routerCtx != nil {
 				ctx = routerCtx
 			}
+
+		case *extProcPb.ProcessingRequest_RequestBody:
+			resp, model, routerCtx, stream, traceTerm = s.HandleRequestBody(ctx, requestID, req, user)
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
 			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, requestID, model, req)
@@ -207,6 +205,11 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 			}
 		}
 	}
+
+	if len(errMsg) == 0 {
+		return nil
+	}
+
 	return errors.New(strings.Join(errMsg, ", "))
 }
 

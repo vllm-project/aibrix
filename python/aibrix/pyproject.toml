@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "aibrix"
-version = "0.3.0"
+version = "0.0.0"  # Placeholder (will be replaced dynamically)
 description = "AIBrix, the foundational building blocks for constructing your own GenAI inference infrastructure."
 authors = [
     "AIBrix Authors <brosoul@126.com>"
@@ -28,6 +28,18 @@ packages = [
     { include = "aibrix" },
 ]
 exclude = ["test"]
+
+[tool.poetry-dynamic-versioning]
+enable = true
+vcs = "git"  # Get version from Git tags
+style = "pep440"  # Follow PEP 440
+
+[tool.poetry-dynamic-versioning.substitution]
+files = ["aibrix/__version__.py"]
+patterns = [
+    '''(^__version__\s*(?::.*?)?=\s*['"])[^'"]*(['"])''',
+    { value = '''(^VERSION\s*(?::.*?)?=\s*\()[^)]*(\))''', mode = "tuple" },
+]
 
 [tool.poetry.scripts]
 aibrix_runtime = 'aibrix.app:main'
@@ -73,8 +85,8 @@ ruff = "0.6.1"
 pytest = "^8.3.2"
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["poetry-core", "poetry-dynamic-versioning"]
+build-backend = "poetry_dynamic_versioning.backend"
 
 [tool.mypy]
 ignore_missing_imports = true

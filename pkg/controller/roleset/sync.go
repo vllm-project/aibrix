@@ -133,7 +133,7 @@ func (r *RoleSetReconciler) calculateStatusForRole(ctx context.Context, rs *orch
 	labelSelector := labels.NewSelector()
 	labelSelector = labelSelector.Add(*roleSetRequirement)
 	allPods := &v1.PodList{}
-	if err := r.Client.List(context.Background(), allPods,
+	if err := r.Client.List(ctx, allPods,
 		client.InNamespace(rs.Namespace),
 		client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
 		return nil, err
