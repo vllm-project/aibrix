@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/pkoukk/tiktoken-go"
 	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader"
@@ -118,5 +119,37 @@ func LoadEnvFloat(key string, defaultValue float64) float64 {
 		}
 	}
 	klog.Infof("set %s: %g, using default value", key, defaultValue)
+	return defaultValue
+}
+
+// LoadEnvBool loads a boolean environment variable or returns a default value if not set.
+func LoadEnvBool(key string, defaultValue bool) bool {
+	value := os.Getenv(key)
+	if value != "" {
+		boolValue, err := strconv.ParseBool(value)
+		if err != nil {
+			klog.Warningf("invalid %s: %s, falling back to default: %v", key, value, defaultValue)
+		} else {
+			klog.Infof("set %s: %v", key, boolValue)
+			return boolValue
+		}
+	}
+	klog.Infof("set %s: %v, using default value", key, defaultValue)
+	return defaultValue
+}
+
+// LoadEnvDuration loads a duration environment variable or returns a default value if not set.
+func LoadEnvDuration(key string, defaultValue time.Duration) time.Duration {
+	value := os.Getenv(key)
+	if value != "" {
+		duration, err := time.ParseDuration(value)
+		if err != nil {
+			klog.Warningf("invalid %s: %s, falling back to default: %v", key, value, defaultValue)
+		} else {
+			klog.Infof("set %s: %v", key, duration)
+			return duration
+		}
+	}
+	klog.Infof("set %s: %v, using default value", key, defaultValue)
 	return defaultValue
 }

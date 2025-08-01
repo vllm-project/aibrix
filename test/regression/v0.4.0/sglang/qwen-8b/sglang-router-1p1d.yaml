@@ -10,11 +10,11 @@ spec:
   stateful: true
   selector:
     matchLabels:
-      app: replica-xpyd
+      app: sglang-router-1p1d
   template:
     metadata:
       labels:
-        app: replica-xpyd
+        app: sglang-router-1p1d
     spec:
       roles:
         - name: routing
@@ -30,6 +30,7 @@ spec:
                     - |
                       python3 -m sglang_router.launch_router \
                         --pd-disaggregation \
+                        --host 0.0.0.0 \
                         --policy cache_aware \
                         --service-discovery \
                         --service-discovery-port 30000 \
@@ -65,6 +66,7 @@ spec:
                         --disaggregation-mode prefill \
                         --disaggregation-transfer-backend=mooncake \
                         --trust-remote-code \
+                        --enable-metrics \
                         --mem-fraction-static 0.8 \
                         --log-level debug
                   env:
@@ -129,6 +131,7 @@ spec:
                         --disaggregation-mode decode \
                         --disaggregation-transfer-backend=mooncake \
                         --trust-remote-code \
+                        --enable-metrics \
                         --mem-fraction-static 0.8 \
                         --log-level debug
                   env:

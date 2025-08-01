@@ -1,7 +1,7 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: sglang-router-random
+  name: sglang-router-random-32b
 spec:
   replicas: 1
   updateStrategy:
@@ -9,11 +9,11 @@ spec:
   stateful: true
   selector:
     matchLabels:
-      app: pool-xpyd
+      app: sglang-router-random-32b
   template:
     metadata:
       labels:
-        app: pool-xpyd
+        app: sglang-router-random-32b
     spec:
       roles:
         - name: routing
@@ -23,7 +23,7 @@ spec:
             spec:
               containers:
                 - name: mini-lb
-                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang-router:v0.1.6
+                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang-router:v0.1.7
                   command: ["sh", "-c"]
                   args:
                     - |

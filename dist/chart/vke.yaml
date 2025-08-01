@@ -4,7 +4,7 @@ controllerManager:
   container:
     image:
       repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
-      tag: d5ca8d6b58520edc221eabf22b0cb35a8c651051
+      tag: v0.4.0.rc.2
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -13,6 +13,19 @@ controllerManager:
       requests:
         cpu: 10m
         memory: 64Mi
+    probes:
+      liveness:
+        httpGet:
+          path: /healthz
+          port: 8081
+        initialDelaySeconds: 15
+        periodSeconds: 20
+      readiness:
+        httpGet:
+          path: /readyz
+          port: 8081
+        initialDelaySeconds: 5
+        periodSeconds: 10
   gatewayTimeoutSeconds: 120
 
 gatewayPlugin:
@@ -24,9 +37,8 @@ gatewayPlugin:
   container:
     image:
       repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins
-      tag: d5ca8d6b58520edc221eabf22b0cb35a8c651051
+      tag: v0.4.0.rc.2
       pullPolicy: IfNotPresent
-
     resources:
       limits:
         cpu: 1
@@ -52,8 +64,7 @@ gpuOptimizer:
   container:
     image:
       repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
-      tag: d5ca8d6b58520edc221eabf22b0cb35a8c651051
-
+      tag: v0.4.0.rc.2
     resources:
       limits:
         cpu: 500m
@@ -61,7 +72,6 @@ gpuOptimizer:
       requests:
         cpu: 10m
         memory: 64Mi
-
   dependencies:
     redis:
       host: aibrix-redis-master
@@ -105,7 +115,7 @@ metadata:
     container:
       image:
         repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/metadata-service
-        tag: d5ca8d6b58520edc221eabf22b0cb35a8c651051
+        tag: v0.4.0.rc.2
         pullPolicy: IfNotPresent
       resources:
         limits:
@@ -157,10 +167,3 @@ prometheus:
 # [CERT-MANAGER]: To enable cert-manager injection to webhooks set true
 certmanager:
   enable: false
-
-
-# TODO: manage common labels
-# app.kubernetes.io/component: aibrix-controller-manager
-# app.kubernetes.io/managed-by: kubectl
-# app.kubernetes.io/name: aibrix
-# app.kubernetes.io/version: nightly

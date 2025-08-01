@@ -40,12 +40,6 @@ import (
 
 const llama7b = "llama-7b"
 
-var dummyPod = &v1.Pod{
-	ObjectMeta: metav1.ObjectMeta{
-		Name: "testpod",
-	},
-}
-
 func getReadyPod(podName, podNamespcae string, modelName string, id int) *v1.Pod {
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

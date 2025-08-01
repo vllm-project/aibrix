@@ -251,7 +251,8 @@ func main() {
 
 	if features.IsControllerEnabled(features.ModelAdapterController) {
 		// cache is enabled for model adapter scheduling.
-		cache.Init(config, stopCh)
+		cache.InitWithOptions(config, stopCh, cache.InitOptions{})
+		// All options default to zero values (false, nil, nil)
 	}
 
 	certsReady := make(chan struct{})
