@@ -18,7 +18,6 @@ package routingalgorithms
 
 import (
 	"context"
-	"log"
 	"slices"
 	"testing"
 
@@ -150,8 +149,8 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	}
 	ctx7 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r7", "")
 	p1, err := prefixCacheRouter.Route(ctx7, podList)
-	log.Println(p2, p3, p4)
-	log.Println(p1)
+	t.Log(p2, p3, p4)
+	t.Log(p1)
 	assert.NoError(t, err)
 	assert.False(t, slices.Contains([]string{p2, p3, p4}, p1))
 }
