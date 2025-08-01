@@ -17,7 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"os"
 	"sync"
 	"testing"
 
@@ -31,8 +30,7 @@ func TestPrefixCacheMetricsNotRegisteredByDefault(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Ensure metrics are not enabled
-	_ = os.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
-	defer func() { _ = os.Unsetenv(constants.EnvPrefixCacheMetricsEnabled) }()
+	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
 
 	// Try to initialize metrics
 	err := initializePrefixCacheMetrics()
@@ -71,8 +69,7 @@ func TestPrefixCacheMetricsRegisteredWhenEnabled(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Enable metrics
-	_ = os.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
-	defer func() { _ = os.Unsetenv(constants.EnvPrefixCacheMetricsEnabled) }()
+	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
 
 	// Initialize metrics
 	err := initializePrefixCacheMetrics()
@@ -103,8 +100,7 @@ func TestPrefixCacheMetricsNoOpWhenNotInitialized(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Ensure metrics are not enabled
-	_ = os.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
-	defer func() { _ = os.Unsetenv(constants.EnvPrefixCacheMetricsEnabled) }()
+	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
 
 	// Initialize (should be no-op)
 	err := initializePrefixCacheMetrics()
@@ -124,8 +120,7 @@ func TestRecordRoutingDecisionBuckets(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Enable metrics
-	_ = os.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
-	defer func() { _ = os.Unsetenv(constants.EnvPrefixCacheMetricsEnabled) }()
+	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
 
 	// Initialize metrics
 	err := initializePrefixCacheMetrics()
@@ -163,8 +158,7 @@ func TestConcurrentPrefixCacheMetricsAccess(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Enable metrics
-	_ = os.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
-	defer func() { _ = os.Unsetenv(constants.EnvPrefixCacheMetricsEnabled) }()
+	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
 
 	// Initialize metrics
 	err := initializePrefixCacheMetrics()
