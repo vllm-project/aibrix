@@ -5,14 +5,8 @@ ARG TARGETARCH
 
 WORKDIR /workspace
 
-# Install build dependencies for static ZMQ
 RUN apt-get update && apt-get install -y \
-    build-essential cmake git wget pkg-config \
-    libtool autoconf automake
-
-# Build static libzmq
-COPY scripts/build-static-zmq.sh /tmp/
-RUN chmod +x /tmp/build-static-zmq.sh && /tmp/build-static-zmq.sh
+    libkrb5-dev libzmq3-dev
 
 # Copy the Go Modules manifests
 COPY go.mod go.mod
@@ -26,21 +20,25 @@ COPY cmd/ cmd/
 COPY api/ api/
 COPY pkg/ pkg/
 
-# Build with static linking
 ENV CGO_ENABLED=1
-ENV CGO_LDFLAGS="-L/usr/local/lib -lzmq -lsodium -lstdc++ -lpthread -lm -static"
-ENV PKG_CONFIG_PATH="/usr/local/lib/pkgconfig"
+ENV CGO_LDFLAGS="-lzmq -lsodium -lpthread -lm -lstdc++"
 
 RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -tags zmq \
-    -ldflags '-extldflags "-static"' \
+    -ldflags "-extldflags '${CGO_LDFLAGS}'" \
     -a -o gateway-plugins cmd/plugins/main.go
+
+# Gather shared libs
+RUN mkdir -p /workspace/deps
+RUN ldd /workspace/gateway-plugins | awk '{if ($3 ~ /^\//) print $3}' | xargs -I '{}' cp -v '{}' /workspace/deps/ || true
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
+FROM gcr.io/distroless/base:nonroot
 WORKDIR /
 COPY --from=builder /workspace/gateway-plugins .
+COPY --from=builder /workspace/deps /gateway-plugins-lib
+ENV LD_LIBRARY_PATH=/gateway-plugins-lib
 USER 65532:65532
 
 ENTRYPOINT ["/gateway-plugins"]
