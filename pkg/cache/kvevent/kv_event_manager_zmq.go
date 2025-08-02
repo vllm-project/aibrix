@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cache
+package kvevent
 
 import (
 	"context"
@@ -37,10 +37,15 @@ const (
 	kvEventsEnabledValue = "true"
 )
 
+type Store interface {
+	RangePods(func(key string, pod *pod.Pod) bool)
+	GetSyncPrefixIndexer() *syncindexer.SyncPrefixHashTable
+}
+
 // KVEventManager manages KV event subscriptions for vLLM pods
 type KVEventManager struct {
 	// Dependencies
-	store *Store
+	store Store
 
 	// Subscriber management
 	subscribers utils.SyncMap[string, *kvcache.ZMQClient] // podKey -> client
@@ -57,7 +62,7 @@ type KVEventManager struct {
 }
 
 // NewKVEventManager creates a new KV event manager
-func NewKVEventManager(store *Store) *KVEventManager {
+func NewKVEventManager(store Store) *KVEventManager {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Check feature dependencies
@@ -106,7 +111,7 @@ func (m *KVEventManager) Start() error {
 	}
 
 	// Process existing pods
-	m.store.metaPods.Range(func(key string, pod *Pod) bool {
+	m.store.metaPods.Range(func(key string, pod *pod.Pod) bool {
 		if m.shouldSubscribe(pod.Pod) {
 			if err := m.subscribeToPod(pod.Pod); err != nil {
 				klog.Errorf("Failed to subscribe to existing pod %s: %v", key, err)
@@ -118,9 +123,9 @@ func (m *KVEventManager) Start() error {
 	return nil
 }
 
-// validateConfiguration checks if the manager can start successfully
+// ValidateConfiguration checks if the manager can start successfully
 // without actually starting any goroutines or connections
-func (m *KVEventManager) validateConfiguration() error {
+func (m *KVEventManager) ValidateConfiguration() error {
 	if !m.enabled {
 		return fmt.Errorf("KV event sync is disabled")
 	}
