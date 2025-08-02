@@ -141,6 +141,19 @@ metadata:
         requests:
           cpu: 10m
           memory: 64Mi
+      probes:
+        liveness:
+          httpGet:
+            path: /healthz
+            port: 8090
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readiness:
+          httpGet:
+            path: /readyz
+            port: 8090
+          initialDelaySeconds: 5
+          periodSeconds: 10
     redis:
       host: aibrix-redis-master
       port: 6379
