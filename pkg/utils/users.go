@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -72,4 +73,10 @@ func DelUser(ctx context.Context, u User, redisClient *redis.Client) error {
 
 func genKey(s string) string {
 	return fmt.Sprintf("aibrix-users/%s", s)
+}
+
+func CheckRedisHealth(ctx context.Context, redisClient *redis.Client) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	return redisClient.Ping(ctx).Err()
 }
