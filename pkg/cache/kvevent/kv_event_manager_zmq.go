@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cache
+package kvevent
 
 import (
 	"context"
@@ -27,6 +27,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
+	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/cache/kvcache"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -40,7 +41,7 @@ const (
 // KVEventManager manages KV event subscriptions for vLLM pods
 type KVEventManager struct {
 	// Dependencies
-	store *Store
+	store *cache.Store
 
 	// Subscriber management
 	subscribers utils.SyncMap[string, *kvcache.ZMQClient] // podKey -> client
@@ -57,14 +58,12 @@ type KVEventManager struct {
 }
 
 // NewKVEventManager creates a new KV event manager
-func NewKVEventManager(store *Store) *KVEventManager {
+func NewKVEventManager(store *cache.Store) *KVEventManager {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Check feature dependencies
-	kvSyncValue := utils.LoadEnv(constants.EnvKVEventSyncEnabled, "false")
-	kvSyncRequested, _ := strconv.ParseBool(kvSyncValue)
-	remoteTokenValue := utils.LoadEnv("AIBRIX_USE_REMOTE_TOKENIZER", "false")
-	remoteTokenizerEnabled, _ := strconv.ParseBool(remoteTokenValue)
+	kvSyncRequested = utils.LoadEnvBool(constants.EnvKVEventSyncEnabled, false)
+	remoteTokenizerEnabled = utils.LoadEnvBool("AIBRIX_USE_REMOTE_TOKENIZER", false)
 
 	// Validate configuration
 	enabled := kvSyncRequested

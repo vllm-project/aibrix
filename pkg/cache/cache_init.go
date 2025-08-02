@@ -60,6 +60,16 @@ const (
 	movingWindow    = 240 * time.Second // keep window same with window size of GPU optimizer.
 )
 
+type KVEventManager interface {
+	NewKVEventManager(store *Store) *KVEventManager
+	ValidateConfiguration() error
+	Start() error
+	Stop()
+	OnPodAdd(pod *v1.Pod)
+	OnPodUpdate(oldPod, newPod *v1.Pod)
+	OnPodDelete(pod *v1.Pod)
+}
+
 // Store contains core data structures and components of the caching system
 type Store struct {
 	mu                  sync.RWMutex            // Read-write lock for concurrency safety
@@ -103,7 +113,7 @@ type Store struct {
 	syncPrefixIndexer *syncindexer.SyncPrefixHashTable
 
 	// KV event management - optional enhancement
-	kvEventManager *KVEventManager
+	kvEventManager KVEventManager
 }
 
 // Get retrieves the cache instance
@@ -456,13 +466,13 @@ func (s *Store) initKVEventSync() error {
 	}()
 
 	// Create and validate event manager first
-	s.kvEventManager = NewKVEventManager(s)
+	s.kvEventManager = kvevent.NewKVEventManager(s)
 	if s.kvEventManager == nil {
 		return fmt.Errorf("failed to create KV event manager")
 	}
 
 	// Validate configuration before allocating more resources
-	if err := s.kvEventManager.validateConfiguration(); err != nil {
+	if err := s.kvEventManager.ValidateConfiguration(); err != nil {
 		return fmt.Errorf("invalid KV event sync configuration: %w", err)
 	}
 

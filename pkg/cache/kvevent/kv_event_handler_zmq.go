@@ -16,13 +16,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cache
+package kvevent
 
 import (
 	"encoding/binary"
 	"fmt"
 	"strconv"
 
+	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/cache/kvcache"
 	syncindexer "github.com/vllm-project/aibrix/pkg/utils/syncprefixcacheindexer"
 	"k8s.io/klog/v2"

@@ -16,25 +16,26 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cache
+package kvevent
 
 import (
 	"context"
 	"fmt"
 
+	"github.com/vllm-project/aibrix/pkg/cache"
 	v1 "k8s.io/api/core/v1"
 )
 
-// KVEventManager stub implementation when ZMQ is not available
+// KVEventManager is a stub implementation used when ZMQ is not available.
 type KVEventManager struct {
-	store   *Store
+	store   *cache.Store
 	enabled bool
 	ctx     context.Context
 	cancel  context.CancelFunc
 }
 
-// NewKVEventManager creates a stub KV event manager
-func NewKVEventManager(store *Store) *KVEventManager {
+// NewKVEventManager creates a stub KVEventManager.
+func NewKVEventManager(store *cache.Store) *KVEventManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &KVEventManager{
 		store:   store,
@@ -44,27 +45,26 @@ func NewKVEventManager(store *Store) *KVEventManager {
 	}
 }
 
-// validateConfiguration validates the manager configuration
-func (m *KVEventManager) validateConfiguration() error {
-	// KV event sync requires ZMQ support which is not available in this build
+// ValidateConfiguration returns an error because ZMQ is not enabled.
+func (m *KVEventManager) ValidateConfiguration() error {
 	return fmt.Errorf("KV event sync requires ZMQ support (build with -tags=zmq)")
 }
 
-// Start is a no-op
+// Start is a no-op in the stub.
 func (m *KVEventManager) Start() error {
 	return nil
 }
 
-// Stop is a no-op
+// Stop cancels the context.
 func (m *KVEventManager) Stop() {
 	m.cancel()
 }
 
-// OnPodAdd is a no-op
+// OnPodAdd is a no-op in the stub.
 func (m *KVEventManager) OnPodAdd(pod *v1.Pod) {}
 
-// OnPodUpdate is a no-op
+// OnPodUpdate is a no-op in the stub.
 func (m *KVEventManager) OnPodUpdate(oldPod, newPod *v1.Pod) {}
 
-// OnPodDelete is a no-op
+// OnPodDelete is a no-op in the stub.
 func (m *KVEventManager) OnPodDelete(pod *v1.Pod) {}
