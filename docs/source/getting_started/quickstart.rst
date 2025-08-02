@@ -46,6 +46,12 @@ Ensure that:
 1. The `Service` name matches the `model.aibrix.ai/name` label value in the `Deployment`.
 2. The `--served-model-name` argument value in the `Deployment` command is also consistent with the `Service` name and `model.aibrix.ai/name` label.
 
+Deploy PD (Prefill-Decode) disaggregation model
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
+
 
 Invoke the model endpoint using gateway API
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

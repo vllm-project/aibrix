@@ -1,14 +1,14 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: qwen3-8b-service
+  name: qwen3-235b-service
   namespace: default
 spec:
   selector:
-    model.aibrix.ai/name: qwen3-8b
+    model.aibrix.ai/name: qwen3-235b
   ports:
     - protocol: TCP
       port: 8000
       targetPort: 8000
-      nodePort: 30008  
+      nodePort: 30010
   type: NodePort

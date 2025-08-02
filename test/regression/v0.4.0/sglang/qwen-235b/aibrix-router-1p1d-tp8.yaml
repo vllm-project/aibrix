@@ -1,7 +1,7 @@
 apiVersion: orchestration.aibrix.ai/v1alpha1
 kind: StormService
 metadata:
-  name: sglang-router-1p1d-tp8
+  name: aibrix-router-1p1d-tp8
   namespace: default
 spec:
   replicas: 1
@@ -10,33 +10,13 @@ spec:
   stateful: true
   selector:
     matchLabels:
-      app: sglang-router-1p1d-tp8
+      app: aibrix-router-1p1d-tp8
   template:
     metadata:
       labels:
-        app: sglang-router-1p1d-tp8
+        app: aibrix-router-1p1d-tp8
     spec:
       roles:
-        - name: routing
-          replicas: 1
-          stateful: true
-          template:
-            spec:
-              containers:
-                - name: mini-lb
-                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang-router:v0.1.6
-                  command: ["sh", "-c"]
-                  args:
-                    - |
-                      python3 -m sglang_router.launch_router \
-                        --pd-disaggregation \
-                        --host 0.0.0.0 \
-                        --policy random \
-                        --service-discovery \
-                        --service-discovery-port 30000 \
-                        --prefill-selector storm-service-name=$STORM_SERVICE_NAME role-name=prefill \
-                        --decode-selector storm-service-name=$STORM_SERVICE_NAME role-name=decode \
-                        --service-discovery-namespace default
         - name: prefill
           replicas: 1
           stateful: true
@@ -86,6 +66,10 @@ spec:
                       }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen3-235b
+                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/engine: sglang
             spec:
               containers:
                 - name: prefill
@@ -186,6 +170,10 @@ spec:
                       }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen3-235b
+                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/engine: sglang
             spec:
               containers:
                 - name: decode

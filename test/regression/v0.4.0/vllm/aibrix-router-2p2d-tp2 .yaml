@@ -1,0 +1,187 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: aibirx-vllm-2p2d-tp2
+  namespace: default
+spec:
+  replicas: 1
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      app: aibirx-vllm-2p2d-tp2
+  template:
+    metadata:
+      labels:
+        app: aibirx-vllm-2p2d-tp2
+    spec:
+      roles:
+        - name: prefill
+          replicas: 2
+          stateful: true
+          template:
+            metadata:
+              annotations:
+                k8s.volcengine.com/pod-networks: |
+                  [
+                    {
+                      "cniConf":{
+                          "name":"rdma"
+                      }
+                    },
+                    {
+                      "cniConf":{
+                          "name":"rdma"
+                      }
+                    }
+                  ]
+              labels:
+                model.aibrix.ai/name: qwen3-32b
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+            spec:
+              containers:
+                - name: prefill
+                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.9.2-cu128-nixl-v0.4.1-lmcache-0.3.1.post1
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      python3 -m vllm.entrypoints.openai.api_server \
+                      --host "0.0.0.0" \
+                      --port "8000" \
+                      --uvicorn-log-level warning \
+                      --model /models/Qwen3-32B \
+                      --served-model-name qwen3-32b \
+                      --disable-log-requests \
+                      --tensor-parallel-size 2 \
+                      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+                  env:
+                    - name: UCX_TLS
+                      value: cuda_ipc,cuda_copy,tcp
+                    - name: VLLM_SERVER_DEV_MODE
+                      value: "1"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+                      value: "5558"
+                    - name: VLLM_WORKER_MULTIPROC_METHOD
+                      value: spawn
+                    - name: VLLM_ENABLE_V1_MULTIPROCESSING
+                      value: "0"
+                    - name: GLOO_SOCKET_IFNAME
+                      value: eth0
+                    - name: NCCL_SOCKET_IFNAME
+                      value: eth0
+                    - name: NCCL_IB_DISABLE
+                      value: "0"
+                    - name: NCCL_IB_GID_INDEX
+                      value: "7"
+                    - name: NCCL_DEBUG
+                      value: "INFO"
+                  volumeMounts:
+                    - name: model-vol
+                      mountPath: /models
+                      readOnly: true
+                    - mountPath: /dev/shm
+                      name: shared-mem
+                  resources:
+                    limits:
+                      nvidia.com/gpu: 2
+                      vke.volcengine.com/rdma: "2"
+                  securityContext:
+                    capabilities:
+                      add:
+                        - IPC_LOCK
+              volumes:
+                - name: model-vol
+                  hostPath:
+                    path: /data01/models
+                    type: Directory
+                - emptyDir:
+                    medium: Memory
+                  name: shared-mem
+              nodeSelector:
+                kubernetes.io/hostname: 192.168.0.6      
+        - name: decode
+          replicas: 2
+          stateful: true
+          template:
+            metadata:
+              annotations:
+                k8s.volcengine.com/pod-networks: |
+                  [
+                    {
+                      "cniConf":{
+                          "name":"rdma"
+                      }
+                    },
+                    {
+                      "cniConf":{
+                          "name":"rdma"
+                      }
+                    }
+                  ]
+              labels:
+                model.aibrix.ai/name: qwen3-32b
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
+            spec:
+              containers:
+                - name: decode
+                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.9.2-cu128-nixl-v0.4.1-lmcache-0.3.1.post1
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      python3 -m vllm.entrypoints.openai.api_server \
+                      --host "0.0.0.0" \
+                      --port "8000" \
+                      --uvicorn-log-level warning \
+                      --model /models/Qwen3-32B \
+                      --served-model-name qwen3-32b \
+                      --disable-log-requests \
+                      --tensor-parallel-size 2 \
+                      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+                  env:
+                    - name: UCX_TLS
+                      value: cuda_ipc,cuda_copy,tcp
+                    - name: VLLM_SERVER_DEV_MODE
+                      value: "1"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+                      value: "5558"
+                    - name: VLLM_WORKER_MULTIPROC_METHOD
+                      value: spawn
+                    - name: VLLM_ENABLE_V1_MULTIPROCESSING
+                      value: "0"
+                    - name: GLOO_SOCKET_IFNAME
+                      value: eth0
+                    - name: NCCL_SOCKET_IFNAME
+                      value: eth0
+                    - name: NCCL_IB_DISABLE
+                      value: "0"
+                    - name: NCCL_IB_GID_INDEX
+                      value: "7"
+                    - name: NCCL_DEBUG
+                      value: "INFO"
+                  volumeMounts:
+                    - name: model-vol
+                      mountPath: /models
+                      readOnly: true
+                    - mountPath: /dev/shm
+                      name: shared-mem
+                  resources:
+                    limits:
+                      nvidia.com/gpu: 2
+                      vke.volcengine.com/rdma: "2"
+                  securityContext:
+                    capabilities:
+                      add:
+                        - IPC_LOCK
+              volumes:
+                - name: model-vol
+                  hostPath:
+                    path: /data01/models
+                    type: Directory
+                - emptyDir:
+                    medium: Memory
+                  name: shared-mem
+              nodeSelector:
+                kubernetes.io/hostname: 192.168.0.6      
