@@ -113,7 +113,7 @@ func TestRenderStormServicePod_WithRoleIndex(t *testing.T) {
 		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
 	}
 
-	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, &roleIndex)
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, &roleIndex, nil)
 
 	// Verify labels
 	assert.Equal(t, "test-role-set", pod.Labels[constants.RoleSetNameLabelKey])
@@ -160,7 +160,7 @@ func TestRenderStormServicePod_WithoutRoleIndex(t *testing.T) {
 	pod := &corev1.Pod{
 		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
 	}
-	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, nil)
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, nil, nil)
 
 	// Verify replica index is not set
 	assert.NotContains(t, pod.Labels, constants.RoleReplicaIndexLabelKey)
@@ -200,7 +200,7 @@ func TestRenderStormServicePod_WithPodGroup(t *testing.T) {
 	pod := &corev1.Pod{
 		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
 	}
-	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, &roleIndex)
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, &roleIndex, nil)
 
 	// Verify pod group labels and annotations
 	assert.Equal(t, "test-role-set", pod.Labels[constants.GodelPodGroupNameAnnotationKey])
@@ -229,7 +229,7 @@ func TestRenderStormServicePod_EmptyLabelsAndAnnotations(t *testing.T) {
 	}
 
 	pod := &corev1.Pod{}
-	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, nil)
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, nil, nil)
 
 	// Verify basic labels are set even when roleSet has no labels
 	assert.Equal(t, "test-role-set", pod.Labels[constants.RoleSetNameLabelKey])
@@ -266,7 +266,7 @@ func TestRenderStormServicePod_MultipleContainers(t *testing.T) {
 	pod := &corev1.Pod{
 		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
 	}
-	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, nil)
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, nil, nil)
 
 	// Verify all containers get env vars injected
 	assert.Len(t, pod.Spec.Containers, 2)
