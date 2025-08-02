@@ -659,27 +659,30 @@ func getTargetPodFromMatchedPods(cache cache.Cache, readyPods []*v1.Pod, matched
 func getTargetPodOnLoadImbalance(cache cache.Cache, readyPods []*v1.Pod) (*v1.Pod, bool) {
 	var imbalance bool
 	var targetPod *v1.Pod
-	targetPods := []string{}
-	minValue := math.MaxInt32
-	maxValue := math.MinInt32
-
 	podRequestCount := getRequestCounts(cache, readyPods)
-	for _, value := range podRequestCount {
-		if value <= minValue {
-			minValue = value
-		} else if value > maxValue {
-			maxValue = value
-		}
-	}
-	for podname, value := range podRequestCount {
-		if minValue == value {
-			targetPods = append(targetPods, podname)
-		}
-	}
+	if len(podRequestCount) > 0 {
+		targetPods := []string{}
+		minValue := math.MaxInt32
+		maxValue := math.MinInt32
 
-	if maxValue-minValue > podRunningRequestImbalanceAbsCount {
-		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
-		imbalance = true
+		for _, value := range podRequestCount {
+			if value <= minValue {
+				minValue = value
+			}
+			if value > maxValue {
+				maxValue = value
+			}
+		}
+		for podname, value := range podRequestCount {
+			if minValue == value {
+				targetPods = append(targetPods, podname)
+			}
+		}
+
+		if maxValue-minValue > podRunningRequestImbalanceAbsCount {
+			targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
+			imbalance = true
+		}
 	}
 
 	return targetPod, imbalance

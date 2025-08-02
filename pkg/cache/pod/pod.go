@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package cache
+package pod
 
 import (
 	"sync/atomic"
@@ -24,6 +24,10 @@ import (
 	atomic_ext "go.uber.org/atomic"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
+)
+
+const (
+	traceLogInterval = 1 * time.Second
 )
 
 type Pod struct {

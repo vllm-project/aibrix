@@ -31,6 +31,8 @@ import (
 	"k8s.io/klog/v2"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/vllm-project/aibrix/pkg/cache/kvevent"
+	"github.com/vllm-project/aibrix/pkg/cache/pod"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	syncindexer "github.com/vllm-project/aibrix/pkg/utils/syncprefixcacheindexer"
@@ -79,7 +81,7 @@ type Store struct {
 	requestTrace  *utils.SyncMap[string, *RequestTrace] // Request trace data (model_name -> *RequestTrace)
 
 	// Pod related storage
-	metaPods utils.SyncMap[string, *Pod] // pod_namespace/pod_name -> *Pod
+	metaPods utils.SyncMap[string, *pod.Pod] // pod_namespace/pod_name -> *Pod
 
 	// Model related storage
 	metaModels utils.SyncMap[string, *Model] // model_name -> *Model
@@ -89,7 +91,7 @@ type Store struct {
 	deploymentProfiles   utils.SyncMap[string, *ModelGPUProfile] // aibrix:profile_[model_name]_[deployment_name] -> *ModelGPUProfile
 
 	// buffer for sync map operations
-	bufferPod   *Pod
+	bufferPod   *pod.Pod
 	bufferModel *Model
 
 	// podMetricsWorkerCount
@@ -97,13 +99,13 @@ type Store struct {
 	podMetricsWorkerCount int
 
 	// podMetricsJobs Channel for sending Pod metrics update jobs to workers
-	podMetricsJobs chan *Pod
+	podMetricsJobs chan *pod.Pod
 
 	// Sync prefix indexer - only created when KV sync is enabled
 	syncPrefixIndexer *syncindexer.SyncPrefixHashTable
 
 	// KV event management - optional enhancement
-	kvEventManager *KVEventManager
+	kvEventManager *kvevent.KVEventManager
 }
 
 // Get retrieves the cache instance
@@ -137,7 +139,7 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
 		modelRouterProvider:   modelRouterProvider,
 		podMetricsWorkerCount: defaultPodMetricsWorkerCount,
-		podMetricsJobs:        make(chan *Pod, 100), // Initialize the job channel with a buffer size of 100
+		podMetricsJobs:        make(chan *pod.Pod, 100), // Initialize the job channel with a buffer size of 100
 		enableProfileCaching:  enableModelGPUProfileCaching,
 	}
 
@@ -235,7 +237,7 @@ func InitWithAsyncPods(st *Store, pods []*v1.Pod, model string) <-chan *Store {
 
 // InitWithPods initializes the cache store with pods metrics for testing purposes, it can be repeated call for reset.
 func InitWithPodsMetrics(st *Store, podMetrics map[string]map[string]metrics.MetricValue) *Store {
-	st.metaPods.Range(func(key string, metaPod *Pod) bool {
+	st.metaPods.Range(func(key string, metaPod *pod.Pod) bool {
 		_, podName, ok := utils.ParsePodKey(key)
 		if !ok {
 			return true
@@ -456,13 +458,13 @@ func (s *Store) initKVEventSync() error {
 	}()
 
 	// Create and validate event manager first
-	s.kvEventManager = NewKVEventManager(s)
+	s.kvEventManager = kvevent.NewKVEventManager(s)
 	if s.kvEventManager == nil {
 		return fmt.Errorf("failed to create KV event manager")
 	}
 
 	// Validate configuration before allocating more resources
-	if err := s.kvEventManager.validateConfiguration(); err != nil {
+	if err := s.kvEventManager.ValidateConfiguration(); err != nil {
 		return fmt.Errorf("invalid KV event sync configuration: %w", err)
 	}
 

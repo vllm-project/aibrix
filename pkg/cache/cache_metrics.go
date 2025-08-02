@@ -21,6 +21,7 @@ import (
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	dto "github.com/prometheus/client_model/go"
+	"github.com/vllm-project/aibrix/pkg/cache/pod"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
@@ -123,7 +124,7 @@ func (c *Store) getPodModelMetricName(modelName string, metricName string) strin
 }
 
 func (c *Store) updatePodMetrics() {
-	c.metaPods.Range(func(key string, metaPod *Pod) bool {
+	c.metaPods.Range(func(key string, metaPod *pod.Pod) bool {
 		if !utils.FilterReadyPod(metaPod.Pod) {
 			// Skip unready pod
 			return true
@@ -133,7 +134,7 @@ func (c *Store) updatePodMetrics() {
 	})
 }
 
-func (c *Store) worker(jobs <-chan *Pod) {
+func (c *Store) worker(jobs <-chan *pod.Pod) {
 	for pod := range jobs {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		//Use the value of the "model.aibrix.ai/metric-port" label as the metrics port.
@@ -165,7 +166,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 	}
 }
 
-func (c *Store) updateSimpleMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
+func (c *Store) updateSimpleMetricFromRawMetrics(pod *pod.Pod, allMetrics map[string]*dto.MetricFamily) {
 	podName := pod.Name
 	podMetricPort := getPodMetricPort(pod)
 	for _, metricName := range counterGaugeMetricNames {
@@ -202,7 +203,7 @@ func (c *Store) updateSimpleMetricFromRawMetrics(pod *Pod, allMetrics map[string
 	}
 }
 
-func (c *Store) updateHistogramMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
+func (c *Store) updateHistogramMetricFromRawMetrics(pod *pod.Pod, allMetrics map[string]*dto.MetricFamily) {
 	podName := pod.Name
 	podMetricPort := getPodMetricPort(pod)
 	for _, metricName := range histogramMetricNames {
@@ -241,7 +242,7 @@ func (c *Store) updateHistogramMetricFromRawMetrics(pod *Pod, allMetrics map[str
 	}
 }
 
-func (c *Store) updateQueryLabelMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
+func (c *Store) updateQueryLabelMetricFromRawMetrics(pod *pod.Pod, allMetrics map[string]*dto.MetricFamily) {
 	podMetricPort := getPodMetricPort(pod)
 	for _, labelMetricName := range labelQueryMetricNames {
 		metric, exists := metrics.Metrics[labelMetricName]
@@ -270,7 +271,7 @@ func (c *Store) updateQueryLabelMetricFromRawMetrics(pod *Pod, allMetrics map[st
 	}
 }
 
-func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
+func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *pod.Pod) {
 	podName := pod.Name
 	podMetricPort := getPodMetricPort(pod)
 	for _, metricName := range prometheusMetricNames {
@@ -308,7 +309,7 @@ func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 	}
 }
 
-func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Metric, queryLabels map[string]string, pod *Pod, modelName string, metricName string, podMetricPort int) error {
+func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Metric, queryLabels map[string]string, pod *pod.Pod, modelName string, metricName string, podMetricPort int) error {
 	scope := metric.MetricScope
 	query := metrics.BuildQuery(metric.PromQL, queryLabels)
 	// Querying metrics
@@ -331,7 +332,7 @@ func (c *Store) queryUpdatePromQLMetrics(ctx context.Context, metric metrics.Met
 	return nil
 }
 
-func (c *Store) fetchMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily, labelMetricName string) (*dto.MetricFamily, bool) {
+func (c *Store) fetchMetrics(pod *pod.Pod, allMetrics map[string]*dto.MetricFamily, labelMetricName string) (*dto.MetricFamily, bool) {
 	metric, exists := metrics.Metrics[labelMetricName]
 	if !exists {
 		klog.V(4).Infof("Cannot find labelMetricName %v in collected metrics names", labelMetricName)
@@ -357,7 +358,7 @@ func (c *Store) fetchMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily, 
 
 // Update `PodMetrics` and `PodModelMetrics` according to the metric scope
 // TODO: replace in-place metric update podMetrics and podModelMetrics to fresh copy for preventing stale metric keys
-func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, scope metrics.MetricScope, metricValue metrics.MetricValue) error {
+func (c *Store) updatePodRecord(pod *pod.Pod, modelName string, metricName string, scope metrics.MetricScope, metricValue metrics.MetricValue) error {
 	if scope == metrics.PodMetricScope {
 		pod.Metrics.Store(metricName, metricValue)
 	} else if scope == metrics.PodModelMetricScope {
