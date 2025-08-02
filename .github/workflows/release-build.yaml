@@ -103,11 +103,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install poetry
+      - name: Install poetry and prepare build dependencies
         run: |
           cd python/aibrix
           python -m pip install --upgrade pip
           pip install -U pip poetry build
+          poetry self add poetry-dynamic-versioning
       - name: Build and publish
         env:
           POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_TOKEN }}
