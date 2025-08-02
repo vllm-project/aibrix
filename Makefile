@@ -148,7 +148,11 @@ build-controller-manager: manifests generate fmt vet ## Build controller-manager
 
 .PHONY: build-gateway-plugins
 build-gateway-plugins: manifests generate fmt vet ## Build gateway-plugins binary with ZMQ.
-	CGO_ENABLED=1 go build -tags="zmq" -o bin/gateway-plugins cmd/plugins/main.go
+	CGO_ENABLED=1 \
+	CGO_LDFLAGS='-Wl,-Bstatic -l:libzmq.a -l:libsodium.a -l:libnorm.a -l:libprotokit.a -l:libpgm.a -Wl,-Bdynamic -lbsd -lkrb5 -lgssapi_krb5 -lk5crypto -lpthread -lm -lstdc++' \
+	go build -tags="zmq" \
+		-ldflags='-extldflags "$(CGO_LDFLAGS)"' \
+		-o bin/gateway-plugins cmd/plugins/main.go
 
 .PHONY: build-metadata-service
 build-metadata-service: manifests generate fmt vet ## Build metadata-service binary without ZMQ.
