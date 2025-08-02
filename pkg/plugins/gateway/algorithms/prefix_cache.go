@@ -468,7 +468,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	modelName := ctx.Model
 	allPods := readyPodList.All()
 	if modelName == "" && len(allPods) > 0 {
-		modelName = allPods[0].Labels["model.aibrix.ai/name"]
+		modelName = allPods[0].Labels[constants.ModelLabelName]
 	}
 
 	loraID := int64(-1) // TODO: Extract from context when available
