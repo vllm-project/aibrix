@@ -52,6 +52,9 @@ func NewHTTPServer(addr string, redis *redis.Client) *http.Server {
 	r.HandleFunc("/DeleteUser", server.deleteUser).Methods("POST")
 	// OpenAI API related handlers
 	r.HandleFunc("/v1/models", server.models).Methods("GET")
+	// Health related handlers
+	r.HandleFunc("/healthz", server.healthz).Methods("GET")
+	r.HandleFunc("/readyz", server.readyz).Methods("GET")
 
 	return &http.Server{
 		Addr:    addr,
@@ -178,4 +181,19 @@ func (s *httpServer) deleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fmt.Fprintf(w, "Deleted User: %+v", u)
+}
+
+
+func (s *httpServer) healthz(w http.ResponseWriter, r *http.Request) {
+	err := utils.CheckRedisHealth(r.Context(), s.redisClient)
+	if err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(fmt.Sprintf("unhealthy: %v", err)))
+		return
+	}
+}
+
+func (s *httpServer) readyz(w http.ResponseWriter, r *http.Request) {
+	// TODO: we need to have a different check
+	s.healthz(w, r)
 }

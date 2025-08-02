@@ -32,7 +32,10 @@ spec:
           ports:
             - containerPort: 8090
           resources: {{ toYaml .Values.metadata.service.container.resources | nindent 12 }}
-          # TODO: add liveness and readiness probes
+          livenessProbe:
+            {{- toYaml .Values.metadata.service.container.probes.liveness | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.metadata.service.container.probes.readiness | nindent 12 }}
           env:
             - name: REDIS_HOST
               value: {{ .Values.metadata.service.redis.host }}
