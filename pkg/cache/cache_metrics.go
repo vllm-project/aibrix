@@ -21,6 +21,7 @@ import (
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	dto "github.com/prometheus/client_model/go"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
@@ -29,10 +30,10 @@ import (
 const (
 	// When the engine's HTTP proxy is separated from the engine itself,
 	// the request port and metrics port may differ, so a dedicated metrics port is required.
-	MetricPortLabel                     = "model.aibrix.ai/metric-port"
-	engineLabel                         = "model.aibrix.ai/engine"
-	portLabel                           = "model.aibrix.ai/port"
-	modelLabel                          = "model.aibrix.ai/name"
+	MetricPortLabel                     = constants.ModelLabelMetricPort
+	engineLabel                         = constants.ModelLabelEngine
+	portLabel                           = constants.ModelLabelPort
+	modelLabel                          = constants.ModelLabelName
 	defaultMetricPort                   = 8000
 	defaultEngineLabelValue             = "vllm"
 	defaultPodMetricRefreshIntervalInMS = 50
@@ -136,7 +137,7 @@ func (c *Store) updatePodMetrics() {
 func (c *Store) worker(jobs <-chan *Pod) {
 	for pod := range jobs {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		//Use the value of the "model.aibrix.ai/metric-port" label as the metrics port.
+		//Use the value of the constants.ModelLabelMetricPort label as the metrics port.
 		podMetricPort := getPodMetricPort(pod)
 		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, podMetricPort)
 		allMetrics, err := metrics.ParseMetricsURLWithContext(ctx, url)
