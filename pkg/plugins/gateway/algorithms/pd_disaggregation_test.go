@@ -49,8 +49,7 @@ func TestPDRouter_Route(t *testing.T) {
 		{
 			name: "successful routing with both prefill and decode pods",
 			readyPods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "prefill"}, Name: "prefill-1"}, Status: v1.PodStatus{PodIP: "127.0.0.1",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
+				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "prefill"}, Name: "prefill-1"}, Status: v1.PodStatus{PodIP: "127.0.0.1"}},
 				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "decode"}, Name: "decode-1"}, Status: v1.PodStatus{PodIP: "127.0.0.2",
 					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
 			},
@@ -143,8 +142,7 @@ func TestDoPrefillRequest(t *testing.T) {
 				},
 			},
 			Status: v1.PodStatus{
-				PodIP:      "127.0.0.1",
-				Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				PodIP: "127.0.0.1",
 			},
 		}
 	}
