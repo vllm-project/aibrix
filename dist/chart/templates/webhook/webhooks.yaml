@@ -48,26 +48,6 @@ webhooks:
     resources:
     - modeladapters
   sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: aibrix-webhook-service
-      namespace: {{ .Release.Namespace }}
-      path: /validate-orchestration-aibrix-ai-v1alpha1-kvcache
-  failurePolicy: Fail
-  name: vkvcache-v1alpha1.kb.io
-  rules:
-  - apiGroups:
-    - orchestration.aibrix.ai
-    apiVersions:
-    - v1alpha1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - kvcaches
-  sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
@@ -97,6 +77,26 @@ webhooks:
     - UPDATE
     resources:
     - modeladapters
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: aibrix-webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /validate-orchestration-aibrix-ai-v1alpha1-kvcache
+  failurePolicy: Fail
+  name: vkvcache-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - orchestration.aibrix.ai
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - kvcaches
   sideEffects: None
 {{- end }}
 
