@@ -142,10 +142,7 @@ func (r *pdRouter) evaluatePrefixCache(ctx *types.RoutingContext, prefillPods []
 		prefillPod = getTargetPodFromMatchedPods(r.cache, prefillPods, matchedPods)
 	}
 	if prefillPod == nil {
-		prefillPod, err = utils.SelectRandomPod(prefillPods, rand.Intn)
-		if err != nil {
-			return nil, nil, err
-		}
+		prefillPod = selectTargetPodWithLeastRequestCount(r.cache, prefillPods)
 	}
 
 	return prefillPod, prefixHashes, err
