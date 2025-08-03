@@ -21,7 +21,6 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 
-	modelapi "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -44,10 +43,10 @@ var _ = ginkgo.Describe("kvcache default and validation", func() {
 
 	ginkgo.AfterEach(func() {
 		gomega.Expect(k8sClient.Delete(ctx, ns)).To(gomega.Succeed())
-		var adapters modelapi.ModelAdapterList
-		gomega.Expect(k8sClient.List(ctx, &adapters)).To(gomega.Succeed())
+		var kvcacheList orchestrationapi.KVCacheList
+		gomega.Expect(k8sClient.List(ctx, &kvcacheList)).To(gomega.Succeed())
 
-		for _, item := range adapters.Items {
+		for _, item := range kvcacheList.Items {
 			gomega.Expect(k8sClient.Delete(ctx, &item)).To(gomega.Succeed())
 		}
 	})
