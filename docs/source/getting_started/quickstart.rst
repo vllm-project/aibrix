@@ -55,6 +55,9 @@ Save yaml as `pd-model.yaml` and run `kubectl apply -f pd-model.yaml`.
    :language: yaml
 
 
+.. note::
+   We use a custom vLLM image with NIXL support. For detailed information about the image build process, see: [aibrix vllm pd-image build](https://github.com/vllm-project/aibrix/blob/main/samples/disaggregation/vllm/README.md)
+
 Invoke the model endpoint using gateway API
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
