@@ -183,12 +183,11 @@ func (s *httpServer) deleteUser(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Deleted User: %+v", u)
 }
 
-
 func (s *httpServer) healthz(w http.ResponseWriter, r *http.Request) {
 	err := utils.CheckRedisHealth(r.Context(), s.redisClient)
 	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(fmt.Sprintf("unhealthy: %v", err)))
+		fmt.Fprintf(w, "unhealthy: %v", err)
 		return
 	}
 }
