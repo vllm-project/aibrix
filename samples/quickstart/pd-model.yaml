@@ -28,7 +28,7 @@ spec:
             spec:
               containers:
                 - name: prefill
-                  image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.9.1
+                  image: vllm/vllm-openai:v0.9.1
                   command: ["sh", "-c"]
                   args:
                     - |
@@ -38,7 +38,7 @@ spec:
                       --uvicorn-log-level warning \
                       --model deepseek-ai/DeepSeek-R1-Distill-Llama-8B \
                       --served-model-name deepseek-r1-distill-llama-8b \
-                      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+                      --kv-transfer-config '{"kv_connector":"PyNcclConnector","kv_role":"kv_both"}'
                   env:
                     - name: UCX_TLS
                       value: cuda_ipc,cuda_copy,tcp
@@ -81,7 +81,7 @@ spec:
             spec:
               containers:
                 - name: decode
-                  image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.9.1
+                  image: vllm/vllm-openai:v0.9.1
                   command: ["sh", "-c"]
                   args:
                     - |
@@ -91,7 +91,7 @@ spec:
                       --uvicorn-log-level warning \
                       --model deepseek-ai/DeepSeek-R1-Distill-Llama-8B \
                       --served-model-name deepseek-r1-distill-llama-8b \
-                      --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+                      --kv-transfer-config '{"kv_connector":"PyNcclConnector","kv_role":"kv_both"}'
                   env:
                     - name: UCX_TLS
                       value: cuda_ipc,cuda_copy,tcp
