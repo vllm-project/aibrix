@@ -46,6 +46,14 @@ Ensure that:
 1. The `Service` name matches the `model.aibrix.ai/name` label value in the `Deployment`.
 2. The `--served-model-name` argument value in the `Deployment` command is also consistent with the `Service` name and `model.aibrix.ai/name` label.
 
+Deploy Prefill-Decode (PD) Disaggregation Model
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Save yaml as `pd-model.yaml` and run `kubectl apply -f pd-model.yaml`.
+
+.. literalinclude:: ../../../samples/quickstart/pd-model.yaml
+   :language: yaml
+
 
 Invoke the model endpoint using gateway API
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -91,6 +99,25 @@ Depending on where you deployed the AIBrix, you can use either of the following 
             {"role": "user", "content": "help me write a random generator in python"}
         ]
     }'
+
+.. note::
+
+    To test PD disaggregation, add the ``routing-strategy`` header to ``pd``. For example:
+
+    .. code-block:: bash
+
+        curl -v http://${ENDPOINT}/v1/chat/completions \
+        -H "routing-strategy: pd" \
+        -H "Content-Type: application/json" \
+        -d '{
+            "model": "deepseek-r1-distill-llama-8b",
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "help me write a random generator in python"}
+            ],
+            "temperature": 0.7
+        }'
+
 
 .. code-block:: python
 
