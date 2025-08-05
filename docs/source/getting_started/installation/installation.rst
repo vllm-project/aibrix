@@ -45,7 +45,6 @@ Stable Version Using Helm
     helm install eg oci://docker.io/envoyproxy/gateway-helm --version v0.0.0-latest -n envoy-gateway-system --create-namespace
 
     # 2. Optional: Install KubeRay operator (if you use AIBrix RayClusterFleet, you need to insstall it):
-    ```
     helm install kuberay-operator kuberay/kuberay-operator \
       --namespace kuberay-system \
       --version 1.2.1 \
@@ -55,17 +54,12 @@ Stable Version Using Helm
       --set fullnameOverride=kuberay-operator \
       --set featureGates[0].name=RayClusterStatusConditions \
       --set featureGates[0].enabled=true
-    ```
 
     # 3. Install AIBrix CRDs. `--install-crds` is not available in local chart installation.
-    ```
     kubectl apply -f dist/chart/crds/
-    ```
 
     # 4. Install AIBrix with the pinned release version:
-    ```
     helm install aibrix dist/chart -f dist/chart/stable.yaml -n aibrix-system --create-namespace
-    ```
 
 Nightly Version
 ^^^^^^^^^^^^^^^
