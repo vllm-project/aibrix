@@ -38,7 +38,7 @@ gatewayPlugin:
     image:
       repository: aibrix/gateway-plugins
       tag: nightly
-      pullPolicy: IfNotPresent
+      imagePullPolicy: IfNotPresent
     resources:
       limits:
         cpu: 1
@@ -132,7 +132,7 @@ metadata:
       image:
         repository: aibrix/metadata-service
         tag: nightly
-        pullPolicy: IfNotPresent
+        imagePullPolicy: IfNotPresent
       resources:
         limits:
           cpu: 500m

@@ -28,7 +28,7 @@ spec:
       containers:
         - name: metadata-service
           image: {{ .Values.metadata.service.container.image.repository }}:{{ .Values.metadata.service.container.image.tag }}
-          imagePullPolicy: {{ .Values.metadata.service.container.image.pullPolicy | default "IfNotPresent" }}
+          imagePullPolicy: {{ .Values.metadata.service.container.image.imagePullPolicy | default "IfNotPresent" }}
           ports:
             - containerPort: 8090
           resources: {{ toYaml .Values.metadata.service.container.resources | nindent 12 }}
