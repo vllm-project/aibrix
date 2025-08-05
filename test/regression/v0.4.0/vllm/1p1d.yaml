@@ -45,8 +45,6 @@ spec:
                       --served-model-name qwen3-8B \
                       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
-                    - name: UCX_TLS
-                      value: cuda_ipc,cuda_copy,tcp
                     - name: VLLM_SERVER_DEV_MODE
                       value: "1"
                     - name: VLLM_NIXL_SIDE_CHANNEL_PORT
@@ -116,8 +114,6 @@ spec:
                       --served-model-name qwen3-8B \
                       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
-                    - name: UCX_TLS
-                      value: cuda_ipc,cuda_copy,tcp
                     - name: VLLM_SERVER_DEV_MODE
                       value: "1"
                     - name: VLLM_NIXL_SIDE_CHANNEL_PORT
