@@ -42,6 +42,7 @@ const (
 	ControllerName            = "roleset-controller"
 	RoleSetFinalizer          = "orchestration.aibrix.ai/roleset-finalizer"
 	DefaultRequeueAfter       = 15 * time.Second
+	DefaultRetryDelay         = 1 * time.Second
 	PodBurst                  = 500
 	PodOperationInitBatchSize = 16
 )
@@ -148,6 +149,10 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
 	}
 	if apiequality.Semantic.DeepEqual(&roleSet.Status, status) {
+		if !orchestrationctrl.IsRoleSetReady(roleSet) {
+			klog.Infof("roleset %s/%s not ready, reconcile after %v seconds", roleSet.Namespace, roleSet.Name, DefaultRetryDelay)
+			return ctrl.Result{RequeueAfter: DefaultRetryDelay}, nil
+		}
 		return ctrl.Result{}, nil
 	}
 	roleSet.Status = *status
