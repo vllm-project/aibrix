@@ -85,6 +85,7 @@ func (m *Manager) Start() error {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+IndexerReadyLoop:
 	for {
 		select {
 		case <-initCtx.Done():
@@ -99,11 +100,9 @@ func (m *Manager) Start() error {
 				return fmt.Errorf("failed to get sync indexer: %w", err)
 			}
 			// Success - indexer is ready
-			goto indexerReady
+			break IndexerReadyLoop
 		}
 	}
-
-indexerReady:
 
 	// Process existing pods
 	err := m.podProvider.RangePods(initCtx, func(key string, podInfo *PodInfo) bool {
@@ -301,11 +300,19 @@ func (m *Manager) unsubscribeFromPod(podKey string) {
 func validateConfiguration() bool {
 	// Check if KV sync is enabled
 	kvSyncValue := utils.LoadEnv(constants.EnvKVEventSyncEnabled, "false")
-	kvSyncRequested, _ := strconv.ParseBool(kvSyncValue)
+	kvSyncRequested, err := strconv.ParseBool(kvSyncValue)
+	if err != nil {
+		klog.Warningf("Invalid boolean value for %s: %q. Defaulting to false.", constants.EnvKVEventSyncEnabled, kvSyncValue)
+		kvSyncRequested = false
+	}
 
 	// Check remote tokenizer
 	remoteTokenValue := utils.LoadEnv("AIBRIX_USE_REMOTE_TOKENIZER", "false")
-	remoteTokenizerEnabled, _ := strconv.ParseBool(remoteTokenValue)
+	remoteTokenizerEnabled, err := strconv.ParseBool(remoteTokenValue)
+	if err != nil {
+		klog.Warningf("Invalid boolean value for AIBRIX_USE_REMOTE_TOKENIZER: %q. Defaulting to false.", remoteTokenValue)
+		remoteTokenizerEnabled = false
+	}
 
 	if kvSyncRequested && !remoteTokenizerEnabled {
 		klog.Warning("KV event sync requires remote tokenizer. Disabling.")
