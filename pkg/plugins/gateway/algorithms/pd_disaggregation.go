@@ -43,7 +43,7 @@ const (
 	SGLangBootstrapPort           int64                  = 8998
 	SGLangBootstrapPortIdentifier string                 = "model.aibrix.ai/sglang-bootstrap-port"
 	LLMEngineIdentifier           string                 = constants.ModelLabelEngine
-	RoleSet                       string                 = "roleset-name"
+	PDRoleSetIdentifier           string                 = "roleset-name"
 	PDRoleIdentifier              string                 = "role-name"
 	RoleReplicaIndex              string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	PodGroupIndex                 string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
@@ -156,14 +156,14 @@ func (r *pdRouter) evaluatePrefixCache(ctx *types.RoutingContext, prefillPods []
 }
 
 func (r *pdRouter) selectDecodePod(prefillPod *v1.Pod, decodePods []*v1.Pod) *v1.Pod {
-	prefillRoleSet, ok := prefillPod.Labels[RoleSet]
+	prefillRoleSet, ok := prefillPod.Labels[PDRoleSetIdentifier]
 	if !ok {
 		return nil
 	}
 
 	filteredDecodePods := []*v1.Pod{}
 	for _, pod := range decodePods {
-		if podRoleSet, exists := pod.Labels[RoleSet]; exists && podRoleSet == prefillRoleSet {
+		if podRoleSet, exists := pod.Labels[PDRoleSetIdentifier]; exists && podRoleSet == prefillRoleSet {
 			filteredDecodePods = append(filteredDecodePods, pod)
 		}
 	}
