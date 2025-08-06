@@ -43,7 +43,10 @@ func NewKVEventManager(store *Store) *KVEventManager {
 func validateKVEventConfiguration() error {
 	// Check if KV sync is enabled
 	kvSyncValue := utils.LoadEnv(constants.EnvKVEventSyncEnabled, "false")
-	kvSyncRequested, _ := strconv.ParseBool(kvSyncValue)
+	kvSyncRequested, err := strconv.ParseBool(kvSyncValue)
+	if err != nil {
+		return fmt.Errorf("invalid boolean value for %s: %q", constants.EnvKVEventSyncEnabled, kvSyncValue)
+	}
 
 	if !kvSyncRequested {
 		// Not an error - just disabled
@@ -52,7 +55,10 @@ func validateKVEventConfiguration() error {
 
 	// If enabled, check requirements
 	remoteTokenValue := utils.LoadEnv("AIBRIX_USE_REMOTE_TOKENIZER", "false")
-	remoteTokenizerEnabled, _ := strconv.ParseBool(remoteTokenValue)
+	remoteTokenizerEnabled, err := strconv.ParseBool(remoteTokenValue)
+	if err != nil {
+		return fmt.Errorf("invalid boolean value for AIBRIX_USE_REMOTE_TOKENIZER: %q", remoteTokenValue)
+	}
 
 	if !remoteTokenizerEnabled {
 		return fmt.Errorf("KV event sync requires remote tokenizer (set AIBRIX_USE_REMOTE_TOKENIZER=true)")
