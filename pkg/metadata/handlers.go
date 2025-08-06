@@ -184,15 +184,18 @@ func (s *httpServer) deleteUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *httpServer) healthz(w http.ResponseWriter, r *http.Request) {
-	err := utils.CheckRedisHealth(r.Context(), s.redisClient)
-	if err != nil {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		fmt.Fprintf(w, "unhealthy: %v", err)
-		return
-	}
+	// Simple check to verify the service is running
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, "healthy")
 }
 
 func (s *httpServer) readyz(w http.ResponseWriter, r *http.Request) {
-	// TODO: we need to have a different check
-	s.healthz(w, r)
+	err := utils.CheckRedisHealth(r.Context(), s.redisClient)
+	if err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, "not ready: %v", err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, "ready")
 }
