@@ -38,7 +38,7 @@ gatewayPlugin:
     image:
       repository: aibrix/gateway-plugins
       tag: nightly
-      pullPolicy: IfNotPresent
+      imagePullPolicy: IfNotPresent
     resources:
       limits:
         cpu: 1
@@ -67,11 +67,12 @@ gatewayPlugin:
       AIBRIX_PREFIX_CACHE_BLOCK_SIZE: "128"
       AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT: "16"
       AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: "2"
+      AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
   dependencies:
     redis:
       host: aibrix-redis-master
       port: 6379
-  messageTimeout: "5s"
+  messageTimeout: "60s"
 
 
 gpuOptimizer:
@@ -131,7 +132,7 @@ metadata:
       image:
         repository: aibrix/metadata-service
         tag: nightly
-        pullPolicy: IfNotPresent
+        imagePullPolicy: IfNotPresent
       resources:
         limits:
           cpu: 500m

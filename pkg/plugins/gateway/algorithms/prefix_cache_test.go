@@ -18,12 +18,12 @@ package routingalgorithms
 
 import (
 	"context"
-	"log"
 	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -35,6 +35,9 @@ import (
 )
 
 func Test_PrefixCacheE2E(t *testing.T) {
+	// Ensure metrics are not enabled
+	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
+
 	readyPods := getReadyPods()
 	c := cache.NewWithPodsMetricsForTest(
 		readyPods,
@@ -146,8 +149,8 @@ func Test_PrefixCacheE2E(t *testing.T) {
 	}
 	ctx7 := types.NewRoutingContext(context.Background(), RouterPrefixCache, "m1", input, "r7", "")
 	p1, err := prefixCacheRouter.Route(ctx7, podList)
-	log.Println(p2, p3, p4)
-	log.Println(p1)
+	t.Log(p2, p3, p4)
+	t.Log(p1)
 	assert.NoError(t, err)
 	assert.False(t, slices.Contains([]string{p2, p3, p4}, p1))
 }
@@ -210,6 +213,9 @@ func getReadyPods() []*v1.Pod {
 }
 
 func Test_ValidatePrePrefixMatchLoadBalance(t *testing.T) {
+	// Ensure metrics are not enabled
+	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
+
 	// no imbalance
 	readyPods := getReadyPods()
 	c := cache.NewWithPodsMetricsForTest(
@@ -241,6 +247,9 @@ func Test_ValidatePrePrefixMatchLoadBalance(t *testing.T) {
 }
 
 func Test_ValidatePostPrefixMatchLoadBalance(t *testing.T) {
+	// Ensure metrics are not enabled
+	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
+
 	readyPods := getReadyPods()
 	testcases := []struct {
 		name        string

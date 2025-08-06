@@ -17,7 +17,6 @@
 package cache
 
 import (
-	"os"
 	"testing"
 )
 
@@ -25,12 +24,8 @@ func TestBuildModeIsZMQ(t *testing.T) {
 	t.Log("✅ Verified ZMQ build")
 
 	// Set environment to enable KV sync
-	os.Setenv("AIBRIX_KV_EVENT_SYNC_ENABLED", "true")
-	os.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
-	defer func() {
-		os.Unsetenv("AIBRIX_KV_EVENT_SYNC_ENABLED")
-		os.Unsetenv("AIBRIX_USE_REMOTE_TOKENIZER")
-	}()
+	t.Setenv("AIBRIX_KV_EVENT_SYNC_ENABLED", "true")
+	t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
 
 	// Verify ZMQ implementation behavior
 	manager := NewKVEventManager(nil)

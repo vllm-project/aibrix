@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -41,10 +42,15 @@ const (
 	SGLangEngine                  string                 = "sglang"
 	SGLangBootstrapPort           int64                  = 8998
 	SGLangBootstrapPortIdentifier string                 = "model.aibrix.ai/sglang-bootstrap-port"
-	LLMEngineIdentifier           string                 = "model.aibrix.ai/engine"
+	LLMEngineIdentifier           string                 = constants.ModelLabelEngine
 	PDRoleIdentifier              string                 = "role-name"
 	RoleReplicaIndex              string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	PodGroupIndex                 string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
+	defaultPrefillRequestTimeout  int                    = 30
+)
+
+var (
+	prefillRequestTimeout int = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
 )
 
 func init() {
@@ -136,7 +142,7 @@ func (r *pdRouter) evaluatePrefixCache(ctx *types.RoutingContext, prefillPods []
 		prefillPod = getTargetPodFromMatchedPods(r.cache, prefillPods, matchedPods)
 	}
 	if prefillPod == nil {
-		prefillPod = selectTargetPodWithLeastRequestCount(r.cache, prefillPods)
+		prefillPod, err = utils.SelectRandomPod(prefillPods, rand.Intn)
 	}
 
 	return prefillPod, prefixHashes, err
@@ -239,7 +245,7 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 	req.Header.Set("content-length", strconv.Itoa(len(payload)))
 
 	// Execute with timeout
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: time.Duration(prefillRequestTimeout) * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to execute http prefill request: %w", err)

@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -76,7 +77,7 @@ func createTestPod(name, model, engine string, ready bool) v1.Pod {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 			Labels: map[string]string{
-				"model.aibrix.ai/name": model,
+				constants.ModelLabelName: model,
 			},
 			Annotations: map[string]string{},
 		},
@@ -119,7 +120,7 @@ func TestGetModelFromPod(t *testing.T) {
 			pod: v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"model.aibrix.ai/name": "llama2-7b",
+						constants.ModelLabelName: "llama2-7b",
 					},
 				},
 			},
@@ -130,7 +131,7 @@ func TestGetModelFromPod(t *testing.T) {
 			pod: v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"model.aibrix.ai/name": "qwen-7b",
+						constants.ModelLabelName: "qwen-7b",
 					},
 				},
 			},
@@ -192,7 +193,7 @@ func TestIsVLLMPod(t *testing.T) {
 			pod: v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"model.aibrix.ai/engine": "vllm",
+						constants.ModelLabelEngine: "vllm",
 					},
 				},
 			},
@@ -203,7 +204,7 @@ func TestIsVLLMPod(t *testing.T) {
 			pod: v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"model.aibrix.ai/engine": "vllm",
+						constants.ModelLabelEngine: "vllm",
 					},
 				},
 			},
@@ -244,7 +245,7 @@ func TestIsVLLMPod(t *testing.T) {
 			pod: v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"model.aibrix.ai/engine": "sglang",
+						constants.ModelLabelEngine: "sglang",
 					},
 				},
 			},

@@ -261,7 +261,7 @@ func buildVineyardDeployment(kvCache *orchestrationv1alpha1.KVCache) *appsv1.Dep
 					LabelSelector: &metav1.LabelSelector{
 						MatchExpressions: []metav1.LabelSelectorRequirement{
 							{
-								Key:      "model.aibrix.ai/name",
+								Key:      constants.ModelLabelName,
 								Operator: metav1.LabelSelectorOpIn,
 								Values:   []string{value},
 							},

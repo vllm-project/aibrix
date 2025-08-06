@@ -30,6 +30,7 @@ import (
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/controller/modeladapter/scheduling"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
@@ -57,7 +58,7 @@ import (
 )
 
 const (
-	ModelIdentifierKey                = "model.aibrix.ai/name"
+	ModelIdentifierKey                = constants.ModelLabelName
 	ModelAdapterKey                   = "adapter.model.aibrix.ai/name"
 	ModelAdapterFinalizer             = "adapter.model.aibrix.ai/finalizer"
 	ModelAdapterPodTemplateLabelKey   = "adapter.model.aibrix.ai/enabled"

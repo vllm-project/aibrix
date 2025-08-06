@@ -96,7 +96,7 @@ func TestShouldSubscribe(t *testing.T) {
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"model.aibrix.ai/name":         "test-model",
+						constants.ModelLabelName:       "test-model",
 						constants.KVEventsEnabledLabel: "true",
 					},
 				},
@@ -112,7 +112,7 @@ func TestShouldSubscribe(t *testing.T) {
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"model.aibrix.ai/name": "test-model",
+						constants.ModelLabelName: "test-model",
 					},
 				},
 				Status: v1.PodStatus{
@@ -127,7 +127,7 @@ func TestShouldSubscribe(t *testing.T) {
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"model.aibrix.ai/name":         "test-model",
+						constants.ModelLabelName:       "test-model",
 						constants.KVEventsEnabledLabel: "true",
 					},
 				},
@@ -142,7 +142,7 @@ func TestShouldSubscribe(t *testing.T) {
 			pod: &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"model.aibrix.ai/name":         "test-model",
+						constants.ModelLabelName:       "test-model",
 						constants.KVEventsEnabledLabel: "true",
 					},
 				},
@@ -199,7 +199,7 @@ func TestPodLifecycle(t *testing.T) {
 			Name:      "test-pod",
 			Namespace: "default",
 			Labels: map[string]string{
-				"model.aibrix.ai/name":         "test-model",
+				constants.ModelLabelName:       "test-model",
 				constants.KVEventsEnabledLabel: "true",
 			},
 		},
@@ -507,7 +507,7 @@ func TestPodUpdateScenarios(t *testing.T) {
 			Name:      "test-pod",
 			Namespace: "default",
 			Labels: map[string]string{
-				"model.aibrix.ai/name":         "test-model",
+				constants.ModelLabelName:       "test-model",
 				constants.KVEventsEnabledLabel: "true",
 			},
 		},
@@ -558,7 +558,7 @@ func TestPodUpdateScenarios(t *testing.T) {
 			oldPod: basePod.DeepCopy(),
 			newPod: func() *v1.Pod {
 				p := basePod.DeepCopy()
-				p.Labels["model.aibrix.ai/name"] = "new-model"
+				p.Labels[constants.ModelLabelName] = "new-model"
 				return p
 			}(),
 			description: "Should handle model name change",
@@ -595,7 +595,7 @@ func TestConcurrentPodOperations(t *testing.T) {
 					Name:      fmt.Sprintf("pod-%d", i),
 					Namespace: "default",
 					Labels: map[string]string{
-						"model.aibrix.ai/name":         "test-model",
+						constants.ModelLabelName:       "test-model",
 						constants.KVEventsEnabledLabel: "true",
 					},
 				},

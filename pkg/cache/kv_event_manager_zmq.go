@@ -243,7 +243,7 @@ func (m *KVEventManager) OnPodDelete(pod *v1.Pod) {
 	// Clean up from sync indexer
 	syncIndexer := m.store.GetSyncPrefixIndexer()
 	if syncIndexer != nil {
-		modelName := pod.Labels["model.aibrix.ai/name"]
+		modelName := pod.Labels[constants.ModelLabelName]
 		if modelName != "" {
 			loraID := int64(-1) // Default no LoRA
 			if loraStr := constants.GetLoraID(pod.Labels); loraStr != "" {
@@ -273,7 +273,7 @@ func (m *KVEventManager) shouldSubscribe(pod *v1.Pod) bool {
 	}
 
 	// Check if it's a model pod
-	if pod.Labels["model.aibrix.ai/name"] == "" {
+	if pod.Labels[constants.ModelLabelName] == "" {
 		return false
 	}
 
@@ -283,7 +283,7 @@ func (m *KVEventManager) shouldSubscribe(pod *v1.Pod) bool {
 // subscribeToPod creates a ZMQ subscription for a pod
 func (m *KVEventManager) subscribeToPod(pod *v1.Pod) error {
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
-	modelName := pod.Labels["model.aibrix.ai/name"]
+	modelName := pod.Labels[constants.ModelLabelName]
 
 	// Check if already subscribed
 	if _, exists := m.subscribers.Load(podKey); exists {

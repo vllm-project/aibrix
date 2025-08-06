@@ -3,7 +3,7 @@ controllerManager:
   replicas: 1
   container:
     image:
-      repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
+      repository: aibrix/controller-manager
       tag: v0.4.0
       imagePullPolicy: IfNotPresent
     resources:
@@ -32,11 +32,11 @@ gatewayPlugin:
   replicaCount: 1
   initContainer:
     image:
-      repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/busybox
+      repository: busybox
       tag: stable
   container:
     image:
-      repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      repository: aibrix/gateway-plugins
       tag: v0.4.0
       pullPolicy: IfNotPresent
     resources:
@@ -46,6 +46,21 @@ gatewayPlugin:
       requests:
         cpu: 1
         memory: 1Gi
+    probes:
+      liveness:
+        grpc:
+          port: 50052
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 3
+      readiness:
+        grpc:
+          port: 50052
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 3
     envs:
       AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"
       AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE: "character"
@@ -64,7 +79,7 @@ gpuOptimizer:
   replicaCount: 1
   container:
     image:
-      repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
+      repository: aibrix/runtime
       tag: v0.4.0
     resources:
       limits:
@@ -83,7 +98,7 @@ gateway:
     replicas: 1
     container:
       envoy:
-        image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy:v1.33.2
+        image: envoyproxy/envoy:v1.33.2
         resources:
           requests:
             cpu: 1
@@ -92,7 +107,7 @@ gateway:
             cpu: 1
             memory: 1Gi
       shutdownManager:
-        image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/gateway:v1.2.8
+        image: envoyproxy/gateway:v1.2.8
         resources:
           requests:
             cpu: 10m
@@ -111,11 +126,11 @@ metadata:
     replicas: 1
     initContainer:
       image:
-        repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/busybox
+        repository: busybox
         tag: stable
     container:
       image:
-        repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/metadata-service
+        repository: aibrix/metadata-service
         tag: v0.4.0
         pullPolicy: IfNotPresent
       resources:
@@ -133,7 +148,7 @@ metadata:
     replicas: 1
     container:
       image:
-        repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/redis
+        repository: redis
         tag: 7.4
       resources:
         requests:

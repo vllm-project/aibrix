@@ -71,13 +71,6 @@ Documentation
 
    production/observability.rst
 
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Testing
-
-   testing/kv-event-sync-e2e.rst
-
 .. toctree::
    :maxdepth: 1
    :caption: Community

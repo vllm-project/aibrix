@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -78,15 +79,15 @@ func createModelAdapterConfig(name, model string) *modelv1alpha1.ModelAdapter {
 		ObjectMeta: v1.ObjectMeta{
 			Name: name,
 			Labels: map[string]string{
-				"model.aibrix.ai/name": name,
-				"model.aibrix.ai/port": "8000",
+				constants.ModelLabelName: name,
+				constants.ModelLabelPort: "8000",
 			},
 		},
 		Spec: modelv1alpha1.ModelAdapterSpec{
 			BaseModel: &model,
 			PodSelector: &v1.LabelSelector{
 				MatchLabels: map[string]string{
-					"model.aibrix.ai/name": model,
+					constants.ModelLabelName: model,
 				},
 			},
 			ArtifactURL: "huggingface://yard1/llama-2-7b-sql-lora-test",
