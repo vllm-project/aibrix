@@ -12,15 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .allocator import ManagedMemoryRegion, TensorPoolAllocator
-from .external_memory_region import ExternalMemoryRegion
-from .memory_region import MemoryRegion
-from .ref_counted_obj import RefCountedObj
+import torch
 
-__all__ = [
-    "ExternalMemoryRegion",
-    "MemoryRegion",
-    "ManagedMemoryRegion",
-    "TensorPoolAllocator",
-    "RefCountedObj",
-]
+from .memory_region import MemoryRegion
+
+
+class ExternalMemoryRegion(MemoryRegion):
+    """ExternalMemoryRegion represents an external continuous memory buffer.
+    Right now we only use it to support GDR.
+    """
+
+    def __init__(
+        self,
+        slab: torch.Tensor,
+        addr: int,
+        len: int,
+    ) -> None:
+        super().__init__(slab, addr, len)
+
+    def __repr__(self) -> str:
+        return (
+            f"ExternalMemoryRegion(addr={self.slab.data_ptr() + self.addr}, "
+            f"length={self.length}, capacity={self.capacity})"
+        )
+
+    def destroy_unsafe(self):
+        pass

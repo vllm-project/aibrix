@@ -21,7 +21,9 @@ import torch
 
 from aibrix_kvcache import TokenListView
 from aibrix_kvcache.l1 import L1Cache
-from aibrix_kvcache.memory import MemoryRegion, TensorPoolAllocator
+from aibrix_kvcache.memory import (
+    ManagedMemoryRegion, MemoryRegion, TensorPoolAllocator
+)
 
 from .conftest import CACHE_DTYPE, release_mrs
 
@@ -246,9 +248,9 @@ def test_duplicated_puts(cache_conf_fixture, eviction_policy):
             torch.cat(tensors, dim=spec.block_shape_token_dim),
             kv_tensors,
         )
-        assert len(cache) == MemoryRegion.calculate_size(
+        assert len(cache) == ManagedMemoryRegion.calculate_size(
             spec.block_nbytes, 16
-        ) + MemoryRegion.calculate_size(spec.block_nbytes, 32)
+        ) + ManagedMemoryRegion.calculate_size(spec.block_nbytes, 32)
         release_mrs(mrs)
 
 
@@ -264,9 +266,9 @@ def test_cache_eviction(cache_conf_fixture, eviction_policy):
         block_spec=spec,
     )
 
-    per_put_nbytes = MemoryRegion.calculate_size(
+    per_put_nbytes = ManagedMemoryRegion.calculate_size(
         spec.block_nbytes, 16
-    ) + MemoryRegion.calculate_size(spec.block_nbytes, 32)
+    ) + ManagedMemoryRegion.calculate_size(spec.block_nbytes, 32)
     expected_capacity_nbytes = 0
     for i in range(0, capacity_nbytes, per_put_nbytes):
         tokens = TokenListView([i * 64 + j for j in range(32)])

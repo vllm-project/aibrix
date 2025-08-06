@@ -21,14 +21,21 @@ import torch
 
 from aibrix_kvcache import (
     BaseKVCacheManager,
+    GDRKVCacheHandle,
     KVCacheConfig,
+    KVCacheBlockLayout,
     ModelSpec,
     cache_manager,
     TokenListView,
 )
 from aibrix_kvcache.memory import TensorPoolAllocator
 
-from .conftest import discard_all_aibrix_envs, randomize_cache_handle
+from .conftest import (
+    discard_all_aibrix_envs,
+    get_cache_conf,
+    make_block_tables_slot_mapping,
+    randomize_cache_handle,
+)
 
 cache_manager.TESTING_DISABLE_PIN_MEMORY = True
 
@@ -94,6 +101,8 @@ def cache_mgr_fixture(cache_conf_fixture, request):
             print(cache.metrics.summary())
             cache.close()
 
+        discard_all_aibrix_envs()
+
 
 def test_cache_initialization(cache_mgr_fixture):
     _, _, cache_mgr, param = cache_mgr_fixture
@@ -157,7 +166,7 @@ def test_put_and_get_with_prefix(cache_mgr_fixture):
     put_status = cache_mgr.put(None, tokens0, put_handle0)
     assert put_status.is_ok()
 
-    status = cache_mgr.allocate_for(None, tokens1)
+    status = cache_mgr.allocate_for(tokens0, tokens1)
     assert status.is_ok()
     put_handle1 = status.value
     assert len(put_handle1) == 2
@@ -384,3 +393,190 @@ def test_stress_cache(compact_layout_enabled, cache_mgr_fixture):
     for reason, num in recorder.get_metrics.num_errors_by_reason.items():
         if num > 0 and reason not in ["out_of_memory", "denied", "not_found"]:
             raise AssertionError(f"GET {reason}: {num}")
+
+@pytest.fixture(
+    params=["gdr_put", "gdr_get", "gdr_put_get"], scope="function"
+)
+def gdr_cache_mgr_fixture(request):
+    discard_all_aibrix_envs()
+
+    # enable l2 and disable l1
+    os.environ["AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED"] = "0"
+
+    os.environ["AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND"] = "MOCK"
+    os.environ[
+        "AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_MAX_INFLIGHT_TOKENS"
+    ] = "0"
+
+    if request.param == "gdr_put":
+        os.environ["AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_PUT"] = "1"
+    elif request.param == "gdr_get":
+        os.environ["AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_GET"] = "1"
+    else:
+        os.environ["AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_PUT"] = "1"
+        os.environ["AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_GET"] = "1"
+
+    shape, spec = get_cache_conf(KVCacheBlockLayout.LCND)
+
+    cache = None
+    try:
+        config = KVCacheConfig(block_spec=spec, model_spec=ModelSpec(1024))
+        # use a small slab size for testing
+        TensorPoolAllocator.SLAB_MAX_NBYTES = spec.block_nbytes * 8
+        cache = BaseKVCacheManager(config=config)
+        yield shape, spec, cache, request.param
+    finally:
+        if cache is not None:
+            print(cache.metrics.summary())
+            cache.close()
+        discard_all_aibrix_envs()
+
+def handle_to_block_tensors(handle) -> list[torch.Tensor]:
+    if isinstance(handle, GDRKVCacheHandle):
+        return [torch.concat(l) for l in handle.to_tensors()]
+    else:
+        return [t.clone() for t in handle.to_tensors()]
+
+def test_gdr_put_and_get_with_prefix(gdr_cache_mgr_fixture):
+    shape, spec, cache_mgr, param = gdr_cache_mgr_fixture
+
+    if "_put" in param:
+        assert cache_mgr.feature.gdr_put
+    if "_get" in param:
+        assert cache_mgr.feature.gdr_get
+
+    block_ntokens = spec.block_ntokens
+    block_tables, slot_mapping, _ = \
+        make_block_tables_slot_mapping(block_ntokens, [8 * block_ntokens])
+
+    num_layers = len(spec.tensor_spec.layers)
+    kvcaches = []
+    for _ in range(num_layers):
+        kvcache = torch.zeros(
+            (2, block_tables.max() + 1, *spec.block_shape[2:]),
+            dtype=spec.block_dtype,
+        )
+        kvcaches.append(kvcache)
+
+    cache_mgr.register_kvcache(kvcaches)
+
+    prefix_len = 2 * block_ntokens
+    ntokens = len(slot_mapping) - prefix_len
+
+    tokens0 = [i for i in range(prefix_len)]
+    tokens1 = [i for i in range(prefix_len, prefix_len + ntokens)]
+    all_tokens = TokenListView(tokens0 + tokens1)
+    tokens0 = all_tokens[:prefix_len]
+    tokens1 = all_tokens[prefix_len:]
+
+    if cache_mgr.feature.gdr_put:
+        put_handle0 = GDRKVCacheHandle.create(
+            kvcaches,
+            spec,
+            slot_mapping[:prefix_len],
+        )
+    else:
+        status = cache_mgr.allocate_for(None, tokens0)
+        assert status.is_ok()
+        put_handle0 = status.value
+    assert len(put_handle0) == prefix_len // block_ntokens
+    randomize_cache_handle(put_handle0)
+    put_tensors0 = handle_to_block_tensors(put_handle0)
+
+    put_status = cache_mgr.put(None, tokens0, put_handle0)
+    assert put_status.is_ok()
+
+    if cache_mgr.feature.gdr_put:
+        put_handle1 = GDRKVCacheHandle.create(
+            kvcaches,
+            spec,
+            slot_mapping[prefix_len:],
+        )
+    else:
+        status = cache_mgr.allocate_for(tokens0, tokens1)
+        assert status.is_ok()
+        put_handle1 = status.value
+    assert len(put_handle1) == ntokens // block_ntokens
+    randomize_cache_handle(put_handle1)
+    put_tensors1 = handle_to_block_tensors(put_handle1)
+
+    put_status = cache_mgr.put(tokens0, tokens1, put_handle1)
+    assert put_status.is_ok()
+
+    if cache_mgr.feature.gdr_get:
+        get_handle0 = GDRKVCacheHandle.create(
+            kvcaches,
+            spec,
+            slot_mapping[:prefix_len],
+        )
+        randomize_cache_handle(get_handle0)
+        get_status = cache_mgr.get(None, tokens0, get_handle0)
+        assert get_status.is_ok()
+        assert get_status.value == prefix_len
+    else:
+        get_status = cache_mgr.acquire(None, tokens0)
+        assert get_status.is_ok()
+        assert get_status.value[0] == prefix_len
+        get_handle0 = get_status.value[1]
+
+    assert len(put_handle0) == len(
+        get_handle0
+    ), f"{len(put_handle0)} != {len(get_handle0)}"
+    get_tensors0 = handle_to_block_tensors(get_handle0)
+    if put_tensors0[0].shape != get_tensors0[0].shape:
+        put_tensors0 = [t.reshape(get_tensors0[0].shape) for t in put_tensors0]
+    for pt, gt in zip(put_tensors0, get_tensors0):
+        assert torch.equal(pt, gt)
+
+    if cache_mgr.feature.gdr_get:
+        get_handle1 = GDRKVCacheHandle.create(
+            kvcaches,
+            spec,
+            slot_mapping[prefix_len:],
+        )
+        randomize_cache_handle(get_handle1)
+        get_status = cache_mgr.get(tokens0, tokens1, get_handle1)
+        assert get_status.is_ok()
+        assert get_status.value == ntokens
+    else:
+        get_status = cache_mgr.acquire(tokens0, tokens1)
+        assert get_status.is_ok()
+        assert get_status.value[0] == ntokens
+        get_handle1 = get_status.value[1]
+
+    assert len(put_handle1) == len(
+        get_handle1
+    ), f"{len(put_handle1)} != {len(get_handle1)}"
+    get_tensors1 = handle_to_block_tensors(get_handle1)
+    if put_tensors1[0].shape != get_tensors1[0].shape:
+        put_tensors1 = [t.reshape(get_tensors1[0].shape) for t in put_tensors1]
+    for pt, gt in zip(put_tensors1, get_tensors1):
+        assert torch.equal(pt, gt)
+
+    exists_status = cache_mgr.exists(tokens0, tokens1)
+    assert exists_status.is_ok()
+    assert exists_status.value == ntokens
+
+    if cache_mgr.feature.gdr_get:
+        get_handle2 = GDRKVCacheHandle.create(
+            kvcaches,
+            spec,
+            slot_mapping,
+        )
+        randomize_cache_handle(get_handle2)
+        get_status = cache_mgr.get(None, tokens0 + tokens1, get_handle2)
+        assert get_status.is_ok()
+        assert get_status.value == prefix_len + ntokens
+    else:
+        get_status = cache_mgr.acquire(None, tokens0 + tokens1)
+        assert get_status.is_ok()
+        assert get_status.value[0] == prefix_len + ntokens
+        get_handle2 = get_status.value[1]
+
+    assert len(get_handle2) == 8, f"len(get_handle2): {len(get_handle2)} != 8"
+    get_tensors2 = handle_to_block_tensors(get_handle2)
+    for pt, gt in zip(put_tensors0 + put_tensors1, get_tensors2):
+        assert torch.equal(pt, gt)
+    get_handle0.release()
+    get_handle1.release()
+    get_handle2.release()

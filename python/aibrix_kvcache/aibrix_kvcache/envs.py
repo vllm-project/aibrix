@@ -91,6 +91,9 @@ if TYPE_CHECKING:
     # Mock Connector
     AIBRIX_KV_CACHE_OL_MOCK_USE_RDMA: bool = False
     AIBRIX_KV_CACHE_OL_MOCK_USE_MPUT_MGET: bool = False
+    AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_PUT: bool = False
+    AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_GET: bool = False
+    AIBRIX_KV_CACHE_OL_MOCK_USE_NOOP: bool = False
 
     # RocksDB Env Vars
     AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT: str = os.path.expanduser(
@@ -268,6 +271,18 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     ),
     "AIBRIX_KV_CACHE_OL_MOCK_USE_MPUT_MGET": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_MOCK_USE_MPUT_MGET", "0").strip().lower()
+        in ("1", "true")
+    ),
+    "AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_PUT": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_PUT", "0").strip().lower()
+        in ("1", "true")
+    ),
+    "AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_GET": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_GET", "0").strip().lower()
+        in ("1", "true")
+    ),
+    "AIBRIX_KV_CACHE_OL_MOCK_USE_NOOP": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_MOCK_USE_NOOP", "0").strip().lower()
         in ("1", "true")
     ),
     # ================== RocksDB Env Vars ==================

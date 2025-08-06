@@ -14,7 +14,7 @@
 
 
 from aibrix_kvcache import TokenListView
-from aibrix_kvcache.memory import MemoryRegion, TensorPoolAllocator
+from aibrix_kvcache.memory import ManagedMemoryRegion, TensorPoolAllocator
 
 from .conftest import randomize_mrs
 
@@ -24,7 +24,7 @@ def test_pack_unpack_basic(compact_layout_enabled):
     max_ntokens = 57
     expected_mr_nbytes = block_nbytes if compact_layout_enabled else 256
     assert (
-        MemoryRegion.calculate_size(
+        ManagedMemoryRegion.calculate_size(
             block_nbytes=block_nbytes, ntokens=max_ntokens
         )
         == expected_mr_nbytes
@@ -70,7 +70,7 @@ def test_pack_unpack_max(compact_layout_enabled):
     max_ntokens = 57
     expected_mr_nbytes = block_nbytes if compact_layout_enabled else 256
     assert (
-        MemoryRegion.calculate_size(
+        ManagedMemoryRegion.calculate_size(
             block_nbytes=block_nbytes, ntokens=max_ntokens
         )
         == expected_mr_nbytes
