@@ -171,8 +171,7 @@ func (r *pdRouter) selectDecodePod(prefillPod *v1.Pod, decodePods []*v1.Pod) *v1
 		return nil
 	}
 
-	decodePods = filteredDecodePods
-	decodePod, _ := utils.SelectRandomPod(decodePods, rand.Intn)
+	decodePod, _ := utils.SelectRandomPod(filteredDecodePods, rand.Intn)
 	return decodePod
 }
 
