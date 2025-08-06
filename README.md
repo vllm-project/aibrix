@@ -9,6 +9,7 @@ Welcome to AIBrix, an open-source initiative designed to provide essential build
 
 ## Latest News
 
+- **[2025-08-05]** AIBrix v0.4.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.4.0) and [Blog Post](https://aibrix.github.io/posts/2025-08-04-v0.4.0-release/) for more details
 - **[2025-06-10]** The AIBrix team delivered a talk at KubeCon China 2025 titled [AIBrix: Cost-Effective and Scalable Kubernetes Control Plane for vLLM](https://kccncchn2025.sched.com/event/1x5im/introducing-aibrix-cost-effective-and-scalable-kubernetes-control-plane-for-vllm-jiaxin-shan-liguang-xie-bytedance), discussing how the framework optimizes vLLM deployment via Kubernetes for cost efficiency and scalability.
 - **[2025-05-21]** AIBrix v0.3.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.3.0) and [Blog Post](https://aibrix.github.io/posts/2025-05-21-v0.3.0-release/) for more details
 - **[2025-04-04]** AIBrix co-delivered a KubeCon EU 2025 keynote with Google on [LLM-Aware Load Balancing in Kubernetes: A New Era of Efficiency](https://kccnceu2025.sched.com/event/1txC7/keynote-llm-aware-load-balancing-in-kubernetes-a-new-era-of-efficiency-clayton-coleman-distinguished-engineer-google-jiaxin-shan-software-engineer-bytedance), focusing on LLM specific routing solutions.
@@ -54,10 +55,10 @@ kubectl apply -k config/default
 Install stable distribution
 ```shell
 # Install component dependencies
-kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.3.0/aibrix-dependency-v0.3.0.yaml" --server-side
+kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.4.0/aibrix-dependency-v0.4.0.yaml" --server-side
 
 # Install aibrix components
-kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.3.0/aibrix-core-v0.3.0.yaml"
+kubectl apply -f "https://github.com/vllm-project/aibrix/releases/download/v0.4.0/aibrix-core-v0.4.0.yaml"
 ```
 
 ## Documentation

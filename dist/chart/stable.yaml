@@ -4,7 +4,7 @@ controllerManager:
   container:
     image:
       repository: aibrix/controller-manager
-      tag: nightly
+      tag: v0.4.0
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -37,8 +37,8 @@ gatewayPlugin:
   container:
     image:
       repository: aibrix/gateway-plugins
-      tag: nightly
-      imagePullPolicy: IfNotPresent
+      tag: v0.4.0
+      pullPolicy: IfNotPresent
     resources:
       limits:
         cpu: 1
@@ -80,7 +80,7 @@ gpuOptimizer:
   container:
     image:
       repository: aibrix/runtime
-      tag: nightly
+      tag: v0.4.0
     resources:
       limits:
         cpu: 500m
@@ -131,8 +131,8 @@ metadata:
     container:
       image:
         repository: aibrix/metadata-service
-        tag: nightly
-        imagePullPolicy: IfNotPresent
+        tag: v0.4.0
+        pullPolicy: IfNotPresent
       resources:
         limits:
           cpu: 500m
@@ -183,10 +183,3 @@ prometheus:
 # [CERT-MANAGER]: To enable cert-manager injection to webhooks set true
 certmanager:
   enable: false
-
-
-# TODO: manage common labels
-# app.kubernetes.io/component: aibrix-controller-manager
-# app.kubernetes.io/managed-by: kubectl
-# app.kubernetes.io/name: aibrix
-# app.kubernetes.io/version: nightly
