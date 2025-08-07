@@ -1,0 +1,130 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+    model.aibrix.ai/port: "8000"
+    model.aibrix.ai/kv-events-enabled: "true"  # NEW: Enable KV events
+  name: deepseek-r1-distill-llama-8b
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+        model.aibrix.ai/kv-events-enabled: "true"  # NEW: Required for discovery
+    spec:
+      containers:
+        - name: vllm-openai
+          image: vllm/vllm-openai:v0.7.1
+          command:
+            - python3
+            - -m
+            - vllm.entrypoints.openai.api_server
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --uvicorn-log-level
+            - warning
+            - --model
+            - deepseek-ai/DeepSeek-R1-Distill-Llama-8B
+            - --served-model-name
+            - deepseek-r1-distill-llama-8b
+            - --max-model-len
+            - "12288"
+            # NEW: KV event publishing configuration
+            - --enable-kv-cache-events
+            - --kv-events-publisher
+            - zmq
+            - --kv-events-endpoint
+            - "tcp://*:5557"
+            - --kv-events-replay-endpoint
+            - "tcp://*:5558"
+            - --kv-events-buffer-steps
+            - "10000"
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+              name: api
+            # NEW: KV event ports
+            - containerPort: 5557
+              protocol: TCP
+              name: kv-events
+            - containerPort: 5558
+              protocol: TCP
+              name: kv-replay
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+          # Health checks remain the same
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 3
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 5
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 30
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+    prometheus-discovery: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+  name: deepseek-r1-distill-llama-8b
+  namespace: default
+spec:
+  ports:
+    - name: serve
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+    - name: metrics
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+    # NEW: Expose KV event ports (optional, for debugging)
+    - name: kv-events
+      port: 5557
+      protocol: TCP
+      targetPort: 5557
+    - name: kv-replay
+      port: 5558
+      protocol: TCP
+      targetPort: 5558
+  selector:
+    model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+  type: ClusterIP

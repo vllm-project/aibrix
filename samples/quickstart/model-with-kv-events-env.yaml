@@ -1,0 +1,65 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    model.aibrix.ai/name: llama-8b-instruct
+    model.aibrix.ai/kv-events-enabled: "true"
+  name: llama-8b-instruct
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: llama-8b-instruct
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: llama-8b-instruct
+        model.aibrix.ai/kv-events-enabled: "true"
+    spec:
+      containers:
+        - name: vllm-openai
+          image: vllm/vllm-openai:v0.7.1
+          command:
+            - python3
+            - -m
+            - vllm.entrypoints.openai.api_server
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --model
+            - meta-llama/Llama-3.1-8B-Instruct
+            - --served-model-name
+            - llama-8b-instruct
+          env:
+            # NEW: KV event configuration via environment
+            - name: VLLM_ENABLE_KV_CACHE_EVENTS
+              value: "true"
+            - name: VLLM_KV_EVENTS_PUBLISHER
+              value: "zmq"
+            - name: VLLM_KV_EVENTS_ENDPOINT
+              value: "tcp://*:5557"
+            - name: VLLM_KV_EVENTS_REPLAY_ENDPOINT
+              value: "tcp://*:5558"
+            - name: VLLM_KV_EVENTS_BUFFER_STEPS
+              value: "10000"
+            # Performance tuning
+            - name: VLLM_KV_EVENTS_HWM
+              value: "100000"  # ZMQ high water mark
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+              name: api
+            - containerPort: 5557
+              protocol: TCP
+              name: kv-events
+            - containerPort: 5558
+              protocol: TCP
+              name: kv-replay
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"

@@ -1,0 +1,22 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kv-events
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: gateway-plugins
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              model.aibrix.ai/kv-events-enabled: "true"
+      ports:
+        - protocol: TCP
+          port: 5557
+        - protocol: TCP
+          port: 5558
