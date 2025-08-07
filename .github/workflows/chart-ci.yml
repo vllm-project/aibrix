@@ -26,8 +26,7 @@ jobs:
         uses: helm/chart-testing-action@v2.7.0
 
       - name: Run chart-testing (lint)
-        working-directory: ./dist/chart
-        run: ct lint
+        run: helm lint ./dist/chart
       
       - name: Create kind cluster
         uses: helm/kind-action@v1.12.0
@@ -35,9 +34,26 @@ jobs:
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
 
-      - name: Install dependencies # TODO: use main dependency and not release one
+      - name: Install Envoy Gateway
         run: |
-          kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.3.0/aibrix-dependency-v0.3.0.yaml
+          helm install eg oci://docker.io/envoyproxy/gateway-helm --version v0.0.0-latest -n envoy-gateway-system --create-namespace --wait
+      
+      - name: Install Kuberay operator
+        run: |
+          helm install kuberay-operator kuberay/kuberay-operator \
+          --namespace kuberay-system  \ 
+          --version 1.2.1 \
+          --set env[0].name=ENABLE_PROBES_INJECTION \
+          --set-string env[0].value=false \
+          --set fullnameOverride=kuberay-operator \
+          --set featureGates[0].name=RayClusterStatusConditions \
+          --set featureGates[0].enabled=true \
+          --create-namespace \
+          --wait
+
+      - name: Install Aibrix CRDs
+        run: |
+          kubectl apply -f dist/chart/crds
       
       - name: Chart test
         working-directory: ./dist/chart
