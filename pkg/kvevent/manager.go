@@ -307,10 +307,10 @@ func validateConfiguration() bool {
 	}
 
 	// Check remote tokenizer
-	remoteTokenValue := utils.LoadEnv("AIBRIX_USE_REMOTE_TOKENIZER", "false")
+	remoteTokenValue := utils.LoadEnv(constants.EnvUseRemoteTokenizer, "false")
 	remoteTokenizerEnabled, err := strconv.ParseBool(remoteTokenValue)
 	if err != nil {
-		klog.Warningf("Invalid boolean value for AIBRIX_USE_REMOTE_TOKENIZER: %q. Defaulting to false.", remoteTokenValue)
+		klog.Warningf("Invalid boolean value for %s: %q. Defaulting to false.", constants.EnvUseRemoteTokenizer, remoteTokenValue)
 		remoteTokenizerEnabled = false
 	}
 

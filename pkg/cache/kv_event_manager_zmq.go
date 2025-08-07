@@ -54,26 +54,26 @@ func validateKVEventConfiguration() error {
 	}
 
 	// If enabled, check requirements
-	remoteTokenValue := utils.LoadEnv("AIBRIX_USE_REMOTE_TOKENIZER", "false")
+	remoteTokenValue := utils.LoadEnv(constants.EnvUseRemoteTokenizer, "false")
 	remoteTokenizerEnabled, err := strconv.ParseBool(remoteTokenValue)
 	if err != nil {
-		return fmt.Errorf("invalid boolean value for AIBRIX_USE_REMOTE_TOKENIZER: %q", remoteTokenValue)
+		return fmt.Errorf("invalid boolean value for %s: %q", constants.EnvUseRemoteTokenizer, remoteTokenValue)
 	}
 
 	if !remoteTokenizerEnabled {
-		return fmt.Errorf("KV event sync requires remote tokenizer (set AIBRIX_USE_REMOTE_TOKENIZER=true)")
+		return fmt.Errorf("KV event sync requires remote tokenizer (set %s=true)", constants.EnvUseRemoteTokenizer)
 	}
 
 	// Check tokenizer type
-	tokenizerType := utils.LoadEnv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "")
+	tokenizerType := utils.LoadEnv(constants.EnvPrefixCacheTokenizerType, "")
 	if tokenizerType != "remote" {
-		return fmt.Errorf("KV event sync requires AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE=remote (got %q)", tokenizerType)
+		return fmt.Errorf("KV event sync requires %s=remote (got %q)", constants.EnvPrefixCacheTokenizerType, tokenizerType)
 	}
 
 	// Check remote tokenizer endpoint
-	endpoint := utils.LoadEnv("AIBRIX_REMOTE_TOKENIZER_ENDPOINT", "")
+	endpoint := utils.LoadEnv(constants.EnvRemoteTokenizerEndpoint, "")
 	if endpoint == "" {
-		return fmt.Errorf("KV event sync requires AIBRIX_REMOTE_TOKENIZER_ENDPOINT to be set")
+		return fmt.Errorf("KV event sync requires %s to be set", constants.EnvRemoteTokenizerEndpoint)
 	}
 
 	return nil

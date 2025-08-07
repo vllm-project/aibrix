@@ -48,6 +48,18 @@ const (
 	// EnvPrefixCacheMetricsEnabled enables prefix cache metrics
 	// Added as part of KV Event Sync to control metrics registration
 	EnvPrefixCacheMetricsEnabled = "AIBRIX_PREFIX_CACHE_METRICS_ENABLED"
+
+	// EnvUseRemoteTokenizer enables remote tokenizer usage
+	// When true, uses remote tokenizer service instead of local tokenization
+	EnvUseRemoteTokenizer = "AIBRIX_USE_REMOTE_TOKENIZER"
+
+	// EnvPrefixCacheTokenizerType specifies the tokenizer type for prefix cache
+	// Options: "character", "tiktoken", "remote"
+	EnvPrefixCacheTokenizerType = "AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE"
+
+	// EnvRemoteTokenizerEndpoint specifies the remote tokenizer service endpoint
+	// Format: "http://service:port" - required when using remote tokenizer
+	EnvRemoteTokenizerEndpoint = "AIBRIX_REMOTE_TOKENIZER_ENDPOINT"
 )
 
 // Helper functions for KV Event Sync labels

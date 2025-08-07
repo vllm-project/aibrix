@@ -75,7 +75,7 @@ func TestManagerConfiguration(t *testing.T) {
 			name: "sync enabled with remote tokenizer",
 			envVars: map[string]string{
 				constants.EnvKVEventSyncEnabled:    "true",
-				"AIBRIX_USE_REMOTE_TOKENIZER":      "true",
+				constants.EnvUseRemoteTokenizer:    "true",
 			},
 			expectEnabled: true,
 		},
@@ -83,7 +83,7 @@ func TestManagerConfiguration(t *testing.T) {
 			name: "sync enabled without remote tokenizer",
 			envVars: map[string]string{
 				constants.EnvKVEventSyncEnabled:    "true",
-				"AIBRIX_USE_REMOTE_TOKENIZER":      "false",
+				constants.EnvUseRemoteTokenizer:    "false",
 			},
 			expectEnabled: false,
 		},
@@ -117,7 +117,7 @@ func TestManagerConfiguration(t *testing.T) {
 func TestManagerPodLifecycle(t *testing.T) {
 	// Enable KV sync
 	t.Setenv(constants.EnvKVEventSyncEnabled, "true")
-	t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
+	t.Setenv(constants.EnvUseRemoteTokenizer, "true")
 
 	// Track method calls
 	syncIndexer := &mockSyncIndexerWithCallbacks{}
@@ -188,7 +188,7 @@ func TestManagerPodLifecycle(t *testing.T) {
 // Test sync indexer initialization retry
 func TestManagerSyncIndexerRetry(t *testing.T) {
 	t.Setenv(constants.EnvKVEventSyncEnabled, "true")
-	t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
+	t.Setenv(constants.EnvUseRemoteTokenizer, "true")
 
 	podProvider := &mockPodProvider{pods: make(map[string]*kvevent.PodInfo)}
 
@@ -226,7 +226,7 @@ func TestManagerSyncIndexerRetry(t *testing.T) {
 func TestManagerPodSubscriptionCriteria(t *testing.T) {
 	// Enable KV sync
 	t.Setenv(constants.EnvKVEventSyncEnabled, "true") 
-	t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
+	t.Setenv(constants.EnvUseRemoteTokenizer, "true")
 
 	tests := []struct {
 		name           string
@@ -354,7 +354,7 @@ func TestManagerPodSubscriptionCriteria(t *testing.T) {
 func TestManagerConcurrentOperations(t *testing.T) {
 	// Enable KV sync
 	t.Setenv(constants.EnvKVEventSyncEnabled, "true")
-	t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
+	t.Setenv(constants.EnvUseRemoteTokenizer, "true")
 
 	podProvider := &mockPodProvider{
 		pods: make(map[string]*kvevent.PodInfo),
