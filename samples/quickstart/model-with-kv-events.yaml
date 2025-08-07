@@ -7,6 +7,8 @@ metadata:
     model.aibrix.ai/port: "8000"
     model.aibrix.ai/kv-events-enabled: "true"  # NEW: Enable KV events
   name: deepseek-r1-distill-llama-8b
+  # Note: This sample uses 'default' namespace for quickstart purposes.
+  # To deploy to a different namespace, change this value or use: kubectl apply -f <file> -n <your-namespace>
   namespace: default
 spec:
   replicas: 1
@@ -105,6 +107,8 @@ metadata:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8080"
   name: deepseek-r1-distill-llama-8b
+  # Note: This sample uses 'default' namespace for quickstart purposes.
+  # To deploy to a different namespace, change this value or use: kubectl apply -f <file> -n <your-namespace>
   namespace: default
 spec:
   ports:

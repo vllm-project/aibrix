@@ -6,6 +6,8 @@ metadata:
     model.aibrix.ai/name: llama-8b-instruct
     model.aibrix.ai/kv-events-enabled: "true"
   name: llama-8b-instruct
+  # Note: This sample uses 'default' namespace for quickstart purposes.
+  # To deploy to a different namespace, change this value or use: kubectl apply -f <file> -n <your-namespace>
   namespace: default
 spec:
   replicas: 2
@@ -63,3 +65,30 @@ spec:
               nvidia.com/gpu: "1"
             requests:
               nvidia.com/gpu: "1"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 3
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 5
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              scheme: HTTP
+            failureThreshold: 30
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 1

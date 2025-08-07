@@ -3,6 +3,8 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-kv-events
+  # Note: This sample uses 'default' namespace for quickstart purposes.
+  # To deploy to a different namespace, change this value or use: kubectl apply -f <file> -n <your-namespace>
   namespace: default
 spec:
   podSelector:
