@@ -260,7 +260,7 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
         assert self.rdma_conn is not None
         for slab in slabs:
             addr = slab.data_ptr()
-            length = slab.numel()
+            length = slab.numel() * slab.itemsize
             ret = self.rdma_conn.register_mr(addr, length)
             if ret != 0:
                 return Status(StatusCodes.INVALID)
@@ -294,7 +294,7 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
     def get_batches(
         self,
         keys: Sequence[Any],
-        mrs: Sequence[MemoryRegion],
+        mrs: Sequence[MemoryRegion],  # type: ignore
         batch_size: int,
     ) -> Sequence[Sequence[Tuple[bytes, MemoryRegion]]]:
         lists: List[List[Tuple[bytes, MemoryRegion]]] = []
