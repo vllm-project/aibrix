@@ -20,7 +20,8 @@ import aibrix.batch.storage as _storage
 
 
 def generate_input_data(num_requests):
-    input_name = "./sample_job_input.json"
+    test_dir = os.path.dirname(__file__)
+    input_name = os.path.join(test_dir, "sample_job_input.jsonl")
     data = None
     with open(input_name, "r") as file:
         for line in file.readlines():
@@ -29,7 +30,8 @@ def generate_input_data(num_requests):
 
     # In the following tests, we use this custom_id
     # to check if the read and write are exactly the same.
-    with open("one_job_input.json", "w") as file:
+    output_path = os.path.join(test_dir, "one_job_input.json")
+    with open(output_path, "w") as file:
         for i in range(num_requests):
             data["custom_id"] = i
             file.write(json.dumps(data) + "\n")
@@ -39,7 +41,9 @@ def test_submit_job_input():
     num_request = 100
     generate_input_data(num_request)
     _storage.initialize_storage()
-    job_id = _storage.submit_job_input("./one_job_input.json")
+    test_dir = os.path.dirname(__file__)
+    input_file = os.path.join(test_dir, "one_job_input.json")
+    job_id = _storage.submit_job_input(input_file)
     print("succesfully create job: ", job_id)
 
     input_num = _storage.get_job_num_request(job_id)
@@ -48,14 +52,16 @@ def test_submit_job_input():
 
     _storage.delete_job(job_id)
     print("remove job id:", job_id)
-    os.remove("./one_job_input.json")
+    os.remove(input_file)
 
 
 def test_read_job_input():
     num_request = 100
     generate_input_data(num_request)
     _storage.initialize_storage()
-    job_id = _storage.submit_job_input("./one_job_input.json")
+    test_dir = os.path.dirname(__file__)
+    input_file = os.path.join(test_dir, "one_job_input.json")
+    job_id = _storage.submit_job_input(input_file)
     print("succesfully create job: ", job_id)
 
     # First round, start with an arbitrary index.
@@ -81,14 +87,16 @@ def test_read_job_input():
 
     _storage.delete_job(job_id)
     print("remove job id:", job_id)
-    os.remove("./one_job_input.json")
+    os.remove(input_file)
 
 
 def test_job_output():
     num_request = 100
     generate_input_data(num_request)
     _storage.initialize_storage()
-    job_id = _storage.submit_job_input("./one_job_input.json")
+    test_dir = os.path.dirname(__file__)
+    input_file = os.path.join(test_dir, "one_job_input.json")
+    job_id = _storage.submit_job_input(input_file)
     print("succesfully create job: ", job_id)
 
     start_idx, num = 50, 10
@@ -103,4 +111,4 @@ def test_job_output():
 
     _storage.delete_job(job_id)
     print("remove job id:", job_id)
-    os.remove("./one_job_input.json")
+    os.remove(input_file)
