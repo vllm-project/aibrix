@@ -40,8 +40,9 @@ jobs:
       
       - name: Install Kuberay operator
         run: |
+          helm repo add kuberay https://ray-project.github.io/kuberay-helm/
           helm install kuberay-operator kuberay/kuberay-operator \
-          --namespace kuberay-system  \ 
+          --namespace kuberay-system  \
           --version 1.2.1 \
           --set env[0].name=ENABLE_PROBES_INJECTION \
           --set-string env[0].value=false \
