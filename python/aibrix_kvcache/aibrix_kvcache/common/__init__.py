@@ -15,5 +15,6 @@
 from .async_base import AsyncBase
 from .cached_pyobject import CachedPyObjectBase
 from .object_pool import ObjectPool
+from .threading import ConditionalLock
 
-__all__ = ["AsyncBase", "ObjectPool", "CachedPyObjectBase"]
+__all__ = ["AsyncBase", "ObjectPool", "CachedPyObjectBase", "ConditionalLock"]
