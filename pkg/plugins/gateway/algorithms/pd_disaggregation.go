@@ -43,6 +43,7 @@ const (
 	SGLangBootstrapPort           int64                  = 8998
 	SGLangBootstrapPortIdentifier string                 = "model.aibrix.ai/sglang-bootstrap-port"
 	LLMEngineIdentifier           string                 = constants.ModelLabelEngine
+	PDRoleSetIdentifier           string                 = "roleset-name"
 	PDRoleIdentifier              string                 = "role-name"
 	RoleReplicaIndex              string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	PodGroupIndex                 string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
@@ -90,12 +91,18 @@ func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (
 		return "", err
 	}
 
-	if err = r.doPrefillRequest(ctx, prefillPods, getLLMEngine(prefillPods[0], LLMEngineIdentifier, VLLMEngine)); err != nil {
+	prefillPod, err := r.doPrefillRequest(ctx, prefillPods, getLLMEngine(prefillPods[0], LLMEngineIdentifier, VLLMEngine))
+	if err != nil {
 		klog.ErrorS(err, "prefill request failed", "request_id", ctx.RequestID)
 		return "", err
 	}
 
-	decodePod := r.selectDecodePod(decodePods)
+	decodePod := r.selectDecodePod(prefillPod, decodePods)
+	if decodePod == nil {
+		return "", fmt.Errorf("decode pod not found")
+	}
+
+	klog.InfoS("P/D", "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)
 
 	ctx.SetTargetPod(decodePod)
 	return ctx.TargetAddress(), nil
@@ -148,15 +155,30 @@ func (r *pdRouter) evaluatePrefixCache(ctx *types.RoutingContext, prefillPods []
 	return prefillPod, prefixHashes, err
 }
 
-func (r *pdRouter) selectDecodePod(decodePods []*v1.Pod) *v1.Pod {
-	decodePod, _ := utils.SelectRandomPod(decodePods, rand.Intn)
+func (r *pdRouter) selectDecodePod(prefillPod *v1.Pod, decodePods []*v1.Pod) *v1.Pod {
+	prefillRoleSet, ok := prefillPod.Labels[PDRoleSetIdentifier]
+	if !ok {
+		return nil
+	}
+
+	filteredDecodePods := []*v1.Pod{}
+	for _, pod := range decodePods {
+		if podRoleSet, exists := pod.Labels[PDRoleSetIdentifier]; exists && podRoleSet == prefillRoleSet {
+			filteredDecodePods = append(filteredDecodePods, pod)
+		}
+	}
+	if len(filteredDecodePods) == 0 {
+		return nil
+	}
+
+	decodePod, _ := utils.SelectRandomPod(filteredDecodePods, rand.Intn)
 	return decodePod
 }
 
-func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, llmEngine string) error {
+func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, llmEngine string) (*v1.Pod, error) {
 	prefillPod, prefixHashes, err := r.evaluatePrefixCache(routingCtx, prefillPods)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() {
 		if len(prefixHashes) > 0 {
@@ -167,7 +189,7 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 	// Prepare prefill request payload
 	payload, err := r.preparePrefillPayload(routingCtx, prefillPod, llmEngine)
 	if err != nil {
-		return fmt.Errorf("failed to prepare prefill payload: %w", err)
+		return nil, fmt.Errorf("failed to prepare prefill payload: %w", err)
 	}
 
 	// Execute HTTP request
@@ -191,12 +213,12 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		}()
 	} else {
 		if err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
-			return fmt.Errorf("failed to execute prefill request: %w", err)
+			return nil, fmt.Errorf("failed to execute prefill request: %w", err)
 		}
-		klog.InfoS("prefill_request_complete", "request_id", routingCtx.RequestID)
+		klog.InfoS("prefill_request_complete", "request_id", routingCtx.RequestID, "prefill_pod_ip", prefillPod.Status.PodIP)
 	}
 
-	return nil
+	return prefillPod, nil
 }
 
 func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *v1.Pod, llmEngine string) ([]byte, error) {
