@@ -23,7 +23,10 @@ class KVCacheConfig:
 
     Args:
         block_spec: The specification of the kv cache block.
+        model_spec: The specification of the model.
+        multi_threaded: Whether to use multi-threaded kv cache.
     """
 
     block_spec: KVCacheBlockSpec
     model_spec: ModelSpec
+    multi_threaded: bool = False
