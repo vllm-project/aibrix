@@ -205,14 +205,26 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 
 	if llmEngine == SGLangEngine {
 		go func() {
-			if err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
+			if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
 				klog.ErrorS(err, "prefill request for sglang failed", "request_id", routingCtx.RequestID)
 				return
 			}
 			klog.InfoS("prefill_request_complete", "request_id", routingCtx.RequestID)
 		}()
+	} else if llmEngine == VLLMEngine {
+		responseData, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to execute prefill request: %w", err)
+		}
+
+		// Update routing context with KV transfer params from prefill response for vLLM
+		if err := r.updateRoutingContextWithKVTransferParams(routingCtx, responseData, prefillPod); err != nil {
+			return nil, fmt.Errorf("failed to update routing context with KV transfer params: %w", err)
+		}
+
+		klog.InfoS("prefill_request_complete", "request_id", routingCtx.RequestID, "prefill_pod_ip", prefillPod.Status.PodIP)
 	} else {
-		if err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
+		if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
 			return nil, fmt.Errorf("failed to execute prefill request: %w", err)
 		}
 		klog.InfoS("prefill_request_complete", "request_id", routingCtx.RequestID, "prefill_pod_ip", prefillPod.Status.PodIP)
@@ -243,6 +255,18 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 		routingCtx.ReqBody = bodyCopy
 	}
 
+	// Add nixl-specific kv_transfer_params for vLLM prefill requests only
+	if llmEngine == VLLMEngine {
+		completionRequest["kv_transfer_params"] = map[string]any{
+			"do_remote_decode":  true,
+			"do_remote_prefill": false,
+			"remote_engine_id":  nil,
+			"remote_block_ids":  nil,
+			"remote_host":       nil,
+			"remote_port":       nil,
+		}
+	}
+
 	// Set prefill-specific parameters
 	completionRequest["max_tokens"] = 1
 	completionRequest["max_completion_tokens"] = 1
@@ -252,11 +276,11 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 	return json.Marshal(completionRequest)
 }
 
-func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingContext, payload []byte) error {
+func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingContext, payload []byte) (map[string]any, error) {
 	// Create request with context
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payload))
 	if err != nil {
-		return fmt.Errorf("failed to create http prefill request: %w", err)
+		return nil, fmt.Errorf("failed to create http prefill request: %w", err)
 	}
 
 	// Set headers
@@ -265,23 +289,70 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 	}
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("content-length", strconv.Itoa(len(payload)))
+	req.Header.Set("X-Request-Id", routingCtx.RequestID)
 
 	// Execute with timeout
 	client := &http.Client{Timeout: time.Duration(prefillRequestTimeout) * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to execute http prefill request: %w", err)
+		return nil, fmt.Errorf("failed to execute http prefill request: %w", err)
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
 
-	// Check response status
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read prefill response body: %w", err)
 	}
 
+	// Check response status
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("http prefill request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse response JSON
+	var responseData map[string]any
+	if err := json.Unmarshal(body, &responseData); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal prefill response: %w", err)
+	}
+
+	return responseData, nil
+}
+
+func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.RoutingContext, responseData map[string]any, prefillPod *v1.Pod) error {
+	// Extract kv_transfer_params from prefill response
+	kvTransferParams, exists := responseData["kv_transfer_params"]
+	if !exists {
+		klog.InfoS("no kv_transfer_params in prefill response", "request_id", routingCtx.RequestID)
+		return nil
+	}
+
+	// Parse the original request body
+	var originalRequest map[string]any
+	if err := json.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
+		return fmt.Errorf("failed to unmarshal original request body: %w", err)
+	}
+
+	// Update request body with KV transfer params from prefill response
+	originalRequest["kv_transfer_params"] = kvTransferParams
+
+	// Add prefill host information following the Python pattern
+	if kvTransferParamsMap, ok := kvTransferParams.(map[string]any); ok {
+		kvTransferParamsMap["remote_host"] = prefillPod.Status.PodIP
+	}
+
+	// Marshal the updated request body
+	updatedReqBody, err := json.Marshal(originalRequest)
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated request body: %w", err)
+	}
+
+	// Update routing context with new request body
+	routingCtx.ReqBody = updatedReqBody
+
+	klog.InfoS("updated routing context with kv_transfer_params", "request_id", routingCtx.RequestID, "prefill_host", prefillPod.Status.PodIP)
 	return nil
 }
 
