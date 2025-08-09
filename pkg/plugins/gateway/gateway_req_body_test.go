@@ -230,11 +230,17 @@ func Test_handleRequestBody(t *testing.T) {
 							RawValue: []byte("74"),
 						},
 					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:      "X-Request-Id",
+							RawValue: []byte("test-request-id"),
+						},
+					},
 				},
 				model:      "test-model",
 				stream:     false,
 				term:       1,
-				routingCtx: &types.RoutingContext{},
+				routingCtx: &types.RoutingContext{RequestID: "test-request-id"},
 			},
 			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
 				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
