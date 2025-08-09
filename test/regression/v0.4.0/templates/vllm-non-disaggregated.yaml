@@ -1,0 +1,83 @@
+{{- if and (eq .Values.engine.type "vllm") (eq .Values.deployment.type "non-disaggregated") }}
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: {{ include "aibrix-model.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "aibrix-model.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.deployment.stormReplicas }}
+  updateStrategy:
+    type: InPlaceUpdate
+  stateful: true
+  selector:
+    matchLabels:
+      {{- include "aibrix-model.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "aibrix-model.selectorLabels" . | nindent 8 }}
+    spec:
+      roles:
+        - name: server
+          replicas: {{ .Values.deployment.replicas }}
+          stateful: false
+          template:
+            spec:
+              containers:
+                - name: vllm-server
+                  image: {{ include "aibrix-model.engineImage" . }}
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      python3 -m vllm.entrypoints.openai.api_server \
+                        --host "0.0.0.0" \
+                        --port "{{ .Values.serverPort }}" \
+                        --uvicorn-log-level warning \
+                        --model {{ .Values.model.path }} \
+                        --served-model-name {{ .Values.model.name }} \
+                        --trust-remote-code
+                  env:
+                    {{- include "aibrix-model.envVars" . | nindent 20 }}
+                    - name: VLLM_SERVER_DEV_MODE
+                      value: "1"
+                    - name: VLLM_USE_V1
+                      value: "1"
+                    - name: VLLM_ENABLE_V1_MULTIPROCESSING
+                      value: "1"
+                    - name: VLLM_WORKER_MULTIPROC_METHOD
+                      value: "spawn"
+                    - name: VLLM_LOGGING_LEVEL
+                      value: "DEBUG"
+                  resources:
+                    {{- include "aibrix-model.resources" . | nindent 20 }}
+                  volumeMounts:
+                    - name: model-vol
+                      mountPath: /models
+                      readOnly: true
+                    {{- if .Values.resources.memory.sharedMemory }}
+                    - mountPath: /dev/shm
+                      name: shared-mem
+                    {{- end }}
+                  securityContext:
+                    {{- if .Values.security.privileged }}
+                    privileged: true
+                    {{- else }}
+                    capabilities:
+                      add:
+                        {{- range .Values.security.capabilities }}
+                        - {{ . }}
+                        {{- end }}
+                    {{- end }}
+              volumes:
+                - name: model-vol
+                  hostPath:
+                    path: {{ .Values.volumes.models.hostPath }}
+                    type: Directory
+                {{- if .Values.resources.memory.sharedMemory }}
+                - emptyDir:
+                    medium: Memory
+                  name: shared-mem
+                {{- end }}
+{{- end }}
