@@ -18,16 +18,20 @@ package routingalgorithms
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
+	"math"
+	rand_math "math/rand"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -62,6 +66,8 @@ type pdRouter struct {
 	cache              cache.Cache
 	tokenizer          tokenizer.Tokenizer
 	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
+	rng                *rand_math.Rand
+	rngMu              sync.Mutex
 }
 
 func NewPDRouter() (types.Router, error) {
@@ -78,14 +84,34 @@ func NewPDRouter() (types.Router, error) {
 		return nil, err
 	}
 
-	return pdRouter{
+	// Create cryptographically secure seed
+	seedBytes := make([]byte, 8)
+	if _, err := rand.Read(seedBytes); err != nil {
+		// Fallback to time-based seed if crypto/rand fails
+		seed := time.Now().UnixNano()
+		return &pdRouter{
+			cache:              c,
+			tokenizer:          tokenizerObj,
+			prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+			rng:                rand_math.New(rand_math.NewSource(seed)),
+		}, nil
+	}
+
+	// Convert bytes to int64 seed
+	seed := int64(0)
+	for i, b := range seedBytes {
+		seed |= int64(b) << (8 * uint(i))
+	}
+
+	return &pdRouter{
 		cache:              c,
 		tokenizer:          tokenizerObj,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+		rng:                rand_math.New(rand_math.NewSource(seed)),
 	}, nil
 }
 
-func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+func (r *pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	prefillPods, decodePods, err := r.filterPrefillDecodePods(readyPodList.All())
 	if err != nil {
 		return "", err
@@ -97,7 +123,7 @@ func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (
 		return "", err
 	}
 
-	decodePod := r.selectDecodePod(prefillPod, decodePods)
+	decodePod := r.selectDecodePod(prefillPod, decodePods, ctx)
 	if decodePod == nil {
 		return "", fmt.Errorf("decode pod not found")
 	}
@@ -149,13 +175,13 @@ func (r *pdRouter) evaluatePrefixCache(ctx *types.RoutingContext, prefillPods []
 		prefillPod = getTargetPodFromMatchedPods(r.cache, prefillPods, matchedPods)
 	}
 	if prefillPod == nil {
-		prefillPod, err = utils.SelectRandomPod(prefillPods, rand.Intn)
+		prefillPod = r.selectPrefillPodWithP2C(prefillPods, ctx)
 	}
 
 	return prefillPod, prefixHashes, err
 }
 
-func (r *pdRouter) selectDecodePod(prefillPod *v1.Pod, decodePods []*v1.Pod) *v1.Pod {
+func (r *pdRouter) selectDecodePod(prefillPod *v1.Pod, decodePods []*v1.Pod, ctx *types.RoutingContext) *v1.Pod {
 	prefillRoleSet, ok := prefillPod.Labels[PDRoleSetIdentifier]
 	if !ok {
 		return nil
@@ -171,8 +197,7 @@ func (r *pdRouter) selectDecodePod(prefillPod *v1.Pod, decodePods []*v1.Pod) *v1
 		return nil
 	}
 
-	decodePod, _ := utils.SelectRandomPod(filteredDecodePods, rand.Intn)
-	return decodePod
+	return r.selectDecodePodWithP2C(filteredDecodePods, ctx)
 }
 
 func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, llmEngine string) (*v1.Pod, error) {
@@ -243,7 +268,10 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 	if llmEngine == SGLangEngine {
 		completionRequest["bootstrap_host"] = pod.Status.PodIP
 		completionRequest["bootstrap_port"] = getSGLangBootstrapPort(pod)
-		completionRequest["bootstrap_room"] = rand.Int63n(1<<63 - 1)
+		r.rngMu.Lock()
+		bootstrapRoom := r.rng.Int63n(1<<63 - 1)
+		r.rngMu.Unlock()
+		completionRequest["bootstrap_room"] = bootstrapRoom
 
 		// Create a copy of the request body
 		reqBody, err := json.Marshal(completionRequest)
@@ -356,8 +384,138 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 	return nil
 }
 
+func (r *pdRouter) safeIntn(n int) int {
+	r.rngMu.Lock()
+	defer r.rngMu.Unlock()
+	return r.rng.Intn(n)
+}
+
+func (r *pdRouter) selectPrefillPodWithP2C(pods []*v1.Pod, ctx *types.RoutingContext) *v1.Pod {
+	if len(pods) == 0 {
+		return nil
+	}
+	if len(pods) == 1 {
+		return pods[0]
+	}
+	if len(pods) == 2 {
+		return r.chooseBetterPrefillPod(pods[0], pods[1], ctx)
+	}
+
+	idx1 := r.safeIntn(len(pods))
+	idx2 := r.safeIntn(len(pods))
+	for idx2 == idx1 {
+		idx2 = r.safeIntn(len(pods))
+	}
+
+	return r.chooseBetterPrefillPod(pods[idx1], pods[idx2], ctx)
+}
+
+func (r *pdRouter) chooseBetterPrefillPod(pod1, pod2 *v1.Pod, ctx *types.RoutingContext) *v1.Pod {
+	score1 := r.calculatePrefillScore(pod1, ctx)
+	score2 := r.calculatePrefillScore(pod2, ctx)
+
+	// Fix bias: if scores are equal, randomly choose instead of always picking pod1
+	if score1 == score2 {
+		if r.safeIntn(2) == 0 {
+			return pod1
+		}
+		return pod2
+	}
+
+	if score1 < score2 {
+		return pod1
+	}
+	return pod2
+}
+
+func (r *pdRouter) calculatePrefillScore(pod *v1.Pod, ctx *types.RoutingContext) float64 {
+	runningReqs, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.NumRequestsRunning)
+	if err != nil {
+		runningReqs = &metrics.SimpleMetricValue{Value: 0}
+	}
+
+	waitingReqs, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.NumRequestsWaiting)
+	if err != nil {
+		waitingReqs = &metrics.SimpleMetricValue{Value: 0}
+	}
+
+	promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgPromptThroughputToksPerS)
+	if err != nil {
+		promptThroughput = &metrics.SimpleMetricValue{Value: 1}
+	}
+
+	// Normalize by throughput capacity to get load score
+	throughputValue := math.Max(promptThroughput.GetSimpleValue(), 1)
+	loadScore := (runningReqs.GetSimpleValue() + waitingReqs.GetSimpleValue()) / throughputValue
+
+	return loadScore
+}
+
+func (r *pdRouter) selectDecodePodWithP2C(pods []*v1.Pod, ctx *types.RoutingContext) *v1.Pod {
+	if len(pods) == 0 {
+		return nil
+	}
+	if len(pods) == 1 {
+		return pods[0]
+	}
+	if len(pods) == 2 {
+		return r.chooseBetterDecodePod(pods[0], pods[1], ctx)
+	}
+
+	idx1 := r.safeIntn(len(pods))
+	idx2 := r.safeIntn(len(pods))
+	for idx2 == idx1 {
+		idx2 = r.safeIntn(len(pods))
+	}
+
+	return r.chooseBetterDecodePod(pods[idx1], pods[idx2], ctx)
+}
+
+func (r *pdRouter) chooseBetterDecodePod(pod1, pod2 *v1.Pod, ctx *types.RoutingContext) *v1.Pod {
+	score1 := r.calculateDecodeScore(pod1, ctx)
+	score2 := r.calculateDecodeScore(pod2, ctx)
+
+	// Fix bias: if scores are equal, randomly choose instead of always picking pod1
+	if score1 == score2 {
+		if r.safeIntn(2) == 0 {
+			return pod1
+		}
+		return pod2
+	}
+
+	if score1 < score2 {
+		return pod1
+	}
+	return pod2
+}
+
+func (r *pdRouter) calculateDecodeScore(pod *v1.Pod, ctx *types.RoutingContext) float64 {
+	m, err := r.cache.GetMetricValueByPodModel(
+		pod.Name, pod.Namespace, ctx.Model, metrics.GPUCacheUsagePerc,
+	)
+	if err != nil || m == nil {
+		return 1.0
+	}
+	score := m.GetSimpleValue()
+	if score > 1.0 {
+		score = score / 100.0
+	}
+	if score < 0 {
+		score = 0
+	} else if score > 1 {
+		score = 1
+	}
+	return score
+}
+
 func (r *pdRouter) SubscribedMetrics() []string {
-	return []string{}
+	return []string{
+		metrics.NumRequestsRunning,
+		metrics.NumRequestsWaiting,
+		metrics.AvgGenerationThroughputToksPerS,
+		metrics.GPUCacheUsagePerc,
+		metrics.AvgPromptThroughputToksPerS,
+	}
 }
 
 func getLLMEngine(pod *v1.Pod, labelName string, defaultValue string) string {

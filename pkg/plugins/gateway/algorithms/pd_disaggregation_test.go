@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -174,6 +175,7 @@ func TestDoPrefillRequest(t *testing.T) {
 			prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 			cache:              cache.NewWithPodsForTest(pods, "m1"),
 			tokenizer:          tokenizerObj,
+			rng:                rand.New(rand.NewSource(42)), // Fixed seed for tests
 		}
 	}
 
@@ -263,7 +265,10 @@ func TestPreparePrefillPayload(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			router := &pdRouter{}
+			seed := time.Now().UnixNano()
+			router := &pdRouter{
+				rng: rand.New(rand.NewSource(seed)),
+			}
 			pod := &v1.Pod{
 				Status: v1.PodStatus{PodIP: "127.0.0.1"},
 			}
