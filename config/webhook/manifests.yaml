@@ -44,6 +44,26 @@ webhooks:
     resources:
     - modeladapters
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-orchestration-aibrix-ai-v1alpha1-stormservice
+  failurePolicy: Fail
+  name: mstormservice.kb.io
+  rules:
+  - apiGroups:
+    - orchestration.aibrix.ai
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - stormservices
+  sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
@@ -89,4 +109,24 @@ webhooks:
     - UPDATE
     resources:
     - modeladapters
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-orchestration-aibrix-ai-v1alpha1-stormservice
+  failurePolicy: Fail
+  name: vstormservice.kb.io
+  rules:
+  - apiGroups:
+    - orchestration.aibrix.ai
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - stormservices
   sideEffects: None
