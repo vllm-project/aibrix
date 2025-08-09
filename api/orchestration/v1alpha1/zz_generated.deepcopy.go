@@ -671,6 +671,11 @@ func (in *RoleSpec) DeepCopyInto(out *RoleSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.UpgradeOrder != nil {
+		in, out := &in.UpgradeOrder, &out.UpgradeOrder
+		*out = new(int32)
+		**out = **in
+	}
 	if in.PodGroupSize != nil {
 		in, out := &in.PodGroupSize, &out.PodGroupSize
 		*out = new(int32)
