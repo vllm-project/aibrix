@@ -50,9 +50,12 @@ func (m *RollingManagerSequential) Next(ctx context.Context, roleSet *orchestrat
 		klog.Infof("[RollingManagerSequential.Next] waiting for roleset %s/%s to be scaled", roleSet.Namespace, roleSet.Name)
 		return nil
 	}
-	// 2. do the rollout process for each role
-	// TODO: in future, consider the rollout sequence based on the role's priority
-	for _, role := range roleSet.Spec.Roles {
+
+	// 2. Sort roles by upgrade order
+	sortedRoles := sortRolesByUpgradeOrder(roleSet.Spec.Roles)
+
+	// 3. do the rollout process for each role by order
+	for _, role := range sortedRoles {
 		klog.Infof("[RollingManagerSequential.Next] start to rollout roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
 		err := GetRoleSyncer(m.cli, &role).Rollout(ctx, roleSet, &role)
 		if err != nil {

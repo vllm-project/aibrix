@@ -377,3 +377,20 @@ func deletePodsInBatch(ctx context.Context, cli client.Client, podsToDelete []*v
 		return cli.Delete(ctx, podsToDelete[index])
 	})
 }
+
+func sortRolesByUpgradeOrder(roles []orchestrationv1alpha1.RoleSpec) []orchestrationv1alpha1.RoleSpec {
+	sortedRoles := make([]orchestrationv1alpha1.RoleSpec, len(roles))
+	copy(sortedRoles, roles)
+	sort.Slice(sortedRoles, func(i, j int) bool {
+		orderI := int32(0)
+		if sortedRoles[i].UpgradeOrder != nil {
+			orderI = *sortedRoles[i].UpgradeOrder
+		}
+		orderJ := int32(0)
+		if sortedRoles[j].UpgradeOrder != nil {
+			orderJ = *sortedRoles[j].UpgradeOrder
+		}
+		return orderI < orderJ
+	})
+	return sortedRoles
+}
