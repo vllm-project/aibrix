@@ -381,7 +381,7 @@ func deletePodsInBatch(ctx context.Context, cli client.Client, podsToDelete []*v
 func sortRolesByUpgradeOrder(roles []orchestrationv1alpha1.RoleSpec) []orchestrationv1alpha1.RoleSpec {
 	sortedRoles := make([]orchestrationv1alpha1.RoleSpec, len(roles))
 	copy(sortedRoles, roles)
-	sort.Slice(sortedRoles, func(i, j int) bool {
+	sort.SliceStable(sortedRoles, func(i, j int) bool {
 		orderI := int32(0)
 		if sortedRoles[i].UpgradeOrder != nil {
 			orderI = *sortedRoles[i].UpgradeOrder
