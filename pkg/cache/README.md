@@ -94,7 +94,7 @@ Kubernetes informers for watching:
 
 **Performance:**
 - `AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS`: Metric refresh interval
-- `AIBRIX_Model_GPU_PROFILE_CACHING_FLAG`: Enable GPU profile caching
+- `AIBRIX_MODEL_GPU_PROFILE_CACHING_FLAG`: Enable GPU profile caching
 
 ## Usage Example
 
