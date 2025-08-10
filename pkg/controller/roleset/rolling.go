@@ -52,7 +52,12 @@ func (m *RollingManagerSequential) Next(ctx context.Context, roleSet *orchestrat
 	}
 
 	// 2. Sort roles by upgrade order
+	klog.Infof("[RollingManagerSequential.Next] sorting roleset roles by UpgradeOrder")
 	sortedRoles := sortRolesByUpgradeOrder(roleSet.Spec.Roles)
+	klog.Infof("[RollingManagerSequential.Next] Upgrade sequence for roleset %s/%s:", roleSet.Namespace, roleSet.Name)
+	for i, role := range sortedRoles {
+		klog.Infof("[RollingManagerSequential.Next]   [%d] Role: %s (UpgradeOrder: %d)", i+1, role.Name, *role.UpgradeOrder)
+	}
 
 	// 3. do the rollout process for each role by order
 	for _, role := range sortedRoles {
