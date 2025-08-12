@@ -23,12 +23,10 @@ import (
 )
 
 // Decision is the output from the scheduler,
-// containing the job to be processed and the affinity hint.
-// It empowers the router to make the final routing choice.
+// containing the job to be processed.
 type Decision struct {
 	Job *SchedulingJob // The job to be processed.
 	Err error          // Any error encountered during scheduling.
-	// PodAffinity string         // The scheduler provides the affinity hint.
 }
 
 // Scheduler defines the interface for a session-aware request scheduler.
@@ -42,9 +40,6 @@ type Scheduler interface {
 
 	// FinalizeJob updates the session state after a job has been completed.
 	FinalizeJob(sessionID string, inheritedCST, executionTime, waitTime time.Duration)
-
-	// Allows the gateway to inform the scheduler about the final routing choice.
-	UpdateAffinity(sessionID, podName string)
 
 	// Stop gracefully shuts down the scheduler's background processing loop.
 	Stop()
