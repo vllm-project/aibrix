@@ -41,10 +41,10 @@ gatewayPlugin:
       imagePullPolicy: IfNotPresent
     resources:
       limits:
-        cpu: 1
+        cpu: "1"
         memory: 1Gi
       requests:
-        cpu: 1
+        cpu: "1"
         memory: 1Gi
     probes:
       liveness:
@@ -91,6 +91,7 @@ gpuOptimizer:
   dependencies:
     redis:
       host: aibrix-redis-master
+      port: 6379
 
 
 gateway:
@@ -101,10 +102,10 @@ gateway:
         image: envoyproxy/envoy:v1.33.2
         resources:
           requests:
-            cpu: 1
+            cpu: "1"
             memory: 1Gi
           limits:
-            cpu: 1
+            cpu: "1"
             memory: 1Gi
       shutdownManager:
         image: envoyproxy/gateway:v1.2.8
@@ -149,7 +150,7 @@ metadata:
     container:
       image:
         repository: redis
-        tag: 7.4
+        tag: "7.4"
       resources:
         requests:
           cpu: 100m

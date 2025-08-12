@@ -23,13 +23,10 @@ import torch
 from sortedcontainers import SortedDict, SortedList
 from tqdm.auto import tqdm
 
-from .. import envs
 from ..cache_hashable import TokenListView
 from ..status import Status, StatusCodes
 from ..utils import round_up
-from .ref_counted_obj import RefCountedObj
-
-MR_USE_COMPACT_LAYOUT = not envs.AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED
+from .memory_region import MemoryRegion
 
 
 @dataclass
@@ -101,7 +98,7 @@ class MemoryRegionFooter:
         return np.dtype(np.int32).itemsize * 2
 
 
-class MemoryRegion(RefCountedObj):
+class ManagedMemoryRegion(MemoryRegion):
     """A memory region representation used by Allocator.
     Layout: [cache block, magic, footer, tokens]
     """
@@ -115,14 +112,9 @@ class MemoryRegion(RefCountedObj):
         addr: int,
         len: int,
     ) -> None:
-        super().__init__()
+        super().__init__(slab=slab, addr=addr, len=len)
         assert allocator is not None
         self.allocator = allocator
-        self.slab = slab
-        self.addr = addr
-        self.length = len
-        self.capacity = len
-        self._cached_tensor_view: torch.Tensor | None = None
         self._init_meta()
 
     def _init_meta(self) -> None:
@@ -131,23 +123,11 @@ class MemoryRegion(RefCountedObj):
         self._prefix: TokenListView | None = None
         self._tokens: TokenListView | None = None
 
-    def __len__(self) -> int:
-        return self.length
-
     def __repr__(self) -> str:
         return (
-            f"MemoryRegion(addr={self.slab.data_ptr() + self.addr}, "
+            f"ManagedMemoryRegion(addr={self.slab.data_ptr() + self.addr}, "
             f"length={self.length}, capacity={self.capacity}, "
             f"ref={self.ref_count}, sealed={self._is_sealed})"
-        )
-
-    def __str__(self) -> str:
-        return self.__repr__()
-
-    def __memoryview__(self) -> memoryview:
-        """Memoryview protocol support"""
-        return memoryview(
-            self.slab[self.addr : self.addr + self.length].numpy().data  # type: ignore
         )
 
     @property
@@ -171,13 +151,13 @@ class MemoryRegion(RefCountedObj):
         if self._is_sealed:
             return
 
-        if not MR_USE_COMPACT_LAYOUT:
+        if not MemoryRegion.use_compact_layout():
             bytes_per_int = np.dtype(np.int32).itemsize
             start = self.addr + self.block_nbytes
             stop = start + bytes_per_int
             magic = self.slab[start:stop].view(torch.int32).numpy()[0]
 
-            assert magic == MemoryRegion.MAGIC, (
+            assert magic == ManagedMemoryRegion.MAGIC, (
                 "Magic mismatch, MUST pack tokens before sealing."
             )
 
@@ -196,69 +176,9 @@ class MemoryRegion(RefCountedObj):
 
         self._is_sealed = True
 
-    def fill(self, data: bytes) -> None:
-        assert len(data) == self.length
-        self.slab[self.addr : self.addr + len(data)].copy_(
-            torch.frombuffer(data, dtype=torch.uint8)
-        )
-
-    def tobytes(self) -> bytes:
-        tensor = self.slab[self.addr : self.addr + self.length]
-        if tensor.is_cuda:
-            tensor = tensor.cpu()
-        return tensor.numpy().tobytes()
-
-    def data_ptr(self) -> int:
-        return self.slab.data_ptr() + self.addr
-
     def destroy_unsafe(self):
         self._init_meta()
         self.allocator._finalize_mr(self)
-
-    def to_tensor(
-        self,
-        mr_dtype: torch.dtype | None = None,
-        mr_shape: Tuple[int, ...] | None = None,
-    ) -> torch.Tensor:
-        """Convert MR to tensor"""
-        # We use a cached view to reduce the overhead of tensor slicing and
-        # view()
-        if (
-            self._cached_tensor_view is not None
-            and mr_dtype is not None
-            and self._cached_tensor_view.dtype != mr_dtype
-        ):
-            self._cached_tensor_view = None
-        if (
-            self._cached_tensor_view is not None
-            and mr_shape is not None
-            and self._cached_tensor_view.shape != mr_shape
-        ):
-            self._cached_tensor_view = None
-        if self._cached_tensor_view is not None:
-            return self._cached_tensor_view
-
-        ret = self.slab[self.addr : self.addr + self.block_nbytes]
-        if mr_dtype is not None:
-            ret = ret.view(mr_dtype)
-        if mr_shape is not None:
-            ret = ret.view(*mr_shape)
-        self._cached_tensor_view = ret
-        return ret
-
-    @staticmethod
-    def to_tensors(
-        mrs: Sequence["MemoryRegion"],
-        mr_dtype: torch.dtype | None = None,
-        mr_shape: Tuple[int, ...] | None = None,
-    ) -> Sequence[torch.Tensor]:
-        """Convert MRs to tensors. Contiguous MRs are supposed to form
-        a single tensor.
-        """
-        if mrs is None or len(mrs) == 0:
-            return []
-
-        return [mr.to_tensor(mr_dtype, mr_shape) for mr in mrs]
 
     def pack_tokens(
         self,
@@ -274,7 +194,7 @@ class MemoryRegion(RefCountedObj):
         ntokens = len(tokens)
         assert ntokens > 0, "tokens must not be empty"
 
-        if MR_USE_COMPACT_LAYOUT:
+        if MemoryRegion.use_compact_layout():
             self._prefix = prefix
             self._tokens = tokens
             return
@@ -296,7 +216,7 @@ class MemoryRegion(RefCountedObj):
         stop = start + bytes_per_token
         self.slab[start:stop].copy_(
             torch.from_numpy(
-                np.array([MemoryRegion.MAGIC], dtype=np.int32)
+                np.array([ManagedMemoryRegion.MAGIC], dtype=np.int32)
             ).view(torch.uint8)
         )
         # Write footer
@@ -325,7 +245,7 @@ class MemoryRegion(RefCountedObj):
         Returns:
             The prefix and tokens.
         """
-        if self._tokens is not None or MR_USE_COMPACT_LAYOUT:
+        if self._tokens is not None or MemoryRegion.use_compact_layout():
             return self._prefix, self._tokens
 
         bytes_per_token = np.dtype(np.int32).itemsize
@@ -333,7 +253,7 @@ class MemoryRegion(RefCountedObj):
         stop = start + bytes_per_token
         magic = self.slab[start:stop].view(torch.int32).numpy()[0]
 
-        if magic != MemoryRegion.MAGIC:
+        if magic != ManagedMemoryRegion.MAGIC:
             # corrupted mr or current mr is not packed with tokens
             return None, None
 
@@ -364,10 +284,6 @@ class MemoryRegion(RefCountedObj):
         return self._prefix, self._tokens
 
     @staticmethod
-    def use_compact_layout() -> bool:
-        return MR_USE_COMPACT_LAYOUT
-
-    @staticmethod
     def calculate_size(block_nbytes: int, ntokens: int) -> int:
         """Calculate the size of the MR.
         Args:
@@ -376,7 +292,7 @@ class MemoryRegion(RefCountedObj):
         Returns:
             The size of the MR in bytes.
         """
-        if MR_USE_COMPACT_LAYOUT:
+        if MemoryRegion.use_compact_layout():
             return block_nbytes
         else:
             # Layout: [cache block, magic, footer, tokens]
@@ -433,7 +349,7 @@ class TensorPoolAllocator(ABC):
         Returns:
             The tensor pool allocator.
         """
-        if MR_USE_COMPACT_LAYOUT:
+        if MemoryRegion.use_compact_layout():
             return ObjectPoolAllocator(
                 capacity_nbytes=capacity_nbytes,
                 device=device,
@@ -479,7 +395,7 @@ class TensorPoolAllocator(ABC):
 
     def alloc(
         self, sizes: int | Sequence[int]
-    ) -> Status[Sequence[MemoryRegion]]:
+    ) -> Status[Sequence[ManagedMemoryRegion]]:
         if isinstance(sizes, int):
             sizes = (sizes,)
 
@@ -489,7 +405,7 @@ class TensorPoolAllocator(ABC):
         num_mrs = len(sizes)
         offset = 0
         with self._lock:
-            mrs: List[MemoryRegion] = []
+            mrs: List[ManagedMemoryRegion] = []
             while len(mrs) < num_mrs:
                 status = self._alloc_unsafe(sizes[offset:])
                 if status.is_ok():
@@ -506,10 +422,10 @@ class TensorPoolAllocator(ABC):
     @abstractmethod
     def _alloc_unsafe(
         self, sizes: Sequence[int]
-    ) -> Status[Sequence[MemoryRegion]]:
+    ) -> Status[Sequence[ManagedMemoryRegion]]:
         raise NotImplementedError
 
-    def _finalize_mr(self, mr: MemoryRegion) -> None:
+    def _finalize_mr(self, mr: ManagedMemoryRegion) -> None:
         if mr.capacity <= 0:
             return
 
@@ -519,7 +435,7 @@ class TensorPoolAllocator(ABC):
             assert self._used_nbytes >= 0, "double free memory region"
 
     @abstractmethod
-    def _finalize_mr_unsafe(self, mr: MemoryRegion) -> None:
+    def _finalize_mr_unsafe(self, mr: ManagedMemoryRegion) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -561,7 +477,7 @@ class CoalescingPoolAllocator(TensorPoolAllocator):
 
     def _alloc_unsafe(
         self, sizes: Sequence[int]
-    ) -> Status[Sequence[MemoryRegion]]:
+    ) -> Status[Sequence[ManagedMemoryRegion]]:
         if len(self._lookup_table) == 0:
             return Status(StatusCodes.OUT_OF_MEMORY)
 
@@ -611,13 +527,13 @@ class CoalescingPoolAllocator(TensorPoolAllocator):
         offset = 0
         mrs = [None] * nmrs
         for i in range(nmrs):
-            mrs[i] = MemoryRegion(  # type: ignore
+            mrs[i] = ManagedMemoryRegion(  # type: ignore
                 self, target_mr.slab, target_mr.addr + offset, sizes[i]
             )
             offset += sizes[i]
         return Status.ok(mrs)  # type: ignore
 
-    def _finalize_mr_unsafe(self, mr: MemoryRegion) -> None:
+    def _finalize_mr_unsafe(self, mr: ManagedMemoryRegion) -> None:
         self._finalize_slab_slice_unsafe(mr.slab, mr.addr, mr.capacity)
 
     def _finalize_slab_slice_unsafe(
@@ -729,7 +645,7 @@ class ObjectPoolAllocator(TensorPoolAllocator):
         pin_memory: bool = False,
     ) -> None:
         self._free_pool: deque[MemoryRegionIntl] = deque()
-        self._reuse_pool: deque[MemoryRegion] = deque()
+        self._reuse_pool: deque[ManagedMemoryRegion] = deque()
         self._frag_nbytes: int = 0
 
         super().__init__(
@@ -743,7 +659,7 @@ class ObjectPoolAllocator(TensorPoolAllocator):
 
     def _alloc_unsafe(
         self, sizes: Sequence[int]
-    ) -> Status[Sequence[MemoryRegion]]:
+    ) -> Status[Sequence[ManagedMemoryRegion]]:
         if len(self._free_pool) == 0 and len(self._reuse_pool) == 0:
             return Status(StatusCodes.OUT_OF_MEMORY)
 
@@ -761,7 +677,7 @@ class ObjectPoolAllocator(TensorPoolAllocator):
 
     def _alloc_unsafe_from_free_pool(
         self, sizes: Sequence[int]
-    ) -> Status[Sequence[MemoryRegion]]:
+    ) -> Status[Sequence[ManagedMemoryRegion]]:
         # all mrs have uniform size
         mr_size = sizes[0]
 
@@ -792,7 +708,7 @@ class ObjectPoolAllocator(TensorPoolAllocator):
         offset = 0
         mrs = [None] * nmrs
         for i in range(nmrs):
-            mrs[i] = MemoryRegion(  # type: ignore
+            mrs[i] = ManagedMemoryRegion(  # type: ignore
                 self, target_mr.slab, target_mr.addr + offset, sizes[i]
             )
             offset += sizes[i]
@@ -800,9 +716,9 @@ class ObjectPoolAllocator(TensorPoolAllocator):
 
     def _alloc_unsafe_from_reuse_pool(
         self, sizes: Sequence[int]
-    ) -> Status[Sequence[MemoryRegion]]:
+    ) -> Status[Sequence[ManagedMemoryRegion]]:
         nmrs = min(len(self._reuse_pool), len(sizes))
-        mrs: List[MemoryRegion] = []
+        mrs: List[ManagedMemoryRegion] = []
         for _ in range(nmrs):
             target = self._reuse_pool.popleft()
             target.allocator = self
@@ -810,7 +726,7 @@ class ObjectPoolAllocator(TensorPoolAllocator):
             mrs.append(target)
         return Status.ok(mrs)
 
-    def _finalize_mr_unsafe(self, mr: MemoryRegion) -> None:
+    def _finalize_mr_unsafe(self, mr: ManagedMemoryRegion) -> None:
         if mr.capacity <= 0:
             return
 

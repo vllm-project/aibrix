@@ -33,11 +33,15 @@ class ConnectorFeature:
         mput_mget: Whether the kv cache connector supports mput/mget
         prefetch: Whether the kv cache connector supports prefetch.
         rdma: Whether the kv cache connector supports RDMA.
+        gdr_put: Whether the kv cache connector supports GDR put.
+        gdr_get: Whether the kv cache connector supports GDR get.
     """
 
     mput_mget: bool = False
     prefetch: bool = False
     rdma: bool = False
+    gdr_put: bool = False
+    gdr_get: bool = False
 
 
 @dataclass
@@ -150,22 +154,28 @@ class Connector(Generic[K, V]):
         raise NotImplementedError
 
     @abstractmethod
-    async def get(self, key: K, mr: MemoryRegion) -> Status:
+    async def get(
+        self, key: K, mr: MemoryRegion | Sequence[MemoryRegion]
+    ) -> Status:
         """Get a value.
         Args:
             key: The key of the kv tensor.
-            mr: The memory region to place the fetched kv tensor.
+            mr: The memory region or MR list to place the fetched kv
+                tensor. It is an MR list only if using GDR.
         Returns:
             The status of the get operation.
         """
         raise NotImplementedError
 
     @abstractmethod
-    async def put(self, key: K, mr: MemoryRegion) -> Status:
+    async def put(
+        self, key: K, mr: MemoryRegion | Sequence[MemoryRegion]
+    ) -> Status:
         """Put a key value pair.
         Args:
             key: The key of the kv cache.
-            mr: The memory region holding the kv tensors.
+            mr: The memory region or MR list holding the kv tensors. It is an
+                MR list only if using GDR.
         Returns:
             The status of the put operation.
         """
@@ -183,42 +193,48 @@ class Connector(Generic[K, V]):
     def get_batches(
         self,
         keys: Sequence[Any],
-        mrs: Sequence[MemoryRegion],
+        mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
         batch_size: int,
-    ) -> Sequence[Sequence[Tuple[K, MemoryRegion]]]:
+    ) -> Sequence[Sequence[Tuple[K, MemoryRegion | Sequence[MemoryRegion]]]]:
         """Get a list of key MR batches that is used for mput and mget
         operations.
 
         Args:
             keys: The keys of the kv tensors.
-            mrs: Memory regions holding the kv tensors.
+            mrs: Memory regions or lists of MRs holding the kv tensors.
             batch_size: The maximum number of key MR pairs in a batch.
         Returns:
-            List of key MR batches.
+            List of key MR/MR List batches.
         """
         raise NotImplementedError
 
     async def mget(
-        self, keys: Sequence[K], mrs: Sequence[MemoryRegion]
+        self,
+        keys: Sequence[K],
+        mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
     ) -> Sequence[Status]:
         """MGet a list of values. This function is optional and only connectors
         have mput_mget feature enabled can implement this function.
         Args:
             keys: The keys of the kv tensors.
-            mrs: Memory regions to hold the fetched kv tensors.
+            mrs: Memory regions or lists of MRs to hold the fetched kv
+                 tensors. It is an MR list only if using GDR.
         Returns:
             List of statuses.
         """
         raise NotImplementedError
 
     async def mput(
-        self, keys: Sequence[K], mrs: Sequence[MemoryRegion]
+        self,
+        keys: Sequence[K],
+        mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
     ) -> Sequence[Status]:
         """MPut a list of key value pairs. This function is optional and only
         connectors have mput_mget feature enabled can implement this function.
         Args:
             keys: The keys of the kv tensors.
-            mrs: Memory regions holding the kv tensors.
+            mrs: Memory regions or lists of MRs holding the kv tensors. It is
+                 an MR list only if using GDR.
         Returns:
             List of statuses.
         """

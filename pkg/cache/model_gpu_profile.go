@@ -47,7 +47,7 @@ const defaultModelGPUProfileRefreshInterval = 10 * time.Second
 var enableModelGPUProfileCaching = getModelGPUProfileCachingFlag()
 
 func getModelGPUProfileCachingFlag() bool {
-	value := utils.LoadEnv("AIBRIX_Model_GPU_PROFILE_CACHING_FLAG", "true")
+	value := utils.LoadEnv("AIBRIX_MODEL_GPU_PROFILE_CACHING_FLAG", "true")
 	boolVal, err := strconv.ParseBool(value)
 	if err != nil || !boolVal {
 		return false

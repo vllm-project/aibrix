@@ -13,11 +13,13 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from typing import Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 import torch
 
 from .memory import MemoryRegion
+from .memory.external_memory_region import ExternalMemoryRegion
+from .spec import KVCacheBlockLayout, KVCacheBlockSpec
 
 
 class KVCacheHandle(ABC):
@@ -25,11 +27,11 @@ class KVCacheHandle(ABC):
 
     @property
     @abstractmethod
-    def memory_regions(self) -> Sequence[MemoryRegion]:
+    def memory_regions(self) -> Sequence[MemoryRegion | Sequence[MemoryRegion]]:
         raise NotImplementedError
 
     @abstractmethod
-    def to_tensors(self) -> Sequence[torch.Tensor]:
+    def to_tensors(self) -> Sequence[torch.Tensor | Sequence[torch.Tensor]]:
         raise NotImplementedError
 
     @abstractmethod
@@ -67,3 +69,110 @@ class MemoryRegionKVCacheHandle(KVCacheHandle):
 
     def __len__(self) -> int:
         return len(self._mrs)
+
+
+class GDRKVCacheHandle(KVCacheHandle):
+    def __init__(
+        self,
+        mr_dtype: torch.dtype,
+        mr_shape: Tuple[int, ...],
+        mrs: Sequence[Sequence[MemoryRegion]],
+    ) -> None:
+        self._mr_dtype = mr_dtype
+        self._mr_shape = mr_shape
+        self._mrs = mrs
+
+    @property
+    def memory_regions(self) -> Sequence[Sequence[MemoryRegion]]:
+        return self._mrs
+
+    def to_tensors(self) -> Sequence[Sequence[torch.Tensor]]:
+        return [
+            MemoryRegion.to_tensors(mrs, self._mr_dtype, self._mr_shape)
+            for mrs in self._mrs
+        ]
+
+    def release(self) -> None:
+        for block_mrs in self._mrs:
+            for mr in block_mrs:
+                mr.ref_down()
+
+    def __len__(self) -> int:
+        return len(self._mrs)
+
+    @staticmethod
+    def create(
+        blocks: Sequence[torch.Tensor],
+        block_spec: KVCacheBlockSpec,
+        slot_mapping: Sequence[int] | torch.Tensor,
+    ) -> KVCacheHandle:
+        """
+        Create a KVCacheHandle for the given token list.
+
+        Args:
+            blocks: Blocks to be scattered/gathered. Dim: (num_layers, 2,
+                    num_blocks, block_size, num_kv_heads, head_size)
+            block_spec: KVCache block spec.
+            slot_mapping: Mapping from tokens to blocks.
+
+        Returns:
+            KVCacheHandle.
+        """
+        assert block_spec.engine_block_ntokens == block_spec.block_ntokens, (
+            "engine KVCache and AIBrix KVCache should use the same "
+            "block_size to enable GDR"
+        )
+        block_ntokens = block_spec.block_ntokens
+        block_nbytes = block_spec.block_nbytes
+        block_dtype = block_spec.block_dtype
+        block_shape = block_spec.block_shape
+        kvcache_block_layout = block_spec.block_layout
+
+        num_layers = len(blocks)
+        assert num_layers > 0, "blocks must not be empty"
+
+        ntokens = (
+            len(slot_mapping)
+            if isinstance(slot_mapping, Sequence)
+            else slot_mapping.shape[0]
+        )
+        assert ntokens % block_ntokens == 0, (
+            "size of slot_mapping must be divisible by block_ntokens"
+        )
+
+        num_blocks = ntokens // block_ntokens
+        if kvcache_block_layout == KVCacheBlockLayout.LCND:
+            layer_nbytes_per_cache_type = block_nbytes // num_layers // 2
+            mrs: List[List[ExternalMemoryRegion]] = [
+                [
+                    None  # type: ignore
+                    for _ in range(num_layers * 2)
+                ]  # num_layers * 2 (k & v)
+                for _ in range(num_blocks)
+            ]
+            for i in range(num_layers):
+                slab = blocks[i].flatten().view(torch.uint8)
+                for j in range(0, ntokens, block_ntokens):
+                    block_id = slot_mapping[j] // block_ntokens
+                    kmr = ExternalMemoryRegion(
+                        slab=slab,
+                        addr=int(
+                            blocks[i][0][block_id].data_ptr() - slab.data_ptr()
+                        ),
+                        len=layer_nbytes_per_cache_type,
+                    )
+
+                    vmr = ExternalMemoryRegion(
+                        slab=slab,
+                        addr=int(
+                            blocks[i][1][block_id].data_ptr() - slab.data_ptr()
+                        ),
+                        len=layer_nbytes_per_cache_type,
+                    )
+                    mrs[j // block_ntokens][i * 2] = kmr
+                    mrs[j // block_ntokens][i * 2 + 1] = vmr
+
+            mr_shape = block_shape[2:]
+            return GDRKVCacheHandle(block_dtype, mr_shape, mrs)
+        else:
+            raise ValueError("Only LCND is supported for now")

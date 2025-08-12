@@ -1,0 +1,33 @@
+# VLLM non-disaggregated base config
+# Use helm --set to customize: model.name, model.path, model.tensorParallel, resources.gpu.count, deployment.replicas
+
+engine:
+  type: "vllm"
+  image: "kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix:vllm-openai:v0.9.2-cu128-nixl-v0.4.1-lmcache-0.3.1.post1"
+
+model:
+  name: "qwen3-8b"          # Override with --set model.name=qwen3-32b
+  path: "/models/Qwen3-8B"  # Override with --set model.path=/models/Qwen3-32B
+  tensorParallel: 1         # Override with --set model.tensorParallel=2
+
+deployment:
+  type: "non-disaggregated"
+  replicas: 3               # Override with --set deployment.replicas=1,2,5
+
+router:
+  enabled: false
+
+resources:
+  gpu: 1                # Override with --set resources.gpu=2 for 32B
+  rdma: ""
+  memory:
+    sharedMemory: true
+
+volumes:
+  models:
+    hostPath: "/data01/models"
+
+security:
+  privileged: true
+  capabilities:
+    - IPC_LOCK

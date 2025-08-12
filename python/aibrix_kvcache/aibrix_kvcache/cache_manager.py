@@ -27,13 +27,17 @@ import torch.distributed as dist
 import uvloop
 
 from . import envs
-from .cache_handle import KVCacheHandle, MemoryRegionKVCacheHandle
+from .cache_handle import (
+    GDRKVCacheHandle,
+    KVCacheHandle,
+    MemoryRegionKVCacheHandle,
+)
 from .cache_hashable import TokenCacheKey, TokenListView
 from .common.absl_logging import getLogger, log_every_n_seconds
 from .config import KVCacheConfig
 from .l1 import L1Cache
 from .l2 import KeyBuilder, L2Cache
-from .memory import MemoryRegion, TensorPoolAllocator
+from .memory import ManagedMemoryRegion, MemoryRegion, TensorPoolAllocator
 from .meta_service import MetaService
 from .metrics import KVCacheMetrics, MeasurableBase, MetricRecorder
 from .profiling import nvtx_range
@@ -50,10 +54,12 @@ TESTING_DISABLE_PIN_MEMORY: bool = False
 class KVCacheFeature:
     """The features of the kv cache.
     Args:
-        zero_copy: Whether the kv cache supports zero-copy.
+        gdr_put: Whether the cache manager supports GDR put.
+        gdr_get: Whether the cache manager supports GDR get.
     """
 
-    zero_copy: bool = False
+    gdr_put: bool = False
+    gdr_get: bool = False
 
 
 class KVCacheManager(ABC):
@@ -99,6 +105,15 @@ class KVCacheManager(ABC):
         """Get the chunk size of the kv cache.
         Returns:
             The chunk size of the kv cache.
+        """
+        raise NotImplementedError
+
+    def register_kvcache(self, kvcache: List[torch.Tensor]) -> Status:
+        """Register kvcache with backend-specific register function.
+        Args:
+            kvcache: kvcache to be registered.
+        Returns:
+            Status of the register operation.
         """
         raise NotImplementedError
 
@@ -148,6 +163,24 @@ class KVCacheManager(ABC):
         Returns:
             Number of tokens have been fetched from the kv cache service.
             The cache handles corresponding to the given tokens.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get(
+        self,
+        prefix: TokenListView | None,
+        tokens: TokenListView,
+        kv_tensors: KVCacheHandle,
+    ) -> Status[int]:
+        """Get the kv tensors for the given prefix and tokens.
+
+        Args:
+            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            kv_tensors: The kv tensors to store the fetched kv cache.
+        Returns:
+            Number of tokens have been fetched from the kv cache service.
         """
         raise NotImplementedError
 
@@ -306,6 +339,11 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
         enable_l1: bool = envs.AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED
         enable_l2: bool = len(envs.AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND) > 0
+
+        assert enable_l1 or enable_l2, (
+            "At least one cache service must be enabled."
+        )
+
         capacity_nbytes: int = int(
             envs.AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB * 1024**3
         )
@@ -347,7 +385,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 // self.block_ntokens
             )
 
-            max_mr_nbytes = MemoryRegion.calculate_size(
+            max_mr_nbytes = ManagedMemoryRegion.calculate_size(
                 self.block_nbytes, self.config.model_spec.max_model_len
             )
             nblocks_per_chunk = self._chunk_size // self.block_ntokens
@@ -460,13 +498,21 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
         logger.info("%s is initialized", self)
 
-    @property
+    @functools.cached_property
     def feature(self) -> KVCacheFeature:
         """Get the feature of the kv cache.
         Returns:
             The feature of the kv cache.
         """
-        return KVCacheFeature(zero_copy=True)
+        feature = KVCacheFeature()
+        if self._l1_cache is not None:
+            return feature
+        if self._l2_cache is not None and self._l2_cache._backend is not None:
+            if self._l2_cache._backend.feature.gdr_get:
+                feature.gdr_get = True
+            if self._l2_cache._backend.feature.gdr_put:
+                feature.gdr_put = True
+        return feature
 
     @property
     def block_size(self) -> int:
@@ -661,6 +707,21 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             return status
         return Status.ok(status.get() * self.block_ntokens)
 
+    def register_kvcache(self, kvcache: List[torch.Tensor]) -> Status:
+        """Register kvcache with backend-specific register function.
+        Args:
+            kvcache: kvcache to be registered.
+        Returns:
+            Status of the register operation.
+        """
+        if not (self.feature.gdr_get or self.feature.gdr_put):
+            return Status.ok()
+        if self._l2_cache is None or self._l2_cache._backend is None:
+            return Status.ok()
+
+        kvcache_bytes_views = [t.flatten().view(torch.uint8) for t in kvcache]
+        return self._l2_cache._backend.register_slabs(kvcache_bytes_views)
+
     def prefetch(
         self, prefix: TokenListView | None, tokens: TokenListView
     ) -> None:
@@ -696,7 +757,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             Number of tokens have been fetched from the kv cache service.
             The cache handle corresponding to the given tokens.
         """
-        status = self._get_impl(prefix, tokens)
+        status = self._acquire_impl(prefix, tokens)
         if not status.is_ok():
             return Status(status)
 
@@ -709,6 +770,82 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 ),
             )
         )
+
+    @nvtx_range("get", "KVCacheManager")
+    @MeasurableBase.measure(MetricRecorder.OP.GET)
+    def get(
+        self,
+        prefix: TokenListView | None,
+        tokens: TokenListView,
+        kv_tensors: KVCacheHandle,
+    ) -> Status[int]:
+        """Get the kv tensors for the given prefix and tokens.
+
+        Args:
+            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            kv_tensors: The kv tensors to store the fetched kv cache.
+        Returns:
+            Number of tokens have been fetched from the kv cache service.
+        """
+        assert self.feature.gdr_get, "Does not support GDR get"
+        mrs = kv_tensors.memory_regions
+        return self._get_impl(prefix, tokens, mrs)
+
+    def _get_impl(
+        self,
+        prefix: TokenListView | None,
+        tokens: TokenListView,
+        mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
+    ) -> Status[int]:
+        """Get the kv tensors for the given prefix and tokens.
+
+        Args:
+            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            mrs: The memory regions to store the fetched kv cache.
+        Returns:
+            Number of tokens have been fetched from the kv cache service.
+        """
+        if prefix is not None and len(prefix) % self.block_ntokens != 0:
+            return Status(StatusCodes.INVALID)
+
+        num_blocks = len(mrs)
+        ntokens_to_get = num_blocks * self.block_ntokens
+        tokens = tokens[:ntokens_to_get]
+
+        # If it is not a full block, return
+        if num_blocks == 0:
+            return Status(StatusCodes.NOT_FOUND)
+
+        assert self._l2_cache is not None
+        timeout_s = (
+            ntokens_to_get * self._l2_cache_per_token_timeout_ms
+        ) / 1000
+
+        assert self._event_loop is not None
+        future = asyncio.run_coroutine_threadsafe(
+            self._l2_cache.get(prefix, tokens, mrs), self._event_loop
+        )
+        try:
+            get_status = future.result(timeout=timeout_s)
+            if not get_status.is_ok():
+                return get_status
+
+            value = get_status.get()
+            return Status.ok(value * self.block_ntokens)
+        except asyncio.CancelledError:
+            # cancelled
+            return Status(StatusCodes.CANCELLED)
+        except asyncio.TimeoutError:
+            # timed out
+            return Status(StatusCodes.TIMEOUT)
+        except Exception as e:
+            # other exceptions
+            return Status(StatusCodes.ERROR, e)
+        finally:
+            if not future.done():
+                future.cancel()
 
     @MeasurableBase.measure(MetricRecorder.OP.EXISTS)
     def exists(
@@ -817,7 +954,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             if not future.done():
                 future.cancel()
 
-    def _get_impl(
+    def _acquire_impl(
         self,
         prefix: TokenListView | None,
         tokens: TokenListView,
@@ -996,7 +1133,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 L1Cache.cache_block_keys(prefix, tokens, self.block_ntokens)
             )
             sizes = tuple(
-                MemoryRegion.calculate_size(
+                ManagedMemoryRegion.calculate_size(
                     self.block_nbytes, len(block_prefix) + len(block_tokens)
                 )
                 for block_prefix, block_tokens in key_pairs
@@ -1015,7 +1152,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
         mrs = status.get()
         for mr in mrs:
-            mr.block_nbytes = self.block_nbytes
+            mr.block_nbytes = self.block_nbytes  # type: ignore
 
         return Status.ok(
             MemoryRegionKVCacheHandle(self.block_dtype, self.block_shape, mrs)
@@ -1048,6 +1185,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             The status of the put operation and the number of tokens have
             been put or scheduled to put into the kv cache service.
         """
+        if isinstance(kv_tensors, GDRKVCacheHandle):
+            assert self.feature.gdr_put, "Does not support GDR put"
+
         # If L1Cache is enabled, we put kv tensors to L1Cache and leverage its
         # eviction policy to asynchronously ingest kv tensors to L2Cache.
         # Otherwise, we ingest kv tensors to L2Cache directly.
@@ -1211,7 +1351,7 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
             Number of tokens have been fetched from the kv cache service.
             The cache handle corresponding to the given tokens.
         """
-        status = self._acquire_impl(prefix, tokens)
+        status = self._group_aware_acquire_impl(prefix, tokens)
         if not status.is_ok():
             return Status(status)
         value = status.get()
@@ -1220,7 +1360,7 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
         )
         return Status.ok((value[0], handle))
 
-    def _acquire_impl(
+    def _group_aware_acquire_impl(
         self,
         prefix: TokenListView | None,
         tokens: TokenListView,
@@ -1249,7 +1389,7 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
             if next_tokens and len(next_tokens) >= 0:
                 # prefetch
                 super().prefetch(chunk_prefix + chunk_tokens, next_tokens)
-            status = super()._get_impl(chunk_prefix, chunk_tokens)
+            status = super()._acquire_impl(chunk_prefix, chunk_tokens)
             value = status.get()
             # we only care about the error code and num of blocks
             coll_status = Status.ok(len(value)) if status.is_ok() else status
@@ -1288,3 +1428,66 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
             if start > 0
             else Status(StatusCodes.NOT_FOUND)
         )
+
+    @nvtx_range("get", "GroupAwareKVCacheManager")
+    @MeasurableBase.measure(MetricRecorder.OP.GET)
+    def get(
+        self,
+        prefix: TokenListView | None,
+        tokens: TokenListView,
+        kv_tensors: KVCacheHandle,
+    ) -> Status[int]:
+        """Get the kv tensors for the given prefix and tokens.
+
+        Args:
+            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
+            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            kv_tensors: The kv tensors to store the fetched kv cache.
+        Returns:
+            Number of tokens have been fetched from the kv cache service.
+        """
+        assert self.feature.gdr_get, "Does not support GDR get"
+        if prefix is not None and len(prefix) % self.block_ntokens != 0:
+            return Status(StatusCodes.INVALID)
+
+        # If it is not a full block, return
+        if len(tokens) // self.block_ntokens == 0:
+            return Status(StatusCodes.NOT_FOUND)
+
+        mrs = kv_tensors.memory_regions
+        start = 0
+        for chunk_prefix, chunk_tokens, _, _ in self.cache_chunk_keys(
+            prefix, tokens
+        ):
+            chunk_mrs_start = start // self.block_ntokens
+            chunk_mrs_end = (
+                chunk_mrs_start + len(chunk_tokens) // self.block_ntokens
+            )
+            chunk_mrs = mrs[chunk_mrs_start:chunk_mrs_end]
+            status = super()._get_impl(chunk_prefix, chunk_tokens, chunk_mrs)
+            # check if all participants have the same status
+            pg_statuses: List[Status] = [Status.ok()] * self.world_size
+            dist.all_gather_object(
+                pg_statuses, status, group=self.process_group
+            )
+            # if any participant encountered an error
+            if not all([s.is_ok() for s in pg_statuses]):
+                if start > 0:
+                    # we have already got some tokens, return success
+                    return Status.ok(start)
+                else:
+                    # return the first error
+                    return next(s for s in pg_statuses if not s.is_ok())
+            elif not all(
+                [
+                    s.get() * self.block_ntokens == len(chunk_tokens)
+                    for s in pg_statuses
+                ]
+            ):
+                # some participants have got less tokens than others
+                num = min(s.get() for s in pg_statuses)
+                return Status.ok(start + num * self.block_ntokens)
+
+            start += len(chunk_tokens)
+
+        return Status.ok(start) if start > 0 else Status(StatusCodes.NOT_FOUND)

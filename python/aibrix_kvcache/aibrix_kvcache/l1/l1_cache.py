@@ -19,7 +19,7 @@ import torch
 
 from ..cache_hashable import TokenCacheKey, TokenListView
 from ..common.absl_logging import getLogger, log_every_n_seconds
-from ..memory import MemoryRegion, TensorPoolAllocator
+from ..memory import ManagedMemoryRegion, MemoryRegion, TensorPoolAllocator
 from ..metrics import L1CacheMetrics, MeasurableBase, MetricRecorder
 from ..profiling import nvtx_range
 from ..spec import KVCacheBlockSpec
@@ -250,7 +250,7 @@ class L1Cache(MeasurableBase):
         num_blocks = num_tokens // self.block_ntokens
 
         sizes = [
-            MemoryRegion.calculate_size(
+            ManagedMemoryRegion.calculate_size(
                 self.block_nbytes, len(block_prefix) + len(block_tokens)
             )
             for block_prefix, block_tokens in self._cache_block_keys(
@@ -280,6 +280,7 @@ class L1Cache(MeasurableBase):
         block_mr_shape[self.block_shape_token_dim] = self.block_ntokens
         with cpu_perf_timer() as get_copy_dur_ms:
             for i, block_mr in enumerate(block_mrs):
+                assert isinstance(block_mr, ManagedMemoryRegion)
                 block_mr.block_nbytes = self.block_nbytes
                 cached_tensors = block_mr.to_tensor(
                     self.block_dtype, tuple(block_mr_shape)
@@ -355,6 +356,7 @@ class L1Cache(MeasurableBase):
             if bi >= len(kv_mrs):
                 break
             block_mr = kv_mrs[bi]
+            assert isinstance(block_mr, ManagedMemoryRegion)
             if not MemoryRegion.use_compact_layout():
                 block_mr.pack_tokens(prefix=block_prefix, tokens=block_tokens)
             block_mr.seal()
