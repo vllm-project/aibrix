@@ -71,6 +71,8 @@ spec:
                       value: "7"
                     - name: NCCL_DEBUG
                       value: "INFO"
+                    - name: UCX_TLS
+                      value: ^gga
                   volumeMounts:
                     - name: model-vol
                       mountPath: /models
@@ -148,6 +150,8 @@ spec:
                       value: "7"
                     - name: NCCL_DEBUG
                       value: "INFO"
+                    - name: UCX_TLS
+                      value: ^gga
                   volumeMounts:
                     - name: model-vol
                       mountPath: /models
