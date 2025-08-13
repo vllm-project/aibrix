@@ -115,6 +115,7 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 									{
 										Name:     "worker",
 										Replicas: ptr.To(int32(1)),
+										UpgradeOrder: ptr.To(int32(1)),
 										Stateful: false,
 										Template: v1.PodTemplateSpec{
 											ObjectMeta: metav1.ObjectMeta{
@@ -204,6 +205,7 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 									{
 										Name:     "master",
 										Replicas: ptr.To(int32(1)),
+										UpgradeOrder: ptr.To(int32(1)),
 										Stateful: true,
 										Template: v1.PodTemplateSpec{
 											ObjectMeta: metav1.ObjectMeta{
@@ -328,6 +330,7 @@ func makeStormServiceWithNoSidecarInjection(name, namespace string,
 						{
 							Name:     "worker",
 							Replicas: ptr.To(int32(1)),
+							UpgradeOrder: ptr.To(int32(0)),
 							Stateful: false,
 							Template: v1.PodTemplateSpec{
 								ObjectMeta: metav1.ObjectMeta{
@@ -362,6 +365,7 @@ func makeStormServiceWithNoSidecarInjection(name, namespace string,
 						{
 							Name:     "master",
 							Replicas: ptr.To(int32(1)),
+							UpgradeOrder: ptr.To(int32(1)),
 							Stateful: true,
 							Template: v1.PodTemplateSpec{
 								ObjectMeta: metav1.ObjectMeta{
