@@ -79,8 +79,8 @@ build = "cp31[12]-manylinux_x86_64"
 # CUDA arch list https://developer.nvidia.com/cuda-gpus
 environment = {TORCH_CUDA_ARCH_LIST = "7.0;7.5;8.0;8.6;8.9;9.0;10.0"}
 
-# Use PyTorch manylinux image for building (cuda 12.8, torch 2.7)
-manylinux-x86_64-image = "docker.io/pytorch/manylinux2_28-builder:cuda12.8"
+# Use PyTorch manylinux image for building (cuda 12.1)
+manylinux-x86_64-image = "docker.io/pytorch/manylinux2_28-builder:cuda12.1"
 
 [tool.cibuildwheel.linux]
 repair-wheel-command = """

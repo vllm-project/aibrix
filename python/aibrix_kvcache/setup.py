@@ -59,7 +59,7 @@ elif (
     # fallback to cpu
     AIBRIX_TARGET_DEVICE = "cpu"
 
-MAIN_CUDA_VERSION = "12.8"
+MAIN_CUDA_VERSION = "12.1"
 
 
 def is_sccache_available() -> bool:
