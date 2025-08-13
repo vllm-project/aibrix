@@ -38,13 +38,7 @@ type eventHandler struct {
 
 // HandleEvent processes KV cache events
 func (h *eventHandler) HandleEvent(event kvcache.KVEvent) error {
-	// Create context with timeout
-	// Use 10s timeout for event processing as sync indexer operations
-	// may involve Redis calls and network I/O under high load
-	ctx, cancel := context.WithTimeout(h.manager.ctx, 10*time.Second)
-	defer cancel()
-
-	// Check if manager is stopped
+	// Check if manager is stopped before using its context
 	h.manager.mu.RLock()
 	stopped := h.manager.stopped
 	h.manager.mu.RUnlock()
@@ -52,6 +46,12 @@ func (h *eventHandler) HandleEvent(event kvcache.KVEvent) error {
 	if stopped {
 		return ErrManagerStopped
 	}
+
+	// Create context with timeout
+	// Use 10s timeout for event processing as sync indexer operations
+	// may involve Redis calls and network I/O under high load
+	ctx, cancel := context.WithTimeout(h.manager.ctx, 10*time.Second)
+	defer cancel()
 
 	switch e := event.(type) {
 	case *kvcache.BlockStoredEvent:

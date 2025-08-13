@@ -83,8 +83,8 @@ func TestTokenIDsToBytes(t *testing.T) {
 			name:     "multiple tokens",
 			tokenIDs: []int32{1, 256, 65535},
 			expected: []byte{
-				0, 0, 0, 1,     // 1
-				0, 0, 1, 0,     // 256
+				0, 0, 0, 1, // 1
+				0, 0, 1, 0, // 256
 				0, 0, 255, 255, // 65535
 			},
 		},

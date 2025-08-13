@@ -37,14 +37,14 @@
 //
 // The syncIndexerAdapter in pkg/cache might seem like unnecessary complexity,
 // but it serves critical architectural purposes:
-//   1. Prevents circular dependencies between packages
-//   2. Acts as an Anti-Corruption Layer between domains
-//   3. Allows packages to remain independent and testable
-//   4. Handles type conversion between nearly-identical structs
+//  1. Prevents circular dependencies between packages
+//  2. Acts as an Anti-Corruption Layer between domains
+//  3. Allows packages to remain independent and testable
+//  4. Handles type conversion between nearly-identical structs
 //
 // Build Requirements:
 //
 // This package requires ZMQ support. Build with:
-//   go build -tags=zmq
 //
+//	go build -tags=zmq
 package kvevent

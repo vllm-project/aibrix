@@ -162,6 +162,15 @@ func (m *Manager) OnPodAdd(pod *v1.Pod) {
 		return
 	}
 
+	// Check if manager is stopped before using its context
+	m.mu.RLock()
+	stopped := m.stopped
+	m.mu.RUnlock()
+
+	if stopped {
+		return
+	}
+
 	// Use 5s timeout for pod operations as they involve simple ZMQ ops
 	ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
 	defer cancel()
@@ -211,6 +220,15 @@ func (m *Manager) OnPodDelete(pod *v1.Pod) {
 
 	podKey := utils.GeneratePodKey(pod.Namespace, pod.Name)
 	m.unsubscribeFromPod(podKey)
+
+	// Check if manager is stopped before using its context
+	m.mu.RLock()
+	stopped := m.stopped
+	m.mu.RUnlock()
+
+	if stopped {
+		return
+	}
 
 	// Clean up from sync indexer
 	// Use 5s timeout for cleanup operations as they should be quick
