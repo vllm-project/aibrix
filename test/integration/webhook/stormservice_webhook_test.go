@@ -113,10 +113,10 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 								UpdateStrategy: orchestrationapi.InterleaveRoleSetStrategyType,
 								Roles: []orchestrationapi.RoleSpec{
 									{
-										Name:     "worker",
-										Replicas: ptr.To(int32(1)),
+										Name:         "worker",
+										Replicas:     ptr.To(int32(1)),
 										UpgradeOrder: ptr.To(int32(1)),
-										Stateful: false,
+										Stateful:     false,
 										Template: v1.PodTemplateSpec{
 											ObjectMeta: metav1.ObjectMeta{
 												Labels: map[string]string{
@@ -203,10 +203,10 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 										},
 									},
 									{
-										Name:     "master",
-										Replicas: ptr.To(int32(1)),
+										Name:         "master",
+										Replicas:     ptr.To(int32(1)),
 										UpgradeOrder: ptr.To(int32(1)),
-										Stateful: true,
+										Stateful:     true,
 										Template: v1.PodTemplateSpec{
 											ObjectMeta: metav1.ObjectMeta{
 												Labels: map[string]string{
@@ -328,10 +328,10 @@ func makeStormServiceWithNoSidecarInjection(name, namespace string,
 					UpdateStrategy: orchestrationapi.InterleaveRoleSetStrategyType,
 					Roles: []orchestrationapi.RoleSpec{
 						{
-							Name:     "worker",
-							Replicas: ptr.To(int32(1)),
+							Name:         "worker",
+							Replicas:     ptr.To(int32(1)),
 							UpgradeOrder: ptr.To(int32(1)),
-							Stateful: false,
+							Stateful:     false,
 							Template: v1.PodTemplateSpec{
 								ObjectMeta: metav1.ObjectMeta{
 									Labels: map[string]string{
@@ -363,10 +363,10 @@ func makeStormServiceWithNoSidecarInjection(name, namespace string,
 							},
 						},
 						{
-							Name:     "master",
-							Replicas: ptr.To(int32(1)),
+							Name:         "master",
+							Replicas:     ptr.To(int32(1)),
 							UpgradeOrder: ptr.To(int32(1)),
-							Stateful: true,
+							Stateful:     true,
 							Template: v1.PodTemplateSpec{
 								ObjectMeta: metav1.ObjectMeta{
 									Labels: map[string]string{
