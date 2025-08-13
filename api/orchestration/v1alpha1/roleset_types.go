@@ -69,6 +69,7 @@ type RoleSpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Type=integer
+	// +kubebuilder:default:=0
 	UpgradeOrder *int32 `json:"upgradeOrder,omitempty"`
 
 	// PodGroupSize is the number of pods to form a minimum role instance.
