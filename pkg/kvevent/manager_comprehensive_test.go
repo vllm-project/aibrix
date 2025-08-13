@@ -33,9 +33,9 @@ import (
 
 // mockSyncIndexerWithCallbacks extends mockSyncIndexer to track method calls
 type mockSyncIndexerWithCallbacks struct {
-	mu             sync.Mutex
+	mu              sync.Mutex
 	removedPrefixes []string
-	onRemovePrefix func(ctx context.Context, modelName string, loraID int64, podKey string) error
+	onRemovePrefix  func(ctx context.Context, modelName string, loraID int64, podKey string) error
 }
 
 func (m *mockSyncIndexerWithCallbacks) ProcessBlockStored(ctx context.Context, event kvevent.BlockStoredEvent) error {
@@ -50,7 +50,7 @@ func (m *mockSyncIndexerWithCallbacks) RemovePrefix(ctx context.Context, modelNa
 	m.mu.Lock()
 	m.removedPrefixes = append(m.removedPrefixes, podKey)
 	m.mu.Unlock()
-	
+
 	if m.onRemovePrefix != nil {
 		return m.onRemovePrefix(ctx, modelName, loraID, podKey)
 	}
@@ -67,23 +67,23 @@ func TestManagerConfiguration(t *testing.T) {
 		{
 			name: "sync disabled",
 			envVars: map[string]string{
-				constants.EnvKVEventSyncEnabled: "false",
+				constants.EnvPrefixCacheKVEventSyncEnabled: "false",
 			},
 			expectEnabled: false,
 		},
 		{
 			name: "sync enabled with remote tokenizer",
 			envVars: map[string]string{
-				constants.EnvKVEventSyncEnabled:    "true",
-				constants.EnvUseRemoteTokenizer:    "true",
+				constants.EnvPrefixCacheKVEventSyncEnabled: "true",
+				constants.EnvPrefixCacheUseRemoteTokenizer: "true",
 			},
 			expectEnabled: true,
 		},
 		{
 			name: "sync enabled without remote tokenizer",
 			envVars: map[string]string{
-				constants.EnvKVEventSyncEnabled:    "true",
-				constants.EnvUseRemoteTokenizer:    "false",
+				constants.EnvPrefixCacheKVEventSyncEnabled: "true",
+				constants.EnvPrefixCacheUseRemoteTokenizer: "false",
 			},
 			expectEnabled: false,
 		},
@@ -116,8 +116,8 @@ func TestManagerConfiguration(t *testing.T) {
 // Test pod lifecycle handling
 func TestManagerPodLifecycle(t *testing.T) {
 	// Enable KV sync
-	t.Setenv(constants.EnvKVEventSyncEnabled, "true")
-	t.Setenv(constants.EnvUseRemoteTokenizer, "true")
+	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
 
 	// Track method calls
 	syncIndexer := &mockSyncIndexerWithCallbacks{}
@@ -179,7 +179,7 @@ func TestManagerPodLifecycle(t *testing.T) {
 	syncIndexer.mu.Lock()
 	removedCount := len(syncIndexer.removedPrefixes)
 	syncIndexer.mu.Unlock()
-	
+
 	if removedCount != 1 {
 		t.Errorf("Expected 1 pod cleanup, got: %d", removedCount)
 	}
@@ -187,8 +187,8 @@ func TestManagerPodLifecycle(t *testing.T) {
 
 // Test sync indexer initialization retry
 func TestManagerSyncIndexerRetry(t *testing.T) {
-	t.Setenv(constants.EnvKVEventSyncEnabled, "true")
-	t.Setenv(constants.EnvUseRemoteTokenizer, "true")
+	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
 
 	podProvider := &mockPodProvider{pods: make(map[string]*kvevent.PodInfo)}
 
@@ -225,12 +225,12 @@ func TestManagerSyncIndexerRetry(t *testing.T) {
 // Test pod subscription criteria
 func TestManagerPodSubscriptionCriteria(t *testing.T) {
 	// Enable KV sync
-	t.Setenv(constants.EnvKVEventSyncEnabled, "true") 
-	t.Setenv(constants.EnvUseRemoteTokenizer, "true")
+	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
 
 	tests := []struct {
-		name           string
-		pod            *v1.Pod
+		name            string
+		pod             *v1.Pod
 		shouldSubscribe bool
 	}{
 		{
@@ -337,7 +337,7 @@ func TestManagerPodSubscriptionCriteria(t *testing.T) {
 
 			// Add pod and check if subscription happens
 			manager.OnPodAdd(tt.pod)
-			
+
 			// Give some time for async operations
 			time.Sleep(50 * time.Millisecond)
 
@@ -353,8 +353,8 @@ func TestManagerPodSubscriptionCriteria(t *testing.T) {
 // Test concurrent pod operations
 func TestManagerConcurrentOperations(t *testing.T) {
 	// Enable KV sync
-	t.Setenv(constants.EnvKVEventSyncEnabled, "true")
-	t.Setenv(constants.EnvUseRemoteTokenizer, "true")
+	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
 
 	podProvider := &mockPodProvider{
 		pods: make(map[string]*kvevent.PodInfo),
@@ -375,7 +375,7 @@ func TestManagerConcurrentOperations(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			
+
 			pod := &v1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      fmt.Sprintf("pod-%d", id),
@@ -393,11 +393,11 @@ func TestManagerConcurrentOperations(t *testing.T) {
 
 			// Add, update, and delete
 			manager.OnPodAdd(pod)
-			
+
 			updatedPod := pod.DeepCopy()
 			updatedPod.Status.PodIP = fmt.Sprintf("10.0.1.%d", id)
 			manager.OnPodUpdate(pod, updatedPod)
-			
+
 			manager.OnPodDelete(updatedPod)
 		}(i)
 	}

@@ -35,44 +35,44 @@ func TestKVEventManagerValidation(t *testing.T) {
 		{
 			name: "disabled - no error",
 			envVars: map[string]string{
-				constants.EnvKVEventSyncEnabled: "false",
+				constants.EnvPrefixCacheKVEventSyncEnabled: "false",
 			},
 			wantError: false,
 		},
 		{
 			name: "enabled without tokenizer - error",
 			envVars: map[string]string{
-				constants.EnvKVEventSyncEnabled: "true",
-				constants.EnvUseRemoteTokenizer: "false",
+				constants.EnvPrefixCacheKVEventSyncEnabled: "true",
+				constants.EnvPrefixCacheUseRemoteTokenizer: "false",
 			},
 			wantError: true,
 		},
 		{
 			name: "enabled without tokenizer type - error",
 			envVars: map[string]string{
-				constants.EnvKVEventSyncEnabled:       "true",
-				constants.EnvUseRemoteTokenizer:       "true",
-				constants.EnvPrefixCacheTokenizerType: "local",
+				constants.EnvPrefixCacheKVEventSyncEnabled: "true",
+				constants.EnvPrefixCacheUseRemoteTokenizer: "true",
+				constants.EnvPrefixCacheTokenizerType:      "local",
 			},
 			wantError: true,
 		},
 		{
 			name: "enabled without endpoint - error",
 			envVars: map[string]string{
-				constants.EnvKVEventSyncEnabled:       "true",
-				constants.EnvUseRemoteTokenizer:       "true",
-				constants.EnvPrefixCacheTokenizerType: "remote",
-				constants.EnvRemoteTokenizerEndpoint:  "",
+				constants.EnvPrefixCacheKVEventSyncEnabled:      "true",
+				constants.EnvPrefixCacheUseRemoteTokenizer:      "true",
+				constants.EnvPrefixCacheTokenizerType:           "remote",
+				constants.EnvPrefixCacheRemoteTokenizerEndpoint: "",
 			},
 			wantError: true,
 		},
 		{
 			name: "enabled with all config - no error",
 			envVars: map[string]string{
-				constants.EnvKVEventSyncEnabled:       "true",
-				constants.EnvUseRemoteTokenizer:       "true",
-				constants.EnvPrefixCacheTokenizerType: "remote",
-				constants.EnvRemoteTokenizerEndpoint:  "http://localhost:8080",
+				constants.EnvPrefixCacheKVEventSyncEnabled:      "true",
+				constants.EnvPrefixCacheUseRemoteTokenizer:      "true",
+				constants.EnvPrefixCacheTokenizerType:           "remote",
+				constants.EnvPrefixCacheRemoteTokenizerEndpoint: "http://localhost:8080",
 			},
 			wantError: false,
 		},

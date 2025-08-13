@@ -41,22 +41,22 @@ func TestIntegrationEventHandlerWithRealComponents(t *testing.T) {
 
 	// Create a real store with real sync indexer
 	store := cache.NewForTest()
-	
+
 	// Initialize with real sync prefix indexer (not a mock!)
 	syncIndexer := syncindexer.NewSyncPrefixHashTable()
-	
+
 	// Use reflection to set the private field (for testing only)
 	// In real code, this would be set by InitSyncResources
 	cache.SetSyncIndexerForTest(store, syncIndexer)
-	
+
 	// Add a test pod
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-pod",
 			Namespace: "default",
 			Labels: map[string]string{
-				constants.ModelLabelName:  "test-model",
-				constants.LoraIDLabel:     "123",
+				constants.ModelLabelName: "test-model",
+				constants.LoraIDLabel:    "123",
 			},
 		},
 		Status: v1.PodStatus{
@@ -64,16 +64,16 @@ func TestIntegrationEventHandlerWithRealComponents(t *testing.T) {
 		},
 	}
 	store = cache.InitWithPods(store, []*v1.Pod{pod}, "test-model")
-	
+
 	// Create adapters
 	podProvider, syncProvider := cache.NewStoreProviderAdapter(store)
-	
+
 	// Create real manager with real components
 	manager := kvevent.NewManager(podProvider, syncProvider)
-	
+
 	// Create handler through internal API
 	handler := kvevent.NewEventHandlerForTest(manager, "default/test-pod", "test-model", 123)
-	
+
 	// Test BlockStored event
 	// Note: tokens must match block hashes length
 	storedEvent := &kvcache.BlockStoredEvent{
@@ -81,25 +81,25 @@ func TestIntegrationEventHandlerWithRealComponents(t *testing.T) {
 		ParentBlockHash: &[]int64{1000}[0],
 		TokenIDs:        [][]int32{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}},
 	}
-	
+
 	err := handler.HandleEvent(storedEvent)
 	if err != nil {
 		t.Errorf("HandleEvent failed with real components: %v", err)
 	}
-	
+
 	// Verify the event was actually processed by checking the indexer state
 	// This would require adding getter methods or checking side effects
-	
+
 	// Test BlockRemoved event
 	removedEvent := &kvcache.BlockRemovedEvent{
 		BlockHashes: []int64{1001},
 	}
-	
+
 	err = handler.HandleEvent(removedEvent)
 	if err != nil {
 		t.Errorf("HandleEvent failed for removal: %v", err)
 	}
-	
+
 	// Test that the real sync indexer received and processed the events
 	// In a real integration test, we would verify the state changes
 }
@@ -114,16 +114,16 @@ func TestIntegrationSyncIndexerAdapterWithRealIndexer(t *testing.T) {
 	store := cache.NewForTest()
 	realIndexer := syncindexer.NewSyncPrefixHashTable()
 	cache.SetSyncIndexerForTest(store, realIndexer)
-	
+
 	// Get adapter
 	_, syncProvider := cache.NewStoreProviderAdapter(store)
-	
+
 	ctx := context.Background()
 	syncIndexer, err := syncProvider.GetSyncIndexer(ctx)
 	if err != nil {
 		t.Fatalf("Failed to get sync indexer: %v", err)
 	}
-	
+
 	// Test real type conversion and processing
 	blockStoredEvent := kvevent.BlockStoredEvent{
 		BlockHashes:     []int64{2001, 2002, 2003},
@@ -133,13 +133,13 @@ func TestIntegrationSyncIndexerAdapterWithRealIndexer(t *testing.T) {
 		ParentBlockHash: &[]int64{2000}[0],
 		Tokens:          [][]byte{{0, 0, 0, 10}, {0, 0, 0, 20}, {0, 0, 0, 30}},
 	}
-	
+
 	// This will go through the adapter to the real indexer
 	err = syncIndexer.ProcessBlockStored(ctx, blockStoredEvent)
 	if err != nil {
 		t.Errorf("ProcessBlockStored failed with real indexer: %v", err)
 	}
-	
+
 	// Test removal
 	blockRemovedEvent := kvevent.BlockRemovedEvent{
 		BlockHashes: []int64{2001},
@@ -147,12 +147,12 @@ func TestIntegrationSyncIndexerAdapterWithRealIndexer(t *testing.T) {
 		LoraID:      456,
 		SourcePod:   "default/integration-pod",
 	}
-	
+
 	err = syncIndexer.ProcessBlockRemoved(ctx, blockRemovedEvent)
 	if err != nil {
 		t.Errorf("ProcessBlockRemoved failed with real indexer: %v", err)
 	}
-	
+
 	// Test prefix removal
 	err = syncIndexer.RemovePrefix(ctx, "integration-test-model", 456, "default/integration-pod")
 	if err != nil {
@@ -167,14 +167,14 @@ func TestIntegrationFullEventFlow(t *testing.T) {
 	}
 
 	// Enable KV sync for this test
-	t.Setenv(constants.EnvKVEventSyncEnabled, "true")
-	t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
-	
+	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
+
 	// Create real store with real components
 	store := cache.NewForTest()
 	realIndexer := syncindexer.NewSyncPrefixHashTable()
 	cache.SetSyncIndexerForTest(store, realIndexer)
-	
+
 	// Add test pod
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -191,31 +191,31 @@ func TestIntegrationFullEventFlow(t *testing.T) {
 			PodIP: "10.0.0.2",
 		},
 	}
-	
+
 	// Initialize store with pod
 	store = cache.InitWithPods(store, []*v1.Pod{pod}, "flow-test-model")
-	
+
 	// Create KV event manager using the old API for compatibility
 	kvManager := cache.NewKVEventManager(store)
-	
+
 	// Start the manager
 	err := kvManager.Start()
 	if err != nil {
 		t.Fatalf("Failed to start KV event manager: %v", err)
 	}
 	defer kvManager.Stop()
-	
+
 	// Simulate pod lifecycle
 	kvManager.OnPodAdd(pod)
-	
+
 	// Update pod (IP change)
 	updatedPod := pod.DeepCopy()
 	updatedPod.Status.PodIP = "10.0.0.3"
 	kvManager.OnPodUpdate(pod, updatedPod)
-	
+
 	// Delete pod
 	kvManager.OnPodDelete(updatedPod)
-	
+
 	// Verify the complete flow worked without errors
 	// In a real system, we would verify side effects in Redis or state changes
 }

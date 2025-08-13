@@ -19,7 +19,6 @@ package cache
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/kvevent"
@@ -42,26 +41,16 @@ func NewKVEventManager(store *Store) *KVEventManager {
 // validateKVEventConfiguration checks if KV event sync configuration is valid
 func validateKVEventConfiguration() error {
 	// Check if KV sync is enabled
-	kvSyncValue := utils.LoadEnv(constants.EnvKVEventSyncEnabled, "false")
-	kvSyncRequested, err := strconv.ParseBool(kvSyncValue)
-	if err != nil {
-		return fmt.Errorf("invalid boolean value for %s: %q", constants.EnvKVEventSyncEnabled, kvSyncValue)
-	}
-
+	kvSyncRequested := utils.LoadEnvBool(constants.EnvPrefixCacheKVEventSyncEnabled, false)
 	if !kvSyncRequested {
 		// Not an error - just disabled
 		return nil
 	}
 
 	// If enabled, check requirements
-	remoteTokenValue := utils.LoadEnv(constants.EnvUseRemoteTokenizer, "false")
-	remoteTokenizerEnabled, err := strconv.ParseBool(remoteTokenValue)
-	if err != nil {
-		return fmt.Errorf("invalid boolean value for %s: %q", constants.EnvUseRemoteTokenizer, remoteTokenValue)
-	}
-
+	remoteTokenizerEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
 	if !remoteTokenizerEnabled {
-		return fmt.Errorf("KV event sync requires remote tokenizer (set %s=true)", constants.EnvUseRemoteTokenizer)
+		return fmt.Errorf("KV event sync requires remote tokenizer (set %s=true)", constants.EnvPrefixCacheUseRemoteTokenizer)
 	}
 
 	// Check tokenizer type
@@ -71,9 +60,9 @@ func validateKVEventConfiguration() error {
 	}
 
 	// Check remote tokenizer endpoint
-	endpoint := utils.LoadEnv(constants.EnvRemoteTokenizerEndpoint, "")
+	endpoint := utils.LoadEnv(constants.EnvPrefixCacheRemoteTokenizerEndpoint, "")
 	if endpoint == "" {
-		return fmt.Errorf("KV event sync requires %s to be set", constants.EnvRemoteTokenizerEndpoint)
+		return fmt.Errorf("KV event sync requires %s to be set", constants.EnvPrefixCacheRemoteTokenizerEndpoint)
 	}
 
 	return nil

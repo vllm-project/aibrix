@@ -22,7 +22,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 
 	"google.golang.org/grpc"
@@ -33,6 +32,7 @@ import (
 
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -80,8 +80,8 @@ func main() {
 	}
 
 	// Initialize cache with KV sync enabled for gateway
-	kvSyncEnabled, _ := strconv.ParseBool(utils.LoadEnv("AIBRIX_KV_EVENT_SYNC_ENABLED", "false"))
-	remoteTokenizerEnabled, _ := strconv.ParseBool(utils.LoadEnv("AIBRIX_USE_REMOTE_TOKENIZER", "false"))
+	kvSyncEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheKVEventSyncEnabled, false)
+	remoteTokenizerEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
 
 	cache.InitWithOptions(config, stopCh, cache.InitOptions{
 		EnableKVSync:        kvSyncEnabled && remoteTokenizerEnabled,
