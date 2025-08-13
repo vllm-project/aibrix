@@ -235,6 +235,10 @@ func TestSyncHeadlessService(t *testing.T) {
 			if service.Spec.Type != corev1.ServiceTypeClusterIP {
 				t.Errorf("Expected service type ClusterIP, got %v", service.Spec.Type)
 			}
+
+			if service.Spec.PublishNotReadyAddresses != true {
+				t.Errorf("Expected PublishNotReadyAddresses to be true, got %v", service.Spec.PublishNotReadyAddresses)
+			}
 		})
 	}
 }
