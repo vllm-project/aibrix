@@ -330,7 +330,7 @@ func makeStormServiceWithNoSidecarInjection(name, namespace string,
 						{
 							Name:     "worker",
 							Replicas: ptr.To(int32(1)),
-							UpgradeOrder: ptr.To(int32(0)),
+							UpgradeOrder: ptr.To(int32(1)),
 							Stateful: false,
 							Template: v1.PodTemplateSpec{
 								ObjectMeta: metav1.ObjectMeta{
