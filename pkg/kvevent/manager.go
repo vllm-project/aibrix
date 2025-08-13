@@ -106,7 +106,7 @@ IndexerReadyLoop:
 
 	// Process existing pods
 	err := m.podProvider.RangePods(initCtx, func(key string, podInfo *PodInfo) bool {
-		if m.shouldSubscribe(podInfo) {
+		if canSubscribeToPod(podInfo) {
 			// Use anonymous function to properly scope the defer
 			func() {
 				// Use 5s timeout for individual pod subscriptions as ZMQ
@@ -158,7 +158,7 @@ func (m *Manager) Stop() {
 
 // OnPodAdd handles new pod additions
 func (m *Manager) OnPodAdd(pod *v1.Pod) {
-	if !m.enabled || !m.shouldSubscribeToPod(pod) {
+	if !m.enabled || !isPodSubscribable(pod) {
 		return
 	}
 
@@ -186,20 +186,18 @@ func (m *Manager) OnPodUpdate(oldPod, newPod *v1.Pod) {
 	}
 
 	podKey := utils.GeneratePodKey(newPod.Namespace, newPod.Name)
-	shouldSubscribeOld := m.shouldSubscribeToPod(oldPod)
-	shouldSubscribeNew := m.shouldSubscribeToPod(newPod)
 
-	// Handle state transitions
-	if !shouldSubscribeOld && shouldSubscribeNew {
-		m.OnPodAdd(newPod)
-	} else if shouldSubscribeOld && !shouldSubscribeNew {
-		m.unsubscribeFromPod(podKey)
-	} else if shouldSubscribeOld && shouldSubscribeNew {
-		// Check if IP changed
-		if oldPod.Status.PodIP != newPod.Status.PodIP {
-			klog.Infof("Pod %s IP changed from %s to %s, resubscribing",
-				podKey, oldPod.Status.PodIP, newPod.Status.PodIP)
+	oldSubscribable := isPodSubscribable(oldPod)
+	newSubscribable := isPodSubscribable(newPod)
+
+	// Resubscription only happens in 2 cases:
+	// - Pod Changed
+	// - Subscription state (status.Phase) changed, this applies to the same pod or different pods
+	if !isSamePod(oldPod, newPod) || oldSubscribable != newSubscribable {
+		if oldSubscribable {
 			m.unsubscribeFromPod(podKey)
+		}
+		if newSubscribable {
 			m.OnPodAdd(newPod)
 		}
 	}
@@ -242,17 +240,23 @@ func (m *Manager) OnPodDelete(pod *v1.Pod) {
 
 // Internal methods
 
-func (m *Manager) shouldSubscribe(podInfo *PodInfo) bool {
+func canSubscribeToPod(podInfo *PodInfo) bool {
 	return podInfo.Labels[constants.KVEventsEnabledLabel] == "true" &&
 		podInfo.PodIP != "" &&
 		podInfo.ModelName != ""
 }
 
-func (m *Manager) shouldSubscribeToPod(pod *v1.Pod) bool {
+// Check if the pod can be subscribed
+func isPodSubscribable(pod *v1.Pod) bool {
 	return constants.IsKVEventsEnabled(pod.Labels) &&
 		pod.Status.Phase == v1.PodRunning &&
 		pod.Status.PodIP != "" &&
 		pod.Labels[constants.ModelLabelName] != ""
+}
+
+func isSamePod(pod1 *v1.Pod, pod2 *v1.Pod) bool {
+	// For now, we just check if PodIP is the same. Other conditions may be added if needed.
+	return pod1.Status.PodIP != pod2.Status.PodIP
 }
 
 func (m *Manager) subscribeToPod(ctx context.Context, podKey string, podInfo *PodInfo) error {
@@ -299,20 +303,10 @@ func (m *Manager) unsubscribeFromPod(podKey string) {
 
 func validateConfiguration() bool {
 	// Check if KV sync is enabled
-	kvSyncValue := utils.LoadEnv(constants.EnvKVEventSyncEnabled, "false")
-	kvSyncRequested, err := strconv.ParseBool(kvSyncValue)
-	if err != nil {
-		klog.Warningf("Invalid boolean value for %s: %q. Defaulting to false.", constants.EnvKVEventSyncEnabled, kvSyncValue)
-		kvSyncRequested = false
-	}
+	kvSyncRequested := utils.LoadEnvBool(constants.EnvPrefixCacheKVEventSyncEnabled, false)
 
 	// Check remote tokenizer
-	remoteTokenValue := utils.LoadEnv(constants.EnvUseRemoteTokenizer, "false")
-	remoteTokenizerEnabled, err := strconv.ParseBool(remoteTokenValue)
-	if err != nil {
-		klog.Warningf("Invalid boolean value for %s: %q. Defaulting to false.", constants.EnvUseRemoteTokenizer, remoteTokenValue)
-		remoteTokenizerEnabled = false
-	}
+	remoteTokenizerEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
 
 	if kvSyncRequested && !remoteTokenizerEnabled {
 		klog.Warning("KV event sync requires remote tokenizer. Disabling.")
