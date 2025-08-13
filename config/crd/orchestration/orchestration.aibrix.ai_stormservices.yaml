@@ -3755,6 +3755,7 @@ spec:
                                   x-kubernetes-int-or-string: true
                               type: object
                             upgradeOrder:
+                              default: 0
                               format: int32
                               minimum: 0
                               type: integer
