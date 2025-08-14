@@ -1342,6 +1342,9 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
         process_group: The process group.
     """
 
+    _COLL_STATUS_ERROR = -1
+    _COLL_STATUS_NOT_FOUND = 0
+
     def __init__(
         self, config: KVCacheConfig, process_group: dist.ProcessGroup
     ) -> None:
@@ -1351,6 +1354,16 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
         self.process_group = process_group
         self.world_size = dist.get_world_size(group=process_group)
         self.rank = dist.get_rank(group=process_group)
+
+        if dist.get_backend(process_group) == dist.Backend.NCCL:
+            coll_tensor_device = "cuda"
+        else:
+            coll_tensor_device = "cpu"
+        self._coll_tensor = torch.empty(
+            (1),
+            dtype=torch.int32,
+            device=coll_tensor_device,
+        )
 
         super().__init__(config)
 
@@ -1431,30 +1444,32 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
                 super().prefetch(chunk_prefix + chunk_tokens, next_tokens)
             status = super()._acquire_impl(chunk_prefix, chunk_tokens)
             value = status.get()
-            # we only care about the error code and num of blocks
-            coll_status = Status.ok(len(value)) if status.is_ok() else status
-            # check if all participants have the same status
-            pg_statuses: List[Status] = [Status.ok()] * self.world_size
-            dist.all_gather_object(
-                pg_statuses, coll_status, group=self.process_group
+            # we only care about num of blocks or if it is an error
+            if status.is_ok():
+                self._coll_tensor[0] = len(value)
+            elif status.is_not_found():
+                self._coll_tensor[0] = self._COLL_STATUS_NOT_FOUND
+            else:
+                self._coll_tensor[0] = self._COLL_STATUS_ERROR
+            dist.all_reduce(
+                self._coll_tensor,
+                op=dist.ReduceOp.MIN,
+                group=self.process_group,
             )
             # if any participant encountered an error
-            if not all([s.is_ok() for s in pg_statuses]):
+            if self._coll_tensor[0] <= 0:
                 self._release(value)
                 if start > 0:
                     # we have already got some tokens, return success
                     return Status.ok((start, results))
+                elif self._coll_tensor[0] == self._COLL_STATUS_NOT_FOUND:
+                    return Status(StatusCodes.NOT_FOUND)
                 else:
-                    # return the first error
-                    return next(s for s in pg_statuses if not s.is_ok())
-            elif not all(
-                [
-                    s.get() * self.block_ntokens == len(chunk_tokens)
-                    for s in pg_statuses
-                ]
-            ):
+                    # return error
+                    return Status(StatusCodes.ERROR)
+            elif self._coll_tensor[0] * self.block_ntokens < len(chunk_tokens):
                 # some participants have got less tokens than others
-                num = min(s.get() for s in pg_statuses)
+                num = self._coll_tensor[0]
                 results.extend(value[:num])
                 self._release(value[num:])
                 return Status.ok((start + num * self.block_ntokens, results))
@@ -1506,27 +1521,30 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
             chunk_mrs = mrs[chunk_mrs_start:chunk_mrs_end]
             status = super()._get_impl(chunk_prefix, chunk_tokens, chunk_mrs)
             # check if all participants have the same status
-            pg_statuses: List[Status] = [Status.ok()] * self.world_size
-            dist.all_gather_object(
-                pg_statuses, status, group=self.process_group
+            if status.is_ok():
+                self._coll_tensor[0] = status.get()
+            elif status.is_not_found():
+                self._coll_tensor[0] = self._COLL_STATUS_NOT_FOUND
+            else:
+                self._coll_tensor[0] = self._COLL_STATUS_ERROR
+            dist.all_reduce(
+                self._coll_tensor,
+                op=dist.ReduceOp.MIN,
+                group=self.process_group,
             )
             # if any participant encountered an error
-            if not all([s.is_ok() for s in pg_statuses]):
+            if self._coll_tensor[0] <= 0:
                 if start > 0:
                     # we have already got some tokens, return success
                     return Status.ok(start)
+                elif self._coll_tensor[0] == self._COLL_STATUS_NOT_FOUND:
+                    return Status(StatusCodes.NOT_FOUND)
                 else:
-                    # return the first error
-                    return next(s for s in pg_statuses if not s.is_ok())
-            elif not all(
-                [
-                    s.get() * self.block_ntokens == len(chunk_tokens)
-                    for s in pg_statuses
-                ]
-            ):
+                    # return error
+                    return Status(StatusCodes.ERROR)
+            elif self._coll_tensor[0] < len(chunk_tokens):
                 # some participants have got less tokens than others
-                num = min(s.get() for s in pg_statuses)
-                return Status.ok(start + num * self.block_ntokens)
+                return Status.ok(start + self._coll_tensor[0])
 
             start += len(chunk_tokens)
 
