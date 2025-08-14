@@ -216,6 +216,17 @@ func TestSyncHeadlessService(t *testing.T) {
 				t.Errorf("Expected ClusterIP to be None, got %s", service.Spec.ClusterIP)
 			}
 
+			if tt.existingService == nil {
+				if len(service.OwnerReferences) == 0 {
+					t.Error("Expected service to have an owner reference")
+				} else {
+					ownerRef := service.OwnerReferences[0]
+					if ownerRef.Kind != orchestrationv1alpha1.StormServiceKind || ownerRef.UID != service.UID {
+						t.Errorf("Expected owner reference to be %s %s, got %s %s", orchestrationv1alpha1.StormServiceKind, service.UID, ownerRef.Kind, ownerRef.UID)
+					}
+				}
+			}
+
 			expectedSelector := map[string]string{constants.StormServiceNameLabelKey: tt.stormService.Name}
 			if !reflect.DeepEqual(service.Spec.Selector, expectedSelector) {
 				t.Errorf("Expected selector %v, got %v", expectedSelector, service.Spec.Selector)
