@@ -173,6 +173,28 @@ func TestSyncHeadlessService(t *testing.T) {
 			},
 			wantError: false,
 		},
+		{
+			name: "service already exists with PublishNotReadyAddresses false",
+			stormService: &orchestrationv1alpha1.StormService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-storm",
+					Namespace: "default",
+				},
+			},
+			existingService: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-storm",
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Type:                     corev1.ServiceTypeClusterIP,
+					ClusterIP:                corev1.ClusterIPNone,
+					Selector:                 map[string]string{constants.StormServiceNameLabelKey: "test-storm"},
+					PublishNotReadyAddresses: false, // should be updated to true
+				},
+			},
+			wantError: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -234,6 +256,10 @@ func TestSyncHeadlessService(t *testing.T) {
 
 			if service.Spec.Type != corev1.ServiceTypeClusterIP {
 				t.Errorf("Expected service type ClusterIP, got %v", service.Spec.Type)
+			}
+
+			if service.Spec.PublishNotReadyAddresses != true {
+				t.Errorf("Expected PublishNotReadyAddresses to be true, got %v", service.Spec.PublishNotReadyAddresses)
 			}
 		})
 	}

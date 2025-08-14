@@ -237,5 +237,6 @@ func sortRoleSetByRevision(roleSets []*orchestrationv1alpha1.RoleSet, updatedRev
 func isServiceEqual(a, b *corev1.Service) bool {
 	return a.Spec.Type == b.Spec.Type &&
 		apiequality.Semantic.DeepEqual(a.Spec.Selector, b.Spec.Selector) &&
-		a.Spec.ClusterIP == b.Spec.ClusterIP
+		a.Spec.ClusterIP == b.Spec.ClusterIP &&
+		a.Spec.PublishNotReadyAddresses == b.Spec.PublishNotReadyAddresses
 }
