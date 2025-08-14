@@ -57,7 +57,10 @@ help: ## Display this help.
 ##@ Development
 
 GINKGO_VERSION ?= $(shell go list -m -f '{{.Version}}' github.com/onsi/ginkgo/v2)
-INTEGRATION_TARGET ?= ./test/integration/webhook/...
+INTEGRATION_ROOT ?= ./test/integration
+INTEGRATION_WEBHOOK_TARGET ?= $(INTEGRATION_ROOT)/webhook/...
+INTEGRATION_CONTROLLER_TARGET ?= $(INTEGRATION_ROOT)/controller/...
+INTEGRATION_TARGET ?= $(INTEGRATION_ROOT)/...
 
 GINKGO = $(shell pwd)/bin/ginkgo
 .PHONY: ginkgo
@@ -102,10 +105,21 @@ test-code-coverage: test
 test-race-condition: manifests generate fmt vet envtest ## Run tests with race detection enabled.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test -race $$(go list ./... | grep -v /e2e)
 
-.PHONY: test-integration
-test-integration: manifests fmt vet envtest ginkgo ## Run integration tests.
+.PHONY: test-integration test-integration-webhook test-integration-controller
+test-integration: manifests fmt vet envtest ginkgo
+	@echo "Running all integration tests..."
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
-	$(GINKGO) --junit-report=junit.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_TARGET)
+	$(GINKGO) --junit-report=junit.integration.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_TARGET)
+
+test-integration-webhook: manifests fmt vet envtest ginkgo
+	@echo "Running webhook integration tests only..."
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+	$(GINKGO) --junit-report=junit.webhook.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_WEBHOOK_TARGET)
+
+test-integration-controller: manifests fmt vet envtest ginkgo
+	@echo "Running controller integration tests only..."
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+	$(GINKGO) --junit-report=junit.controller.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_CONTROLLER_TARGET)
 
 # Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
 .PHONY: test-e2e  # Run the e2e tests against a Kind k8s instance that is spun up.
