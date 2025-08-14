@@ -81,9 +81,10 @@ func (r *StormServiceReconciler) syncHeadlessService(ctx context.Context, servic
 			},
 		},
 		Spec: corev1.ServiceSpec{
-			Type:      corev1.ServiceTypeClusterIP,
-			ClusterIP: corev1.ClusterIPNone,
-			Selector:  map[string]string{constants.StormServiceNameLabelKey: service.Name},
+			Type:                     corev1.ServiceTypeClusterIP,
+			ClusterIP:                corev1.ClusterIPNone,
+			Selector:                 map[string]string{constants.StormServiceNameLabelKey: service.Name},
+			PublishNotReadyAddresses: true,
 		},
 	}
 
