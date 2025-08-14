@@ -37,7 +37,7 @@ spec:
             spec:
               containers:
                 - name: prefill
-                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.9.2-cu128-nixl-v0.4.1-lmcache-0.3.1.post1
+                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.10.0-cu128-nixl-v0.4.1-lmcache-0.3.2
                   command: ["sh", "-c"]
                   args:
                     - |
@@ -116,7 +116,7 @@ spec:
             spec:
               containers:
                 - name: decode
-                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.9.2-cu128-nixl-v0.4.1-lmcache-0.3.1.post1
+                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.10.0-cu128-nixl-v0.4.1-lmcache-0.3.2
                   command: ["sh", "-c"]
                   args:
                     - |
