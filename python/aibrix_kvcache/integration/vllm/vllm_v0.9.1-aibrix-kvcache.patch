@@ -4925,10 +4925,10 @@ index 000000000..311169501
 +  }
 diff --git a/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py b/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py
 new file mode 100644
-index 000000000..19a06f312
+index 000000000..ed208e5d9
 --- /dev/null
 +++ b/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py
-@@ -0,0 +1,1156 @@
+@@ -0,0 +1,1159 @@
 +# SPDX-License-Identifier: Apache-2.0
 +import copy
 +import dataclasses
@@ -5747,8 +5747,11 @@ index 000000000..19a06f312
 +                        "Failed to put to offloading service: %s", 3,
 +                        str(status))
 +                    break
-+                else:
-+                    total_sent += length
++
++                put_ntokens = status.get()
++                total_sent += put_ntokens
++                if put_ntokens != length:
++                    break
 +
 +            log_if(
 +                logger,
@@ -6141,10 +6144,10 @@ index 58dfa251c..7c78f901c 100644
 +    ".aibrix_offloading_connector_type1", "AIBrixOffloadingConnector")
 diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type1.py b/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type1.py
 new file mode 100644
-index 000000000..ec337f67b
+index 000000000..f61b7f6ba
 --- /dev/null
 +++ b/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type1.py
-@@ -0,0 +1,1234 @@
+@@ -0,0 +1,1237 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +import copy
@@ -7143,8 +7146,11 @@ index 000000000..ec337f67b
 +                                    "Failed to put to offloading service: %s",
 +                                    3, str(status))
 +                break
-+            else:
-+                total_sent += length
++
++            put_ntokens = status.get()
++            total_sent += put_ntokens
++            if put_ntokens != length:
++                break
 +
 +        log_if(
 +            logger,

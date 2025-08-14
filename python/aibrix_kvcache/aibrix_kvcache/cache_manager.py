@@ -33,7 +33,7 @@ from .cache_handle import (
     MemoryRegionKVCacheHandle,
 )
 from .cache_hashable import TokenCacheKey, TokenListView
-from .common.absl_logging import getLogger, log_every_n_seconds
+from .common.absl_logging import getLogger, log_every_n_seconds, log_if
 from .config import KVCacheConfig
 from .l1 import L1Cache
 from .l2 import KeyBuilder, L2Cache
@@ -43,6 +43,7 @@ from .metrics import KVCacheMetrics, MeasurableBase, MetricRecorder
 from .profiling import nvtx_range
 from .spec import KVCacheBlockLayout, KVCacheBlockSpec
 from .status import Status, StatusCodes
+from .utils import round_down, round_up
 
 logger = getLogger(__name__)
 
@@ -309,6 +310,20 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         )
 
         self._chunk_size: int = envs.AIBRIX_KV_CACHE_OL_CHUNK_SIZE
+        self._max_seq_len: int = envs.AIBRIX_KV_CACHE_OL_MAX_SEQ_LEN
+        if self._max_seq_len > 0:
+            max_seq_len = round_up(self._max_seq_len, self.block_ntokens)
+            log_if(
+                logger,
+                logging.WARNING,
+                "AIBRIX_KV_CACHE_OL_MAX_SEQ_LEN=%d is not divisible by "
+                "block_ntokens=%d, aligned to %d",
+                max_seq_len > self._max_seq_len,
+                self._max_seq_len,
+                self.block_ntokens,
+                max_seq_len,
+            )
+            self._max_seq_len = max_seq_len
 
         if self._chunk_size % self.block_ntokens != 0:
             self._chunk_size = (
@@ -1185,6 +1200,31 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             The status of the put operation and the number of tokens have
             been put or scheduled to put into the kv cache service.
         """
+        pref_len = len(prefix) if prefix is not None else 0
+        if pref_len % self.block_ntokens != 0:
+            return Status(
+                StatusCodes.INVALID,
+                (
+                    f"Prefix length {pref_len} is not aligned to block size "
+                    f"{self.block_ntokens}."
+                ),
+            )
+
+        if self._max_seq_len > 0:
+            if pref_len >= self._max_seq_len:
+                return Status(StatusCodes.DENIED, "Sequence too long")
+            elif pref_len + len(tokens) > self._max_seq_len:
+                token_len = round_down(
+                    self._max_seq_len - pref_len,
+                    self.block_ntokens,
+                )
+                if token_len == 0:
+                    return Status.ok(0)
+
+                # truncate tokens and kv_tensors
+                tokens = tokens[:token_len]
+                kv_tensors.truncate(token_len // self.block_ntokens)
+
         if isinstance(kv_tensors, GDRKVCacheHandle):
             assert self.feature.gdr_put, "Does not support GDR put"
 

@@ -39,6 +39,10 @@ class KVCacheHandle(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def truncate(self, length: int) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     def __len__(self) -> int:
         raise NotImplementedError
 
@@ -66,6 +70,11 @@ class MemoryRegionKVCacheHandle(KVCacheHandle):
     def release(self) -> None:
         for mr in self._mrs:
             mr.ref_down()
+
+    def truncate(self, length: int) -> None:
+        for mr in self._mrs[length:]:
+            mr.ref_down()
+        self._mrs = self._mrs[:length]
 
     def __len__(self) -> int:
         return len(self._mrs)
@@ -96,6 +105,12 @@ class GDRKVCacheHandle(KVCacheHandle):
         for block_mrs in self._mrs:
             for mr in block_mrs:
                 mr.ref_down()
+
+    def truncate(self, length: int) -> None:
+        for block_mrs in self._mrs[length:]:
+            for mr in block_mrs:
+                mr.ref_down()
+        self._mrs = self._mrs[:length]
 
     def __len__(self) -> int:
         return len(self._mrs)

@@ -35,6 +35,9 @@ if TYPE_CHECKING:
     # to -1, which means we will use engine's block size.
     AIBRIX_KV_CACHE_OL_BLOCK_SIZE: int = -1
     AIBRIX_KV_CACHE_OL_CHUNK_SIZE: int = 512
+    # Maximum sequence length. Defaults to -1, which means no limit.
+    # If set, we will ignore tokens beyond this length.
+    AIBRIX_KV_CACHE_OL_MAX_SEQ_LEN: int = -1
     AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED: bool = True
     AIBRIX_KV_CACHE_OL_BREAKDOWN_MEASUREMENT_ENABLED: bool = True
     # Whether to validate the token in L2 cache. Defaults to False.
@@ -163,6 +166,9 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     ),
     "AIBRIX_KV_CACHE_OL_CHUNK_SIZE": lambda: int(
         os.getenv("AIBRIX_KV_CACHE_OL_CHUNK_SIZE", "512")
+    ),
+    "AIBRIX_KV_CACHE_OL_MAX_SEQ_LEN": lambda: int(
+        os.getenv("AIBRIX_KV_CACHE_OL_MAX_SEQ_LEN", "-1")
     ),
     "AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED", "1")
