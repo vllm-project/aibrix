@@ -103,11 +103,8 @@ func (r *StormServiceReconciler) syncHeadlessService(ctx context.Context, servic
 		if err := r.Client.Update(ctx, headlessService); err != nil {
 			return fmt.Errorf("failed to update headless service: %w", err)
 		}
-		r.EventRecorder.Eventf(service, corev1.EventTypeNormal, "Updated", "Headless Service updated")
+		r.EventRecorder.Eventf(service, corev1.EventTypeNormal, HeadlessServiceEventType, "Headless Service %s updated", service.Name)
 	}
-
-	r.EventRecorder.Eventf(service, corev1.EventTypeNormal, HeadlessServiceEventType, "Headless Service(discovery) %s updated", service.Name)
-
 	return nil
 }
 
