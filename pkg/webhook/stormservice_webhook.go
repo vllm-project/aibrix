@@ -44,7 +44,7 @@ func SetupStormServiceWebhookWithManager(mgr ctrl.Manager) error {
 type StormServiceCustomDefaulter struct {
 }
 
-//+kubebuilder:webhook:path=/mutate-orchestration-aibrix-ai-v1alpha1-stormservice,mutating=true,failurePolicy=fail,sideEffects=None,groups=orchestration.aibrix.ai,resources=stormservices,verbs=create;update,versions=v1alpha1,name=mstormservice.kb.io,admissionReviewVersions=v1
+//+kubebuilder:webhook:path=/mutate-orchestration-aibrix-ai-v1alpha1-stormservice,mutating=true,failurePolicy=ignore,sideEffects=None,groups=orchestration.aibrix.ai,resources=stormservices,verbs=create;update,versions=v1alpha1,name=mstormservice.kb.io,admissionReviewVersions=v1
 
 var _ webhook.CustomDefaulter = &StormServiceCustomDefaulter{}
 
@@ -210,9 +210,9 @@ func containsContainer(containers []corev1.Container, name string) bool {
 // Sidecar injection constants
 const (
 	// SidecarInjectionAnnotation Annotation used to enable or disable sidecar injection
-	SidecarInjectionAnnotation = "stormservice.orchestration.aibrix.ai/sidecar-injection"
+	SidecarInjectionAnnotation = "model.aibrix.ai/sidecar-injection"
 	// SidecarInjectionRuntimeImageAnnotation Annotation used to specify a custom image for the sidecar container
-	SidecarInjectionRuntimeImageAnnotation = "stormservice.orchestration.aibrix.ai/sidecar-runtime-image"
+	SidecarInjectionRuntimeImageAnnotation = "model.aibrix.ai/sidecar-runtime-image"
 	SidecarName                            = "aibrix-runtime"
 	SidecarImage                           = "aibrix/runtime:v0.4.0"
 	SidecarCommand                         = "aibrix_runtime"
@@ -223,7 +223,7 @@ const (
 )
 
 // TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
-//+kubebuilder:webhook:path=/validate-orchestration-aibrix-ai-v1alpha1-stormservice,mutating=false,failurePolicy=fail,sideEffects=None,groups=orchestration.aibrix.ai,resources=stormservices,verbs=create;update,versions=v1alpha1,name=vstormservice.kb.io,admissionReviewVersions=v1
+//+kubebuilder:webhook:path=/validate-orchestration-aibrix-ai-v1alpha1-stormservice,mutating=false,failurePolicy=ignore,sideEffects=None,groups=orchestration.aibrix.ai,resources=stormservices,verbs=create;update,versions=v1alpha1,name=vstormservice.kb.io,admissionReviewVersions=v1
 
 var _ webhook.CustomDefaulter = &StormServiceCustomDefaulter{}
 
