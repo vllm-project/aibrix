@@ -3,7 +3,7 @@
 
 engine:
   type: "sglang"
-  image: "kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix:sglang:v0.4.9.post3-cu126-nixl-v0.4.1"
+  image: "kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang:v0.4.9.post3-cu126-nixl-v0.4.1"
 
 model:
   name: "qwen3-8b"          # Override with --set model.name=qwen3-32b
@@ -16,7 +16,7 @@ deployment:
 router:
   enabled: true
   policy: "cache_aware"     # Override with --set router.policy=random
-  image: "kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix:sglang-router:v0.1.7"
+  image: "kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang-router:v0.1.7"
 
 workers:
   prefill:

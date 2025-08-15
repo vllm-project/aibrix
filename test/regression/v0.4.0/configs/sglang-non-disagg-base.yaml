@@ -3,7 +3,7 @@
 
 engine:
   type: "sglang"
-  image: "kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix:sglang:v0.4.9.post3-cu126-nixl-v0.4.1"
+  image: "kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/sglang:v0.4.9.post3-cu126-nixl-v0.4.1"
 
 model:
   name: "qwen3-8b"          # Override with --set model.name=qwen3-32b
