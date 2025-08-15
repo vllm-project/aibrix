@@ -1202,6 +1202,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         """
         pref_len = len(prefix) if prefix is not None else 0
         if pref_len % self.block_ntokens != 0:
+            kv_tensors.release()
             return Status(
                 StatusCodes.INVALID,
                 (
@@ -1212,6 +1213,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
         if self._max_seq_len > 0:
             if pref_len >= self._max_seq_len:
+                kv_tensors.release()
                 return Status(StatusCodes.DENIED, "Sequence too long")
             elif pref_len + len(tokens) > self._max_seq_len:
                 token_len = round_down(
@@ -1219,6 +1221,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                     self.block_ntokens,
                 )
                 if token_len == 0:
+                    kv_tensors.release()
                     return Status.ok(0)
 
                 # truncate tokens and kv_tensors
