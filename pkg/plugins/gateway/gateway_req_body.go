@@ -86,7 +86,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
 			HeaderTargetPod, targetPodIP,
-			"content-length", strconv.Itoa(len(routingCtx.ReqBody)))
+			"content-length", strconv.Itoa(len(routingCtx.ReqBody)),
+			"X-Request-Id", routingCtx.RequestID)
 		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream, "routingAlgorithm", routingAlgorithm, "targetPodIP", targetPodIP, "routingDuration", routingCtx.GetRoutingDelay())
 	}
 
