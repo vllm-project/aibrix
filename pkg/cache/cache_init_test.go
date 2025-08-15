@@ -23,6 +23,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
 func TestInitKVEventSync_FailureCleanup(t *testing.T) {
@@ -35,10 +36,10 @@ func TestInitKVEventSync_FailureCleanup(t *testing.T) {
 		{
 			name: "cleanup on Start failure - remote tokenizer not configured",
 			setupEnv: func(t *testing.T) {
-				t.Setenv("AIBRIX_KV_EVENT_SYNC_ENABLED", "true")
-				t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
-				t.Setenv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "")
-				t.Setenv("AIBRIX_REMOTE_TOKENIZER_ENDPOINT", "")
+				t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+				t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
+				t.Setenv(constants.EnvPrefixCacheTokenizerType, "")
+				t.Setenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint, "")
 			},
 			expectCleanup: true,
 			expectError:   true,
@@ -46,10 +47,10 @@ func TestInitKVEventSync_FailureCleanup(t *testing.T) {
 		{
 			name: "cleanup on Start failure - invalid tokenizer type",
 			setupEnv: func(t *testing.T) {
-				t.Setenv("AIBRIX_KV_EVENT_SYNC_ENABLED", "true")
-				t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
-				t.Setenv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "local") // Should be "remote"
-				t.Setenv("AIBRIX_REMOTE_TOKENIZER_ENDPOINT", "http://test:8080")
+				t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+				t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
+				t.Setenv(constants.EnvPrefixCacheTokenizerType, "local") // Should be "remote"
+				t.Setenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint, "http://test:8080")
 			},
 			expectCleanup: true,
 			expectError:   true,
@@ -57,10 +58,10 @@ func TestInitKVEventSync_FailureCleanup(t *testing.T) {
 		{
 			name: "no cleanup on success",
 			setupEnv: func(t *testing.T) {
-				t.Setenv("AIBRIX_KV_EVENT_SYNC_ENABLED", "true")
-				t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
-				t.Setenv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "remote")
-				t.Setenv("AIBRIX_REMOTE_TOKENIZER_ENDPOINT", "http://test:8080")
+				t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+				t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
+				t.Setenv(constants.EnvPrefixCacheTokenizerType, "remote")
+				t.Setenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint, "http://test:8080")
 			},
 			expectCleanup: false,
 			expectError:   false,
@@ -68,8 +69,8 @@ func TestInitKVEventSync_FailureCleanup(t *testing.T) {
 		{
 			name: "no error when KV sync disabled",
 			setupEnv: func(t *testing.T) {
-				t.Setenv("AIBRIX_KV_EVENT_SYNC_ENABLED", "false")
-				t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
+				t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "false")
+				t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
 			},
 			expectCleanup: false,
 			expectError:   false,
@@ -77,8 +78,8 @@ func TestInitKVEventSync_FailureCleanup(t *testing.T) {
 		{
 			name: "no error when remote tokenizer disabled",
 			setupEnv: func(t *testing.T) {
-				t.Setenv("AIBRIX_KV_EVENT_SYNC_ENABLED", "true")
-				t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "false")
+				t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+				t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "false")
 			},
 			expectCleanup: false,
 			expectError:   false,
@@ -110,8 +111,8 @@ func TestInitKVEventSync_FailureCleanup(t *testing.T) {
 				assert.Nil(t, store.kvEventManager)
 				assert.Nil(t, store.syncPrefixIndexer)
 			} else if !expectedError &&
-				os.Getenv("AIBRIX_KV_EVENT_SYNC_ENABLED") == "true" &&
-				os.Getenv("AIBRIX_USE_REMOTE_TOKENIZER") == "true" {
+				os.Getenv(constants.EnvPrefixCacheKVEventSyncEnabled) == "true" &&
+				os.Getenv(constants.EnvPrefixCacheUseRemoteTokenizer) == "true" {
 				assert.NotNil(t, store.kvEventManager)
 				assert.NotNil(t, store.syncPrefixIndexer)
 			}
@@ -134,10 +135,10 @@ func TestCleanupKVEventSync_Idempotent(t *testing.T) {
 }
 
 func TestStore_Close_CallsCleanup(t *testing.T) {
-	t.Setenv("AIBRIX_KV_EVENT_SYNC_ENABLED", "true")
-	t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
-	t.Setenv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "remote")
-	t.Setenv("AIBRIX_REMOTE_TOKENIZER_ENDPOINT", "http://test:8080")
+	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
+	t.Setenv(constants.EnvPrefixCacheTokenizerType, "remote")
+	t.Setenv(constants.EnvPrefixCacheRemoteTokenizerEndpoint, "http://test:8080")
 
 	store := &Store{}
 	err := store.initKVEventSync()
@@ -172,8 +173,8 @@ func TestInitWithOptions_KVSyncBehavior(t *testing.T) {
 			},
 			expectKVSync: false,
 			setupEnv: func(t *testing.T) {
-				t.Setenv("AIBRIX_KV_EVENT_SYNC_ENABLED", "true")
-				t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
+				t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+				t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
 			},
 		},
 		{
@@ -181,8 +182,8 @@ func TestInitWithOptions_KVSyncBehavior(t *testing.T) {
 			opts:         InitOptions{},
 			expectKVSync: false,
 			setupEnv: func(t *testing.T) {
-				t.Setenv("AIBRIX_KV_EVENT_SYNC_ENABLED", "true")
-				t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
+				t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+				t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
 			},
 		},
 		{
@@ -193,8 +194,8 @@ func TestInitWithOptions_KVSyncBehavior(t *testing.T) {
 			},
 			expectKVSync: false,
 			setupEnv: func(t *testing.T) {
-				t.Setenv("AIBRIX_KV_EVENT_SYNC_ENABLED", "false")
-				t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "false")
+				t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "false")
+				t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "false")
 			},
 		},
 	}

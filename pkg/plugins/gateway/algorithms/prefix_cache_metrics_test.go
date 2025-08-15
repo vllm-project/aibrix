@@ -30,7 +30,7 @@ func TestPrefixCacheMetricsNotRegisteredByDefault(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Ensure metrics are not enabled
-	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
+	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "false")
 
 	// Try to initialize metrics
 	err := initializePrefixCacheMetrics()
@@ -69,7 +69,7 @@ func TestPrefixCacheMetricsRegisteredWhenEnabled(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Enable metrics
-	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "true")
 
 	// Initialize metrics
 	err := initializePrefixCacheMetrics()
@@ -100,7 +100,7 @@ func TestPrefixCacheMetricsNoOpWhenNotInitialized(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Ensure metrics are not enabled
-	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
+	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "false")
 
 	// Initialize (should be no-op)
 	err := initializePrefixCacheMetrics()
@@ -120,7 +120,7 @@ func TestRecordRoutingDecisionBuckets(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Enable metrics
-	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "true")
 
 	// Initialize metrics
 	err := initializePrefixCacheMetrics()
@@ -158,7 +158,7 @@ func TestConcurrentPrefixCacheMetricsAccess(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Enable metrics
-	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "true")
 
 	// Initialize metrics
 	err := initializePrefixCacheMetrics()

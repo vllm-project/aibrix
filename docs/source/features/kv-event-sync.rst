@@ -56,16 +56,16 @@ Environment Variables
    * - Variable
      - Default
      - Description
-   * - ``AIBRIX_KV_EVENT_SYNC_ENABLED``
+   * - ``AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED``
      - ``false``
      - Enable KV event synchronization
-   * - ``AIBRIX_USE_REMOTE_TOKENIZER``
+   * - ``AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER``
      - ``false``
      - Must be ``true`` for KV sync
-   * - ``AIBRIX_REMOTE_TOKENIZER_ENDPOINT``
+   * - ``AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT``
      - -
      - vLLM service endpoint
-   * - ``AIBRIX_PREFIX_CACHE_METRICS_ENABLED``
+   * - ``AIBRIX_PREFIX_CACHE_LOCAL_ROUTER_METRICS_ENABLED``
      - ``false``
      - Enable prefix cache metrics
 
@@ -121,18 +121,18 @@ Quick Start
 1. **Enable Remote Tokenizer** (mandatory prerequisite)::
 
       kubectl set env deployment/aibrix-gateway-plugins -n aibrix-system \
-        AIBRIX_USE_REMOTE_TOKENIZER=true \
-        AIBRIX_REMOTE_TOKENIZER_ENDPOINT=http://vllm-service:8000
+        AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER=true \
+        AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT=http://vllm-service:8000
 
 2. **Enable KV Event Sync**::
 
       kubectl set env deployment/aibrix-gateway-plugins -n aibrix-system \
-        AIBRIX_KV_EVENT_SYNC_ENABLED=true
+        AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true
 
 3. **Enable Prefix Cache Metrics** (optional but recommended)::
 
       kubectl set env deployment/aibrix-gateway-plugins -n aibrix-system \
-        AIBRIX_PREFIX_CACHE_METRICS_ENABLED=true
+        AIBRIX_PREFIX_CACHE_LOCAL_ROUTER_METRICS_ENABLED=true
 
 3. **Deploy vLLM with KV Events**:
 
@@ -291,7 +291,7 @@ To disable KV event sync::
 
    # Disable in gateway
    kubectl set env deployment/aibrix-gateway-plugins -n aibrix-system \
-     AIBRIX_KV_EVENT_SYNC_ENABLED=false
+     AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=false
 
    # Remove from vLLM deployments
    kubectl label deployment vllm-model model.aibrix.ai/kv-events-enabled-

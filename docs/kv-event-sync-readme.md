@@ -26,7 +26,7 @@ This directory contains the core documentation for KV Event Synchronization feat
 ## Quick Links
 
 - **Feature Requirements**: vLLM 0.7.0+, ZMQ support, Remote tokenizer
-- **Key Environment Variable**: `AIBRIX_KV_EVENT_SYNC_ENABLED=true`
+- **Key Environment Variable**: `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true`
 - **Build Tag**: `-tags="zmq"` (for gateway-plugins only)
 
 ## Getting Started

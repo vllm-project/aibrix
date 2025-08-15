@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,6 +30,7 @@ import (
 	"k8s.io/klog/v2"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	syncindexer "github.com/vllm-project/aibrix/pkg/utils/syncprefixcacheindexer"
@@ -431,10 +431,8 @@ func (s *Store) initKVEventSync() error {
 	klog.Info("Initializing KV event synchronization")
 
 	// Check if KV sync should be enabled
-	kvSyncValue := utils.LoadEnv("AIBRIX_KV_EVENT_SYNC_ENABLED", "false")
-	kvSyncEnabled, _ := strconv.ParseBool(kvSyncValue)
-	remoteTokenValue := utils.LoadEnv("AIBRIX_USE_REMOTE_TOKENIZER", "false")
-	remoteTokenizerEnabled, _ := strconv.ParseBool(remoteTokenValue)
+	kvSyncEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheKVEventSyncEnabled, false)
+	remoteTokenizerEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
 
 	// Early return if not enabled
 	if !kvSyncEnabled {

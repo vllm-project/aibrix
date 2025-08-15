@@ -49,7 +49,7 @@ const (
 
 var (
 	RouterPrefixCache                  types.RoutingAlgorithm = "prefix-cache"
-	tokenizerType                                             = utils.LoadEnv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "character")
+	tokenizerType                                             = utils.LoadEnv(constants.EnvPrefixCacheTokenizerType, "character")
 	podRunningRequestImbalanceAbsCount int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT", defaultPodRunningRequestImbalanceAbsCount)
 	standardDeviationFactor            int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR", defaultStandardDeviationFactor)
 )
@@ -119,7 +119,7 @@ func (m *PrefixCacheMetrics) register() error {
 // initializePrefixCacheMetrics initializes prefix cache metrics if enabled
 func initializePrefixCacheMetrics() error {
 	// Check if metrics are enabled
-	metricsEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheMetricsEnabled, false)
+	metricsEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheLocalRouterMetricsEnabled, false)
 	if !metricsEnabled {
 		return nil
 	}
@@ -199,13 +199,13 @@ func NewPrefixCacheRouter() (types.Router, error) {
 	var tokenizerPool *TokenizerPool
 
 	// Note: tokenizerType is a global variable defined at line 48 of prefix_cache.go
-	// tokenizerType = utils.LoadEnv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "character")
+	// tokenizerType = utils.LoadEnv(constants.EnvPrefixCacheTokenizerType, "character")
 
 	// Check configuration dependencies
 	// Only KV Event Sync constants are defined in pkg/constants
-	var useRemoteTokenizer = utils.LoadEnvBool("AIBRIX_USE_REMOTE_TOKENIZER", false)
+	var useRemoteTokenizer = utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
 	// Using constant from pkg/constants/kv_event_sync.go
-	var kvSyncEnabled = utils.LoadEnvBool(constants.EnvKVEventSyncEnabled, false)
+	var kvSyncEnabled = utils.LoadEnvBool(constants.EnvPrefixCacheKVEventSyncEnabled, false)
 
 	// Log configuration state
 	klog.InfoS("prefix cache router configuration",
@@ -307,9 +307,7 @@ func NewPrefixCacheRouter() (types.Router, error) {
 		}
 	} else {
 		// Set local indexer metrics only if metrics are enabled
-		// Using constant from pkg/constants/kv_event_sync.go
-		// Note: AIBRIX_PREFIX_CACHE_METRICS_ENABLED was added in this branch for KV Event Sync
-		metricsEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheMetricsEnabled, false)
+		metricsEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheLocalRouterMetricsEnabled, false)
 		if metricsEnabled {
 			if metrics := getPrefixCacheMetrics(); metrics != nil {
 				metrics.prefixCacheIndexerStatus.WithLabelValues("", "local").Set(1)
