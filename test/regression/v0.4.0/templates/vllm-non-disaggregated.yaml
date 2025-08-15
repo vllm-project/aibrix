@@ -24,6 +24,11 @@ spec:
           replicas: {{ .Values.deployment.replicas }}
           stateful: false
           template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: {{ .Values.model.name }}
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
             spec:
               containers:
                 - name: vllm-server

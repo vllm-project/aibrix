@@ -37,6 +37,10 @@ spec:
               annotations:
                 {{- include "aibrix-model.rdmaAnnotation" . | nindent 16 }}
               {{- end }}
+              labels:
+                model.aibrix.ai/name: {{ .Values.model.name }}
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
             spec:
               {{- if .Values.network.hostNetwork }}
               hostNetwork: true
@@ -49,7 +53,7 @@ spec:
                     - |
                       python3 -m vllm.entrypoints.openai.api_server \
                         --host "0.0.0.0" \
-                        --port "30000" \
+                        --port "8000" \
                         --uvicorn-log-level warning \
                         --model {{ .Values.model.path }} \
                         --served-model-name {{ .Values.model.name }} \
@@ -113,6 +117,10 @@ spec:
               annotations:
                 {{- include "aibrix-model.rdmaAnnotation" . | nindent 16 }}
               {{- end }}
+              labels:
+                model.aibrix.ai/name: {{ .Values.model.name }}
+                model.aibrix.ai/port: "8000"
+                model.aibrix.ai/engine: vllm
             spec:
               {{- if .Values.network.hostNetwork }}
               hostNetwork: true
@@ -125,7 +133,7 @@ spec:
                     - |
                       python3 -m vllm.entrypoints.openai.api_server \
                         --host "0.0.0.0" \
-                        --port "30000" \
+                        --port "8000" \
                         --uvicorn-log-level warning \
                         --model {{ .Values.model.path }} \
                         --served-model-name {{ .Values.model.name }} \

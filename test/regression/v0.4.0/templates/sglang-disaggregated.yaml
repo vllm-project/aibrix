@@ -51,10 +51,16 @@ spec:
               annotations:
                 {{- include "aibrix-model.rdmaAnnotation" . | nindent 16 }}
               {{- end }}
+              labels:
+                model.aibrix.ai/name: {{ .Values.model.name }}
+                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/engine: sglang
             spec:
               {{- if .Values.network.hostNetwork }}
               hostNetwork: true
               {{- end }}
+              nodeSelector:
+                kubernetes.io/hostname: 192.168.0.6
               containers:
                 - name: prefill
                   image: {{ include "aibrix-model.engineImage" . }}
@@ -113,10 +119,16 @@ spec:
               annotations:
                 {{- include "aibrix-model.rdmaAnnotation" . | nindent 16 }}
               {{- end }}
+              labels:
+                model.aibrix.ai/name: {{ .Values.model.name }}
+                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/engine: sglang
             spec:
               {{- if .Values.network.hostNetwork }}
               hostNetwork: true
               {{- end }}
+              nodeSelector:
+                kubernetes.io/hostname: 192.168.0.6
               containers:
                 - name: decode
                   image: {{ include "aibrix-model.engineImage" . }}
