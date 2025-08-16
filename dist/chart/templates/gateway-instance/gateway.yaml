@@ -74,8 +74,9 @@ spec:
               template:
                 metadata:
                   labels:
-                    {{- include "chart.labels" . | nindent 20 }}
-                    app.kubernetes.io/component: aibrix-gateway
+                    {{- include "chart.selectorLabels" . | nindent 20 }}
+                    app.kubernetes.io/name: envoy
+                    app.kubernetes.io/component: proxy
                 spec:
                   containers:
                     - name: envoy
