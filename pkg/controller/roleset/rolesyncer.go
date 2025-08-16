@@ -60,21 +60,32 @@ func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1
 	// delete pods that cannot find the corresponding slot
 	slots, toDelete := s.podSlotForRole(role, activePods)
 	podsToDelete = append(podsToDelete, toDelete...)
-	createBudget := int32(len(slots)) + MaxSurge(role) - int32(len(activePods)) - int32(len(terminatingPods))
+	podGroupSize := getRolePodGroupSize(role)
+	activeReplicas := len(activePods) / podGroupSize // risk that partial pod within group is active
+	terminatingReplicas := len(terminatingPods) / podGroupSize
+	createBudget := int32(len(slots)) + MaxSurge(role) - int32(activeReplicas) - int32(terminatingReplicas)
 	// check pods for each slot
 	for i := range slots {
-		if len(slots[i]) == 0 {
+		if len(slots[i]) < podGroupSize { // what about < podGroupSize but > 0?
 			if createBudget <= 0 {
 				continue
 			}
-			pod, err := ctrlutil.GetPodFromTemplate(&role.Template, roleSet, metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)))
-			if err != nil {
-				return false, err
+			// indexing is not guaranteed in this case..
+			missingCount := podGroupSize - len(slots[i])
+			for j := 0; j < missingCount; j++ {
+				pod, err := ctrlutil.GetPodFromTemplate(&role.Template, roleSet, metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)))
+				if err != nil {
+					return false, err
+				}
+				if podGroupSize > 1 {
+					renderStormServicePod(roleSet, role, pod, &i, &j)
+				} else {
+					renderStormServicePod(roleSet, role, pod, &i, nil)
+				}
+				podsToCreate = append(podsToCreate, pod)
 			}
-			renderStormServicePod(roleSet, role, pod, &i)
-			podsToCreate = append(podsToCreate, pod)
 			createBudget--
-		} else if len(slots[i]) > 1 {
+		} else if len(slots[i]) > podGroupSize {
 			readyPods, notReadyPods := filterReadyPods(slots[i])
 			roleTemplateHash := s.computeHashFunc(&role.Template, nil)
 			updatedReadyPods, outdatedReadyPods := filterUpdatedPods(readyPods, roleTemplateHash)
@@ -84,16 +95,17 @@ func (s *StatefulRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv1
 				// only keep 1 updated ready pod for each slot
 				podsToDelete = append(podsToDelete, outdatedReadyPods...)
 				podsToDelete = append(podsToDelete, updatedNotReadyPods...)
-				if len(updatedReadyPods) > 1 {
-					podsToDelete = append(podsToDelete, updatedReadyPods[1:]...)
+				// we need to keep the group but not just 1.
+				if len(updatedReadyPods) > podGroupSize {
+					podsToDelete = append(podsToDelete, updatedReadyPods[podGroupSize:]...)
 				}
 			} else {
 				// keep 1 updated not ready pod & 1 outdated ready pod for each slot
-				if len(outdatedReadyPods) > 1 {
-					podsToDelete = append(podsToDelete, outdatedReadyPods[1:]...)
+				if len(outdatedReadyPods) > podGroupSize {
+					podsToDelete = append(podsToDelete, outdatedReadyPods[podGroupSize:]...)
 				}
-				if len(updatedNotReadyPods) > 1 {
-					podsToDelete = append(podsToDelete, updatedNotReadyPods[1:]...)
+				if len(updatedNotReadyPods) > podGroupSize {
+					podsToDelete = append(podsToDelete, updatedNotReadyPods[podGroupSize:]...)
 				}
 			}
 		}
@@ -112,9 +124,10 @@ func (s *StatefulRoleSyncer) readySlotNum(role *orchestrationv1alpha1.RoleSpec, 
 	activePods, _ := filterActivePods(allPods)
 	slots, _ := s.podSlotForRole(role, activePods)
 	var result int
+	podGroupSize := getRolePodGroupSize(role)
 	for i := range slots {
 		ready, _ := filterReadyPods(slots[i])
-		if len(ready) >= 1 {
+		if len(ready) >= podGroupSize {
 			result++
 		}
 	}
@@ -159,34 +172,58 @@ func (s *StatefulRoleSyncer) Rollout(ctx context.Context, roleSet *orchestration
 	expectedReplicas := getRoleReplicas(role)
 	activePods, _ := filterActivePods(allPods)
 	readySlotNum := s.readySlotNum(role, allPods)
+	podGroupSize := getRolePodGroupSize(role)
 	deleteBudget := int32(readySlotNum) - expectedReplicas + MaxUnavailable(role)
-	createBudget := expectedReplicas + MaxSurge(role) - int32(len(allPods))
+	createBudget := expectedReplicas + MaxSurge(role) - int32(len(allPods)/podGroupSize)
 	roleTemplateHash := s.computeHashFunc(&role.Template, nil)
 	klog.Infof("[StatefulRoleSyncer.Rollout] roleset %s/%s role %s expectedReplicas %d, deleteBudget %d, createBudget %d, template hash %s", roleSet.Namespace, roleSet.Name, role.Name, expectedReplicas, deleteBudget, createBudget, roleTemplateHash)
 
 	slots, _ := s.podSlotForRole(role, activePods)
 	for i := range slots {
-		if len(slots[i]) != 1 {
+		if len(slots[i]) != podGroupSize {
 			// wait for scale to handle this slot
 			continue
 		}
-		if slots[i][0].Labels[constants.RoleTemplateHashLabelKey] == roleTemplateHash {
+		// update
+		allUpdated := true
+		for _, pod := range slots[i] {
+			if pod.Labels[constants.RoleTemplateHashLabelKey] != roleTemplateHash {
+				allUpdated = false
+				break
+			}
+		}
+		if allUpdated {
 			continue
 		}
-		if !podutil.IsPodReady(slots[i][0]) {
-			toDelete = append(toDelete, slots[i][0])
+
+		allReady := true
+		for _, pod := range slots[i] {
+			if !podutil.IsPodReady(pod) {
+				allReady = false
+				break
+			}
+		}
+		if !allReady {
+			toDelete = append(toDelete, slots[i]...)
 			continue
 		}
+
 		if deleteBudget > 0 {
-			toDelete = append(toDelete, slots[i][0])
+			// todo: seems not correct. we need better ways. hard to use pod group at different level.
+			// delete the first pod group in the slots? how does it this sorted?
+			for j := 0; j < podGroupSize; j++ {
+				toDelete = append(toDelete, slots[i][j])
+			}
 			deleteBudget--
 		} else if createBudget > 0 {
-			pod, err := ctrlutil.GetPodFromTemplate(&role.Template, roleSet, metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)))
-			if err != nil {
-				return err
+			for j := 0; j < podGroupSize; j++ {
+				pod, err := ctrlutil.GetPodFromTemplate(&role.Template, roleSet, metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)))
+				if err != nil {
+					return err
+				}
+				renderStormServicePod(roleSet, role, pod, &i, &j)
+				toCreate = append(toCreate, pod)
 			}
-			renderStormServicePod(roleSet, role, pod, &i)
-			toCreate = append(toCreate, pod)
 			createBudget--
 		}
 	}
@@ -248,7 +285,7 @@ func (s *StatefulRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orchest
 			if err != nil {
 				return err
 			}
-			renderStormServicePod(roleSet, role, pod, &i)
+			renderStormServicePod(roleSet, role, pod, &i, nil)
 			toCreate = append(toCreate, pod)
 			createBudget--
 		}
@@ -284,8 +321,10 @@ func (s *StatefulRoleSyncer) AllReady(ctx context.Context, roleSet *orchestratio
 	if len(toDelete) != 0 {
 		return false, nil
 	}
+
+	podGroupSize := getRolePodGroupSize(role)
 	for i := range slots {
-		if len(slots[i]) != 1 {
+		if len(slots[i]) != podGroupSize {
 			return false, nil
 		}
 	}
@@ -353,6 +392,11 @@ func (s *StatefulRoleSyncer) printLog(roleSet *orchestrationv1alpha1.RoleSet, ro
 	klog.Infof("roleset %s/%s role %s, toCreate %v, toDelete %v", roleSet.Namespace, roleSet.Name, role.Name, creationNames, deletionNames)
 }
 
+// podSlotForRole assigns active pods to corresponding slots based on the role specification and the list of active pods,
+// and identifies the pods that need to be deleted.
+// Each slot corresponds to a unique index. The slot index of a pod is obtained from its annotation.
+// If a pod does not have this annotation, the annotation value cannot be converted to a valid index, or the index is out of bounds,
+// the pod will be marked for deletion.
 func (s *StatefulRoleSyncer) podSlotForRole(role *orchestrationv1alpha1.RoleSpec, activePods []*v1.Pod) (slots [][]*v1.Pod, toDelete []*v1.Pod) {
 	expectedReplicas := getRoleReplicas(role)
 	slots = make([][]*v1.Pod, expectedReplicas)
@@ -423,7 +467,7 @@ func (s *StatelessRoleSyncer) Scale(ctx context.Context, roleSet *orchestrationv
 			if err != nil {
 				return false, err
 			}
-			renderStormServicePod(roleSet, role, pod, nil)
+			renderStormServicePod(roleSet, role, pod, nil, nil)
 			toCreate = append(toCreate, pod)
 		}
 		klog.Infof("[StatelessRoleSyncer.Scale] roleset %s/%s role %s toCreate %d pods", roleSet.Namespace, roleSet.Name, role.Name, len(toCreate))
@@ -471,7 +515,7 @@ func (s *StatelessRoleSyncer) Rollout(ctx context.Context, roleSet *orchestratio
 		if err != nil {
 			return err
 		}
-		renderStormServicePod(roleSet, role, pod, nil)
+		renderStormServicePod(roleSet, role, pod, nil, nil)
 		toCreate = append(toCreate, pod)
 	}
 	klog.Infof("[StatelessRoleSyncer.Rollout] roleset %s/%s outdated %d, expectedReplicas %d, deleteBudget %d, createBudget %d, allPods %d, toDelete %d, toCreate %d", roleSet.Namespace, roleSet.Name, len(outdated), expectedReplicas, deleteBudget, createBudget, len(allPods), len(toDelete), len(toCreate))
@@ -533,7 +577,7 @@ func (s *StatelessRoleSyncer) RolloutByStep(ctx context.Context, roleSet *orches
 		if err != nil {
 			return err
 		}
-		renderStormServicePod(roleSet, role, pod, nil)
+		renderStormServicePod(roleSet, role, pod, nil, nil)
 		toCreate = append(toCreate, pod)
 	}
 	klog.Infof("[StatelessRoleSyncer.RolloutByStep] Step %d: roleset %s/%s outdated %d, expectedReplicas %d, expectedUpdatedReplicas %d, deleteBudget %d, createBudget %d, allPods %d, toDelete %d, toCreate %d", currentStep, roleSet.Namespace, roleSet.Name, len(outdated), expectedReplicas, expectedUpdatedReplicas, deleteBudget, createBudget, len(allPods), len(toDelete), len(toCreate))
