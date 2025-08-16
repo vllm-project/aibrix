@@ -32,6 +32,7 @@ import (
 	//+kubebuilder:scaffold:imports
 
 	admissionv1 "k8s.io/api/admission/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	"k8s.io/client-go/rest"
@@ -104,6 +105,8 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	err = corev1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
+	err = appsv1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
 
 	//+kubebuilder:scaffold:scheme
 
@@ -130,6 +133,8 @@ var _ = BeforeSuite(func() {
 	err = apiwebhook.SetupKVCacheWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 	err = apiwebhook.SetupStormServiceWebhookWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+	err = apiwebhook.SetupDeploymentWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
 	//+kubebuilder:scaffold:webhook

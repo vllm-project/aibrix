@@ -15,7 +15,7 @@ webhooks:
       name: aibrix-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /mutate-orchestration-aibrix-ai-v1alpha1-kvcache
-  failurePolicy: Fail
+  failurePolicy: Ignore
   name: mkvcache-v1alpha1.kb.io
   rules:
   - apiGroups:
@@ -35,7 +35,7 @@ webhooks:
       name: aibrix-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /mutate-model-aibrix-ai-v1alpha1-modeladapter
-  failurePolicy: Fail
+  failurePolicy: Ignore
   name: mmodeladapter.kb.io
   rules:
   - apiGroups:
@@ -65,7 +65,7 @@ webhooks:
       name: aibrix-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /validate-model-aibrix-ai-v1alpha1-modeladapter
-  failurePolicy: Fail
+  failurePolicy: Ignore
   name: vmodeladapter.kb.io
   rules:
   - apiGroups:
@@ -85,7 +85,7 @@ webhooks:
       name: aibrix-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /validate-orchestration-aibrix-ai-v1alpha1-kvcache
-  failurePolicy: Fail
+  failurePolicy: Ignore
   name: vkvcache-v1alpha1.kb.io
   rules:
   - apiGroups:
