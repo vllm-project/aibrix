@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 
@@ -43,6 +44,9 @@ const (
 	ResourceMetrics MetricType = "resource"
 	CustomMetrics   MetricType = "custom"
 	RawMetrics      MetricType = "raw"
+	maxRetries                 = 3
+	baseDelay                  = 100 * time.Millisecond
+	maxDelay                   = 5 * time.Second
 )
 
 // MetricFetcher defines an interface for fetching metrics. it could be Kubernetes metrics or Pod prometheus metrics.
@@ -98,17 +102,37 @@ func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscali
 		return 0.0, fmt.Errorf("failed to create request to source %s: %v", url, err)
 	}
 
-	// Send the request using the default client
-	resp, err := f.client.Do(req)
-	if err != nil {
-		return 0.0, fmt.Errorf("failed to fetch metrics from source %s: %v", url, err)
+	var resp *http.Response
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoffDelay := baseDelay * time.Duration(1<<uint(attempt-1))
+			// Cap the delay to prevent it from becoming too long
+			if backoffDelay > maxDelay {
+				backoffDelay = maxDelay
+			}
+			klog.V(4).InfoS("Backing off before retry", "attempt", attempt+1, "delay", backoffDelay)
+			time.Sleep(backoffDelay)
+		}
+		resp, err = f.client.Do(req)
+		if err == nil {
+			break
+		}
+		lastErr = err
 	}
+	if err != nil {
+		return 0.0, fmt.Errorf("failed to fetch metrics from source %s: %v", url, lastErr)
+	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			// Handle the error here. For example, log it or take appropriate corrective action.
 			klog.ErrorS(err, "error closing response body")
 		}
 	}()
+
+	// TODO: Add smart retry logic for different HTTP status codes (e.g. don't retry 4xx client errors)
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return 0.0, fmt.Errorf("failed to read response from source %s: %v", url, err)
