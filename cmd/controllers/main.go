@@ -79,25 +79,25 @@ func init() {
 }
 
 func RegisterSchemas(scheme *runtime.Scheme) error {
+	podAutoscalerEnabled := features.IsControllerEnabled(features.PodAutoscalerController)
+	modelAdapterEnabled := features.IsControllerEnabled(features.ModelAdapterController)
+	distributedInferenceEnabled := features.IsControllerEnabled(features.DistributedInferenceController)
+	kvCacheEnabled := features.IsControllerEnabled(features.KVCacheController)
+	stormServiceEnabled := features.IsControllerEnabled(features.StormServiceController)
 
-	if features.IsControllerEnabled(features.PodAutoscalerController) {
+	if podAutoscalerEnabled {
 		utilruntime.Must(autoscalingv1alpha1.AddToScheme(scheme))
 	}
 
-	if features.IsControllerEnabled(features.ModelAdapterController) {
+	if modelAdapterEnabled {
 		utilruntime.Must(modelv1alpha1.AddToScheme(scheme))
 	}
 
-	if features.IsControllerEnabled(features.DistributedInferenceController) {
-		utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
+	if distributedInferenceEnabled {
 		utilruntime.Must(rayclusterv1.AddToScheme(scheme))
 	}
 
-	if features.IsControllerEnabled(features.KVCacheController) {
-		utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
-	}
-
-	if features.IsControllerEnabled(features.StormServiceController) {
+	if distributedInferenceEnabled || kvCacheEnabled || stormServiceEnabled {
 		utilruntime.Must(orchestrationv1alpha1.AddToScheme(scheme))
 	}
 
