@@ -104,6 +104,7 @@ func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscali
 
 	var resp *http.Response
 	var lastErr error
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
 			backoffDelay := baseDelay * time.Duration(1<<uint(attempt-1))
@@ -114,13 +115,26 @@ func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscali
 			klog.V(4).InfoS("Backing off before retry", "attempt", attempt+1, "delay", backoffDelay)
 			time.Sleep(backoffDelay)
 		}
+		var err error
 		resp, err = f.client.Do(req)
-		if err == nil {
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			lastErr = nil // Success
 			break
 		}
-		lastErr = err
+		resp.Body.Close()
+		// Don't retry on 4xx client errors.
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			lastErr = fmt.Errorf("client error: %s", resp.Status)
+			break
+		}
+		lastErr = fmt.Errorf("server error: %s", resp.Status)
 	}
-	if err != nil {
+
+	if lastErr != nil {
 		return 0.0, fmt.Errorf("failed to fetch metrics from source %s: %v", url, lastErr)
 	}
 
@@ -130,8 +144,6 @@ func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscali
 			klog.ErrorS(err, "error closing response body")
 		}
 	}()
-
-	// TODO: Add smart retry logic for different HTTP status codes (e.g. don't retry 4xx client errors)
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
