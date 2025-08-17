@@ -125,7 +125,11 @@ func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscali
 			lastErr = nil // Success
 			break
 		}
-		resp.Body.Close()
+
+		if err := resp.Body.Close(); err != nil {
+			klog.ErrorS(err, "error closing response body")
+		}
+
 		// Don't retry on 4xx client errors.
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			lastErr = fmt.Errorf("client error: %s", resp.Status)
