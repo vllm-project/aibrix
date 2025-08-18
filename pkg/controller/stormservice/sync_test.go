@@ -144,6 +144,7 @@ func TestSyncHeadlessService(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-storm",
 					Namespace: "default",
+					UID:       "test-stormservice-uid",
 					Labels: map[string]string{
 						"app": "test",
 					},
@@ -158,12 +159,20 @@ func TestSyncHeadlessService(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-storm",
 					Namespace: "default",
+					UID:       "test-stormservice-uid",
 				},
 			},
 			existingService: &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-storm",
 					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind:       "StormService",
+							APIVersion: "orchestration.aibrix.org/v1alpha1",
+							UID:        "test-stormservice-uid",
+						},
+					},
 				},
 				Spec: corev1.ServiceSpec{
 					Type:      corev1.ServiceTypeClusterIP,
@@ -179,12 +188,20 @@ func TestSyncHeadlessService(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-storm",
 					Namespace: "default",
+					UID:       "test-stormservice-uid",
 				},
 			},
 			existingService: &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-storm",
 					Namespace: "default",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							Kind:       "StormService",
+							APIVersion: "orchestration.aibrix.org/v1alpha1",
+							UID:        "test-stormservice-uid",
+						},
+					},
 				},
 				Spec: corev1.ServiceSpec{
 					Type:                     corev1.ServiceTypeClusterIP,
@@ -238,14 +255,12 @@ func TestSyncHeadlessService(t *testing.T) {
 				t.Errorf("Expected ClusterIP to be None, got %s", service.Spec.ClusterIP)
 			}
 
-			if tt.existingService == nil {
-				if len(service.OwnerReferences) == 0 {
-					t.Error("Expected service to have an owner reference")
-				} else {
-					ownerRef := service.OwnerReferences[0]
-					if ownerRef.Kind != orchestrationv1alpha1.StormServiceKind || ownerRef.UID != service.UID {
-						t.Errorf("Expected owner reference to be %s %s, got %s %s", orchestrationv1alpha1.StormServiceKind, service.UID, ownerRef.Kind, ownerRef.UID)
-					}
+			if len(service.OwnerReferences) == 0 {
+				t.Error("Expected service to have an owner reference")
+			} else {
+				ownerRef := service.OwnerReferences[0]
+				if ownerRef.Kind != orchestrationv1alpha1.StormServiceKind || ownerRef.UID != tt.stormService.UID {
+					t.Errorf("Expected owner reference to be %s %s, got %s %s", orchestrationv1alpha1.StormServiceKind, tt.stormService.UID, ownerRef.Kind, ownerRef.UID)
 				}
 			}
 
