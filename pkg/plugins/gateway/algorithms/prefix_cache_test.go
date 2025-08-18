@@ -36,7 +36,7 @@ import (
 
 func Test_PrefixCacheE2E(t *testing.T) {
 	// Ensure metrics are not enabled
-	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
+	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "false")
 
 	readyPods := getReadyPods()
 	c := cache.NewWithPodsMetricsForTest(
@@ -214,7 +214,7 @@ func getReadyPods() []*v1.Pod {
 
 func Test_ValidatePrePrefixMatchLoadBalance(t *testing.T) {
 	// Ensure metrics are not enabled
-	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
+	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "false")
 
 	// no imbalance
 	readyPods := getReadyPods()
@@ -248,7 +248,7 @@ func Test_ValidatePrePrefixMatchLoadBalance(t *testing.T) {
 
 func Test_ValidatePostPrefixMatchLoadBalance(t *testing.T) {
 	// Ensure metrics are not enabled
-	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "false")
+	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "false")
 
 	readyPods := getReadyPods()
 	testcases := []struct {

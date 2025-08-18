@@ -32,8 +32,8 @@ Manages KV cache event synchronization between vLLM pods and the routing system:
 // It subscribes to eligible pods and processes their KV cache events
 
 // Configuration via environment variables:
-// AIBRIX_KV_EVENT_SYNC_ENABLED=true
-// AIBRIX_USE_REMOTE_TOKENIZER=true
+// AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED=true
+// AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER=true
 ```
 
 **Features:**
@@ -89,8 +89,8 @@ Kubernetes informers for watching:
 - `AIBRIX_POD_RAYCLUSTERFLEET_LABEL`: Label for fleet identification
 
 **KV Event Sync:**
-- `AIBRIX_KV_EVENT_SYNC_ENABLED`: Enable KV event synchronization
-- `AIBRIX_USE_REMOTE_TOKENIZER`: Enable remote tokenizer (required for KV sync)
+- `AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED`: Enable KV event synchronization
+- `AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER`: Enable remote tokenizer (required for KV sync)
 
 **Performance:**
 - `AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS`: Metric refresh interval
@@ -100,8 +100,8 @@ Kubernetes informers for watching:
 
 ```go
 // Create cache with KV event sync enabled
-os.Setenv("AIBRIX_KV_EVENT_SYNC_ENABLED", "true")
-os.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
+os.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+os.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
 
 store := cache.NewStore()
 
