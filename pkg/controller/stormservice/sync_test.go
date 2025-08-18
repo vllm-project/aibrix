@@ -173,6 +173,28 @@ func TestSyncHeadlessService(t *testing.T) {
 			},
 			wantError: false,
 		},
+		{
+			name: "service already exists with PublishNotReadyAddresses false",
+			stormService: &orchestrationv1alpha1.StormService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-storm",
+					Namespace: "default",
+				},
+			},
+			existingService: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-storm",
+					Namespace: "default",
+				},
+				Spec: corev1.ServiceSpec{
+					Type:                     corev1.ServiceTypeClusterIP,
+					ClusterIP:                corev1.ClusterIPNone,
+					Selector:                 map[string]string{constants.StormServiceNameLabelKey: "test-storm"},
+					PublishNotReadyAddresses: false, // should be updated to true
+				},
+			},
+			wantError: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -216,6 +238,17 @@ func TestSyncHeadlessService(t *testing.T) {
 				t.Errorf("Expected ClusterIP to be None, got %s", service.Spec.ClusterIP)
 			}
 
+			if tt.existingService == nil {
+				if len(service.OwnerReferences) == 0 {
+					t.Error("Expected service to have an owner reference")
+				} else {
+					ownerRef := service.OwnerReferences[0]
+					if ownerRef.Kind != orchestrationv1alpha1.StormServiceKind || ownerRef.UID != service.UID {
+						t.Errorf("Expected owner reference to be %s %s, got %s %s", orchestrationv1alpha1.StormServiceKind, service.UID, ownerRef.Kind, ownerRef.UID)
+					}
+				}
+			}
+
 			expectedSelector := map[string]string{constants.StormServiceNameLabelKey: tt.stormService.Name}
 			if !reflect.DeepEqual(service.Spec.Selector, expectedSelector) {
 				t.Errorf("Expected selector %v, got %v", expectedSelector, service.Spec.Selector)
@@ -223,6 +256,10 @@ func TestSyncHeadlessService(t *testing.T) {
 
 			if service.Spec.Type != corev1.ServiceTypeClusterIP {
 				t.Errorf("Expected service type ClusterIP, got %v", service.Spec.Type)
+			}
+
+			if service.Spec.PublishNotReadyAddresses != true {
+				t.Errorf("Expected PublishNotReadyAddresses to be true, got %v", service.Spec.PublishNotReadyAddresses)
 			}
 		})
 	}

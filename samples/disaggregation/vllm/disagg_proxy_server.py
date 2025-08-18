@@ -16,6 +16,7 @@ import argparse
 import os
 import random
 import time
+import uuid
 from contextlib import asynccontextmanager
 
 import httpx
@@ -99,20 +100,46 @@ def parse_args():
     return args
 
 
-async def send_request_to_service(client: httpx.AsyncClient, endpoint: str, req_data: dict):
-    req_data = req_data.copy()
-    req_data["max_tokens"] = 1
-    if "max_completion_tokens" in req_data:
-        req_data["max_completion_tokens"] = 1
+async def send_request_to_service(client: httpx.AsyncClient, endpoint: str, req_id: str, req_data: dict):
+    req_data_copy = req_data.copy()
+    # nixl-specific kv_transfer_params for prefillers
+    req_data_copy['kv_transfer_params'] = {
+        "do_remote_decode": True,
+        "do_remote_prefill": False,
+        "remote_engine_id": None,
+        "remote_block_ids": None,
+        "remote_host": None,
+        "remote_port": None
+    }
+    # disable streaming for prefillers
+    req_data_copy["stream"] = False
+    if "stream_options" in req_data_copy:
+        del req_data_copy["stream_options"]
+    req_data_copy["max_tokens"] = 1
+    if "max_completion_tokens" in req_data_copy:
+        req_data_copy["max_completion_tokens"] = 1
 
-    headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
-    response = await client.post(endpoint, json=req_data, headers=headers)
+    headers = {
+        "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}",
+        "X-Request-Id": req_id
+    }
+    response = await client.post(endpoint, json=req_data_copy, headers=headers)
     response.raise_for_status()
+    # extract nixl-specific kv_transfer_params returned from prefillers and
+    # attach to the req_data for decode clients
+    response_json = response.json()
+    kv_transfer_params = response_json.get('kv_transfer_params', {})
+    if kv_transfer_params:
+        req_data["kv_transfer_params"] = kv_transfer_params
+        req_data["kv_transfer_params"]["remote_host"] = client.base_url.host
     return response
 
 
-async def stream_service_response(client: httpx.AsyncClient, endpoint: str, req_data: dict):
-    headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
+async def stream_service_response(client: httpx.AsyncClient, endpoint: str, req_id: str, req_data: dict):
+    headers = {
+        "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}",
+        "X-Request-Id": req_id
+    }
     async with client.stream("POST", endpoint, json=req_data, headers=headers) as response:
         response.raise_for_status()
         async for chunk in response.aiter_bytes():
@@ -141,15 +168,16 @@ async def handle_completions(request: Request):
     st = time.time()
 
     try:
+        req_id = str(uuid.uuid4())
         req_data = await request.json()
         prefill_client, decode_client = select_random_clients()
 
-        await send_request_to_service(prefill_client, "/completions", req_data)
+        await send_request_to_service(prefill_client, "/completions", req_id, req_data)
         et = time.time()
         stats_calculator.add(et - st)
 
         async def generate_stream():
-            async for chunk in stream_service_response(decode_client, "/completions", req_data):
+            async for chunk in stream_service_response(decode_client, "/completions", req_id, req_data):
                 yield chunk
 
         return StreamingResponse(generate_stream(), media_type="text/event-stream")
@@ -169,15 +197,16 @@ async def handle_chat_completions(request: Request):
     st = time.time()
 
     try:
+        req_id = str(uuid.uuid4())
         req_data = await request.json()
         prefill_client, decode_client = select_random_clients()
 
-        await send_request_to_service(prefill_client, "/chat/completions", req_data)
+        await send_request_to_service(prefill_client, "/chat/completions", req_id, req_data)
         et = time.time()
         stats_calculator.add(et - st)
 
         async def generate_stream():
-            async for chunk in stream_service_response(decode_client, "/chat/completions", req_data):
+            async for chunk in stream_service_response(decode_client, "/chat/completions", req_id, req_data):
                 yield chunk
 
         return StreamingResponse(generate_stream(), media_type="text/event-stream")

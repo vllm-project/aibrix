@@ -49,8 +49,12 @@ spec:
                       --served-model-name qwen3-8B \
                       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
+                    - name: PYTHONHASHSEED
+                      value: "1047"
                     - name: VLLM_SERVER_DEV_MODE
                       value: "1"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+                      value: "0.0.0.0"
                     - name: VLLM_NIXL_SIDE_CHANNEL_PORT
                       value: "5558"
                     - name: VLLM_WORKER_MULTIPROC_METHOD
@@ -67,6 +71,8 @@ spec:
                       value: "7"
                     - name: NCCL_DEBUG
                       value: "INFO"
+                    - name: UCX_TLS
+                      value: ^gga
                   volumeMounts:
                     - name: model-vol
                       mountPath: /models
@@ -122,10 +128,12 @@ spec:
                       --served-model-name qwen3-8B \
                       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
-                    - name: UCX_TLS
-                      value: cuda_ipc,cuda_copy,tcp
+                    - name: PYTHONHASHSEED
+                      value: "1047"
                     - name: VLLM_SERVER_DEV_MODE
                       value: "1"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+                      value: "0.0.0.0"
                     - name: VLLM_NIXL_SIDE_CHANNEL_PORT
                       value: "5558"
                     - name: VLLM_WORKER_MULTIPROC_METHOD
@@ -142,6 +150,8 @@ spec:
                       value: "7"
                     - name: NCCL_DEBUG
                       value: "INFO"
+                    - name: UCX_TLS
+                      value: ^gga
                   volumeMounts:
                     - name: model-vol
                       mountPath: /models

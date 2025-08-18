@@ -76,11 +76,15 @@ func (r *StormServiceReconciler) syncHeadlessService(ctx context.Context, servic
 			Name:      service.Name,
 			Namespace: service.Namespace,
 			Labels:    service.Labels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(service, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.StormServiceKind)),
+			},
 		},
 		Spec: corev1.ServiceSpec{
-			Type:      corev1.ServiceTypeClusterIP,
-			ClusterIP: corev1.ClusterIPNone,
-			Selector:  map[string]string{constants.StormServiceNameLabelKey: service.Name},
+			Type:                     corev1.ServiceTypeClusterIP,
+			ClusterIP:                corev1.ClusterIPNone,
+			Selector:                 map[string]string{constants.StormServiceNameLabelKey: service.Name},
+			PublishNotReadyAddresses: true,
 		},
 	}
 

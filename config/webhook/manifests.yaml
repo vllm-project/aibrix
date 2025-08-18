@@ -56,26 +56,6 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-model-aibrix-ai-v1alpha1-modeladapter
-  failurePolicy: Fail
-  name: vmodeladapter.kb.io
-  rules:
-  - apiGroups:
-    - model.aibrix.ai
-    apiVersions:
-    - v1alpha1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - modeladapters
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
       path: /validate-orchestration-aibrix-ai-v1alpha1-kvcache
   failurePolicy: Fail
   name: vkvcache-v1alpha1.kb.io
@@ -89,4 +69,24 @@ webhooks:
     - UPDATE
     resources:
     - kvcaches
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-model-aibrix-ai-v1alpha1-modeladapter
+  failurePolicy: Fail
+  name: vmodeladapter.kb.io
+  rules:
+  - apiGroups:
+    - model.aibrix.ai
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - modeladapters
   sideEffects: None
