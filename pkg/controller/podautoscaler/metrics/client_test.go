@@ -39,7 +39,7 @@ type MetricFetcherRecorder struct {
 
 func NewMetricFetcherRecorder() *MetricFetcherRecorder {
 	recorder := &MetricFetcherRecorder{}
-	recorder.RestMetricsFetcher.test_url_setter = func(url string) {
+	recorder.RestMetricsFetcher.testURLSetter = func(url string) {
 		recorder.url = url
 	}
 	return recorder

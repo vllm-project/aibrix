@@ -19,18 +19,21 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
-
-	"k8s.io/klog/v2"
 
 	"github.com/prometheus/client_golang/api"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/config"
 	"github.com/prometheus/common/expfmt"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
+
+	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
 // ParseHistogramFromBody parses a histogram metric from the Prometheus response body.
@@ -228,4 +231,22 @@ func ParseMetricsURLWithContext(ctx context.Context, url string) (map[string]*dt
 		return make(map[string]*dto.MetricFamily), fmt.Errorf("Error parsing metric families: %v\n", err)
 	}
 	return allMetrics, nil
+}
+
+// ParseMetricsFromReader parses Prometheus metrics from an io.Reader (extracted for reuse)
+func ParseMetricsFromReader(reader io.Reader) (map[string]*dto.MetricFamily, error) {
+	var parser expfmt.TextParser
+	allMetrics, err := parser.TextToMetricFamilies(reader)
+	if err != nil {
+		return make(map[string]*dto.MetricFamily), fmt.Errorf("error parsing metric families: %v", err)
+	}
+	return allMetrics, nil
+}
+
+// getEngineType extracts the engine type from pod labels, defaults to "vllm"
+func getEngineType(pod v1.Pod) string {
+	if engineType, exists := pod.Labels[constants.ModelLabelEngine]; exists && engineType != "" {
+		return engineType
+	}
+	return "vllm" // Default to vllm for backward compatibility
 }

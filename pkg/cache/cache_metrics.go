@@ -21,10 +21,12 @@ import (
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	dto "github.com/prometheus/client_model/go"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
+
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -137,35 +139,44 @@ func (c *Store) updatePodMetrics() {
 func (c *Store) worker(jobs <-chan *Pod) {
 	for pod := range jobs {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		//Use the value of the constants.ModelLabelMetricPort label as the metrics port.
 		podMetricPort := getPodMetricPort(pod)
-		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, podMetricPort)
-		allMetrics, err := metrics.ParseMetricsURLWithContext(ctx, url)
+
+		// Use centralized typed metrics fetcher for better engine abstraction and error handling
+		metricsToFetch := c.getAllAvailableMetrics()
+		endpoint := fmt.Sprintf("%s:%d", pod.Status.PodIP, podMetricPort)
+		engineType := getEngineTypeFromPod(*pod.Pod)
+		identifier := pod.Name
+		result, err := c.engineMetricsFetcher.FetchAllTypedMetrics(ctx, endpoint, engineType, identifier, metricsToFetch)
 		if err != nil {
-			klog.V(4).Infof("Error parsing metric families: %v\n", err)
+			klog.V(4).InfoS("Failed to fetch typed metrics from engine pod",
+				"pod", pod.Name, "podIP", pod.Status.PodIP, "port", podMetricPort, "error", err)
 			cancel()
 			continue
 		}
 
-		// parse counterGaugeMetricsNames
-		c.updateSimpleMetricFromRawMetrics(pod, allMetrics)
+		// Update pod metrics using typed results
+		c.updatePodMetricsFromTypedResult(pod, result)
 
-		// parse histogramMetrics
-		c.updateHistogramMetricFromRawMetrics(pod, allMetrics)
-
-		// parse QueryLabel metrics
-		c.updateQueryLabelMetricFromRawMetrics(pod, allMetrics)
-
-		if c.prometheusApi == nil {
-			klog.V(4).InfoS("Prometheus api is not initialized, PROMETHEUS_ENDPOINT is not configured, skip fetching prometheus metrics")
-		} else {
-			// parse prometheus metrics
+		// Handle Prometheus-based metrics separately (these require PromQL queries)
+		if c.prometheusApi != nil {
 			c.updateMetricFromPromQL(ctx, pod)
+		} else {
+			klog.V(4).InfoS("Prometheus API not initialized, skipping PromQL metrics", "pod", pod.Name)
 		}
+
+		// Log successful processing
+		klog.V(5).InfoS("Successfully processed metrics for pod",
+			"pod", pod.Name,
+			"podMetrics", len(result.Metrics),
+			"modelMetrics", len(result.ModelMetrics),
+			"errors", len(result.Errors))
+
 		cancel()
 	}
 }
 
+// Deprecated: updateSimpleMetricFromRawMetrics is kept for backward compatibility.
+// Use updatePodMetricsFromTypedResult instead.
 func (c *Store) updateSimpleMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
 	podName := pod.Name
 	podMetricPort := getPodMetricPort(pod)
@@ -203,6 +214,8 @@ func (c *Store) updateSimpleMetricFromRawMetrics(pod *Pod, allMetrics map[string
 	}
 }
 
+// Deprecated: updateHistogramMetricFromRawMetrics is kept for backward compatibility.
+// Use updatePodMetricsFromTypedResult instead.
 func (c *Store) updateHistogramMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
 	podName := pod.Name
 	podMetricPort := getPodMetricPort(pod)
@@ -242,6 +255,8 @@ func (c *Store) updateHistogramMetricFromRawMetrics(pod *Pod, allMetrics map[str
 	}
 }
 
+// Deprecated: updateQueryLabelMetricFromRawMetrics is kept for backward compatibility.
+// Use updatePodMetricsFromTypedResult instead.
 func (c *Store) updateQueryLabelMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
 	podMetricPort := getPodMetricPort(pod)
 	for _, labelMetricName := range labelQueryMetricNames {
@@ -395,4 +410,86 @@ func (c *Store) aggregateMetrics() {
 			}
 		}
 	}
+}
+
+// Helper methods for centralized typed metrics processing
+
+// getAllAvailableMetrics returns all metrics that can be fetched from engine pods
+func (c *Store) getAllAvailableMetrics() []string {
+	var allMetrics []string
+
+	// Add all the metrics we currently process
+	allMetrics = append(allMetrics, counterGaugeMetricNames...)
+	allMetrics = append(allMetrics, histogramMetricNames...)
+	allMetrics = append(allMetrics, labelQueryMetricNames...)
+
+	return allMetrics
+}
+
+// getEngineTypeFromPod extracts the engine type from pod labels, defaulting to "vllm" for backward compatibility
+func getEngineTypeFromPod(pod v1.Pod) string {
+	if engineType, exists := pod.Labels[constants.ModelLabelEngine]; exists && engineType != "" {
+		return engineType
+	}
+	return "vllm" // Default to vllm for backward compatibility
+}
+
+// updatePodMetricsFromTypedResult processes the typed metrics result and updates pod storage
+func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.EngineMetricsResult) {
+	// Process pod-scoped metrics
+	for metricName, metricValue := range result.Metrics {
+		if metricDef, exists := metrics.Metrics[metricName]; exists {
+			err := c.updatePodRecord(pod, "", metricName, metricDef.MetricScope, metricValue)
+			if err != nil {
+				klog.V(4).InfoS("Failed to update pod metric",
+					"pod", pod.Name, "metric", metricName, "error", err)
+			}
+		}
+	}
+
+	// Process model-scoped metrics
+	for modelMetricKey, metricValue := range result.ModelMetrics {
+		// modelMetricKey format: "model/metric"
+		modelName, metricName := parseModelMetricKey(modelMetricKey)
+		if metricDef, exists := metrics.Metrics[metricName]; exists {
+			err := c.updatePodRecord(pod, modelName, metricName, metricDef.MetricScope, metricValue)
+			if err != nil {
+				klog.V(4).InfoS("Failed to update model metric",
+					"pod", pod.Name, "model", modelName, "metric", metricName, "error", err)
+			}
+		}
+	}
+
+	// Log any errors from the fetching process
+	for _, err := range result.Errors {
+		klog.V(4).InfoS("Metric fetching error", "pod", pod.Name, "error", err)
+	}
+}
+
+// parseModelMetricKey parses a key like "model/metric" into model name and metric name
+func parseModelMetricKey(key string) (modelName, metricName string) {
+	parts := splitAtFirst(key, "/")
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return "", key // Fallback if parsing fails
+}
+
+// splitAtFirst splits a string at the first occurrence of separator
+func splitAtFirst(s, sep string) []string {
+	index := findFirst(s, sep)
+	if index == -1 {
+		return []string{s}
+	}
+	return []string{s[:index], s[index+1:]}
+}
+
+// findFirst returns the first index of substring in string
+func findFirst(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
 }
