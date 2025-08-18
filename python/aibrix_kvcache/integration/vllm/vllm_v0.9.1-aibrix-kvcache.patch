@@ -4925,10 +4925,10 @@ index 000000000..311169501
 +  }
 diff --git a/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py b/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py
 new file mode 100644
-index 000000000..ed208e5d9
+index 000000000..9b9d357e8
 --- /dev/null
 +++ b/vllm/distributed/kv_transfer/kv_connector/aibrix_offloading_connector.py
-@@ -0,0 +1,1159 @@
+@@ -0,0 +1,1156 @@
 +# SPDX-License-Identifier: Apache-2.0
 +import copy
 +import dataclasses
@@ -5385,10 +5385,7 @@ index 000000000..ed208e5d9
 +
 +        tp_size = parallel_config.tensor_parallel_size
 +        num_kv_heads = model_config.get_num_kv_heads(parallel_config)
-+        hidden_size = model_config.get_hidden_size()
-+        num_attention_heads = model_config.get_num_attention_heads(
-+            parallel_config) * tp_size
-+        head_size = int(hidden_size / num_attention_heads)
++        head_size = model_config.get_head_size()
 +        tp_rank = get_tp_group().rank_in_group
 +
 +        kv_head_ids = list(
@@ -6144,10 +6141,10 @@ index 58dfa251c..7c78f901c 100644
 +    ".aibrix_offloading_connector_type1", "AIBrixOffloadingConnector")
 diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type1.py b/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type1.py
 new file mode 100644
-index 000000000..f61b7f6ba
+index 000000000..a3c14a36c
 --- /dev/null
 +++ b/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type1.py
-@@ -0,0 +1,1237 @@
+@@ -0,0 +1,1234 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +import copy
@@ -6729,10 +6726,7 @@ index 000000000..f61b7f6ba
 +
 +        tp_size = parallel_config.tensor_parallel_size
 +        num_kv_heads = model_config.get_num_kv_heads(parallel_config)
-+        hidden_size = model_config.get_hidden_size()
-+        num_attention_heads = model_config.get_num_attention_heads(
-+            parallel_config) * tp_size
-+        head_size = int(hidden_size / num_attention_heads)
++        head_size = model_config.get_head_size()
 +
 +        rank = get_tp_group().rank_in_group
 +        kv_head_ids = list(
