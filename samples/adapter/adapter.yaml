@@ -7,12 +7,32 @@ metadata:
     model.aibrix.ai/name: "qwen-code-lora"
     model.aibrix.ai/port: "8000"
 spec:
-  # Optional: Number of replicas for the adapter (default: 1)
-  # Uncomment to load adapter on multiple pods
-  # replicas: 3
+  # Base model that this LoRA adapter extends
   baseModel: qwen-coder-1-5b-instruct
+  
+  # Pod selector to find pods that can host this adapter
+  # Pods must have both labels: model.aibrix.ai/name and adapter.model.aibrix.ai/enabled=true
   podSelector:
     matchLabels:
       model.aibrix.ai/name: qwen-coder-1-5b-instruct
+      adapter.model.aibrix.ai/enabled: "true"
+  
+  # URL for the LoRA adapter artifact
+  # Supported formats: huggingface://, s3://, or absolute local path
   artifactURL: huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora
+  
+  # Optional: Number of replicas for the adapter (default: 1)
+  # The controller will load the adapter on this many pods
+  # Uncomment to enable high availability across multiple pods
+  # replicas: 2
+  
+  # Optional: Scheduler to use for pod selection (default: "default")
+  # Available schedulers: "default", "least-adapters"
   schedulerName: default
+
+  # Lifecycle phases: Pending → Scheduled → Loading → Bound → Running
+  # - Pending: Starting reconciliation
+  # - Scheduled: Pods selected and validated for readiness
+  # - Loading: Adapter being downloaded and loaded (with retry mechanism)
+  # - Bound: Successfully loaded, creating service resources
+  # - Running: Ready for inference requests
