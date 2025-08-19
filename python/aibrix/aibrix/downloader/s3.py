@@ -21,6 +21,11 @@ from urllib.parse import urlparse
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import MAX_POOL_CONNECTIONS, Config
+from botocore.exceptions import (
+    ClientError,
+    NoCredentialsError,
+    CredentialRetrievalError,
+)
 from tqdm import tqdm
 
 from aibrix import envs
@@ -109,9 +114,149 @@ class S3BaseDownloader(BaseDownloader):
 
         try:
             self.client.head_bucket(Bucket=self.bucket_name)
+        except NoCredentialsError as e:
+            logger.error(
+                f"No AWS credentials found. If using IRSA, ensure the service account is properly annotated with the IAM role ARN."
+            )
+            raise ModelNotFoundError(
+                model_uri=self.model_uri,
+                detail_msg=f"AWS credentials not found: {str(e)}",
+            )
+        except CredentialRetrievalError as e:
+            logger.error(
+                f"Failed to retrieve AWS credentials. If using IRSA, check that:\n"
+                f"1. Service account is annotated with eks.amazonaws.com/role-arn\n"
+                f"2. IAM role trust policy allows the service account\n"
+                f"3. Pod has the correct service account assigned\n"
+                f"Error: {str(e)}"
+            )
+            raise ModelNotFoundError(
+                model_uri=self.model_uri,
+                detail_msg=f"AWS credential retrieval failed: {str(e)}",
+            )
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            error_message = e.response.get("Error", {}).get("Message", str(e))
+
+            if error_code in [
+                "InvalidUserID.NotFound",
+                "AccessDenied",
+                "TokenRefreshRequired",
+                "Unknown",
+            ]:
+                # Handle IRSA-specific authentication issues
+                if error_code == "Unknown" and "AssumeRoleWithWebIdentity" in str(e):
+                    # Get IRSA environment variables for debugging
+                    import os
+
+                    aws_role_arn = os.environ.get("AWS_ROLE_ARN", "NOT_SET")
+                    aws_web_identity_token_file = os.environ.get(
+                        "AWS_WEB_IDENTITY_TOKEN_FILE", "NOT_SET"
+                    )
+                    aws_region = os.environ.get("AWS_REGION", "NOT_SET")
+
+                    # Check if token file exists and is readable
+                    token_file_status = "NOT_SET"
+                    token_info = ""
+                    if aws_web_identity_token_file != "NOT_SET":
+                        try:
+                            if os.path.exists(aws_web_identity_token_file):
+                                with open(aws_web_identity_token_file, "r") as f:
+                                    token_content = f.read().strip()
+                                    token_file_status = (
+                                        f"EXISTS (length: {len(token_content)} chars)"
+                                    )
+
+                                    # Parse JWT token to extract useful info (without verification)
+                                    try:
+                                        import json
+                                        import base64
+
+                                        # JWT tokens are base64 encoded, split by '.'
+                                        parts = token_content.split(".")
+                                        if len(parts) >= 2:
+                                            # Decode header and payload
+                                            header = json.loads(
+                                                base64.b64decode(parts[0] + "==")
+                                            )
+                                            payload = json.loads(
+                                                base64.b64decode(parts[1] + "==")
+                                            )
+
+                                            token_info = f"\n   Token Info:"
+                                            token_info += f"\n     iss (issuer): {payload.get('iss', 'N/A')}"
+                                            token_info += f"\n     sub (subject): {payload.get('sub', 'N/A')}"
+                                            token_info += f"\n     aud (audience): {payload.get('aud', 'N/A')}"
+                                            if "exp" in payload:
+                                                import datetime
+
+                                                exp_time = (
+                                                    datetime.datetime.fromtimestamp(
+                                                        payload["exp"],
+                                                        tz=datetime.timezone.utc,
+                                                    )
+                                                )
+                                                token_info += (
+                                                    f"\n     exp (expires): {exp_time}"
+                                                )
+                                    except Exception as parse_error:
+                                        token_info = f"\n   Token Parse Error: {str(parse_error)}"
+                            else:
+                                token_file_status = "FILE_NOT_FOUND"
+                        except Exception as token_error:
+                            token_file_status = f"READ_ERROR: {str(token_error)}"
+
+                    logger.error(
+                        f"IRSA authentication failed. Please verify:\n"
+                        f"1. Service account is annotated: eks.amazonaws.com/role-arn=<IAM_ROLE_ARN>\n"
+                        f"2. IAM role trust policy includes the EKS OIDC provider:\n"
+                        f"   - 'sts:AssumeRoleWithWebIdentity' action is allowed\n"
+                        f"   - Condition: StringEquals 'oidc.eks.<region>.amazonaws.com/id/<cluster-id>:sub' = 'system:serviceaccount:<namespace>:<service-account-name>'\n"
+                        f"3. Pod is using the correct service account\n"
+                        f"4. IAM role has required S3 permissions\n"
+                        f"\nCurrent Environment:\n"
+                        f"   AWS_ROLE_ARN: {aws_role_arn}\n"
+                        f"   AWS_WEB_IDENTITY_TOKEN_FILE: {aws_web_identity_token_file}\n"
+                        f"   Token File Status: {token_file_status}{token_info}\n"
+                        f"   AWS_REGION: {aws_region}\n"
+                        f"\nError Details: {error_message}\n"
+                        f"Full Error: {str(e)}\n"
+                        f"\nTroubleshooting Steps:\n"
+                        f"1. Check IAM role trust policy for: {aws_role_arn}\n"
+                        f"2. Verify EKS OIDC provider is configured\n"
+                        f"3. Ensure role trust policy condition matches the token subject above"
+                    )
+                else:
+                    logger.error(
+                        f"AWS authentication failed with error {error_code}. If using IRSA, check that:\n"
+                        f"1. IAM role has necessary S3 permissions (s3:ListBucket, s3:GetObject)\n"
+                        f"2. IAM role trust policy includes the correct OIDC provider and service account\n"
+                        f"3. Service account annotation matches the IAM role ARN\n"
+                        f"Error: {error_message}"
+                    )
+                raise ModelNotFoundError(
+                    model_uri=self.model_uri,
+                    detail_msg=f"AWS authentication failed ({error_code}): {error_message}",
+                )
+            elif error_code == "NoSuchBucket":
+                logger.error(
+                    f"S3 bucket '{self.bucket_name}' does not exist or is not accessible"
+                )
+                raise ModelNotFoundError(
+                    model_uri=self.model_uri,
+                    detail_msg=f"S3 bucket '{self.bucket_name}' not found",
+                )
+            else:
+                logger.error(
+                    f"S3 operation failed with error {error_code}: {error_message}"
+                )
+                raise ModelNotFoundError(
+                    model_uri=self.model_uri,
+                    detail_msg=f"S3 error ({error_code}): {error_message}",
+                )
         except Exception as e:
             logger.error(
-                f"Bucket {self.bucket_name} not exist in {self.model_uri}\nFor {e}"
+                f"Unexpected error accessing bucket {self.bucket_name} in {self.model_uri}: {str(e)}"
             )
             raise ModelNotFoundError(model_uri=self.model_uri, detail_msg=str(e))
 
@@ -203,9 +348,11 @@ class S3BaseDownloader(BaseDownloader):
 
         # download file
         total_length = int(meta_data.get("ContentLength", 0))
-        with tqdm(
-            desc=_file_name, total=total_length, unit="b", unit_scale=True
-        ) if self.enable_progress_bar else nullcontext() as pbar:
+        with (
+            tqdm(desc=_file_name, total=total_length, unit="b", unit_scale=True)
+            if self.enable_progress_bar
+            else nullcontext()
+        ) as pbar:
 
             def download_progress(bytes_transferred):
                 pbar.update(bytes_transferred)
@@ -249,20 +396,44 @@ class S3Downloader(S3BaseDownloader):
             self.download_extra_config.ak or envs.DOWNLOADER_AWS_ACCESS_KEY_ID,
             self.download_extra_config.sk or envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY,
         )
-        if ak is None or ak == "":
-            raise ArgNotCongiuredError(
-                arg_name="ak", arg_source="--download-extra-config"
+
+        # If both access key and secret key are provided, use them
+        if ak and sk:
+            return {
+                "region_name": self.download_extra_config.region
+                or envs.DOWNLOADER_AWS_REGION,
+                "endpoint_url": self.download_extra_config.endpoint
+                or envs.DOWNLOADER_AWS_ENDPOINT_URL,
+                "aws_access_key_id": ak,
+                "aws_secret_access_key": sk,
+            }
+
+        # If neither access key nor secret key are provided, use IRSA/default credential chain
+        if not ak and not sk:
+            logger.info(
+                "No AWS access key or secret key provided, using IRSA or default credential chain"
             )
-        if sk is None or sk == "":
+            auth_config = {}
+
+            # Only add region and endpoint if they are specified
+            region = self.download_extra_config.region or envs.DOWNLOADER_AWS_REGION
+            endpoint = (
+                self.download_extra_config.endpoint or envs.DOWNLOADER_AWS_ENDPOINT_URL
+            )
+
+            if region:
+                auth_config["region_name"] = region
+            if endpoint:
+                auth_config["endpoint_url"] = endpoint
+
+            return auth_config
+
+        # If only one of them is provided, this is an error condition
+        if ak and not sk:
             raise ArgNotCongiuredError(
                 arg_name="sk", arg_source="--download-extra-config"
             )
-
-        return {
-            "region_name": self.download_extra_config.region
-            or envs.DOWNLOADER_AWS_REGION,
-            "endpoint_url": self.download_extra_config.endpoint
-            or envs.DOWNLOADER_AWS_ENDPOINT_URL,
-            "aws_access_key_id": ak,
-            "aws_secret_access_key": sk,
-        }
+        if sk and not ak:
+            raise ArgNotCongiuredError(
+                arg_name="ak", arg_source="--download-extra-config"
+            )
