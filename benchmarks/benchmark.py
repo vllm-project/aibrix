@@ -13,6 +13,32 @@ from generator.workload_generator import workload_generator
 from argparse import Namespace
 from string import Template
 
+# Helper function to print all override-able parameters
+def print_override_help(config_path):
+    with open(config_path, 'r') as f:
+        content = os.path.expandvars(f.read())
+        config = yaml.safe_load(content)
+
+    print("\n========== OVERRIDE-ABLE PARAMETERS ==========")
+    print("Use --override key=value to override these parameters.")
+    print("Nested parameters can be accessed with dot notation (e.g., dataset_configs.synthetic_multiturn.shared_prefix_length)")
+    print("\nTop-level parameters:")
+    for key, value in config.items():
+        if not isinstance(value, dict):
+            print(f"  - {key}: {value}")
+        else:
+            print(f"\nNested parameters under '{key}':")
+            print_nested_parameters(value, prefix=f"{key}.")
+    print("\n=============================================")
+    sys.exit(0)
+
+def print_nested_parameters(config_dict, prefix=''):
+    for key, value in config_dict.items():
+        if isinstance(value, dict):
+            print_nested_parameters(value, prefix=f"{prefix}{key}.")
+        else:
+            print(f"  - {prefix}{key}: {value}")
+
 
 class BenchmarkRunner:
     def __init__(self, config_base="config/base.yaml", overrides=None):
@@ -304,12 +330,18 @@ class BenchmarkRunner:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run benchmark pipeline", add_help=True, formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument("--stage", required=True, help="Specify the benchmark stage to run. Possible stages:\n- all: Run all stages (dataset, workload, client, analysis)\n- dataset: Generate the dataset\n- workload: Generate the workload\n- client: Run the client to dispatch workload\n- analysis: Analyze the trace output")
+    parser.add_argument("--stage", help="Specify the benchmark stage to run. Possible stages:\n- all: Run all stages (dataset, workload, client, analysis)\n- dataset: Generate the dataset\n- workload: Generate the workload\n- client: Run the client to dispatch workload\n- analysis: Analyze the trace output")
     parser.add_argument("--config", required=True, help="Path to base config YAML")
-    parser.add_argument("--override", action="append", default=[], help="Override config values in the config file specified through --config, e.g., --override time_scale=2.0 or target_qps=5")
+    parser.add_argument("--override", action="append", default=[], help="Override config values in the config file specified through --config, e.g., --override time_scale=2.0 or target_qps=5. Use 'help' to list all override-able parameters.")
     
 
     args = parser.parse_args()
+
+    # Check if user asked for help on overrides
+    if 'help' in args.override:
+        print_override_help(args.config)
+    elif not args.stage:
+        parser.error("--stage is required")
 
     runner = BenchmarkRunner(config_base=args.config, overrides=args.override)
     runner.run(args.stage)
