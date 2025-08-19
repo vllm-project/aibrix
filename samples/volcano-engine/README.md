@@ -8,8 +8,8 @@ including routing strategies, autoscaling, observability dashboards, and KV cach
 Install:
 
 ```bash
-kubectl apply -f aibrix-dependency-v0.4.1.yaml --server-side
-kubectl apply -f aibrix-core-v0.4.1.yaml
+kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.4.1/aibrix-dependency-v0.4.1.yaml --server-side
+kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.4.1/aibrix-core-v0.4.1.yaml
 ```
 
 Uninstall:
