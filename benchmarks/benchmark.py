@@ -250,7 +250,7 @@ class BenchmarkRunner:
             # API_KEY was not set in environment variables
             logging.warning('No API_KEY provided.')
             # Set to None so it can be handled appropriately later
-            self.config["api_key"] = "key"
+            self.config["api_key"] = None
         
         args_dict = {
             "workload_path": workload_file,
