@@ -171,19 +171,21 @@ class BenchmarkRunner:
             
         elif workload_type == "synthetic":
             if subconfig["use_preset_pattern"]:
-                    args_dict.update({
-                    "traffic_pattern": subconfig["preset_patterns"]["traffic_pattern"],
-                    "prompt_len_pattern": subconfig["preset_patterns"]["prompt_len_pattern"],
-                    "completion_len_pattern": subconfig["preset_patterns"]["completion_len_pattern"],
-                    "max_concurrent_sessions": subconfig["pattern_files"].get("max_concurrent_sessions", 1),
-                })
+                patterns = subconfig["preset_patterns"]
+                pattern_args = {
+                    "traffic_pattern": patterns["traffic_pattern"],
+                    "prompt_len_pattern": patterns["prompt_len_pattern"],
+                    "completion_len_pattern": patterns["completion_len_pattern"],
+                }
             else:
-                args_dict.update({
-                    "traffic_pattern_config": subconfig["pattern_files"]["traffic_file"],
-                    "prompt_len_pattern_config": subconfig["pattern_files"]["prompt_len_file"],
-                    "completion_len_pattern_config": subconfig["pattern_files"]["completion_len_file"],
-                    "max_concurrent_sessions": subconfig["pattern_files"].get("max_concurrent_sessions", 1),
-                })
+                pattern_files = subconfig["pattern_files"]
+                pattern_args = {
+                    "traffic_pattern_config": pattern_files["traffic_file"],
+                    "prompt_len_pattern_config": pattern_files["prompt_len_file"],
+                    "completion_len_pattern_config": pattern_files["completion_len_file"],
+                }
+            pattern_args["max_concurrent_sessions"] = subconfig["pattern_files"].get("max_concurrent_sessions", 1)
+            args_dict.update(pattern_args)
             
         elif workload_type == "stat":
             args_dict.update({
