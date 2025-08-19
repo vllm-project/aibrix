@@ -47,10 +47,16 @@ workload_dir: "./output/workload/${workload_type}"
 
 workload_configs:
   synthetic:
-    traffic_file: "scenarios/autoscaling/workload-configs/predefined/traffic-configs//HighSlow.json"
-    prompt_len_file: "scenarios/autoscaling/workload-configs/predefined/prompt-len-configs/HighSlow.json"
-    completion_len_file: "scenarios/autoscaling/workload-configs/predefined/completion-len-configs/HighSlow.json"
-    max_concurrent_sessions: 2
+    use_preset_pattern: true 
+    preset_patterns:
+      traffic_pattern: 'slow_rising' # Choose among 'quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'
+      prompt_len_pattern: 'severe_fluctuation' # Choose among 'quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'
+      completion_len_pattern: 'slight_fluctuation' # Choose among 'quick_rising', 'slow_rising', 'slight_fluctuation', 'severe_fluctuation'
+    pattern_files:
+      traffic_file: "scenarios/autoscaling/workload-configs/predefined/traffic-configs//HighSlow.json"
+      prompt_len_file: "scenarios/autoscaling/workload-configs/predefined/prompt-len-configs/HighSlow.json"
+      completion_len_file: "scenarios/autoscaling/workload-configs/predefined/completion-len-configs/HighSlow.json"
+      max_concurrent_sessions: 2
 
   constant:
     target_qps: 1

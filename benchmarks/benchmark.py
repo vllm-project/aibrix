@@ -170,12 +170,20 @@ class BenchmarkRunner:
             })
             
         elif workload_type == "synthetic":
-            args_dict.update({
-                "traffic_pattern_config": subconfig["traffic_file"],
-                "prompt_len_pattern_config": subconfig["prompt_len_file"],
-                "completion_len_pattern_config": subconfig["completion_len_file"],
-                "max_concurrent_sessions": subconfig.get("max_concurrent_sessions", 1),
-            })
+            if subconfig["use_preset_pattern"]:
+                    args_dict.update({
+                    "traffic_pattern": subconfig["preset_patterns"]["traffic_pattern"],
+                    "prompt_len_pattern": subconfig["preset_patterns"]["prompt_len_pattern"],
+                    "completion_len_pattern": subconfig["preset_patterns"]["completion_len_pattern"],
+                    "max_concurrent_sessions": subconfig["pattern_files"].get("max_concurrent_sessions", 1),
+                })
+            else:
+                args_dict.update({
+                    "traffic_pattern_config": subconfig["pattern_files"]["traffic_file"],
+                    "prompt_len_pattern_config": subconfig["pattern_files"]["prompt_len_file"],
+                    "completion_len_pattern_config": subconfig["pattern_files"]["completion_len_file"],
+                    "max_concurrent_sessions": subconfig["pattern_files"].get("max_concurrent_sessions", 1),
+                })
             
         elif workload_type == "stat":
             args_dict.update({
@@ -236,6 +244,13 @@ class BenchmarkRunner:
     def run_client(self):
         logging.info("Running client to dispatch workload...")
         workload_file = self.config["workload_file"]  # Use the pre-defined workload_file
+        # Only add api_key if it's not None
+        # Special handling for API_KEY
+        if 'api_key' in self.config and self.config["api_key"] == '${API_KEY}':
+            # API_KEY was not set in environment variables
+            logging.warning('No API_KEY provided.')
+            # Set to None so it can be handled appropriately later
+            self.config["api_key"] = "key"
         
         args_dict = {
             "workload_path": workload_file,
