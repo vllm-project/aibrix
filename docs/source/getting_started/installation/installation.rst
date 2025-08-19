@@ -23,10 +23,10 @@ Stable Version
 .. code:: bash
 
     # Install component dependencies
-    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.4.0/aibrix-dependency-v0.4.0.yaml
+    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.4.1/aibrix-dependency-v0.4.1.yaml
 
     # Install aibrix components
-    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.4.0/aibrix-core-v0.4.0.yaml
+    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.4.1/aibrix-core-v0.4.1.yaml
 
     # For custom configurations
     git clone https://github.com/vllm-project/aibrix.git
