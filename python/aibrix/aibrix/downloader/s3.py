@@ -177,10 +177,10 @@ class S3BaseDownloader(BaseDownloader):
                                         if len(parts) >= 2:
                                             # Decode header and payload
                                             header = json.loads(
-                                                base64.b64decode(parts[0] + "==")
+                                                base64.urlsafe_b64decode(parts[0] + "=" * (-len(parts[0]) % 4))
                                             )
                                             payload = json.loads(
-                                                base64.b64decode(parts[1] + "==")
+                                                base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
                                             )
 
                                             token_info = f"\n   Token Info:"
