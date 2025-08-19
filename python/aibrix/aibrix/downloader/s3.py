@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
 from abc import abstractmethod
 from contextlib import nullcontext
 from functools import lru_cache
@@ -23,8 +24,8 @@ from boto3.s3.transfer import TransferConfig
 from botocore.config import MAX_POOL_CONNECTIONS, Config
 from botocore.exceptions import (
     ClientError,
-    NoCredentialsError,
     CredentialRetrievalError,
+    NoCredentialsError,
 )
 from tqdm import tqdm
 
@@ -116,7 +117,7 @@ class S3BaseDownloader(BaseDownloader):
             self.client.head_bucket(Bucket=self.bucket_name)
         except NoCredentialsError as e:
             logger.error(
-                f"No AWS credentials found. If using IRSA, ensure the service account is properly annotated with the IAM role ARN."
+                "No AWS credentials found. If using IRSA, ensure the service account is properly annotated with the IAM role ARN."
             )
             raise ModelNotFoundError(
                 model_uri=self.model_uri,
@@ -147,8 +148,6 @@ class S3BaseDownloader(BaseDownloader):
                 # Handle IRSA-specific authentication issues
                 if error_code == "Unknown" and "AssumeRoleWithWebIdentity" in str(e):
                     # Get IRSA environment variables for debugging
-                    import os
-
                     aws_role_arn = os.environ.get("AWS_ROLE_ARN", "NOT_SET")
                     aws_web_identity_token_file = os.environ.get(
                         "AWS_WEB_IDENTITY_TOKEN_FILE", "NOT_SET"
@@ -169,21 +168,18 @@ class S3BaseDownloader(BaseDownloader):
 
                                     # Parse JWT token to extract useful info (without verification)
                                     try:
-                                        import json
                                         import base64
+                                        import json
 
                                         # JWT tokens are base64 encoded, split by '.'
                                         parts = token_content.split(".")
                                         if len(parts) >= 2:
-                                            # Decode header and payload
-                                            header = json.loads(
-                                                base64.urlsafe_b64decode(parts[0] + "=" * (-len(parts[0]) % 4))
-                                            )
+                                            # Decode payload (header not needed for our purposes)
                                             payload = json.loads(
                                                 base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
                                             )
 
-                                            token_info = f"\n   Token Info:"
+                                            token_info = "\n   Token Info:"
                                             token_info += f"\n     iss (issuer): {payload.get('iss', 'N/A')}"
                                             token_info += f"\n     sub (subject): {payload.get('sub', 'N/A')}"
                                             token_info += f"\n     aud (audience): {payload.get('aud', 'N/A')}"
@@ -397,43 +393,36 @@ class S3Downloader(S3BaseDownloader):
             self.download_extra_config.sk or envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY,
         )
 
+        auth_config: Dict[str, Optional[str]] = {}
+        region = self.download_extra_config.region or envs.DOWNLOADER_AWS_REGION
+        if region:
+            auth_config["region_name"] = region
+
+        endpoint = (
+            self.download_extra_config.endpoint or envs.DOWNLOADER_AWS_ENDPOINT_URL
+        )
+        if endpoint:
+            auth_config["endpoint_url"] = endpoint
+
         # If both access key and secret key are provided, use them
         if ak and sk:
-            return {
-                "region_name": self.download_extra_config.region
-                or envs.DOWNLOADER_AWS_REGION,
-                "endpoint_url": self.download_extra_config.endpoint
-                or envs.DOWNLOADER_AWS_ENDPOINT_URL,
-                "aws_access_key_id": ak,
-                "aws_secret_access_key": sk,
-            }
-
+            auth_config["aws_access_key_id"] = ak
+            auth_config["aws_secret_access_key"] = sk
+            return auth_config
+        
         # If neither access key nor secret key are provided, use IRSA/default credential chain
         if not ak and not sk:
             logger.info(
                 "No AWS access key or secret key provided, using IRSA or default credential chain"
             )
-            auth_config = {}
-
-            # Only add region and endpoint if they are specified
-            region = self.download_extra_config.region or envs.DOWNLOADER_AWS_REGION
-            endpoint = (
-                self.download_extra_config.endpoint or envs.DOWNLOADER_AWS_ENDPOINT_URL
-            )
-
-            if region:
-                auth_config["region_name"] = region
-            if endpoint:
-                auth_config["endpoint_url"] = endpoint
-
             return auth_config
 
         # If only one of them is provided, this is an error condition
-        if ak and not sk:
+        if not sk:
             raise ArgNotCongiuredError(
                 arg_name="sk", arg_source="--download-extra-config"
             )
-        if sk and not ak:
+        else:  # not ak
             raise ArgNotCongiuredError(
                 arg_name="ak", arg_source="--download-extra-config"
             )
