@@ -176,7 +176,10 @@ class S3BaseDownloader(BaseDownloader):
                                         if len(parts) >= 2:
                                             # Decode payload (header not needed for our purposes)
                                             payload = json.loads(
-                                                base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+                                                base64.urlsafe_b64decode(
+                                                    parts[1]
+                                                    + "=" * (-len(parts[1]) % 4)
+                                                )
                                             )
 
                                             token_info = "\n   Token Info:"
@@ -409,7 +412,7 @@ class S3Downloader(S3BaseDownloader):
             auth_config["aws_access_key_id"] = ak
             auth_config["aws_secret_access_key"] = sk
             return auth_config
-        
+
         # If neither access key nor secret key are provided, use IRSA/default credential chain
         if not ak and not sk:
             logger.info(
