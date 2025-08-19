@@ -23,7 +23,7 @@ namePrefix: aibrix-lora-
 images:
   - name: controller
     newName: aibrix/controller-manager
-    newTag: v0.4.0
+    newTag: v0.4.1
 
 patches:
   - path: patch.yaml
