@@ -40,7 +40,7 @@ Gateway error messages
 Gateway ReferenceGrant Issue
 ---------------------------
 
-When using multi-node inference with RayClusterFleet (as described in the `multi-node inference guide <https://aibrix.readthedocs.io/latest/features/multi-node-inference.html>`_), you might encounter a 500 error when accessing the model through the Envoy gateway, while direct access via port-forward works fine.
+When using multi-node inference with RayClusterFleet (as described in the :ref:`multi-node inference guide <distributed_inference>`), you might encounter a 500 error when accessing the model through the Envoy gateway, while direct access via port-forward works fine.
 
 This issue occurs because the gateway (in aibrix-system namespace) needs explicit permission to access services in other namespaces (e.g., default namespace). To resolve this, you need to create a ReferenceGrant:
 
