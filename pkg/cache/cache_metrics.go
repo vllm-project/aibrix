@@ -17,11 +17,11 @@ package cache
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	dto "github.com/prometheus/client_model/go"
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -144,7 +144,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 		// Use centralized typed metrics fetcher for better engine abstraction and error handling
 		metricsToFetch := c.getAllAvailableMetrics()
 		endpoint := fmt.Sprintf("%s:%d", pod.Status.PodIP, podMetricPort)
-		engineType := getEngineTypeFromPod(*pod.Pod)
+		engineType := metrics.GetEngineType(*pod.Pod)
 		identifier := pod.Name
 		result, err := c.engineMetricsFetcher.FetchAllTypedMetrics(ctx, endpoint, engineType, identifier, metricsToFetch)
 		if err != nil {
@@ -426,14 +426,6 @@ func (c *Store) getAllAvailableMetrics() []string {
 	return allMetrics
 }
 
-// getEngineTypeFromPod extracts the engine type from pod labels, defaulting to "vllm" for backward compatibility
-func getEngineTypeFromPod(pod v1.Pod) string {
-	if engineType, exists := pod.Labels[constants.ModelLabelEngine]; exists && engineType != "" {
-		return engineType
-	}
-	return "vllm" // Default to vllm for backward compatibility
-}
-
 // updatePodMetricsFromTypedResult processes the typed metrics result and updates pod storage
 func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.EngineMetricsResult) {
 	// Process pod-scoped metrics
@@ -468,28 +460,9 @@ func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.Engine
 
 // parseModelMetricKey parses a key like "model/metric" into model name and metric name
 func parseModelMetricKey(key string) (modelName, metricName string) {
-	parts := splitAtFirst(key, "/")
-	if len(parts) == 2 {
-		return parts[0], parts[1]
+	modelName, metricName, found := strings.Cut(key, "/")
+	if !found {
+		return "", key // Fallback if parsing fails
 	}
-	return "", key // Fallback if parsing fails
-}
-
-// splitAtFirst splits a string at the first occurrence of separator
-func splitAtFirst(s, sep string) []string {
-	index := findFirst(s, sep)
-	if index == -1 {
-		return []string{s}
-	}
-	return []string{s[:index], s[index+1:]}
-}
-
-// findFirst returns the first index of substring in string
-func findFirst(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
+	return modelName, metricName
 }

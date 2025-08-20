@@ -120,8 +120,7 @@ func GetMetricUsageRatio(metrics PodMetricsInfo, targetUsage int64) (usageRatio 
 }
 
 func GetPodContainerMetric(ctx context.Context, fetcher MetricFetcher, pod corev1.Pod, source autoscalingv1alpha1.MetricSource) (PodMetricsInfo, time.Time, error) {
-	endpoint := fmt.Sprintf("%s:%s", pod.Status.PodIP, source.Port)
-	_, err := fetcher.FetchMetric(ctx, source.ProtocolType, endpoint, source.Path, source.TargetMetric)
+	_, err := fetcher.FetchPodMetrics(ctx, pod, source)
 	currentTimestamp := time.Now()
 	if err != nil {
 		return nil, currentTimestamp, err
@@ -154,8 +153,7 @@ func GetMetricsFromPods(ctx context.Context, fetcher MetricFetcher, pods []corev
 			continue
 		}
 
-		endpoint := fmt.Sprintf("%s:%s", pod.Status.PodIP, source.Port)
-		metric, err := fetcher.FetchMetric(ctx, source.ProtocolType, endpoint, source.Path, source.TargetMetric)
+		metric, err := fetcher.FetchPodMetrics(ctx, pod, source)
 		if err != nil {
 			errors = append(errors, err.Error())
 			failedPods = append(failedPods, fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
@@ -208,5 +206,7 @@ func GetMetricFromSource(ctx context.Context, fetcher MetricFetcher, source auto
 			endpoint = fmt.Sprintf("%s:%s", u.Hostname(), source.Port)
 		}
 	}
+	// Note: This function uses FetchMetric for external endpoint-based fetching
+	// where no pod context is available. This is acceptable for external endpoints.
 	return fetcher.FetchMetric(ctx, source.ProtocolType, endpoint, source.Path, source.TargetMetric)
 }

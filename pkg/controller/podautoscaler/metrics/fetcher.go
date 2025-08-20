@@ -19,12 +19,12 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 
 	v1 "k8s.io/api/core/v1"
@@ -93,11 +93,36 @@ func NewRestMetricsFetcherWithConfig(config metrics.EngineMetricsFetcherConfig) 
 }
 
 func (f *RestMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
-	// Extract information from the pod and metric source
+	// Check for test URL setter (for unit tests)
+	if f.testURLSetter != nil {
+		pathSeparator := "/"
+		if strings.HasPrefix(source.Path, "/") {
+			pathSeparator = ""
+		}
+		url := fmt.Sprintf("%s://%s:%s%s%s", source.ProtocolType, pod.Status.PodIP, source.Port, pathSeparator, source.Path)
+		f.testURLSetter(url)
+		return 0.0, nil
+	}
+
+	// Use real pod information instead of fake pod creation
 	endpoint := fmt.Sprintf("%s:%s", pod.Status.PodIP, source.Port)
-	return f.FetchMetric(ctx, source.ProtocolType, endpoint, source.Path, source.TargetMetric)
+	engineType := metrics.GetEngineType(pod)
+	identifier := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+
+	// Use the centralized engine fetcher with real pod information
+	metricValue, err := f.engineFetcher.FetchTypedMetric(ctx, endpoint, engineType, identifier, source.TargetMetric)
+	if err != nil {
+		klog.Warningf("Failed to fetch metric %s from pod %s: %v. Returning zero value.",
+			source.TargetMetric, identifier, err)
+		// Return zero value with warning instead of error - business logic can decide how to handle
+		return 0.0, nil
+	}
+
+	return metricValue.GetSimpleValue(), nil
 }
 
+// FetchMetric is deprecated. Use FetchPodMetrics instead which provides proper pod context.
+// This method creates a fake pod which loses important metadata and should be avoided.
 func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscalingv1alpha1.ProtocolType, endpoint, path, metricName string) (float64, error) {
 	// Check for test URL setter (for unit tests)
 	if f.testURLSetter != nil {
@@ -111,10 +136,10 @@ func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscali
 		return 0.0, nil
 	}
 
-	// Parse endpoint to extract podIP and port
-	podIP, portStr, found := parseEndpoint(endpoint)
-	if !found {
-		return 0.0, fmt.Errorf("invalid endpoint format: %s", endpoint)
+	// Parse endpoint to extract podIP and port using Go standard library
+	podIP, portStr, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return 0.0, fmt.Errorf("invalid endpoint format %s: %v", endpoint, err)
 	}
 
 	metricPort, err := strconv.Atoi(portStr)
@@ -136,7 +161,7 @@ func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscali
 		},
 	}
 
-	engineType := getEngineType(fakePod)
+	engineType := metrics.GetEngineType(fakePod)
 	identifier := fmt.Sprintf("endpoint-%s", podIP)
 	fullEndpoint := fmt.Sprintf("%s:%d", podIP, metricPort)
 
@@ -153,42 +178,6 @@ func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscali
 }
 
 // Helper functions
-
-// getEngineType extracts the engine type from pod labels, defaulting to "vllm" for backward compatibility
-func getEngineType(pod v1.Pod) string {
-	if engineType, exists := pod.Labels[constants.ModelLabelEngine]; exists && engineType != "" {
-		return engineType
-	}
-	return "vllm" // Default to vllm for backward compatibility
-}
-
-// parseEndpoint parses an endpoint string like "10.1.2.3:8000" into IP and port
-func parseEndpoint(endpoint string) (podIP, port string, found bool) {
-	parts := splitAtLast(endpoint, ":")
-	if len(parts) != 2 {
-		return "", "", false
-	}
-	return parts[0], parts[1], true
-}
-
-// splitAtLast splits a string at the last occurrence of separator
-func splitAtLast(s, sep string) []string {
-	lastIndex := lastIndex(s, sep)
-	if lastIndex == -1 {
-		return []string{s}
-	}
-	return []string{s[:lastIndex], s[lastIndex+1:]}
-}
-
-// lastIndex returns the last index of substring in string
-func lastIndex(s, substr string) int {
-	for i := len(s) - len(substr); i >= 0; i-- {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
-}
 
 // ResourceMetricsFetcher fetches resource metrics from Kubernetes metrics API (metrics.k8s.io).
 type ResourceMetricsFetcher struct {

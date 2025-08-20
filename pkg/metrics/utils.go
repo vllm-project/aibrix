@@ -213,7 +213,7 @@ func ParseMetricsURLWithContext(ctx context.Context, url string) (map[string]*dt
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return make(map[string]*dto.MetricFamily), fmt.Errorf("Failed to fetch metrics from %s: %v\n", url, err)
+		return nil, fmt.Errorf("Failed to fetch metrics from %s: %v\n", url, err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -228,7 +228,7 @@ func ParseMetricsURLWithContext(ctx context.Context, url string) (map[string]*dt
 	var parser expfmt.TextParser
 	allMetrics, err := parser.TextToMetricFamilies(resp.Body)
 	if err != nil {
-		return make(map[string]*dto.MetricFamily), fmt.Errorf("Error parsing metric families: %v\n", err)
+		return nil, fmt.Errorf("Error parsing metric families: %v\n", err)
 	}
 	return allMetrics, nil
 }
@@ -238,13 +238,14 @@ func ParseMetricsFromReader(reader io.Reader) (map[string]*dto.MetricFamily, err
 	var parser expfmt.TextParser
 	allMetrics, err := parser.TextToMetricFamilies(reader)
 	if err != nil {
-		return make(map[string]*dto.MetricFamily), fmt.Errorf("error parsing metric families: %v", err)
+		return nil, fmt.Errorf("error parsing metric families: %v", err)
 	}
 	return allMetrics, nil
 }
 
-// getEngineType extracts the engine type from pod labels, defaults to "vllm"
-func getEngineType(pod v1.Pod) string {
+// GetEngineType extracts the engine type from pod labels, defaults to "vllm" for backward compatibility
+// This function is centralized to avoid duplication across packages
+func GetEngineType(pod v1.Pod) string {
 	if engineType, exists := pod.Labels[constants.ModelLabelEngine]; exists && engineType != "" {
 		return engineType
 	}

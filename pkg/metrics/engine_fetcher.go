@@ -349,7 +349,7 @@ func (ef *EngineMetricsFetcher) fetchAllMetricsFromURL(ctx context.Context, url 
 
 	resp, err := ef.client.Do(req)
 	if err != nil {
-		return make(map[string]*dto.MetricFamily), fmt.Errorf("failed to fetch metrics from %s: %v", url, err)
+		return nil, fmt.Errorf("failed to fetch metrics from %s: %v", url, err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
