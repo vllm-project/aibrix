@@ -44,7 +44,7 @@ func SetupStormServiceWebhookWithManager(mgr ctrl.Manager) error {
 type StormServiceCustomDefaulter struct {
 }
 
-//+kubebuilder:webhook:path=/mutate-orchestration-aibrix-ai-v1alpha1-stormservice,mutating=true,failurePolicy=fail,sideEffects=None,groups=orchestration.aibrix.ai,resources=stormservices,verbs=create;update,versions=v1alpha1,name=mstormservice.kb.io,admissionReviewVersions=v1
+//+kubebuilder:webhook:path=/mutate-orchestration-aibrix-ai-v1alpha1-stormservice,mutating=true,failurePolicy=ignore,sideEffects=None,groups=orchestration.aibrix.ai,resources=stormservices,verbs=create;update,versions=v1alpha1,name=mstormservice.kb.io,admissionReviewVersions=v1
 
 var _ webhook.CustomDefaulter = &StormServiceCustomDefaulter{}
 
@@ -75,7 +75,7 @@ func (r *StormServiceCustomDefaulter) Default(_ context.Context, obj runtime.Obj
 func (r *StormServiceCustomDefaulter) injectAIBrixRuntime(stormService *orchestrationv1alpha1.StormService) {
 	spec := stormService.Spec.Template.Spec
 
-	// Get engine type from template annotations, if specified
+	// Get engine type from RoleSet template annotations, if specified
 	var engineType string
 	if annotations := stormService.Spec.Template.Annotations; annotations != nil {
 		if engine, exists := annotations[constants.ModelLabelEngine]; exists && engine != "" {
@@ -83,9 +83,9 @@ func (r *StormServiceCustomDefaulter) injectAIBrixRuntime(stormService *orchestr
 		}
 	}
 
-	// Get sidecar image from annotations; fall back to default if not set
+	// Get sidecar image from stormService annotations; fall back to default if not set
 	var sidecarImage string
-	if annotations := stormService.Spec.Template.Annotations; annotations != nil {
+	if annotations := stormService.GetAnnotations(); annotations != nil {
 		if image, exists := annotations[SidecarInjectionRuntimeImageAnnotation]; exists && image != "" {
 			sidecarImage = image
 		}
@@ -210,9 +210,9 @@ func containsContainer(containers []corev1.Container, name string) bool {
 // Sidecar injection constants
 const (
 	// SidecarInjectionAnnotation Annotation used to enable or disable sidecar injection
-	SidecarInjectionAnnotation = "stormservice.orchestration.aibrix.ai/sidecar-injection"
+	SidecarInjectionAnnotation = "model.aibrix.ai/sidecar-injection"
 	// SidecarInjectionRuntimeImageAnnotation Annotation used to specify a custom image for the sidecar container
-	SidecarInjectionRuntimeImageAnnotation = "stormservice.orchestration.aibrix.ai/sidecar-runtime-image"
+	SidecarInjectionRuntimeImageAnnotation = "model.aibrix.ai/sidecar-runtime-image"
 	SidecarName                            = "aibrix-runtime"
 	SidecarImage                           = "aibrix/runtime:v0.4.0"
 	SidecarCommand                         = "aibrix_runtime"
@@ -223,7 +223,7 @@ const (
 )
 
 // TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
-//+kubebuilder:webhook:path=/validate-orchestration-aibrix-ai-v1alpha1-stormservice,mutating=false,failurePolicy=fail,sideEffects=None,groups=orchestration.aibrix.ai,resources=stormservices,verbs=create;update,versions=v1alpha1,name=vstormservice.kb.io,admissionReviewVersions=v1
+//+kubebuilder:webhook:path=/validate-orchestration-aibrix-ai-v1alpha1-stormservice,mutating=false,failurePolicy=ignore,sideEffects=None,groups=orchestration.aibrix.ai,resources=stormservices,verbs=create;update,versions=v1alpha1,name=vstormservice.kb.io,admissionReviewVersions=v1
 
 var _ webhook.CustomDefaulter = &StormServiceCustomDefaulter{}
 

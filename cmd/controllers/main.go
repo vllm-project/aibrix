@@ -329,6 +329,10 @@ func setupControllers(mgr ctrl.Manager, runtimeConfig config.RuntimeConfig, cert
 			setupLog.Error(err, "unable to setup webhook", "webhook", "StormService")
 			os.Exit(1)
 		}
+		if err := apiwebhook.SetupDeploymentWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to setup webhook", "webhook", "Deployment")
+			os.Exit(1)
+		}
 	}
 
 	// Kind controller registration is encapsulated inside the pkg/controller/controller.go
