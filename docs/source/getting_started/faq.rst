@@ -37,3 +37,29 @@ Gateway error messages
 
 * no ready pods
 
+Gateway ReferenceGrant Issue
+---------------------------
+
+When using multi-node inference with RayClusterFleet (as described in the :ref:`multi-node inference guide <distributed_inference>`), you might encounter a 500 error when accessing the model through the Envoy gateway, while direct access via port-forward works fine.
+
+This issue occurs because the gateway (in aibrix-system namespace) needs explicit permission to access services in other namespaces (e.g., default namespace). To resolve this, you need to create a ReferenceGrant:
+
+.. code-block:: yaml
+
+    apiVersion: gateway.networking.k8s.io/v1beta1
+    kind: ReferenceGrant
+    metadata:
+      name: allow-aibrix-gateway-to-access-services-route
+      namespace: default
+    spec:
+      from:
+      - group: gateway.networking.k8s.io
+        kind: HTTPRoute
+        namespace: aibrix-system
+      to:
+      - group: ""
+        kind: Service
+
+After applying this ReferenceGrant, the gateway should be able to properly route requests to your model service.
+
+Note: This is typically only needed for multi-node deployments. Simple model deployments usually work without requiring this additional configuration.
