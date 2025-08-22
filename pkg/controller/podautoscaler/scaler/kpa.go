@@ -400,7 +400,7 @@ func (k *KpaAutoscaler) UpdateScaleTargetMetrics(ctx context.Context, metricKey 
 		return err
 	}
 
-	err = k.metricClient.UpdatePodListMetric(metricValues, metricKey, now)
+	err = k.metricClient.UpdateMetrics(now, metricKey, metricValues...)
 	if err != nil {
 		return err
 	}
