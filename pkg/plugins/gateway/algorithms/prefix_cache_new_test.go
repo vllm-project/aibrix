@@ -19,7 +19,6 @@ package routingalgorithms
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"sync"
 	"testing"
 
@@ -51,8 +50,8 @@ func TestPrefixCacheRouterConfiguration(t *testing.T) {
 		{
 			name: "default configuration - no KV sync",
 			envVars: map[string]string{
-				"AIBRIX_USE_REMOTE_TOKENIZER":  "false",
-				"AIBRIX_KV_EVENT_SYNC_ENABLED": "false",
+				constants.EnvPrefixCacheUseRemoteTokenizer: "false",
+				constants.EnvPrefixCacheKVEventSyncEnabled: "false",
 			},
 			expectKVSync:       false,
 			expectSyncIndexer:  false,
@@ -61,8 +60,8 @@ func TestPrefixCacheRouterConfiguration(t *testing.T) {
 		{
 			name: "KV sync enabled with remote tokenizer",
 			envVars: map[string]string{
-				"AIBRIX_USE_REMOTE_TOKENIZER":  "true",
-				"AIBRIX_KV_EVENT_SYNC_ENABLED": "true",
+				constants.EnvPrefixCacheUseRemoteTokenizer: "true",
+				constants.EnvPrefixCacheKVEventSyncEnabled: "true",
 			},
 			expectKVSync:       true,
 			expectSyncIndexer:  true,
@@ -71,8 +70,8 @@ func TestPrefixCacheRouterConfiguration(t *testing.T) {
 		{
 			name: "remote tokenizer without KV sync",
 			envVars: map[string]string{
-				"AIBRIX_USE_REMOTE_TOKENIZER":  "true",
-				"AIBRIX_KV_EVENT_SYNC_ENABLED": "false",
+				constants.EnvPrefixCacheUseRemoteTokenizer: "true",
+				constants.EnvPrefixCacheKVEventSyncEnabled: "false",
 			},
 			expectKVSync:       false,
 			expectSyncIndexer:  false,
@@ -95,10 +94,8 @@ func TestPrefixCacheRouterConfiguration(t *testing.T) {
 			require.NoError(t, err)
 
 			// Parse configuration
-			remoteTokenizerValue := utils.LoadEnv("AIBRIX_USE_REMOTE_TOKENIZER", "false")
-			useRemoteTokenizer, _ := strconv.ParseBool(remoteTokenizerValue)
-			kvSyncValue := utils.LoadEnv("AIBRIX_KV_EVENT_SYNC_ENABLED", "false")
-			kvSyncEnabled, _ := strconv.ParseBool(kvSyncValue)
+			useRemoteTokenizer := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
+			kvSyncEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheKVEventSyncEnabled, false)
 
 			// Create router with test configuration
 			router := prefixCacheRouter{
@@ -150,7 +147,7 @@ func TestPrefixCacheRouterWithSyncIndexer(t *testing.T) {
 				Name:      "pod1",
 				Namespace: "default",
 				Labels: map[string]string{
-					"model.aibrix.ai/name": "test-model",
+					constants.ModelLabelName: "test-model",
 				},
 			},
 			Status: v1.PodStatus{PodIP: "1.1.1.1"},
@@ -160,7 +157,7 @@ func TestPrefixCacheRouterWithSyncIndexer(t *testing.T) {
 				Name:      "pod2",
 				Namespace: "default",
 				Labels: map[string]string{
-					"model.aibrix.ai/name": "test-model",
+					constants.ModelLabelName: "test-model",
 				},
 			},
 			Status: v1.PodStatus{PodIP: "2.2.2.2"},
@@ -236,7 +233,7 @@ func TestPrefixCacheRouterWithLocalIndexer(t *testing.T) {
 				Name:      "pod1",
 				Namespace: "default",
 				Labels: map[string]string{
-					"model.aibrix.ai/name": "test-model",
+					constants.ModelLabelName: "test-model",
 				},
 			},
 			Status: v1.PodStatus{PodIP: "1.1.1.1"},
@@ -246,7 +243,7 @@ func TestPrefixCacheRouterWithLocalIndexer(t *testing.T) {
 				Name:      "pod2",
 				Namespace: "default",
 				Labels: map[string]string{
-					"model.aibrix.ai/name": "test-model",
+					constants.ModelLabelName: "test-model",
 				},
 			},
 			Status: v1.PodStatus{PodIP: "2.2.2.2"},
@@ -353,7 +350,7 @@ func TestPrefixCacheRouterMetrics(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Initialize metrics for testing
-	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "true")
 	_ = initializePrefixCacheMetrics()
 	// Create test pods
 	readyPods := []*v1.Pod{
@@ -362,7 +359,7 @@ func TestPrefixCacheRouterMetrics(t *testing.T) {
 				Name:      "pod1",
 				Namespace: "default",
 				Labels: map[string]string{
-					"model.aibrix.ai/name": "test-model",
+					constants.ModelLabelName: "test-model",
 				},
 			},
 			Status: v1.PodStatus{PodIP: "1.1.1.1"},
@@ -478,7 +475,7 @@ func TestRecordRoutingDecision(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Initialize metrics for testing
-	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "true")
 	_ = initializePrefixCacheMetrics()
 	tests := []struct {
 		matchPercent   int
@@ -522,7 +519,7 @@ func TestPrefixCacheRouterLatencyMetric(t *testing.T) {
 	prefixCacheMetricsOnce = sync.Once{}
 
 	// Initialize metrics for testing
-	t.Setenv(constants.EnvPrefixCacheMetricsEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheLocalRouterMetricsEnabled, "true")
 	_ = initializePrefixCacheMetrics()
 	// Create simple test setup
 	readyPods := []*v1.Pod{
@@ -531,7 +528,7 @@ func TestPrefixCacheRouterLatencyMetric(t *testing.T) {
 				Name:      "pod1",
 				Namespace: "default",
 				Labels: map[string]string{
-					"model.aibrix.ai/name": "test-model",
+					constants.ModelLabelName: "test-model",
 				},
 			},
 			Status: v1.PodStatus{PodIP: "1.1.1.1"},
@@ -626,7 +623,7 @@ func TestPrefixCacheRouterWithRemoteTokenizer(t *testing.T) {
 				Name:      "pod1",
 				Namespace: "default",
 				Labels: map[string]string{
-					"model.aibrix.ai/name": "test-model",
+					constants.ModelLabelName: "test-model",
 				},
 			},
 			Status: v1.PodStatus{PodIP: "1.1.1.1"},
@@ -859,7 +856,7 @@ func TestPrefixCacheRouterModelExtraction(t *testing.T) {
 				Name:      "pod1",
 				Namespace: "default",
 				Labels: map[string]string{
-					"model.aibrix.ai/name": "llama-2-7b",
+					constants.ModelLabelName: "llama-2-7b",
 				},
 			},
 			Status: v1.PodStatus{PodIP: "1.1.1.1"},

@@ -33,21 +33,33 @@ const (
 
 // Environment variable names for KV Event Sync
 const (
-	// EnvKVEventSyncEnabled enables KV event synchronization
+	// EnvPrefixCacheKVEventSyncEnabled enables KV event synchronization
 	// When true, enables ZMQ-based cache event synchronization
-	EnvKVEventSyncEnabled = "AIBRIX_KV_EVENT_SYNC_ENABLED"
+	EnvPrefixCacheKVEventSyncEnabled = "AIBRIX_PREFIX_CACHE_KV_EVENT_SYNC_ENABLED"
 
-	// EnvKVEventPublishAddr specifies ZMQ publish address
+	// EnvPrefixCacheKVEventPublishAddr specifies ZMQ publish address
 	// Format: "tcp://*:5555" or similar ZMQ address
-	EnvKVEventPublishAddr = "AIBRIX_KV_EVENT_PUBLISH_ADDR"
+	EnvPrefixCacheKVEventPublishAddr = "AIBRIX_PREFIX_CACHE_KV_EVENT_PUBLISH_ADDR"
 
-	// EnvKVEventSubscribeAddrs specifies ZMQ subscribe addresses
+	// EnvPrefixCacheKVEventSubscribeAddrs specifies ZMQ subscribe addresses
 	// Comma-separated list of ZMQ addresses to subscribe to
-	EnvKVEventSubscribeAddrs = "AIBRIX_KV_EVENT_SUBSCRIBE_ADDRS"
+	EnvPrefixCacheKVEventSubscribeAddrs = "AIBRIX_PREFIX_CACHE_KV_EVENT_SUBSCRIBE_ADDRS"
 
-	// EnvPrefixCacheMetricsEnabled enables prefix cache metrics
+	// EnvPrefixCacheLocalRouterMetricsEnabled enables prefix cache metrics
 	// Added as part of KV Event Sync to control metrics registration
-	EnvPrefixCacheMetricsEnabled = "AIBRIX_PREFIX_CACHE_METRICS_ENABLED"
+	EnvPrefixCacheLocalRouterMetricsEnabled = "AIBRIX_PREFIX_CACHE_LOCAL_ROUTER_METRICS_ENABLED"
+
+	// EnvPrefixCacheUseRemoteTokenizer enables remote tokenizer usage
+	// When true, uses remote tokenizer service instead of local tokenization
+	EnvPrefixCacheUseRemoteTokenizer = "AIBRIX_PREFIX_CACHE_USE_REMOTE_TOKENIZER"
+
+	// EnvPrefixCacheTokenizerType specifies the tokenizer type for prefix cache
+	// Options: "character", "tiktoken", "remote"
+	EnvPrefixCacheTokenizerType = "AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE"
+
+	// EnvPrefixCacheRemoteTokenizerEndpoint specifies the remote tokenizer service endpoint
+	// Format: "http://service:port" - required when using remote tokenizer
+	EnvPrefixCacheRemoteTokenizerEndpoint = "AIBRIX_PREFIX_CACHE_REMOTE_TOKENIZER_ENDPOINT"
 )
 
 // Helper functions for KV Event Sync labels

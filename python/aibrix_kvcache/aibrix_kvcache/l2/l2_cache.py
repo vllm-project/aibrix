@@ -23,7 +23,7 @@ from more_itertools import batched
 from ..cache_handle import KVCacheHandle
 from ..cache_hashable import TokenListView
 from ..common.absl_logging import getLogger, log_every_n_seconds
-from ..memory import MemoryRegion
+from ..memory import ManagedMemoryRegion, MemoryRegion
 from ..meta_service import MetaService
 from ..metrics import L2CacheMetrics, MeasurableBase, MetricRecorder
 from ..profiling import nvtx_range
@@ -134,6 +134,14 @@ class L2Cache(MeasurableBase):
 
     def open(self) -> Status:
         """Open the cache."""
+        if not MemoryRegion.use_compact_layout() and (
+            self._backend.feature.gdr_get or self._backend.feature.gdr_put
+        ):
+            return Status(
+                StatusCodes.INVALID,
+                "please set AIBRIX_KV_CACHE_OL_TOKEN_VALIDATION_ENABLED to "
+                "false to use GDR",
+            )
         return self._backend.open()
 
     def close(self) -> Status:
@@ -270,7 +278,7 @@ class L2Cache(MeasurableBase):
                     ),
                 )
 
-            blocks = tuple(kv_tensors.memory_regions)
+            blocks = tuple(kv_tensors.memory_regions)  # type: ignore
         else:
             raise ValueError(f"Unsupported type {type(kv_tensors).__name__}")
 
@@ -286,7 +294,10 @@ class L2Cache(MeasurableBase):
             return await self._put_impl(block_batches)
 
     async def _mput_impl(
-        self, block_batches: Sequence[Sequence[Tuple[Any, MemoryRegion]]]
+        self,
+        block_batches: Sequence[
+            Sequence[Tuple[Any, MemoryRegion | Sequence[MemoryRegion]]]
+        ],
     ) -> Status[int]:
         num_processed_blocks = 0
         for batch in block_batches:
@@ -294,13 +305,14 @@ class L2Cache(MeasurableBase):
             key_pairs, mrs = zip(*batch)
             real_keys, cache_keys = zip(*key_pairs)
             for i, mr in enumerate(mrs):
-                if not mr.is_sealed:
-                    if not MemoryRegion.use_compact_layout():
-                        mr.pack_tokens(
-                            prefix=real_keys[i][: -self.block_ntokens],
-                            tokens=real_keys[i][-self.block_ntokens :],
-                        )
-                    mr.seal()
+                if isinstance(mr, ManagedMemoryRegion):
+                    if not mr.is_sealed:
+                        if not MemoryRegion.use_compact_layout():
+                            mr.pack_tokens(
+                                prefix=real_keys[i][: -self.block_ntokens],
+                                tokens=real_keys[i][-self.block_ntokens :],
+                            )
+                        mr.seal()
 
             statuses = await self._backend.mput(cache_keys, mrs)
 
@@ -334,7 +346,10 @@ class L2Cache(MeasurableBase):
         return Status.ok(num_processed_blocks)
 
     async def _put_impl(
-        self, block_batches: Sequence[Sequence[Tuple[Any, MemoryRegion]]]
+        self,
+        block_batches: Sequence[
+            Sequence[Tuple[Any, MemoryRegion | Sequence[MemoryRegion]]]
+        ],
     ) -> Status[int]:
         num_processed_blocks = 0
         for batch in block_batches:
@@ -371,19 +386,21 @@ class L2Cache(MeasurableBase):
         return Status.ok(num_processed_blocks)
 
     async def _backend_put_impl(
-        self, key_pair: Tuple[TokenListView, bytes], mr: MemoryRegion
+        self,
+        key_pair: Tuple[TokenListView, bytes],
+        mr: MemoryRegion | Sequence[MemoryRegion],
     ) -> Status:
         """Put kv tensors to the backend.
         Args:
             key_pair: I.e., real_key and cache_key.
                 real_key (TokenListView): The real key of the kv tensors.
                 cache_key (bytes): The cache key of the kv tensors.
-            mr (MemoryRegion): Memory region of kv tensors.
+            mr: Memory regions of kv tensors.
         Returns:
             The status of the put operation.
         """
         real_key, cache_key = key_pair
-        if not mr.is_sealed:
+        if isinstance(mr, ManagedMemoryRegion) and not mr.is_sealed:
             if not MemoryRegion.use_compact_layout():
                 mr.pack_tokens(
                     prefix=real_key[: -self.block_ntokens],
@@ -398,14 +415,13 @@ class L2Cache(MeasurableBase):
         self,
         prefix: TokenListView | None,
         tokens: TokenListView,
-        mrs: Sequence[MemoryRegion],
+        mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
     ) -> Status[int]:
         """Get kv tensors from the cache.
         Args:
             prefix (TokenListView | None): The prefix tokens of the kv tensors.
             tokens (TokenListView): The tokens of the kv tensors.
-            mrs (Sequence[MemoryRegion]): Memory regions to place the fetched
-                                          kv tensors.
+            mrs: Memory regions to place the fetched kv tensors.
         Returns:
             The number of blocks that are fetched.
         """
@@ -427,7 +443,10 @@ class L2Cache(MeasurableBase):
             return await self._get_impl(block_batches)
 
     async def _mget_impl(
-        self, block_batches: Sequence[Sequence[Tuple[Any, MemoryRegion]]]
+        self,
+        block_batches: Sequence[
+            Sequence[Tuple[Any, MemoryRegion | Sequence[MemoryRegion]]]
+        ],
     ) -> Status[int]:
         nr = 0
         for batch in block_batches:
@@ -450,7 +469,7 @@ class L2Cache(MeasurableBase):
     async def _backend_mget_impl(
         self,
         key_pairs: Sequence[Tuple[TokenListView, bytes]],
-        mrs: Sequence[MemoryRegion],
+        mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
     ) -> Status[int]:
         """Get kv tensors from the backend using mget.
         Args:
@@ -476,15 +495,16 @@ class L2Cache(MeasurableBase):
                 return status
             statuses = [status] * len(mrs)
 
+        is_managed_mr = isinstance(mrs[0], ManagedMemoryRegion)
         nr: int = 0
         for i, status in enumerate(statuses):
             if not status.is_ok():
                 continue
             # Bypass token validation if MR is using compact layout
-            if not MemoryRegion.use_compact_layout():
+            if is_managed_mr and not MemoryRegion.use_compact_layout():
                 mr = mrs[i]
-                mr.block_nbytes = self.block_nbytes
-                prefix_in_mr, tokens_in_mr = mr.unpack_tokens()
+                mr.block_nbytes = self.block_nbytes  # type: ignore
+                prefix_in_mr, tokens_in_mr = mr.unpack_tokens()  # type: ignore
                 if not self._tokens_match(
                     real_keys[i], prefix_in_mr, tokens_in_mr
                 ):
@@ -496,7 +516,10 @@ class L2Cache(MeasurableBase):
         return Status.ok(nr)
 
     async def _get_impl(
-        self, block_batches: Sequence[Sequence[Tuple[Any, MemoryRegion]]]
+        self,
+        block_batches: Sequence[
+            Sequence[Tuple[Any, MemoryRegion | Sequence[MemoryRegion]]]
+        ],
     ) -> Status[int]:
         nr = 0
         for batch in block_batches:
@@ -526,14 +549,16 @@ class L2Cache(MeasurableBase):
         return Status.ok(nr)
 
     async def _backend_get_impl(
-        self, key_pair: Tuple[TokenListView, bytes], mr: MemoryRegion
+        self,
+        key_pair: Tuple[TokenListView, bytes],
+        mr: MemoryRegion | Sequence[MemoryRegion],
     ) -> Status:
         """Get kv tensors from the backend.
         Args:
             key_pair: I.e., real_key and cache_key.
                 real_key (TokenListView): The real key of the kv tensors.
                 cache_key (bytes): The cache key of the kv tensors.
-            mr (MemoryRegion): Memory region to place the fetched kv tensors.
+            mr: Memory regions to place the fetched kv tensors.
         Returns:
             The status of the get operation.
         """
@@ -543,7 +568,10 @@ class L2Cache(MeasurableBase):
             return status
 
         # Bypass token validation if MR is using compact layout
-        if not MemoryRegion.use_compact_layout():
+        if (
+            isinstance(mr, ManagedMemoryRegion)
+            and not MemoryRegion.use_compact_layout()
+        ):
             # check if tokens match
             mr.block_nbytes = self.block_nbytes
             prefix_in_mr, tokens_in_mr = mr.unpack_tokens()

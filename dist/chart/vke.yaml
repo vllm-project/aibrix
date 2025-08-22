@@ -4,7 +4,7 @@ controllerManager:
   container:
     image:
       repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
-      tag: v0.4.0.rc.2
+      tag: v0.4.1
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -37,14 +37,14 @@ gatewayPlugin:
   container:
     image:
       repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins
-      tag: v0.4.0.rc.2
-      pullPolicy: IfNotPresent
+      tag: v0.4.1
+      imagePullPolicy: IfNotPresent
     resources:
       limits:
-        cpu: 1
+        cpu: "1"
         memory: 1Gi
       requests:
-        cpu: 1
+        cpu: "1"
         memory: 1Gi
     envs:
       AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"
@@ -52,11 +52,12 @@ gatewayPlugin:
       AIBRIX_PREFIX_CACHE_BLOCK_SIZE: "128"
       AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT: "16"
       AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: "2"
+      AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
   dependencies:
     redis:
       host: aibrix-redis-master
       port: 6379
-  messageTimeout: "5s"
+  messageTimeout: "60s"
 
 
 gpuOptimizer:
@@ -64,7 +65,7 @@ gpuOptimizer:
   container:
     image:
       repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
-      tag: v0.4.0.rc.2
+      tag: v0.4.1
     resources:
       limits:
         cpu: 500m
@@ -75,6 +76,7 @@ gpuOptimizer:
   dependencies:
     redis:
       host: aibrix-redis-master
+      port: 6379
 
 
 gateway:
@@ -85,10 +87,10 @@ gateway:
         image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy:v1.33.2
         resources:
           requests:
-            cpu: 1
+            cpu: "1"
             memory: 1Gi
           limits:
-            cpu: 1
+            cpu: "1"
             memory: 1Gi
       shutdownManager:
         image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/gateway:v1.2.8
@@ -115,8 +117,8 @@ metadata:
     container:
       image:
         repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/metadata-service
-        tag: v0.4.0.rc.2
-        pullPolicy: IfNotPresent
+        tag: v0.4.1
+        imagePullPolicy: IfNotPresent
       resources:
         limits:
           cpu: 500m
@@ -133,7 +135,7 @@ metadata:
     container:
       image:
         repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/redis
-        tag: 7.4
+        tag: "7.4"
       resources:
         requests:
           cpu: 100m

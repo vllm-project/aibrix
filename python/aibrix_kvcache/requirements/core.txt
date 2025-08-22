@@ -16,7 +16,7 @@ zstandard
 redis >= 6.0.0
 
 nvtx
-torch==2.7.0
+torch>=2.7.0
 
 # profiling
 pyroscope-io

@@ -49,7 +49,7 @@ const (
 
 var (
 	RouterPrefixCache                  types.RoutingAlgorithm = "prefix-cache"
-	tokenizerType                                             = utils.LoadEnv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "character")
+	tokenizerType                                             = utils.LoadEnv(constants.EnvPrefixCacheTokenizerType, "character")
 	podRunningRequestImbalanceAbsCount int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT", defaultPodRunningRequestImbalanceAbsCount)
 	standardDeviationFactor            int                    = utils.LoadEnvInt("AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR", defaultStandardDeviationFactor)
 )
@@ -119,7 +119,7 @@ func (m *PrefixCacheMetrics) register() error {
 // initializePrefixCacheMetrics initializes prefix cache metrics if enabled
 func initializePrefixCacheMetrics() error {
 	// Check if metrics are enabled
-	metricsEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheMetricsEnabled, false)
+	metricsEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheLocalRouterMetricsEnabled, false)
 	if !metricsEnabled {
 		return nil
 	}
@@ -199,13 +199,13 @@ func NewPrefixCacheRouter() (types.Router, error) {
 	var tokenizerPool *TokenizerPool
 
 	// Note: tokenizerType is a global variable defined at line 48 of prefix_cache.go
-	// tokenizerType = utils.LoadEnv("AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE", "character")
+	// tokenizerType = utils.LoadEnv(constants.EnvPrefixCacheTokenizerType, "character")
 
 	// Check configuration dependencies
 	// Only KV Event Sync constants are defined in pkg/constants
-	var useRemoteTokenizer = utils.LoadEnvBool("AIBRIX_USE_REMOTE_TOKENIZER", false)
+	var useRemoteTokenizer = utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
 	// Using constant from pkg/constants/kv_event_sync.go
-	var kvSyncEnabled = utils.LoadEnvBool(constants.EnvKVEventSyncEnabled, false)
+	var kvSyncEnabled = utils.LoadEnvBool(constants.EnvPrefixCacheKVEventSyncEnabled, false)
 
 	// Log configuration state
 	klog.InfoS("prefix cache router configuration",
@@ -307,9 +307,7 @@ func NewPrefixCacheRouter() (types.Router, error) {
 		}
 	} else {
 		// Set local indexer metrics only if metrics are enabled
-		// Using constant from pkg/constants/kv_event_sync.go
-		// Note: AIBRIX_PREFIX_CACHE_METRICS_ENABLED was added in this branch for KV Event Sync
-		metricsEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheMetricsEnabled, false)
+		metricsEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheLocalRouterMetricsEnabled, false)
 		if metricsEnabled {
 			if metrics := getPrefixCacheMetrics(); metrics != nil {
 				metrics.prefixCacheIndexerStatus.WithLabelValues("", "local").Set(1)
@@ -376,11 +374,17 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	targetPod, isLoadImbalanced = getTargetPodOnLoadImbalance(p.cache, readyPods)
 	if isLoadImbalanced {
 		prefixHashes = p.prefixCacheIndexer.GetPrefixHashes(tokens)
-		klog.InfoS("prefix_cache_load_imbalanced",
-			"request_id", ctx.RequestID,
-			"target_pod", targetPod.Name,
-			"target_pod_ip", targetPod.Status.PodIP,
-			"pod_request_count", getRequestCounts(p.cache, readyPods))
+		if targetPod != nil {
+			klog.InfoS("prefix_cache_load_imbalanced",
+				"request_id", ctx.RequestID,
+				"target_pod", targetPod.Name,
+				"target_pod_ip", targetPod.Status.PodIP,
+				"pod_request_count", getRequestCounts(p.cache, readyPods))
+		} else {
+			klog.InfoS("prefix_cache_load_imbalanced_no_target",
+				"request_id", ctx.RequestID,
+				"pod_request_count", getRequestCounts(p.cache, readyPods))
+		}
 	} else {
 		matchedPods, prefixHashes = p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
 		klog.InfoS("prefix_hashes", "request_id", ctx.RequestID, "prefix_hashes", prefixHashes)
@@ -406,15 +410,22 @@ func (p prefixCacheRouter) routeOriginal(ctx *types.RoutingContext, readyPodList
 	// no pod with prefix match, as a fallback select pod with least request count
 	if len(matchedPods) == 0 || targetPod == nil {
 		targetPod = selectTargetPodWithLeastRequestCount(p.cache, readyPods)
-		klog.InfoS("prefix_cache_fallback_least_request_count",
-			"request_id", ctx.RequestID,
-			"target_pod", targetPod.Name,
-			"target_pod_ip", targetPod.Status.PodIP,
-			"matched_pods", matchedPods,
-			"pod_request_count", getRequestCounts(p.cache, readyPods))
+		if targetPod != nil {
+			klog.InfoS("prefix_cache_fallback_least_request_count",
+				"request_id", ctx.RequestID,
+				"target_pod", targetPod.Name,
+				"target_pod_ip", targetPod.Status.PodIP,
+				"matched_pods", matchedPods,
+				"pod_request_count", getRequestCounts(p.cache, readyPods))
+		} else {
+			klog.InfoS("prefix_cache_no_pods_available",
+				"request_id", ctx.RequestID,
+				"matched_pods", matchedPods,
+				"pod_request_count", getRequestCounts(p.cache, readyPods))
+		}
 	}
 
-	if len(prefixHashes) > 0 {
+	if len(prefixHashes) > 0 && targetPod != nil {
 		p.prefixCacheIndexer.AddPrefix(prefixHashes, ctx.Model, targetPod.Name)
 	}
 
@@ -455,7 +466,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	modelName := ctx.Model
 	allPods := readyPodList.All()
 	if modelName == "" && len(allPods) > 0 {
-		modelName = allPods[0].Labels["model.aibrix.ai/name"]
+		modelName = allPods[0].Labels[constants.ModelLabelName]
 	}
 
 	loraID := int64(-1) // TODO: Extract from context when available
@@ -482,11 +493,17 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 		// Handle load imbalance case
 		prefixHashes = k.syncIndexer.GetPrefixHashes(tokens)
 
-		klog.InfoS("prefix_cache_load_imbalanced",
-			"request_id", ctx.RequestID,
-			"target_pod", targetPod.Name,
-			"target_pod_ip", targetPod.Status.PodIP,
-			"pod_request_count", getRequestCounts(k.cache, readyPods))
+		if targetPod != nil {
+			klog.InfoS("prefix_cache_load_imbalanced",
+				"request_id", ctx.RequestID,
+				"target_pod", targetPod.Name,
+				"target_pod_ip", targetPod.Status.PodIP,
+				"pod_request_count", getRequestCounts(k.cache, readyPods))
+		} else {
+			klog.InfoS("prefix_cache_load_imbalanced_no_target",
+				"request_id", ctx.RequestID,
+				"pod_request_count", getRequestCounts(k.cache, readyPods))
+		}
 	} else {
 		// Normal routing with prefix matching
 		// Build pod key map for sync indexer
@@ -664,10 +681,18 @@ func getTargetPodOnLoadImbalance(cache cache.Cache, readyPods []*v1.Pod) (*v1.Po
 	maxValue := math.MinInt32
 
 	podRequestCount := getRequestCounts(cache, readyPods)
+
+	// Handle empty podRequestCount case
+	if len(podRequestCount) == 0 {
+		return targetPod, imbalance
+	}
+
+	// Find min/max values
 	for _, value := range podRequestCount {
-		if value <= minValue {
+		if value < minValue {
 			minValue = value
-		} else if value > maxValue {
+		}
+		if value > maxValue {
 			maxValue = value
 		}
 	}
@@ -677,7 +702,7 @@ func getTargetPodOnLoadImbalance(cache cache.Cache, readyPods []*v1.Pod) (*v1.Po
 		}
 	}
 
-	if maxValue-minValue > podRunningRequestImbalanceAbsCount {
+	if maxValue-minValue > podRunningRequestImbalanceAbsCount && len(targetPods) > 0 {
 		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
 		imbalance = true
 	}
