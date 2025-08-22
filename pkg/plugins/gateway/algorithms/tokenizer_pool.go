@@ -24,6 +24,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils/tokenizer"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -379,12 +380,12 @@ func (p *TokenizerPool) findVLLMEndpointForModel(model string, pods []*v1.Pod) s
 func getModelFromPod(pod *v1.Pod) string {
 	// 1. Check labels (highest priority)
 	// Only KV Event Sync constants are defined in pkg/constants
-	if model := pod.Labels["model.aibrix.ai/name"]; model != "" {
+	if model := pod.Labels[constants.ModelLabelName]; model != "" {
 		return model
 	}
 
 	// 2. Check annotations
-	if model := pod.Annotations["model.aibrix.ai/name"]; model != "" {
+	if model := pod.Annotations[constants.ModelLabelName]; model != "" {
 		return model
 	}
 
@@ -404,12 +405,12 @@ func getModelFromPod(pod *v1.Pod) string {
 func isVLLMPod(pod *v1.Pod) bool {
 	// Check labels
 	// Only KV Event Sync constants are defined in pkg/constants
-	if engine := pod.Labels["model.aibrix.ai/engine"]; engine == vllmEngine {
+	if engine := pod.Labels[constants.ModelLabelEngine]; engine == vllmEngine {
 		return true
 	}
 
 	// Check annotations
-	if engine := pod.Annotations["model.aibrix.ai/engine"]; engine == vllmEngine {
+	if engine := pod.Annotations[constants.ModelLabelEngine]; engine == vllmEngine {
 		return true
 	}
 

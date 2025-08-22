@@ -23,7 +23,9 @@ import torch
 from aibrix_kvcache import TokenListView
 from aibrix_kvcache.l2 import KeyBuilder, L2Cache
 from aibrix_kvcache.l2.key_builders import Hasher
-from aibrix_kvcache.memory import MemoryRegion, TensorPoolAllocator
+from aibrix_kvcache.memory import (
+    ManagedMemoryRegion, MemoryRegion, TensorPoolAllocator
+)
 
 from .conftest import (
     randomize_mrs,
@@ -34,7 +36,7 @@ from .conftest import (
 def build_get_mr(
     allocator: TensorPoolAllocator, block_nbytes: int, tokens: TokenListView
 ) -> MemoryRegion:
-    size = MemoryRegion.calculate_size(
+    size = ManagedMemoryRegion.calculate_size(
         block_nbytes=block_nbytes, ntokens=len(tokens)
     )
     status = allocator.alloc(size)

@@ -106,6 +106,9 @@ spec:
                               type: object
                             name:
                               type: string
+                            podGroupSize:
+                              format: int32
+                              type: integer
                             replicas:
                               format: int32
                               type: integer
@@ -3751,6 +3754,11 @@ spec:
                                   - type: string
                                   x-kubernetes-int-or-string: true
                               type: object
+                            upgradeOrder:
+                              default: 0
+                              format: int32
+                              minimum: 0
+                              type: integer
                           type: object
                         type: array
                       schedulingStrategy:

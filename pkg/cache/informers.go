@@ -19,6 +19,7 @@ import (
 	"errors"
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
@@ -34,7 +35,7 @@ import (
 )
 
 const (
-	modelIdentifier = "model.aibrix.ai/name"
+	modelIdentifier = constants.ModelLabelName
 	nodeType        = "ray.io/node-type"
 	nodeWorker      = "worker"
 )

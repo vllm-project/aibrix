@@ -37,7 +37,7 @@ spec:
             spec:
               containers:
                 - name: prefill
-                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.9.2-cu128-nixl-v0.4.1-lmcache-0.3.1.post1
+                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.10.0-cu128-nixl-v0.4.1-lmcache-0.3.2
                   command: ["sh", "-c"]
                   args:
                     - |
@@ -49,10 +49,12 @@ spec:
                       --served-model-name qwen3-8B \
                       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
-                    - name: UCX_TLS
-                      value: cuda_ipc,cuda_copy,tcp
+                    - name: PYTHONHASHSEED
+                      value: "1047"
                     - name: VLLM_SERVER_DEV_MODE
                       value: "1"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+                      value: "0.0.0.0"
                     - name: VLLM_NIXL_SIDE_CHANNEL_PORT
                       value: "5558"
                     - name: VLLM_WORKER_MULTIPROC_METHOD
@@ -69,6 +71,8 @@ spec:
                       value: "7"
                     - name: NCCL_DEBUG
                       value: "INFO"
+                    - name: UCX_TLS
+                      value: ^gga
                   volumeMounts:
                     - name: model-vol
                       mountPath: /models
@@ -112,7 +116,7 @@ spec:
             spec:
               containers:
                 - name: decode
-                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.9.2-cu128-nixl-v0.4.1-lmcache-0.3.1.post1
+                  image: kvcache-container-image-hb2-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.10.0-cu128-nixl-v0.4.1-lmcache-0.3.2
                   command: ["sh", "-c"]
                   args:
                     - |
@@ -124,10 +128,12 @@ spec:
                       --served-model-name qwen3-8B \
                       --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
                   env:
-                    - name: UCX_TLS
-                      value: cuda_ipc,cuda_copy,tcp
+                    - name: PYTHONHASHSEED
+                      value: "1047"
                     - name: VLLM_SERVER_DEV_MODE
                       value: "1"
+                    - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+                      value: "0.0.0.0"
                     - name: VLLM_NIXL_SIDE_CHANNEL_PORT
                       value: "5558"
                     - name: VLLM_WORKER_MULTIPROC_METHOD
@@ -144,6 +150,8 @@ spec:
                       value: "7"
                     - name: NCCL_DEBUG
                       value: "INFO"
+                    - name: UCX_TLS
+                      value: ^gga
                   volumeMounts:
                     - name: model-vol
                       mountPath: /models

@@ -104,6 +104,8 @@ spec:
               value: "16"
             - name: AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR
               value: "2"
+            - name: AIBRIX_PREFILL_REQUEST_TIMEOUT
+              value: "60"
             # Uncomment to enable request tracing for GPU optimizer, default "false".
             # - name: AIBRIX_GPU_OPTIMIZER_TRACING_FLAG
             #   value: "true"
@@ -200,4 +202,4 @@ spec:
           body: Buffered
         response:
           body: Streamed
-      messageTimeout: 5s
+      messageTimeout: 60s

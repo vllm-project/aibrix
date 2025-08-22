@@ -55,7 +55,7 @@ spec:
       containers:
         - name: gateway-plugin
           image: {{ .Values.gatewayPlugin.container.image.repository }}:{{ .Values.gatewayPlugin.container.image.tag }}
-          imagePullPolicy: {{ .Values.gatewayPlugin.container.image.pullPolicy }}
+          imagePullPolicy: {{ .Values.gatewayPlugin.container.image.imagePullPolicy | default "IfNotPresent" }}
           ports:
             - name: gateway
               containerPort: 50052

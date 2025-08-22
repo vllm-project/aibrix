@@ -13,17 +13,15 @@
 # limitations under the License.
 
 import os
-import random
 import sys
 import threading
-from typing import Sequence, Optional, Union
+from typing import Sequence
 
-import numpy as np
 import pytest
 import redis
 import torch
 
-from aibrix_kvcache.cache_handle import KVCacheHandle
+from aibrix_kvcache.cache_handle import GDRKVCacheHandle, KVCacheHandle
 from aibrix_kvcache.memory import MemoryRegion
 from aibrix_kvcache.spec import (
     KVCacheBlockLayout,
@@ -104,7 +102,12 @@ def randomize_mrs(mrs: Sequence[MemoryRegion]):
 
 
 def randomize_cache_handle(handle: KVCacheHandle):
-    randomize_mrs(handle.memory_regions)
+    if isinstance(handle, GDRKVCacheHandle):
+        mrs = handle.memory_regions
+        for block_mrs in mrs:
+            randomize_mrs(block_mrs)
+    else:
+        randomize_mrs(handle.memory_regions)
 
 
 @pytest.fixture
@@ -151,16 +154,96 @@ def redis_client(redis_server):
 def compact_layout_enabled(request):
     import aibrix_kvcache
 
-    origin = aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT
+    origin = aibrix_kvcache.memory.memory_region.MR_USE_COMPACT_LAYOUT
     if request.param == "with_compact_layout":
-        aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT = True
+        aibrix_kvcache.memory.memory_region.MR_USE_COMPACT_LAYOUT = True
     else:
-        aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT = False
+        aibrix_kvcache.memory.memory_region.MR_USE_COMPACT_LAYOUT = False
     yield request.param == "with_compact_layout"
 
-    aibrix_kvcache.memory.allocator.MR_USE_COMPACT_LAYOUT = origin
+    aibrix_kvcache.memory.memory_region.MR_USE_COMPACT_LAYOUT = origin
 
 @pytest.fixture()
 def kv_cache_factory_flashinfer():
     from vllm.utils import create_kv_caches_with_random_flash
     return create_kv_caches_with_random_flash
+
+def make_block_tables_slot_mapping(
+        block_size: int,
+        seq_lens: list[int],
+        block_base_addr: int = 0) -> tuple[torch.Tensor, list[int], int]:
+    '''
+    Ported from vLLM.
+    
+    Construct fake block tables & slot mappings.
+
+    For a sequence with num_tokens tokens the minimum number
+    of required KV cache blocks is
+
+    num_blocks = (num_tokens + block_size) // block_size
+
+    Then the minimum KV cache size in blocks is
+
+    total_cache_blocks = sum(num_blocks for all seqs)
+
+    Then, the blocktable mapping counts downward from
+
+    block_base_addr + total_cache_blocks
+
+    to
+
+    block_base_addr
+
+
+    The constructed block-tables and slot-mapping are sized to the
+    lengths of the sequences in their entirety (as reflected by seq_lens),
+    i.e. the total of prefill prompt tokens + decoded tokens.
+
+    Arguments:
+
+    * block_size: number of offsets per block
+    * seq_lens: list of token-counts for each sequence
+    * block_base_addr: the block table base address
+
+    Return:
+
+    * block_tables_tensor: block table for sequence
+    * slot_mapping_list: slot mapping for sequence
+    * max_block_idx: the highest block address within this block table
+    '''
+    from vllm.utils import make_tensor_with_pad
+
+    # Provision minimum number of KV cache blocks
+    num_blocks_list = [
+        (num_tokens + block_size) // block_size
+        for num_tokens in seq_lens
+    ]
+    max_block_table_len = max(num_blocks_list)
+    block_table_pad_tokens = 10
+
+    block_tables = []
+    slot_mapping_list = []
+    # Compute uppermost address of block table
+    total_cache_blocks = sum(num_blocks_list)
+    block_base_idx = block_base_addr + total_cache_blocks
+    max_block_idx = block_base_idx
+    for sdx, num_tokens in enumerate(seq_lens):
+        num_blocks = num_blocks_list[sdx]
+        block_table = list(
+            range(block_base_idx, block_base_idx - num_blocks, -1))
+        for idx in range(num_tokens):
+            mapping_value = (
+                idx % block_size) + block_table[idx // block_size] * block_size
+            slot_mapping_list.append(mapping_value)
+
+        block_base_idx -= num_blocks
+        block_tables.append(block_table)
+
+    block_tables_tensor = make_tensor_with_pad(
+        block_tables,
+        max_len=max_block_table_len + block_table_pad_tokens,
+        pad=0,
+        dtype=torch.int,
+    )
+
+    return (block_tables_tensor, slot_mapping_list, max_block_idx)
