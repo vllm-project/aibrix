@@ -67,13 +67,13 @@ Note: This is typically only needed for multi-node deployments. Simple model dep
 Using NodePort or ClusterIP to Expose the Gateway API
 -----------------------------------------------------
 
-In the Quickstart guide <quickstart>, model endpoints are typically accessed using either ``kubectl port-forward`` or through a LoadBalancer service.
+In the :ref:`quickstart` guide, model endpoints are typically accessed using either ``kubectl port-forward`` or through a LoadBalancer service.
 However, in some environments (e.g., local clusters without external load balancers), you may prefer to expose the Envoy gateway using a ``NodePort`` service or rely on the default ``ClusterIP`` service type.
 
 **Important:** You should not modify the ``svc/envoy-aibrix-system-aibrix-eg-903790dc`` service directly, since it is managed by the EnvoyProxy controller.
 Instead, update the EnvoyProxy configuration to set the service type.
 
-### Option 1: NodePort (Expose Outside the Cluster)
+**Option 1**: NodePort (Expose Outside the Cluster)
 
 Update the spec to ``NodePort``:
 
@@ -106,7 +106,7 @@ You can then regenerate the model endpoint:
 
 Your model endpoint is now accessible from outside the cluster via NodePort.
 
-### Option 2: ClusterIP (Internal Access Only)
+**Option 2**: ClusterIP (Internal Access Only)
 
 By default, the Envoy gateway service type is ``ClusterIP``:
 
