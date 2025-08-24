@@ -31,10 +31,6 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 )
 
-var (
-	controllerKind = pav1.GroupVersion.WithKind("PodAutoscaler") // Define the resource type for the controller
-)
-
 // MakeHPA creates an HPA resource from a PodAutoscaler resource.
 func makeHPA(pa *pav1.PodAutoscaler) (*autoscalingv2.HorizontalPodAutoscaler, error) {
 	minReplicas, maxReplicas := pa.Spec.MinReplicas, pa.Spec.MaxReplicas
@@ -49,7 +45,7 @@ func makeHPA(pa *pav1.PodAutoscaler) (*autoscalingv2.HorizontalPodAutoscaler, er
 			Labels:      pa.Labels,
 			Annotations: pa.Annotations,
 			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(pa, controllerKind),
+				*metav1.NewControllerRef(pa, pav1.GroupVersion.WithKind("PodAutoscaler")),
 			},
 		},
 		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{

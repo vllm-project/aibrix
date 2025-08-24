@@ -37,6 +37,9 @@ spec:
                     metricSourceType:
                       enum:
                       - pod
+                      - resource
+                      - custom
+                      - external
                       - domain
                       type: string
                     path:

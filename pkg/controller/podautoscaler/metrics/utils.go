@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -188,25 +187,23 @@ func GetMetricsFromPods(ctx context.Context, fetcher MetricFetcher, pods []corev
 	return metrics, nil
 }
 
-// min returns the minimum of two integers
-func min(a, b int) int {
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}
 	return b
 }
 
-func GetMetricFromSource(ctx context.Context, fetcher MetricFetcher, source autoscalingv1alpha1.MetricSource) (float64, error) {
-	endpoint := source.Endpoint
-
-	// If port specified, try override.
-	if source.Port != "" {
-		u := url.URL{Host: source.Endpoint}
-		if u.Port() == "" {
-			endpoint = fmt.Sprintf("%s:%s", u.Hostname(), source.Port)
-		}
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
 	}
-	// Note: This function uses FetchMetric for external endpoint-based fetching
-	// where no pod context is available. This is acceptable for external endpoints.
-	return fetcher.FetchMetric(ctx, source.ProtocolType, endpoint, source.Path, source.TargetMetric)
+	return b
+}
+
+func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }
