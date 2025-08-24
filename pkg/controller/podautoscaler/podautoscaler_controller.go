@@ -24,12 +24,14 @@ import (
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/aggregation"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/algorithm"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/scaler"
-	podutil "github.com/vllm-project/aibrix/pkg/utils"
 	podutils "github.com/vllm-project/aibrix/pkg/utils"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -78,8 +80,10 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		Mapper:         mgr.GetRESTMapper(),
 		resyncInterval: 10 * time.Second, // TODO: this should be override by an environment variable
 		eventCh:        make(chan event.GenericEvent),
-		AutoscalerMap:  make(map[metrics.NamespaceNameMetric]scaler.Scaler),
-		RuntimeConfig:  runtimeConfig,
+		// Initialize both maps for backward compatibility
+		AutoscalerMap: make(map[metrics.NamespaceNameMetric]scaler.Scaler),
+		AutoScalerMap: make(map[metrics.NamespaceNameMetric]scaler.AutoScaler),
+		RuntimeConfig: runtimeConfig,
 	}
 
 	return reconciler, nil
@@ -150,10 +154,12 @@ var _ reconcile.Reconciler = &PodAutoscalerReconciler{}
 // PodAutoscalerReconciler reconciles a PodAutoscaler object
 type PodAutoscalerReconciler struct {
 	client.Client
-	Scheme         *runtime.Scheme
-	EventRecorder  record.EventRecorder
-	Mapper         apimeta.RESTMapper
-	AutoscalerMap  map[metrics.NamespaceNameMetric]scaler.Scaler // AutoscalerMap maps each NamespaceNameMetric to its corresponding scaler instance.
+	Scheme        *runtime.Scheme
+	EventRecorder record.EventRecorder
+	Mapper        apimeta.RESTMapper
+	// Maintain both old and new interfaces for backward compatibility
+	AutoscalerMap  map[metrics.NamespaceNameMetric]scaler.Scaler     // Legacy interface
+	AutoScalerMap  map[metrics.NamespaceNameMetric]scaler.AutoScaler // New interface
 	resyncInterval time.Duration
 	eventCh        chan event.GenericEvent
 	RuntimeConfig  config.RuntimeConfig
@@ -161,16 +167,27 @@ type PodAutoscalerReconciler struct {
 
 func (r *PodAutoscalerReconciler) deleteStaleScalerInCache(request types.NamespacedName) {
 	// When deleting, we only have access to the Namespace and Name, not other attributes in pa_types.
-	// We should scan `AutoscalerMap` and remove the matched objects.
+	// We should scan both AutoscalerMap and AutoScalerMap and remove the matched objects.
 	// Note that due to the OwnerRef, the created HPA object will automatically be removed when AIBrix-HPA is deleted.
 	// Therefore, manual deletion of the HPA is not necessary.
+
+	// Clean legacy AutoscalerMap
 	for namespaceNameMetric := range r.AutoscalerMap {
 		if namespaceNameMetric.PaNamespace == request.Namespace && namespaceNameMetric.PaName == request.Name {
-			// remove matched entry from the map
-			klog.InfoS("Delete scaler", "PaName", namespaceNameMetric.PaName,
+			klog.InfoS("Delete legacy scaler", "PaName", namespaceNameMetric.PaName,
 				"PaNamespace", namespaceNameMetric.PaNamespace,
 				"TargetRefNamespace", request.Namespace, "TargetRefName", request.Name)
 			delete(r.AutoscalerMap, namespaceNameMetric)
+		}
+	}
+
+	// Clean new AutoScalerMap
+	for namespaceNameMetric := range r.AutoScalerMap {
+		if namespaceNameMetric.PaNamespace == request.Namespace && namespaceNameMetric.PaName == request.Name {
+			klog.InfoS("Delete new autoscaler", "PaName", namespaceNameMetric.PaName,
+				"PaNamespace", namespaceNameMetric.PaNamespace,
+				"TargetRefNamespace", request.Namespace, "TargetRefName", request.Name)
+			delete(r.AutoScalerMap, namespaceNameMetric)
 		}
 	}
 }
@@ -631,6 +648,67 @@ func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context,
 	logger := klog.FromContext(ctx)
 	currentTimestamp := time.Now()
 
+	// Try new interface first
+	if newAutoScaler, exists := r.AutoScalerMap[metricKey]; exists {
+		return r.computeReplicasWithNewInterface(ctx, pa, scale, metricKey, newAutoScaler, currentTimestamp)
+	}
+
+	// Fall back to legacy interface
+	return r.computeReplicasWithLegacyInterface(ctx, pa, scale, metricKey, logger, currentTimestamp)
+}
+
+// computeReplicasWithNewInterface uses the new AutoScaler interface
+func (r *PodAutoscalerReconciler) computeReplicasWithNewInterface(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured, metricKey metrics.NamespaceNameMetric, autoScaler scaler.AutoScaler, currentTimestamp time.Time) (int32, string, time.Time, error) {
+	// Get current replicas
+	currentReplicasInt64, found, err := unstructured.NestedInt64(scale.Object, "spec", "replicas")
+	if !found || err != nil {
+		return 0, "", currentTimestamp, fmt.Errorf("failed to get current replicas: %v", err)
+	}
+
+	// Get pod list
+	labelsSelector, err := extractLabelSelector(scale)
+	if err != nil {
+		return 0, "", currentTimestamp, err
+	}
+
+	// Append ray head worker requirement for label selector
+	if scale.GetAPIVersion() == orchestrationv1alpha1.GroupVersion.String() && scale.GetKind() == "RayClusterFleet" {
+		newRequirement, err := labels.NewRequirement("ray.io/node-type", selection.Equals, []string{"head"})
+		if err != nil {
+			klog.ErrorS(err, "Failed to add new requirements ray.io/node-type: head to label selector")
+			return 0, "", currentTimestamp, err
+		}
+		labelsSelector = labelsSelector.Add(*newRequirement)
+	}
+
+	podList, err := podutils.GetPodListByLabelSelector(ctx, r.Client, pa.Namespace, labelsSelector)
+	if err != nil {
+		return 0, "", currentTimestamp, fmt.Errorf("failed to get pod list: %v", err)
+	}
+
+	// Create scale request
+	scaleRequest := types.ScaleRequest{
+		PodAutoscaler:   pa,
+		CurrentReplicas: int32(currentReplicasInt64),
+		Pods:            podList.Items,
+		Timestamp:       currentTimestamp,
+	}
+
+	// Execute scaling pipeline
+	result, err := autoScaler.Scale(ctx, scaleRequest)
+	if err != nil {
+		return 0, "", currentTimestamp, err
+	}
+
+	if !result.ScaleValid {
+		return 0, "", currentTimestamp, fmt.Errorf("invalid scale result: %s", result.Reason)
+	}
+
+	return result.DesiredPodCount, result.Algorithm, currentTimestamp, nil
+}
+
+// computeReplicasWithLegacyInterface uses the legacy Scaler interface
+func (r *PodAutoscalerReconciler) computeReplicasWithLegacyInterface(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured, metricKey metrics.NamespaceNameMetric, logger klog.Logger, currentTimestamp time.Time) (int32, string, time.Time, error) {
 	// Retrieve the selector string from the Scale object's Status,
 	// and convert *metav1.LabelSelector object to labels.Selector structure
 	labelsSelector, err := extractLabelSelector(scale)
@@ -690,6 +768,36 @@ func (r *PodAutoscalerReconciler) updateScalerSpec(ctx context.Context, pa autos
 
 // updateMetricsForScale: we pass into the currentReplicas to construct autoScaler, as KNative implementation
 func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured, metricKey metrics.NamespaceNameMetric, metricSource autoscalingv1alpha1.MetricSource, currentReplicas int) (err error) {
+	// Check if new AutoScaler exists, if not create it
+	if newAutoScaler, exists := r.AutoScalerMap[metricKey]; exists {
+		// Update configuration for existing new AutoScaler
+		return newAutoScaler.UpdateConfiguration(pa)
+	}
+
+	// Create new AutoScaler
+	fetcher := metrics.NewRestMetricsFetcher()
+	config := r.createAutoScalerConfig(pa, metricSource)
+
+	newAutoScaler, err := scaler.NewAutoScaler(pa.Spec.ScalingStrategy, fetcher, config)
+	if err != nil {
+		return fmt.Errorf("failed to create new AutoScaler: %v", err)
+	}
+
+	// Update configuration
+	if err := newAutoScaler.UpdateConfiguration(pa); err != nil {
+		return fmt.Errorf("failed to update AutoScaler configuration: %v", err)
+	}
+
+	// Store in new map
+	r.AutoScalerMap[metricKey] = newAutoScaler
+	klog.InfoS("New AutoScaler added to AutoScalerMap", "metricKey", metricKey, "type", pa.Spec.ScalingStrategy)
+
+	// Fall back to legacy logic for backward compatibility
+	return r.updateMetricsForScaleLegacy(ctx, pa, scale, metricKey, metricSource, currentReplicas)
+}
+
+// Legacy method for backward compatibility
+func (r *PodAutoscalerReconciler) updateMetricsForScaleLegacy(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured, metricKey metrics.NamespaceNameMetric, metricSource autoscalingv1alpha1.MetricSource, currentReplicas int) (err error) {
 	currentTimestamp := time.Now()
 	var autoScaler scaler.Scaler
 	// it's similar to knative: pkg/autoscaler/scaling/multiscaler.go: func (m *MultiScaler) Create
@@ -756,5 +864,25 @@ func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa 
 		return autoScaler.UpdateSourceMetrics(ctx, metricKey, metricSource, currentTimestamp)
 	default:
 		return fmt.Errorf("unsupported protocol type: %v", metricSource.ProtocolType)
+	}
+}
+
+// createAutoScalerConfig creates configuration for new AutoScaler
+func (r *PodAutoscalerReconciler) createAutoScalerConfig(pa autoscalingv1alpha1.PodAutoscaler, metricSource autoscalingv1alpha1.MetricSource) scaler.AutoScalerConfig {
+	return scaler.AutoScalerConfig{
+		MetricSource: metricSource,
+		AggregationConfig: aggregation.AggregationConfig{
+			StableWindow: 60 * time.Second, // TODO: Extract from PA annotations
+			PanicWindow:  6 * time.Second,  // TODO: Extract from PA annotations
+			Window:       60 * time.Second, // TODO: Extract from PA annotations
+			Granularity:  time.Second,
+		},
+		EngineConfig: algorithm.EngineConfig{
+			Strategy:       pa.Spec.ScalingStrategy,
+			PanicThreshold: 2.0, // TODO: Extract from PA annotations
+			StableWindow:   60 * time.Second,
+			PanicWindow:    6 * time.Second,
+			ScaleToZero:    false, // TODO: Extract from PA spec
+		},
 	}
 }
