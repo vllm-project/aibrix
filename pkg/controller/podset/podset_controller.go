@@ -219,6 +219,10 @@ func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.P
 		}
 	}
 
+	// manually set the hostname and subdomain for FQDN
+	pod.Spec.Hostname = pod.Name
+	pod.Spec.Subdomain = podSet.Labels[constants.StormServiceNameLabelKey]
+
 	// Add environment variables for pod coordination
 	if pod.Spec.Containers != nil {
 		for i := range pod.Spec.Containers {
