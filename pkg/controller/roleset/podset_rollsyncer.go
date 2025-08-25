@@ -357,7 +357,9 @@ func (p *PodSetRoleSyncer) podSetSlotForRole(role *orchestrationv1alpha1.RoleSpe
 }
 
 func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, roleIndex *int) *orchestrationv1alpha1.PodSet {
-	templateHash := p.computeHashFunc(&role.Template, nil)
+	// Make a deep copy of the template first to avoid mutation issues
+	podTemplate := *role.Template.DeepCopy()
+	templateHash := p.computeHashFunc(&podTemplate, nil)
 	podSet := &orchestrationv1alpha1.PodSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: roleSet.Namespace,
@@ -377,7 +379,7 @@ func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.Ro
 		},
 		Spec: orchestrationv1alpha1.PodSetSpec{
 			PodGroupSize: *role.PodGroupSize,
-			Template:     role.Template,
+			Template:     podTemplate,
 			Stateful:     role.Stateful,
 		},
 	}
