@@ -31,7 +31,6 @@ import (
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
-	ctrlutil "github.com/vllm-project/aibrix/pkg/controller/util"
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 )
 
@@ -358,7 +357,7 @@ func (p *PodSetRoleSyncer) podSetSlotForRole(role *orchestrationv1alpha1.RoleSpe
 }
 
 func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec, roleIndex *int) *orchestrationv1alpha1.PodSet {
-	templateHash := ctrlutil.ComputeHash(&role.Template, nil)
+	templateHash := p.computeHashFunc(&role.Template, nil)
 	podSet := &orchestrationv1alpha1.PodSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: roleSet.Namespace,
