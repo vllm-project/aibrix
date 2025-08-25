@@ -176,6 +176,10 @@ func NewWithPodsMetricsForTest(pods []*v1.Pod, model string, podMetrics map[stri
 	return InitWithPodsMetrics(InitWithPods(NewForTest(), pods, model), podMetrics)
 }
 
+func NewWithPodsModelMetricsForTest(pods []*v1.Pod, model string, podMetrics map[string]map[string]metrics.MetricValue) *Store {
+	return InitWithPodsModelMetrics(InitWithPods(NewForTest(), pods, model), podMetrics)
+}
+
 // InitModelRouterProvider initializes the cache store with model router provider for testing purposes, it can be repeated call for reset.
 // Call this function before InitWithPods for expected behavior.
 func InitWithModelRouterProvider(st *Store, modelRouterProvider ModelRouterProviderFunc) *Store {
@@ -236,7 +240,7 @@ func InitWithAsyncPods(st *Store, pods []*v1.Pod, model string) <-chan *Store {
 	return ret
 }
 
-// InitWithPods initializes the cache store with pods metrics for testing purposes, it can be repeated call for reset.
+// InitWithPodsMetrics initializes the cache store with pods metrics for testing purposes, it can be repeated call for reset.
 func InitWithPodsMetrics(st *Store, podMetrics map[string]map[string]metrics.MetricValue) *Store {
 	st.metaPods.Range(func(key string, metaPod *Pod) bool {
 		_, podName, ok := utils.ParsePodKey(key)
@@ -246,6 +250,25 @@ func InitWithPodsMetrics(st *Store, podMetrics map[string]map[string]metrics.Met
 		if podmetrics, ok := podMetrics[podName]; ok {
 			for metricName, metric := range podmetrics {
 				if err := st.updatePodRecord(metaPod, "", metricName, metrics.PodMetricScope, metric); err != nil {
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return st
+}
+
+// InitWithPodsModelMetrics initializes the cache store with pods modelMetrics for testing purposes, it can be repeated call for reset.
+func InitWithPodsModelMetrics(st *Store, podMetrics map[string]map[string]metrics.MetricValue) *Store {
+	st.metaPods.Range(func(key string, metaPod *Pod) bool {
+		_, podName, ok := utils.ParsePodKey(key)
+		if !ok {
+			return true
+		}
+		if podmetrics, ok := podMetrics[podName]; ok {
+			for metricName, metric := range podmetrics {
+				if err := st.updatePodRecord(metaPod, metaPod.Pod.Labels[modelIdentifier], metricName, metrics.PodModelMetricScope, metric); err != nil {
 					return false
 				}
 			}
