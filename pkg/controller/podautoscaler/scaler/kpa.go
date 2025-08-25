@@ -97,6 +97,19 @@ type KpaScalingContext struct {
 	// ScaleDownDelay is the time that must pass at reduced concurrency before a
 	// scale-down decision is applied.
 	ScaleDownDelay time.Duration
+
+	// Runtime state values
+	// Current observed stable metric value
+	stableValue float64
+	// Current observed panic metric value
+	panicValue float64
+	// Current time for scaling decision
+	currentTime time.Time
+	// Whether the system is currently in panic mode
+	inPanicMode bool
+	// Maximum pod count reached during panic mode
+	maxPanicPods int32
+	// Current observed stable metric value
 }
 
 var _ scalingcontext.ScalingContext = (*KpaScalingContext)(nil)
@@ -248,6 +261,7 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	if !ok {
 		// Handle the error if the conversion fails
 		klog.Error("Failed to convert ScalingContext to KpaScalingContext")
+		return ScaleResult{}
 	}
 
 	kpaMetricsClient := k.metricClient.(*metrics.KPAMetricsClient)
@@ -257,52 +271,15 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 		return ScaleResult{}
 	}
 
-	// Old logic:
-	// readyPodsCount = min(1, originalReadyPodsCount)
-	// maxScaleUp = ceil(spec.MaxScaleUpRate*readyPodsCount)
-	// maxScaleDown = floor(readyPodsCount / spec.MaxScaleDownRate)
-	//
-	// The problems with old way was:
-	// 1. readyPodsCount did not reflect real pods count in "KPA Details" log.
-	// 2. If originalReadyPodsCount == 0 and spec.MaxScaleDownRate == 1, maxScaleDown will reset to 1,
-	//    preventing down scale to 0.
-	//
-	// New implementation does follows:
-	// 1. readyPodsCount now reflects real pods count.
-	// 2. maxScaleUp is at lease to 1 to ensure 0 to 1 activation.
-	// 3. maxScaleDown will remain 0 in case spec.MaxScaleDownRate == 0
-	readyPodsCount := math.Max(0, float64(originalReadyPodsCount))           // A little sanitizing.
-	maxScaleUp := math.Max(1, math.Ceil(spec.MaxScaleUpRate*readyPodsCount)) // Keep scale up non zero
-	maxScaleDown := math.Floor(readyPodsCount / spec.MaxScaleDownRate)       // Make scale down zero-able
+	// Set the observed values in the context
+	spec.SetStableValue(observedStableValue)
+	spec.SetPanicValue(observedPanicValue)
+	spec.SetCurrentTime(now)
 
-	dspc := math.Ceil(observedStableValue / spec.TargetValue)
+	// Calculate panic threshold condition for state management
+	readyPodsCount := math.Max(0, float64(originalReadyPodsCount))
 	dppc := math.Ceil(observedPanicValue / spec.TargetValue)
-
-	// We want to keep desired pod count in the  [maxScaleDown, maxScaleUp] range.
-	desiredStablePodCount := int32(math.Min(math.Max(dspc, maxScaleDown), maxScaleUp))
-	desiredPanicPodCount := int32(math.Min(math.Max(dppc, maxScaleDown), maxScaleUp))
-
-	//	If ActivationScale > 1, then adjust the desired pod counts
-	if k.scalingContext.ActivationScale > 1 {
-		// ActivationScale only makes sense if activated (desired > 0)
-		if k.scalingContext.ActivationScale > desiredStablePodCount && desiredStablePodCount > 0 {
-			desiredStablePodCount = k.scalingContext.ActivationScale
-		}
-		if k.scalingContext.ActivationScale > desiredPanicPodCount && desiredPanicPodCount > 0 {
-			desiredPanicPodCount = k.scalingContext.ActivationScale
-		}
-	}
-
-	// Now readyPodsCount can be 0, use max(1, readyPodsCount) to prevent error.
 	isOverPanicThreshold := dppc/math.Max(1, readyPodsCount) >= spec.PanicThreshold
-
-	klog.V(4).InfoS("--- KPA Details", "readyPodsCount", readyPodsCount,
-		"MaxScaleUpRate", spec.MaxScaleUpRate, "MaxScaleDownRate", spec.MaxScaleDownRate,
-		"TargetValue", spec.TargetValue, "PanicThreshold", spec.PanicThreshold,
-		"StableWindow", spec.StableWindow, "PanicWindow", spec.PanicWindow, "ScaleDownDelay", spec.ScaleDownDelay,
-		"dppc", dppc, "dspc", dspc, "desiredStablePodCount", desiredStablePodCount,
-		"PanicThreshold", spec.PanicThreshold, "isOverPanicThreshold", isOverPanicThreshold,
-	)
 
 	if !k.InPanicMode() && isOverPanicThreshold {
 		// Begin panicking when we cross the threshold in the panic window.
@@ -322,25 +299,17 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 		k.maxPanicPods = 0
 	}
 
-	desiredPodCount := desiredStablePodCount
-	if k.InPanicMode() {
-		// In some edgecases stable window metric might be larger
-		// than panic one. And we should provision for stable as for panic,
-		// so pick the larger of the two.
-		klog.InfoS("Operating in panic mode.", "desiredPodCount", desiredPodCount, "desiredPanicPodCount", desiredPanicPodCount)
-		if desiredPodCount < desiredPanicPodCount {
-			desiredPodCount = desiredPanicPodCount
-		}
-		// We do not scale down while in panic mode. Only increases will be applied.
-		if desiredPodCount > k.maxPanicPods {
-			klog.InfoS("Increasing pods count.", "originalPodCount", originalReadyPodsCount, "desiredPodCount", desiredPodCount)
-			k.maxPanicPods = desiredPodCount
-		} else if desiredPodCount < k.maxPanicPods {
-			klog.InfoS("Skipping pod count decrease", "current", k.maxPanicPods, "desired", desiredPodCount)
-		}
-		desiredPodCount = k.maxPanicPods
-	} else {
-		klog.V(4).InfoS("Operating in stable mode.", "desiredPodCount", desiredPodCount)
+	// Set the current panic mode state in the context
+	spec.SetInPanicMode(k.InPanicMode())
+	spec.SetMaxPanicPods(k.maxPanicPods)
+	desiredPodCount := k.algorithm.ComputeTargetReplicas(float64(originalReadyPodsCount), spec)
+	// context.SetMaxPanicPods(desiredPodCount)
+	// maxPanicPods might be changed in the algorithm
+	k.maxPanicPods = spec.GetMaxPanicPods()
+
+	// Update maxPanicPods if in panic mode and scaling up (stateful update)
+	if k.InPanicMode() && desiredPodCount > k.maxPanicPods {
+		k.maxPanicPods = desiredPodCount
 	}
 
 	// Delay scale down decisions, if a ScaleDownDelay was specified.
@@ -451,9 +420,92 @@ func (k *KpaAutoscaler) GetScalingContext() scalingcontext.ScalingContext {
 	return k.scalingContext
 }
 
+func (k *KpaScalingContext) GetStableValue() float64 {
+	return k.stableValue
+}
+
+func (k *KpaScalingContext) GetPanicValue() float64 {
+	return k.panicValue
+}
+
+func (k *KpaScalingContext) GetCurrentTime() time.Time {
+	return k.currentTime
+}
+
+func (k *KpaScalingContext) GetMinReplicas() int32 {
+	return k.BaseScalingContext.GetMinReplicas()
+}
+
+func (k *KpaScalingContext) GetMaxReplicas() int32 {
+	return k.BaseScalingContext.GetMaxReplicas()
+}
+
 func (k *KpaAutoscaler) InPanicMode() bool {
 	k.specMux.RLock()
 	defer k.specMux.RUnlock()
 
 	return !k.panicTime.IsZero()
+}
+
+func (k *KpaScalingContext) SetStableValue(value float64) {
+	k.stableValue = value
+}
+
+func (k *KpaScalingContext) SetPanicValue(value float64) {
+	k.panicValue = value
+}
+
+func (k *KpaScalingContext) SetCurrentTime(t time.Time) {
+	k.currentTime = t
+}
+
+func (k *KpaScalingContext) SetMinReplicas(replicas int32) {
+	k.BaseScalingContext.SetMinReplicas(replicas)
+}
+
+func (k *KpaScalingContext) SetMaxReplicas(replicas int32) {
+	k.BaseScalingContext.SetMaxReplicas(replicas)
+}
+
+func (k *KpaScalingContext) SetActivationScale(value int32) {
+	k.ActivationScale = value
+}
+
+// ActivationScale methods
+func (k *KpaScalingContext) GetActivationScale() int32 {
+	return k.ActivationScale
+}
+
+// PanicThreshold methods
+func (k *KpaScalingContext) GetPanicThreshold() float64 {
+	return k.PanicThreshold
+}
+
+// Panic mode state methods
+func (k *KpaScalingContext) GetInPanicMode() bool {
+	return k.inPanicMode
+}
+
+func (k *KpaScalingContext) SetInPanicMode(inPanic bool) {
+	k.inPanicMode = inPanic
+}
+
+func (k *KpaScalingContext) GetMaxPanicPods() int32 {
+	return k.maxPanicPods
+}
+
+func (k *KpaScalingContext) SetMaxPanicPods(pods int32) {
+	k.maxPanicPods = pods
+}
+
+func (k *KpaScalingContext) GetStableWindow() time.Duration {
+	return k.StableWindow
+}
+
+func (k *KpaScalingContext) GetPanicWindow() time.Duration {
+	return k.PanicWindow
+}
+
+func (k *KpaScalingContext) GetScaleDownDelay() time.Duration {
+	return k.ScaleDownDelay
 }
