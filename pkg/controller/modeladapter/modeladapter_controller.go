@@ -146,12 +146,6 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		return nil, err
 	}
 
-	klog.Info("Waiting for caches to sync")
-	if ok := cacher.WaitForCacheSync(context.TODO()); !ok {
-		return nil, errors.New("modeladapter controller: failed to sync cache")
-	}
-	klog.Info("All caches synced")
-
 	// Let's generate the clientset and use ModelAdapterLister here as well.
 	podLister := corelisters.NewPodLister(podInformer.(toolscache.SharedIndexInformer).GetIndexer())
 	serviceLister := corelisters.NewServiceLister(serviceInformer.(toolscache.SharedIndexInformer).GetIndexer())

@@ -149,12 +149,7 @@ var _ = BeforeSuite(func() {
 	features.InitControllers("*")
 	Expect(controller.Initialize(mgr)).To(Succeed())
 	runtimeConfig := config.NewRuntimeConfig(false, false, "leastAdapters")
-	go func() {
-		if err := controller.SetupWithManager(mgr, runtimeConfig); err != nil {
-			panic(fmt.Sprintf("SetupWithManager failed: %v", err))
-		}
-		By("controllers setup completed")
-	}()
+	Expect(controller.SetupWithManager(mgr, runtimeConfig)).To(Succeed())
 
 	By("starting controller manager")
 	go func() {
