@@ -13,11 +13,11 @@ import (
 
 func TestLeastGpuCache(t *testing.T) {
 	tests := []struct {
-		name       string
-		readyPods  []*v1.Pod
-		podMetrics map[string]map[string]metrics.MetricValue
-		expectErr  bool
-		expectMsgs []string
+		name            string
+		readyPods       []*v1.Pod
+		podModelMetrics map[string]map[string]metrics.MetricValue
+		expectErr       bool
+		expectMsgs      []string
 	}{
 		{
 			name: "successful routing with least gpu cache",
@@ -31,7 +31,7 @@ func TestLeastGpuCache(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "p4"}, Status: v1.PodStatus{PodIP: "4.4.4.4",
 					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
 			},
-			podMetrics: map[string]map[string]metrics.MetricValue{
+			podModelMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1}},
 				"p2": {metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.2}},
 				"p3": {metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.3}},
@@ -41,10 +41,10 @@ func TestLeastGpuCache(t *testing.T) {
 			expectMsgs: []string{"1.1.1.1:8000"},
 		},
 		{
-			name:       "no ready pods",
-			readyPods:  []*v1.Pod{},
-			podMetrics: map[string]map[string]metrics.MetricValue{},
-			expectErr:  true,
+			name:            "no ready pods",
+			readyPods:       []*v1.Pod{},
+			podModelMetrics: map[string]map[string]metrics.MetricValue{},
+			expectErr:       true,
 		},
 		{
 			name: "multiple pods with same gpu cache",
@@ -56,7 +56,7 @@ func TestLeastGpuCache(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "p3"}, Status: v1.PodStatus{PodIP: "3.3.3.3",
 					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
 			},
-			podMetrics: map[string]map[string]metrics.MetricValue{
+			podModelMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1}},
 				"p2": {metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.5}},
 				"p3": {metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1}},
@@ -72,7 +72,7 @@ func TestLeastGpuCache(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}, Status: v1.PodStatus{PodIP: "2.2.2.2",
 					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
 			},
-			podMetrics: map[string]map[string]metrics.MetricValue{
+			podModelMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1}},
 			},
 			expectErr:  false,
@@ -86,9 +86,9 @@ func TestLeastGpuCache(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}, Status: v1.PodStatus{PodIP: "2.2.2.2",
 					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
 			},
-			podMetrics: map[string]map[string]metrics.MetricValue{},
-			expectErr:  false,
-			expectMsgs: []string{"1.1.1.1:8000", "2.2.2.2:8000"},
+			podModelMetrics: map[string]map[string]metrics.MetricValue{},
+			expectErr:       false,
+			expectMsgs:      []string{"1.1.1.1:8000", "2.2.2.2:8000"},
 		},
 	}
 
@@ -97,15 +97,15 @@ func TestLeastGpuCache(t *testing.T) {
 			c := cache.NewWithPodModelMetricsForTest(
 				tt.readyPods,
 				"m1",
-				tt.podMetrics)
+				tt.podModelMetrics)
 			podList := podsFromCache(c)
 
-			leaseGpuCacheRouter := leastGpuCacheRouter{
+			leastGpuCacheRouter := leastGpuCacheRouter{
 				cache: c,
 			}
 
 			ctx := types.NewRoutingContext(context.Background(), "test", "m1", "message", "request", "user")
-			targetPod, err := leaseGpuCacheRouter.Route(ctx, podList)
+			targetPod, err := leastGpuCacheRouter.Route(ctx, podList)
 			if tt.expectErr {
 				assert.Error(t, err)
 			} else {

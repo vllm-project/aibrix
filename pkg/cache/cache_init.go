@@ -259,13 +259,13 @@ func InitWithPodsMetrics(st *Store, podMetrics map[string]map[string]metrics.Met
 	return st
 }
 
-func InitWithPodModelMetrics(st *Store, modelMetrics map[string]map[string]metrics.MetricValue) *Store {
+func InitWithPodModelMetrics(st *Store, podModelMetrics map[string]map[string]metrics.MetricValue) *Store {
 	st.metaPods.Range(func(key string, metaPod *Pod) bool {
 		_, podName, ok := utils.ParsePodKey(key)
 		if !ok {
 			return true
 		}
-		if podmetrics, ok := modelMetrics[podName]; ok {
+		if podmetrics, ok := podModelMetrics[podName]; ok {
 			for metricName, metric := range podmetrics {
 				if err := st.updatePodRecord(metaPod, "", metricName, metrics.PodModelMetricScope, metric); err != nil {
 					return false
