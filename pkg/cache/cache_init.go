@@ -176,6 +176,10 @@ func NewWithPodsMetricsForTest(pods []*v1.Pod, model string, podMetrics map[stri
 	return InitWithPodsMetrics(InitWithPods(NewForTest(), pods, model), podMetrics)
 }
 
+func NewWithPodModelMetricsForTest(pods []*v1.Pod, model string, podModelMetrics map[string]map[string]metrics.MetricValue) *Store {
+	return InitWithPodModelMetrics(InitWithPods(NewForTest(), pods, model), podModelMetrics)
+}
+
 // InitModelRouterProvider initializes the cache store with model router provider for testing purposes, it can be repeated call for reset.
 // Call this function before InitWithPods for expected behavior.
 func InitWithModelRouterProvider(st *Store, modelRouterProvider ModelRouterProviderFunc) *Store {
@@ -246,6 +250,24 @@ func InitWithPodsMetrics(st *Store, podMetrics map[string]map[string]metrics.Met
 		if podmetrics, ok := podMetrics[podName]; ok {
 			for metricName, metric := range podmetrics {
 				if err := st.updatePodRecord(metaPod, "", metricName, metrics.PodMetricScope, metric); err != nil {
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return st
+}
+
+func InitWithPodModelMetrics(st *Store, modelMetrics map[string]map[string]metrics.MetricValue) *Store {
+	st.metaPods.Range(func(key string, metaPod *Pod) bool {
+		_, podName, ok := utils.ParsePodKey(key)
+		if !ok {
+			return true
+		}
+		if podmetrics, ok := modelMetrics[podName]; ok {
+			for metricName, metric := range podmetrics {
+				if err := st.updatePodRecord(metaPod, "", metricName, metrics.PodModelMetricScope, metric); err != nil {
 					return false
 				}
 			}
