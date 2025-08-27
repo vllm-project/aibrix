@@ -171,10 +171,8 @@ const (
 
 // GetPaMetricSources Currently, we don't support metric resources that are more than one yet.
 func GetPaMetricSources(pa PodAutoscaler) (MetricSource, error) {
-	if len(pa.Spec.MetricsSources) == 0 {
-		return MetricSource{}, fmt.Errorf("can not find any MetricsSource")
-	} else if len(pa.Spec.MetricsSources) != 1 {
-		return MetricSource{}, fmt.Errorf("for now we only support one MetricsSource")
+	if len(pa.Spec.MetricsSources) != 1 {
+		return MetricSource{}, fmt.Errorf("for now we only support one MetricsSource, but got %d", len(pa.Spec.MetricsSources))
 	}
 	return pa.Spec.MetricsSources[0], nil
 }
