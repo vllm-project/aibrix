@@ -120,6 +120,19 @@ const (
 	RoleSetProgressing    ConditionType = "Progressing"
 )
 
+const (
+	// Ready
+	RoleSetReasonRolesReady    = "RolesReady"
+	RoleSetReasonRolesNotReady = "RolesNotReady"
+
+	// Progressing
+	RoleSetReasonRolesProgressing    = "RolesProgressing"
+	RoleSetReasonProgressingComplete = "ProgressingCompleted"
+
+	// ReplicaFailure
+	RoleSetReasonReconcileError = "ReconcileError"
+)
+
 type RoleStatus struct {
 	Name string `json:"name,omitempty"`
 
