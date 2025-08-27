@@ -5,14 +5,8 @@ ARG TARGETARCH
 
 WORKDIR /workspace
 
-# Install build dependencies for static ZMQ
 RUN apt-get update && apt-get install -y \
-    build-essential cmake git wget pkg-config \
-    libtool autoconf automake
-
-# Build static libzmq
-COPY scripts/build-static-zmq.sh /tmp/
-RUN chmod +x /tmp/build-static-zmq.sh && /tmp/build-static-zmq.sh
+    libkrb5-dev libnorm-dev libpgm-dev libzmq3-dev
 
 # Copy the Go Modules manifests
 COPY go.mod go.mod
@@ -26,14 +20,27 @@ COPY cmd/ cmd/
 COPY api/ api/
 COPY pkg/ pkg/
 
-# Build with static linking
 ENV CGO_ENABLED=1
-ENV CGO_LDFLAGS="-L/usr/local/lib -lzmq -lsodium -lstdc++ -lpthread -lm -static"
-ENV PKG_CONFIG_PATH="/usr/local/lib/pkgconfig"
+# - zmq links to sodium, norm, pgm and bsd and krb5
+# - norm links to protokit
+# - krb4 links to gssapi_krb5 and k5crypto
+ENV CGO_LDFLAGS="\
+-Wl,-Bstatic \
+-l:libzmq.a \
+-l:libsodium.a \
+-l:libnorm.a \
+-l:libprotokit.a \
+-l:libpgm.a \
+-Wl,-Bdynamic \
+-lbsd \
+-lkrb5 \
+-lgssapi_krb5 \
+-lk5crypto \
+-lpthread -lm -lstdc++"
 
 RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -tags zmq \
-    -ldflags '-extldflags "-static"' \
+    -ldflags "-extldflags '${CGO_LDFLAGS}'" \
     -a -o gateway-plugins cmd/plugins/main.go
 
 # Use distroless as minimal base image to package the manager binary
