@@ -291,3 +291,21 @@ rules:
   - list
   - update
   - watch
+- apiGroups:
+  - scheduling.godel.kubewharf.io
+  resources:
+  - podgroups
+  verbs:
+  - '*'
+- apiGroups:
+  - scheduling.x-k8s.io
+  resources:
+  - podgroups
+  verbs:
+  - '*'
+- apiGroups:
+  - scheduling.volcano.sh
+  resources:
+  - podgroups
+  verbs:
+  - '*'

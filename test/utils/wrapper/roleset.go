@@ -66,11 +66,13 @@ func (w *RoleSetWrapper) UpdateStrategy(strategy orchestrationapi.RoleSetUpdateS
 // SchedulingStrategyPodGroup sets the PodGroup scheduling strategy.
 // This allows integration with kube-batchd or volcano for gang scheduling.
 func (w *RoleSetWrapper) SchedulingStrategyPodGroup(pgSpec *schedv1alpha1.PodGroupSpec) *RoleSetWrapper {
-	if w.roleset.Spec.SchedulingStrategy.PodGroup == nil {
-		w.roleset.Spec.SchedulingStrategy.PodGroup = &schedv1alpha1.PodGroupSpec{}
+	if w.roleset.Spec.SchedulingStrategy == nil {
+		w.roleset.Spec.SchedulingStrategy = &orchestrationapi.SchedulingStrategy{
+			GodelSchedulingStrategy: &orchestrationapi.GodelSchedulingStrategySpec{},
+		}
 	}
 	if pgSpec != nil {
-		*w.roleset.Spec.SchedulingStrategy.PodGroup = *pgSpec
+		w.roleset.Spec.SchedulingStrategy.GodelSchedulingStrategy.PodGroupSpec = *pgSpec
 	}
 	return w
 }
