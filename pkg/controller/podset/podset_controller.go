@@ -154,11 +154,7 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 			existingIndices := map[int]struct{}{}
 
 			// sort pods by index to ensure deterministic creation
-			sort.Slice(activePods, func(i, j int) bool {
-				iIndex, _ := strconv.Atoi(activePods[i].Labels[constants.PodGroupIndexLabelKey])
-				jIndex, _ := strconv.Atoi(activePods[j].Labels[constants.PodGroupIndexLabelKey])
-				return iIndex < jIndex
-			})
+			sortPodsByIndex(activePods)
 			for _, pod := range activePods {
 				if idxStr, ok := pod.Labels[constants.PodGroupIndexLabelKey]; ok {
 					if idx, err := strconv.Atoi(idxStr); err == nil {
@@ -181,18 +177,30 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 				}
 			}
 		case orchestrationv1alpha1.FullRecreatePodRecreateStrategy:
-			// Recreate all pods
-			for _, pod := range activePods {
-				if err := r.Delete(ctx, &pod); err != nil {
-					return fmt.Errorf("failed to delete pod %v: %w", pod.Name, err)
+			// Recreate all pods. First, delete existing active pods.
+			if len(activePods) > 0 {
+				klog.InfoS("FullRecreate strategy: deleting active pods", "podset", podSet.Name, "count", len(activePods))
+				for i := range activePods {
+					if err := r.Delete(ctx, &activePods[i]); err != nil {
+						return fmt.Errorf("failed to delete pod %v: %w", activePods[i].Name, err)
+					}
 				}
+				// Return to wait for pods to be deleted. The controller will be re-invoked due to pod deletion events.
+				return nil
 			}
+
+			// Once all old pods are gone, create the new set.
+			klog.InfoS("FullRecreate strategy: creating new pods", "podset", podSet.Name, "count", desiredPodCount)
 			for i := 0; i < desiredPodCount; i++ {
 				pod, err := r.createPodFromTemplate(podSet, i)
 				if err != nil {
 					return fmt.Errorf("failed to create pod template: %w", err)
 				}
 				if err := r.Create(ctx, pod); err != nil {
+					// It's possible the pod was created in a previous reconciliation, so ignore AlreadyExists errors.
+					if apierrors.IsAlreadyExists(err) {
+						continue
+					}
 					return fmt.Errorf("failed to create pod %v: %w", pod.Name, err)
 				}
 				klog.InfoS("Created pod", "pod", pod.Name)
@@ -202,11 +210,7 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 		// Delete excess pods
 		podsToDelete := currentPodCount - desiredPodCount
 		// sort pods by index to ensure deterministic deletion
-		sort.Slice(activePods, func(i, j int) bool {
-			iIndex, _ := strconv.Atoi(activePods[i].Labels[constants.PodGroupIndexLabelKey])
-			jIndex, _ := strconv.Atoi(activePods[j].Labels[constants.PodGroupIndexLabelKey])
-			return iIndex < jIndex
-		})
+		sortPodsByIndex(activePods)
 		// Delete pods with highest indices first
 		for i := 0; i < podsToDelete; i++ {
 			podToDelete := activePods[len(activePods)-1-i]
@@ -357,4 +361,23 @@ func filterReadyPods(pods []v1.Pod) []v1.Pod {
 		}
 	}
 	return ready
+}
+
+// getPodIndexFromLabels safely extracts pod index from labels
+// If index label is missing or invalid, return a large number to push it to the end.
+func getPodIndexFromLabels(pod v1.Pod) int {
+	if idxStr, ok := pod.Labels[constants.PodGroupIndexLabelKey]; ok {
+		if idx, err := strconv.Atoi(idxStr); err == nil {
+			return idx
+		}
+	}
+	// return a big number so invalid pods are always sorted last
+	return int(^uint(0) >> 1) // max int
+}
+
+// sortPodsByIndex sorts pods in ascending order of their PodGroupIndex
+func sortPodsByIndex(pods []v1.Pod) {
+	sort.Slice(pods, func(i, j int) bool {
+		return getPodIndexFromLabels(pods[i]) < getPodIndexFromLabels(pods[j])
+	})
 }

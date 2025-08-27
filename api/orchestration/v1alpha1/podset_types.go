@@ -87,8 +87,7 @@ const (
 	// MissingOnlyPodRecreateStrategy means only missing pods (by index) will be recreated.
 	MissingOnlyPodRecreateStrategy PodRecreateStrategy = "MissingOnly"
 
-	// FullRecreatePodRecreateStrategy means if any pod in the set fails, is deleted, or is restarted,
-	// the entire PodSet will be recreated (all pods deleted and recreated).
+	// FullRecreatePodRecreateStrategy means if any pod is missing, all pods in the set will be deleted, and then all pods will be recreated.
 	FullRecreatePodRecreateStrategy PodRecreateStrategy = "FullRecreate"
 )
 
