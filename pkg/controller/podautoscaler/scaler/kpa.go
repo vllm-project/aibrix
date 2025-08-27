@@ -303,14 +303,8 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	spec.SetInPanicMode(k.InPanicMode())
 	spec.SetMaxPanicPods(k.maxPanicPods)
 	desiredPodCount := k.algorithm.ComputeTargetReplicas(float64(originalReadyPodsCount), spec)
-	// context.SetMaxPanicPods(desiredPodCount)
 	// maxPanicPods might be changed in the algorithm
 	k.maxPanicPods = spec.GetMaxPanicPods()
-
-	// Update maxPanicPods if in panic mode and scaling up (stateful update)
-	if k.InPanicMode() && desiredPodCount > k.maxPanicPods {
-		k.maxPanicPods = desiredPodCount
-	}
 
 	// Delay scale down decisions, if a ScaleDownDelay was specified.
 	// We only do this if there's a non-nil delayWindow because although a
