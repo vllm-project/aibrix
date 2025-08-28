@@ -240,7 +240,7 @@ func InitWithAsyncPods(st *Store, pods []*v1.Pod, model string) <-chan *Store {
 	return ret
 }
 
-// InitWithPods initializes the cache store with pods metrics for testing purposes, it can be repeated call for reset.
+// InitWithPodsMetrics initializes the cache store with pods metrics for testing purposes, it can be repeated call for reset.
 func InitWithPodsMetrics(st *Store, podMetrics map[string]map[string]metrics.MetricValue) *Store {
 	st.metaPods.Range(func(key string, metaPod *Pod) bool {
 		_, podName, ok := utils.ParsePodKey(key)
