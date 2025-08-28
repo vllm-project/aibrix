@@ -26,7 +26,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestLeastGpuCache(t *testing.T) {
@@ -40,14 +39,18 @@ func TestLeastGpuCache(t *testing.T) {
 		{
 			name: "successful routing with least gpu cache",
 			readyPods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}, Status: v1.PodStatus{PodIP: "1.1.1.1",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}, Status: v1.PodStatus{PodIP: "2.2.2.2",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "p3"}, Status: v1.PodStatus{PodIP: "3.3.3.3",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "p4"}, Status: v1.PodStatus{PodIP: "4.4.4.4",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
+				newPod("p1", "1.1.1.1", true, map[string]string{
+					"model.aibrix.ai/port": "8000",
+				}),
+				newPod("p2", "2.2.2.2", true, map[string]string{
+					"model.aibrix.ai/port": "8000",
+				}),
+				newPod("p3", "3.3.3.3", true, map[string]string{
+					"model.aibrix.ai/port": "8000",
+				}),
+				newPod("p4", "4.4.4.4", true, map[string]string{
+					"model.aibrix.ai/port": "8000",
+				}),
 			},
 			podModelMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1}},
@@ -67,12 +70,15 @@ func TestLeastGpuCache(t *testing.T) {
 		{
 			name: "multiple pods with same gpu cache",
 			readyPods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}, Status: v1.PodStatus{PodIP: "1.1.1.1",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}, Status: v1.PodStatus{PodIP: "2.2.2.2",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "p3"}, Status: v1.PodStatus{PodIP: "3.3.3.3",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
+				newPod("p1", "1.1.1.1", true, map[string]string{
+					"model.aibrix.ai/port": "8000",
+				}),
+				newPod("p2", "2.2.2.2", true, map[string]string{
+					"model.aibrix.ai/port": "8000",
+				}),
+				newPod("p3", "3.3.3.3", true, map[string]string{
+					"model.aibrix.ai/port": "8000",
+				}),
 			},
 			podModelMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1}},
@@ -85,10 +91,12 @@ func TestLeastGpuCache(t *testing.T) {
 		{
 			name: "one pod has no metrics",
 			readyPods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}, Status: v1.PodStatus{PodIP: "1.1.1.1",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}, Status: v1.PodStatus{PodIP: "2.2.2.2",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
+				newPod("p1", "1.1.1.1", true, map[string]string{
+					"model.aibrix.ai/port": "8000",
+				}),
+				newPod("p2", "2.2.2.2", true, map[string]string{
+					"model.aibrix.ai/port": "8000",
+				}),
 			},
 			podModelMetrics: map[string]map[string]metrics.MetricValue{
 				"p1": {metrics.GPUCacheUsagePerc: &metrics.SimpleMetricValue{Value: 0.1}},
@@ -99,10 +107,12 @@ func TestLeastGpuCache(t *testing.T) {
 		{
 			name: "all pods have no metrics",
 			readyPods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "p1"}, Status: v1.PodStatus{PodIP: "1.1.1.1",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "p2"}, Status: v1.PodStatus{PodIP: "2.2.2.2",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
+				newPod("p1", "1.1.1.1", true, map[string]string{
+					"model.aibrix.ai/port": "8000",
+				}),
+				newPod("p2", "2.2.2.2", true, map[string]string{
+					"model.aibrix.ai/port": "8000",
+				}),
 			},
 			podModelMetrics: map[string]map[string]metrics.MetricValue{},
 			expectErr:       false,
@@ -112,7 +122,7 @@ func TestLeastGpuCache(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := cache.NewWithPodModelMetricsForTest(
+			c := cache.NewWithPodsModelMetricsForTest(
 				tt.readyPods,
 				"m1",
 				tt.podModelMetrics)
