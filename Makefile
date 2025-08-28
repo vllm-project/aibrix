@@ -81,6 +81,13 @@ generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and
 update-codegen:
 	sh ./hack/update-codegen.sh
 
+.PHONY: verify
+verify: verify-codegen verify-crd
+
+.PHONY: verify-crd
+verify-crd:
+	hack/verify-crd-sync.sh
+
 .PHONY: verify-codegen
 verify-codegen:
 	sh ./hack/verify-codegen.sh
