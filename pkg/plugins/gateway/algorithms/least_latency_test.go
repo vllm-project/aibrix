@@ -131,7 +131,7 @@ func TestLeastLatency(t *testing.T) {
 			expectMsgs: []string{"1.1.1.1:8000", "3.3.3.3:8000"},
 		},
 		{
-			name: "use gessed prompt tokens",
+			name: "use guessed prompt tokens",
 			readyPods: []*v1.Pod{
 				newPod("p1", "1.1.1.1", true, map[string]string{
 					"model.aibrix.ai/port": "8000",
@@ -160,7 +160,7 @@ func TestLeastLatency(t *testing.T) {
 			expectMsgs: []string{"1.1.1.1:8000"},
 		},
 		{
-			name: "use gessed generation tokens",
+			name: "use guesses generation tokens",
 			readyPods: []*v1.Pod{
 				newPod("p1", "1.1.1.1", true, map[string]string{
 					"model.aibrix.ai/port": "8000",
