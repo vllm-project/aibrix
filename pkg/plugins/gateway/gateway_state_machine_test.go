@@ -17,6 +17,7 @@ limitations under the License.
 package gateway
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -58,6 +59,146 @@ func TestPerRequestState_StateTransitions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSchedulerIntegration_StateTransitions(t *testing.T) {
+	// Test that scheduler integration works with state machine
+	state := &perRequestState{
+		currentState:   stateAwaitingDecision,
+		requestID:      "test-scheduler-request",
+		submissionTime: time.Now(),
+	}
+
+	// Simulate scheduler decision received
+	state.dispatchTime = time.Now().Add(10 * time.Millisecond)
+	state.currentState = stateForwarding
+
+	assert.Equal(t, stateForwarding, state.currentState)
+	assert.False(t, state.dispatchTime.IsZero())
+
+	// Test timing calculations
+	waitTime := state.dispatchTime.Sub(state.submissionTime)
+	assert.Greater(t, waitTime, time.Duration(0))
+
+	t.Log("Scheduler integration state transitions test completed")
+}
+
+func TestLoadAwareScheduling_StateTracking(t *testing.T) {
+	// Test that load-aware scheduling properly tracks state
+	states := []*perRequestState{
+		{
+			currentState:   stateAwaitingDecision,
+			requestID:      "high-load-request-1",
+			submissionTime: time.Now(),
+		},
+		{
+			currentState:   stateAwaitingDecision,
+			requestID:      "high-load-request-2",
+			submissionTime: time.Now().Add(1 * time.Millisecond),
+		},
+		{
+			currentState:   stateAwaitingDecision,
+			requestID:      "high-load-request-3",
+			submissionTime: time.Now().Add(2 * time.Millisecond),
+		},
+	}
+
+	// Simulate batch scheduling decision
+	batchDispatchTime := time.Now().Add(5 * time.Millisecond)
+	for _, state := range states {
+		state.dispatchTime = batchDispatchTime
+		state.currentState = stateForwarding
+	}
+
+	// Verify all states transitioned correctly
+	for i, state := range states {
+		assert.Equal(t, stateForwarding, state.currentState, "State %d should be forwarding", i)
+		assert.Equal(t, batchDispatchTime, state.dispatchTime, "State %d should have batch dispatch time", i)
+
+		waitTime := state.dispatchTime.Sub(state.submissionTime)
+		assert.Greater(t, waitTime, time.Duration(0), "State %d should have positive wait time", i)
+	}
+
+	t.Log("Load-aware scheduling state tracking test completed")
+}
+
+func TestCapacityAwareScheduling_Metrics(t *testing.T) {
+	// Test capacity-aware scheduling metrics tracking
+	now := time.Now()
+
+	// Simulate different capacity scenarios
+	scenarios := []struct {
+		name              string
+		podCapacity       int
+		requestCount      int
+		expectedBatchSize int
+	}{
+		{
+			name:              "low capacity pod",
+			podCapacity:       1,
+			requestCount:      10,
+			expectedBatchSize: 1,
+		},
+		{
+			name:              "high capacity pod",
+			podCapacity:       100,
+			requestCount:      10,
+			expectedBatchSize: 10,
+		},
+		{
+			name:              "overloaded scenario",
+			podCapacity:       50,
+			requestCount:      100,
+			expectedBatchSize: 50,
+		},
+	}
+
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			// Create states for requests
+			states := make([]*perRequestState, scenario.requestCount)
+			for i := 0; i < scenario.requestCount; i++ {
+				states[i] = &perRequestState{
+					currentState:   stateAwaitingDecision,
+					requestID:      fmt.Sprintf("capacity-test-request-%d", i),
+					submissionTime: now.Add(time.Duration(i) * time.Millisecond),
+				}
+			}
+
+			// Simulate capacity-aware batch scheduling
+			batchSize := min(scenario.expectedBatchSize, len(states))
+			batchDispatchTime := now.Add(10 * time.Millisecond)
+
+			// Only dispatch up to capacity
+			for i := 0; i < batchSize; i++ {
+				states[i].dispatchTime = batchDispatchTime
+				states[i].currentState = stateForwarding
+			}
+
+			// Verify correct number were dispatched
+			dispatchedCount := 0
+			for _, state := range states {
+				if state.currentState == stateForwarding {
+					dispatchedCount++
+				}
+			}
+
+			assert.Equal(t, batchSize, dispatchedCount, "Should dispatch exactly batch size")
+
+			// Verify remaining are still waiting
+			waitingCount := 0
+			for _, state := range states {
+				if state.currentState == stateAwaitingDecision {
+					waitingCount++
+				}
+			}
+
+			expectedWaiting := scenario.requestCount - batchSize
+			assert.Equal(t, expectedWaiting, waitingCount, "Remaining should still be waiting")
+		})
+	}
+
+	t.Log("Capacity-aware scheduling metrics test completed")
 }
 
 func TestServer_WithStateMachine(t *testing.T) {

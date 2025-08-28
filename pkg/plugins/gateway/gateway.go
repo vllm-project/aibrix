@@ -112,7 +112,7 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 
 	// Initialize session cache and scheduler
 	sessionCache := sessioninfo.NewMutexSessionCache()
-	sched := scheduler.NewScheduler(client, sessionCache)
+	sched := scheduler.NewScheduler(client, sessionCache, c)
 
 	// Start session cleanup routine (cleanup every 5 minutes, timeout after 30 minutes)
 	sessionCleanupStop := sessionCache.StartCleanupRoutine(5*time.Minute, 30*time.Minute)
