@@ -18,14 +18,16 @@ package cache
 
 import (
 	"testing"
+
+	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
 func TestBuildModeIsZMQ(t *testing.T) {
 	t.Log("✅ Verified ZMQ build")
 
 	// Set environment to enable KV sync
-	t.Setenv("AIBRIX_KV_EVENT_SYNC_ENABLED", "true")
-	t.Setenv("AIBRIX_USE_REMOTE_TOKENIZER", "true")
+	t.Setenv(constants.EnvPrefixCacheKVEventSyncEnabled, "true")
+	t.Setenv(constants.EnvPrefixCacheUseRemoteTokenizer, "true")
 
 	// Verify ZMQ implementation behavior
 	manager := NewKVEventManager(nil)

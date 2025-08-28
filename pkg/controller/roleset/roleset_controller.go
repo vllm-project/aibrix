@@ -66,6 +66,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	err := ctrl.NewControllerManagedBy(mgr).
 		Named(ControllerName).
 		For(&orchestrationv1alpha1.RoleSet{}).
+		Owns(&orchestrationv1alpha1.PodSet{}).
 		Owns(&v1.Pod{}).
 		// TODO: Bring PodGroup back later
 		//Owns(&schedv1alpha1.PodGroup{}).

@@ -18,7 +18,6 @@ package modelrouter
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 
@@ -106,12 +105,6 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 		AddFunc:    modelRouter.addRouteFromRayClusterFleet,
 		DeleteFunc: modelRouter.deleteRouteFromRayClusterFleet,
 	})
-
-	klog.Info("Waiting for caches to sync")
-	if ok := cacher.WaitForCacheSync(context.TODO()); !ok {
-		return errors.New("modelrouter controller: failed to sync cache")
-	}
-	klog.Info("All caches synced")
 
 	return err
 }

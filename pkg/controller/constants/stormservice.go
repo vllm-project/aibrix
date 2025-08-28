@@ -25,6 +25,8 @@ const (
 	RoleNameLabelKey             = "role-name"
 	RoleTemplateHashLabelKey     = "role-template-hash"
 	RoleReplicaIndexLabelKey     = "stormservice.orchestration.aibrix.ai/role-replica-index"
+	PodSetNameLabelKey           = "stormservice.orchestration.aibrix.ai/podset-name"
+	PodGroupIndexLabelKey        = "stormservice.orchestration.aibrix.ai/pod-group-index"
 
 	RoleSetIndexAnnotationKey    = "stormservice.orchestration.aibrix.ai/roleset-index"
 	RoleSetRevisionAnnotationKey = "stormservice.orchestration.aibrix.ai/revision"
@@ -37,4 +39,7 @@ const (
 	RoleNameEnvKey         = "ROLE_NAME"
 	RoleReplicaIndexEnvKey = "ROLE_REPLICA_INDEX"
 	RoleTemplateHashEnvKey = "ROLE_TEMPLATE_HASH"
+	PodSetNameEnvKey       = "PODSET_NAME"
+	PodSetIndexEnvKey      = "POD_GROUP_INDEX"
+	PodSetSizeEnvKey       = "POD_GROUP_SIZE"
 )

@@ -33,7 +33,7 @@ from .cache_handle import (
     MemoryRegionKVCacheHandle,
 )
 from .cache_hashable import TokenCacheKey, TokenListView
-from .common.absl_logging import getLogger, log_every_n_seconds
+from .common.absl_logging import getLogger, log_every_n_seconds, log_if
 from .config import KVCacheConfig
 from .l1 import L1Cache
 from .l2 import KeyBuilder, L2Cache
@@ -43,6 +43,7 @@ from .metrics import KVCacheMetrics, MeasurableBase, MetricRecorder
 from .profiling import nvtx_range
 from .spec import KVCacheBlockLayout, KVCacheBlockSpec
 from .status import Status, StatusCodes
+from .utils import round_down, round_up
 
 logger = getLogger(__name__)
 
@@ -309,6 +310,20 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         )
 
         self._chunk_size: int = envs.AIBRIX_KV_CACHE_OL_CHUNK_SIZE
+        self._max_seq_len: int = envs.AIBRIX_KV_CACHE_OL_MAX_SEQ_LEN
+        if self._max_seq_len > 0:
+            max_seq_len = round_up(self._max_seq_len, self.block_ntokens)
+            log_if(
+                logger,
+                logging.WARNING,
+                "AIBRIX_KV_CACHE_OL_MAX_SEQ_LEN=%d is not divisible by "
+                "block_ntokens=%d, aligned to %d",
+                max_seq_len > self._max_seq_len,
+                self._max_seq_len,
+                self.block_ntokens,
+                max_seq_len,
+            )
+            self._max_seq_len = max_seq_len
 
         if self._chunk_size % self.block_ntokens != 0:
             self._chunk_size = (
@@ -1185,6 +1200,34 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             The status of the put operation and the number of tokens have
             been put or scheduled to put into the kv cache service.
         """
+        pref_len = len(prefix) if prefix is not None else 0
+        if pref_len % self.block_ntokens != 0:
+            kv_tensors.release()
+            return Status(
+                StatusCodes.INVALID,
+                (
+                    f"Prefix length {pref_len} is not aligned to block size "
+                    f"{self.block_ntokens}."
+                ),
+            )
+
+        if self._max_seq_len > 0:
+            if pref_len >= self._max_seq_len:
+                kv_tensors.release()
+                return Status(StatusCodes.DENIED, "Sequence too long")
+            elif pref_len + len(tokens) > self._max_seq_len:
+                token_len = round_down(
+                    self._max_seq_len - pref_len,
+                    self.block_ntokens,
+                )
+                if token_len == 0:
+                    kv_tensors.release()
+                    return Status.ok(0)
+
+                # truncate tokens and kv_tensors
+                tokens = tokens[:token_len]
+                kv_tensors.truncate(token_len // self.block_ntokens)
+
         if isinstance(kv_tensors, GDRKVCacheHandle):
             assert self.feature.gdr_put, "Does not support GDR put"
 
@@ -1302,6 +1345,9 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
         process_group: The process group.
     """
 
+    _COLL_STATUS_ERROR = -1
+    _COLL_STATUS_NOT_FOUND = 0
+
     def __init__(
         self, config: KVCacheConfig, process_group: dist.ProcessGroup
     ) -> None:
@@ -1311,6 +1357,16 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
         self.process_group = process_group
         self.world_size = dist.get_world_size(group=process_group)
         self.rank = dist.get_rank(group=process_group)
+
+        if dist.get_backend(process_group) == dist.Backend.NCCL:
+            coll_tensor_device = "cuda"
+        else:
+            coll_tensor_device = "cpu"
+        self._coll_tensor = torch.empty(
+            (1),
+            dtype=torch.int32,
+            device=coll_tensor_device,
+        )
 
         super().__init__(config)
 
@@ -1391,30 +1447,32 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
                 super().prefetch(chunk_prefix + chunk_tokens, next_tokens)
             status = super()._acquire_impl(chunk_prefix, chunk_tokens)
             value = status.get()
-            # we only care about the error code and num of blocks
-            coll_status = Status.ok(len(value)) if status.is_ok() else status
-            # check if all participants have the same status
-            pg_statuses: List[Status] = [Status.ok()] * self.world_size
-            dist.all_gather_object(
-                pg_statuses, coll_status, group=self.process_group
+            # we only care about num of blocks or if it is an error
+            if status.is_ok():
+                self._coll_tensor[0] = len(value)
+            elif status.is_not_found():
+                self._coll_tensor[0] = self._COLL_STATUS_NOT_FOUND
+            else:
+                self._coll_tensor[0] = self._COLL_STATUS_ERROR
+            dist.all_reduce(
+                self._coll_tensor,
+                op=dist.ReduceOp.MIN,
+                group=self.process_group,
             )
             # if any participant encountered an error
-            if not all([s.is_ok() for s in pg_statuses]):
+            if self._coll_tensor[0] <= 0:
                 self._release(value)
                 if start > 0:
                     # we have already got some tokens, return success
                     return Status.ok((start, results))
+                elif self._coll_tensor[0] == self._COLL_STATUS_NOT_FOUND:
+                    return Status(StatusCodes.NOT_FOUND)
                 else:
-                    # return the first error
-                    return next(s for s in pg_statuses if not s.is_ok())
-            elif not all(
-                [
-                    s.get() * self.block_ntokens == len(chunk_tokens)
-                    for s in pg_statuses
-                ]
-            ):
+                    # return error
+                    return Status(StatusCodes.ERROR)
+            elif self._coll_tensor[0] * self.block_ntokens < len(chunk_tokens):
                 # some participants have got less tokens than others
-                num = min(s.get() for s in pg_statuses)
+                num = self._coll_tensor[0]
                 results.extend(value[:num])
                 self._release(value[num:])
                 return Status.ok((start + num * self.block_ntokens, results))
@@ -1466,27 +1524,30 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
             chunk_mrs = mrs[chunk_mrs_start:chunk_mrs_end]
             status = super()._get_impl(chunk_prefix, chunk_tokens, chunk_mrs)
             # check if all participants have the same status
-            pg_statuses: List[Status] = [Status.ok()] * self.world_size
-            dist.all_gather_object(
-                pg_statuses, status, group=self.process_group
+            if status.is_ok():
+                self._coll_tensor[0] = status.get()
+            elif status.is_not_found():
+                self._coll_tensor[0] = self._COLL_STATUS_NOT_FOUND
+            else:
+                self._coll_tensor[0] = self._COLL_STATUS_ERROR
+            dist.all_reduce(
+                self._coll_tensor,
+                op=dist.ReduceOp.MIN,
+                group=self.process_group,
             )
             # if any participant encountered an error
-            if not all([s.is_ok() for s in pg_statuses]):
+            if self._coll_tensor[0] <= 0:
                 if start > 0:
                     # we have already got some tokens, return success
                     return Status.ok(start)
+                elif self._coll_tensor[0] == self._COLL_STATUS_NOT_FOUND:
+                    return Status(StatusCodes.NOT_FOUND)
                 else:
-                    # return the first error
-                    return next(s for s in pg_statuses if not s.is_ok())
-            elif not all(
-                [
-                    s.get() * self.block_ntokens == len(chunk_tokens)
-                    for s in pg_statuses
-                ]
-            ):
+                    # return error
+                    return Status(StatusCodes.ERROR)
+            elif self._coll_tensor[0] < len(chunk_tokens):
                 # some participants have got less tokens than others
-                num = min(s.get() for s in pg_statuses)
-                return Status.ok(start + num * self.block_ntokens)
+                return Status.ok(start + self._coll_tensor[0])
 
             start += len(chunk_tokens)
 

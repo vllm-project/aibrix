@@ -23,10 +23,10 @@ Stable Version
 .. code:: bash
 
     # Install component dependencies
-    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.4.0/aibrix-dependency-v0.4.0.yaml
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.4.1/aibrix-dependency-v0.4.1.yaml --server-side
 
     # Install aibrix components
-    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.4.0/aibrix-core-v0.4.0.yaml
+    kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.4.1/aibrix-core-v0.4.1.yaml
 
     # For custom configurations
     git clone https://github.com/vllm-project/aibrix.git
@@ -37,29 +37,46 @@ Stable Version
 Stable Version Using Helm
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Install AIBrix with dependencies
+
 .. code:: bash
 
     # 1. Install envoy-gateway, this is not aibrix component. you can also use helm package to install it.
-    kubectl apply -k config/dependency --server-side
-    # or
-    helm install eg oci://docker.io/envoyproxy/gateway-helm --version v0.0.0-latest -n envoy-gateway-system --create-namespace
+    helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.2.8 -n envoy-gateway-system --create-namespace
 
-    # 2. Optional: Install KubeRay operator (if you use AIBrix RayClusterFleet, you need to insstall it):
+    # 2. Install KubeRay operator (if you use AIBrix RayClusterFleet, you need to install it):
     helm install kuberay-operator kuberay/kuberay-operator \
-      --namespace kuberay-system \
+      --namespace aibrix-system \
+      --create-namespace \
       --version 1.2.1 \
-      --include-crds \
       --set env[0].name=ENABLE_PROBES_INJECTION \
       --set-string env[0].value=false \
       --set fullnameOverride=kuberay-operator \
       --set featureGates[0].name=RayClusterStatusConditions \
-      --set featureGates[0].enabled=true
+      --set featureGates[0].enabled=true \
+      --set image.repository=aibrix/kuberay-operator \
+      --set image.tag=v1.2.1-patch-20250726
 
     # 3. Install AIBrix CRDs. `--install-crds` is not available in local chart installation.
     kubectl apply -f dist/chart/crds/
 
     # 4. Install AIBrix with the pinned release version:
     helm install aibrix dist/chart -f dist/chart/stable.yaml -n aibrix-system --create-namespace
+
+Upgrade AIBrix
+
+.. code:: bash
+
+    helm upgrade aibrix dist/chart -f dist/chart/values.yaml -n aibrix-system
+
+Uninstall AIBrix
+
+.. code:: bash
+
+    helm uninstall aibrix -n aibrix-system
+    helm uninstall kuberay-operator -n aibrix-system
+    helm uninstall eg -n envoy-gateway-system
+
 
 Nightly Version
 ^^^^^^^^^^^^^^^
