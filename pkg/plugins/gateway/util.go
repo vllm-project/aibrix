@@ -28,6 +28,34 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// extractSessionID extracts session ID from request body or headers.
+// If no session ID is found, it returns the requestID as a fallback.
+func extractSessionID(requestID, requestPath string, requestBody []byte, headers map[string]string) string {
+	// First, try to get session ID from headers
+	if sessionID, exists := headers["x-session-id"]; exists && sessionID != "" {
+		return sessionID
+	}
+	if sessionID, exists := headers["X-Session-ID"]; exists && sessionID != "" {
+		return sessionID
+	}
+
+	// Then, try to extract from request body
+	if requestPath == "/v1/chat/completions" || requestPath == "/v1/completions" {
+		var jsonMap map[string]json.RawMessage
+		if err := json.Unmarshal(requestBody, &jsonMap); err == nil {
+			if sessionData, exists := jsonMap["session_id"]; exists {
+				var sessionID string
+				if err := json.Unmarshal(sessionData, &sessionID); err == nil && sessionID != "" {
+					return sessionID
+				}
+			}
+		}
+	}
+
+	// Fallback to requestID if no session ID found
+	return requestID
+}
+
 // validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
 // nolint:nakedret
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {

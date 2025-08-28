@@ -37,12 +37,47 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/scheduler"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/scheduler/sessioninfo"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayapi "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
+
+// requestState represents the state of a single request processing flow
+type requestState int
+
+const (
+	stateAwaitingHeaders requestState = iota
+	stateAwaitingBody
+	stateAwaitingDecision
+	stateForwarding
+	stateDone
+)
+
+// perRequestState holds all the state for a single Process() invocation
+type perRequestState struct {
+	currentState  requestState
+	sessionID     string
+	requestID     string
+	user          utils.User
+	rpm           int64
+	model         string
+	routerCtx     *types.RoutingContext
+	stream        bool
+	traceTerm     int64
+	completed     bool
+	isRespError   bool
+	respErrorCode int
+
+	// For timing and scheduling
+	requestStartTime   time.Time
+	submissionTime     time.Time
+	dispatchTime       time.Time // When scheduler granted permission
+	schedulingDecision *scheduler.Decision
+}
 
 const (
 	defaultAIBrixNamespace = "aibrix-system"
@@ -56,6 +91,13 @@ type Server struct {
 	requestCountTracker map[string]int
 	cache               cache.Cache
 	metricsServer       *metrics.Server
+
+	// Scheduler and session management
+	scheduler    scheduler.Scheduler
+	sessionCache *sessioninfo.MutexSessionCache
+
+	// Cleanup function for session cache
+	sessionCleanupStop func()
 }
 
 func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient gatewayapi.Interface) *Server {
@@ -68,6 +110,13 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 	// Initialize the routers
 	routing.Init()
 
+	// Initialize session cache and scheduler
+	sessionCache := sessioninfo.NewMutexSessionCache()
+	sched := scheduler.NewScheduler(client, sessionCache)
+
+	// Start session cleanup routine (cleanup every 5 minutes, timeout after 30 minutes)
+	sessionCleanupStop := sessionCache.StartCleanupRoutine(5*time.Minute, 30*time.Minute)
+
 	return &Server{
 		redisClient:         redisClient,
 		ratelimiter:         r,
@@ -76,10 +125,19 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		requestCountTracker: map[string]int{},
 		cache:               c,
 		metricsServer:       nil,
+		scheduler:           sched,
+		sessionCache:        sessionCache,
+		sessionCleanupStop:  sessionCleanupStop,
 	}
 }
 
+// Process delegates to the state machine implementation
 func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
+	return s.ProcessStateMachine(srv)
+}
+
+// ProcessLegacy is the original implementation kept for reference
+func (s *Server) ProcessLegacy(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var user utils.User
 	var rpm, traceTerm int64
 	var respErrorCode int
@@ -227,11 +285,29 @@ func (s *Server) StartMetricsServer(addr string) error {
 }
 
 func (s *Server) Shutdown() {
+	klog.InfoS("Starting graceful shutdown of Gateway Server")
+
+	// Stop scheduler first to prevent new jobs
+	if s.scheduler != nil {
+		klog.InfoS("Stopping scheduler")
+		s.scheduler.Stop()
+	}
+
+	// Stop session cache cleanup routine
+	if s.sessionCleanupStop != nil {
+		klog.InfoS("Stopping session cache cleanup routine")
+		s.sessionCleanupStop()
+	}
+
+	// Stop metrics server
 	if s.metricsServer != nil {
+		klog.InfoS("Stopping metrics server")
 		if err := s.metricsServer.Stop(); err != nil {
 			klog.ErrorS(err, "Error stopping metrics server")
 		}
 	}
+
+	klog.InfoS("Gateway Server shutdown complete")
 }
 
 func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.ProcessingResponse, respErrorCode int,
