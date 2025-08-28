@@ -102,6 +102,9 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 								"app": "my-ai-app",
 							},
 						},
+						UpdateStrategy: orchestrationapi.StormServiceUpdateStrategy{
+							Type: orchestrationapi.RollingUpdateStormServiceStrategyType,
+						},
 						Stateful: true,
 						Template: orchestrationapi.RoleSetTemplateSpec{
 							ObjectMeta: metav1.ObjectMeta{
@@ -328,6 +331,9 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 								"app": "my-ai-app",
 							},
 						},
+						UpdateStrategy: orchestrationapi.StormServiceUpdateStrategy{
+							Type: orchestrationapi.RollingUpdateStormServiceStrategyType,
+						},
 						Stateful: true,
 						Template: orchestrationapi.RoleSetTemplateSpec{
 							ObjectMeta: metav1.ObjectMeta{
@@ -544,6 +550,9 @@ func makeStormServiceWithNoSidecarInjection(name, namespace string,
 				MatchLabels: map[string]string{
 					"app": "my-ai-app",
 				},
+			},
+			UpdateStrategy: orchestrationapi.StormServiceUpdateStrategy{
+				Type: orchestrationapi.RollingUpdateStormServiceStrategyType,
 			},
 			Stateful: true,
 			Template: orchestrationapi.RoleSetTemplateSpec{
