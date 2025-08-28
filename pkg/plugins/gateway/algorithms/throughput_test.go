@@ -102,7 +102,7 @@ func TestThroughput(t *testing.T) {
 				},
 				"p3": {
 					metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 2},
-					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 1},
+					metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 2},
 				},
 			},
 			expectErr:  false,
