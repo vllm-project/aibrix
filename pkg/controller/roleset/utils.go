@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
@@ -357,8 +358,13 @@ func createPodsInBatch(ctx context.Context, cli client.Client, podsToCreate []*v
 		podsToCreate = podsToCreate[:PodBurst]
 	}
 	return utils.SlowStartBatch(len(podsToCreate), PodOperationInitBatchSize, func(index int) error {
-		err := cli.Create(ctx, podsToCreate[index])
+		pod := podsToCreate[index]
+		err := cli.Create(ctx, pod)
 		if err != nil {
+			if errors.IsAlreadyExists(err) {
+				klog.V(4).InfoS("Pod already exists, skipping", "pod", pod.Name)
+				return nil
+			}
 			if errors.HasStatusCause(err, v1.NamespaceTerminatingCause) {
 				// if the namespace is being terminated, we don't have to do
 				// anything because any creation will fail
@@ -374,7 +380,15 @@ func deletePodsInBatch(ctx context.Context, cli client.Client, podsToDelete []*v
 		podsToDelete = podsToDelete[:PodBurst]
 	}
 	return utils.SlowStartBatch(len(podsToDelete), PodOperationInitBatchSize, func(index int) error {
-		return cli.Delete(ctx, podsToDelete[index])
+		pod := podsToDelete[index]
+		err := cli.Delete(ctx, pod)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				klog.V(4).InfoS("Pod already deleted, skipping", "pod", pod.Name)
+				return nil
+			}
+		}
+		return err
 	})
 }
 
