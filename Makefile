@@ -72,6 +72,41 @@ ginkgo: ## Download ginkgo locally if necessary.
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=controller-manager-role crd:maxDescLen=0,generateEmbeddedObjectMeta=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
+# Synchronize generated CRD files from 'bases/' to module-specific directories
+# such as 'orchestration/', 'autoscaling/', and 'model/'.
+# This ensures that kustomize overlays can reference the correct CRD files.
+# Depends on 'manifests' to ensure CRDs are up-to-date before syncing.
+.PHONY: sync-crds
+sync-crds: manifests
+	mkdir -p config/crd/orchestration
+	mkdir -p config/crd/autoscaling
+	mkdir -p config/crd/model
+
+	# Copy CRDs matching each module's domain
+	cp config/crd/bases/*orchestration.aibrix.ai_*.yaml config/crd/orchestration/ || true
+	cp config/crd/bases/*autoscaling.aibrix.ai_*.yaml config/crd/autoscaling/ || true
+	cp config/crd/bases/*model.aibrix.ai_*.yaml config/crd/model/ || true
+
+# Run all manifest generation and synchronization steps
+# Includes CRD syncing to module directories.
+.PHONY: manifests-all
+manifests-all: manifests sync-crds
+	@echo "✅ All manifests generated and synced to module directories."
+
+# Synchronize CRD files from 'config/crd/bases/' to Helm's 'crds/' directory.
+# This ensures Helm uses the canonical CRD definitions maintained in config/crd/.
+.PHONY: sync-crds-to-helm
+sync-crds-to-helm: manifests
+	@echo "🔄 Syncing CRDs from config/crd/bases/ to dist/chart/crds/"
+
+	# Ensure Helm crds directory exists
+	mkdir -p dist/chart/crds
+
+	# Copy all CRDs from bases to Helm crds/ (overwrite what helmify generated)
+	cp config/crd/bases/*.yaml dist/chart/crds/ || true
+
+	@echo "✅ CRDs synced to Helm chart"
+
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
