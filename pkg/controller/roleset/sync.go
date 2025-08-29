@@ -192,14 +192,14 @@ func (r *RoleSetReconciler) calculateStatusFromPodSets(ctx context.Context, rs *
 
 	for _, podSet := range podSetList.Items {
 		totalReplicas++
-		if podSet.DeletionTimestamp == nil && podSet.Status.Phase != orchestrationv1alpha1.PodSetPhaseFailed {
+		if isPodSetActive(&podSet) && isPodSetReady(&podSet) {
 			readyReplicas++
 		}
 
 		// Check if PodSet is updated (has current template hash)
 		if podSet.Labels[constants.RoleTemplateHashLabelKey] == currentHash {
 			updatedReplicas++
-			if podSet.Status.Phase == orchestrationv1alpha1.PodSetPhaseReady {
+			if isPodSetReady(&podSet) {
 				updatedReadyReplicas++
 			}
 		}

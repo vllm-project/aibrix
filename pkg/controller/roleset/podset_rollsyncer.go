@@ -442,7 +442,7 @@ func getRolePodSets(ctx context.Context, cli client.Client, namespace, roleSetNa
 func filterActivePodSets(allPodSets []*orchestrationv1alpha1.PodSet) ([]*orchestrationv1alpha1.PodSet, []*orchestrationv1alpha1.PodSet) {
 	var active, inactive []*orchestrationv1alpha1.PodSet
 	for _, podSet := range allPodSets {
-		if podSet.DeletionTimestamp == nil && podSet.Status.Phase != orchestrationv1alpha1.PodSetPhaseFailed {
+		if isPodSetActive(podSet) {
 			active = append(active, podSet)
 		} else {
 			inactive = append(inactive, podSet)
@@ -494,6 +494,11 @@ func filterUpdatedPodSets(podSets []*orchestrationv1alpha1.PodSet, templateHash 
 // isPodSetReady checks if a PodSet is ready
 func isPodSetReady(podSet *orchestrationv1alpha1.PodSet) bool {
 	return podSet.Status.Phase == orchestrationv1alpha1.PodSetPhaseReady
+}
+
+// isPodSetActive checks if a PodSet is active
+func isPodSetActive(podSet *orchestrationv1alpha1.PodSet) bool {
+	return podSet.DeletionTimestamp == nil && podSet.Status.Phase != orchestrationv1alpha1.PodSetPhaseFailed
 }
 
 // createPodSetsInBatch creates multiple PodSets
