@@ -30,6 +30,8 @@ type RoleSetSpec struct {
 	Roles []RoleSpec `json:"roles,omitempty"`
 
 	// +optional
+	// +kubebuilder:validation:Enum={Parallel,Sequential,Interleave}
+	// +kubebuilder:default=Sequential
 	UpdateStrategy RoleSetUpdateStrategyType `json:"updateStrategy,omitempty"`
 
 	// +optional

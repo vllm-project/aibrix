@@ -137,6 +137,8 @@ const (
 type StormServiceUpdateStrategy struct {
 	// Type of update strategy. Can be "RollingUpdate". Default is RollingUpdate.
 	// +optional
+	// +kubebuilder:default=RollingUpdate
+	// +kubebuilder:validation:Enum={RollingUpdate,InPlaceUpdate}
 	Type StormServiceUpdateStrategyType `json:"type,omitempty"`
 
 	// +optional

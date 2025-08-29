@@ -41,6 +41,8 @@ spec:
                       type: string
                     podGroupSize:
                       format: int32
+                      maximum: 100
+                      minimum: 1
                       type: integer
                     replicas:
                       format: int32
@@ -3811,6 +3813,11 @@ spec:
                     type: object
                 type: object
               updateStrategy:
+                default: Sequential
+                enum:
+                - Parallel
+                - Sequential
+                - Interleave
                 type: string
             type: object
           status:

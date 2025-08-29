@@ -164,6 +164,10 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 			}
 
 			if err := r.Create(ctx, pod); err != nil {
+				if apierrors.IsAlreadyExists(err) {
+					klog.InfoS("Pod already exists, skipping", "pod", pod.Name, "podset", podSet.Name)
+					continue
+				}
 				return fmt.Errorf("failed to create pod %s: %w", pod.Name, err)
 			}
 			klog.InfoS("Created pod", "pod", pod.Name, "podset", podSet.Name)
@@ -181,6 +185,10 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 		for i := 0; i < podsToDelete; i++ {
 			podToDelete := activePods[len(activePods)-1-i]
 			if err := r.Delete(ctx, &podToDelete); err != nil {
+				if apierrors.IsNotFound(err) {
+					klog.InfoS("Pod already deleted, skipping", "pod", podToDelete.Name, "podset", podSet.Name)
+					continue
+				}
 				return fmt.Errorf("failed to delete pod %s: %w", podToDelete.Name, err)
 			}
 			klog.InfoS("Deleted pod", "pod", podToDelete.Name, "podset", podSet.Name)

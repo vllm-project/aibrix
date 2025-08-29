@@ -108,6 +108,8 @@ spec:
                               type: string
                             podGroupSize:
                               format: int32
+                              maximum: 100
+                              minimum: 1
                               type: integer
                             replicas:
                               format: int32
@@ -3878,6 +3880,11 @@ spec:
                             type: object
                         type: object
                       updateStrategy:
+                        default: Sequential
+                        enum:
+                        - Parallel
+                        - Sequential
+                        - Interleave
                         type: string
                     type: object
                 type: object
@@ -3894,6 +3901,10 @@ spec:
                     - type: string
                     x-kubernetes-int-or-string: true
                   type:
+                    default: RollingUpdate
+                    enum:
+                    - RollingUpdate
+                    - InPlaceUpdate
                     type: string
                 type: object
             required:
