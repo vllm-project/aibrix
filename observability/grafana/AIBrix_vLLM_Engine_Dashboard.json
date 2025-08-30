@@ -985,7 +985,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(vllm:time_per_output_token_seconds_sum{model_name=\"$model_name\",job=\"${job}\"}[$__rate_interval])\n/\nrate(vllm:time_per_output_token_seconds_count{model_name=\"$model_name\",job=\"${job}\"}[$__rate_interval])",
+          "expr": "rate(vllm:time_to_first_token_seconds_sum{model_name=\"$model_name\",job=\"${job}\"}[$__rate_interval])\n/\nrate(vllm:time_to_first_token_seconds_count{model_name=\"$model_name\",job=\"${job}\"}[$__rate_interval])",
           "hide": false,
           "instant": false,
           "legendFormat": "Mean-{{pod}}",
@@ -1177,7 +1177,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "avg(rate(vllm:time_to_first_token_seconds_sum{model_name=\"$model_name\",job=\"${job}\"}[$__rate_interval])\n/\nrate(vllm:time_to_first_token_seconds_count{model_name=\"$model_name\",job=\"${job}\"}[$__rate_interval]))",
+          "expr": "avg(rate(vllm:time_per_output_token_seconds_sum{model_name=\"$model_name\",job=\"${job}\"}[$__rate_interval])\n/\nrate(vllm:time_per_output_token_seconds_count{model_name=\"$model_name\",job=\"${job}\"}[$__rate_interval]))",
           "hide": false,
           "instant": false,
           "legendFormat": "Average",
