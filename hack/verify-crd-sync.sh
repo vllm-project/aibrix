@@ -92,17 +92,17 @@ verify_crd_sync() {
 # Run verification for each module
 all_ok=true
 
-if ! verify_crd_sync "${BASES_DIR}" "${ORCHESTRATION_DIR}" "orchestration"; then
-  all_ok=false
-fi
+declare -A modules=(
+  ["orchestration"]="${ORCHESTRATION_DIR}"
+  ["autoscaling"]="${AUTOSCALING_DIR}"
+  ["model"]="${MODEL_DIR}"
+)
 
-if ! verify_crd_sync "${BASES_DIR}" "${AUTOSCALING_DIR}" "autoscaling"; then
-  all_ok=false
-fi
-
-if ! verify_crd_sync "${BASES_DIR}" "${MODEL_DIR}" "model"; then
-  all_ok=false
-fi
+for module in "${!modules[@]}"; do
+  if ! verify_crd_sync "${BASES_DIR}" "${modules[$module]}" "${module}"; then
+    all_ok=false
+  fi
+done
 
 if [[ "${all_ok}" == "true" ]]; then
   echo "🎉 All CRD modules are synchronized with bases/."
