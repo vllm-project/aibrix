@@ -48,11 +48,7 @@ spec:
                     operator: NotIn
                     values:
                       - "true"
-      {{- $imagePullSecrets := .Values.gatewayPlugin.imagePullSecrets | default .Values.global.imagePullSecrets }}
-      {{- if $imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml $imagePullSecrets | nindent 8 }}
-      {{- end }}
+      {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.gatewayPlugin.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
       initContainers:
         - name: init-c
           image: {{ .Values.gatewayPlugin.initContainer.image.repository }}:{{ .Values.gatewayPlugin.initContainer.image.tag }}

@@ -18,11 +18,7 @@ spec:
         {{- include "chart.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-metadata-service
     spec:
-      {{- $imagePullSecrets := .Values.metadata.service.imagePullSecrets | default .Values.global.imagePullSecrets }}
-      {{- if $imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml $imagePullSecrets | nindent 8 }}
-      {{- end }}
+      {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.metadata.service.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
       initContainers:
         - name: init-c
           image: {{ .Values.metadata.service.initContainer.image.repository }}:{{ .Values.metadata.service.initContainer.image.tag }}
