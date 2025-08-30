@@ -18,6 +18,11 @@ spec:
         {{- include "chart.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-controller-manager
     spec:
+      {{- $imagePullSecrets := .Values.controllerManager.imagePullSecrets | default .Values.global.imagePullSecrets }}
+      {{- if $imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml $imagePullSecrets | nindent 8 }}
+      {{- end }}
       containers:
       - args:
         - --leader-elect
