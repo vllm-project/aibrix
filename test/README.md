@@ -78,10 +78,10 @@ For CI pipelines that need full cluster setup and teardown:
 
 ```bash
 # Full CI setup - creates Kind cluster and installs AIBrix
+# This can be run via make:
 KIND_E2E=true INSTALL_AIBRIX=true make test-e2e
 
-or 
-
+# Or by directly executing the script:
 ./test/run-e2e-tests.sh
 ```
 

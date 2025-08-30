@@ -203,7 +203,7 @@ Download model locally using Hugging Face CLI:
 
 .. code-block:: bash
 
-   huggingface-cli download facebook/opt-125m
+    huggingface-cli download facebook/opt-125m
 
 Start local cluster with kind (edit ``kind-config.yaml`` to mount your model cache):
 
