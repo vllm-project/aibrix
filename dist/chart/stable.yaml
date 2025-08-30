@@ -1,6 +1,10 @@
 # [Core]: AIBrix Deployment Configurations
+global:
+  imagePullSecrets: []
+
 controllerManager:
   replicas: 1
+  imagePullSecrets: []
   container:
     image:
       repository: aibrix/controller-manager
@@ -30,6 +34,7 @@ controllerManager:
 
 gatewayPlugin:
   replicaCount: 1
+  imagePullSecrets: []
   initContainer:
     image:
       repository: busybox
@@ -77,6 +82,7 @@ gatewayPlugin:
 
 gpuOptimizer:
   replicaCount: 1
+  imagePullSecrets: []
   container:
     image:
       repository: aibrix/runtime
@@ -97,6 +103,7 @@ gpuOptimizer:
 gateway:
   envoyProxy:
     replicas: 1
+    imagePullSecrets: []
     container:
       envoy:
         image: envoyproxy/envoy:v1.33.2
@@ -125,6 +132,7 @@ gateway:
 metadata:
   service:
     replicas: 1
+    imagePullSecrets: []
     initContainer:
       image:
         repository: busybox
@@ -147,6 +155,7 @@ metadata:
     metricRefreshIntervalMs: "3600000"
   redis:
     replicas: 1
+    imagePullSecrets: []
     container:
       image:
         repository: redis
