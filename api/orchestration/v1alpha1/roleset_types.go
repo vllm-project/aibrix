@@ -23,6 +23,8 @@ import (
 
 	// let's temporarily use godel scheduler's definition, consider to switch to community definitions
 	schedv1alpha1 "github.com/kubewharf/godel-scheduler-api/pkg/apis/scheduling/v1alpha1"
+	schedulerpluginsv1aplha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
+	volcanoschedv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
 
 // RoleSetSpec defines the desired state of RoleSet
@@ -35,12 +37,31 @@ type RoleSetSpec struct {
 	UpdateStrategy RoleSetUpdateStrategyType `json:"updateStrategy,omitempty"`
 
 	// +optional
-	SchedulingStrategy SchedulingStrategy `json:"schedulingStrategy,omitempty"`
+	SchedulingStrategy *SchedulingStrategy `json:"schedulingStrategy,omitempty"`
 }
 
-// +enum
+// +kubebuilder:validation:MaxProperties=1
 type SchedulingStrategy struct {
-	PodGroup *schedv1alpha1.PodGroupSpec `json:"podGroup,omitempty"`
+	GodelSchedulingStrategy *GodelSchedulingStrategySpec `json:"godelSchedulingStrategy,omitempty"`
+
+	CoschedulingSchedulingStrategy *CoschedulingSchedulingStrategySpec `json:"coschedulingSchedulingStrategy,omitempty"`
+
+	VolcanoSchedulingStrategy *VolcanoSchedulingStrategySpec `json:"volcanoSchedulingStrategy,omitempty"`
+}
+
+// GodelSchedulingStrategySpec uses godel scheduler's podgroup definition
+type GodelSchedulingStrategySpec struct {
+	schedv1alpha1.PodGroupSpec `json:",inline"`
+}
+
+// CoschedulingSchedulingStrategySpec uses coscheduling scheduler-plugin's podgroup definition
+type CoschedulingSchedulingStrategySpec struct {
+	schedulerpluginsv1aplha1.PodGroupSpec `json:",inline"`
+}
+
+// VolcanoSchedulingStrategySpec uses volcano's podgroup definition
+type VolcanoSchedulingStrategySpec struct {
+	volcanoschedv1beta1.PodGroupSpec `json:",inline"`
 }
 
 // +enum
@@ -94,6 +115,9 @@ type RoleSpec struct {
 	// DisruptionTolerance indicates how many pods can be unavailable during the preemption/eviction.
 	// +optional
 	DisruptionTolerance DisruptionTolerance `json:"disruptionTolerance,omitempty"`
+
+	// +optional
+	SchedulingStrategy *SchedulingStrategy `json:"schedulingStrategy,omitempty"`
 }
 
 // +enum
