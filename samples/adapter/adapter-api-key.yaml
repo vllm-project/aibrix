@@ -11,6 +11,7 @@ spec:
   podSelector:
     matchLabels:
       model.aibrix.ai/name: qwen-coder-1-5b-instruct
+      adapter.model.aibrix.ai/enabled: "true"
   artifactURL: huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora
   additionalConfig:
     api-key: sk-kFJ12nKsFakefVmGpj3QzX65s4RbN2xJqWzPYCjYu7wT3BFake
