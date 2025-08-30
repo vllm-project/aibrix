@@ -38,7 +38,7 @@ Gateway error messages
 * no ready pods
 
 Gateway ReferenceGrant Issue
----------------------------
+----------------------------
 
 When using multi-node inference with RayClusterFleet (as described in the :ref:`multi-node inference guide <distributed_inference>`), you might encounter a 500 error when accessing the model through the Envoy gateway, while direct access via port-forward works fine.
 
