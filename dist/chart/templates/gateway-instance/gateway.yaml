@@ -78,11 +78,7 @@ spec:
                     app.kubernetes.io/name: envoy
                     app.kubernetes.io/component: proxy
                 spec:
-                  {{- $imagePullSecrets := .Values.gateway.envoyProxy.imagePullSecrets | default .Values.global.imagePullSecrets }}
-                  {{- if $imagePullSecrets }}
-                  imagePullSecrets:
-                    {{- toYaml $imagePullSecrets | nindent 20 }}
-                  {{- end }}
+                  {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.gateway.envoyProxy.imagePullSecrets "globalSecrets") | nindent 18 }}
                   containers:
                     - name: envoy
                       image: {{ .Values.gateway.envoyProxy.container.envoy.image }}
