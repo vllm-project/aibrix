@@ -20,6 +20,7 @@ spec:
         {{- include "chart.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-metadata-redis
     spec:
+      {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.metadata.redis.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
       containers:
         - name: master
           image: {{ .Values.metadata.redis.container.image.repository }}:{{ .Values.metadata.redis.container.image.tag }}
