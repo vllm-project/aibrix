@@ -131,6 +131,10 @@ type StormServiceStatus struct {
 	//
 	// +optional
 	RoleStatuses []RoleStatus `json:"roleStatuses,omitempty"`
+
+	// CanaryStatus tracks the progress of canary deployments.
+	// +optional
+	CanaryStatus *CanaryStatus `json:"canaryStatus,omitempty"`
 }
 
 // These are valid conditions of a stormService.
@@ -158,6 +162,10 @@ type StormServiceUpdateStrategy struct {
 
 	// +optional
 	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty" protobuf:"bytes,2,opt,name=maxSurge"`
+
+	// Canary defines the canary deployment strategy for gradual rollouts.
+	// +optional
+	Canary *CanaryUpdateStrategy `json:"canary,omitempty"`
 }
 
 // +enum
@@ -195,6 +203,105 @@ type StormServiceList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []StormService `json:"items"`
+}
+
+// CanaryUpdateStrategy defines the canary deployment configuration
+type CanaryUpdateStrategy struct {
+	// Steps defines the sequence of canary deployment steps
+	Steps []CanaryStep `json:"steps,omitempty"`
+}
+
+// CanaryStep defines a single step in the canary deployment process
+type CanaryStep struct {
+	// SetWeight defines the percentage of traffic/replicas to route to the new version
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	SetWeight *int32 `json:"setWeight,omitempty"`
+
+	// Pause defines a pause in the canary deployment
+	// +optional
+	Pause *PauseStep `json:"pause,omitempty"`
+}
+
+// PauseStep defines pause behavior in canary deployments
+type PauseStep struct {
+	// Duration specifies how long to pause
+	// - String: "30s", "5m", etc. (parsed as time.Duration)
+	// - Int: seconds as integer
+	// - nil: manual pause requiring user intervention
+	// Resume manual pause by setting duration to "0" or 0
+
+	// Duration field is accepted but not implemented.
+	// At this moment, all pauses are manual and require removing the pause condition to resume.
+	// - pause: {} # this is accepted
+	// - pause:    # api accepted but not implemented.
+	//     duration: "60s"
+
+	// +optional
+	Duration *intstr.IntOrString `json:"duration,omitempty"`
+}
+
+// CanaryStatus tracks the progress of a canary deployment
+type CanaryStatus struct {
+	// CurrentStep is the index of the current step in the canary deployment
+	// +optional
+	CurrentStep int32 `json:"currentStep,omitempty"`
+
+	// PauseConditions indicates the reasons why the canary deployment is paused
+	// When paused, the first pause condition's StartTime indicates when the pause began
+	// +optional
+	PauseConditions []PauseCondition `json:"pauseConditions,omitempty"`
+
+	// NOTE: Removed StableRevision and CanaryRevision fields
+	// Use status.CurrentRevision for stable revision
+	// Use status.UpdateRevision for canary revision
+
+	// Phase indicates the current phase of the canary deployment
+	// +optional
+	Phase CanaryPhase `json:"phase,omitempty"`
+
+	// AbortedAt indicates when the canary deployment was aborted
+	// +optional
+	AbortedAt *metav1.Time `json:"abortedAt,omitempty"`
+
+	// Message provides details about the current canary state
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
+// CanaryPhase represents the phase of a canary deployment
+// +enum
+type CanaryPhase string
+
+const (
+	// CanaryPhaseInitializing indicates the canary deployment is starting
+	CanaryPhaseInitializing CanaryPhase = "Initializing"
+	// CanaryPhaseProgressing indicates the canary deployment is progressing through steps
+	CanaryPhaseProgressing CanaryPhase = "Progressing"
+	// CanaryPhasePaused indicates the canary deployment is paused
+	CanaryPhasePaused CanaryPhase = "Paused"
+	// CanaryPhaseCompleted indicates the canary deployment has completed successfully
+	CanaryPhaseCompleted CanaryPhase = "Completed"
+	// CanaryPhaseAborted indicates the canary deployment was aborted/rolled back
+	CanaryPhaseAborted CanaryPhase = "Aborted"
+)
+
+// PauseReason represents the reason for a pause condition
+// +enum
+type PauseReason string
+
+const (
+	// PauseReasonCanaryPauseStep indicates a pause at a canary step
+	PauseReasonCanaryPauseStep PauseReason = "CanaryPauseStep"
+)
+
+// PauseCondition represents a pause condition in the canary deployment
+type PauseCondition struct {
+	// Reason indicates why the canary deployment was paused
+	Reason PauseReason `json:"reason"`
+	// StartTime is when the pause condition was added
+	StartTime metav1.Time `json:"startTime"`
 }
 
 func init() {

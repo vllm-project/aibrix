@@ -19,6 +19,7 @@ package stormservice
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	apps "k8s.io/api/apps/v1"
@@ -49,16 +50,63 @@ func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchest
 	}
 
 	var reconcileErr error
+	var canaryRequeueAfter time.Duration
 	// 1. reconcile the number of roleSets to meet the spec.Replicas, both currentRevision and updateRevision
 	if scaling, err := r.scaling(ctx, stormService, current, currentRevision, updateRevision); err != nil {
 		r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, ScalingEventType, "scaling error %s", err.Error())
 		reconcileErr = err
-	} else if !stormService.Spec.Paused && !scaling { // skip rollout when paused and in scaling
-		// 2. check the rollout progress
-		reconcileErr = r.rollout(ctx, stormService, current, currentRevision, updateRevision)
-		if reconcileErr != nil {
-			r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, RolloutEventType, "rollout error %s", reconcileErr.Error())
+	} else if !scaling { // skip rollout when in scaling
+		// 2. check if canary deployment is enabled
+		canaryEnabled := r.isCanaryEnabled(stormService) && currentRevision.Name != updateRevision.Name
+		canaryActive := canaryEnabled && stormService.Status.CanaryStatus != nil
+
+		if canaryEnabled {
+			// Handle canary deployment
+			if result, err := r.processCanaryUpdate(ctx, stormService, currentRevision.Name, updateRevision.Name); err != nil {
+				r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, "CanaryError", "canary deployment error: %s", err.Error())
+				reconcileErr = err
+			} else if result.Requeue || result.RequeueAfter > 0 {
+				// Don't return early during canary - let updateStatus run to get correct replica counts
+				// Store requeue time and return it after status update
+				canaryRequeueAfter = result.RequeueAfter
+			}
+			// Canary completed, continue with normal rollout logic
 		}
+
+		if canaryActive {
+			// Canary is still in progress, but we still need to trigger rollout with canary limits
+			if !stormService.Spec.Paused && stormService.Status.CanaryStatus != nil &&
+				stormService.Status.CanaryStatus.Phase != orchestrationv1alpha1.CanaryPhasePaused {
+				rolloutErr := r.canaryRollout(ctx, stormService, current, currentRevision, updateRevision)
+				if rolloutErr != nil {
+					klog.Errorf("Canary rollout error for %s/%s: %v", stormService.Namespace, stormService.Name, rolloutErr)
+					r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, RolloutEventType, "canary rollout error %s", rolloutErr.Error())
+				}
+			}
+		} else if !stormService.Spec.Paused {
+			// 2. check the rollout progress (traditional rollout or post-canary cleanup)
+			reconcileErr = r.rollout(ctx, stormService, current, currentRevision, updateRevision)
+			if reconcileErr != nil {
+				r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, RolloutEventType, "rollout error %s", reconcileErr.Error())
+			}
+		}
+	} else if scaling && r.isCanaryEnabled(stormService) && stormService.Status.CanaryStatus != nil {
+		// Scaling occurred during canary deployment - need to recalculate weight distribution
+		klog.Infof("Scaling occurred during canary deployment for StormService %s/%s, recalculating weight distribution",
+			stormService.Namespace, stormService.Name)
+
+		// Reapply current weight with new replica count
+		currentWeight := r.getCurrentWeight(stormService)
+		if currentWeight > 0 {
+			err := r.applyCanaryWeight(ctx, stormService, currentWeight,
+				stormService.Status.CurrentRevision, stormService.Status.UpdateRevision)
+			if err != nil {
+				klog.Errorf("Failed to recalculate canary weight after scaling: %v", err)
+				r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, "CanaryScalingError",
+					"Failed to recalculate canary weight after scaling: %v", err)
+			}
+		}
+		return DefaultRequeueAfter, nil
 	}
 	// 3. update status
 	if ready, err := r.updateStatus(ctx, stormService, reconcileErr, currentRevision, updateRevision, collisionCount); err != nil {
@@ -66,6 +114,10 @@ func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchest
 		return 0, err
 	} else if !ready {
 		return DefaultRequeueAfter, nil
+	}
+	// If canary requested requeue, honor that; otherwise complete normally
+	if canaryRequeueAfter > 0 {
+		return canaryRequeueAfter, nil
 	}
 	return 0, nil
 }
@@ -175,7 +227,9 @@ func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, curr
 			// TODO: currentRevisionSets may actually contain multiple revisions. For now, we treat them all as currentRevision.
 			//       Revisit this logic for finer handling if needed in the future.
 			updatedRevisionSets, currentRevisionSets := filterRoleSetByRevision(activeRoleSets, updatedRevision)
-			expectCurrentReplica, expectUpdatedReplica := calculateReplicas(expectReplica, stormService.Status.CurrentReplicas, stormService.Status.UpdatedReplicas)
+			baseCurrent := int32(len(currentRevisionSets))
+			baseUpdated := int32(len(updatedRevisionSets))
+			expectCurrentReplica, expectUpdatedReplica := calculateReplicas(expectReplica, baseCurrent, baseUpdated)
 			klog.Infof("scaling out stormservice %s/%s, current revision %s, updated revision %s, currentReplica %d, updatedReplica %d, expectCurrentReplica: %d, expectUpdatedReplica: %d", stormService.Namespace, stormService.Name, currentRevision, updatedRevision, len(currentRevisionSets), len(updatedRevisionSets), expectCurrentReplica, expectUpdatedReplica)
 			// For current revision, all roles use currentCR
 			currentRoleRevisions := computeRoleRevisions(current, current, currentCR, currentCR)
@@ -194,7 +248,7 @@ func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, curr
 		}
 	} else if diff > 0 {
 		// 2. scale in
-		if currentRevision == updatedRevision || !stormService.Spec.Paused {
+		if currentRevision == updatedRevision || (!stormService.Spec.Paused && !r.isCanaryEnabled(stormService)) {
 			// 2.1 Two cases fall into this branch:
 			// 2.1.1 Only one revision exists and the number of RoleSets exceeds spec.Replicas — scale in by 'diff' based on readiness.
 			// 2.1.2 Rollout is in progress and new RoleSets are already created — scale in old RoleSets first based on maxUnavailable.
@@ -245,8 +299,15 @@ func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, curr
 			// 2.2.2 Continue scaling in ready RoleSets proportionally
 			updatedReady, currentReady := filterRoleSetByRevision(ready, updatedRevision)
 			expectCurrentReplica, expectUpdatedReplica := calculateReplicas(expectReplica, int32(len(currentReady)), int32(len(updatedReady)))
-			toDelete = append(toDelete, currentReady[:len(currentReady)-int(expectCurrentReplica)]...)
-			toDelete = append(toDelete, updatedReady[:len(updatedReady)-int(expectUpdatedReplica)]...)
+			curN := len(currentReady) - int(expectCurrentReplica)
+			if curN > 0 {
+				toDelete = append(toDelete, currentReady[:curN]...)
+			}
+			updN := len(updatedReady) - int(expectUpdatedReplica)
+			if updN > 0 {
+				toDelete = append(toDelete, updatedReady[:updN]...)
+			}
+
 			count, err := r.deleteRoleSet(toDelete)
 			if err != nil {
 				return false, err
@@ -280,6 +341,65 @@ func (r *StormServiceReconciler) rollout(ctx context.Context, stormService, curr
 		return r.rollingUpdate(allRoleSets, stormService, current, currentCR, updateCR)
 	case orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType:
 		return r.inPlaceUpdate(allRoleSets, stormService, current, currentCR, updateCR)
+	default:
+		return fmt.Errorf("unexpected stormService strategy type: %s", stormService.Spec.UpdateStrategy.Type)
+	}
+}
+
+// canaryRollout handles rollout with canary deployment limits
+func (r *StormServiceReconciler) canaryRollout(ctx context.Context, stormService, current *orchestrationv1alpha1.StormService, currentCR, updateCR *apps.ControllerRevision) error {
+	if stormService.Status.CanaryStatus == nil {
+		// No canary status, use normal rollout
+		return r.rollout(ctx, stormService, current, currentCR, updateCR)
+	}
+
+	updatedRevision := updateCR.Name
+	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
+	if err != nil {
+		return err
+	}
+
+	var canaryLimit int32
+	if r.isReplicaMode(stormService) {
+		// In replica mode, calculate achievable canary limit based on constraints
+		totalReplicas := int32(1)
+		if stormService.Spec.Replicas != nil {
+			totalReplicas = *stormService.Spec.Replicas
+		}
+		currentWeight := r.getCurrentWeight(stormService)
+		desiredCanaryReplicas := int32(math.Ceil(float64(totalReplicas) * float64(currentWeight) / 100.0))
+		canaryLimit = r.calculateAchievableCanaryReplicas(stormService, allRoleSets, updatedRevision, desiredCanaryReplicas)
+	} else {
+		// In pooled mode, we need to update specific roles based on canary counts
+		// For now, we'll use a simplified approach
+		totalReplicas := int32(1)
+		if stormService.Spec.Replicas != nil {
+			totalReplicas = *stormService.Spec.Replicas
+		}
+		currentWeight := r.getCurrentWeight(stormService)
+		canaryLimit = int32(math.Ceil(float64(totalReplicas) * float64(currentWeight) / 100.0))
+	}
+
+	klog.Infof("Canary rollout for StormService %s/%s: limiting updates to %d RoleSets",
+		stormService.Namespace, stormService.Name, canaryLimit)
+
+	// Check how many RoleSets are already on the updated revision
+	active, _ := filterTerminatingRoleSets(allRoleSets)
+	updated, _ := filterRoleSetByRevision(active, updatedRevision)
+	if len(updated) >= int(canaryLimit) {
+		// Already have enough updated RoleSets for this canary step
+		return nil
+	}
+
+	// Use modified rollout logic that respects canary limits
+	switch stormService.Spec.UpdateStrategy.Type {
+	case "":
+		// By default use RollingUpdate strategy
+		fallthrough
+	case orchestrationv1alpha1.RollingUpdateStormServiceStrategyType:
+		return r.canaryRollingUpdate(allRoleSets, stormService, current, currentCR, updateCR, canaryLimit)
+	case orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType:
+		return r.canaryInPlaceUpdate(allRoleSets, stormService, current, currentCR, updateCR, canaryLimit)
 	default:
 		return fmt.Errorf("unexpected stormService strategy type: %s", stormService.Spec.UpdateStrategy.Type)
 	}
@@ -336,6 +456,111 @@ func (r *StormServiceReconciler) rollingUpdate(allRoleSets []*orchestrationv1alp
 	return nil
 }
 
+// canaryRollingUpdate: rolling update logic for canary deployment with limits
+func (r *StormServiceReconciler) canaryRollingUpdate(allRoleSets []*orchestrationv1alpha1.RoleSet, stormService, current *orchestrationv1alpha1.StormService, currentCR, updateCR *apps.ControllerRevision, canaryLimit int32) error {
+	updatedRevision := updateCR.Name
+	minAvailable := MinAvailable(stormService)
+	activeRoleSets, _ := filterTerminatingRoleSets(allRoleSets)
+	ready, _ := filterReadyRoleSets(activeRoleSets)
+	readyCount := len(ready)
+	maxSurge := MaxSurge(stormService)
+
+	klog.Infof("canary rolling update for stormservice %s/%s, updatedRevision %s, canaryLimit %d, currReady %d, minAvailable %d, maxSurge %d",
+		stormService.Namespace, stormService.Name, updatedRevision, canaryLimit, len(ready), minAvailable, maxSurge)
+
+	// 1. delete outdated roleset, follow the max unavailable rule
+	updated, outdated := filterRoleSetByRevision(activeRoleSets, updatedRevision)
+	sortRoleSetByRevision(outdated, updatedRevision)
+
+	// For canary, we only delete if we have excess updated RoleSets beyond the canary limit
+	var toDelete []*orchestrationv1alpha1.RoleSet
+	if len(updated) > int(canaryLimit) {
+		// Delete excess updated RoleSets
+		for i := int(canaryLimit); i < len(updated) && readyCount > int(minAvailable); i++ {
+			if utils.IsRoleSetReady(updated[i]) {
+				toDelete = append(toDelete, updated[i])
+				readyCount--
+			}
+		}
+	}
+
+	_, err := r.deleteRoleSet(toDelete)
+	if err != nil {
+		return err
+	}
+
+	// 2. create roleset up to canary limit, follow the max surge rule
+	var totalReplicas int
+	if stormService.Spec.Replicas != nil {
+		totalReplicas = int(*stormService.Spec.Replicas)
+	}
+
+	// Calculate how many more updated RoleSets we need to reach canary limit
+	neededUpdated := int(canaryLimit) - len(updated)
+	if neededUpdated <= 0 {
+		return nil // Already have enough updated RoleSets
+	}
+
+	// Respect max surge rule, but limit to canary target
+	surge := utils.MinInt(totalReplicas+int(maxSurge)-len(allRoleSets), neededUpdated)
+	if surge < 0 {
+		surge = 0
+	}
+
+	if surge == 0 {
+		notReadyOutdated := make([]*orchestrationv1alpha1.RoleSet, 0, len(outdated))
+		readyOutdated := make([]*orchestrationv1alpha1.RoleSet, 0, len(outdated))
+		for _, rs := range outdated {
+			if utils.IsRoleSetReady(rs) {
+				readyOutdated = append(readyOutdated, rs)
+			} else {
+				notReadyOutdated = append(notReadyOutdated, rs)
+			}
+		}
+		need := neededUpdated
+		for _, rs := range notReadyOutdated {
+			if need <= 0 {
+				break
+			}
+			toDelete = append(toDelete, rs)
+			need--
+		}
+		for _, rs := range readyOutdated {
+			if need <= 0 {
+				break
+			}
+			if readyCount <= int(minAvailable) {
+				break
+			}
+			toDelete = append(toDelete, rs)
+			readyCount--
+			need--
+		}
+		if len(toDelete) > 0 {
+			if _, err := r.deleteRoleSet(toDelete); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+
+	// Compute per-role revisions for canary rolling update
+	roleRevisions := computeRoleRevisions(current, stormService, currentCR, updateCR)
+	_, err = r.createRoleSet(stormService, surge, updatedRevision, roleRevisions)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// canaryInPlaceUpdate: in-place update logic for canary deployment
+func (r *StormServiceReconciler) canaryInPlaceUpdate(allRoleSets []*orchestrationv1alpha1.RoleSet, stormService, current *orchestrationv1alpha1.StormService, currentCR, updateCR *apps.ControllerRevision, canaryLimit int32) error {
+	// For now, fall back to regular in-place update logic
+	// TODO: Implement canary-specific in-place update logic
+	return r.inPlaceUpdate(allRoleSets, stormService, current, currentCR, updateCR)
+}
+
 // inPlaceUpdate: logic for in-place updates in pooled mode with per-role revision tracking
 // Propagate changes from the StormService to all associated RoleSets
 func (r *StormServiceReconciler) inPlaceUpdate(allRoleSets []*orchestrationv1alpha1.RoleSet, stormService, current *orchestrationv1alpha1.StormService, currentCR, updateCR *apps.ControllerRevision) error {
@@ -350,12 +575,12 @@ func (r *StormServiceReconciler) inPlaceUpdate(allRoleSets []*orchestrationv1alp
 	return nil
 }
 
-func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService *orchestrationv1alpha1.StormService, reconcileErr error, currentRevision *apps.ControllerRevision, updateRevision *apps.ControllerRevision, collisionCount int32) (bool, error) {
+// nolint:gocyclo // This function is complex by design; refactor later.
+func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService *orchestrationv1alpha1.StormService,
+	reconcileErr error, currentRevision *apps.ControllerRevision, updateRevision *apps.ControllerRevision, collisionCount int32) (bool, error) {
 	checkpoint := stormService.Status.DeepCopy()
 
 	stormService.Status.ObservedGeneration = stormService.Generation
-	stormService.Status.CurrentRevision = currentRevision.Name
-	stormService.Status.UpdateRevision = updateRevision.Name
 	stormService.Status.CollisionCount = &collisionCount
 	if reconcileErr != nil {
 		condition := []orchestrationv1alpha1.Condition{
@@ -365,6 +590,16 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 		err := r.Client.Status().Update(ctx, stormService)
 		return false, err
 	}
+
+	curName := ""
+	if currentRevision != nil {
+		curName = currentRevision.Name
+	}
+	updName := ""
+	if updateRevision != nil {
+		updName = updateRevision.Name
+	}
+
 	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
 	if err != nil {
 		return false, err
@@ -373,21 +608,99 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 	stormService.Status.CurrentReplicas = 0
 	stormService.Status.UpdatedReplicas = 0
 	stormService.Status.UpdatedReadyReplicas = 0
-	for _, rs := range allRoleSets {
-		if isRoleSetMatchRevision(rs, currentRevision.Name) {
-			stormService.Status.CurrentReplicas++
+
+	// During canary deployment, calculate replicas based on revision distribution
+	if r.isCanaryEnabled(stormService) && stormService.Status.CanaryStatus != nil {
+		if curName != "" {
+			stormService.Status.CurrentRevision = curName
 		}
-		if isRoleSetMatchRevision(rs, updateRevision.Name) && isAllRoleUpdated(rs) {
-			stormService.Status.UpdatedReplicas++
+
+		if updName != "" {
+			stormService.Status.UpdateRevision = updName
 		}
-		if isRoleSetMatchRevision(rs, updateRevision.Name) && utils.IsRoleSetReady(rs) && isAllRoleUpdatedAndReady(rs) {
-			stormService.Status.UpdatedReadyReplicas++
+
+		// Filter active (non-terminating) RoleSets for accurate counts
+		activeRoleSets, _ := filterTerminatingRoleSets(allRoleSets)
+
+		// use persist revision from status, if it's empty, fallback to parameter
+		curRev := stormService.Status.CurrentRevision
+		if curRev == "" {
+			curRev = curName
+		}
+		updRev := stormService.Status.UpdateRevision
+		if updRev == "" {
+			updRev = updName
+		}
+
+		// use persist revision value for statistics
+		currentRoleSets, _ := filterRoleSetByRevision(activeRoleSets, curRev)
+		stormService.Status.CurrentReplicas = int32(len(currentRoleSets))
+
+		updatedRoleSets, _ := filterRoleSetByRevision(activeRoleSets, updRev)
+		stormService.Status.UpdatedReplicas = int32(len(updatedRoleSets))
+
+		// Count ready updated RoleSets
+		readyUpdated, _ := filterReadyRoleSets(updatedRoleSets)
+		stormService.Status.UpdatedReadyReplicas = int32(len(readyUpdated))
+	} else {
+		if stormService.Status.CurrentRevision == "" && curName != "" {
+			stormService.Status.CurrentRevision = curName
+		}
+
+		if stormService.Status.UpdateRevision == "" && updName != "" {
+			stormService.Status.UpdateRevision = updName
+		}
+
+		// Standard non-canary logic
+		for _, rs := range allRoleSets {
+			if isRoleSetMatchRevision(rs, currentRevision.Name) {
+				stormService.Status.CurrentReplicas++
+			}
+			if isRoleSetMatchRevision(rs, updateRevision.Name) && isAllRoleUpdated(rs) {
+				stormService.Status.UpdatedReplicas++
+			}
+			if isRoleSetMatchRevision(rs, updateRevision.Name) && utils.IsRoleSetReady(rs) && isAllRoleUpdatedAndReady(rs) {
+				stormService.Status.UpdatedReadyReplicas++
+			}
 		}
 	}
-	if stormService.Status.CurrentReplicas == 0 {
-		stormService.Status.CurrentReplicas = stormService.Status.UpdatedReplicas
-		stormService.Status.CurrentRevision = stormService.Status.UpdateRevision
+
+	// status won't be changed in canary progress, leave it to completeCanary() for canary promotion
+	if stormService.Status.CanaryStatus == nil {
+		// Promote update revision to current only after all replicas are updated and ready
+		allOnUpdateAndReady :=
+			stormService.Status.UpdatedReplicas == stormService.Status.Replicas &&
+				stormService.Status.UpdatedReadyReplicas == stormService.Status.Replicas
+		if allOnUpdateAndReady {
+			// Once all replicas are on the update revision, promote it to current
+			stormService.Status.CurrentRevision = stormService.Status.UpdateRevision
+
+			// Recalculate status fields with the new current revision
+			stormService.Status.CurrentReplicas = 0
+			stormService.Status.UpdatedReplicas = 0
+			stormService.Status.UpdatedReadyReplicas = 0
+			for _, rs := range allRoleSets {
+				if isRoleSetMatchRevision(rs, stormService.Status.CurrentRevision) {
+					stormService.Status.CurrentReplicas++
+				}
+				if isRoleSetMatchRevision(rs, stormService.Status.UpdateRevision) && isAllRoleUpdated(rs) {
+					stormService.Status.UpdatedReplicas++
+				}
+				if isRoleSetMatchRevision(rs, stormService.Status.UpdateRevision) && utils.IsRoleSetReady(rs) && isAllRoleUpdatedAndReady(rs) {
+					stormService.Status.UpdatedReadyReplicas++
+				}
+			}
+		}
+	} else {
+		if stormService.Status.CurrentRevision == "" {
+			stormService.Status.CurrentRevision = currentRevision.Name
+		}
+
+		if stormService.Status.UpdateRevision == "" {
+			stormService.Status.UpdateRevision = updateRevision.Name
+		}
 	}
+
 	ready, notReady := filterReadyRoleSets(allRoleSets)
 	stormService.Status.ReadyReplicas = int32(len(ready))
 	stormService.Status.NotReadyReplicas = int32(len(notReady))
@@ -397,8 +710,8 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 		specReplica = *stormService.Spec.Replicas
 	}
 	stormServiceReady := stormService.Status.ReadyReplicas >= specReplica &&
-		stormService.Status.UpdatedReplicas == *stormService.Spec.Replicas &&
-		stormService.Status.Replicas == *stormService.Spec.Replicas &&
+		stormService.Status.UpdatedReplicas == specReplica &&
+		stormService.Status.Replicas == specReplica &&
 		stormService.Status.CurrentRevision == stormService.Status.UpdateRevision
 	if stormServiceReady {
 		stormService.Status.Conditions = []orchestrationv1alpha1.Condition{
