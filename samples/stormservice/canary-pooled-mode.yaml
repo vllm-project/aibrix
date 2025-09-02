@@ -1,0 +1,81 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: canary-pooled-demo
+  namespace: default
+spec:
+  # Pooled mode: 1 replica for canary distribution within roles
+  replicas: 1
+  stateful: true
+  
+  selector:
+    matchLabels:
+      app: canary-pooled-demo
+  
+  updateStrategy:
+    type: InPlaceUpdate
+    canary:
+      steps:
+        # Step 1: Set 25% traffic to new version
+        - setWeight: 25
+        # Step 2: Automatic pause for 60 seconds
+        - pause:
+            duration: "60s"
+        # Step 3: Set 50% traffic to new version
+        - setWeight: 50
+        # Step 4: Longer automatic pause for 120 seconds
+        - pause:
+            duration: "120s"
+        # Step 5: Set 75% traffic to new version
+        - setWeight: 75
+        # Step 6: Manual pause - requires user intervention
+        - pause: {}
+        # Step 7: Complete rollout at 100%
+        - setWeight: 100
+
+  template:
+    metadata:
+      labels:
+        app: canary-pooled-demo
+    spec:
+      roles:
+        - name: prefill
+          replicas: 2
+          podGroupSize: 2
+          stateful: true
+          template:
+            spec:
+              containers:
+                - name: busybox
+                  image: busybox:1.35
+                  imagePullPolicy: IfNotPresent
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      echo "Prefill role started: ${PODSET_NAME}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5000"
+                      echo "Pod IP: $(hostname -i)"
+                      echo "Role: prefill (pooled mode)"
+                      while true; do
+                        echo "$(date): Prefill processing requests..."
+                        sleep 30
+                      done
+        - name: decode
+          replicas: 2
+          podGroupSize: 2
+          stateful: true
+          template:
+            spec:
+              containers:
+                - name: busybox
+                  image: busybox:1.35
+                  imagePullPolicy: IfNotPresent
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      echo "Decode role started: ${PODSET_NAME}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5001"
+                      echo "Pod IP: $(hostname -i)"
+                      echo "Role: decode (pooled mode)"
+                      while true; do
+                        echo "$(date): Decode processing requests..."
+                        sleep 30
+                      done
