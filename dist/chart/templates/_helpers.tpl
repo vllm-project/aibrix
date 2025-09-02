@@ -51,3 +51,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- $d.found -}}
 {{- end }}
+
+{{/*
+Renders imagePullSecrets block
+*/}}
+{{- define "chart.imagePullSecrets" -}}
+{{- $secrets := .componentSecrets | default .globalSecrets -}}
+{{- if $secrets -}}
+imagePullSecrets:
+{{- toYaml $secrets | nindent 2 }}
+{{- end -}}
+{{- end -}}

@@ -38,10 +38,10 @@ var (
 // MakeHPA creates an HPA resource from a PodAutoscaler resource.
 func makeHPA(pa *pav1.PodAutoscaler) (*autoscalingv2.HorizontalPodAutoscaler, error) {
 	minReplicas, maxReplicas := pa.Spec.MinReplicas, pa.Spec.MaxReplicas
-	// TODO: add some validation logics, has to be larger than minReplicas
 	if maxReplicas == 0 {
 		maxReplicas = math.MaxInt32 // Set default to no upper limit if not specified
 	}
+
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        fmt.Sprintf("%s-hpa", pa.Name),
@@ -63,7 +63,12 @@ func makeHPA(pa *pav1.PodAutoscaler) (*autoscalingv2.HorizontalPodAutoscaler, er
 	}
 	if minReplicas != nil && *minReplicas > 0 {
 		hpa.Spec.MinReplicas = minReplicas
+		// if minReplicas exist, check validation of minReplicas and maxReplicas
+		if maxReplicas < *minReplicas {
+			return nil, fmt.Errorf("HPA Strategy: maxReplicas %d must be equal or larger than minReplicas %d", maxReplicas, *minReplicas)
+		}
 	}
+
 	source, err := pav1.GetPaMetricSources(*pa)
 	if err != nil {
 		return nil, fmt.Errorf("failed to GetPaMetricSources: %w", err)

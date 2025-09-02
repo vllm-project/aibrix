@@ -20,6 +20,7 @@ spec:
     spec:
       serviceAccountName: aibrix-gpu-optimizer
       automountServiceAccountToken: true
+      {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.gpuOptimizer.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
       containers:
         - name: gpu-optimizer
           image: {{ .Values.gpuOptimizer.container.image.repository }}:{{ .Values.gpuOptimizer.container.image.tag }}
