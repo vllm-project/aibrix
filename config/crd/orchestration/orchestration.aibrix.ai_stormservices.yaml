@@ -3889,6 +3889,24 @@ spec:
                 type: object
               updateStrategy:
                 properties:
+                  canary:
+                    properties:
+                      steps:
+                        items:
+                          properties:
+                            pause:
+                              properties:
+                                duration:
+                                  type: string
+                              type: object
+                            setWeight:
+                              format: int32
+                              maximum: 100
+                              minimum: 0
+                              type: integer
+                          type: object
+                        type: array
+                    type: object
                   maxSurge:
                     anyOf:
                     - type: integer
@@ -3912,6 +3930,24 @@ spec:
             type: object
           status:
             properties:
+              canaryStatus:
+                properties:
+                  canaryRevision:
+                    type: string
+                  currentStep:
+                    format: int32
+                    type: integer
+                  currentWeight:
+                    format: int32
+                    type: integer
+                  pausedAt:
+                    format: date-time
+                    type: string
+                  phase:
+                    type: string
+                  stableRevision:
+                    type: string
+                type: object
               collisionCount:
                 format: int32
                 type: integer
