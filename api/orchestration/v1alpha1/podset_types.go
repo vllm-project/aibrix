@@ -36,11 +36,11 @@ type PodSetSpec struct {
 	// +optional
 	Stateful bool `json:"stateful,omitempty"`
 
-	// RecreateStrategy defines how pods in the set are recreated when failures happen
+	// RecoveryPolicy defines how pods in the set are recreated when failures happen
 	// +kubebuilder:default=MissingOnly
 	// +kubebuilder:validation:Enum={MissingOnly,FullRecreate}
 	// +optional
-	RecreateStrategy PodRecreateStrategy `json:"recreateStrategy,omitempty"`
+	RecoveryPolicy PodRecoveryPolicy `json:"recoveryPolicy,omitempty"`
 }
 
 // PodSetStatus defines the observed state of PodSet
@@ -79,16 +79,16 @@ const (
 	PodSetPhaseFailed PodSetPhase = "Failed"
 )
 
-// PodRecreateStrategy defines how a PodSet handles pod recreation when pods are lost or fail.
+// PodRecoveryPolicy defines how a PodSet handles pod recreation when pods are lost or fail.
 // +enum
-type PodRecreateStrategy string
+type PodRecoveryPolicy string
 
 const (
-	// MissingOnlyPodRecreateStrategy means only missing pods (by index) will be recreated.
-	MissingOnlyPodRecreateStrategy PodRecreateStrategy = "MissingOnly"
+	// ReplaceUnhealthy means only missing pods (by index) will be recreated.
+	ReplaceUnhealthy PodRecoveryPolicy = "ReplaceUnhealthy"
 
-	// FullRecreatePodRecreateStrategy means if any pod is missing, all pods in the set will be deleted, and then all pods will be recreated.
-	FullRecreatePodRecreateStrategy PodRecreateStrategy = "FullRecreate"
+	// RecreatePodRecreateStrategy means if any pod is missing, all pods in the set will be deleted, and then all pods will be recreated.
+	RecreatePodRecreateStrategy PodRecoveryPolicy = "Recreate"
 )
 
 // PodSet conditions

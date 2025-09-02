@@ -31,7 +31,7 @@ spec:
                 maximum: 100
                 minimum: 2
                 type: integer
-              recreateStrategy:
+              recoveryPolicy:
                 default: MissingOnly
                 enum:
                 - MissingOnly
