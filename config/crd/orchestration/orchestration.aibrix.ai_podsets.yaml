@@ -32,10 +32,10 @@ spec:
                 minimum: 2
                 type: integer
               recoveryPolicy:
-                default: MissingOnly
+                default: ReplaceUnhealthy
                 enum:
-                - MissingOnly
-                - FullRecreate
+                - ReplaceUnhealthy
+                - Recreate
                 type: string
               stateful:
                 type: boolean
