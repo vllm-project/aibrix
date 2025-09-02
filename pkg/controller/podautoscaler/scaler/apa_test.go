@@ -32,9 +32,6 @@ import (
 
 // TestHcpaScale tests the APA behavior. For now, APA implements HCPA algorithm.
 func TestAPAScale(t *testing.T) {
-	// TODO (jiaxin.shan): make the logics to enable the test later.
-	t.Skip("Skipping this test")
-
 	readyPodCount := 5
 	spec := NewApaScalingContext()
 	metricsFetcher := metrics.NewRestMetricsFetcher()
@@ -80,22 +77,48 @@ func TestAPAScale(t *testing.T) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	// test 1:
-	result := apaScaler.Scale(readyPodCount, metricKey, now)
-	// recent rapid rising metric value make scaler adapt turn on panic mode
-	if result.DesiredPodCount != 10 {
-		t.Errorf("result.DesiredPodCount = 10, got %d", result.DesiredPodCount)
+	testCases := []struct {
+		name                 string
+		targetValue          float64
+		readyPodCount        int
+		expectedDesiredCount int32
+	}{
+		{
+			name:                 "should not scale when within tolerance",
+			targetValue:          5,
+			readyPodCount:        readyPodCount,
+			expectedDesiredCount: 5,
+		},
+		{
+			name:                 "should scale up when above tolerance",
+			targetValue:          4,
+			readyPodCount:        readyPodCount,
+			expectedDesiredCount: 7,
+		},
+		{
+			name:                 "should scale down when below tolerance",
+			targetValue:          10,
+			readyPodCount:        readyPodCount,
+			expectedDesiredCount: 3,
+		},
+		{
+			name:                 "should return 0 when readyPodCount is 0",
+			targetValue:          10,
+			readyPodCount:        0,
+			expectedDesiredCount: 0,
+		},
 	}
 
-	// test 2:
-	// 1.1 means APA won't scale up unless current usage > TargetValue * (1+1.1), i.e. 210%
-	// In this test case with UpFluctuationTolerance = 1.1, APA will not scale up.
-	apaScaler.scalingContext.UpFluctuationTolerance = 1.1
-	result = apaScaler.Scale(readyPodCount, metricKey, now)
-	// recent rapid rising metric value make scaler adapt turn on panic mode
-	if result.DesiredPodCount != int32(readyPodCount) {
-		t.Errorf("result should remain previous replica = %d, but got %d", readyPodCount, result.DesiredPodCount)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			apaScaler.scalingContext.BaseScalingContext.TargetValue = tc.targetValue
+			result := apaScaler.Scale(tc.readyPodCount, metricKey, now)
+			if result.DesiredPodCount != tc.expectedDesiredCount {
+				t.Errorf("expected DesiredPodCount = %d, but got %d", tc.expectedDesiredCount, result.DesiredPodCount)
+			}
+		})
 	}
+
 }
 
 func TestApaUpdateContext(t *testing.T) {
