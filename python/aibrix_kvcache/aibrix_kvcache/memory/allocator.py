@@ -110,9 +110,9 @@ class ManagedMemoryRegion(MemoryRegion):
         allocator: "TensorPoolAllocator",
         slab: torch.Tensor,
         addr: int,
-        len: int,
+        length: int,
     ) -> None:
-        super().__init__(slab=slab, addr=addr, len=len)
+        super().__init__(slab=slab, addr=addr, length=length)
         assert allocator is not None
         self.allocator = allocator
         self._init_meta()
