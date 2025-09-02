@@ -37,8 +37,8 @@ type PodSetSpec struct {
 	Stateful bool `json:"stateful,omitempty"`
 
 	// RecoveryPolicy defines how pods in the set are recreated when failures happen
-	// +kubebuilder:default=MissingOnly
-	// +kubebuilder:validation:Enum={MissingOnly,FullRecreate}
+	// +kubebuilder:default=ReplaceUnhealthy
+	// +kubebuilder:validation:Enum={ReplaceUnhealthy,Recreate}
 	// +optional
 	RecoveryPolicy PodRecoveryPolicy `json:"recoveryPolicy,omitempty"`
 }
