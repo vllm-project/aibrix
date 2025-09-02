@@ -119,6 +119,10 @@ func (r *StormServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	} else if !controllerutil.ContainsFinalizer(stormService, StormServiceFinalizer) {
 		if err := utils.Patch(ctx, r.Client, stormService, patch.AddFinalizerPatch(stormService, StormServiceFinalizer)); err != nil {
 			klog.Errorf("add finalizer failed: %v, stormService %s", err, req.NamespacedName.String())
+			// If context is canceled, don't requeue
+			if ctx.Err() != nil {
+				return ctrl.Result{}, nil // Return nil error to avoid requeue
+			}
 			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
 		}
 	}

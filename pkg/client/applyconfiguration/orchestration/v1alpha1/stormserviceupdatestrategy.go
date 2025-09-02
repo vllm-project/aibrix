@@ -28,6 +28,7 @@ type StormServiceUpdateStrategyApplyConfiguration struct {
 	Type           *v1alpha1.StormServiceUpdateStrategyType `json:"type,omitempty"`
 	MaxUnavailable *intstr.IntOrString                      `json:"maxUnavailable,omitempty"`
 	MaxSurge       *intstr.IntOrString                      `json:"maxSurge,omitempty"`
+	Canary         *CanaryUpdateStrategyApplyConfiguration  `json:"canary,omitempty"`
 }
 
 // StormServiceUpdateStrategyApplyConfiguration constructs a declarative configuration of the StormServiceUpdateStrategy type for use with
@@ -57,5 +58,13 @@ func (b *StormServiceUpdateStrategyApplyConfiguration) WithMaxUnavailable(value 
 // If called multiple times, the MaxSurge field is set to the value of the last call.
 func (b *StormServiceUpdateStrategyApplyConfiguration) WithMaxSurge(value intstr.IntOrString) *StormServiceUpdateStrategyApplyConfiguration {
 	b.MaxSurge = &value
+	return b
+}
+
+// WithCanary sets the Canary field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Canary field is set to the value of the last call.
+func (b *StormServiceUpdateStrategyApplyConfiguration) WithCanary(value *CanaryUpdateStrategyApplyConfiguration) *StormServiceUpdateStrategyApplyConfiguration {
+	b.Canary = value
 	return b
 }

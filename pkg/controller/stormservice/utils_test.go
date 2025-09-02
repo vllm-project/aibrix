@@ -433,7 +433,7 @@ func TestIsRoleSetMatchRevision(t *testing.T) {
 				},
 			},
 			revision: "",
-			expected: true,
+			expected: false,
 		},
 		{
 			name: "empty revision should not match roleSet with non-empty revision",
