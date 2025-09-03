@@ -157,7 +157,7 @@ const (
 	// InPlaceUpdateStormServiceStrategyType inplace updates the ReplicaSets
 	InPlaceUpdateStormServiceStrategyType StormServiceUpdateStrategyType = "InPlaceUpdate"
 )
-
+//+genclient
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.scalingTargetSelector
