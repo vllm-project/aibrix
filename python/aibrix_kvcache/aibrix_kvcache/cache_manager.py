@@ -109,7 +109,9 @@ class KVCacheManager(ABC):
         """
         raise NotImplementedError
 
-    def register_kvcache(self, kvcache: List[torch.Tensor]) -> Status:
+    def register_kvcache(
+        self, kvcache: torch.Tensor | List[torch.Tensor]
+    ) -> Status:
         """Register kvcache with backend-specific register function.
         Args:
             kvcache: kvcache to be registered.
@@ -722,17 +724,20 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             return status
         return Status.ok(status.get() * self.block_ntokens)
 
-    def register_kvcache(self, kvcache: List[torch.Tensor]) -> Status:
+    def register_kvcache(
+        self, kvcache: torch.Tensor | List[torch.Tensor]
+    ) -> Status:
         """Register kvcache with backend-specific register function.
         Args:
             kvcache: kvcache to be registered.
         Returns:
             Status of the register operation.
         """
-        if not (self.feature.gdr_get or self.feature.gdr_put):
-            return Status.ok()
         if self._l2_cache is None or self._l2_cache._backend is None:
             return Status.ok()
+
+        if isinstance(kvcache, torch.Tensor):
+            kvcache = [kvcache]
 
         kvcache_bytes_views = [t.flatten().view(torch.uint8) for t in kvcache]
         return self._l2_cache._backend.register_slabs(kvcache_bytes_views)
@@ -781,7 +786,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             (
                 len(value) * self.block_ntokens,
                 MemoryRegionKVCacheHandle(
-                    self.block_dtype, self.block_shape, value
+                    self.block_dtype,
+                    self.block_shape,
+                    value,  # type: ignore
                 ),
             )
         )
@@ -803,7 +810,8 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         Returns:
             Number of tokens have been fetched from the kv cache service.
         """
-        assert self.feature.gdr_get, "Does not support GDR get"
+        if isinstance(kv_tensors, GDRKVCacheHandle):
+            assert self.feature.gdr_get, "Does not support GDR get"
         mrs = kv_tensors.memory_regions
         return self._get_impl(prefix, tokens, mrs)
 
@@ -811,7 +819,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         self,
         prefix: TokenListView | None,
         tokens: TokenListView,
-        mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
+        mrs: Sequence[MemoryRegion] | Sequence[Sequence[MemoryRegion]],
     ) -> Status[int]:
         """Get the kv tensors for the given prefix and tokens.
 
@@ -822,45 +830,10 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         Returns:
             Number of tokens have been fetched from the kv cache service.
         """
-        if prefix is not None and len(prefix) % self.block_ntokens != 0:
-            return Status(StatusCodes.INVALID)
-
-        num_blocks = len(mrs)
-        ntokens_to_get = num_blocks * self.block_ntokens
-        tokens = tokens[:ntokens_to_get]
-
-        # If it is not a full block, return
-        if num_blocks == 0:
-            return Status(StatusCodes.NOT_FOUND)
-
-        assert self._l2_cache is not None
-        timeout_s = (
-            ntokens_to_get * self._l2_cache_per_token_timeout_ms
-        ) / 1000
-
-        assert self._event_loop is not None
-        future = asyncio.run_coroutine_threadsafe(
-            self._l2_cache.get(prefix, tokens, mrs), self._event_loop
-        )
-        try:
-            get_status = future.result(timeout=timeout_s)
-            if not get_status.is_ok():
-                return get_status
-
-            value = get_status.get()
-            return Status.ok(value * self.block_ntokens)
-        except asyncio.CancelledError:
-            # cancelled
-            return Status(StatusCodes.CANCELLED)
-        except asyncio.TimeoutError:
-            # timed out
-            return Status(StatusCodes.TIMEOUT)
-        except Exception as e:
-            # other exceptions
-            return Status(StatusCodes.ERROR, e)
-        finally:
-            if not future.done():
-                future.cancel()
+        status = self._acquire_impl(prefix, tokens, mrs)
+        if not status.is_ok():
+            return Status(status)
+        return Status.ok(len(status.get()) * self.block_ntokens)
 
     @MeasurableBase.measure(MetricRecorder.OP.EXISTS)
     def exists(
@@ -973,19 +946,31 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         self,
         prefix: TokenListView | None,
         tokens: TokenListView,
-    ) -> Status[Sequence[MemoryRegion]]:
+        output_mrs: Sequence[MemoryRegion]
+        | Sequence[Sequence[MemoryRegion]]
+        | None = None,
+    ) -> (
+        Status[Sequence[MemoryRegion]]
+        | Status[Sequence[Sequence[MemoryRegion]]]
+    ):
         """Get kv tensors from the kv cache service.
 
         Args:
             prefix: The prefix of the kv cache. E.g., [1, 2, 3]
             tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            output_mrs: The memory regions to store the fetched kv cache.
         Returns:
             The memory regions corresponding to the tokens.
         """
         if prefix is not None and len(prefix) % self.block_ntokens != 0:
             return Status(StatusCodes.INVALID)
 
-        num_blocks = len(tokens) // self.block_ntokens
+        if output_mrs is not None:
+            num_blocks = len(output_mrs)
+            ntokens_to_get = num_blocks * self.block_ntokens
+            tokens = tokens[:ntokens_to_get]
+        else:
+            num_blocks = len(tokens) // self.block_ntokens
 
         # If it is not a full block, return
         if num_blocks == 0:
@@ -1011,6 +996,13 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 # 2. L2Cache is not enabled, return the result directly
                 # 3. num of missing blocks is less than the threshold,
                 #    return the result directly
+                if not l1_status.is_ok():
+                    return l1_status
+
+                if output_mrs is not None:
+                    for i in range(num_fetched_blocks):
+                        output_mrs[i].copy(fetched_mrs[i])  # type: ignore
+                    l1_status = Status.ok(output_mrs[:num_fetched_blocks])  # type: ignore
                 return l1_status
 
         assert self._l2_cache is not None
@@ -1028,12 +1020,15 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             * self._l2_cache_per_token_timeout_ms
         ) / 1000
 
-        # allocate MRs to hold fetched tensors
-        status = self.allocate_for(prefix_curr, tokens_curr)
-        if not status.is_ok():
-            return status if num_fetched_blocks == 0 else l1_status
+        if output_mrs is None:
+            # allocate MRs to hold fetched tensors
+            status = self.allocate_for(prefix_curr, tokens_curr)
+            if not status.is_ok():
+                return status if num_fetched_blocks == 0 else l1_status
+            mrs: List[MemoryRegion] = list(status.get().memory_regions)
+        else:
+            mrs: List[MemoryRegion] = list(output_mrs[num_fetched_blocks:])  # type: ignore
 
-        mrs = list(status.get().memory_regions)
         ntokens_to_get = len(mrs) * self.block_ntokens
         tokens_curr = tokens_curr[:ntokens_to_get]
 
@@ -1052,20 +1047,33 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
             # put the fetched kv tensors to L1Cache
             if self._l1_cache is not None:
-                for mr in l2_fetched_mrs:
-                    mr.ref_up()
-                mrs_to_release = l2_fetched_mrs
                 put_tokens_curr = tokens_curr[
                     : len(l2_fetched_mrs) * self.block_ntokens
                 ]
-                put_status = self._l1_cache.put(
-                    prefix_curr, put_tokens_curr, l2_fetched_mrs
-                )
-                if put_status.is_ok():
-                    mrs_to_release = l2_fetched_mrs[put_status.get() :]
-                self._release(mrs_to_release)
 
-            return Status.ok(fetched_mrs + l2_fetched_mrs)
+                if output_mrs is None:
+                    for mr in l2_fetched_mrs:
+                        mr.ref_up()
+                    mrs_to_release = l2_fetched_mrs
+                    put_status = self._l1_cache.put(
+                        prefix_curr, put_tokens_curr, l2_fetched_mrs
+                    )
+                    if put_status.is_ok():
+                        mrs_to_release = l2_fetched_mrs[put_status.get() :]
+                    self._release(mrs_to_release)
+                else:
+                    put_tensors = [
+                        mr.to_tensor(self.block_dtype, self.block_shape)
+                        for mr in l2_fetched_mrs
+                    ]
+                    self._l1_cache.put(
+                        prefix_curr, put_tokens_curr, put_tensors
+                    )
+
+            if output_mrs is None:
+                return Status.ok(fetched_mrs + l2_fetched_mrs)  # type: ignore
+            else:
+                return Status.ok(output_mrs[: num_fetched_blocks + value])  # type: ignore
         except asyncio.CancelledError:
             # cancelled
             return (
@@ -1088,7 +1096,8 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 else l1_status
             )
         finally:
-            self._release(mrs)
+            if output_mrs is None:
+                self._release(mrs)
             if not future.done():
                 future.cancel()
 
@@ -1235,10 +1244,18 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         # eviction policy to asynchronously ingest kv tensors to L2Cache.
         # Otherwise, we ingest kv tensors to L2Cache directly.
         if self._l1_cache is not None:
-            mrs = kv_tensors.memory_regions
-            status = self._l1_cache.put(prefix, tokens, mrs)
-            # release mrs that are not put to L1Cache
-            self._release(mrs[status.get() :])
+            if kv_tensors.memory_region_type is ManagedMemoryRegion:
+                mrs = kv_tensors.memory_regions
+                status = self._l1_cache.put(prefix, tokens, mrs)
+                # release mrs that are not put to L1Cache
+                self._release(mrs[status.get() :])
+            else:
+                # for a handle with ExternalMemoryRegions, we have to convert
+                # it to tensors in order to trigger underlying data copy to
+                # ensure L1Cache does not own any external MRs
+                tensors = kv_tensors.to_tensors()
+                status = self._l1_cache.put(prefix, tokens, tensors)
+                kv_tensors.release()
 
             if not status.is_ok():
                 return status
@@ -1473,13 +1490,13 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
             elif self._coll_tensor[0] * self.block_ntokens < len(chunk_tokens):
                 # some participants have got less tokens than others
                 num = self._coll_tensor[0]
-                results.extend(value[:num])
+                results.extend(value[:num])  # type: ignore
                 self._release(value[num:])
                 return Status.ok((start + num * self.block_ntokens, results))
 
             assert len(value) * self.block_ntokens == len(chunk_tokens)
             start += len(chunk_tokens)
-            results.extend(status.get())
+            results.extend(status.get())  # type: ignore
 
         return (
             Status.ok((start, results))
@@ -1504,7 +1521,8 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
         Returns:
             Number of tokens have been fetched from the kv cache service.
         """
-        assert self.feature.gdr_get, "Does not support GDR get"
+        if isinstance(kv_tensors, GDRKVCacheHandle):
+            assert self.feature.gdr_get, "Does not support GDR get"
         if prefix is not None and len(prefix) % self.block_ntokens != 0:
             return Status(StatusCodes.INVALID)
 
