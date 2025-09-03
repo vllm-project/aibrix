@@ -27,6 +27,7 @@ from .cache_manager import (
     KVCacheManager,
 )
 from .config import KVCacheConfig
+from .memory import ExternalMemoryRegion, MemoryRegion
 from .metrics import KVCacheMetrics
 from .spec import *
 from .status import Status, StatusCodes
@@ -35,6 +36,8 @@ __all__ = [
     "__version__",
     "__version_tuple__",
     "KVCacheHandle",
+    "ExternalMemoryRegion",
+    "MemoryRegion",
     "MemoryRegionKVCacheHandle",
     "GDRKVCacheHandle",
     "TokenListView",

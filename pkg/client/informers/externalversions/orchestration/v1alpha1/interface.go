@@ -27,6 +27,8 @@ type Interface interface {
 	RayClusterFleets() RayClusterFleetInformer
 	// RayClusterReplicaSets returns a RayClusterReplicaSetInformer.
 	RayClusterReplicaSets() RayClusterReplicaSetInformer
+	// StormServices returns a StormServiceInformer.
+	StormServices() StormServiceInformer
 }
 
 type version struct {
@@ -48,4 +50,9 @@ func (v *version) RayClusterFleets() RayClusterFleetInformer {
 // RayClusterReplicaSets returns a RayClusterReplicaSetInformer.
 func (v *version) RayClusterReplicaSets() RayClusterReplicaSetInformer {
 	return &rayClusterReplicaSetInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// StormServices returns a StormServiceInformer.
+func (v *version) StormServices() StormServiceInformer {
+	return &stormServiceInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }

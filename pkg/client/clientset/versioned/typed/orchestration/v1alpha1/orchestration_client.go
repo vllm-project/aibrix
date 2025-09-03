@@ -29,6 +29,7 @@ type OrchestrationV1alpha1Interface interface {
 	RESTClient() rest.Interface
 	RayClusterFleetsGetter
 	RayClusterReplicaSetsGetter
+	StormServicesGetter
 }
 
 // OrchestrationV1alpha1Client is used to interact with features provided by the orchestration group.
@@ -42,6 +43,10 @@ func (c *OrchestrationV1alpha1Client) RayClusterFleets(namespace string) RayClus
 
 func (c *OrchestrationV1alpha1Client) RayClusterReplicaSets(namespace string) RayClusterReplicaSetInterface {
 	return newRayClusterReplicaSets(c, namespace)
+}
+
+func (c *OrchestrationV1alpha1Client) StormServices(namespace string) StormServiceInterface {
+	return newStormServices(c, namespace)
 }
 
 // NewForConfig creates a new OrchestrationV1alpha1Client for the given config.

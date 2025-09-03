@@ -29,13 +29,13 @@ class MemoryRegion(RefCountedObj):
         self,
         slab: torch.Tensor,
         addr: int,
-        len: int,
+        length: int,
     ) -> None:
         super().__init__()
         self.slab = slab
         self.addr = addr
-        self.length = len
-        self.capacity = len
+        self.length = length
+        self.capacity = length
         self._cached_tensor_view: torch.Tensor | None = None
 
     def __len__(self) -> int:
@@ -73,6 +73,13 @@ class MemoryRegion(RefCountedObj):
         self.slab[self.addr : self.addr + len(data)].copy_(
             torch.frombuffer(data, dtype=torch.uint8)
         )
+
+    def copy(self, mr: "MemoryRegion") -> None:
+        assert self.capacity >= mr.length
+        self.slab[self.addr : self.addr + mr.length].copy_(
+            mr.slab[mr.addr : mr.addr + mr.length]
+        )
+        self.length = mr.length
 
     def to_tensor(
         self,
