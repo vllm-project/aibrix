@@ -29,7 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestStrategyRequiresCache(t *testing.T) {
+func TestStrategyRequiresCache(t *testing.T) { // fix this
 	req := "this is test message"
 	targetPod := getTargetPodFromChatCompletion(t, req, "least-request")
 	assert.NotEmpty(t, targetPod, "least request target pod is empty")
