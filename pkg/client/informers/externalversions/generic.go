@@ -66,6 +66,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Orchestration().V1alpha1().RayClusterFleets().Informer()}, nil
 	case orchestrationv1alpha1.SchemeGroupVersion.WithResource("rayclusterreplicasets"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Orchestration().V1alpha1().RayClusterReplicaSets().Informer()}, nil
+	case orchestrationv1alpha1.SchemeGroupVersion.WithResource("stormservices"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Orchestration().V1alpha1().StormServices().Informer()}, nil
 
 	}
 
