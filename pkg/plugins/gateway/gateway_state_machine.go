@@ -17,6 +17,7 @@ limitations under the License.
 package gateway
 
 import (
+	"fmt"
 	"io"
 	"strconv"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"k8s.io/klog/v2"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	extProcFilterPb "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/scheduler"
@@ -53,7 +55,13 @@ func (s *Server) ProcessStateMachine(srv extProcPb.ExternalProcessor_ProcessServ
 	errChan := make(chan error, 1)
 
 	klog.InfoS("new request stream started", "requestID", state.requestID)
+	klog.InfoS("DEBUG: line 57 reached", "requestID", state.requestID)
+	klog.InfoS("about to start message receive goroutine", "requestID", state.requestID)
+	klog.InfoS("DEBUG: line 59 reached", "requestID", state.requestID)
 	defer func() {
+		if r := recover(); r != nil {
+			klog.ErrorS(nil, "panic in Process function", "requestID", state.requestID, "panic", r)
+		}
 		klog.InfoS("request stream finished", "requestID", state.requestID)
 
 		// CRITICAL: Ensure FinalizeJob is always called if a decision was made.
@@ -75,26 +83,36 @@ func (s *Server) ProcessStateMachine(srv extProcPb.ExternalProcessor_ProcessServ
 	}()
 
 	// Start goroutine to receive messages from Envoy
+	klog.InfoS("launching message receive goroutine", "requestID", state.requestID)
 	go func() {
+		klog.InfoS("starting message receive goroutine", "requestID", state.requestID)
 		for {
+			klog.InfoS("waiting for message from Envoy", "requestID", state.requestID)
 			req, err := srv.Recv()
+			klog.InfoS("received message from Envoy", "requestID", state.requestID, "hasError", err != nil)
+
 			// IMPORTANT: Check for context cancellation *before* sending to channel
 			select {
 			case <-ctx.Done():
+				klog.InfoS("context cancelled in receive goroutine", "requestID", state.requestID)
 				// The main loop will handle the error, just exit.
 				return
 			default:
 			}
 
 			if err != nil {
+				klog.InfoS("sending error to error channel", "requestID", state.requestID, "error", err)
 				errChan <- err
 				return
 			}
+			klog.InfoS("sending message to message channel", "requestID", state.requestID, "messageType", fmt.Sprintf("%T", req.Request))
 			msgChan <- req
 		}
 	}()
 
+	klog.InfoS("entering main loop", "requestID", state.requestID, "initialState", state.currentState)
 	for state.currentState != stateDone {
+		klog.InfoS("main loop iteration", "requestID", state.requestID, "currentState", state.currentState)
 		select {
 		case <-ctx.Done():
 			klog.InfoS("request context cancelled", "requestID", state.requestID)
@@ -135,10 +153,12 @@ func (s *Server) ProcessStateMachine(srv extProcPb.ExternalProcessor_ProcessServ
 
 		case req := <-msgChan:
 			// Event: Received a message from Envoy
+			klog.InfoS("received message in main loop", "requestID", state.requestID, "messageType", fmt.Sprintf("%T", req.Request))
 			if err := s.handleEnvoyMessage(srv, req, state, decisionChan); err != nil {
 				klog.ErrorS(err, "failed to handle envoy message", "requestID", state.requestID)
 				return err
 			}
+			klog.InfoS("successfully handled envoy message", "requestID", state.requestID, "newState", state.currentState)
 
 		case err := <-errChan:
 			// Event: Error receiving from Envoy
@@ -157,11 +177,15 @@ func (s *Server) ProcessStateMachine(srv extProcPb.ExternalProcessor_ProcessServ
 
 // handleEnvoyMessage processes messages received from Envoy based on current state
 func (s *Server) handleEnvoyMessage(srv extProcPb.ExternalProcessor_ProcessServer, req *extProcPb.ProcessingRequest, state *perRequestState, decisionChan chan<- *scheduler.Decision) error {
+	klog.InfoS("received message from Envoy", "requestID", state.requestID, "messageType", fmt.Sprintf("%T", req.Request))
+
 	switch v := req.Request.(type) {
 	case *extProcPb.ProcessingRequest_RequestHeaders:
+		klog.InfoS("processing request headers", "requestID", state.requestID)
 		return s.handleRequestHeaders(srv, req, state)
 
 	case *extProcPb.ProcessingRequest_RequestBody:
+		klog.InfoS("processing request body", "requestID", state.requestID)
 		return s.handleRequestBody(srv, req, state, decisionChan)
 
 	case *extProcPb.ProcessingRequest_ResponseHeaders:
@@ -187,26 +211,45 @@ func (s *Server) handleRequestHeaders(srv extProcPb.ExternalProcessor_ProcessSer
 	_, user, rpm, routerCtx := s.HandleRequestHeaders(srv.Context(), state.requestID, req)
 	state.user, state.rpm, state.routerCtx = user, rpm, routerCtx
 
-	// Extract Session ID as early as possible from headers
+	// DEBUG: Check if routerCtx is nil after HandleRequestHeaders
+	klog.InfoS("DEBUG: HandleRequestHeaders returned", "requestID", state.requestID, "routerCtxIsNil", routerCtx == nil)
+
+	// Extract temporary Session ID from headers only (no SessionCache interaction yet)
 	if routerCtx != nil {
-		state.sessionID = extractSessionID(state.requestID, routerCtx.ReqPath, nil, routerCtx.ReqHeaders)
-		klog.InfoS("extracted session ID from headers", "requestID", state.requestID, "sessionID", state.sessionID)
+		state.sessionID = extractSessionIDFromHeaders(state.requestID, routerCtx.ReqHeaders)
+		klog.InfoS("extracted temporary session ID from headers", "requestID", state.requestID, "tempSessionID", state.sessionID)
 	}
 
-	// Don't send response yet, wait for body
+	// CRITICAL: Send response to Envoy telling it to send us the RequestBody
+	resp := s.buildRequestHeadersResponse()
+	if err := srv.Send(resp); err != nil {
+		klog.ErrorS(err, "failed to send request headers response", "requestID", state.requestID)
+		state.currentState = stateDone
+		return err
+	}
+
+	// Now transition to wait for the body
 	state.currentState = stateAwaitingBody
+	klog.InfoS("sent headers response, waiting for body", "requestID", state.requestID)
 	return nil
 }
 
 // handleRequestBody processes RequestBody message and initiates scheduling
 func (s *Server) handleRequestBody(srv extProcPb.ExternalProcessor_ProcessServer, req *extProcPb.ProcessingRequest, state *perRequestState, decisionChan chan<- *scheduler.Decision) error {
+	klog.InfoS("handleRequestBody called", "requestID", state.requestID, "currentState", state.currentState)
+
 	if state.currentState != stateAwaitingBody {
 		klog.ErrorS(nil, "received RequestBody in unexpected state", "requestID", state.requestID, "state", state.currentState)
 		return nil
 	}
 
-	resp, model, routerCtx, stream, traceTerm := s.HandleRequestBody(srv.Context(), state.requestID, req, state.user)
+	klog.InfoS("calling HandleRequestBody", "requestID", state.requestID, "schedulerEnabled", s.scheduler != nil)
+	// CRITICAL FIX: Pass state.routerCtx directly - it's already *types.RoutingContext which implements context.Context
+	// Don't cast to context.Context as that loses the original type information needed for type assertion
+	resp, model, routerCtx, stream, traceTerm := s.HandleRequestBody(state.routerCtx, state.requestID, req, state.user)
 	state.model, state.routerCtx, state.stream, state.traceTerm = model, routerCtx, stream, traceTerm
+
+	klog.InfoS("HandleRequestBody returned", "requestID", state.requestID, "hasResponse", resp != nil, "model", model)
 
 	if resp != nil {
 		// Handle cases where HandleRequestBody returns an error response
@@ -217,31 +260,59 @@ func (s *Server) handleRequestBody(srv extProcPb.ExternalProcessor_ProcessServer
 		return nil
 	}
 
-	// Refine session ID with body information if needed
-	if state.sessionID == "" || state.sessionID == state.requestID {
-		state.sessionID = extractSessionID(state.requestID, routerCtx.ReqPath, routerCtx.ReqBody, routerCtx.ReqHeaders)
+	// CRITICAL: state.routerCtx must not be nil at this point
+	// If it's nil, it indicates a serious bug in HandleRequestBody
+	if state.routerCtx == nil {
+		klog.ErrorS(nil, "CRITICAL BUG: state.routerCtx is nil after HandleRequestBody",
+			"requestID", state.requestID, "hasResponse", resp != nil)
+		return fmt.Errorf("critical error: routerCtx is nil after HandleRequestBody for request %s", state.requestID)
 	}
 
-	// Submit job to scheduler asynchronously with timeout protection
-	state.submissionTime = time.Now()
-	go func() {
-		klog.InfoS("submitting job to scheduler", "requestID", state.requestID, "sessionID", state.sessionID)
+	// MODIFIED: Use only headers-based session ID (no body parsing)
+	// The session ID was already extracted from headers in the headers phase
+	finalSessionID := state.sessionID
 
-		// TODO: Add timeout protection when scheduler supports context
-		decision, err := s.scheduler.SubmitJob(state.routerCtx, state.sessionID)
-		if err != nil {
-			decision = &scheduler.Decision{Err: err}
-		}
+	// CRITICAL: Session ID is required - client must provide it in headers
+	// If finalSessionID equals requestID, it means no real session ID was found (fallback was used)
+	if finalSessionID == state.requestID {
+		klog.ErrorS(nil, "session ID is required but not provided in headers",
+			"requestID", state.requestID, "path", state.routerCtx.ReqPath,
+			"headerSessionID", state.sessionID)
+		return fmt.Errorf("session ID is required but not found in headers for request %s", state.requestID)
+	}
 
-		// Non-blocking send to avoid goroutine leak if main loop exits
-		select {
-		case decisionChan <- decision:
-		case <-srv.Context().Done():
-			// Main context cancelled, don't send decision
-		}
-	}()
+	klog.InfoS("using session ID from headers", "requestID", state.requestID, "sessionID", finalSessionID)
+	// No need to reassign since finalSessionID is already state.sessionID
 
-	state.currentState = stateAwaitingDecision
+	// Check if scheduler is enabled and submit job
+	if s.scheduler != nil {
+		// Submit job to scheduler asynchronously with timeout protection
+		state.submissionTime = time.Now()
+		go func() {
+			klog.InfoS("submitting job to scheduler", "requestID", state.requestID, "sessionID", state.sessionID)
+
+			// TODO: Add timeout protection when scheduler supports context
+			decision, err := s.scheduler.SubmitJob(state.routerCtx, state.sessionID)
+			if err != nil {
+				decision = &scheduler.Decision{Err: err}
+			}
+
+			// Non-blocking send to avoid goroutine leak if main loop exits
+			select {
+			case decisionChan <- decision:
+			case <-srv.Context().Done():
+				// Main context cancelled, don't send decision
+			}
+		}()
+
+		state.currentState = stateAwaitingDecision
+		return nil
+	}
+
+	// If we reach here, scheduler is disabled but HandleRequestBody returned nil
+	// This should not happen in normal operation
+	klog.ErrorS(nil, "HandleRequestBody returned nil but scheduler is disabled", "requestID", state.requestID)
+	state.currentState = stateDone
 	return nil
 }
 
@@ -367,6 +438,35 @@ func (s *Server) handleScheduledRequest(routingCtx *types.RoutingContext, state 
 					},
 				},
 			},
+		},
+	}
+}
+
+// buildRequestHeadersResponse creates a response that tells Envoy to send us the RequestBody
+func (s *Server) buildRequestHeadersResponse() *extProcPb.ProcessingResponse {
+	return &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_RequestHeaders{
+			RequestHeaders: &extProcPb.HeadersResponse{
+				Response: &extProcPb.CommonResponse{
+					HeaderMutation: &extProcPb.HeaderMutation{
+						SetHeaders: []*configPb.HeaderValueOption{
+							{
+								Header: &configPb.HeaderValue{
+									Key:      HeaderWentIntoReqHeaders,
+									RawValue: []byte("true"),
+								},
+							},
+						},
+					},
+					ClearRouteCache: true,
+				},
+			},
+		},
+		// This is the MOST IMPORTANT part. We are telling Envoy:
+		// "I'm interested in the body. Please stream it to me."
+		ModeOverride: &extProcFilterPb.ProcessingMode{
+			RequestBodyMode:  extProcFilterPb.ProcessingMode_BUFFERED, // Use BUFFERED for complete body
+			ResponseBodyMode: extProcFilterPb.ProcessingMode_STREAMED,
 		},
 	}
 }

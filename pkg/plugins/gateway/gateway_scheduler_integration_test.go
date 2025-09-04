@@ -65,13 +65,22 @@ func TestExtractSessionID(t *testing.T) {
 			headers:     map[string]string{"X-Session-ID": "session-789"},
 			expected:    "session-789",
 		},
+		// COMMENTED OUT: Body-based session ID extraction is disabled
+		// {
+		// 	name:        "session ID from request body",
+		// 	requestID:   "req-123",
+		// 	requestPath: "/v1/chat/completions",
+		// 	requestBody: []byte(`{"model":"test-model","session_id":"session-body-123","messages":[{"role":"user","content":"hello"}]}`),
+		// 	headers:     map[string]string{},
+		// 	expected:    "session-body-123",
+		// },
 		{
-			name:        "session ID from request body",
+			name:        "session ID from request body - now falls back to request ID",
 			requestID:   "req-123",
 			requestPath: "/v1/chat/completions",
 			requestBody: []byte(`{"model":"test-model","session_id":"session-body-123","messages":[{"role":"user","content":"hello"}]}`),
 			headers:     map[string]string{},
-			expected:    "session-body-123",
+			expected:    "req-123", // MODIFIED: Now falls back to requestID since body parsing is disabled
 		},
 		{
 			name:        "fallback to request ID",
@@ -103,6 +112,192 @@ func TestExtractSessionID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := extractSessionID(tt.requestID, tt.requestPath, tt.requestBody, tt.headers)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestExtractSessionIDFromHeaders(t *testing.T) {
+	tests := []struct {
+		name      string
+		requestID string
+		headers   map[string]string
+		expected  string
+	}{
+		{
+			name:      "session ID from header (lowercase)",
+			requestID: "req-123",
+			headers:   map[string]string{"x-session-id": "session-456"},
+			expected:  "session-456",
+		},
+		{
+			name:      "session ID from header (uppercase)",
+			requestID: "req-123",
+			headers:   map[string]string{"X-Session-ID": "session-789"},
+			expected:  "session-789",
+		},
+		{
+			name:      "no session ID in headers - fallback to requestID",
+			requestID: "req-fallback",
+			headers:   map[string]string{},
+			expected:  "req-fallback",
+		},
+		{
+			name:      "empty session ID in headers - fallback to requestID",
+			requestID: "req-empty",
+			headers:   map[string]string{"x-session-id": ""},
+			expected:  "req-empty",
+		},
+		{
+			name:      "lowercase takes precedence when both present",
+			requestID: "req-123",
+			headers:   map[string]string{"x-session-id": "session-lower", "X-Session-ID": "session-upper"},
+			expected:  "session-lower",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractSessionIDFromHeaders(tt.requestID, tt.headers)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestExtractSessionIDFromBody tests the extractSessionID function behavior
+// NOTE: Body parsing is now disabled, so these tests verify headers-only behavior
+// and proper fallback to requestID when no headers are present
+func TestExtractSessionIDFromBody(t *testing.T) {
+	tests := []struct {
+		name        string
+		requestID   string
+		requestPath string
+		requestBody []byte
+		headers     map[string]string
+		expected    string
+	}{
+		{
+			name:        "header session_id takes priority over body",
+			requestID:   "req-123",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model":"test-model","session_id":"session-body-123","messages":[{"role":"user","content":"hello"}]}`),
+			headers:     map[string]string{"x-session-id": "session-header-456"},
+			expected:    "session-header-456", // Headers are checked first in extractSessionID
+		},
+		{
+			name:        "body session_id when no header session_id - now falls back to request ID",
+			requestID:   "req-123",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model":"test-model","session_id":"session-body-123","messages":[{"role":"user","content":"hello"}]}`),
+			headers:     map[string]string{},
+			expected:    "req-123", // MODIFIED: Now falls back to requestID since body parsing is disabled
+		},
+		{
+			name:        "header session_id when no body session_id",
+			requestID:   "req-123",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model":"test-model","messages":[{"role":"user","content":"hello"}]}`),
+			headers:     map[string]string{"x-session-id": "session-header-456"},
+			expected:    "session-header-456",
+		},
+		{
+			name:        "fallback to requestID when no session_id anywhere",
+			requestID:   "req-fallback",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model":"test-model","messages":[{"role":"user","content":"hello"}]}`),
+			headers:     map[string]string{},
+			expected:    "req-fallback",
+		},
+		{
+			name:        "invalid JSON body falls back to header session_id",
+			requestID:   "req-invalid",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{invalid json`),
+			headers:     map[string]string{"x-session-id": "session-header-789"},
+			expected:    "session-header-789",
+		},
+		{
+			name:        "invalid JSON body with no header falls back to requestID",
+			requestID:   "req-invalid",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{invalid json`),
+			headers:     map[string]string{},
+			expected:    "req-invalid",
+		},
+		{
+			name:        "non-chat-completion path ignores body",
+			requestID:   "req-123",
+			requestPath: "/v1/models",
+			requestBody: []byte(`{"session_id":"session-body-123"}`),
+			headers:     map[string]string{"x-session-id": "session-header-456"},
+			expected:    "session-header-456",
+		},
+		{
+			name:        "empty body session_id falls back to header",
+			requestID:   "req-123",
+			requestPath: "/v1/chat/completions",
+			requestBody: []byte(`{"model":"test-model","session_id":"","messages":[{"role":"user","content":"hello"}]}`),
+			headers:     map[string]string{"x-session-id": "session-header-456"},
+			expected:    "session-header-456",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractSessionID(tt.requestID, tt.requestPath, tt.requestBody, tt.headers)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestExtractSessionID_HeadersOnlyBehavior specifically tests the headers-only behavior
+// after disabling body parsing to ensure the modification works correctly
+func TestExtractSessionID_HeadersOnlyBehavior(t *testing.T) {
+	tests := []struct {
+		name        string
+		requestID   string
+		headers     map[string]string
+		requestBody []byte // This should be ignored
+		expected    string
+	}{
+		{
+			name:        "headers-only: lowercase header with body present (body ignored)",
+			requestID:   "req-123",
+			headers:     map[string]string{"x-session-id": "session-from-header"},
+			requestBody: []byte(`{"session_id":"session-from-body"}`), // Should be ignored
+			expected:    "session-from-header",
+		},
+		{
+			name:        "headers-only: uppercase header with body present (body ignored)",
+			requestID:   "req-456",
+			headers:     map[string]string{"X-Session-ID": "session-from-header-upper"},
+			requestBody: []byte(`{"session_id":"session-from-body"}`), // Should be ignored
+			expected:    "session-from-header-upper",
+		},
+		{
+			name:        "headers-only: no header, body present (fallback to requestID)",
+			requestID:   "req-789",
+			headers:     map[string]string{},
+			requestBody: []byte(`{"session_id":"session-from-body"}`), // Should be ignored
+			expected:    "req-789",                                    // Falls back to requestID
+		},
+		{
+			name:        "headers-only: empty header, body present (fallback to requestID)",
+			requestID:   "req-empty",
+			headers:     map[string]string{"x-session-id": ""},
+			requestBody: []byte(`{"session_id":"session-from-body"}`), // Should be ignored
+			expected:    "req-empty",                                  // Falls back to requestID
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test the main extractSessionID function (which now ignores body)
+			result := extractSessionID(tt.requestID, "/v1/chat/completions", tt.requestBody, tt.headers)
+			assert.Equal(t, tt.expected, result, "extractSessionID should ignore body and use headers-only logic")
+
+			// Also test the headers-only function for consistency
+			headerResult := extractSessionIDFromHeaders(tt.requestID, tt.headers)
+			assert.Equal(t, tt.expected, headerResult, "extractSessionIDFromHeaders should match extractSessionID behavior")
 		})
 	}
 }

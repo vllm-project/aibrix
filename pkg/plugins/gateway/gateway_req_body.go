@@ -34,7 +34,14 @@ import (
 func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
 	var term int64 // Identify the trace window
 
-	routingCtx, _ := ctx.(*types.RoutingContext)
+	routingCtx, ok := ctx.(*types.RoutingContext)
+	if !ok || routingCtx == nil {
+		klog.ErrorS(nil, "CRITICAL: context is not RoutingContext or is nil", "requestID", requestID, "contextType", fmt.Sprintf("%T", ctx))
+		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorRouting, RawValue: []byte("true")}}},
+			"internal routing context error"), "", nil, false, term
+	}
 	requestPath := routingCtx.ReqPath
 	routingAlgorithm := routingCtx.Algorithm
 

@@ -28,8 +28,26 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// extractSessionIDFromHeaders extracts session ID only from headers.
+// This is used in handleRequestHeaders phase for temporary session ID extraction.
+// If no session ID is found in headers, it returns the requestID as a temporary fallback.
+func extractSessionIDFromHeaders(requestID string, headers map[string]string) string {
+	// Try to get session ID from headers
+	if sessionID, exists := headers["x-session-id"]; exists && sessionID != "" {
+		return sessionID
+	}
+	if sessionID, exists := headers["X-Session-ID"]; exists && sessionID != "" {
+		return sessionID
+	}
+
+	// Return requestID as temporary fallback
+	return requestID
+}
+
 // extractSessionID extracts session ID from request body or headers.
 // If no session ID is found, it returns the requestID as a fallback.
+// DEPRECATED: This function is kept for backward compatibility and existing tests.
+// New code should use extractSessionIDFromHeaders and extractFinalSessionID instead.
 func extractSessionID(requestID, requestPath string, requestBody []byte, headers map[string]string) string {
 	// First, try to get session ID from headers
 	if sessionID, exists := headers["x-session-id"]; exists && sessionID != "" {
@@ -39,18 +57,19 @@ func extractSessionID(requestID, requestPath string, requestBody []byte, headers
 		return sessionID
 	}
 
+	// COMMENTED OUT: Body-based session ID extraction (moved to headers-only approach)
 	// Then, try to extract from request body
-	if requestPath == "/v1/chat/completions" || requestPath == "/v1/completions" {
-		var jsonMap map[string]json.RawMessage
-		if err := json.Unmarshal(requestBody, &jsonMap); err == nil {
-			if sessionData, exists := jsonMap["session_id"]; exists {
-				var sessionID string
-				if err := json.Unmarshal(sessionData, &sessionID); err == nil && sessionID != "" {
-					return sessionID
-				}
-			}
-		}
-	}
+	// if requestPath == "/v1/chat/completions" || requestPath == "/v1/completions" {
+	// 	var jsonMap map[string]json.RawMessage
+	// 	if err := json.Unmarshal(requestBody, &jsonMap); err == nil {
+	// 		if sessionData, exists := jsonMap["session_id"]; exists {
+	// 			var sessionID string
+	// 			if err := json.Unmarshal(sessionData, &sessionID); err == nil && sessionID != "" {
+	// 				return sessionID
+	// 			}
+	// 		}
+	// 	}
+	// }
 
 	// Fallback to requestID if no session ID found
 	return requestID
