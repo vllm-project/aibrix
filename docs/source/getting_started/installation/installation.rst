@@ -8,7 +8,7 @@ This guide describes how to install AIBrix manifests in different platforms.
 
 Currently, AIBrix installation does rely on other cloud specific features. It's fully compatible with vanilla Kubernetes.
 
-
+-------------------------------------------
 Install AIBrix on Cloud Kubernetes Clusters
 -------------------------------------------
 
@@ -16,9 +16,9 @@ Install AIBrix on Cloud Kubernetes Clusters
     AIBrix will install `Envoy Gateway <https://gateway.envoyproxy.io/>`_ and `KubeRay <https://github.com/ray-project/kuberay>`_ in your environment.
     If you already have these components installed, you can use corresponding manifest to skip them.
 
-
+~~~~~~~~~~~~
 Stable Version
-^^^^^^^^^^^^^^
+~~~~~~~~~~~~
 
 .. code:: bash
 
@@ -34,42 +34,66 @@ Stable Version
     kubectl apply -k config/overlays/release
 
 
+~~~~~~~~~~~~
 Stable Version Using Helm
-^^^^^^^^^^^^^^^^^^^^^^^^^
+~~~~~~~~~~~~
 
-Install AIBrix with dependencies
+^^^^^^^^^^^^
+Prerequisites
+^^^^^^^^^^^^
+
+**Envoy Gateway**
 
 .. code:: bash
 
-    # 1. Install envoy-gateway, this is not aibrix component. you can also use helm package to install it.
+    # Install envoy-gateway, this is not aibrix component. you can also use helm package to install it.
     helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.2.8 -n envoy-gateway-system --create-namespace
 
-    # 2. Install KubeRay operator (if you use AIBrix RayClusterFleet, you need to install it):
-    helm install kuberay-operator kuberay/kuberay-operator \
-      --namespace aibrix-system \
-      --create-namespace \
-      --version 1.2.1 \
-      --set env[0].name=ENABLE_PROBES_INJECTION \
-      --set-string env[0].value=false \
-      --set fullnameOverride=kuberay-operator \
-      --set featureGates[0].name=RayClusterStatusConditions \
-      --set featureGates[0].enabled=true \
-      --set image.repository=aibrix/kuberay-operator \
-      --set image.tag=v1.2.1-patch-20250726
+.. note::
+    If you are experiencing network issues with `docker.io`, you can install the helm chart from the code repo https://github.com/envoyproxy/ai-gateway/tree/main/manifests/charts/ai-gateway-helm instead.
 
-    # 3. Install AIBrix CRDs. `--install-crds` is not available in local chart installation.
+**KubeRay operator**
+
+.. code:: bash
+
+    # Install KubeRay operator
+    helm repo add kuberay https://ray-project.github.io/kuberay-helm/
+    helm repo update
+
+    helm install kuberay-operator kuberay/kuberay-operator --namespace aibrix-system \
+    --create-namespace \
+    --version 1.2.1 \
+    --set-string 'env[0].name=ENABLE_PROBES_INJECTION' \
+    --set-string 'env[0].value=false' \
+    --set fullnameOverride=kuberay-operator \
+    --set 'featureGates[0].name=RayClusterStatusConditions' \
+    --set 'featureGates[0].enabled=true' \
+    --set image.repository=aibrix/kuberay-operator \
+    --set image.tag=v1.2.1-patch-20250726
+
+^^^^^^^^^^^^
+Install AIBrix with Helm
+^^^^^^^^^^^^
+
+.. code:: bash
+
+    # Install AIBrix CRDs. `--install-crds` is not available in local chart installation.
     kubectl apply -f dist/chart/crds/
 
-    # 4. Install AIBrix with the pinned release version:
+    # Install AIBrix with the pinned release version:
     helm install aibrix dist/chart -f dist/chart/stable.yaml -n aibrix-system --create-namespace
 
+~~~~~~~~~~~~
 Upgrade AIBrix
+~~~~~~~~~~~~
 
 .. code:: bash
 
     helm upgrade aibrix dist/chart -f dist/chart/values.yaml -n aibrix-system
 
+~~~~~~~~~~~~
 Uninstall AIBrix
+~~~~~~~~~~~~
 
 .. code:: bash
 
@@ -77,9 +101,9 @@ Uninstall AIBrix
     helm uninstall kuberay-operator -n aibrix-system
     helm uninstall eg -n envoy-gateway-system
 
-
+~~~~~~~~~~~~
 Nightly Version
-^^^^^^^^^^^^^^^
+~~~~~~~~~~~~
 
 .. code:: bash
 
@@ -91,7 +115,7 @@ Nightly Version
     kubectl apply -k config/dependency --server-side
     kubectl apply -k config/default
 
-
+--------------------------------------
 Install AIBrix in testing Environments
 --------------------------------------
 
@@ -105,36 +129,37 @@ Install AIBrix in testing Environments
    gcp.rst
    advanced-k8s-examples.rst
 
-
+------------------------------------
 Install Individual AIBrix Components
 ------------------------------------
 
+~~~~~~~~~~~~
 Autoscaler
-^^^^^^^^^^
+~~~~~~~~~~~~
 
 .. code:: bash
 
     kubectl apply -k config/standalone/autoscaler-controller/
 
-
+~~~~~~~~~~~~
 Distributed Inference
-^^^^^^^^^^^^^^^^^^^^^
+~~~~~~~~~~~~
 
 .. code:: bash
 
     kubectl apply -k config/standalone/distributed-inference-controller/
 
-
+~~~~~~~~~~~~
 Model Adapter(Lora)
-^^^^^^^^^^^^^^^^^^^
+~~~~~~~~~~~~
 
 .. code:: bash
 
     kubectl apply -k config/standalone/model-adapter-controller
 
-
+~~~~~~~~~~~~
 KV Cache
-^^^^^^^^
+~~~~~~~~~~~~
 
 .. code:: bash
 
