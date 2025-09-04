@@ -60,16 +60,16 @@ Prerequisites
     helm repo add kuberay https://ray-project.github.io/kuberay-helm/
     helm repo update
 
-    helm install kuberay-operator kuberay/kuberay-operator --namespace aibrix-system \
-    --create-namespace \
-    --version 1.2.1 \
-    --set-string 'env[0].name=ENABLE_PROBES_INJECTION' \
-    --set-string 'env[0].value=false' \
-    --set fullnameOverride=kuberay-operator \
-    --set 'featureGates[0].name=RayClusterStatusConditions' \
-    --set 'featureGates[0].enabled=true' \
-    --set image.repository=aibrix/kuberay-operator \
-    --set image.tag=v1.2.1-patch-20250726
+helm install kuberay-operator kuberay/kuberay-operator --namespace aibrix-system \
+--create-namespace \
+--version 1.2.1 \
+--set-string 'env[0].name=ENABLE_PROBES_INJECTION' \
+--set-string 'env[0].value=false' \
+--set-string 'fullnameOverride=kuberay-operator' \
+--set-string 'featureGates[0].name=RayClusterStatusConditions' \
+--set 'featureGates[0].enabled=true' \
+--set-string 'image.repository=aibrix/kuberay-operator' \
+--set-string 'image.tag=v1.2.1-patch-20250726'
 
 ^^^^^^^^^^^^
 Install AIBrix with Helm
