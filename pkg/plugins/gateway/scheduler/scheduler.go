@@ -89,7 +89,7 @@ func NewScheduler(k8sClient kubernetes.Interface, sessionCache *sessioninfo.Mute
 			klog.ErrorS(err, "failed to create PendingLoadProvider, using basic capacity calculation")
 		} else {
 			loadProvider = pendingLoadProvider
-			klog.InfoS("scheduler initialized with advanced load awareness")
+			// klog.InfoS("scheduler initialized with advanced load awareness")
 		}
 	}
 
@@ -115,30 +115,93 @@ func NewScheduler(k8sClient kubernetes.Interface, sessionCache *sessioninfo.Mute
 	return s
 }
 
-// podWatcherLoop periodically queries the k8s API server to get an updated
-// list of healthy pods, which is used to determine the cluster's processing capacity.
+// podWatcherLoop periodically aggregates healthy pods from cache across all models
+// to determine the cluster's processing capacity. This avoids direct K8s API calls
+// and leverages the existing cache infrastructure.
 func (s *inProcessScheduler) podWatcherLoop() {
 	// A ticker to trigger the pod list refresh at regular intervals.
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
+	// klog.InfoS("Pod watcher loop started")
+
 	for {
 		select {
 		case <-s.stopChan:
+			// klog.InfoS("Pod watcher loop stopping")
 			return
 		case <-ticker.C:
-			// In a real implementation, this would list pods with a specific label selector.
-			// For example:
-			// podList, err := s.k8sClient.CoreV1().Pods("aibrix-system").List(context.TODO(), metav1.ListOptions{LabelSelector: "app=llm-server"})
-			// if err != nil {
-			// 	 klog.Errorf("Scheduler: failed to list pods: %v", err)
-			// 	 continue
+			// Use cache to get all healthy pods across all models
+			// This is the correct approach - no hardcoded labels or direct K8s API calls
+			var allPods []*v1.Pod
+			// totalPods := 0
+
+			if s.cache != nil {
+				// Get all models from cache
+				models := s.cache.ListModels()
+				klog.V(4).InfoS("Scheduler found models in cache", "modelCount", len(models))
+
+				// Aggregate pods from all models
+				podMap := make(map[string]*v1.Pod) // Use map to deduplicate pods
+				for _, model := range models {
+					podList, err := s.cache.ListPodsByModel(model)
+					if err != nil {
+						klog.V(4).InfoS("Failed to get pods for model", "model", model, "error", err)
+						continue
+					}
+
+					for _, pod := range podList.All() {
+						podMap[pod.Name] = pod
+					}
+				}
+
+				// Convert map to slice
+				for _, pod := range podMap {
+					allPods = append(allPods, pod)
+				}
+				// totalPods = len(allPods)
+			} else {
+				// klog.V(3).InfoS("Cache not available, scheduler will use fallback capacity calculation")
+			}
+
+			// klog.V(3).InfoS("Pod watcher found pods from cache", "totalPods", totalPods)
+
+			readyPods := s.filterReadyPods(allPods)
+			s.healthyPods.Store(readyPods)
+
+			// klog.InfoS("Pod watcher updated healthy pods", "readyPods", len(readyPods), "totalPods", totalPods)
+
+			// Log pod details for debugging
+			// for _, pod := range readyPods {
+			// 	klog.V(4).InfoS("Ready pod found",
+			// 		"name", pod.Name,
+			// 		"ip", pod.Status.PodIP,
+			// 		"phase", pod.Status.Phase,
+			// 		"model", pod.Labels["model.aibrix.ai/name"])
 			// }
-			//
-			// readyPods := filterReadyPods(podList.Items)
-			// s.healthyPods.Store(readyPods)
 		}
 	}
+}
+
+// filterReadyPods filters pods that are ready and available for scheduling
+func (s *inProcessScheduler) filterReadyPods(pods []*v1.Pod) []*v1.Pod {
+	var readyPods []*v1.Pod
+	for _, pod := range pods {
+		if pod.Status.Phase == v1.PodRunning {
+			// Check if all containers are ready
+			allReady := true
+			for _, condition := range pod.Status.Conditions {
+				if condition.Type == v1.PodReady && condition.Status != v1.ConditionTrue {
+					allReady = false
+					break
+				}
+			}
+			if allReady {
+				readyPods = append(readyPods, pod)
+			}
+		}
+	}
+	return readyPods
 }
 
 // SubmitJob is now extremely lightweight and lock-free.
@@ -198,16 +261,24 @@ func (s *inProcessScheduler) processingLoop() {
 	ticker := time.NewTicker(PROCESSING_LOOP_INTERVAL)
 	defer ticker.Stop()
 
+	// klog.InfoS("Scheduler processing loop started")
+
 	for {
 		select {
 		case <-s.stopChan:
+			// klog.InfoS("Scheduler processing loop stopping")
 			return
 
 		case job := <-s.submitChan:
 			if job == nil { // This is a wakeup signal from FinalizeJob
+				klog.V(5).InfoS("Received wakeup signal from FinalizeJob")
 				// Just continue to the unified scheduling point
 				break
 			}
+
+			// klog.V(4).InfoS("Received new job",
+			// 	"sessionID", job.SessionID,
+			// 	"queueLength", len(priorityQueue))
 
 			// --- State Enrichment ---
 			cst, waitTime := s.sessionCache.GetOrCreateForScheduler(job.SessionID)
@@ -217,9 +288,13 @@ func (s *inProcessScheduler) processingLoop() {
 			// --- Enqueue ---
 			heap.Push(&priorityQueue, job)
 
+			// klog.V(4).InfoS("Job enqueued",
+			// 	"sessionID", job.SessionID,
+			// 	"newQueueLength", len(priorityQueue))
+
 		case <-ticker.C:
 			// --- Periodic Scheduling ---
-			// Just continue to the unified scheduling point
+			// klog.V(5).InfoS("Periodic scheduling tick", "queueLength", len(priorityQueue))
 		}
 
 		// --- Unified Scheduling Point ---
@@ -232,20 +307,32 @@ func (s *inProcessScheduler) processingLoop() {
 
 // scheduleBatch is now a private method that operates on the local priority queue.
 func (s *inProcessScheduler) scheduleBatch(pq *PriorityQueue) {
-	if len(*pq) == 0 {
+	queueLength := len(*pq)
+	if queueLength == 0 {
 		return
 	}
 
 	// The batching logic with smoothing: based on dynamic capacity with exponential moving average.
 	batchSize := s.calculateSmoothedBatchSize()
+
+	// klog.V(4).InfoS("Scheduling batch",
+	// 	"queueLength", queueLength,
+	// 	"calculatedBatchSize", batchSize)
+
 	if batchSize <= 0 {
+		// klog.V(3).InfoS("Batch size is 0, skipping scheduling",
+		// 	"queueLength", queueLength)
 		return
 	}
 
-	numToPop := min(batchSize, len(*pq))
+	numToPop := min(batchSize, queueLength)
 	if numToPop <= 0 {
 		return
 	}
+
+	// klog.InfoS("Dispatching batch of requests",
+	// 	"batchSize", numToPop,
+	// 	"queueLength", queueLength)
 
 	// Pop and dispatch concurrently.
 	for i := 0; i < numToPop; i++ {
@@ -254,6 +341,11 @@ func (s *inProcessScheduler) scheduleBatch(pq *PriorityQueue) {
 			Job: job,
 			Err: nil,
 		}
+
+		// klog.V(4).InfoS("Dispatching job",
+		// 	"sessionID", job.SessionID,
+		// 	"waitTime", time.Since(job.SubmissionTime))
+
 		job.ResultChan <- decision
 	}
 }
@@ -278,11 +370,11 @@ func (s *inProcessScheduler) calculateSmoothedBatchSize() int {
 	// Store the smoothed value for next iteration
 	s.lastBatchSize.Store(int32(smoothed))
 
-	klog.V(5).InfoS("batch size smoothing",
-		"rawBatchSize", rawBatchSize,
-		"lastBatchSize", lastBatchSize,
-		"smoothedBatchSize", smoothed,
-		"alpha", BATCH_SIZE_SMOOTHING_ALPHA)
+	// klog.V(5).InfoS("batch size smoothing",
+	// 	"rawBatchSize", rawBatchSize,
+	// 	"lastBatchSize", lastBatchSize,
+	// 	"smoothedBatchSize", smoothed,
+	// 	"alpha", BATCH_SIZE_SMOOTHING_ALPHA)
 
 	return smoothed
 }
@@ -292,17 +384,26 @@ func (s *inProcessScheduler) calculateSmoothedBatchSize() int {
 func (s *inProcessScheduler) calculateBatchSize() int {
 	// Load the list of healthy pods atomically.
 	pods, _ := s.healthyPods.Load().([]*v1.Pod)
+
+	// klog.V(4).InfoS("Calculating batch size", "healthyPods", len(pods))
+
 	if len(pods) == 0 {
+		klog.V(3).InfoS("No healthy pods available, batch size = 0")
 		return 0
 	}
 
+	var batchSize int
 	// Use advanced load awareness if available
 	if s.cache != nil && s.loadProvider != nil {
-		return s.calculateAdvancedBatchSize(pods)
+		klog.V(4).InfoS("Using advanced batch size calculation with load provider")
+		batchSize = s.calculateAdvancedBatchSize(pods)
+	} else {
+		// klog.V(4).InfoS("Using fallback batch size calculation")
+		batchSize = s.calculateImprovedFallbackBatchSize(pods)
 	}
 
-	// Improved fallback: use pod annotations even without cache
-	return s.calculateImprovedFallbackBatchSize(pods)
+	// klog.V(3).InfoS("Calculated batch size", "batchSize", batchSize, "podCount", len(pods))
+	return batchSize
 }
 
 // calculateAdvancedBatchSize uses Router's load awareness for precise capacity calculation
@@ -314,8 +415,8 @@ func (s *inProcessScheduler) calculateAdvancedBatchSize(pods []*v1.Pod) int {
 		utilization, err := s.loadProvider.GetUtilization(nil, pod)
 		if err != nil {
 			// If we can't get utilization, assume pod is available
-			klog.V(4).InfoS("failed to get pod utilization, assuming available",
-				"pod", pod.Name, "error", err)
+			// klog.V(4).InfoS("failed to get pod utilization, assuming available",
+			// 	"pod", pod.Name, "error", err)
 			totalAvailableCapacity += 1
 			continue
 		}
@@ -333,23 +434,23 @@ func (s *inProcessScheduler) calculateAdvancedBatchSize(pods []*v1.Pod) int {
 			totalAvailableCapacity += podAvailableSlots
 		}
 
-		klog.V(4).InfoS("pod capacity analysis",
-			"pod", pod.Name,
-			"utilization", utilization,
-			"capacity", podCapacity,
-			"availableCapacity", availableCapacity,
-			"estimatedSlots", int(availableCapacity*float64(s.getEstimatedConcurrentCapacity(pod))))
+		// klog.V(4).InfoS("pod capacity analysis",
+		// 	"pod", pod.Name,
+		// 	"utilization", utilization,
+		// 	"capacity", podCapacity,
+		// 	"availableCapacity", availableCapacity,
+		// 	"estimatedSlots", int(availableCapacity*float64(s.getEstimatedConcurrentCapacity(pod))))
 	}
 
 	// Apply scheduling strategy following Router's approach (no oversubscription)
 	// Router strictly enforces capacity limits, so we follow the same principle
 	finalCapacity := int(float64(totalAvailableCapacity) * SCHEDULER_OVERSUBSCRIPTION_FACTOR)
 
-	klog.V(4).InfoS("advanced batch size calculation",
-		"totalPods", len(pods),
-		"totalAvailableCapacity", totalAvailableCapacity,
-		"finalCapacity", finalCapacity,
-		"oversubscriptionFactor", SCHEDULER_OVERSUBSCRIPTION_FACTOR)
+	// klog.V(4).InfoS("advanced batch size calculation",
+	// 	"totalPods", len(pods),
+	// 	"totalAvailableCapacity", totalAvailableCapacity,
+	// 	"finalCapacity", finalCapacity,
+	// 	"oversubscriptionFactor", SCHEDULER_OVERSUBSCRIPTION_FACTOR)
 
 	return max(0, finalCapacity)
 }
@@ -362,24 +463,28 @@ func (s *inProcessScheduler) calculateImprovedFallbackBatchSize(pods []*v1.Pod) 
 	for _, pod := range pods {
 		podCapacity := s.getEstimatedConcurrentCapacity(pod)
 		totalEstimatedCapacity += podCapacity
+
+		// klog.V(5).InfoS("Pod capacity estimation",
+		// 	"podName", pod.Name,
+		// 	"estimatedCapacity", podCapacity)
 	}
 
 	// Calculate available capacity
 	inflight := s.inflightRequests.Load()
 	availableSlots := totalEstimatedCapacity - int(inflight)
 
-	klog.V(4).InfoS("improved fallback batch size calculation",
-		"totalPods", len(pods),
-		"totalEstimatedCapacity", totalEstimatedCapacity,
-		"inflight", inflight,
-		"availableSlots", availableSlots)
+	// klog.V(4).InfoS("improved fallback batch size calculation",
+	// 	"totalPods", len(pods),
+	// 	"totalEstimatedCapacity", totalEstimatedCapacity,
+	// 	"inflight", inflight,
+	// 	"availableSlots", availableSlots)
 
-	// If we still get very low capacity (indicating no annotations),
-	// switch to pass-through mode
+	// If we get very low capacity (indicating no annotations or default values),
+	// switch to pass-through mode to behave like no scheduler exists
 	if totalEstimatedCapacity <= len(pods) {
-		klog.V(3).InfoS("switching to pass-through mode - no pod capacity annotations found",
-			"totalEstimatedCapacity", totalEstimatedCapacity,
-			"podCount", len(pods))
+		// klog.V(3).InfoS("switching to pass-through mode - no pod capacity annotations found",
+		// 	"totalEstimatedCapacity", totalEstimatedCapacity,
+		// 	"podCount", len(pods))
 		// Return a large number to essentially disable batching
 		// This allows requests to be routed immediately without scheduler bottleneck
 		return PASS_THROUGH_BATCH_SIZE
