@@ -85,10 +85,10 @@ func (w *StormServiceWrapper) Selector(selector *metav1.LabelSelector) *StormSer
 
 // UpdateStrategy sets the update strategy of the StormService.
 func (w *StormServiceWrapper) UpdateStrategy(
-    strategy orchestrationapi.StormServiceUpdateStrategy,
+	strategy orchestrationapi.StormServiceUpdateStrategy,
 ) *StormServiceWrapper {
-    w.stormService.Spec.UpdateStrategy = strategy
-    return w
+	w.stormService.Spec.UpdateStrategy = strategy
+	return w
 }
 
 // Stateful sets the stateful flag of the StormService.
