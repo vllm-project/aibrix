@@ -17,7 +17,9 @@ limitations under the License.
 package wrapper
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
@@ -55,11 +57,56 @@ func (w *KVCacheWrapper) Namespace(ns string) *KVCacheWrapper {
 	return w
 }
 
+// Mode sets the mode of the KVCache.
+func (w *KVCacheWrapper) Mode(mode string) *KVCacheWrapper {
+	w.cache.Spec.Mode = mode
+	return w
+}
+
+// WithWatcher sets the watcher of the KVCache.
+func (w *KVCacheWrapper) WithWatcher(watcher orchestrationapi.RuntimeSpec) *KVCacheWrapper {
+	w.cache.Spec.Watcher = &watcher
+	return w
+}
+
+// WithCache sets the cache of the KVCache.
+func (w *KVCacheWrapper) WithCache(cache orchestrationapi.RuntimeSpec) *KVCacheWrapper {
+	w.cache.Spec.Cache = cache
+	return w
+}
+
 // Annotation adds an annotation to the KVCache.
 func (w *KVCacheWrapper) Annotation(key, value string) *KVCacheWrapper {
 	if w.cache.Annotations == nil {
 		w.cache.Annotations = map[string]string{}
 	}
 	w.cache.Annotations[key] = value
+	return w
+}
+
+// WithDefaultConfiguration sets up the KVCache with default configuration.
+func (w *KVCacheWrapper) WithDefaultConfiguration() *KVCacheWrapper {
+	w.cache.Spec = orchestrationapi.KVCacheSpec{
+		Metadata: &orchestrationapi.MetadataSpec{},
+		Service: orchestrationapi.ServiceSpec{
+			Type: corev1.ServiceTypeClusterIP,
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "service",
+					Port:       12345,
+					TargetPort: intstr.FromInt(12345),
+					Protocol:   corev1.ProtocolTCP,
+				},
+				{
+					Name:       "admin",
+					Port:       8088,
+					TargetPort: intstr.FromInt(8088),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+		},
+		Watcher: &orchestrationapi.RuntimeSpec{},
+		Cache:   orchestrationapi.RuntimeSpec{},
+	}
 	return w
 }
