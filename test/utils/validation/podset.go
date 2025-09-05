@@ -29,7 +29,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
 )
 
-func WaitForPodsCreated(ctx context.Context, k8sClient client.Client, ns, podSetLabel string, expected int) {
+func WaitForPodSetPodsCreated(ctx context.Context, k8sClient client.Client, ns, podSetLabel string, expected int) {
 	gomega.Eventually(func(g gomega.Gomega) int {
 		podList := &corev1.PodList{}
 		g.Expect(k8sClient.List(ctx, podList,
@@ -40,6 +40,7 @@ func WaitForPodsCreated(ctx context.Context, k8sClient client.Client, ns, podSet
 	}, time.Second*10, time.Millisecond*250).Should(gomega.Equal(expected))
 }
 
+//nolint:dupl
 func MarkPodSetPodsReady(ctx context.Context, k8sClient client.Client, ns, podSetLabel string) {
 	gomega.Eventually(func(g gomega.Gomega) {
 		podList := &corev1.PodList{}

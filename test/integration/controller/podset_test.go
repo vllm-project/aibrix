@@ -117,7 +117,7 @@ var _ = ginkgo.Describe("PodSet controller test", func() {
 							// Step 1: Create the PodSet
 							gomega.Expect(k8sClient.Create(ctx, podset)).To(gomega.Succeed())
 							// Step 2: Wait for all Pods to be created
-							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, podset.Name, 3)
+							validation.WaitForPodSetPodsCreated(ctx, k8sClient, ns.Name, podset.Name, 3)
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, podset *orchestrationapi.PodSet) {
 							// Validate Spec
@@ -131,14 +131,13 @@ var _ = ginkgo.Describe("PodSet controller test", func() {
 						// trigger PodSet all pods to ready
 						updateFunc: func(podset *orchestrationapi.PodSet) {
 							// Step 1: List all Pods
-							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, podset.Name, 3)
+							validation.WaitForPodSetPodsCreated(ctx, k8sClient, ns.Name, podset.Name, 3)
 							// Step 2: Patch all Pods to Running and Ready (simulate integration test environment)
 							validation.MarkPodSetPodsReady(ctx, k8sClient, ns.Name, podset.Name)
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, podset *orchestrationapi.PodSet) {
 							// Validate Spec
 							validation.ValidatePodSetSpec(podset, 3, false)
-							gomega.Expect(podset.Spec.PodGroupSize).To(gomega.Equal(int32(3)))
 							// Validate Status
 							validation.ValidatePodSetStatus(ctx, k8sClient,
 								podset, orchestrationapi.PodSetPhaseReady, 3, 3)

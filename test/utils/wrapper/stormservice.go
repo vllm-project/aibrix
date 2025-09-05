@@ -17,9 +17,8 @@ limitations under the License.
 package wrapper
 
 import (
-	"strconv"
-
 	"fmt"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
@@ -29,7 +28,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	webhook "github.com/vllm-project/aibrix/pkg/webhook"
+	"github.com/vllm-project/aibrix/pkg/webhook"
 )
 
 // StormServiceWrapper wraps core StormService types to provide a fluent API for test construction.
@@ -91,6 +90,16 @@ func (w *StormServiceWrapper) UpdateStrategy(
 	return w
 }
 
+// UpdateStrategyType sets the StormService update strategy type.
+func (w *StormServiceWrapper) UpdateStrategyType(
+	strategyType orchestrationapi.StormServiceUpdateStrategyType) *StormServiceWrapper {
+	if w.stormService.Spec.UpdateStrategy.Type == "" {
+		w.stormService.Spec.UpdateStrategy = orchestrationapi.StormServiceUpdateStrategy{}
+	}
+	w.stormService.Spec.UpdateStrategy.Type = strategyType
+	return w
+}
+
 // Stateful sets the stateful flag of the StormService.
 func (w *StormServiceWrapper) Stateful(stateful bool) *StormServiceWrapper {
 	w.stormService.Spec.Stateful = stateful
@@ -100,6 +109,15 @@ func (w *StormServiceWrapper) Stateful(stateful bool) *StormServiceWrapper {
 // Template sets the template of the StormService.
 func (w *StormServiceWrapper) Template(template orchestrationapi.RoleSetTemplateSpec) *StormServiceWrapper {
 	w.stormService.Spec.Template = template
+	return w
+}
+
+func (w *StormServiceWrapper) RoleSetTemplateMeta(metadata metav1.ObjectMeta,
+	roleSetSpec *orchestrationapi.RoleSetSpec) *StormServiceWrapper {
+	w.stormService.Spec.Template = orchestrationapi.RoleSetTemplateSpec{
+		ObjectMeta: metadata,
+		Spec:       roleSetSpec,
+	}
 	return w
 }
 
