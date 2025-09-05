@@ -100,7 +100,7 @@ class MemoryRegionKVCacheHandle(KVCacheHandle):
     def create(
         blocks: Sequence[torch.Tensor],
         block_spec: KVCacheBlockSpec,
-        slot_mapping: Sequence[int] | torch.Tensor,
+        select: Sequence[Tuple[int, int]],
         on_mr_release: Callable[[torch.Tensor, int, int], None] | None = None,
     ) -> KVCacheHandle:
         """
@@ -110,7 +110,8 @@ class MemoryRegionKVCacheHandle(KVCacheHandle):
         Args:
             blocks: Blocks that have been registered via register_kvcache.
             block_spec: KVCache block spec.
-            slot_mapping: Mapping from tokens to blocks.
+            select: A sequence of tuples to indicate how to pick MRs from the
+            blocks. Each tuple in it represents (block id, address offset).
             on_mr_release: Callback function when memory region is released.
 
         Returns:
@@ -131,17 +132,10 @@ class MemoryRegionKVCacheHandle(KVCacheHandle):
         total_blocks = len(blocks)
         assert total_blocks > 0, "blocks must not be empty"
 
-        ntokens = (
-            len(slot_mapping)
-            if isinstance(slot_mapping, Sequence)
-            else slot_mapping.shape[0]
-        )
-
-        num_blocks = ntokens // block_ntokens
-        mrs: List[ExternalMemoryRegion] = [None for _ in range(num_blocks)]  # type: ignore
-        for i in range(0, ntokens, block_ntokens):
-            block_id = slot_mapping[i] // block_ntokens
-            block_off = slot_mapping[i] % block_ntokens
+        nmrs = len(select)
+        mrs: List[ExternalMemoryRegion] = [None for _ in range(nmrs)]  # type: ignore
+        for i in range(nmrs):
+            block_id, block_off = select[i]
             slab = blocks[block_id].flatten().view(torch.uint8)
             mr = ExternalMemoryRegion(
                 slab=slab,
@@ -152,7 +146,7 @@ class MemoryRegionKVCacheHandle(KVCacheHandle):
                 on_release=on_mr_release,
             )
 
-            mrs[i // block_ntokens] = mr
+            mrs[i] = mr
 
         return MemoryRegionKVCacheHandle(block_dtype, block_shape, mrs)
 
