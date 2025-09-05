@@ -54,12 +54,12 @@ class KeyBuilder(ABC):
 
     @abstractmethod
     def build(
-        self, prefix: TokenListView | None, tokens: TokenListView
+        self, prefix: TokenListView | None, query: TokenListView
     ) -> Tuple[Tuple[TokenListView, bytes], ...]:
         """Build a sequence of keys from given tokens.
         Args:
             prefix (TokenListView | None): prefix tokens
-            tokens (TokenListView): tokens
+            query (TokenListView): query tokens
         Returns:
             A sequence of keys.
         """
