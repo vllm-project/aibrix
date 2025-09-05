@@ -29,6 +29,10 @@ import (
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
 
+const (
+	testRuntimeImage = "aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.0"
+)
+
 var _ = ginkgo.Describe("stormservice default webhook", func() {
 	var ns *corev1.Namespace
 
@@ -106,7 +110,7 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 					Namespace(ns.Name).
 					Annotations(map[string]string{
 						webhook.SidecarInjectionAnnotation:             "true",
-						webhook.SidecarInjectionRuntimeImageAnnotation: "aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.0",
+						webhook.SidecarInjectionRuntimeImageAnnotation: testRuntimeImage,
 					}).
 					WithDefaultConfiguration().
 					Obj()
@@ -116,10 +120,10 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 					Namespace(ns.Name).
 					Annotations(map[string]string{
 						webhook.SidecarInjectionAnnotation:             "true",
-						webhook.SidecarInjectionRuntimeImageAnnotation: "aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.0",
+						webhook.SidecarInjectionRuntimeImageAnnotation: testRuntimeImage,
 					}).
 					WithDefaultConfiguration().
-					WithSidecarInjection("aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.0").
+					WithSidecarInjection(testRuntimeImage).
 					Obj()
 			},
 		}),

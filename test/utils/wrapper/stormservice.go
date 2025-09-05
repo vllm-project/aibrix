@@ -17,6 +17,10 @@ limitations under the License.
 package wrapper
 
 import (
+	"strconv"
+
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -25,6 +29,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	webhook "github.com/vllm-project/aibrix/pkg/webhook"
 )
 
 // StormServiceWrapper wraps core StormService types to provide a fluent API for test construction.
@@ -79,9 +84,11 @@ func (w *StormServiceWrapper) Selector(selector *metav1.LabelSelector) *StormSer
 }
 
 // UpdateStrategy sets the update strategy of the StormService.
-func (w *StormServiceWrapper) UpdateStrategy(strategy orchestrationapi.StormServiceUpdateStrategy) *StormServiceWrapper {
-	w.stormService.Spec.UpdateStrategy = strategy
-	return w
+func (w *StormServiceWrapper) UpdateStrategy(
+    strategy orchestrationapi.StormServiceUpdateStrategy,
+) *StormServiceWrapper {
+    w.stormService.Spec.UpdateStrategy = strategy
+    return w
 }
 
 // Stateful sets the stateful flag of the StormService.
@@ -113,74 +120,27 @@ func (w *StormServiceWrapper) WithBasicTemplate() *StormServiceWrapper {
 	return w
 }
 
-// WithWorkerRole adds a worker role to the StormService.
-func (w *StormServiceWrapper) WithWorkerRole() *StormServiceWrapper {
-	if w.stormService.Spec.Template.Spec == nil {
-		w.WithBasicTemplate()
-	}
-
-	workerRole := orchestrationapi.RoleSpec{
-		Name:         "worker",
-		Replicas:     ptr.To(int32(1)),
-		UpgradeOrder: ptr.To(int32(1)),
-		Stateful:     false,
-		Template: v1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{
-				Labels: map[string]string{
-					"role": "worker",
-					"app":  "my-ai-app",
-				},
-			},
-			Spec: v1.PodSpec{
-				Containers: []v1.Container{
-					{
-						Name:  "vllm-worker",
-						Image: "vllm/vllm-openai:latest",
-						Args: []string{
-							"--model", "meta-llama/Llama-3-8b",
-							"--tensor-parallel-size", "1",
-						},
-						Ports: []v1.ContainerPort{
-							{ContainerPort: 8000, Protocol: "TCP"},
-						},
-						Resources: v1.ResourceRequirements{
-							Requests: v1.ResourceList{
-								v1.ResourceCPU:    resource.MustParse("4"),
-								v1.ResourceMemory: resource.MustParse("16Gi"),
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	w.stormService.Spec.Template.Spec.Roles = append(w.stormService.Spec.Template.Spec.Roles, workerRole)
-	return w
-}
-
-// WithMasterRole adds a master role to the StormService.
-func (w *StormServiceWrapper) WithMasterRole() *StormServiceWrapper {
+func (w *StormServiceWrapper) withRole(name string, stateful bool) *StormServiceWrapper {
 	if w.stormService.Spec.Template.Spec == nil {
 		w.WithBasicTemplate()
 	}
 
 	masterRole := orchestrationapi.RoleSpec{
-		Name:         "master",
+		Name:         name,
 		Replicas:     ptr.To(int32(1)),
 		UpgradeOrder: ptr.To(int32(1)),
-		Stateful:     true,
+		Stateful:     stateful,
 		Template: v1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels: map[string]string{
-					"role": "master",
+					"role": name,
 					"app":  "my-ai-app",
 				},
 			},
 			Spec: v1.PodSpec{
 				Containers: []v1.Container{
 					{
-						Name:  "vllm-master",
+						Name:  fmt.Sprintf("vllm-%s", name),
 						Image: "vllm/vllm-openai:latest",
 						Args: []string{
 							"--model", "meta-llama/Llama-3-8b",
@@ -205,6 +165,16 @@ func (w *StormServiceWrapper) WithMasterRole() *StormServiceWrapper {
 	return w
 }
 
+// WithWorkerRole adds a worker role to the StormService.
+func (w *StormServiceWrapper) WithWorkerRole() *StormServiceWrapper {
+	return w.withRole("worker", false)
+}
+
+// WithMasterRole adds a master role to the StormService.
+func (w *StormServiceWrapper) WithMasterRole() *StormServiceWrapper {
+	return w.withRole("master", true)
+}
+
 // WithSidecarInjection adds sidecar containers to all roles.
 func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormServiceWrapper {
 	if w.stormService.Spec.Template.Spec == nil {
@@ -213,20 +183,20 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 
 	// Default runtime image if not provided
 	if runtimeImage == "" {
-		runtimeImage = "aibrix/runtime:v0.4.0"
+		runtimeImage = webhook.SidecarImage
 	}
 
 	sidecarContainer := v1.Container{
-		Name:  "aibrix-runtime",
+		Name:  webhook.SidecarName,
 		Image: runtimeImage,
 		Command: []string{
 			"aibrix_runtime",
-			"--port", "8080",
+			"--port", strconv.Itoa(webhook.SidecarPort),
 		},
 		Ports: []v1.ContainerPort{
 			{
 				Name:          "metrics",
-				ContainerPort: 8080,
+				ContainerPort: webhook.SidecarPort,
 				Protocol:      "TCP",
 			},
 		},
@@ -237,7 +207,7 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 			},
 			{
 				Name:  "INFERENCE_ENGINE_ENDPOINT",
-				Value: "http://localhost:8000",
+				Value: webhook.DefaultEngineEndpoint,
 			},
 		},
 		Resources: v1.ResourceRequirements{
@@ -254,7 +224,7 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 			ProbeHandler: v1.ProbeHandler{
 				HTTPGet: &v1.HTTPGetAction{
 					Path: "/healthz",
-					Port: intstr.FromInt(8080),
+					Port: intstr.FromInt(webhook.SidecarPort),
 				},
 			},
 			InitialDelaySeconds: 3,
@@ -264,7 +234,7 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 			ProbeHandler: v1.ProbeHandler{
 				HTTPGet: &v1.HTTPGetAction{
 					Path: "/ready",
-					Port: intstr.FromInt(8080),
+					Port: intstr.FromInt(webhook.SidecarPort),
 				},
 			},
 			InitialDelaySeconds: 5,
