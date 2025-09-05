@@ -245,10 +245,19 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 	// Add sidecar to all roles
 	for i := range w.stormService.Spec.Template.Spec.Roles {
 		role := &w.stormService.Spec.Template.Spec.Roles[i]
+		// Check if sidecar already exists to ensure idempotency.
+		var exists bool
+		for _, c := range role.Template.Spec.Containers {
+			if c.Name == webhook.SidecarName {
+				exists = true
+				break
+			}
+		}
+		if exists {
+			continue
+		}
 		// Prepend sidecar container
-		containers := []v1.Container{sidecarContainer}
-		containers = append(containers, role.Template.Spec.Containers...)
-		role.Template.Spec.Containers = containers
+		role.Template.Spec.Containers = append([]v1.Container{sidecarContainer}, role.Template.Spec.Containers...)
 	}
 
 	return w
