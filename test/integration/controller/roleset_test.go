@@ -36,9 +36,15 @@ import (
 )
 
 const (
-	router  = "router"
-	prefill = "prefill"
-	decode  = "decode"
+	router                = "router"
+	prefill               = "prefill"
+	decode                = "decode"
+	prefillImageVersionV1 = "prefill:v1"
+	prefillImageVersionV2 = "prefill:v2"
+	decodeImageVersionV1  = "decode:v1"
+	decodeImageVersionV2  = "decode:v2"
+	routerImageVersionV1  = "router:v1"
+	routerImageVersionV2  = "router:v2"
 )
 
 var _ = ginkgo.Describe("RoleSet controller test", func() {
@@ -162,15 +168,19 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 					podList := &corev1.PodList{}
 					if err := k8sClient.List(ctx, podList,
 						client.InNamespace(ns.Name),
-						client.MatchingLabels{constants.RoleSetNameLabelKey: rs.Name}); err == nil {
-						for i := range podList.Items {
-							pod := &podList.Items[i]
-							if pod.DeletionTimestamp != nil {
-								continue
-							}
-							if pod.Status.Phase != corev1.PodRunning {
-								makePodReady(pod)
-								_ = k8sClient.Status().Update(ctx, pod)
+						client.MatchingLabels{constants.RoleSetNameLabelKey: rs.Name}); err != nil {
+						ginkgo.GinkgoLogr.Error(err, "Failed to list pods in startPodReadyHelper")
+						continue
+					}
+					for i := range podList.Items {
+						pod := &podList.Items[i]
+						if pod.DeletionTimestamp != nil {
+							continue
+						}
+						if pod.Status.Phase != corev1.PodRunning {
+							makePodReady(pod)
+							if err := k8sClient.Status().Update(ctx, pod); err != nil {
+								ginkgo.GinkgoLogr.Error(err, "Failed to update pod status in startPodReadyHelper", "pod", pod.Name)
 							}
 						}
 					}
@@ -346,7 +356,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 						Name:         router,
 						Replicas:     int32Ptr(1),
 						UpgradeOrder: int32Ptr(1),
-						Template:     makePodTemplate("router:v1"),
+						Template:     makePodTemplate(routerImageVersionV1),
 						UpdateStrategy: orchestrationapi.RoleUpdateStrategy{
 							MaxUnavailable: &maxUnavailable,
 						},
@@ -356,7 +366,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 						Name:         prefill,
 						Replicas:     int32Ptr(2),
 						UpgradeOrder: int32Ptr(2),
-						Template:     makePodTemplate("prefill:v1"),
+						Template:     makePodTemplate(prefillImageVersionV1),
 						UpdateStrategy: orchestrationapi.RoleUpdateStrategy{
 							MaxUnavailable: &maxUnavailable,
 						},
@@ -366,7 +376,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 						Name:         decode,
 						Replicas:     int32Ptr(2),
 						UpgradeOrder: int32Ptr(3),
-						Template:     makePodTemplate("decode:v1"),
+						Template:     makePodTemplate(decodeImageVersionV1),
 						UpdateStrategy: orchestrationapi.RoleUpdateStrategy{
 							MaxUnavailable: &maxUnavailable,
 						},
@@ -415,11 +425,11 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 								for i := range latest.Spec.Roles {
 									switch latest.Spec.Roles[i].Name {
 									case router:
-										latest.Spec.Roles[i].Template = makePodTemplate("router:v2")
+										latest.Spec.Roles[i].Template = makePodTemplate(routerImageVersionV2)
 									case prefill:
-										latest.Spec.Roles[i].Template = makePodTemplate("prefill:v2")
+										latest.Spec.Roles[i].Template = makePodTemplate(prefillImageVersionV2)
 									case decode:
-										latest.Spec.Roles[i].Template = makePodTemplate("decode:v2")
+										latest.Spec.Roles[i].Template = makePodTemplate(decodeImageVersionV2)
 									}
 								}
 
@@ -455,20 +465,21 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 								if routerHasNewImage {
 									prefillPods := getPodsForRole(rs, prefill)
 									for _, pod := range prefillPods {
-										if pod.Spec.Containers[0].Image == "prefill:v2" {
+										if pod.Spec.Containers[0].Image == prefillImageVersionV2 {
 											return true
 										}
 									}
 								}
 								return false
-							}, time.Second*45, time.Millisecond*500).Should(gomega.BeTrue(), "prefill should start upgrading after router starts")
+							}, time.Second*45, time.Millisecond*500).Should(gomega.BeTrue(),
+								"prefill should start upgrading after router starts")
 
 							// Decode should upgrade after prefill
 							gomega.Eventually(func() bool {
 								prefillPods := getPodsForRole(rs, prefill)
 								prefillHasNewImage := false
 								for _, pod := range prefillPods {
-									if pod.Spec.Containers[0].Image == "prefill:v2" {
+									if pod.Spec.Containers[0].Image == prefillImageVersionV2 {
 										prefillHasNewImage = true
 										break
 									}
@@ -477,13 +488,14 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 								if prefillHasNewImage {
 									decodePods := getPodsForRole(rs, decode)
 									for _, pod := range decodePods {
-										if pod.Spec.Containers[0].Image == "decode:v2" {
+										if pod.Spec.Containers[0].Image == decodeImageVersionV2 {
 											return true
 										}
 									}
 								}
 								return false
-							}, time.Second*45, time.Millisecond*500).Should(gomega.BeTrue(), "decode should start upgrading after prefill starts")
+							}, time.Second*45, time.Millisecond*500).Should(gomega.BeTrue(),
+								"decode should start upgrading after prefill starts")
 
 							// Verify final state - all roles should be upgraded
 							gomega.Eventually(func() error {
@@ -506,27 +518,28 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 								// Verify all pods have the new images
 								routerPods := getPodsForRole(rs, router)
 								for _, pod := range routerPods {
-									if pod.Spec.Containers[0].Image != "router:v2" {
+									if pod.Spec.Containers[0].Image != routerImageVersionV2 {
 										return fmt.Errorf("router pod still has old image: %s", pod.Spec.Containers[0].Image)
 									}
 								}
 
 								prefillPods := getPodsForRole(rs, prefill)
 								for _, pod := range prefillPods {
-									if pod.Spec.Containers[0].Image != "prefill:v2" {
+									if pod.Spec.Containers[0].Image != prefillImageVersionV2 {
 										return fmt.Errorf("prefill pod still has old image: %s", pod.Spec.Containers[0].Image)
 									}
 								}
 
 								decodePods := getPodsForRole(rs, decode)
 								for _, pod := range decodePods {
-									if pod.Spec.Containers[0].Image != "decode:v2" {
+									if pod.Spec.Containers[0].Image != decodeImageVersionV2 {
 										return fmt.Errorf("decode pod still has old image: %s", pod.Spec.Containers[0].Image)
 									}
 								}
 
 								return nil
-							}, time.Second*45, time.Millisecond*500).Should(gomega.Succeed(), "All roles should be fully upgraded with new images")
+							}, time.Second*45, time.Millisecond*500).Should(gomega.Succeed(),
+								"All roles should be fully upgraded with new images")
 						},
 					},
 				},
@@ -543,7 +556,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 						Name:         prefill,
 						Replicas:     int32Ptr(1),
 						UpgradeOrder: int32Ptr(1),
-						Template:     makePodTemplate("prefill:v1"),
+						Template:     makePodTemplate(prefillImageVersionV1),
 						UpdateStrategy: orchestrationapi.RoleUpdateStrategy{
 							MaxUnavailable: &maxUnavailable,
 						},
@@ -553,7 +566,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 						Name:         decode,
 						Replicas:     int32Ptr(1),
 						UpgradeOrder: int32Ptr(1),
-						Template:     makePodTemplate("decode:v1"),
+						Template:     makePodTemplate(decodeImageVersionV1),
 						UpdateStrategy: orchestrationapi.RoleUpdateStrategy{
 							MaxUnavailable: &maxUnavailable,
 						},
@@ -607,40 +620,49 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 								for i := range latest.Spec.Roles {
 									switch latest.Spec.Roles[i].Name {
 									case prefill:
-										latest.Spec.Roles[i].Template = makePodTemplate("prefill:v2")
+										latest.Spec.Roles[i].Template = makePodTemplate(prefillImageVersionV2)
 									case decode:
-										latest.Spec.Roles[i].Template = makePodTemplate("decode:v2")
+										latest.Spec.Roles[i].Template = makePodTemplate(decodeImageVersionV2)
 									}
 								}
 								g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
 							}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, rs *orchestrationapi.RoleSet) {
-							gomega.Eventually(func() bool {
+							// Wait for prefill to be upgraded first, as it's defined first in the RoleSet
+							gomega.Eventually(func(g gomega.Gomega) bool {
 								prefillPods := getPodsForRole(rs, prefill)
-								decodePods := getPodsForRole(rs, decode)
-
-								prefillUpgraded := false
-								decodeUpgraded := false
-
 								for _, pod := range prefillPods {
-									if pod.Spec.Containers[0].Image == "prefill:v2" {
-										prefillUpgraded = true
+									if pod.Spec.Containers[0].Image == prefillImageVersionV2 {
 										makePodReady(pod)
-										_ = k8sClient.Status().Update(ctx, pod)
+										g.Expect(k8sClient.Status().Update(ctx, pod)).To(gomega.Succeed())
+										return true
 									}
 								}
+								return false
+							}, time.Second*15, time.Millisecond*500).Should(gomega.BeTrue(),
+								"prefill role should upgrade first")
 
+							// Verify decode role is not upgraded yet
+							decodePods := getPodsForRole(rs, decode)
+							for _, pod := range decodePods {
+								gomega.Expect(pod.Spec.Containers[0].Image).To(gomega.Equal(decodeImageVersionV1),
+									"decode role should not be upgraded yet")
+							}
+
+							// Now, wait for decode role to be upgraded
+							gomega.Eventually(func(g gomega.Gomega) bool {
+								decodePods := getPodsForRole(rs, decode)
 								for _, pod := range decodePods {
-									if pod.Spec.Containers[0].Image == "decode:v2" {
-										decodeUpgraded = true
+									if pod.Spec.Containers[0].Image == decodeImageVersionV2 {
 										makePodReady(pod)
-										_ = k8sClient.Status().Update(ctx, pod)
+										g.Expect(k8sClient.Status().Update(ctx, pod)).To(gomega.Succeed())
+										return true
 									}
 								}
-
-								return prefillUpgraded && decodeUpgraded
-							}, time.Second*30, time.Millisecond*500).Should(gomega.BeTrue(), "Both services with same upgrade order should be upgraded")
+								return false
+							}, time.Second*15, time.Millisecond*500).Should(gomega.BeTrue(),
+								"decode role should upgrade after prefill")
 						},
 					},
 				},
