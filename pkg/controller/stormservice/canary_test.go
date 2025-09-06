@@ -237,29 +237,33 @@ func TestProcessCanaryWeightStep(t *testing.T) {
 
 	// Verify events were recorded (may receive multiple events)
 	var events []string
-	timeout := time.After(time.Second)
-eventLoop:
-	for len(events) < 2 {
+	timeout := time.After(2 * time.Second)
+collect:
+	for len(events) < 3 { // collect a few events or until timeout
 		select {
 		case event := <-eventRecorder.Events:
 			events = append(events, event)
 		case <-timeout:
-			break eventLoop
+			break collect
 		}
 	}
 
-	// Should have received both CanaryWeightApplied and CanaryReplicaMode events
+	// We expect at least the generic CanaryUpdate (weight set) and a mode-specific event
+	// Replica mode is used here since replicas=3
 	require.True(t, len(events) >= 1, "Expected at least one event")
 
-	// Check that we got either CanaryWeightApplied or CanaryReplicaMode (or both)
-	foundWeightEvent := false
-	for _, event := range events {
-		if strings.Contains(event, "33%") && (strings.Contains(event, "CanaryWeightApplied") || strings.Contains(event, "CanaryReplicaMode")) {
-			foundWeightEvent = true
-			break
+	foundUpdate := false
+	foundReplicaMode := false
+	for _, e := range events {
+		if strings.Contains(e, "CanaryUpdate") && strings.Contains(e, "33%") {
+			foundUpdate = true
+		}
+		if strings.Contains(e, "CanaryReplicaMode") && strings.Contains(e, "33%") {
+			foundReplicaMode = true
 		}
 	}
-	assert.True(t, foundWeightEvent, "Expected to find weight-related event with 33%, got events: %v", events)
+	assert.True(t, foundUpdate, "Expected CanaryUpdate event with 33%%, got: %v", events)
+	assert.True(t, foundReplicaMode, "Expected CanaryReplicaMode event with 33%%, got: %v", events)
 }
 
 func TestProcessCanaryPauseStep_AutomaticPause(t *testing.T) {
@@ -459,6 +463,8 @@ func TestAdvanceCanaryStep(t *testing.T) {
 	assert.Equal(t, int32(1), stormService.Status.CanaryStatus.CurrentStep)
 	assert.Nil(t, stormService.Status.CanaryStatus.PausedAt)
 	assert.Equal(t, orchestrationv1alpha1.CanaryPhaseProgressing, stormService.Status.CanaryStatus.Phase)
+	// Pause conditions should also be cleared when advancing
+	assert.Empty(t, stormService.Status.CanaryStatus.PauseConditions)
 }
 
 func TestHasPauseCondition(t *testing.T) {

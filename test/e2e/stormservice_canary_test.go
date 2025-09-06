@@ -727,6 +727,12 @@ func waitForCanaryResume(t *testing.T, client *v1alpha1.Clientset, name string) 
 				return false, err
 			}
 
+			if storm.Status.CanaryStatus == nil {
+				// Already completed or cleared; consider as resumed for this check
+				t.Logf("canary status cleared - considered resumed")
+				return true, nil
+			}
+
 			t.Logf("resume check: spec.paused=%v, canary phase=%s, step=%d, pausedAt=%v",
 				storm.Spec.Paused, storm.Status.CanaryStatus.Phase,
 				storm.Status.CanaryStatus.CurrentStep, storm.Status.CanaryStatus.PausedAt)

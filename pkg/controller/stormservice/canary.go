@@ -139,9 +139,10 @@ func (r *StormServiceReconciler) processCanaryUpdate(ctx context.Context, stormS
 	currentStepIndex := canaryStatus.CurrentStep
 	if currentStepIndex < int32(len(steps)) {
 		currentStep := steps[currentStepIndex]
-		// If current step is a manual pause step but no pause condition exists, advance
+		// Treat as resume ONLY if we've already marked PausedAt (i.e., entered this pause step)
+		// and the CanaryPauseStep condition has been removed by the user.
 		if currentStep.Pause != nil && currentStep.Pause.IsManualPause() {
-			if !r.hasPauseCondition(canaryStatus, orchestrationv1alpha1.PauseReasonCanaryPauseStep) {
+			if canaryStatus.PausedAt != nil && !r.hasPauseCondition(canaryStatus, orchestrationv1alpha1.PauseReasonCanaryPauseStep) {
 				klog.Infof("Manual pause condition removed for StormService %s/%s, advancing to next step",
 					stormService.Namespace, stormService.Name)
 				return r.advanceCanaryStep(ctx, stormService)
@@ -211,7 +212,7 @@ func (r *StormServiceReconciler) processCanaryPauseStep(ctx context.Context, sto
 			addStatusUpdate(func(status *orchestrationv1alpha1.CanaryStatus) {
 				status.PausedAt = &now
 				status.Phase = orchestrationv1alpha1.CanaryPhasePaused
-				
+
 				// Add pause condition to track why it's paused
 				pauseCondition := orchestrationv1alpha1.PauseCondition{
 					Reason:    orchestrationv1alpha1.PauseReasonCanaryPauseStep,
@@ -297,8 +298,12 @@ func (r *StormServiceReconciler) processCanaryPauseStep(ctx context.Context, sto
 			return ctrl.Result{}, fmt.Errorf("failed to add CanaryPauseStep pause condition: %w", err)
 		}
 	} else {
-		r.EventRecorder.Eventf(stormService, "Normal", "CanaryPauseManual",
-			"Canary paused at manual pause step. Remove CanaryPauseStep pause condition to continue")
+		// Emit a consistent CanaryUpdate event even if the pause condition already exists
+		update := newCanaryStatusUpdate().
+			addEvent("Canary paused at manual pause step. Remove CanaryPauseStep pause condition to continue")
+		if err := r.applyCanaryStatusUpdate(ctx, stormService, update); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to record manual pause event: %w", err)
+		}
 	}
 
 	// Requeue periodically to check if pause condition was removed
@@ -342,15 +347,15 @@ func (r *StormServiceReconciler) applyCanaryWeight(ctx context.Context, stormSer
 
 	// Check if this is a scaling event during canary (compare with current status replicas)
 	currentStatusReplicas := stormService.Status.Replicas
-	
+
 	// If replicas changed during canary, log and notify but continue with recalculation
 	if currentStatusReplicas > 0 && currentStatusReplicas != totalReplicas {
-		klog.Infof("Scaling detected during canary for StormService %s/%s: %d -> %d replicas, recalculating distribution", 
+		klog.Infof("Scaling detected during canary for StormService %s/%s: %d -> %d replicas, recalculating distribution",
 			stormService.Namespace, stormService.Name, currentStatusReplicas, totalReplicas)
-		
+
 		// Log the recalculation event
 		r.EventRecorder.Eventf(stormService, "Normal", "CanaryScaling",
-			"Recalculated canary distribution due to scaling: %d%% weight with %d total replicas (%d canary, %d stable)", 
+			"Recalculated canary distribution due to scaling: %d%% weight with %d total replicas (%d canary, %d stable)",
 			weight, totalReplicas, canaryReplicas, stableReplicas)
 	}
 
@@ -401,7 +406,7 @@ func (r *StormServiceReconciler) advanceCanaryStep(ctx context.Context, stormSer
 	update := newCanaryStatusUpdate().
 		addStatusUpdate(func(status *orchestrationv1alpha1.CanaryStatus) {
 			status.CurrentStep = nextStep
-			status.PausedAt = nil // Clear pause timestamp
+			status.PausedAt = nil        // Clear pause timestamp
 			status.PauseConditions = nil // Clear pause conditions when resuming
 			status.Phase = orchestrationv1alpha1.CanaryPhaseProgressing
 		})
@@ -474,6 +479,10 @@ func (r *StormServiceReconciler) completeCanary(ctx context.Context, stormServic
 		return ctrl.Result{}, fmt.Errorf("failed to promote canary revision: %w", err)
 	}
 
+	// Use single patch operation for the final status update
+	// Capture the original object BEFORE mutating status to ensure the patch contains the changes
+	original := stormService.DeepCopy()
+
 	// Step 3: Update main status to reflect the promotion
 	stormService.Status.CurrentRevision = promotedRevision
 	stormService.Status.UpdateRevision = promotedRevision
@@ -481,8 +490,6 @@ func (r *StormServiceReconciler) completeCanary(ctx context.Context, stormServic
 	// Step 4: Clear canary status - this triggers normal rollout logic to take over
 	stormService.Status.CanaryStatus = nil
 
-	// Use single patch operation for the final status update
-	original := stormService.DeepCopy()
 	if err := r.Status().Patch(ctx, stormService, client.MergeFrom(original)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to clear canary status and promote revision: %w", err)
 	}
