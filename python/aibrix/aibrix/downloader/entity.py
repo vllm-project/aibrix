@@ -70,23 +70,21 @@ class DownloadFile:
             return FileDownloadStatus.DOWNLOADED
 
         try:
-            # Downloading process will acquire the lock,
-            # and other process will raise Timeout Exception
+            # Downloading process will acquire the lock; if we cannot acquire
+            # immediately (non-blocking), another process is downloading.
             lock = FileLock(self.lock_path)
-            # Try a non-blocking acquire to detect an active download.
             acquired = lock.acquire(blocking=False)
-        except Timeout:
-            return FileDownloadStatus.DOWNLOADING
         except Exception as e:
             logger.warning(f"Failed to acquire lock failed for error: {e}")
             return FileDownloadStatus.UNKNOWN
         else:
             # If we acquired the lock, immediately release it to avoid stale locks.
-            if acquired:
-                try:
-                    lock.release()
-                except Exception:
-                    pass
+            if not acquired:
+                return FileDownloadStatus.DOWNLOADING
+            try:
+                lock.release()
+            except Exception:
+                pass
             return FileDownloadStatus.NO_OPERATION
 
     @contextlib.contextmanager
