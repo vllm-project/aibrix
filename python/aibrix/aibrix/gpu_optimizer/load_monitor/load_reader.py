@@ -244,8 +244,8 @@ class GatewayLoadReader:
         self.prefix = f"aibrix:{model_name}_request_trace_"
         self.key_ts_alignment = key_ts_alignment
         self.ver = 3  # Change here or negotiate with Redis to be legacy compatible
-        # self.accumulated_total = 0.0
-        # self.accumulated_pending = 0.0
+        self.accumulated_total = 0.0
+        self.accumulated_pending = 0.0
 
     def read(self, ts: float = 0.0) -> Tuple[List[LoadRecord], float]:
         """Read the next batch of records from the data source."""
@@ -361,27 +361,25 @@ class GatewayLoadReader:
         )  # Add 2 seconds to tolerate possible delay
 
     def _get_rate(self, total, pending) -> float:
-        # Pending requests includes in window pending and out of window pending.
-        # Most of pending requests are in window pending
-        # We add pending to total proportionally to request more resources.
-        # if pending == 0.0:
-        #     # reset accumulated
-        #     self.accumulated_pending = 0.0
-        #     self.accumulated_total = 0.0
-        #     return float(total) / self.key_ts_alignment
+        # Pending requests includes in-window and out-of-window pending requests.
+        # We proportionally add pending to scale up the rate.
+        if pending == 0.0:
+            # Reset accumulated values when there is no backlog.
+            self.accumulated_pending = 0.0
+            self.accumulated_total = 0.0
+            return float(total) / self.key_ts_alignment
 
-        # self.accumulated_pending += pending
-        # self.accumulated_total += total
-        # if self.accumulated_pending < self.accumulated_total:
-        #     # gap_ratio = pending(gap)/completed(real)
-        #     gap_ratio = self.accumulated_pending / (
-        #         self.accumulated_total - self.accumulated_pending
-        #     )
-        #     return (gap_ratio + 1) * total / self.key_ts_alignment
-        # else:
-        #     # Abnormal, simply compensate for 2 times.
-        #     return 2.0 * total / self.key_ts_alignment
-        return total / self.key_ts_alignment
+        self.accumulated_pending += pending
+        self.accumulated_total += total
+        if self.accumulated_pending < self.accumulated_total:
+            # gap_ratio = pending(gap)/completed(real)
+            gap_ratio = self.accumulated_pending / (
+                self.accumulated_total - self.accumulated_pending
+            )
+            return (gap_ratio + 1) * total / self.key_ts_alignment
+        else:
+            # Abnormal, simply compensate for 2x.
+            return 2.0 * total / self.key_ts_alignment
 
     def _parse_profiles(
         self, profiles: dict, ts: float, out_records: Optional[List[LoadRecord]] = None

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import types
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -159,3 +161,52 @@ def test_get_downloader_s3_irsa_auth_config(mock_boto3):
     assert "aws_secret_access_key" not in auth_config
     assert auth_config.get("region_name") == "us-west-2"
     assert "endpoint_url" not in auth_config  # Should not be present when None
+
+
+def test_s3_atomic_write(monkeypatch, tmp_path):
+    # Validate that S3 download writes to .part then renames atomically
+    from aibrix.downloader import s3 as s3_mod
+
+    class FakePaginator:
+        def __init__(self, pages):
+            self._pages = pages
+
+        def paginate(self, **kwargs):
+            for p in self._pages:
+                yield p
+
+    class FakeS3Client:
+        def __init__(self):
+            self.objects = {
+                "bucket": {"path/file.txt": {"ETag": "etag", "ContentLength": 4}}
+            }
+
+        def head_bucket(self, Bucket):
+            return {}
+
+        def head_object(self, Bucket, Key):
+            return self.objects[Bucket][Key]
+
+        def get_paginator(self, name):
+            assert name == "list_objects_v2"
+            return FakePaginator(
+                [{"Contents": [{"Key": "path/file.txt"}], "KeyCount": 1}]
+            )
+
+        def download_file(self, Bucket, Key, Filename, Config, Callback=None):
+            # Write to the provided temporary file path
+            Path(Filename).parent.mkdir(parents=True, exist_ok=True)
+            Path(Filename).write_bytes(b"data")
+
+    def fake_boto3_client(service_name, config, **auth):
+        return FakeS3Client()
+
+    monkeypatch.setattr(
+        s3_mod, "boto3", types.SimpleNamespace(client=fake_boto3_client)
+    )
+
+    d = s3_mod.S3Downloader("s3://bucket/path/file.txt", model_name="m")
+    d.download_model(local_path=str(tmp_path))
+    final = tmp_path / "m" / "file.txt"
+    assert final.exists()
+    assert not Path(str(final) + ".part").exists()
