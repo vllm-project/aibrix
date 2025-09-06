@@ -35,6 +35,7 @@ import (
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/stretchr/testify/assert"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -166,4 +167,27 @@ func validateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expecte
 			return false, nil
 		})
 	assert.NoError(t, err, "timeout waiting for all pods to be ready")
+}
+
+// waitForStormServiceReady waits for a StormService to be ready
+func waitForStormServiceReady(ctx context.Context, t *testing.T, k8sClient *kubernetes.Clientset,
+	crdClient *v1alpha1.Clientset, stormService *orchestrationv1alpha1.StormService, timeout time.Duration) error {
+	return wait.PollUntilContextTimeout(ctx, 10*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
+		ss, err := crdClient.OrchestrationV1alpha1().StormServices(stormService.Namespace).
+			Get(ctx, stormService.Name, v1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+
+		// Check if all replicas are ready
+		if ss.Status.ReadyReplicas > 0 && ss.Status.ReadyReplicas == ss.Status.Replicas {
+			t.Logf("StormService %s is ready: %d/%d replicas ready",
+				stormService.Name, ss.Status.ReadyReplicas, ss.Status.Replicas)
+			return true, nil
+		}
+
+		t.Logf("Waiting for StormService %s to be ready: %d/%d replicas ready",
+			stormService.Name, ss.Status.ReadyReplicas, ss.Status.Replicas)
+		return false, nil
+	})
 }

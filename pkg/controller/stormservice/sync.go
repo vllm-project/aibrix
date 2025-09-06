@@ -53,12 +53,30 @@ func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchest
 	if scaling, err := r.scaling(ctx, stormService, current, currentRevision.Name, updateRevision.Name); err != nil {
 		r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, ScalingEventType, "scaling error %s", err.Error())
 		reconcileErr = err
-	} else if !stormService.Spec.Paused && !scaling { // skip rollout when paused and in scaling
-		// 2. check the rollout progress
-		reconcileErr = r.rollout(ctx, stormService, currentRevision.Name, updateRevision.Name)
-		if reconcileErr != nil {
-			r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, RolloutEventType, "rollout error %s", reconcileErr.Error())
+	} else if !scaling { // skip rollout when in scaling
+		// 2. check if canary deployment is enabled
+		if r.isCanaryEnabled(stormService) && currentRevision.Name != updateRevision.Name {
+			// Handle canary deployment
+			if result, err := r.processCanaryUpdate(ctx, stormService, currentRevision.Name, updateRevision.Name); err != nil {
+				r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, "CanaryError", "canary deployment error: %s", err.Error())
+				reconcileErr = err
+			} else if result.Requeue || result.RequeueAfter > 0 {
+				// Canary is still in progress, return early with requeue
+				return result.RequeueAfter, nil
+			}
+			// Canary completed, continue with normal rollout logic
+		} else if !stormService.Spec.Paused {
+			// 2. check the rollout progress (traditional rollout)
+			reconcileErr = r.rollout(ctx, stormService, currentRevision.Name, updateRevision.Name)
+			if reconcileErr != nil {
+				r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, RolloutEventType, "rollout error %s", reconcileErr.Error())
+			}
 		}
+	} else if scaling && r.isCanaryEnabled(stormService) && stormService.Status.CanaryStatus != nil {
+		// Scaling occurred during canary deployment - requeue to recalculate replica distribution
+		klog.Infof("Scaling occurred during canary deployment for StormService %s/%s, requeue for replica recalculation",
+			stormService.Namespace, stormService.Name)
+		return DefaultRequeueAfter, nil
 	}
 	// 3. update status
 	if ready, err := r.updateStatus(ctx, stormService, reconcileErr, currentRevision, updateRevision, collisionCount); err != nil {
