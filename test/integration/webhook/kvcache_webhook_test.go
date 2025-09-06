@@ -21,10 +21,11 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 
-	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
+
+	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
 
 var _ = ginkgo.Describe("kvcache default and validation", func() {
@@ -67,81 +68,29 @@ var _ = ginkgo.Describe("kvcache default and validation", func() {
 		},
 		ginkgo.Entry("apply kvcache with no backend specified", &testDefaultingCase{
 			kvcache: func() *orchestrationapi.KVCache {
-				return &orchestrationapi.KVCache{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "kvcache-cluster-no-backend",
-						Namespace: ns.Name,
-						Annotations: map[string]string{
-							"infinistore.kvcache.orchestration.aibrix.ai/link-type": "Ethernet",
-						},
-					},
-					Spec: orchestrationapi.KVCacheSpec{
-						Metadata: &orchestrationapi.MetadataSpec{},
-						Service: orchestrationapi.ServiceSpec{
-							Type: corev1.ServiceTypeClusterIP,
-							Ports: []corev1.ServicePort{
-								{
-									Name:       "service",
-									Port:       12345,
-									TargetPort: intstr.FromInt(12345),
-									Protocol:   corev1.ProtocolTCP,
-								},
-								{
-									Name:       "admin",
-									Port:       8088,
-									TargetPort: intstr.FromInt(8088),
-									Protocol:   corev1.ProtocolTCP,
-								},
-							},
-						},
-						Watcher: &orchestrationapi.RuntimeSpec{},
-						Cache:   orchestrationapi.RuntimeSpec{},
-					},
-				}
+				return wrapper.MakeKVCache("kvcache-cluster-no-backend").
+					Namespace(ns.Name).
+					Annotation("infinistore.kvcache.orchestration.aibrix.ai/link-type", "Ethernet").
+					WithDefaultConfiguration().
+					Obj()
 			},
 			wantKvcache: func() *orchestrationapi.KVCache {
-				return &orchestrationapi.KVCache{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "kvcache-cluster-no-backend",
-						Namespace: ns.Name,
-						Annotations: map[string]string{
-							"infinistore.kvcache.orchestration.aibrix.ai/link-type": "Ethernet",
-							"kvcache.orchestration.aibrix.ai/backend":               "vineyard",
-							"kvcache.orchestration.aibrix.ai/mode":                  "vineyard",
-						},
-					},
-					Spec: orchestrationapi.KVCacheSpec{
-						Mode:     "distributed",
-						Metadata: &orchestrationapi.MetadataSpec{},
-						Service: orchestrationapi.ServiceSpec{
-							Type: corev1.ServiceTypeClusterIP,
-							Ports: []corev1.ServicePort{
-								{
-									Name:       "service",
-									Port:       12345,
-									TargetPort: intstr.FromInt(12345),
-									Protocol:   corev1.ProtocolTCP,
-								},
-								{
-									Name:       "admin",
-									Port:       8088,
-									TargetPort: intstr.FromInt(8088),
-									Protocol:   corev1.ProtocolTCP,
-								},
-							},
-						},
-						Watcher: &orchestrationapi.RuntimeSpec{
-							Replicas:        1,
-							ImagePullPolicy: string(corev1.PullIfNotPresent),
-							Env:             []corev1.EnvVar{},
-						},
-						Cache: orchestrationapi.RuntimeSpec{
-							Replicas:        1,
-							ImagePullPolicy: string(corev1.PullIfNotPresent),
-							Env:             []corev1.EnvVar{},
-						},
-					},
+				runtimeSpec := orchestrationapi.RuntimeSpec{
+					Replicas:        1,
+					ImagePullPolicy: string(corev1.PullIfNotPresent),
+					Env:             []corev1.EnvVar{},
 				}
+
+				return wrapper.MakeKVCache("kvcache-cluster-no-backend").
+					Namespace(ns.Name).
+					Annotation("infinistore.kvcache.orchestration.aibrix.ai/link-type", "Ethernet").
+					Annotation("kvcache.orchestration.aibrix.ai/backend", "vineyard").
+					Annotation("kvcache.orchestration.aibrix.ai/mode", "vineyard").
+					WithDefaultConfiguration().
+					Mode("distributed").
+					WithWatcher(runtimeSpec).
+					WithCache(runtimeSpec).
+					Obj()
 			},
 		}),
 	)
@@ -160,165 +109,43 @@ var _ = ginkgo.Describe("kvcache default and validation", func() {
 		},
 		ginkgo.Entry("normal creation", &testValidatingCase{
 			kvcache: func() *orchestrationapi.KVCache {
-				kv := &orchestrationapi.KVCache{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "kvcache-cluster",
-						Namespace: ns.Name,
-						Annotations: map[string]string{
-							"kvcache.orchestration.aibrix.ai/backend":                    "infinistore",
-							"infinistore.kvcache.orchestration.aibrix.ai/link-type":      "Ethernet",
-							"infinistore.kvcache.orchestration.aibrix.ai/hint-gid-index": "7",
-						},
-					},
-					Spec: orchestrationapi.KVCacheSpec{
-						Metadata: &orchestrationapi.MetadataSpec{
-							Redis: &orchestrationapi.MetadataConfig{
-								Runtime: &orchestrationapi.RuntimeSpec{
-									Image:    "aibrix-cn-beijing.cr.volces.com/aibrix/redis:7.4.2",
-									Replicas: 1,
-								},
-							},
-						},
-						Service: orchestrationapi.ServiceSpec{
-							Type: corev1.ServiceTypeClusterIP,
-							Ports: []corev1.ServicePort{
-								{
-									Name:       "service",
-									Port:       12345,
-									TargetPort: intstr.FromInt(12345),
-									Protocol:   corev1.ProtocolTCP,
-								},
-								{
-									Name:       "admin",
-									Port:       8088,
-									TargetPort: intstr.FromInt(8088),
-									Protocol:   corev1.ProtocolTCP,
-								},
-							},
-						},
-						Watcher: &orchestrationapi.RuntimeSpec{
-							Image:           "aibrix-cn-beijing.cr.volces.com/aibrix/kvcache-watcher:v0.3.0",
-							ImagePullPolicy: string(corev1.PullAlways),
-						},
-						Cache: orchestrationapi.RuntimeSpec{
-							Replicas:        1,
-							Image:           "aibrix-cn-beijing.cr.volces.com/aibrix/infinistore:v0.2.42-20250506",
-							ImagePullPolicy: string(corev1.PullIfNotPresent),
-						},
-					},
-				}
-				return kv
+				return wrapper.MakeKVCache("kvcache-cluster").
+					Namespace(ns.Name).
+					Annotation("kvcache.orchestration.aibrix.ai/backend", "infinistore").
+					Annotation("infinistore.kvcache.orchestration.aibrix.ai/link-type", "Ethernet").
+					Annotation("infinistore.kvcache.orchestration.aibrix.ai/hint-gid-index", "7").
+					WithDefaultConfiguration().
+					Obj()
 			},
 			failed: false,
 		}),
 		ginkgo.Entry("invalid backend", &testValidatingCase{
 			kvcache: func() *orchestrationapi.KVCache {
-				kv := &orchestrationapi.KVCache{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "kvcache-cluster-invalid-backend",
-						Namespace: ns.Name,
-						Annotations: map[string]string{
-							"kvcache.orchestration.aibrix.ai/backend": "unsupported_backend",
-						},
-					},
-					Spec: orchestrationapi.KVCacheSpec{
-						Metadata: &orchestrationapi.MetadataSpec{},
-						Service: orchestrationapi.ServiceSpec{
-							Type: corev1.ServiceTypeClusterIP,
-							Ports: []corev1.ServicePort{
-								{
-									Name:       "service",
-									Port:       12345,
-									TargetPort: intstr.FromInt(12345),
-									Protocol:   corev1.ProtocolTCP,
-								},
-								{
-									Name:       "admin",
-									Port:       8088,
-									TargetPort: intstr.FromInt(8088),
-									Protocol:   corev1.ProtocolTCP,
-								},
-							},
-						},
-						Watcher: &orchestrationapi.RuntimeSpec{},
-						Cache:   orchestrationapi.RuntimeSpec{},
-					},
-				}
-				return kv
+				return wrapper.MakeKVCache("kvcache-cluster-invalid-backend").
+					Namespace(ns.Name).
+					Annotation("kvcache.orchestration.aibrix.ai/backend", "unsupported_backend").
+					WithDefaultConfiguration().
+					Obj()
 			},
 			failed: true,
 		}),
 		ginkgo.Entry("no backend specified", &testValidatingCase{
 			kvcache: func() *orchestrationapi.KVCache {
-				kv := &orchestrationapi.KVCache{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "kvcache-cluster-no-backend",
-						Namespace: ns.Name,
-						Annotations: map[string]string{
-							"infinistore.kvcache.orchestration.aibrix.ai/link-type": "Ethernet",
-						},
-					},
-					Spec: orchestrationapi.KVCacheSpec{
-						Metadata: &orchestrationapi.MetadataSpec{},
-						Service: orchestrationapi.ServiceSpec{
-							Type: corev1.ServiceTypeClusterIP,
-							Ports: []corev1.ServicePort{
-								{
-									Name:       "service",
-									Port:       12345,
-									TargetPort: intstr.FromInt(12345),
-									Protocol:   corev1.ProtocolTCP,
-								},
-								{
-									Name:       "admin",
-									Port:       8088,
-									TargetPort: intstr.FromInt(8088),
-									Protocol:   corev1.ProtocolTCP,
-								},
-							},
-						},
-						Watcher: &orchestrationapi.RuntimeSpec{},
-						Cache:   orchestrationapi.RuntimeSpec{},
-					},
-				}
-				return kv
+				return wrapper.MakeKVCache("kvcache-cluster-no-backend").
+					Namespace(ns.Name).
+					Annotation("infinistore.kvcache.orchestration.aibrix.ai/link-type", "Ethernet").
+					WithDefaultConfiguration().
+					Obj()
 			},
 			failed: false,
 		}),
 		ginkgo.Entry("mode determines backend", &testValidatingCase{
 			kvcache: func() *orchestrationapi.KVCache {
-				kv := &orchestrationapi.KVCache{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "kvcache-cluster-mode-backend",
-						Namespace: ns.Name,
-						Annotations: map[string]string{
-							"infinistore.kvcache.orchestration.aibrix.ai/mode": "distributed",
-						},
-					},
-					Spec: orchestrationapi.KVCacheSpec{
-						Metadata: &orchestrationapi.MetadataSpec{},
-						Service: orchestrationapi.ServiceSpec{
-							Type: corev1.ServiceTypeClusterIP,
-							Ports: []corev1.ServicePort{
-								{
-									Name:       "service",
-									Port:       12345,
-									TargetPort: intstr.FromInt(12345),
-									Protocol:   corev1.ProtocolTCP,
-								},
-								{
-									Name:       "admin",
-									Port:       8088,
-									TargetPort: intstr.FromInt(8088),
-									Protocol:   corev1.ProtocolTCP,
-								},
-							},
-						},
-						Watcher: &orchestrationapi.RuntimeSpec{},
-						Cache:   orchestrationapi.RuntimeSpec{},
-					},
-				}
-				return kv
+				return wrapper.MakeKVCache("kvcache-cluster-mode-backend").
+					Namespace(ns.Name).
+					Annotation("infinistore.kvcache.orchestration.aibrix.ai/mode", "distributed").
+					WithDefaultConfiguration().
+					Obj()
 			},
 			failed: false,
 		}),
