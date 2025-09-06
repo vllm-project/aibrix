@@ -120,11 +120,33 @@ class TOSDownloaderV1(BaseDownloader):
         return True
 
     def _directory_list(self, path: str) -> List[str]:
-        # TODO cache list_objects_type2 result to avoid too many requests
-        objects_out = self.client.list_objects_type2(
-            self.bucket_name, prefix=path, delimiter="/"
-        )
-        return [obj.key for obj in objects_out.contents]
+        # Recursively list all objects under the prefix with best-effort pagination
+        prefix = path if path.endswith("/") else f"{path}/"
+        keys: List[str] = []
+        continuation_token: Optional[str] = None
+        while True:
+            kwargs = {"prefix": prefix, "delimiter": "/"}
+            if continuation_token:
+                kwargs["continuation_token"] = continuation_token
+            try:
+                resp = self.client.list_objects_type2(self.bucket_name, **kwargs)
+            except TypeError:
+                # SDK may not support continuation; fall back to single call
+                resp = self.client.list_objects_type2(
+                    self.bucket_name, prefix=prefix, delimiter="/"
+                )
+                keys.extend([obj.key for obj in getattr(resp, "contents", [])])
+                break
+
+            keys.extend([obj.key for obj in getattr(resp, "contents", [])])
+            is_truncated = getattr(resp, "is_truncated", False)
+            if not is_truncated:
+                break
+            continuation_token = getattr(resp, "next_continuation_token", None)
+            if not continuation_token:
+                break
+
+        return keys
 
     def _support_range_download(self) -> bool:
         return True
@@ -143,6 +165,11 @@ class TOSDownloaderV1(BaseDownloader):
 
         _file_name = bucket_path.split("/")[-1]
         local_file = local_path.joinpath(_file_name).absolute()
+        tmp_file = (
+            local_file.with_suffix(local_file.suffix + ".part")
+            if local_file.suffix
+            else Path(str(local_file) + ".part")
+        )
 
         # check if file exist
         etag = meta_data.etag
@@ -180,7 +207,7 @@ class TOSDownloaderV1(BaseDownloader):
                     bucket=bucket_name,
                     key=bucket_path,
                     file_path=str(
-                        local_file
+                        tmp_file
                     ),  # TOS client does not support Path, convert it to str
                     task_num=task_num,
                     data_transfer_listener=download_progress
@@ -188,6 +215,7 @@ class TOSDownloaderV1(BaseDownloader):
                     else None,
                     **download_kwargs,
                 )
+                tmp_file.replace(local_file)
                 save_meta_data(meta_data_file, etag)
 
 
@@ -210,17 +238,17 @@ class TOSDownloaderV2(S3BaseDownloader):
         )  # type: ignore
 
     def _get_auth_config(self) -> Dict[str, Optional[str]]:
-        return {
-            "region_name": self.download_extra_config.region
-            or envs.DOWNLOADER_TOS_REGION
-            or "",
-            "endpoint_url": self.download_extra_config.endpoint
-            or envs.DOWNLOADER_TOS_ENDPOINT
-            or "",
-            "aws_access_key_id": self.download_extra_config.ak
-            or envs.DOWNLOADER_TOS_ACCESS_KEY
-            or "",
-            "aws_secret_access_key": self.download_extra_config.sk
-            or envs.DOWNLOADER_TOS_SECRET_KEY
-            or "",
-        }
+        cfg: Dict[str, Optional[str]] = {}
+        region = self.download_extra_config.region or envs.DOWNLOADER_TOS_REGION
+        if region:
+            cfg["region_name"] = region
+        endpoint = self.download_extra_config.endpoint or envs.DOWNLOADER_TOS_ENDPOINT
+        if endpoint:
+            cfg["endpoint_url"] = endpoint
+        ak = self.download_extra_config.ak or envs.DOWNLOADER_TOS_ACCESS_KEY
+        sk = self.download_extra_config.sk or envs.DOWNLOADER_TOS_SECRET_KEY
+        # Only set AK/SK if both provided; otherwise let default chain/IRSA resolve
+        if ak and sk:
+            cfg["aws_access_key_id"] = ak
+            cfg["aws_secret_access_key"] = sk
+        return cfg

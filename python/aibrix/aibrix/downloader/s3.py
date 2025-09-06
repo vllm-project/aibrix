@@ -285,20 +285,38 @@ class S3BaseDownloader(BaseDownloader):
         """Check if model_uri is a directory."""
         if self.bucket_path.endswith("/"):
             return True
-        objects_out = self.client.list_objects_v2(
-            Bucket=self.bucket_name, Delimiter="/", Prefix=self.bucket_path
-        )
-        contents = objects_out.get("Contents", [])
-        if len(contents) == 1 and contents[0].get("Key") == self.bucket_path:
-            return False
-        return True
+        # If the exact key exists and there are no child keys under path+"/",
+        # we treat it as a file. Otherwise, it's a directory-like prefix.
+        key_exists = False
+        try:
+            self.client.head_object(Bucket=self.bucket_name, Key=self.bucket_path)
+            key_exists = True
+        except Exception:
+            key_exists = False
+
+        # Check for any child under prefix + '/'
+        prefix = self.bucket_path.rstrip("/") + "/"
+        paginator = self.client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(
+            Bucket=self.bucket_name, Prefix=prefix, PaginationConfig={"MaxItems": 1}
+        ):
+            if page.get("KeyCount", 0) > 0 or page.get("Contents"):
+                return True
+            break
+
+        return not key_exists and True or False
 
     def _directory_list(self, path: str) -> List[str]:
-        objects_out = self.client.list_objects_v2(
-            Bucket=self.bucket_name, Delimiter="/", Prefix=path
-        )
-        contents = objects_out.get("Contents", [])
-        return [content.get("Key") for content in contents]
+        # Recursively list all objects under the prefix using paginator
+        prefix = path if path.endswith("/") else f"{path}/"
+        keys: List[str] = []
+        paginator = self.client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
+            for content in page.get("Contents", []) if page else []:
+                k = content.get("Key")
+                if k is not None:
+                    keys.append(k)
+        return keys
 
     def _support_range_download(self) -> bool:
         return True
@@ -317,6 +335,12 @@ class S3BaseDownloader(BaseDownloader):
 
         _file_name = bucket_path.split("/")[-1]
         local_file = local_path.joinpath(_file_name).absolute()
+        # Write to a temporary file to ensure atomic finalize
+        tmp_file = (
+            local_file.with_suffix(local_file.suffix + ".part")
+            if local_file.suffix
+            else Path(str(local_file) + ".part")
+        )
 
         # check if file exist
         etag = meta_data.get("ETag", "")
@@ -364,11 +388,13 @@ class S3BaseDownloader(BaseDownloader):
                     Bucket=bucket_name,
                     Key=bucket_path,
                     Filename=str(
-                        local_file
+                        tmp_file
                     ),  # S3 client does not support Path, convert it to str
                     Config=config,
                     Callback=download_progress if self.enable_progress_bar else None,
                 )
+                # Atomically move into place then write metadata
+                tmp_file.replace(local_file)
                 save_meta_data(meta_data_file, etag)
 
 
