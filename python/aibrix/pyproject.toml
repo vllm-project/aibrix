@@ -27,7 +27,7 @@ classifiers = [
 packages = [
     { include = "aibrix" },
 ]
-exclude = ["test"]
+exclude = ["tests"]
 
 [tool.poetry-dynamic-versioning]
 enable = true
