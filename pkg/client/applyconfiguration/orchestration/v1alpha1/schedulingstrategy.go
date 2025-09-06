@@ -17,14 +17,12 @@ limitations under the License.
 
 package v1alpha1
 
-import (
-	v1alpha1 "github.com/kubewharf/godel-scheduler-api/pkg/apis/scheduling/v1alpha1"
-)
-
 // SchedulingStrategyApplyConfiguration represents a declarative configuration of the SchedulingStrategy type for use
 // with apply.
 type SchedulingStrategyApplyConfiguration struct {
-	PodGroup *v1alpha1.PodGroupSpec `json:"podGroup,omitempty"`
+	GodelSchedulingStrategy        *GodelSchedulingStrategySpecApplyConfiguration        `json:"godelSchedulingStrategy,omitempty"`
+	CoschedulingSchedulingStrategy *CoschedulingSchedulingStrategySpecApplyConfiguration `json:"coschedulingSchedulingStrategy,omitempty"`
+	VolcanoSchedulingStrategy      *VolcanoSchedulingStrategySpecApplyConfiguration      `json:"volcanoSchedulingStrategy,omitempty"`
 }
 
 // SchedulingStrategyApplyConfiguration constructs a declarative configuration of the SchedulingStrategy type for use with
@@ -33,10 +31,26 @@ func SchedulingStrategy() *SchedulingStrategyApplyConfiguration {
 	return &SchedulingStrategyApplyConfiguration{}
 }
 
-// WithPodGroup sets the PodGroup field in the declarative configuration to the given value
+// WithGodelSchedulingStrategy sets the GodelSchedulingStrategy field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the PodGroup field is set to the value of the last call.
-func (b *SchedulingStrategyApplyConfiguration) WithPodGroup(value v1alpha1.PodGroupSpec) *SchedulingStrategyApplyConfiguration {
-	b.PodGroup = &value
+// If called multiple times, the GodelSchedulingStrategy field is set to the value of the last call.
+func (b *SchedulingStrategyApplyConfiguration) WithGodelSchedulingStrategy(value *GodelSchedulingStrategySpecApplyConfiguration) *SchedulingStrategyApplyConfiguration {
+	b.GodelSchedulingStrategy = value
+	return b
+}
+
+// WithCoschedulingSchedulingStrategy sets the CoschedulingSchedulingStrategy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the CoschedulingSchedulingStrategy field is set to the value of the last call.
+func (b *SchedulingStrategyApplyConfiguration) WithCoschedulingSchedulingStrategy(value *CoschedulingSchedulingStrategySpecApplyConfiguration) *SchedulingStrategyApplyConfiguration {
+	b.CoschedulingSchedulingStrategy = value
+	return b
+}
+
+// WithVolcanoSchedulingStrategy sets the VolcanoSchedulingStrategy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the VolcanoSchedulingStrategy field is set to the value of the last call.
+func (b *SchedulingStrategyApplyConfiguration) WithVolcanoSchedulingStrategy(value *VolcanoSchedulingStrategySpecApplyConfiguration) *SchedulingStrategyApplyConfiguration {
+	b.VolcanoSchedulingStrategy = value
 	return b
 }

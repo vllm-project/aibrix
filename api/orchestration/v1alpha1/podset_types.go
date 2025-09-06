@@ -35,6 +35,9 @@ type PodSetSpec struct {
 	// Stateful indicates whether pods should have stable network identities
 	// +optional
 	Stateful bool `json:"stateful,omitempty"`
+
+	// +optional
+	SchedulingStrategy *SchedulingStrategy `json:"schedulingStrategy,omitempty"`
 }
 
 // PodSetStatus defines the observed state of PodSet
