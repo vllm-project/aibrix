@@ -27,6 +27,7 @@ import (
 const (
 	StormServiceKind = "StormService"
 	RoleSetKind      = "RoleSet"
+	PodSetKind       = "PodSet"
 )
 
 var (

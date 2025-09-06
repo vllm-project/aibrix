@@ -378,9 +378,10 @@ func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.Ro
 			},
 		},
 		Spec: orchestrationv1alpha1.PodSetSpec{
-			PodGroupSize: *role.PodGroupSize,
-			Template:     podTemplate,
-			Stateful:     role.Stateful,
+			PodGroupSize:       *role.PodGroupSize,
+			Template:           podTemplate,
+			Stateful:           role.Stateful,
+			SchedulingStrategy: role.SchedulingStrategy,
 		},
 	}
 
@@ -399,8 +400,31 @@ func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.Ro
 		podSet.Labels[constants.RoleReplicaIndexLabelKey] = fmt.Sprintf("%d", *roleIndex)
 	}
 
-	if roleSet.Spec.SchedulingStrategy.PodGroup != nil {
-		podSet.Annotations[constants.GodelPodGroupNameAnnotationKey] = roleSet.Name
+	if roleSet.Spec.SchedulingStrategy != nil {
+		if roleSet.Spec.SchedulingStrategy.CoschedulingSchedulingStrategy != nil {
+			podSet.Labels[constants.CoschedulingPodGroupNameLabelKey] = roleSet.Name
+		}
+		if roleSet.Spec.SchedulingStrategy.GodelSchedulingStrategy != nil {
+			podSet.Annotations[constants.GodelPodGroupNameAnnotationKey] = roleSet.Name
+			podSet.Labels[constants.GodelPodGroupNameAnnotationKey] = roleSet.Name
+		}
+		if roleSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy != nil {
+			podSet.Annotations[constants.VolcanoPodGroupNameAnnotationKey] = roleSet.Name
+			podSet.Labels[constants.VolcanoPodGroupNameAnnotationKey] = roleSet.Name
+		}
+	}
+	if role.SchedulingStrategy != nil { // note that roleSet.Spec.SchedulingStrategy and role.SchedulingStrategy should not be set concurrently
+		if role.SchedulingStrategy.CoschedulingSchedulingStrategy != nil {
+			podSet.Labels[constants.CoschedulingPodGroupNameLabelKey] = podSet.Name
+		}
+		if role.SchedulingStrategy.GodelSchedulingStrategy != nil {
+			podSet.Annotations[constants.GodelPodGroupNameAnnotationKey] = podSet.Name
+			podSet.Labels[constants.GodelPodGroupNameAnnotationKey] = podSet.Name
+		}
+		if role.SchedulingStrategy.VolcanoSchedulingStrategy != nil {
+			podSet.Annotations[constants.VolcanoPodGroupNameAnnotationKey] = podSet.Name
+			podSet.Labels[constants.VolcanoPodGroupNameAnnotationKey] = podSet.Name
+		}
 	}
 
 	// inject container env
