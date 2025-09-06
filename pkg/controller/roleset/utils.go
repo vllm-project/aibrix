@@ -396,15 +396,21 @@ func sortRolesByUpgradeOrder(roles []orchestrationv1alpha1.RoleSpec) []orchestra
 	sortedRoles := make([]orchestrationv1alpha1.RoleSpec, len(roles))
 	copy(sortedRoles, roles)
 	sort.SliceStable(sortedRoles, func(i, j int) bool {
-		orderI := int32(0)
-		if sortedRoles[i].UpgradeOrder != nil {
-			orderI = *sortedRoles[i].UpgradeOrder
+		// Explicit orders come before nil orders
+		if sortedRoles[i].UpgradeOrder == nil && sortedRoles[j].UpgradeOrder != nil {
+			return false // i (nil) comes after j (explicit)
 		}
-		orderJ := int32(0)
-		if sortedRoles[j].UpgradeOrder != nil {
-			orderJ = *sortedRoles[j].UpgradeOrder
+		if sortedRoles[i].UpgradeOrder != nil && sortedRoles[j].UpgradeOrder == nil {
+			return true // i (explicit) comes before j (nil)
 		}
-		return orderI < orderJ
+
+		// Both nil - maintain stable sort order
+		if sortedRoles[i].UpgradeOrder == nil && sortedRoles[j].UpgradeOrder == nil {
+			return false
+		}
+
+		// Both explicit - sort by value
+		return *sortedRoles[i].UpgradeOrder < *sortedRoles[j].UpgradeOrder
 	})
 	return sortedRoles
 }
