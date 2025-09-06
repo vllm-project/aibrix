@@ -125,16 +125,14 @@ class TOSDownloaderV1(BaseDownloader):
         keys: List[str] = []
         continuation_token: Optional[str] = None
         while True:
-            kwargs = {"prefix": prefix, "delimiter": "/"}
+            kwargs = {"prefix": prefix}
             if continuation_token:
                 kwargs["continuation_token"] = continuation_token
             try:
                 resp = self.client.list_objects_type2(self.bucket_name, **kwargs)
             except TypeError:
                 # SDK may not support continuation; fall back to single call
-                resp = self.client.list_objects_type2(
-                    self.bucket_name, prefix=prefix, delimiter="/"
-                )
+                resp = self.client.list_objects_type2(self.bucket_name, prefix=prefix)
                 keys.extend([obj.key for obj in getattr(resp, "contents", [])])
                 break
 

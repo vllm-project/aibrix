@@ -291,7 +291,9 @@ class S3BaseDownloader(BaseDownloader):
         try:
             self.client.head_object(Bucket=self.bucket_name, Key=self.bucket_path)
             key_exists = True
-        except Exception:
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") not in ("404", "NoSuchKey"):
+                raise
             key_exists = False
 
         # Check for any child under prefix + '/'
@@ -304,7 +306,7 @@ class S3BaseDownloader(BaseDownloader):
                 return True
             break
 
-        return not key_exists and True or False
+        return not key_exists
 
     def _directory_list(self, path: str) -> List[str]:
         # Recursively list all objects under the prefix using paginator

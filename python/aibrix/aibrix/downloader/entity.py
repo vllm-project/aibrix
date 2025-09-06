@@ -66,26 +66,27 @@ class DownloadFile:
 
     @property
     def status(self):
+        # If both the file and its metadata exist, the download is complete
         if self.file_path.exists() and self.metadata_path.exists():
             return FileDownloadStatus.DOWNLOADED
 
+        lock = FileLock(self.lock_path)
         try:
-            # Downloading process will acquire the lock; if we cannot acquire
-            # immediately (non-blocking), another process is downloading.
-            lock = FileLock(self.lock_path)
-            acquired = lock.acquire(blocking=False)
-        except Exception as e:
-            logger.warning(f"Failed to acquire lock failed for error: {e}")
-            return FileDownloadStatus.UNKNOWN
-        else:
-            # If we acquired the lock, immediately release it to avoid stale locks.
-            if not acquired:
-                return FileDownloadStatus.DOWNLOADING
+            # Try to acquire the lock in a non-blocking way (timeout=0).
+            # If the lock is already held, a Timeout exception will be raised.
+            lock.acquire(timeout=0)
             try:
+                # Successfully acquired the lock → no download is currently in progress
+                return FileDownloadStatus.NO_OPERATION
+            finally:
+                # Release immediately to avoid holding the lock unnecessarily
                 lock.release()
-            except Exception:
-                pass
-            return FileDownloadStatus.NO_OPERATION
+        except Timeout:
+            # Another process is holding the lock → a download is in progress
+            return FileDownloadStatus.DOWNLOADING
+        except Exception as e:
+            logger.warning(f"Failed to acquire lock for error: {e}")
+            return FileDownloadStatus.UNKNOWN
 
     @contextlib.contextmanager
     def download_lock(self) -> Generator[BaseFileLock, None, None]:
@@ -163,14 +164,9 @@ class DownloadModel:
         # in-progress, completed, and interrupted cases.
         filenames = set()
         if cache_dir.exists():
-            for lock_file in Path(cache_dir).glob("*.lock"):
-                name = lock_file.name
-                if name.endswith(".lock"):
-                    filenames.add(name[: -len(".lock")])
-            for meta_file in Path(cache_dir).glob("*.metadata"):
-                name = meta_file.name
-                if name.endswith(".metadata"):
-                    filenames.add(name[: -len(".metadata")])
+            for suffix in (".lock", ".metadata"):
+                for path in Path(cache_dir).glob(f"*{suffix}"):
+                    filenames.add(path.name[: -len(suffix)])
 
         download_files = [
             get_local_download_paths(
