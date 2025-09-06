@@ -69,7 +69,7 @@ def build_cache_value(
     assert mr.length == TEST_ALLOC_SIZE
     mr.block_nbytes = block_nbytes
     randomize_mrs([mr])
-    mr.pack_tokens(prefix=key.prefix, tokens=key.tokens)
+    mr.pack_tokens(prefix=key.prefix, query=key.query)
     mr.seal()
     return mr
 
@@ -280,7 +280,7 @@ def test_on_hot_access_callback(policy):
         mr = build_cache_value(allocator, 64, key)
         policy.put(key, mr)
         if i % 3 == 0:
-            key = TokenCacheKey(prefix=None, tokens=(i,))
+            key = TokenCacheKey(prefix=None, query=(i,))
             # get multiple times to ensure no duplicate calls to
             # on_hot_access callback
             for _ in range(5):
