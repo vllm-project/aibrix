@@ -181,12 +181,12 @@ func waitForStormServiceReady(ctx context.Context, t *testing.T, k8sClient *kube
 
 		// Check if all replicas are ready
 		if ss.Status.ReadyReplicas > 0 && ss.Status.ReadyReplicas == ss.Status.Replicas {
-			t.Logf("StormService %s is ready: %d/%d replicas ready", 
+			t.Logf("StormService %s is ready: %d/%d replicas ready",
 				stormService.Name, ss.Status.ReadyReplicas, ss.Status.Replicas)
 			return true, nil
 		}
 
-		t.Logf("Waiting for StormService %s to be ready: %d/%d replicas ready", 
+		t.Logf("Waiting for StormService %s to be ready: %d/%d replicas ready",
 			stormService.Name, ss.Status.ReadyReplicas, ss.Status.Replicas)
 		return false, nil
 	})
