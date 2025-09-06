@@ -526,3 +526,60 @@ and remove the ``
         - --health-probe-bind-address=:8081
         - --metrics-bind-address=0
         - --enable-runtime-sidecar # this line should be removed
+
+Runtime Metrics Configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The AIBrix runtime provides flexible metrics transformation options to handle different inference engines (vLLM, SGLang) and ensure compatibility. You can control metrics behavior using environment variables:
+
+**Default Mode (Recommended):**
+
+.. code-block:: bash
+
+    # Enable metrics transformation (default: enabled)
+    export METRICS_ENABLE_TRANSFORMATION=1
+    
+    # Disable raw passthrough mode (default: disabled) 
+    export METRICS_RAW_PASSTHROUGH_MODE=0
+
+This mode standardizes metrics from different engines to a common ``aibrix:`` namespace:
+
+- ``vllm:num_requests_waiting`` → ``aibrix:queue_size``
+- ``sglang:num_queue_reqs`` → ``aibrix:queue_size``
+- ``vllm:prompt_tokens_total`` → ``aibrix:prompt_tokens_total``
+- ``sglang:prompt_tokens_total`` → ``aibrix:prompt_tokens_total``
+
+**Raw Passthrough Mode (Debugging/Fallback):**
+
+.. code-block:: bash
+
+    # Return raw engine metrics unchanged
+    export METRICS_RAW_PASSTHROUGH_MODE=1
+
+Use this mode when:
+
+- Debugging metrics transformation issues
+- Different engines have scale/semantic differences  
+- You need engine-specific metric names preserved
+- Fallback during transformation errors
+
+**Complete Transformation Disable (Emergency):**
+
+.. code-block:: bash
+
+    # Disable all transformation (forces raw passthrough)
+    export METRICS_ENABLE_TRANSFORMATION=0
+
+This is the safest fallback option that guarantees raw metrics regardless of any errors.
+
+**Automatic Error Recovery:**
+
+The runtime automatically falls back to raw passthrough mode if metrics transformation encounters errors, ensuring metrics collection never fails completely.
+
+**Configuration Priority:**
+
+1. ``METRICS_ENABLE_TRANSFORMATION=0`` forces raw passthrough (highest priority)
+2. ``METRICS_RAW_PASSTHROUGH_MODE=1`` enables raw mode when transformation is enabled
+3. Automatic fallback on transformation errors (lowest priority)
+
+This configuration affects the ``/metrics`` endpoint exposed by the AIBrix runtime sidecar.

@@ -18,7 +18,7 @@ from prometheus_client.core import CounterMetricFamily
 
 from aibrix.metrics.engine_rules import get_metric_standard_rules
 from aibrix.metrics.http_collector import HTTPCollector
-from aibrix.metrics.standard_rules import RenameStandardRule
+from aibrix.metrics.standard_rules import PassthroughStandardRule, RenameStandardRule
 
 
 def test_get_metric_standard_rules_ignore_case():
@@ -32,12 +32,19 @@ def test_get_metric_standard_rules_ignore_case():
 
 
 def test_get_metric_standard_rules_not_support():
-    # SGLang and TensorRT-LLM are not supported
-    with pytest.raises(ValueError):
-        get_metric_standard_rules("SGLang")
-
+    # TensorRT-LLM is not supported (SGLang is now supported)
     with pytest.raises(ValueError):
         get_metric_standard_rules("TensorRT-LLM")
+
+def test_get_metric_standard_rules_sglang_support():
+    # SGLang is now supported
+    rules = get_metric_standard_rules("sglang")
+    assert rules is not None
+    assert len(rules) > 0
+    
+    # Case insensitive
+    rules2 = get_metric_standard_rules("SGLang")
+    assert rules.keys() == rules2.keys()
 
 
 class TestRenameStandardRule:
@@ -224,3 +231,24 @@ temperature_degrees{} 25.5
         results = list(collector.collect())
         # Assert
         assert len(results) == 0
+
+
+class TestPassthroughStandardRule:
+    """Test PassthroughStandardRule basic functionality."""
+
+    @staticmethod
+    def create_sample_metric(name: str, value: float = 1.0):
+        metric = CounterMetricFamily(name, f"Test metric for {name}")
+        metric.add_metric(labels=[], value=value)
+        return metric
+
+    def test_passthrough_basic(self):
+        """Test basic passthrough functionality."""
+        metric = self.create_sample_metric("test_metric")
+        rule = PassthroughStandardRule("test_metric")
+        
+        result = list(rule(metric))
+        
+        assert len(result) == 1
+        assert result[0].name == "test_metric"
+        assert result[0] is metric  # Should be the same object
