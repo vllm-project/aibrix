@@ -73,13 +73,20 @@ class DownloadFile:
             # Downloading process will acquire the lock,
             # and other process will raise Timeout Exception
             lock = FileLock(self.lock_path)
-            lock.acquire(blocking=False)
+            # Try a non-blocking acquire to detect an active download.
+            acquired = lock.acquire(blocking=False)
         except Timeout:
             return FileDownloadStatus.DOWNLOADING
         except Exception as e:
             logger.warning(f"Failed to acquire lock failed for error: {e}")
             return FileDownloadStatus.UNKNOWN
         else:
+            # If we acquired the lock, immediately release it to avoid stale locks.
+            if acquired:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
             return FileDownloadStatus.NO_OPERATION
 
     @contextlib.contextmanager
@@ -154,18 +161,25 @@ class DownloadModel:
 
         cache_sub_dir = (DOWNLOAD_CACHE_DIR % source.value).strip("/")
         cache_dir = Path(model_base_dir).joinpath(cache_sub_dir)
-        lock_files = list(Path(cache_dir).glob("*.lock"))
+        # Build list of files from both lock and metadata to cover
+        # in-progress, completed, and interrupted cases.
+        filenames = set()
+        if cache_dir.exists():
+            for lock_file in Path(cache_dir).glob("*.lock"):
+                name = lock_file.name
+                if name.endswith(".lock"):
+                    filenames.add(name[: -len(".lock")])
+            for meta_file in Path(cache_dir).glob("*.metadata"):
+                name = meta_file.name
+                if name.endswith(".metadata"):
+                    filenames.add(name[: -len(".metadata")])
 
-        download_files = []
-        for lock_file in lock_files:
-            lock_name = lock_file.name
-            lock_suffix = ".lock"
-            if lock_name.endswith(lock_suffix):
-                filename = lock_name[: -len(lock_suffix)]
-                download_file = get_local_download_paths(
-                    model_base_dir=model_base_dir, filename=filename, source=source
-                )
-                download_files.append(download_file)
+        download_files = [
+            get_local_download_paths(
+                model_base_dir=model_base_dir, filename=filename, source=source
+            )
+            for filename in sorted(filenames)
+        ]
 
         return cls(
             model_source=source,
