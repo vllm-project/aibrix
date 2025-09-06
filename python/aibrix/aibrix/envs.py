@@ -93,7 +93,9 @@ METRIC_SCRAPE_PATH = os.getenv("METRIC_SCRAPE_PATH", "/metrics")
 PROMETHEUS_MULTIPROC_DIR = os.getenv("PROMETHEUS_MULTIPROC_DIR", "/tmp/aibrix/metrics/")
 
 # Metrics transformation config
-METRICS_ENABLE_TRANSFORMATION = _is_true(os.getenv("METRICS_ENABLE_TRANSFORMATION", "1"))
+METRICS_ENABLE_TRANSFORMATION = _is_true(
+    os.getenv("METRICS_ENABLE_TRANSFORMATION", "1")
+)
 METRICS_RAW_PASSTHROUGH_MODE = _is_true(os.getenv("METRICS_RAW_PASSTHROUGH_MODE", "0"))
 
 # Inference Engine Config

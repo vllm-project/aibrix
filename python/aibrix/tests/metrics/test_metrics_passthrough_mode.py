@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 from aibrix.metrics.http_collector import HTTPCollector
@@ -50,7 +49,7 @@ vllm:prompt_tokens_total{model_name="test-model"} 1000
             endpoint="http://fake.metrics.url",
             metrics_rules=metrics_rules,
             keep_original_metric=False,  # Would normally suppress original
-            raw_passthrough_mode=True,   # Override - return raw metrics
+            raw_passthrough_mode=True,  # Override - return raw metrics
         )
 
         # Act
@@ -58,14 +57,14 @@ vllm:prompt_tokens_total{model_name="test-model"} 1000
 
         # Assert
         metric_names = [m.name for m in results]
-        
+
         # Should have original metrics (note: prometheus client strips _total from counters)
         assert "vllm:num_requests_waiting" in metric_names
         assert "vllm:prompt_tokens" in metric_names
-        
+
         # Should NOT have transformed metrics
         assert "aibrix:queue_size" not in metric_names
-        
+
         # Should have exactly 2 metrics (no duplication)
         assert len(results) == 2
 
@@ -96,13 +95,13 @@ vllm:prompt_tokens_total{model_name="test-model"} 1000
 
         # Assert
         metric_names = [m.name for m in results]
-        
+
         # Should NOT have original vllm:num_requests_waiting
         assert "vllm:num_requests_waiting" not in metric_names
-        
+
         # Should have transformed metric
         assert "aibrix:queue_size" in metric_names
-        
+
         # Should have untransformed metric that has no rule
         assert "vllm:prompt_tokens" not in metric_names
 
@@ -134,11 +133,11 @@ vllm:prompt_tokens_total{model_name="test-model"} 1000
 
         # Assert
         metric_names = [m.name for m in results]
-        
+
         # Should have original metrics (env var enabled passthrough)
         assert "vllm:num_requests_waiting" in metric_names
         assert "vllm:prompt_tokens" in metric_names
-        
+
         # Should NOT have transformed metrics
         assert "aibrix:queue_size" not in metric_names
 
@@ -170,11 +169,11 @@ vllm:prompt_tokens_total{model_name="test-model"} 1000
 
         # Assert - should still be in passthrough mode
         metric_names = [m.name for m in results]
-        
+
         # Should have original metrics (transformation disabled)
         assert "vllm:num_requests_waiting" in metric_names
         assert "vllm:prompt_tokens" in metric_names
-        
+
         # Should NOT have transformed metrics
         assert "aibrix:queue_size" not in metric_names
 
@@ -192,9 +191,7 @@ vllm:prompt_tokens_total{model_name="test-model"} 1000
             def __call__(self, metric):
                 raise ValueError("Simulated transformation error")
 
-        metrics_rules = {
-            "vllm:num_requests_waiting": FailingRule()
-        }
+        metrics_rules = {"vllm:num_requests_waiting": FailingRule()}
 
         collector = HTTPCollector(
             endpoint="http://fake.metrics.url",
@@ -208,11 +205,11 @@ vllm:prompt_tokens_total{model_name="test-model"} 1000
 
         # Assert - should fall back to passthrough mode
         metric_names = [m.name for m in results]
-        
+
         # Should have original metrics (fallback mode)
         assert "vllm:num_requests_waiting" in metric_names
         assert "vllm:prompt_tokens" in metric_names
-        
+
         # Should have exactly 2 metrics
         assert len(results) == 2
 
@@ -232,7 +229,9 @@ vllm:prompt_tokens_total{model_name="test-model"} 1000
         }
 
         # Mock env var to be False, but explicitly enable passthrough
-        with patch("aibrix.metrics.http_collector.envs.METRICS_RAW_PASSTHROUGH_MODE", False):
+        with patch(
+            "aibrix.metrics.http_collector.envs.METRICS_RAW_PASSTHROUGH_MODE", False
+        ):
             collector = HTTPCollector(
                 endpoint="http://fake.metrics.url",
                 metrics_rules=metrics_rules,
@@ -245,11 +244,11 @@ vllm:prompt_tokens_total{model_name="test-model"} 1000
 
             # Assert
             metric_names = [m.name for m in results]
-            
+
             # Should have original metrics (explicit override)
             assert "vllm:num_requests_waiting" in metric_names
             assert "vllm:prompt_tokens" in metric_names
-            
+
             # Should NOT have transformed metrics
             assert "aibrix:queue_size" not in metric_names
 
@@ -263,14 +262,22 @@ vllm:prompt_tokens_total{model_name="test-model"} 1000
         assert collector1.raw_passthrough_mode is True
 
         # Test 2: Environment variable used when no explicit parameter
-        with patch("aibrix.metrics.http_collector.envs.METRICS_RAW_PASSTHROUGH_MODE", True):
-            with patch("aibrix.metrics.http_collector.envs.METRICS_ENABLE_TRANSFORMATION", True):
+        with patch(
+            "aibrix.metrics.http_collector.envs.METRICS_RAW_PASSTHROUGH_MODE", True
+        ):
+            with patch(
+                "aibrix.metrics.http_collector.envs.METRICS_ENABLE_TRANSFORMATION", True
+            ):
                 collector2 = HTTPCollector(endpoint="http://fake.url")
                 assert collector2.raw_passthrough_mode is True
 
         # Test 3: Transformation disabled forces passthrough regardless of other settings
-        with patch("aibrix.metrics.http_collector.envs.METRICS_ENABLE_TRANSFORMATION", False):
-            with patch("aibrix.metrics.http_collector.envs.METRICS_RAW_PASSTHROUGH_MODE", False):
+        with patch(
+            "aibrix.metrics.http_collector.envs.METRICS_ENABLE_TRANSFORMATION", False
+        ):
+            with patch(
+                "aibrix.metrics.http_collector.envs.METRICS_RAW_PASSTHROUGH_MODE", False
+            ):
                 collector3 = HTTPCollector(
                     endpoint="http://fake.url",
                     raw_passthrough_mode=False,

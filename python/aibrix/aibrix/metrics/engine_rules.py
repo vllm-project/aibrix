@@ -14,7 +14,11 @@
 
 from typing import Dict
 
-from aibrix.metrics.standard_rules import PassthroughStandardRule, RenameStandardRule, StandardRule
+from aibrix.metrics.standard_rules import (
+    PassthroughStandardRule,
+    RenameStandardRule,
+    StandardRule,
+)
 
 # vLLM metric standard rules - complete coverage
 VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
@@ -25,7 +29,6 @@ VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
     "vllm:gpu_cache_usage_perc": RenameStandardRule(
         "vllm:gpu_cache_usage_perc", "aibrix:gpu_cache_usage_perc"
     ),
-    
     # Token processing metrics
     "vllm:prompt_tokens_total": RenameStandardRule(
         "vllm:prompt_tokens_total", "aibrix:prompt_tokens_total"
@@ -33,7 +36,6 @@ VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
     "vllm:generation_tokens_total": RenameStandardRule(
         "vllm:generation_tokens_total", "aibrix:generation_tokens_total"
     ),
-    
     # Latency metrics
     "vllm:time_to_first_token_seconds": RenameStandardRule(
         "vllm:time_to_first_token_seconds", "aibrix:time_to_first_token_seconds"
@@ -44,7 +46,6 @@ VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
     "vllm:e2e_request_latency_seconds": RenameStandardRule(
         "vllm:e2e_request_latency_seconds", "aibrix:e2e_request_latency_seconds"
     ),
-    
     # Request success metrics
     "vllm:request_success_total": RenameStandardRule(
         "vllm:request_success_total", "aibrix:request_success_total"
@@ -60,7 +61,6 @@ SGLANG_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
     "sglang:gen_throughput": RenameStandardRule(
         "sglang:gen_throughput", "aibrix:generation_throughput"
     ),
-    
     # Token processing metrics
     "sglang:prompt_tokens_total": RenameStandardRule(
         "sglang:prompt_tokens_total", "aibrix:prompt_tokens_total"
@@ -68,7 +68,6 @@ SGLANG_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
     "sglang:generation_tokens_total": RenameStandardRule(
         "sglang:generation_tokens_total", "aibrix:generation_tokens_total"
     ),
-    
     # Latency metrics
     "sglang:time_to_first_token_seconds": RenameStandardRule(
         "sglang:time_to_first_token_seconds", "aibrix:time_to_first_token_seconds"
@@ -79,7 +78,6 @@ SGLANG_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
     "sglang:e2e_request_latency_seconds": RenameStandardRule(
         "sglang:e2e_request_latency_seconds", "aibrix:e2e_request_latency_seconds"
     ),
-    
     # Cache and utilization metrics
     "sglang:cache_hit_rate": RenameStandardRule(
         "sglang:cache_hit_rate", "aibrix:cache_hit_rate"
@@ -87,11 +85,12 @@ SGLANG_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
     "sglang:token_usage": RenameStandardRule(
         "sglang:token_usage", "aibrix:token_usage"
     ),
-    
     # Pass-through SGLang-specific metrics for debugging
     "sglang:num_running_reqs": PassthroughStandardRule("sglang:num_running_reqs"),
     "sglang:num_used_tokens": PassthroughStandardRule("sglang:num_used_tokens"),
-    "sglang:func_latency_seconds": PassthroughStandardRule("sglang:func_latency_seconds"),
+    "sglang:func_latency_seconds": PassthroughStandardRule(
+        "sglang:func_latency_seconds"
+    ),
 }
 
 # Enhanced vLLM rules with pass-through for debugging metrics
@@ -100,7 +99,9 @@ ENHANCED_VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
     # Pass-through vLLM-specific metrics for debugging
     "vllm:num_requests_running": PassthroughStandardRule("vllm:num_requests_running"),
     "vllm:request_prompt_tokens": PassthroughStandardRule("vllm:request_prompt_tokens"),
-    "vllm:request_generation_tokens": PassthroughStandardRule("vllm:request_generation_tokens"),
+    "vllm:request_generation_tokens": PassthroughStandardRule(
+        "vllm:request_generation_tokens"
+    ),
 }
 
 # TODO add more engine standard rules
@@ -113,4 +114,6 @@ def get_metric_standard_rules(engine: str) -> Dict[str, StandardRule]:
     elif engine_lower == "sglang":
         return SGLANG_METRIC_STANDARD_RULES
     else:
-        raise ValueError(f"Engine {engine} is not supported. Supported engines: vllm, sglang")
+        raise ValueError(
+            f"Engine {engine} is not supported. Supported engines: vllm, sglang"
+        )

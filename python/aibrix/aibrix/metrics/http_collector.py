@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from copy import deepcopy
 from typing import Dict, Optional
 
 import requests
@@ -38,13 +39,13 @@ class HTTPCollector(Collector):
         self.metric_endpoint = endpoint
         self.metrics_rules = metrics_rules or {}
         self.keep_original_metric = keep_original_metric
-        
+
         # Determine mode: raw passthrough overrides transformation
         if raw_passthrough_mode is not None:
             self.raw_passthrough_mode = raw_passthrough_mode
         else:
             self.raw_passthrough_mode = envs.METRICS_RAW_PASSTHROUGH_MODE
-        
+
         # If transformation is disabled, force raw passthrough
         if not envs.METRICS_ENABLE_TRANSFORMATION:
             self.raw_passthrough_mode = True
@@ -71,28 +72,30 @@ class HTTPCollector(Collector):
 
     def collect(self):
         metrics_text = self._collect()
-        
+
         # Raw passthrough mode: return all metrics unchanged
         if self.raw_passthrough_mode:
             logger.debug("Raw passthrough mode enabled - returning metrics unchanged")
             for m in text_string_to_metric_families(metrics_text):
                 yield m
             return
-        
+
         # Standard transformation mode
         try:
             for m in text_string_to_metric_families(metrics_text):
-                if self.keep_original_metric:
-                    yield m
-
-                # metric standardizing rule matched
                 if m.name in self.metrics_rules:
+                    if self.keep_original_metric:
+                        yield deepcopy(m)
                     new_metric = self.metrics_rules[m.name](m)
                     if new_metric is not None:
                         yield from new_metric
+                elif self.keep_original_metric:
+                    yield m
         except Exception as e:
             logger.error(f"Error during metrics transformation: {e}")
             # Fallback to raw passthrough on transformation errors
-            logger.warning("Falling back to raw passthrough mode due to transformation error")
+            logger.warning(
+                "Falling back to raw passthrough mode due to transformation error"
+            )
             for m in text_string_to_metric_families(metrics_text):
                 yield m

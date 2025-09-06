@@ -559,7 +559,7 @@ This mode standardizes metrics from different engines to a common ``aibrix:`` na
 Use this mode when:
 
 - Debugging metrics transformation issues
-- Different engines have scale/semantic differences  
+- Different engines have scale/semantic differences
 - You need engine-specific metric names preserved
 - Fallback during transformation errors
 

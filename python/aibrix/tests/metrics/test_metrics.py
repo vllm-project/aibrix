@@ -36,12 +36,13 @@ def test_get_metric_standard_rules_not_support():
     with pytest.raises(ValueError):
         get_metric_standard_rules("TensorRT-LLM")
 
+
 def test_get_metric_standard_rules_sglang_support():
     # SGLang is now supported
     rules = get_metric_standard_rules("sglang")
     assert rules is not None
     assert len(rules) > 0
-    
+
     # Case insensitive
     rules2 = get_metric_standard_rules("SGLang")
     assert rules.keys() == rules2.keys()
@@ -182,13 +183,67 @@ temperature_degrees{} 25.5
         # Assert
         assert len(collector.metrics_rules) == 1
 
+        # Should have both original and renamed metrics
         original_metric = next((m for m in results if m.name == "http_requests"), None)
-        assert original_metric is None
+        assert original_metric is not None
+        assert original_metric.samples[0].name == "http_requests_total"
 
         renamed_metric = next(
             (m for m in results if m.name == "http_requests_renamed"), None
         )
         assert renamed_metric is not None
+        assert renamed_metric.samples[0].name == "http_requests_renamed_total"
+
+        # Verify they are different objects (not the same reference)
+        assert original_metric is not renamed_metric
+
+        # Verify we have exactly 3 metrics (original + renamed + unmatched temperature)
+        assert len(results) == 3
+
+    @patch("aibrix.metrics.http_collector.requests.Session")
+    def test_collect_deepcopy_preserves_original(self, mock_session):
+        """Test that deepcopy actually preserves the original metric values."""
+        # Arrange
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = """# HELP test_metric A test metric
+# TYPE test_metric counter
+test_metric{label="original_value"} 42
+"""
+        mock_session.return_value.get.return_value = mock_response
+
+        metrics_rules = {
+            "test_metric": RenameStandardRule(
+                original_name="test_metric", new_name="test_metric_renamed"
+            )
+        }
+
+        collector = HTTPCollector(
+            endpoint="http://fake.metrics.url",
+            metrics_rules=metrics_rules,
+            keep_original_metric=True,
+        )
+
+        # Act
+        results = list(collector.collect())
+
+        # Assert
+        original_metric = next((m for m in results if m.name == "test_metric"), None)
+        renamed_metric = next(
+            (m for m in results if m.name == "test_metric_renamed"), None
+        )
+
+        # Both should exist
+        assert original_metric is not None
+        assert renamed_metric is not None
+
+        # Both should have the original label value
+        assert original_metric.samples[0].labels["label"] == "original_value"
+        assert renamed_metric.samples[0].labels["label"] == "original_value"
+
+        # But different metric names
+        assert original_metric.samples[0].name == "test_metric_total"
+        assert renamed_metric.samples[0].name == "test_metric_renamed_total"
 
     @patch("aibrix.metrics.http_collector.requests.Session")
     def test_collect_request_failure(self, mock_session):
@@ -246,9 +301,9 @@ class TestPassthroughStandardRule:
         """Test basic passthrough functionality."""
         metric = self.create_sample_metric("test_metric")
         rule = PassthroughStandardRule("test_metric")
-        
+
         result = list(rule(metric))
-        
+
         assert len(result) == 1
         assert result[0].name == "test_metric"
         assert result[0] is metric  # Should be the same object
