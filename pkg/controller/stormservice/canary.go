@@ -87,7 +87,7 @@ func (r *StormServiceReconciler) applyCanaryStatusUpdate(
 			ss.Status.CanaryStatus = &orchestrationv1alpha1.CanaryStatus{}
 		}
 		for _, fn := range upd.statusUpdates {
-			fn(ss.Status.CanaryStatus) // 只改 status
+			fn(ss.Status.CanaryStatus)
 		}
 		if err := r.Status().Patch(ctx, ss, client.MergeFrom(before)); err != nil {
 			return fmt.Errorf("patch status: %w", err)
