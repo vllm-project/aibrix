@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -103,6 +102,7 @@ func TestFallbackRouter_Route(t *testing.T) {
 		wantAlgorithm   types.RoutingAlgorithm
 		wantErr         bool
 		wantErrContains string
+		expectPanic     bool
 		verifyState     func(t *testing.T, r *FallbackRouter)
 	}{
 		{
@@ -199,6 +199,7 @@ func TestFallbackRouter_Route(t *testing.T) {
 			pods: []*v1.Pod{
 				createFallbackTestPod("p1", "1.1.1.1", true),
 			},
+			expectPanic:     true,
 			wantErr:         true,
 			wantErrContains: "invalid memory address or nil pointer",
 		},
@@ -216,7 +217,7 @@ func TestFallbackRouter_Route(t *testing.T) {
 				// After first call, defaults should be set
 				assert.Equal(t, RouterRandom, r.fallbackAlgorithm)
 				assert.NotNil(t, r.fallbackProvider)
-				
+
 				// Second call should use already set defaults
 				ctx := newRoutingContext()
 				podList := &utils.PodArray{Pods: []*v1.Pod{createFallbackTestPod("p2", "2.2.2.2", true)}}
@@ -383,11 +384,12 @@ func TestFallbackRouter_Route(t *testing.T) {
 			podList := &utils.PodArray{Pods: tt.pods}
 
 			// Handle potential panic for nil router case
-			if strings.Contains(tt.name, "nil router without error") {
+			if tt.expectPanic {
 				defer func() {
 					if r := recover(); r != nil {
-						err := r.(error)
-						if tt.wantErrContains != "" {
+						err, ok := r.(error)
+						assert.True(t, ok, "panic value should be an error")
+						if ok && tt.wantErrContains != "" {
 							assert.Contains(t, err.Error(), tt.wantErrContains)
 						}
 					}
@@ -417,12 +419,12 @@ func TestFallbackRouter_Route(t *testing.T) {
 
 func TestFallbackRouter_SetFallback(t *testing.T) {
 	tests := []struct {
-		name              string
-		initialAlgorithm  types.RoutingAlgorithm
-		initialProvider   types.RouterProviderFunc
-		newAlgorithm      types.RoutingAlgorithm
-		newProvider       types.RouterProviderFunc
-		verifyState       func(t *testing.T, r *FallbackRouter)
+		name             string
+		initialAlgorithm types.RoutingAlgorithm
+		initialProvider  types.RouterProviderFunc
+		newAlgorithm     types.RoutingAlgorithm
+		newProvider      types.RouterProviderFunc
+		verifyState      func(t *testing.T, r *FallbackRouter)
 	}{
 		{
 			name:             "set fallback from empty state",
@@ -493,15 +495,15 @@ func TestFallbackRouter_SetFallback(t *testing.T) {
 			verifyState: func(t *testing.T, r *FallbackRouter) {
 				// First set
 				assert.Equal(t, RouterLeastRequest, r.fallbackAlgorithm)
-				
+
 				// Second set
 				r.SetFallback(RouterThroughput, mockErrorProvider)
 				assert.Equal(t, RouterThroughput, r.fallbackAlgorithm)
-				
+
 				// Third set
 				r.SetFallback(RouterRandom, mockSuccessProvider)
 				assert.Equal(t, RouterRandom, r.fallbackAlgorithm)
-				
+
 				// Verify final provider works
 				ctx := newRoutingContext()
 				pods := []*v1.Pod{createFallbackTestPod("p1", "1.1.1.1", true)}
