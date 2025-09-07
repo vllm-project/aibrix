@@ -3897,7 +3897,10 @@ spec:
                             pause:
                               properties:
                                 duration:
-                                  type: string
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  x-kubernetes-int-or-string: true
                               type: object
                             setWeight:
                               format: int32
@@ -3940,6 +3943,19 @@ spec:
                   currentWeight:
                     format: int32
                     type: integer
+                  pauseConditions:
+                    items:
+                      properties:
+                        reason:
+                          type: string
+                        startTime:
+                          format: date-time
+                          type: string
+                      required:
+                      - reason
+                      - startTime
+                      type: object
+                    type: array
                   pausedAt:
                     format: date-time
                     type: string

@@ -339,7 +339,8 @@ var _ = ginkgo.Describe("StormService Canary Controller Integration Test", func(
 				latest := &orchestrationapi.StormService{}
 				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(stormService), latest)).To(gomega.Succeed())
 				// Change container image to trigger updateRevision != currentRevision
-				if len(latest.Spec.Template.Spec.Roles) > 0 && len(latest.Spec.Template.Spec.Roles[0].Template.Spec.Containers) > 0 {
+				if len(latest.Spec.Template.Spec.Roles) > 0 &&
+					len(latest.Spec.Template.Spec.Roles[0].Template.Spec.Containers) > 0 {
 					latest.Spec.Template.Spec.Roles[0].Template.Spec.Containers[0].Image = "nginx:1.21"
 					g.Expect(k8sClient.Update(ctx, latest)).To(gomega.Succeed())
 				}
