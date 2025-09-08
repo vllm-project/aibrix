@@ -56,7 +56,7 @@ spec:
               name: model-hostpath
       containers:
         - name: vllm-openai
-          image:  docker.1ms.run/aibrix/vllm-openai:v0.6.2-distributed
+          image:  aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm/vllm-openai:v0.9.2 #docker.1ms.run/aibrix/vllm-openai:v0.6.2-distributed
           imagePullPolicy: Always
           command:
             - python3
@@ -74,7 +74,7 @@ spec:
             - "32000" # please modify this field if your gpu has more room
             - --enable-prefix-caching
             - --disable-fastapi-docs
-            - --trust-remote-codes
+            - --trust-remote-code
             - --disable-log-requests
             - --swap-space
             - "0"
