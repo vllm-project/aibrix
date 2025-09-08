@@ -5,75 +5,96 @@ metadata:
   labels: 
     model.aibrix.ai/name: hunyuan-dit 
     model.aibrix.ai/port: "6000" 
-  spec: 
-    replicas: 1 
-    strategy: 
-      rollingUpdate: 
-        maxSurge: 1 
-        maxUnavailable: 1 
-      type: RollingUpdate 
-    selector: 
-      matchLabels: 
+spec: 
+  replicas: 1 
+  strategy: 
+    rollingUpdate: 
+      maxSurge: 1 
+      maxUnavailable: 1 
+    type: RollingUpdate 
+  selector: 
+    matchLabels: 
+      model.aibrix.ai/name: hunyuan-dit 
+  template: 
+    metadata: 
+      labels: 
         model.aibrix.ai/name: hunyuan-dit 
-      template: 
-        metadata: 
-          labels: model.aibrix.ai/name: hunyuan-dit 
-        spec: 
-          initContainers: 
-            - command:
-                - aibrix_download 
-                - --model-uri 
-                - tos://aibrix-artifact-testing/models/HunyuanDiT-v1.2-Diffusers/ 
-                - --local-dir 
-                - /models/ 
-              env: 
-                - name: DOWNLOADER_NUM_THREADS 
-                  value: "16" 
-                - name: DOWNLOADER_ALLOW_FILE_SUFFIX 
-                  value: json, safetensors 
-                - name: TOS_ACCESS_KEY 
-                  valueFrom: 
-                    secretKeyRef: 
-                      key: TOS_ACCESS_KEY 
-                      name: tos-credential 
-                - name: TOS_SECRET_KEY 
-                  valueFrom: 
-                    secretKeyRef: 
-                      key: TOS_SECRET_KEY 
-                      name: tos-credential 
-                - name: TOS_ENDPOINT 
-                  value: https://tos-s3-cn-beijing.ivolces.com 
-                - name: TOS_REGION 
-                  value: cn-beijing 
-              image: aibrix-cn-beijing.cr.volces.com/aibrix/runtime:v0.3.0 
-              name: init-model 
-              volumeMounts: 
-                - mountPath: /models 
-                  name: model-hostpath 
-          containers: 
-            - name: xdit-dev 
-              image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:0.3.4 #aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5 
-              imagePullPolicy: Always 
-              #command: ["sleep"] args: ["3600"] # sleep for 1 hour # 
-              command: ["sh", "-c"] # args: # 
-                - | # 
-                  python3 http-service/launch_host.py --config /models/config.json 
-              env: 
-                volumeMounts: 
-                  - mountPath: /models 
-                    name: model-hostpath 
-                resources: 
-                  limits: 
-                    nvidia.com/gpu: "1" 
-                    cpu: "10" # memory: "150G" 
-                  requests: 
-                    nvidia.com/gpu: "1" 
-                    cpu: "10" # memory: "150G" 
-          volumes: 
-            - name: model-hostpath 
-              hostPath: 
-                path: /root/models 
-                type: DirectoryOrCreate 
+    spec: 
+      initContainers: 
+        - command:             
+            - aibrix_download 
+            - --model-uri 
+            - tos://aibrix-artifact-testing/models/HunyuanDiT-v1.2-Diffusers/
+            - --local-dir 
+            - /models/ 
+          env: 
+            - name: DOWNLOADER_NUM_THREADS 
+              value: "16" 
+            - name: TOS_ACCESS_KEY 
+              valueFrom: 
+                secretKeyRef: 
+                  key: TOS_ACCESS_KEY 
+                  name: tos-credential 
+            - name: TOS_SECRET_KEY 
+              valueFrom: 
+                secretKeyRef: 
+                  key: TOS_SECRET_KEY 
+                  name: tos-credential 
+            - name: TOS_ENDPOINT 
+              value: https://tos-s3-cn-beijing.ivolces.com 
+            - name: TOS_REGION 
+              value: cn-beijing 
+            - name: LOG_LEVEL
+              value: DEBUG  
+          image: aibrix-cn-beijing.cr.volces.com/aibrix/runtime:v0.3.0 
+          name: init-model 
+          volumeMounts: 
+            - mountPath: /models 
+              name: model-hostpath 
+      containers: 
+        - name: xdit-dev 
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:0.3.4 #aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5 
+          imagePullPolicy: Always 
+          # command: ["sleep"]
+          # args: ["3600"] # sleep for 1 hour
+          command: ["sh", "-c"]
+          args:
+          - |
+            cat > /models/config.json <<'EOF'
+            {
+              "nproc_per_node": 1,
+              "model": "/models/HunyuanDiT-v1.2-Diffusers",
+              "pipefusion_parallel_degree": 1,
+              "ulysses_degree": 1,
+              "ring_degree": 1,
+              "height": 512,
+              "width": 512,
+              "save_disk_path": "/tmp",
+              "use_cfg_parallel": false
+            }
+            EOF
+            sleep 36000
+          # command: ["sh", "-c"]
+          # args:
+          #   - |
+          #     cat > /models/config.json <<'EOF' { "nproc_per_node": 1, "model": "/models/HunyuanDiT-v1.2-Diffusers", "pipefusion_parallel_degree": 1, "ulysses_degree": 1, "ring_degree": 1, "height": 512, "width": 512, "save_disk_path": "/tmp", "use_cfg_parallel": false } EOF
+          #     python3 http-service/launch_host.py --config /models/config.json 
+          env: []
+          volumeMounts: 
+            - mountPath: /models 
+              name: model-hostpath 
+          resources: 
+            limits: 
+              nvidia.com/gpu: "1" 
+              cpu: "10" # memory: "150G" 
+            requests: 
+              nvidia.com/gpu: "1" 
+              cpu: "10" # memory: "150G" 
+      volumes: 
+        - name: model-hostpath 
+          hostPath: 
+            path: /root/models 
+            type: DirectoryOrCreate 
                 
                 
 --- 

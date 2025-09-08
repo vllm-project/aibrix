@@ -1,9 +1,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: qwen-vl
+  name: dse-qwen
   labels:
-    model.aibrix.ai/name: qwen-vl
+    model.aibrix.ai/name: dse-qwen
     model.aibrix.ai/port: "8000"
     model.aibrix.ai/engine: "vllm"
 spec:
@@ -15,11 +15,11 @@ spec:
     type: RollingUpdate
   selector:
     matchLabels:
-      model.aibrix.ai/name: qwen-vl
+      model.aibrix.ai/name: dse-qwen
   template:
     metadata:
       labels:
-        model.aibrix.ai/name: qwen-vl
+        model.aibrix.ai/name: dse-qwen
         model.aibrix.ai/port: "8000"
         model.aibrix.ai/engine: "vllm"
     spec:
@@ -27,14 +27,14 @@ spec:
         - command:
             - aibrix_download
             - --model-uri
-            - tos://aibrix-artifact-testing/models/Qwen2.5-VL-7B-Instruct/
+            - tos://aibrix-artifact-testing/models/dse-qwen2-2b-mrl-v1/
             - --local-dir
             - /models/
           env:
             - name: DOWNLOADER_NUM_THREADS
               value: "16"
-            - name: DOWNLOADER_ALLOW_FILE_SUFFIX
-              value: json, safetensors
+            # - name: DOWNLOADER_ALLOW_FILE_SUFFIX
+            #   value: json, safetensors
             - name: TOS_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
@@ -59,28 +59,29 @@ spec:
           image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm/vllm-openai:v0.9.2
           imagePullPolicy: Always
           command:
-            - python3
-            - -m
-            - vllm.entrypoints.openai.api_server
+            # - python3
+            # - -m
+            # - vllm.entrypoints.openai.api_server
+            # - --model
+            # - /models/dse-qwen2-2b-mrl-v1/
+            - vllm
+            - serve
+            - /models/dse-qwen2-2b-mrl-v1/
+            # - --runner 
+            # - pooling 
             - --port
             - "8000"
+            - --task
+            - "embed"
             - --uvicorn-log-level
             - warning
-            - --model
-            - /models/Qwen2.5-VL-7B-Instruct/
             - --served-model-name
-            - qwen-vl
-            - --max-model-len
-            - "32000" # please modify this field if your gpu has more room
-            - --enable-prefix-caching
-            - --disable-fastapi-docs
+            - dse-qwen
             - --trust-remote-code
-            - --no-enable-chunked-prefill
-            - --disable-log-requests
-            - --allowed-local-media-path
-            - "/models"
-            - --swap-space
-            - "0"
+            - --max-model-len 
+            - "8192"
+            - --chat-template 
+            - examples/template_dse_qwen2_vl.jinja 
           env:
             - name: VLLM_RPC_TIMEOUT
               value: "1000000"
@@ -114,14 +115,14 @@ apiVersion: v1
 kind: Service
 metadata:
   labels:
-    model.aibrix.ai/name: qwen-vl
+    model.aibrix.ai/name: dse-qwen
     model.aibrix.ai/port: "8000"
     model.aibrix.ai/engine: "vllm"
     prometheus-discovery: "true"
   annotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8080"
-  name: qwen-vl # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
+  name: dse-qwen # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
   namespace: default
 spec:
   ports:
@@ -134,5 +135,5 @@ spec:
       protocol: TCP
       targetPort: 8080
   selector:
-    model.aibrix.ai/name: qwen-vl
+    model.aibrix.ai/name: dse-qwen
   type: ClusterIP
