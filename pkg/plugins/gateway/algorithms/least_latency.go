@@ -94,30 +94,40 @@ func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, readyPodLis
 		}
 
 		// expected prefill latency
-		avgPromptTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgPromptToksPerReq)
+		avgPromptTokensMetric, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgPromptToksPerReq)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
+		avgPromptTokens := guessPromptTokens
+		if avgPromptTokensMetric.GetSimpleValue() > 0 {
+			avgPromptTokens = avgPromptTokensMetric.GetSimpleValue()
+		}
+
 		PrefillTime, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.RequestPrefillTimeSeconds)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		prefillLatency := PrefillTime.GetHistogramValue().GetMean() / avgPromptTokens.GetSimpleValue() * guessPromptTokens
+		prefillLatency := PrefillTime.GetHistogramValue().GetMean() / avgPromptTokens * guessPromptTokens
 
 		// expected decode latency
-		avgGenerationTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationToksPerReq)
+		avgGenerationTokensMetric, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationToksPerReq)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
+		avgGenerationTokens := guessGenerationTokens
+		if avgGenerationTokensMetric.GetSimpleValue() > 0 {
+			avgGenerationTokens = avgGenerationTokensMetric.GetSimpleValue()
+		}
+
 		DecodeTime, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.RequestDecodeTimeSeconds)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		decodeLatency := DecodeTime.GetHistogramValue().GetMean() / avgGenerationTokens.GetSimpleValue() * guessGenerationTokens
+		decodeLatency := DecodeTime.GetHistogramValue().GetMean() / avgGenerationTokens * guessGenerationTokens
 
 		totalExpectedLatency := queuingLatency.GetSimpleValue() + prefillLatency + decodeLatency
 		klog.V(4).Infof("pod: %v, podIP: %v, queuingLatency: %v, prefillLatency: %v, decodeLatency: %v, totalExpectedLatency: %v",

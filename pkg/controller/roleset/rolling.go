@@ -58,11 +58,13 @@ func (m *RollingManagerSequential) Next(ctx context.Context, roleSet *orchestrat
 	sortedRoles := sortRolesByUpgradeOrder(roleSet.Spec.Roles)
 	var sequenceLines []string
 	for i, role := range sortedRoles {
-		order := int32(0)
+		var orderStr string
 		if role.UpgradeOrder != nil {
-			order = *role.UpgradeOrder
+			orderStr = fmt.Sprintf("%d", *role.UpgradeOrder)
+		} else {
+			orderStr = "nil"
 		}
-		sequenceLines = append(sequenceLines, fmt.Sprintf("[%d] %s (Order=%d)", i+1, role.Name, order))
+		sequenceLines = append(sequenceLines, fmt.Sprintf("[%d] %s (Order=%s)", i+1, role.Name, orderStr))
 	}
 
 	klog.Infof("[RollingManagerSequential.Next] Upgrade sequence for %s/%s:\n%s",

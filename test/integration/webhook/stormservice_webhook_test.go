@@ -22,14 +22,15 @@ import (
 	"github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/webhook"
+	"github.com/vllm-project/aibrix/test/utils/wrapper"
+)
+
+const (
+	testRuntimeImage = "aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.0"
 )
 
 var _ = ginkgo.Describe("stormservice default webhook", func() {
@@ -60,6 +61,7 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 		stormservice     func() *orchestrationapi.StormService
 		wantStormService func() *orchestrationapi.StormService
 	}
+
 	ginkgo.DescribeTable("Defaulting test",
 		func(tc *testDefaultingCase) {
 			model := tc.stormservice()
@@ -72,571 +74,58 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 		},
 		ginkgo.Entry("apply StormService with no sidecar injection annotation", &testDefaultingCase{
 			stormservice: func() *orchestrationapi.StormService {
-				return makeStormServiceWithNoSidecarInjection(
-					"stormservice-with-no-inject-sidecar", ns.Name, nil)
+				return wrapper.MakeStormService("stormservice-with-no-inject-sidecar").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Obj()
 			},
 			wantStormService: func() *orchestrationapi.StormService {
-				return makeStormServiceWithNoSidecarInjection(
-					"stormservice-with-no-inject-sidecar", ns.Name, nil)
+				return wrapper.MakeStormService("stormservice-with-no-inject-sidecar").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Obj()
 			},
 		}),
 		ginkgo.Entry("apply StormService with sidecar injection annotation", &testDefaultingCase{
 			stormservice: func() *orchestrationapi.StormService {
-				return makeStormServiceWithNoSidecarInjection("stormservice-with-inject-sidecar",
-					ns.Name, map[string]string{webhook.SidecarInjectionAnnotation: "true"})
+				return wrapper.MakeStormService("stormservice-with-inject-sidecar").
+					Namespace(ns.Name).
+					Annotations(map[string]string{webhook.SidecarInjectionAnnotation: "true"}).
+					WithDefaultConfiguration().
+					Obj()
 			},
-			//nolint:dupl
 			wantStormService: func() *orchestrationapi.StormService {
-				return &orchestrationapi.StormService{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "stormservice-with-inject-sidecar",
-						Namespace: ns.Name,
-						Annotations: map[string]string{
-							webhook.SidecarInjectionAnnotation: "true",
-						},
-					},
-					Spec: orchestrationapi.StormServiceSpec{
-						Replicas: ptr.To(int32(1)),
-						Selector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{
-								"app": "my-ai-app",
-							},
-						},
-						UpdateStrategy: orchestrationapi.StormServiceUpdateStrategy{
-							Type: orchestrationapi.RollingUpdateStormServiceStrategyType,
-						},
-						Stateful: true,
-						Template: orchestrationapi.RoleSetTemplateSpec{
-							ObjectMeta: metav1.ObjectMeta{
-								Labels: map[string]string{
-									"app": "my-ai-app",
-								},
-							},
-							Spec: &orchestrationapi.RoleSetSpec{
-								UpdateStrategy: orchestrationapi.InterleaveRoleSetStrategyType,
-								Roles: []orchestrationapi.RoleSpec{
-									{
-										Name:         "worker",
-										Replicas:     ptr.To(int32(1)),
-										UpgradeOrder: ptr.To(int32(1)),
-										Stateful:     false,
-										Template: v1.PodTemplateSpec{
-											ObjectMeta: metav1.ObjectMeta{
-												Labels: map[string]string{
-													"role": "worker",
-													"app":  "my-ai-app",
-												},
-											},
-											Spec: v1.PodSpec{
-												Containers: []v1.Container{
-													{
-														Name:  "aibrix-runtime",
-														Image: "aibrix/runtime:v0.4.0",
-														Command: []string{
-															"aibrix_runtime",
-															"--port", "8080",
-														},
-														Ports: []v1.ContainerPort{
-															{
-																Name:          "metrics",
-																ContainerPort: 8080,
-																Protocol:      "TCP",
-															},
-														},
-														Env: []v1.EnvVar{
-															{
-																Name:  "INFERENCE_ENGINE",
-																Value: "vllm",
-															},
-															{
-																Name:  "INFERENCE_ENGINE_ENDPOINT",
-																Value: "http://localhost:8000",
-															},
-														},
-														Resources: v1.ResourceRequirements{
-															Requests: corev1.ResourceList{
-																corev1.ResourceCPU:    resource.MustParse("100m"),
-																corev1.ResourceMemory: resource.MustParse("256Mi"),
-															},
-															Limits: corev1.ResourceList{
-																corev1.ResourceCPU:    resource.MustParse("500m"),
-																corev1.ResourceMemory: resource.MustParse("512Mi"),
-															},
-														},
-														LivenessProbe: &v1.Probe{
-															ProbeHandler: v1.ProbeHandler{
-																HTTPGet: &v1.HTTPGetAction{
-																	Path: "/healthz",
-																	Port: intstr.FromInt(8080),
-																},
-															},
-															InitialDelaySeconds: 3,
-															PeriodSeconds:       2,
-														},
-														ReadinessProbe: &v1.Probe{
-															ProbeHandler: v1.ProbeHandler{
-																HTTPGet: &v1.HTTPGetAction{
-																	Path: "/ready",
-																	Port: intstr.FromInt(8080),
-																},
-															},
-															InitialDelaySeconds: 5,
-															PeriodSeconds:       10,
-														},
-													},
-													{
-														Name:  "vllm-worker",
-														Image: "vllm/vllm-openai:latest",
-														Args: []string{
-															"--model", "meta-llama/Llama-3-8b",
-															"--tensor-parallel-size", "1",
-														},
-														Ports: []v1.ContainerPort{
-															{ContainerPort: 8000, Protocol: "TCP"},
-														},
-														Resources: v1.ResourceRequirements{
-															Requests: v1.ResourceList{
-																v1.ResourceCPU:    resource.MustParse("4"),
-																v1.ResourceMemory: resource.MustParse("16Gi"),
-															},
-														},
-													},
-												},
-											},
-										},
-									},
-									{
-										Name:         "master",
-										Replicas:     ptr.To(int32(1)),
-										UpgradeOrder: ptr.To(int32(1)),
-										Stateful:     true,
-										Template: v1.PodTemplateSpec{
-											ObjectMeta: metav1.ObjectMeta{
-												Labels: map[string]string{
-													"role": "master",
-													"app":  "my-ai-app",
-												},
-											},
-											Spec: v1.PodSpec{
-												Containers: []v1.Container{
-													{
-														Name:  "aibrix-runtime",
-														Image: "aibrix/runtime:v0.4.0",
-														Command: []string{
-															"aibrix_runtime",
-															"--port", "8080",
-														},
-														Ports: []v1.ContainerPort{
-															{
-																Name:          "metrics",
-																ContainerPort: 8080,
-																Protocol:      "TCP",
-															},
-														},
-														Env: []v1.EnvVar{
-															{
-																Name:  "INFERENCE_ENGINE",
-																Value: "vllm",
-															},
-															{
-																Name:  "INFERENCE_ENGINE_ENDPOINT",
-																Value: "http://localhost:8000",
-															},
-														},
-														Resources: v1.ResourceRequirements{
-															Requests: corev1.ResourceList{
-																corev1.ResourceCPU:    resource.MustParse("100m"),
-																corev1.ResourceMemory: resource.MustParse("256Mi"),
-															},
-															Limits: corev1.ResourceList{
-																corev1.ResourceCPU:    resource.MustParse("500m"),
-																corev1.ResourceMemory: resource.MustParse("512Mi"),
-															},
-														},
-														LivenessProbe: &v1.Probe{
-															ProbeHandler: v1.ProbeHandler{
-																HTTPGet: &v1.HTTPGetAction{
-																	Path: "/healthz",
-																	Port: intstr.FromInt(8080),
-																},
-															},
-															InitialDelaySeconds: 3,
-															PeriodSeconds:       2,
-														},
-														ReadinessProbe: &v1.Probe{
-															ProbeHandler: v1.ProbeHandler{
-																HTTPGet: &v1.HTTPGetAction{
-																	Path: "/ready",
-																	Port: intstr.FromInt(8080),
-																},
-															},
-															InitialDelaySeconds: 5,
-															PeriodSeconds:       10,
-														},
-													},
-													{
-														Name:  "vllm-master",
-														Image: "vllm/vllm-openai:latest",
-														Args: []string{
-															"--model", "meta-llama/Llama-3-8b",
-															"--tensor-parallel-size", "1",
-														},
-														Ports: []v1.ContainerPort{
-															{ContainerPort: 8000, Protocol: "TCP"},
-														},
-														Resources: v1.ResourceRequirements{
-															Requests: v1.ResourceList{
-																v1.ResourceCPU:    resource.MustParse("4"),
-																v1.ResourceMemory: resource.MustParse("16Gi"),
-															},
-														},
-													},
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				}
+				return wrapper.MakeStormService("stormservice-with-inject-sidecar").
+					Namespace(ns.Name).
+					Annotations(map[string]string{webhook.SidecarInjectionAnnotation: "true"}).
+					WithDefaultConfiguration().
+					WithSidecarInjection("").
+					Obj()
 			},
 		}),
 		ginkgo.Entry("apply StormService with sidecar injection annotation "+
 			"and sidecar runtime image annotation", &testDefaultingCase{
 			stormservice: func() *orchestrationapi.StormService {
-				return makeStormServiceWithNoSidecarInjection("stormservice-with-inject-sidecar",
-					ns.Name, map[string]string{
-						webhook.SidecarInjectionAnnotation: "true",
-						//nolint:lll
-						webhook.SidecarInjectionRuntimeImageAnnotation: "aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.0",
-					})
+				return wrapper.MakeStormService("stormservice-with-inject-sidecar").
+					Namespace(ns.Name).
+					Annotations(map[string]string{
+						webhook.SidecarInjectionAnnotation:             "true",
+						webhook.SidecarInjectionRuntimeImageAnnotation: testRuntimeImage,
+					}).
+					WithDefaultConfiguration().
+					Obj()
 			},
-			//nolint:dupl
 			wantStormService: func() *orchestrationapi.StormService {
-				return &orchestrationapi.StormService{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "stormservice-with-inject-sidecar",
-						Namespace: ns.Name,
-						Annotations: map[string]string{
-							webhook.SidecarInjectionAnnotation: "true",
-							//nolint:lll
-							webhook.SidecarInjectionRuntimeImageAnnotation: "aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.0",
-						},
-					},
-					Spec: orchestrationapi.StormServiceSpec{
-						Replicas: ptr.To(int32(1)),
-						Selector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{
-								"app": "my-ai-app",
-							},
-						},
-						UpdateStrategy: orchestrationapi.StormServiceUpdateStrategy{
-							Type: orchestrationapi.RollingUpdateStormServiceStrategyType,
-						},
-						Stateful: true,
-						Template: orchestrationapi.RoleSetTemplateSpec{
-							ObjectMeta: metav1.ObjectMeta{
-								Labels: map[string]string{
-									"app": "my-ai-app",
-								},
-							},
-							Spec: &orchestrationapi.RoleSetSpec{
-								UpdateStrategy: orchestrationapi.InterleaveRoleSetStrategyType,
-								Roles: []orchestrationapi.RoleSpec{
-									{
-										Name:         "worker",
-										Replicas:     ptr.To(int32(1)),
-										UpgradeOrder: ptr.To(int32(1)),
-										Stateful:     false,
-										Template: v1.PodTemplateSpec{
-											ObjectMeta: metav1.ObjectMeta{
-												Labels: map[string]string{
-													"role": "worker",
-													"app":  "my-ai-app",
-												},
-											},
-											Spec: v1.PodSpec{
-												Containers: []v1.Container{
-													{
-														Name: "aibrix-runtime",
-														Image: "aibrix-container-registry-cn-beijing.cr.volces.com" +
-															"/aibrix/runtime:v0.4.0",
-														Command: []string{
-															"aibrix_runtime",
-															"--port", "8080",
-														},
-														Ports: []v1.ContainerPort{
-															{
-																Name:          "metrics",
-																ContainerPort: 8080,
-																Protocol:      "TCP",
-															},
-														},
-														Env: []v1.EnvVar{
-															{
-																Name:  "INFERENCE_ENGINE",
-																Value: "vllm",
-															},
-															{
-																Name:  "INFERENCE_ENGINE_ENDPOINT",
-																Value: "http://localhost:8000",
-															},
-														},
-														Resources: v1.ResourceRequirements{
-															Requests: corev1.ResourceList{
-																corev1.ResourceCPU:    resource.MustParse("100m"),
-																corev1.ResourceMemory: resource.MustParse("256Mi"),
-															},
-															Limits: corev1.ResourceList{
-																corev1.ResourceCPU:    resource.MustParse("500m"),
-																corev1.ResourceMemory: resource.MustParse("512Mi"),
-															},
-														},
-														LivenessProbe: &v1.Probe{
-															ProbeHandler: v1.ProbeHandler{
-																HTTPGet: &v1.HTTPGetAction{
-																	Path: "/healthz",
-																	Port: intstr.FromInt(8080),
-																},
-															},
-															InitialDelaySeconds: 3,
-															PeriodSeconds:       2,
-														},
-														ReadinessProbe: &v1.Probe{
-															ProbeHandler: v1.ProbeHandler{
-																HTTPGet: &v1.HTTPGetAction{
-																	Path: "/ready",
-																	Port: intstr.FromInt(8080),
-																},
-															},
-															InitialDelaySeconds: 5,
-															PeriodSeconds:       10,
-														},
-													},
-													{
-														Name:  "vllm-worker",
-														Image: "vllm/vllm-openai:latest",
-														Args: []string{
-															"--model", "meta-llama/Llama-3-8b",
-															"--tensor-parallel-size", "1",
-														},
-														Ports: []v1.ContainerPort{
-															{ContainerPort: 8000, Protocol: "TCP"},
-														},
-														Resources: v1.ResourceRequirements{
-															Requests: v1.ResourceList{
-																v1.ResourceCPU:    resource.MustParse("4"),
-																v1.ResourceMemory: resource.MustParse("16Gi"),
-															},
-														},
-													},
-												},
-											},
-										},
-									},
-									{
-										Name:         "master",
-										Replicas:     ptr.To(int32(1)),
-										UpgradeOrder: ptr.To(int32(1)),
-										Stateful:     true,
-										Template: v1.PodTemplateSpec{
-											ObjectMeta: metav1.ObjectMeta{
-												Labels: map[string]string{
-													"role": "master",
-													"app":  "my-ai-app",
-												},
-											},
-											Spec: v1.PodSpec{
-												Containers: []v1.Container{
-													{
-														Name: "aibrix-runtime",
-														Image: "aibrix-container-registry-cn-beijing.cr.volces.com" +
-															"/aibrix/runtime:v0.4.0",
-														Command: []string{
-															"aibrix_runtime",
-															"--port", "8080",
-														},
-														Ports: []v1.ContainerPort{
-															{
-																Name:          "metrics",
-																ContainerPort: 8080,
-																Protocol:      "TCP",
-															},
-														},
-														Env: []v1.EnvVar{
-															{
-																Name:  "INFERENCE_ENGINE",
-																Value: "vllm",
-															},
-															{
-																Name:  "INFERENCE_ENGINE_ENDPOINT",
-																Value: "http://localhost:8000",
-															},
-														},
-														Resources: v1.ResourceRequirements{
-															Requests: corev1.ResourceList{
-																corev1.ResourceCPU:    resource.MustParse("100m"),
-																corev1.ResourceMemory: resource.MustParse("256Mi"),
-															},
-															Limits: corev1.ResourceList{
-																corev1.ResourceCPU:    resource.MustParse("500m"),
-																corev1.ResourceMemory: resource.MustParse("512Mi"),
-															},
-														},
-														LivenessProbe: &v1.Probe{
-															ProbeHandler: v1.ProbeHandler{
-																HTTPGet: &v1.HTTPGetAction{
-																	Path: "/healthz",
-																	Port: intstr.FromInt(8080),
-																},
-															},
-															InitialDelaySeconds: 3,
-															PeriodSeconds:       2,
-														},
-														ReadinessProbe: &v1.Probe{
-															ProbeHandler: v1.ProbeHandler{
-																HTTPGet: &v1.HTTPGetAction{
-																	Path: "/ready",
-																	Port: intstr.FromInt(8080),
-																},
-															},
-															InitialDelaySeconds: 5,
-															PeriodSeconds:       10,
-														},
-													},
-													{
-														Name:  "vllm-master",
-														Image: "vllm/vllm-openai:latest",
-														Args: []string{
-															"--model", "meta-llama/Llama-3-8b",
-															"--tensor-parallel-size", "1",
-														},
-														Ports: []v1.ContainerPort{
-															{ContainerPort: 8000, Protocol: "TCP"},
-														},
-														Resources: v1.ResourceRequirements{
-															Requests: v1.ResourceList{
-																v1.ResourceCPU:    resource.MustParse("4"),
-																v1.ResourceMemory: resource.MustParse("16Gi"),
-															},
-														},
-													},
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				}
+				return wrapper.MakeStormService("stormservice-with-inject-sidecar").
+					Namespace(ns.Name).
+					Annotations(map[string]string{
+						webhook.SidecarInjectionAnnotation:             "true",
+						webhook.SidecarInjectionRuntimeImageAnnotation: testRuntimeImage,
+					}).
+					WithDefaultConfiguration().
+					WithSidecarInjection(testRuntimeImage).
+					Obj()
 			},
 		}),
 	)
 })
-
-func makeStormServiceWithNoSidecarInjection(name, namespace string,
-	annotations map[string]string) *orchestrationapi.StormService {
-	return &orchestrationapi.StormService{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   namespace,
-			Annotations: annotations,
-		},
-		Spec: orchestrationapi.StormServiceSpec{
-			Replicas: ptr.To(int32(1)),
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": "my-ai-app",
-				},
-			},
-			UpdateStrategy: orchestrationapi.StormServiceUpdateStrategy{
-				Type: orchestrationapi.RollingUpdateStormServiceStrategyType,
-			},
-			Stateful: true,
-			Template: orchestrationapi.RoleSetTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app": "my-ai-app",
-					},
-				},
-				Spec: &orchestrationapi.RoleSetSpec{
-					UpdateStrategy: orchestrationapi.InterleaveRoleSetStrategyType,
-					Roles: []orchestrationapi.RoleSpec{
-						{
-							Name:         "worker",
-							Replicas:     ptr.To(int32(1)),
-							UpgradeOrder: ptr.To(int32(1)),
-							Stateful:     false,
-							Template: v1.PodTemplateSpec{
-								ObjectMeta: metav1.ObjectMeta{
-									Labels: map[string]string{
-										"role": "worker",
-										"app":  "my-ai-app",
-									},
-								},
-								Spec: v1.PodSpec{
-									Containers: []v1.Container{
-										{
-											Name:  "vllm-worker",
-											Image: "vllm/vllm-openai:latest",
-											Args: []string{
-												"--model", "meta-llama/Llama-3-8b",
-												"--tensor-parallel-size", "1",
-											},
-											Ports: []v1.ContainerPort{
-												{ContainerPort: 8000, Protocol: "TCP"},
-											},
-											Resources: v1.ResourceRequirements{
-												Requests: v1.ResourceList{
-													v1.ResourceCPU:    resource.MustParse("4"),
-													v1.ResourceMemory: resource.MustParse("16Gi"),
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-						{
-							Name:         "master",
-							Replicas:     ptr.To(int32(1)),
-							UpgradeOrder: ptr.To(int32(1)),
-							Stateful:     true,
-							Template: v1.PodTemplateSpec{
-								ObjectMeta: metav1.ObjectMeta{
-									Labels: map[string]string{
-										"role": "master",
-										"app":  "my-ai-app",
-									},
-								},
-								Spec: v1.PodSpec{
-									Containers: []v1.Container{
-										{
-											Name:  "vllm-master",
-											Image: "vllm/vllm-openai:latest",
-											Args: []string{
-												"--model", "meta-llama/Llama-3-8b",
-												"--tensor-parallel-size", "1",
-											},
-											Ports: []v1.ContainerPort{
-												{ContainerPort: 8000, Protocol: "TCP"},
-											},
-											Resources: v1.ResourceRequirements{
-												Requests: v1.ResourceList{
-													v1.ResourceCPU:    resource.MustParse("4"),
-													v1.ResourceMemory: resource.MustParse("16Gi"),
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-}

@@ -27,7 +27,7 @@ classifiers = [
 packages = [
     { include = "aibrix" },
 ]
-exclude = ["test"]
+exclude = ["tests"]
 
 [tool.poetry-dynamic-versioning]
 enable = true
@@ -72,6 +72,7 @@ matplotlib = "^3.9.2"
 filelock = "^3.16.1"
 tiktoken = "^0.7.0"
 transformers = ">=4.38.0"
+tenacity = "^9.0.0"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "1.11.1"

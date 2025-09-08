@@ -19,9 +19,7 @@ from .memory_region import MemoryRegion
 
 
 class ExternalMemoryRegion(MemoryRegion):
-    """ExternalMemoryRegion represents an external continuous memory buffer.
-    Right now we only use it to support GDR.
-    """
+    """ExternalMemoryRegion represents an external continuous memory buffer."""
 
     def __init__(
         self,

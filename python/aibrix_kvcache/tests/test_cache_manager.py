@@ -418,16 +418,8 @@ def test_ext_handle_put_and_get_with_prefix(cache_mgr_fixture):
     tokens0 = all_tokens[:32]
     tokens1 = all_tokens[32:]
 
-    token_idx_to_slot = (
-        lambda idx: idx // block_ntokens * block_ntokens + idx % block_ntokens
-    )
-
-    slot_mapping = []
-    for idx in range(len(tokens0)):
-        mapping_value = token_idx_to_slot(idx)
-        slot_mapping.append(mapping_value)
-    put_handle0 = MemoryRegionKVCacheHandle.create(kvcaches, spec, slot_mapping)
-    slot_mapping.clear()
+    select = [(idx, 0) for idx in range(len(tokens0) // block_ntokens)]
+    put_handle0 = MemoryRegionKVCacheHandle.create(kvcaches, spec, select)
 
     assert len(put_handle0) == 2
     randomize_cache_handle(put_handle0)
@@ -437,12 +429,12 @@ def test_ext_handle_put_and_get_with_prefix(cache_mgr_fixture):
     put_status = cache_mgr.put(None, tokens0, put_handle0)
     assert put_status.is_ok()
 
-    for idx in range(len(tokens1)):
-        idx += len(tokens0)
-        mapping_value = token_idx_to_slot(idx)
-        slot_mapping.append(mapping_value)
-    put_handle1 = MemoryRegionKVCacheHandle.create(kvcaches, spec, slot_mapping)
-    slot_mapping.clear()
+    start_index = len(tokens0) // block_ntokens
+    select = [
+        (idx + start_index, 0)
+        for idx in range(len(tokens1) // block_ntokens)
+    ]
+    put_handle1 = MemoryRegionKVCacheHandle.create(kvcaches, spec, select)
 
     assert len(put_handle1) == 2
     randomize_cache_handle(put_handle1)
@@ -455,12 +447,12 @@ def test_ext_handle_put_and_get_with_prefix(cache_mgr_fixture):
     if param.endswith("async"):
         cache_mgr.flush()
 
-    for idx in range(len(tokens0)):
-        idx += len(tokens0) + len(tokens1)
-        mapping_value = token_idx_to_slot(idx)
-        slot_mapping.append(mapping_value)
-    get_handle0 = MemoryRegionKVCacheHandle.create(kvcaches, spec, slot_mapping)
-    slot_mapping.clear()
+    start_index = (len(tokens0) + len(tokens1)) // block_ntokens
+    select = [
+        (idx + start_index, 0)
+        for idx in range(len(tokens0) // block_ntokens)
+    ]
+    get_handle0 = MemoryRegionKVCacheHandle.create(kvcaches, spec, select)
 
     randomize_cache_handle(get_handle0)
     get_status = cache_mgr.get(None, tokens0, get_handle0)
@@ -472,12 +464,14 @@ def test_ext_handle_put_and_get_with_prefix(cache_mgr_fixture):
     for pt, gt in zip(put_tensors0, get_tensors0):
         assert torch.equal(pt, gt)
 
-    for idx in range(len(tokens1)):
-        idx += len(tokens0) + len(tokens1) + len(tokens0)
-        mapping_value = token_idx_to_slot(idx)
-        slot_mapping.append(mapping_value)
-    get_handle1 = MemoryRegionKVCacheHandle.create(kvcaches, spec, slot_mapping)
-    slot_mapping.clear()
+    start_index = (
+        (len(tokens0) + len(tokens1) + len(tokens0)) // block_ntokens
+    )
+    select = [
+        (idx + start_index, 0)
+        for idx in range(len(tokens1) // block_ntokens)
+    ]
+    get_handle1 = MemoryRegionKVCacheHandle.create(kvcaches, spec, select)
 
     randomize_cache_handle(get_handle1)
     get_status = cache_mgr.get(tokens0, tokens1, get_handle1)
@@ -492,12 +486,12 @@ def test_ext_handle_put_and_get_with_prefix(cache_mgr_fixture):
     assert exists_status.is_ok()
     assert exists_status.value == 32
 
-    for idx in range(len(tokens0) + len(tokens1)):
-        idx += 2 * (len(tokens0) + len(tokens1))
-        mapping_value = token_idx_to_slot(idx)
-        slot_mapping.append(mapping_value)
-    get_handle2 = MemoryRegionKVCacheHandle.create(kvcaches, spec, slot_mapping)
-    slot_mapping.clear()
+    start_index = (2 * (len(tokens0) + len(tokens1))) // block_ntokens
+    select = [
+        (idx + start_index, 0)
+        for idx in range((len(tokens0) + len(tokens1)) // block_ntokens)
+    ]
+    get_handle2 = MemoryRegionKVCacheHandle.create(kvcaches, spec, select)
 
     randomize_cache_handle(get_handle2)
     get_status = cache_mgr.get(None, tokens0 + tokens1, get_handle2)

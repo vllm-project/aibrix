@@ -341,9 +341,9 @@ func TestSortRolesByUpgradeOrder(t *testing.T) {
 				{Name: "role2", UpgradeOrder: int32Ptr(1)},
 			},
 			expected: []orchestrationv1alpha1.RoleSpec{
-				{Name: "role1", UpgradeOrder: nil},
 				{Name: "role2", UpgradeOrder: int32Ptr(1)},
 				{Name: "role3", UpgradeOrder: int32Ptr(2)},
+				{Name: "role1", UpgradeOrder: nil},
 			},
 		},
 		{
@@ -368,10 +368,25 @@ func TestSortRolesByUpgradeOrder(t *testing.T) {
 				{Name: "role3", UpgradeOrder: int32Ptr(1)},
 			},
 			expected: []orchestrationv1alpha1.RoleSpec{
-				{Name: "role1", UpgradeOrder: nil},
-				{Name: "role2", UpgradeOrder: nil},
 				{Name: "role3", UpgradeOrder: int32Ptr(1)},
 				{Name: "role4", UpgradeOrder: int32Ptr(2)},
+				{Name: "role1", UpgradeOrder: nil},
+				{Name: "role2", UpgradeOrder: nil},
+			},
+		},
+		{
+			name: "multiple roles with explicit order and one missing (real-world scenario)",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "api-server", UpgradeOrder: int32Ptr(2)},
+				{Name: "database", UpgradeOrder: nil}, // Missing - should upgrade LAST
+				{Name: "cache", UpgradeOrder: int32Ptr(1)},
+				{Name: "monitoring", UpgradeOrder: int32Ptr(3)},
+			},
+			expected: []orchestrationv1alpha1.RoleSpec{
+				{Name: "cache", UpgradeOrder: int32Ptr(1)},      // First
+				{Name: "api-server", UpgradeOrder: int32Ptr(2)}, // Second
+				{Name: "monitoring", UpgradeOrder: int32Ptr(3)}, // Third
+				{Name: "database", UpgradeOrder: nil},           // Last (safest)
 			},
 		},
 	}

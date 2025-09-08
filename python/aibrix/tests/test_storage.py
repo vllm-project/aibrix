@@ -15,12 +15,14 @@
 
 import json
 import os
+from pathlib import Path
 
 import aibrix.batch.storage as _storage
 
 
 def generate_input_data(num_requests):
-    input_name = "./sample_job_input.json"
+    # Resolve sample input relative to this test file directory
+    input_name = str(Path(__file__).parent.joinpath("sample_job_input.json"))
     data = None
     with open(input_name, "r") as file:
         for line in file.readlines():

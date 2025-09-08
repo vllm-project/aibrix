@@ -67,11 +67,10 @@ type RoleSpec struct {
 	Replicas *int32 `json:"replicas,omitempty"`
 
 	// UpgradeOrder specifies the order in which this role should be upgraded.
-	// Lower values are upgraded first. If not specified, defaults to 0.
+	// Lower values are upgraded first. If not specified, roles upgrade after all explicitly ordered roles.
 	// +optional
-	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Type=integer
-	// +kubebuilder:default:=0
 	UpgradeOrder *int32 `json:"upgradeOrder,omitempty"`
 
 	// PodGroupSize is the number of pods to form a minimum role instance.
