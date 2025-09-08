@@ -231,14 +231,13 @@ func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, curr
 			} else {
 				toDelete = append(toDelete, notReady...)
 				diff -= len(notReady)
-				// TODO: note: diff is not being used in following logic, log a comment for short term, correct me!
 				klog.Infof("current diff is %d", diff)
 			}
 			// 2.2.2 Continue scaling in ready RoleSets proportionally
 			updatedReady, currentReady := filterRoleSetByRevision(ready, updatedRevision)
-			expectCurrentReplica, expectUpdatedReplica := calculateReplicas(expectReplica, int32(len(currentReady)), int32(len(updatedReady)))
-			toDelete = append(toDelete, currentReady[:len(currentReady)-int(expectCurrentReplica)]...)
-			toDelete = append(toDelete, updatedReady[:len(updatedReady)-int(expectUpdatedReplica)]...)
+			expectDeleteCurrentReplica, expectDeleteUpdatedReplica := calculateReplicas(int32(diff), int32(len(currentReady)), int32(len(updatedReady)))
+			toDelete = append(toDelete, currentReady[:expectDeleteCurrentReplica]...)
+			toDelete = append(toDelete, updatedReady[:expectDeleteUpdatedReplica]...)
 			count, err := r.deleteRoleSet(toDelete)
 			if err != nil {
 				return false, err
