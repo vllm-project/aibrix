@@ -14,7 +14,24 @@ spec:
     singular: stormservice
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - description: Desired number of replicas
+      jsonPath: .spec.replicas
+      name: Replicas
+      type: integer
+    - description: Whether the StormService is ready
+      jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - description: Whether the StormService is paused
+      jsonPath: .spec.paused
+      name: Paused
+      type: boolean
+    - description: Time this StormService was created
+      jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         properties:
@@ -3757,9 +3774,8 @@ spec:
                                   x-kubernetes-int-or-string: true
                               type: object
                             upgradeOrder:
-                              default: 0
                               format: int32
-                              minimum: 0
+                              minimum: 1
                               type: integer
                           type: object
                         type: array

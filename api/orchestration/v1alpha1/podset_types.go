@@ -102,6 +102,10 @@ const (
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="ReadyPods",type=integer,JSONPath=`.status.readyPods`
+// +kubebuilder:printcolumn:name="TotalPods",type=integer,JSONPath=`.status.totalPods`
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`,description="Time this PodSet was created"
 
 // PodSet is the Schema for the podsets API
 // PodSet represents an atomic group of pods that work together

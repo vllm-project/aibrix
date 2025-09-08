@@ -162,6 +162,10 @@ const (
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.scalingTargetSelector
+// +kubebuilder:printcolumn:name="Replicas",type=integer,JSONPath=`.spec.replicas`,description="Desired number of replicas"
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=='Ready')].status`,description="Whether the StormService is ready"
+// +kubebuilder:printcolumn:name="Paused",type=boolean,JSONPath=`.spec.paused`,description="Whether the StormService is paused"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`,description="Time this StormService was created"
 
 // StormService is the Schema for the stormservices API
 type StormService struct {

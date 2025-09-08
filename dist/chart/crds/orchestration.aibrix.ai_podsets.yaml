@@ -14,7 +14,21 @@ spec:
     singular: podset
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.readyPods
+      name: ReadyPods
+      type: integer
+    - jsonPath: .status.totalPods
+      name: TotalPods
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - description: Time this PodSet was created
+      jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         properties:
