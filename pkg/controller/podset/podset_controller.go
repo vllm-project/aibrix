@@ -178,7 +178,6 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 				for _, pod := range podsToDelete {
 					if err := r.Delete(ctx, pod); err != nil {
 						klog.ErrorS(err, "Failed to delete unhealthy pod", "pod", pod.Name)
-						r.EventRecorder.Eventf(podSet, corev1.EventTypeWarning, "FailedDelete", "Failed to delete unhealthy pod %s: %v", pod.Name, err)
 						continue
 					}
 					r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "DeletingUnhealthyPod", "Deleting unhealthy pod %s due to container restarts.", pod.Name)
