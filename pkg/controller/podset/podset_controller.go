@@ -148,128 +148,128 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 	desiredPodCount := int(podSet.Spec.PodGroupSize)
 
 	if currentPodCount < desiredPodCount {
-		// Need Create missing pods
 		switch podSet.Spec.RecoveryPolicy {
 		case orchestrationv1alpha1.ReplaceUnhealthy:
-			// Proactively find and delete unhealthy pods based on restart count.
-			var podsToDelete []*corev1.Pod
-			for i := range activePods {
-				pod := activePods[i] // Create a local copy for safe referencing
-				isUnhealthy := false
-
-				// Check for container restarts.
-				for _, containerStatus := range pod.Status.ContainerStatuses {
-					if containerStatus.RestartCount > 0 {
-						isUnhealthy = true
-						klog.InfoS("Marking pod as unhealthy due to container restarts", "pod", pod.Name, "restarts", containerStatus.RestartCount)
-						break // One unhealthy container is enough.
-					}
-				}
-
-				if isUnhealthy {
-					podsToDelete = append(podsToDelete, &pod)
-				}
-			}
-
-			// If any unhealthy pods are found, delete them and return.
-			// Replacement creation will occur in the next reconciliation loop.
-			if len(podsToDelete) > 0 {
-				klog.InfoS("Found unhealthy pods to be deleted", "count", len(podsToDelete), "podset", podSet.Name)
-				for _, pod := range podsToDelete {
-					if err := r.Delete(ctx, pod); err != nil {
-						klog.ErrorS(err, "Failed to delete unhealthy pod", "pod", pod.Name)
-						continue
-					}
-					r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "DeletingUnhealthyPod", "Deleting unhealthy pod %s due to container restarts.", pod.Name)
-				}
-				// Return nil to trigger a requeue. The next reconcile will handle the missing pods.
-				return nil
-			}
-
-			// If no pods were deleted for being unhealthy, proceed with filling missing slots.
-			if desiredPodCount-currentPodCount > 0 {
-				r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "ReplacingUnhealthy", "ReplaceUnhealthy policy: creating %d pod(s) to replace missing ones, aiming for %d total.", desiredPodCount-currentPodCount, desiredPodCount)
-			}
-
-			// Create missing pods
-			existingIndices := map[int]struct{}{}
-			sortPodsByIndex(activePods)
-			for _, pod := range activePods {
-				if idxStr, ok := pod.Labels[constants.PodGroupIndexLabelKey]; ok {
-					if idx, err := strconv.Atoi(idxStr); err == nil {
-						existingIndices[idx] = struct{}{}
-					}
-				}
-			}
-
-			// fill the gaps
-			for i := 0; i < desiredPodCount; i++ {
-				if _, exists := existingIndices[i]; !exists {
-					pod, err := r.createPodFromTemplate(podSet, i)
-					if err != nil {
-						return fmt.Errorf("failed to create pod template: %w", err)
-					}
-					if err := r.Create(ctx, pod); err != nil {
-						if apierrors.IsAlreadyExists(err) {
-							klog.InfoS("Pod already exists, skipping", "pod", pod.Name, "podset", podSet.Name)
-							continue
-						}
-						return fmt.Errorf("failed to create pod %v: %w", pod.Name, err)
-					}
-					klog.InfoS("Created pod (missing)", "pod", pod.Name, "podset", podSet.Name)
-				}
-			}
+			return r.handleReplaceUnhealthy(ctx, podSet, activePods, currentPodCount, desiredPodCount)
 		case orchestrationv1alpha1.RecreatePodRecreateStrategy:
-			// Recreate all pods. First, delete existing active pods.
-			if len(activePods) > 0 {
-				klog.InfoS("Recreate strategy: deleting active pods", "podset", podSet.Name, "count", len(activePods))
-
-				r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "RecreatingAllPods", "Recreate policy triggered: deleting all %d active pods before creating new ones", len(activePods))
-
-				for i := range activePods {
-					if err := r.Delete(ctx, &activePods[i]); err != nil {
-						return fmt.Errorf("failed to delete pod %v: %w", activePods[i].Name, err)
-					}
-				}
-				// Return to wait for pods to be deleted. The controller will be re-invoked due to pod deletion events.
-				return nil
-			}
-
-			// Once all old pods are gone, create the new set.
-			klog.InfoS("FullRecreate strategy: creating new pods", "podset", podSet.Name, "count", desiredPodCount)
-			for i := 0; i < desiredPodCount; i++ {
-				pod, err := r.createPodFromTemplate(podSet, i)
-				if err != nil {
-					return fmt.Errorf("failed to create pod template: %w", err)
-				}
-				if err := r.Create(ctx, pod); err != nil {
-					// It's possible the pod was created in a previous reconciliation, so ignore AlreadyExists errors.
-					if apierrors.IsAlreadyExists(err) {
-						continue
-					}
-					return fmt.Errorf("failed to create pod %v: %w", pod.Name, err)
-				}
-				klog.InfoS("Created pod", "pod", pod.Name)
-			}
+			return r.handleRecreateStrategy(ctx, podSet, activePods, desiredPodCount)
 		}
 	} else if currentPodCount > desiredPodCount {
-		// Delete excess pods
-		podsToDelete := currentPodCount - desiredPodCount
-
-		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "ScalingDown", "Deleting %d excess pods to meet desired count of %d", podsToDelete, desiredPodCount)
-
-		// sort pods by index to ensure deterministic deletion
-		sortPodsByIndex(activePods)
-		// Delete pods with highest indices first
-		for i := 0; i < podsToDelete; i++ {
-			podToDelete := activePods[len(activePods)-1-i]
-			if err := r.Delete(ctx, &podToDelete); err != nil {
-				return fmt.Errorf("failed to delete pod %s: %w", podToDelete.Name, err)
-			}
-			klog.InfoS("Deleted pod", "pod", podToDelete.Name, "podset", podSet.Name)
-		}
+		return r.handleScaleDown(ctx, podSet, activePods, currentPodCount, desiredPodCount)
 	}
 
+	return nil
+}
+
+func (r *PodSetReconciler) handleReplaceUnhealthy(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
+	activePods []corev1.Pod, currentPodCount, desiredPodCount int) error {
+
+	// Proactively find and delete unhealthy pods
+	var podsToDelete []*corev1.Pod
+	for i := range activePods {
+		pod := activePods[i]
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.RestartCount > 0 {
+				klog.InfoS("Marking pod as unhealthy due to container restarts", "pod", pod.Name, "restarts", cs.RestartCount)
+				podsToDelete = append(podsToDelete, &pod)
+				break
+			}
+		}
+	}
+	if len(podsToDelete) > 0 {
+		klog.InfoS("Found unhealthy pods to be deleted", "count", len(podsToDelete), "podset", podSet.Name)
+		for _, pod := range podsToDelete {
+			if err := r.Delete(ctx, pod); err != nil {
+				klog.ErrorS(err, "Failed to delete unhealthy pod", "pod", pod.Name)
+				continue
+			}
+			r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "DeletingUnhealthyPod", "Deleting unhealthy pod %s due to container restarts.", pod.Name)
+		}
+		return nil // next reconcile will create missing pods
+	}
+
+	// If no unhealthy pods deleted, fill missing slots
+	if desiredPodCount-currentPodCount > 0 {
+		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "ReplacingUnhealthy",
+			"ReplaceUnhealthy policy: creating %d pod(s) to replace missing ones, aiming for %d total.",
+			desiredPodCount-currentPodCount, desiredPodCount)
+	}
+
+	existingIndices := map[int]struct{}{}
+	sortPodsByIndex(activePods)
+	for _, pod := range activePods {
+		if idxStr, ok := pod.Labels[constants.PodGroupIndexLabelKey]; ok {
+			if idx, err := strconv.Atoi(idxStr); err == nil {
+				existingIndices[idx] = struct{}{}
+			}
+		}
+	}
+	for i := 0; i < desiredPodCount; i++ {
+		if _, exists := existingIndices[i]; !exists {
+			pod, err := r.createPodFromTemplate(podSet, i)
+			if err != nil {
+				return fmt.Errorf("failed to create pod template: %w", err)
+			}
+			if err := r.Create(ctx, pod); err != nil {
+				if apierrors.IsAlreadyExists(err) {
+					klog.InfoS("Pod already exists, skipping", "pod", pod.Name, "podset", podSet.Name)
+					continue
+				}
+				return fmt.Errorf("failed to create pod %v: %w", pod.Name, err)
+			}
+			klog.InfoS("Created pod (missing)", "pod", pod.Name, "podset", podSet.Name)
+		}
+	}
+	return nil
+}
+
+func (r *PodSetReconciler) handleRecreateStrategy(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
+	activePods []corev1.Pod, desiredPodCount int) error {
+
+	if len(activePods) > 0 {
+		klog.InfoS("Recreate strategy: deleting active pods", "podset", podSet.Name, "count", len(activePods))
+		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "RecreatingAllPods",
+			"Recreate policy triggered: deleting all %d active pods before creating new ones", len(activePods))
+		for i := range activePods {
+			if err := r.Delete(ctx, &activePods[i]); err != nil {
+				return fmt.Errorf("failed to delete pod %v: %w", activePods[i].Name, err)
+			}
+		}
+		return nil
+	}
+
+	klog.InfoS("FullRecreate strategy: creating new pods", "podset", podSet.Name, "count", desiredPodCount)
+	for i := 0; i < desiredPodCount; i++ {
+		pod, err := r.createPodFromTemplate(podSet, i)
+		if err != nil {
+			return fmt.Errorf("failed to create pod template: %w", err)
+		}
+		if err := r.Create(ctx, pod); err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				continue
+			}
+			return fmt.Errorf("failed to create pod %v: %w", pod.Name, err)
+		}
+		klog.InfoS("Created pod", "pod", pod.Name)
+	}
+	return nil
+}
+
+func (r *PodSetReconciler) handleScaleDown(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
+	activePods []corev1.Pod, currentPodCount, desiredPodCount int) error {
+
+	podsToDelete := currentPodCount - desiredPodCount
+	r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "ScalingDown",
+		"Deleting %d excess pods to meet desired count of %d", podsToDelete, desiredPodCount)
+
+	sortPodsByIndex(activePods)
+	for i := 0; i < podsToDelete; i++ {
+		podToDelete := activePods[len(activePods)-1-i]
+		if err := r.Delete(ctx, &podToDelete); err != nil {
+			return fmt.Errorf("failed to delete pod %s: %w", podToDelete.Name, err)
+		}
+		klog.InfoS("Deleted pod", "pod", podToDelete.Name, "podset", podSet.Name)
+	}
 	return nil
 }
 
