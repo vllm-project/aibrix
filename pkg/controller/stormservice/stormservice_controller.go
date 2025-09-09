@@ -178,16 +178,12 @@ func (r *StormServiceReconciler) getAndSortRevisions(ctx context.Context, stormS
 	return revisions, nil
 }
 
-func (r *StormServiceReconciler) syncRevisions(ctx context.Context, stormService *orchestrationv1alpha1.StormService, revisions []*apps.ControllerRevision) (*apps.ControllerRevision, *apps.ControllerRevision, int64, error) {
-	currentRevision, updateRevision, collisionCount, err := r.syncRevision(ctx, stormService, revisions)
-	if err != nil {
-		return nil, nil, 0, err
-	}
-	return currentRevision, updateRevision, int64(collisionCount), err
+func (r *StormServiceReconciler) syncRevisions(ctx context.Context, stormService *orchestrationv1alpha1.StormService, revisions []*apps.ControllerRevision) (*apps.ControllerRevision, *apps.ControllerRevision, int32, error) {
+	return r.syncRevision(ctx, stormService, revisions)
 }
 
-func (r *StormServiceReconciler) performSync(ctx context.Context, stormService *orchestrationv1alpha1.StormService, currentRevision, updateRevision *apps.ControllerRevision, collisionCount int64) (time.Duration, error) {
-	return r.sync(ctx, stormService, currentRevision, updateRevision, int32(collisionCount))
+func (r *StormServiceReconciler) performSync(ctx context.Context, stormService *orchestrationv1alpha1.StormService, currentRevision, updateRevision *apps.ControllerRevision, collisionCount int32) (time.Duration, error) {
+	return r.sync(ctx, stormService, currentRevision, updateRevision, collisionCount)
 }
 
 func (r *StormServiceReconciler) cleanupHistory(ctx context.Context, stormService *orchestrationv1alpha1.StormService, revisions []*apps.ControllerRevision, currentRevision, updateRevision *apps.ControllerRevision) error {
