@@ -211,6 +211,10 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 						return fmt.Errorf("failed to create pod template: %w", err)
 					}
 					if err := r.Create(ctx, pod); err != nil {
+						if apierrors.IsAlreadyExists(err) {
+							klog.InfoS("Pod already exists, skipping", "pod", pod.Name, "podset", podSet.Name)
+							continue
+						}
 						return fmt.Errorf("failed to create pod %v: %w", pod.Name, err)
 					}
 					klog.InfoS("Created pod (missing)", "pod", pod.Name, "podset", podSet.Name)
