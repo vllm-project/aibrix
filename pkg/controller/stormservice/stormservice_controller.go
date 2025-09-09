@@ -20,6 +20,7 @@ import (
 	"context"
 	"time"
 
+	apps "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
@@ -98,10 +99,8 @@ type StormServiceReconciler struct {
 
 func (r *StormServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	startTime := time.Now()
-	klog.Infof("Started syncing stormservice %s (%v)", req.NamespacedName.String(), startTime)
-	defer func() {
-		klog.Infof("Finished syncing stormservice %q (%v)", req.NamespacedName.String(), time.Since(startTime))
-	}()
+	r.logReconcileStart(req.NamespacedName.String(), startTime)
+	defer r.logReconcileEnd(req.NamespacedName.String(), startTime)
 
 	stormService := &orchestrationv1alpha1.StormService{}
 	if err := r.Get(ctx, req.NamespacedName, stormService); err != nil {
@@ -109,40 +108,88 @@ func (r *StormServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	if stormService.DeletionTimestamp != nil {
-		if done, err := r.finalize(ctx, stormService); err != nil {
-			klog.Errorf("stormservice %s/%s finalize failed: %v", stormService.Namespace, stormService.Name, err)
-			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
-		} else if !done {
-			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, nil
-		}
-		return ctrl.Result{}, nil
-	} else if !controllerutil.ContainsFinalizer(stormService, StormServiceFinalizer) {
-		if err := utils.Patch(ctx, r.Client, stormService, patch.AddFinalizerPatch(stormService, StormServiceFinalizer)); err != nil {
-			klog.Errorf("add finalizer failed: %v, stormService %s", err, req.NamespacedName.String())
-			return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
-		}
+		return r.handleDeletion(ctx, stormService)
 	}
 
-	revisions, err := r.getControllerRevision(ctx, stormService)
-	if err != nil {
-		return ctrl.Result{}, nil
+	if err := r.ensureFinalizer(ctx, stormService); err != nil {
+		return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
 	}
-	history.SortControllerRevisions(revisions)
 
-	currentRevision, updateRevision, collisionCount, err := r.syncRevision(ctx, stormService, revisions)
+	revisions, err := r.getAndSortRevisions(ctx, stormService)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	requeueAfter, err := r.sync(ctx, stormService, currentRevision, updateRevision, collisionCount)
+	currentRevision, updateRevision, collisionCount, err := r.syncRevisions(ctx, stormService, revisions)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	err = r.truncateHistory(ctx, stormService, revisions, currentRevision, updateRevision)
+	requeueAfter, err := r.performSync(ctx, stormService, currentRevision, updateRevision, collisionCount)
 	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.cleanupHistory(ctx, stormService, revisions, currentRevision, updateRevision); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+func (r *StormServiceReconciler) logReconcileStart(name string, startTime time.Time) {
+	klog.Infof("Started syncing stormservice %s (%v)", name, startTime)
+}
+
+func (r *StormServiceReconciler) logReconcileEnd(name string, startTime time.Time) {
+	klog.Infof("Finished syncing stormservice %q (%v)", name, time.Since(startTime))
+}
+
+func (r *StormServiceReconciler) handleDeletion(ctx context.Context, stormService *orchestrationv1alpha1.StormService) (ctrl.Result, error) {
+	done, err := r.finalize(ctx, stormService)
+	if err != nil {
+		klog.Errorf("stormservice %s/%s finalize failed: %v", stormService.Namespace, stormService.Name, err)
+		return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
+	}
+	if !done {
+		return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, nil
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *StormServiceReconciler) ensureFinalizer(ctx context.Context, stormService *orchestrationv1alpha1.StormService) error {
+	if controllerutil.ContainsFinalizer(stormService, StormServiceFinalizer) {
+		return nil
+	}
+
+	if err := utils.Patch(ctx, r.Client, stormService, patch.AddFinalizerPatch(stormService, StormServiceFinalizer)); err != nil {
+		klog.Errorf("add finalizer failed: %v, stormService %s/%s", err, stormService.Namespace, stormService.Name)
+		return err
+	}
+	return nil
+}
+
+func (r *StormServiceReconciler) getAndSortRevisions(ctx context.Context, stormService *orchestrationv1alpha1.StormService) ([]*apps.ControllerRevision, error) {
+	revisions, err := r.getControllerRevision(ctx, stormService)
+	if err != nil {
+		return nil, err
+	}
+	history.SortControllerRevisions(revisions)
+	return revisions, nil
+}
+
+func (r *StormServiceReconciler) syncRevisions(ctx context.Context, stormService *orchestrationv1alpha1.StormService, revisions []*apps.ControllerRevision) (*apps.ControllerRevision, *apps.ControllerRevision, int64, error) {
+	currentRevision, updateRevision, collisionCount, err := r.syncRevision(ctx, stormService, revisions)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	return currentRevision, updateRevision, int64(collisionCount), err
+}
+
+func (r *StormServiceReconciler) performSync(ctx context.Context, stormService *orchestrationv1alpha1.StormService, currentRevision, updateRevision *apps.ControllerRevision, collisionCount int64) (time.Duration, error) {
+	return r.sync(ctx, stormService, currentRevision, updateRevision, int32(collisionCount))
+}
+
+func (r *StormServiceReconciler) cleanupHistory(ctx context.Context, stormService *orchestrationv1alpha1.StormService, revisions []*apps.ControllerRevision, currentRevision, updateRevision *apps.ControllerRevision) error {
+	return r.truncateHistory(ctx, stormService, revisions, currentRevision, updateRevision)
 }
