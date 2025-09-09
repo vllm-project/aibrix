@@ -183,9 +183,9 @@ func (r *PodSetReconciler) handleReplaceUnhealthy(ctx context.Context, podSet *o
 				klog.ErrorS(err, "Failed to delete unhealthy pod", "pod", pod.Name)
 				continue
 			}
-			r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "DeletingUnhealthyPod", "Deleting unhealthy pod %s due to container restarts.", pod.Name)
 		}
-		return nil // next reconcile will create missing pods
+		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "DeletingUnhealthyPods", "Deleting %d unhealthy pods due to container restarts.", len(podsToDelete))
+		return nil
 	}
 
 	// If no unhealthy pods deleted, fill missing slots
