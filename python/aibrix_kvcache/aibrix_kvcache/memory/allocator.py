@@ -23,7 +23,7 @@ import torch
 from sortedcontainers import SortedDict, SortedList
 from tqdm.auto import tqdm
 
-from ..cache_hashable import TokenListView
+from ..cache_hashable import KVCacheKeyTypes, TokenListView
 from ..status import Status, StatusCodes
 from ..utils import round_up
 from .memory_region import MemoryRegion
@@ -69,20 +69,20 @@ class MemoryRegionIntl:
 @dataclass
 class MemoryRegionFooter:
     prefix_length: int
-    tokens_length: int
+    query_length: int
 
-    def __init__(self, prefix_length: int, tokens_length: int):
+    def __init__(self, prefix_length: int, query_length: int):
         self.prefix_length = prefix_length
-        self.tokens_length = tokens_length
+        self.query_length = query_length
         self._storage = np.array(
-            [self.prefix_length, self.tokens_length], dtype=np.int32
+            [self.prefix_length, self.query_length], dtype=np.int32
         )
 
     def __post_init__(self):
         if self.prefix_length < 0:
             raise ValueError("prefix_length must be non-negative")
-        if self.tokens_length < 0:
-            raise ValueError("tokens_length must be non-negative")
+        if self.query_length < 0:
+            raise ValueError("query_length must be non-negative")
 
     def to_numpy(self) -> np.ndarray:
         return self._storage
@@ -90,7 +90,7 @@ class MemoryRegionFooter:
     @staticmethod
     def from_numpy(storage: np.ndarray) -> "MemoryRegionFooter":
         return MemoryRegionFooter(
-            prefix_length=int(storage[0]), tokens_length=int(storage[1])
+            prefix_length=int(storage[0]), query_length=int(storage[1])
         )
 
     @staticmethod
@@ -120,8 +120,8 @@ class ManagedMemoryRegion(MemoryRegion):
     def _init_meta(self) -> None:
         self._block_nbytes = -1
         self._is_sealed = False
-        self._prefix: TokenListView | None = None
-        self._tokens: TokenListView | None = None
+        self._prefix: KVCacheKeyTypes | None = None
+        self._query: KVCacheKeyTypes | None = None
 
     def __repr__(self) -> str:
         return (
@@ -166,7 +166,7 @@ class ManagedMemoryRegion(MemoryRegion):
             footer = MemoryRegionFooter.from_numpy(
                 self.slab[start:stop].view(torch.int32).numpy()
             )
-            ntokens = footer.prefix_length + footer.tokens_length
+            ntokens = footer.prefix_length + footer.query_length
             actual_length = self.calculate_size(self.block_nbytes, ntokens)
             assert actual_length <= self.length, (
                 f"{actual_length} > {self.length}"
@@ -183,20 +183,20 @@ class ManagedMemoryRegion(MemoryRegion):
     def pack_tokens(
         self,
         *,
-        tokens: TokenListView,
-        prefix: TokenListView | None = None,
+        query: KVCacheKeyTypes,
+        prefix: KVCacheKeyTypes | None = None,
     ) -> None:
         """Pack tokens into the MR.
         Args:
             prefix: The prefix tokens.
-            tokens: The tokens to be set.
+            query: The query tokens to be set.
         """
-        ntokens = len(tokens)
-        assert ntokens > 0, "tokens must not be empty"
+        ntokens = len(query)
+        assert ntokens > 0, "query must not be empty"
 
         if MemoryRegion.use_compact_layout():
             self._prefix = prefix
-            self._tokens = tokens
+            self._query = query
             return
 
         bytes_per_token = np.dtype(np.int32).itemsize
@@ -205,11 +205,11 @@ class ManagedMemoryRegion(MemoryRegion):
             self.length - self.block_nbytes - MemoryRegionFooter.nbytes()
         ) // bytes_per_token - 1
         assert ntokens <= ntokens_limit, (
-            f"tokens ({ntokens}) must not exceed the limit ({ntokens_limit})"
+            f"query ({ntokens}) must not exceed the limit ({ntokens_limit})"
         )
 
         self._prefix = prefix
-        self._tokens = tokens
+        self._query = query
 
         # Write magic
         start = self.addr + self.block_nbytes
@@ -221,7 +221,7 @@ class ManagedMemoryRegion(MemoryRegion):
         )
         # Write footer
         prefix_length = len(prefix) if prefix is not None else 0
-        footer = MemoryRegionFooter(prefix_length, len(tokens))
+        footer = MemoryRegionFooter(prefix_length, len(query))
         start = stop
         stop = start + MemoryRegionFooter.nbytes()
         self.slab[start:stop].copy_(
@@ -229,9 +229,9 @@ class ManagedMemoryRegion(MemoryRegion):
         )
         # Pack tokens
         if prefix is not None:
-            all = prefix + tokens
+            all = prefix + query
         else:
-            all = tokens
+            all = query
         start = stop
         stop = start + all.nbytes()
         self.slab[start:stop].copy_(
@@ -240,13 +240,13 @@ class ManagedMemoryRegion(MemoryRegion):
 
     def unpack_tokens(
         self,
-    ) -> Tuple[TokenListView | None, TokenListView | None]:
+    ) -> Tuple[KVCacheKeyTypes | None, KVCacheKeyTypes | None]:
         """Unpack tokens from the MR.
         Returns:
-            The prefix and tokens.
+            The prefix and query tokens.
         """
-        if self._tokens is not None or MemoryRegion.use_compact_layout():
-            return self._prefix, self._tokens
+        if self._query is not None or MemoryRegion.use_compact_layout():
+            return self._prefix, self._query
 
         bytes_per_token = np.dtype(np.int32).itemsize
         start = self.addr + self.block_nbytes
@@ -270,18 +270,18 @@ class ManagedMemoryRegion(MemoryRegion):
                 self.slab[start:stop].view(torch.int32).numpy()
             )
 
-        if footer.tokens_length <= 0:
+        if footer.query_length <= 0:
             return None, None
 
         start = stop
-        stop = start + bytes_per_token * footer.tokens_length
-        tokens = TokenListView.from_numpy(
+        stop = start + bytes_per_token * footer.query_length
+        query = TokenListView.from_numpy(
             self.slab[start:stop].view(torch.int32).numpy()
         )
 
         self._prefix = prefix
-        self._tokens = tokens
-        return self._prefix, self._tokens
+        self._query = query
+        return self._prefix, self._query
 
     @staticmethod
     def calculate_size(block_nbytes: int, ntokens: int) -> int:

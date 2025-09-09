@@ -21,6 +21,7 @@ import torch
 
 from aibrix_kvcache import (
     BaseKVCacheManager,
+    BlockHashes,
     ExternalMemoryRegion,
     MemoryRegionKVCacheHandle,
     GDRKVCacheHandle,
@@ -28,7 +29,6 @@ from aibrix_kvcache import (
     KVCacheBlockLayout,
     ModelSpec,
     cache_manager,
-    TokenListView,
 )
 from aibrix_kvcache.memory import TensorPoolAllocator
 
@@ -114,9 +114,9 @@ def test_cache_initialization(cache_mgr_fixture):
         assert cache_mgr._l2_cache is not None
 
 
-def test_put_and_get_aligned(cache_mgr_fixture):
+def test_put_and_get_aligned(cache_key_fixture, cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
-    tokens = TokenListView([i for i in range(32)])
+    tokens = cache_key_fixture([i for i in range(32)], spec.block_ntokens)
     origin_tokens = copy.deepcopy(tokens)
     status = cache_mgr.allocate_for(None, tokens)
     assert status.is_ok()
@@ -149,11 +149,11 @@ def test_put_and_get_aligned(cache_mgr_fixture):
     get_handle.release()
 
 
-def test_put_and_get_with_prefix(cache_mgr_fixture):
+def test_put_and_get_with_prefix(cache_key_fixture, cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
     tokens0 = [i for i in range(32)]
     tokens1 = [i for i in range(100, 132)]
-    all_tokens = TokenListView(tokens0 + tokens1)
+    all_tokens = cache_key_fixture(tokens0 + tokens1, spec.block_ntokens)
     tokens0 = all_tokens[:32]
     tokens1 = all_tokens[32:]
 
@@ -221,10 +221,10 @@ def test_put_and_get_with_prefix(cache_mgr_fixture):
     get_handle2.release()
 
 
-def test_duplicated_puts(cache_mgr_fixture):
+def test_duplicated_puts(cache_key_fixture, cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
     for _ in range(10):
-        tokens = TokenListView([i for i in range(32)])
+        tokens = cache_key_fixture([i for i in range(32)], spec.block_ntokens)
         status = cache_mgr.allocate_for(None, tokens)
         assert status.is_ok()
         put_handle = status.value
@@ -251,9 +251,9 @@ def test_duplicated_puts(cache_mgr_fixture):
         get_handle.release()
 
 
-def test_delete(cache_mgr_fixture):
+def test_delete(cache_key_fixture, cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
-    tokens = TokenListView([i for i in range(32)])
+    tokens = cache_key_fixture([i for i in range(32)], spec.block_ntokens)
     origin_tokens = copy.deepcopy(tokens)
     status = cache_mgr.allocate_for(None, tokens)
     assert status.is_ok()
@@ -285,8 +285,12 @@ def test_delete(cache_mgr_fixture):
     assert get_status.is_not_found()
 
 
-def test_stress_cache(compact_layout_enabled, cache_mgr_fixture):
+def test_stress_cache(compact_layout_enabled, cache_key_fixture, cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
+    test_key = cache_key_fixture([0], spec.block_ntokens)
+    if not compact_layout_enabled and isinstance(test_key, BlockHashes):
+        pytest.skip("BlockHashes only supports compact layout")
+
     query = {}
     for i in range(200):
         num_prefix_blocks = random.randint(0, 10)
@@ -296,7 +300,8 @@ def test_stress_cache(compact_layout_enabled, cache_mgr_fixture):
 
         if num_prefix_blocks > 0:
             prefix_tokens = [j for j in range(num_prefix_blocks * 16)]
-            all_tokens = TokenListView(prefix_tokens + tokens)
+            all_tokens = cache_key_fixture(prefix_tokens + tokens,
+                                           spec.block_ntokens)
             prefix_tokens = all_tokens[: num_prefix_blocks * 16]
             tokens = all_tokens[num_prefix_blocks * 16 :]
 
@@ -319,7 +324,7 @@ def test_stress_cache(compact_layout_enabled, cache_mgr_fixture):
             status.value[1].release()
         else:
             prefix_tokens = None
-            tokens = TokenListView(tokens)
+            tokens = cache_key_fixture(tokens, spec.block_ntokens)
 
         status = cache_mgr.allocate_for(prefix_tokens, tokens)
         if status.is_out_of_memory():
@@ -396,7 +401,7 @@ def test_stress_cache(compact_layout_enabled, cache_mgr_fixture):
         if num > 0 and reason not in ["out_of_memory", "denied", "not_found"]:
             raise AssertionError(f"GET {reason}: {num}")
 
-def test_ext_handle_put_and_get_with_prefix(cache_mgr_fixture):
+def test_ext_handle_put_and_get_with_prefix(cache_key_fixture, cache_mgr_fixture):
     shape, spec, cache_mgr, param = cache_mgr_fixture
     if (
         spec.block_layout == KVCacheBlockLayout.LCND
@@ -414,7 +419,7 @@ def test_ext_handle_put_and_get_with_prefix(cache_mgr_fixture):
 
     tokens0 = [i for i in range(32)]
     tokens1 = [i for i in range(100, 132)]
-    all_tokens = TokenListView(tokens0 + tokens1)
+    all_tokens = cache_key_fixture(tokens0 + tokens1, spec.block_ntokens)
     tokens0 = all_tokens[:32]
     tokens1 = all_tokens[32:]
 
@@ -549,7 +554,7 @@ def handle_to_block_tensors(handle) -> list[torch.Tensor]:
     else:
         return [t.clone() for t in handle.to_tensors()]
 
-def test_gdr_put_and_get_with_prefix(gdr_cache_mgr_fixture):
+def test_gdr_put_and_get_with_prefix(cache_key_fixture, gdr_cache_mgr_fixture):
     shape, spec, cache_mgr, param = gdr_cache_mgr_fixture
 
     if "_put" in param:
@@ -577,7 +582,7 @@ def test_gdr_put_and_get_with_prefix(gdr_cache_mgr_fixture):
 
     tokens0 = [i for i in range(prefix_len)]
     tokens1 = [i for i in range(prefix_len, prefix_len + ntokens)]
-    all_tokens = TokenListView(tokens0 + tokens1)
+    all_tokens = cache_key_fixture(tokens0 + tokens1, spec.block_ntokens)
     tokens0 = all_tokens[:prefix_len]
     tokens1 = all_tokens[prefix_len:]
 

@@ -29,11 +29,11 @@ class SimpleHashKeyBuilder(KeyBuilder):
         return "sim"
 
     def build(
-        self, prefix: TokenListView | None, tokens: TokenListView
+        self, prefix: TokenListView | None, query: TokenListView
     ) -> Tuple[Tuple[TokenListView, bytes], ...]:
         assert prefix is None or len(prefix) % self.block_size == 0
 
-        token_size = len(tokens) - len(tokens) % self.block_size
+        token_size = len(query) - len(query) % self.block_size
         if token_size < self.block_size:
             return tuple()
 
@@ -42,9 +42,9 @@ class SimpleHashKeyBuilder(KeyBuilder):
         prefix_len = len(prefix) if prefix is not None else 0
 
         if prefix is not None:
-            all = prefix + tokens
+            all = prefix + query
         else:
-            all = tokens
+            all = query
 
         all_bytes = all.memoryview()
         for i in range(0, token_size, self.block_size):

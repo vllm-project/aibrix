@@ -20,7 +20,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List
 
-from .cache_hashable import TokenListView
+from .cache_args import parse_kvcache_api_args
 from .status import Status
 from .utils import cpu_perf_timer, human_readable_bytes
 
@@ -884,20 +884,19 @@ class MeasurableBase:
             @functools.wraps(func)
             async def async_wrapper(
                 self,
-                prefix: TokenListView | None,
-                tokens: TokenListView,
                 *args,
                 **kwargs,
             ):
                 with cpu_perf_timer(
                     self._enable_time_measurement
                 ) as get_lat_ms:
-                    status = await func(self, prefix, tokens, *args, **kwargs)
+                    prefix, query, _ = parse_kvcache_api_args(*args, **kwargs)
+                    status = await func(self, *args, **kwargs)
                 if self._recorder:
                     self._recorder.record(
                         op,
                         0 if prefix is None else len(prefix),
-                        len(tokens),
+                        len(query),  # type: ignore
                         status,
                         get_lat_ms(),
                     )
@@ -906,20 +905,19 @@ class MeasurableBase:
             @functools.wraps(func)
             def wrapper(
                 self,
-                prefix: TokenListView | None,
-                tokens: TokenListView,
                 *args,
                 **kwargs,
             ):
                 with cpu_perf_timer(
                     self._enable_time_measurement
                 ) as get_lat_ms:
-                    status = func(self, prefix, tokens, *args, **kwargs)
+                    prefix, query, _ = parse_kvcache_api_args(*args, **kwargs)
+                    status = func(self, *args, **kwargs)
                 if self._recorder:
                     self._recorder.record(
                         op,
                         0 if prefix is None else len(prefix),
-                        len(tokens),
+                        len(query),  # type: ignore
                         status,
                         get_lat_ms(),
                     )
