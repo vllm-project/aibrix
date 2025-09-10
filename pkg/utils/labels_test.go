@@ -155,15 +155,14 @@ func TestCloneAndRemoveLabel(t *testing.T) {
 				t.Errorf("CloneAndRemoveLabel() = %v, want %v", result, tt.expected)
 			}
 
-			// Check if original map was modified
-			if tt.shouldClone {
-				if !reflect.DeepEqual(tt.labels, originalLabels) && tt.labels != nil {
-					t.Errorf("Original map was unexpectedly modified")
+			// Check if the map was cloned correctly.
+			if tt.labels != nil {
+				resultIsSameRef := fmt.Sprintf("%p", result) == fmt.Sprintf("%p", tt.labels)
+				if tt.shouldClone && resultIsSameRef {
+					t.Errorf("Expected a cloned map, but got the same map reference")
 				}
-			} else {
-				// When not cloning, should return the same reference
-				if &result != &tt.labels {
-					t.Errorf("Expected same reference when not cloning")
+				if !tt.shouldClone && !resultIsSameRef {
+					t.Errorf("Expected the same map reference, but got a cloned map")
 				}
 			}
 		})
