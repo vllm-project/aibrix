@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -146,55 +147,129 @@ func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrat
 	currentPodCount := len(activePods)
 	desiredPodCount := int(podSet.Spec.PodGroupSize)
 
-	// The current logic for creating missing pods assumes that existing pods have contiguous indices starting from
-	// 0 (i.e., 0, 1, ..., currentPodCount-1). If a pod with a lower index is deleted for some reason,
-	// this logic could attempt to create a pod with an index that already exists, or it won't fill the gap.
-	// TODO:
-	// 1. Identify all indices of existing active pods.
-	// 2. Determine which indices in the range [0, desiredPodCount-1] are missing.
-	// 3. Create pods for the missing indices.
 	if currentPodCount < desiredPodCount {
-		// Create missing pods
-		podsToCreate := desiredPodCount - currentPodCount
-		for i := 0; i < podsToCreate; i++ {
-			podIndex := currentPodCount + i
-			pod, err := r.createPodFromTemplate(podSet, podIndex)
+		switch podSet.Spec.RecoveryPolicy {
+		case orchestrationv1alpha1.ReplaceUnhealthy:
+			return r.handleReplaceUnhealthy(ctx, podSet, activePods, currentPodCount, desiredPodCount)
+		case orchestrationv1alpha1.RecreatePodRecreateStrategy:
+			return r.handleRecreateStrategy(ctx, podSet, activePods, desiredPodCount)
+		}
+	} else if currentPodCount > desiredPodCount {
+		return r.handleScaleDown(ctx, podSet, activePods, currentPodCount, desiredPodCount)
+	}
+
+	return nil
+}
+
+func (r *PodSetReconciler) handleReplaceUnhealthy(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
+	activePods []corev1.Pod, currentPodCount, desiredPodCount int) error {
+
+	// Proactively find and delete unhealthy pods
+	var podsToDelete []*corev1.Pod
+	for i := range activePods {
+		pod := activePods[i]
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.RestartCount > 0 {
+				klog.InfoS("Marking pod as unhealthy due to container restarts", "pod", pod.Name, "restarts", cs.RestartCount)
+				podsToDelete = append(podsToDelete, &pod)
+				break
+			}
+		}
+	}
+	if len(podsToDelete) > 0 {
+		klog.InfoS("Found unhealthy pods to be deleted", "count", len(podsToDelete), "podset", podSet.Name)
+		for _, pod := range podsToDelete {
+			if err := r.Delete(ctx, pod); err != nil {
+				klog.ErrorS(err, "Failed to delete unhealthy pod", "pod", pod.Name)
+				continue
+			}
+		}
+		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "DeletingUnhealthyPods", "Deleting %d unhealthy pods due to container restarts.", len(podsToDelete))
+		return nil
+	}
+
+	// If no unhealthy pods deleted, fill missing slots
+	if desiredPodCount-currentPodCount > 0 {
+		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "ReplacingUnhealthy",
+			"ReplaceUnhealthy policy: creating %d pod(s) to replace missing ones, aiming for %d total.",
+			desiredPodCount-currentPodCount, desiredPodCount)
+	}
+
+	existingIndices := map[int]struct{}{}
+	sortPodsByIndex(activePods)
+	for _, pod := range activePods {
+		if idxStr, ok := pod.Labels[constants.PodGroupIndexLabelKey]; ok {
+			if idx, err := strconv.Atoi(idxStr); err == nil {
+				existingIndices[idx] = struct{}{}
+			}
+		}
+	}
+	for i := 0; i < desiredPodCount; i++ {
+		if _, exists := existingIndices[i]; !exists {
+			pod, err := r.createPodFromTemplate(podSet, i)
 			if err != nil {
 				return fmt.Errorf("failed to create pod template: %w", err)
 			}
-
 			if err := r.Create(ctx, pod); err != nil {
 				if apierrors.IsAlreadyExists(err) {
 					klog.InfoS("Pod already exists, skipping", "pod", pod.Name, "podset", podSet.Name)
 					continue
 				}
-				return fmt.Errorf("failed to create pod %s: %w", pod.Name, err)
+				return fmt.Errorf("failed to create pod %v: %w", pod.Name, err)
 			}
-			klog.InfoS("Created pod", "pod", pod.Name, "podset", podSet.Name)
-		}
-	} else if currentPodCount > desiredPodCount {
-		// Delete excess pods
-		podsToDelete := currentPodCount - desiredPodCount
-		// sort pods by index to ensure deterministic deletion
-		sort.Slice(activePods, func(i, j int) bool {
-			iIndex, _ := strconv.Atoi(activePods[i].Labels[constants.PodGroupIndexLabelKey])
-			jIndex, _ := strconv.Atoi(activePods[j].Labels[constants.PodGroupIndexLabelKey])
-			return iIndex < jIndex
-		})
-		// Delete pods with highest indices first
-		for i := 0; i < podsToDelete; i++ {
-			podToDelete := activePods[len(activePods)-1-i]
-			if err := r.Delete(ctx, &podToDelete); err != nil {
-				if apierrors.IsNotFound(err) {
-					klog.InfoS("Pod already deleted, skipping", "pod", podToDelete.Name, "podset", podSet.Name)
-					continue
-				}
-				return fmt.Errorf("failed to delete pod %s: %w", podToDelete.Name, err)
-			}
-			klog.InfoS("Deleted pod", "pod", podToDelete.Name, "podset", podSet.Name)
+			klog.InfoS("Created pod (missing)", "pod", pod.Name, "podset", podSet.Name)
 		}
 	}
+	return nil
+}
 
+func (r *PodSetReconciler) handleRecreateStrategy(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
+	activePods []corev1.Pod, desiredPodCount int) error {
+
+	if len(activePods) > 0 {
+		klog.InfoS("Recreate strategy: deleting active pods", "podset", podSet.Name, "count", len(activePods))
+		r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "RecreatingAllPods",
+			"Recreate policy triggered: deleting all %d active pods before creating new ones", len(activePods))
+		for i := range activePods {
+			if err := r.Delete(ctx, &activePods[i]); err != nil {
+				return fmt.Errorf("failed to delete pod %v: %w", activePods[i].Name, err)
+			}
+		}
+		return nil
+	}
+
+	klog.InfoS("FullRecreate strategy: creating new pods", "podset", podSet.Name, "count", desiredPodCount)
+	for i := 0; i < desiredPodCount; i++ {
+		pod, err := r.createPodFromTemplate(podSet, i)
+		if err != nil {
+			return fmt.Errorf("failed to create pod template: %w", err)
+		}
+		if err := r.Create(ctx, pod); err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				continue
+			}
+			return fmt.Errorf("failed to create pod %v: %w", pod.Name, err)
+		}
+		klog.InfoS("Created pod", "pod", pod.Name)
+	}
+	return nil
+}
+
+func (r *PodSetReconciler) handleScaleDown(ctx context.Context, podSet *orchestrationv1alpha1.PodSet,
+	activePods []corev1.Pod, currentPodCount, desiredPodCount int) error {
+
+	podsToDelete := currentPodCount - desiredPodCount
+	r.EventRecorder.Eventf(podSet, corev1.EventTypeNormal, "ScalingDown",
+		"Deleting %d excess pods to meet desired count of %d", podsToDelete, desiredPodCount)
+
+	sortPodsByIndex(activePods)
+	for i := 0; i < podsToDelete; i++ {
+		podToDelete := activePods[len(activePods)-1-i]
+		if err := r.Delete(ctx, &podToDelete); err != nil {
+			return fmt.Errorf("failed to delete pod %s: %w", podToDelete.Name, err)
+		}
+		klog.InfoS("Deleted pod", "pod", podToDelete.Name, "podset", podSet.Name)
+	}
 	return nil
 }
 
@@ -335,4 +410,23 @@ func filterReadyPods(pods []v1.Pod) []v1.Pod {
 		}
 	}
 	return ready
+}
+
+// getPodIndexFromLabels safely extracts pod index from labels
+// If index label is missing or invalid, return a large number to push it to the end.
+func getPodIndexFromLabels(pod v1.Pod) int {
+	if idxStr, ok := pod.Labels[constants.PodGroupIndexLabelKey]; ok {
+		if idx, err := strconv.Atoi(idxStr); err == nil {
+			return idx
+		}
+	}
+	// return a big number so invalid pods are always sorted last
+	return int(^uint(0) >> 1) // max int
+}
+
+// sortPodsByIndex sorts pods in ascending order of their PodGroupIndex
+func sortPodsByIndex(pods []v1.Pod) {
+	sort.Slice(pods, func(i, j int) bool {
+		return getPodIndexFromLabels(pods[i]) < getPodIndexFromLabels(pods[j])
+	})
 }

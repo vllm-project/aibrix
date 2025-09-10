@@ -35,6 +35,12 @@ type PodSetSpec struct {
 	// Stateful indicates whether pods should have stable network identities
 	// +optional
 	Stateful bool `json:"stateful,omitempty"`
+
+	// RecoveryPolicy defines how pods in the set are recreated when failures happen
+	// +kubebuilder:default=ReplaceUnhealthy
+	// +kubebuilder:validation:Enum={ReplaceUnhealthy,Recreate}
+	// +optional
+	RecoveryPolicy PodRecoveryPolicy `json:"recoveryPolicy,omitempty"`
 }
 
 // PodSetStatus defines the observed state of PodSet
@@ -71,6 +77,18 @@ const (
 
 	// PodSetPhaseFailed indicates the PodSet has failed
 	PodSetPhaseFailed PodSetPhase = "Failed"
+)
+
+// PodRecoveryPolicy defines how a PodSet handles pod recreation when pods are lost or fail.
+// +enum
+type PodRecoveryPolicy string
+
+const (
+	// ReplaceUnhealthy means only missing pods (by index) will be recreated.
+	ReplaceUnhealthy PodRecoveryPolicy = "ReplaceUnhealthy"
+
+	// RecreatePodRecreateStrategy means if any pod is missing, all pods in the set will be deleted, and then all pods will be recreated.
+	RecreatePodRecreateStrategy PodRecoveryPolicy = "Recreate"
 )
 
 // PodSet conditions
