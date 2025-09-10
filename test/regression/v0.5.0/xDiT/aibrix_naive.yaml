@@ -27,7 +27,7 @@ spec:
           command: ["sh", "-c"]
           args:
             - | 
-              python3 http-service/launch_host.py --config /models/config.json    
+              python3 http-service/launch_host.py --config /models/config.json 
           env:
           volumeMounts:
             - name: model-vol
