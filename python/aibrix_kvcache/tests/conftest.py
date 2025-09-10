@@ -22,12 +22,14 @@ import redis
 import torch
 
 from aibrix_kvcache.cache_handle import GDRKVCacheHandle, KVCacheHandle
+from aibrix_kvcache.cache_hashable import BlockHashes, TokenListView
 from aibrix_kvcache.memory import MemoryRegion
 from aibrix_kvcache.spec import (
     KVCacheBlockLayout,
     KVCacheBlockSpec,
     KVCacheTensorSpec,
 )
+from aibrix_kvcache.utils import round_down
 
 CACHE_SHAPE_NCLD = (16, 2, 8, 2, 32)
 CACHE_SHAPE_LCND = (8, 2, 16, 2, 32)
@@ -87,6 +89,23 @@ def get_cache_conf(layout):
 def cache_conf_fixture(request):
     layout = request.param
     return get_cache_conf(layout)
+
+
+@pytest.fixture(
+    params=[BlockHashes, TokenListView], scope="function"
+)
+def cache_key_fixture(request):
+    def wrapper(data, block_ntokens):
+        if type(request.param) is TokenListView:
+            return TokenListView(data)
+        else:
+            aligned_len = round_down(len(data), block_ntokens)
+            data = [
+                str(hash(tuple(data[: i + block_ntokens])))
+                for i in range(0, aligned_len, block_ntokens)
+            ]
+            return BlockHashes(data, block_ntokens)
+    return wrapper
 
 
 def release_mrs(mrs: Sequence[MemoryRegion]):

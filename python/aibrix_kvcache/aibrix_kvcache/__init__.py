@@ -20,7 +20,7 @@ from .cache_handle import (
     KVCacheHandle,
     MemoryRegionKVCacheHandle,
 )
-from .cache_hashable import TokenListView
+from .cache_hashable import BlockHashes, KVCacheKey, TokenListView
 from .cache_manager import (
     BaseKVCacheManager,
     GroupAwareKVCacheManager,
@@ -41,6 +41,8 @@ __all__ = [
     "MemoryRegionKVCacheHandle",
     "GDRKVCacheHandle",
     "TokenListView",
+    "BlockHashes",
+    "KVCacheKey",
     "BaseKVCacheManager",
     "GroupAwareKVCacheManager",
     "KVCacheManager",
