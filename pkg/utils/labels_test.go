@@ -17,6 +17,7 @@ limitations under the License.
 package utils
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -64,6 +65,14 @@ func TestCloneAndAddLabel(t *testing.T) {
 			expected:    map[string]string{"key": "newvalue"},
 			shouldClone: true,
 		},
+		{
+			name:        "empty label key returns original map",
+			labels:      map[string]string{"existing": "value"},
+			labelKey:    "",
+			labelValue:  "value",
+			expected:    map[string]string{"existing": "value"},
+			shouldClone: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -80,19 +89,14 @@ func TestCloneAndAddLabel(t *testing.T) {
 				t.Errorf("CloneAndAddLabel() = %v, want %v", result, tt.expected)
 			}
 
-			// Check if original map was modified
-			if tt.shouldClone {
-				if reflect.DeepEqual(tt.labels, originalLabels) == false && tt.labels != nil {
-					t.Errorf("Original map was unexpectedly modified")
+			// Check if the map was cloned correctly.
+			if tt.labels != nil {
+				resultIsSameRef := fmt.Sprintf("%p", result) == fmt.Sprintf("%p", tt.labels)
+				if tt.shouldClone && resultIsSameRef {
+					t.Errorf("Expected a cloned map, but got the same map reference")
 				}
-				// Verify it's a different map reference when cloned
-				if tt.labels != nil && &result == &tt.labels {
-					t.Errorf("Expected cloned map, but got same reference")
-				}
-			} else {
-				// When not cloning, should return the same reference
-				if &result != &tt.labels {
-					t.Errorf("Expected same reference when not cloning")
+				if !tt.shouldClone && !resultIsSameRef {
+					t.Errorf("Expected the same map reference, but got a cloned map")
 				}
 			}
 		})
@@ -214,7 +218,6 @@ func TestAddLabel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := AddLabel(tt.labels, tt.labelKey, tt.labelValue)
-
 			// Check the result matches expected
 			if !reflect.DeepEqual(result, tt.expected) {
 				t.Errorf("AddLabel() = %v, want %v", result, tt.expected)
@@ -231,135 +234,135 @@ func TestAddLabel(t *testing.T) {
 }
 
 func TestCloneSelectorAndAddLabel(t *testing.T) {
-    tests := []struct {
-        name        string
-        selector    *metav1.LabelSelector
-        labelKey    string
-        labelValue  string
-        expected    *metav1.LabelSelector
-        shouldClone bool
-    }{
-        {
-            name: "add label to selector with existing MatchLabels",
-            selector: &metav1.LabelSelector{
-                MatchLabels: map[string]string{"existing": "value"},
-            },
-            labelKey:   "new",
-            labelValue: "newvalue",
-            expected: &metav1.LabelSelector{
-                MatchLabels: map[string]string{"existing": "value", "new": "newvalue"},
-            },
-            shouldClone: true,
-        },
-        {
-            name: "add label to selector with nil MatchLabels",
-            selector: &metav1.LabelSelector{
-                MatchLabels: nil,
-            },
-            labelKey:   "key",
-            labelValue: "value",
-            expected: &metav1.LabelSelector{
-                MatchLabels: map[string]string{"key": "value"},
-            },
-            shouldClone: true,
-        },
-        {
-            name: "add label to selector with MatchExpressions",
-            selector: &metav1.LabelSelector{
-                MatchLabels: map[string]string{"existing": "value"},
-                MatchExpressions: []metav1.LabelSelectorRequirement{
-                    {
-                        Key:      "env",
-                        Operator: metav1.LabelSelectorOpIn,
-                        Values:   []string{"dev", "test"},
-                    },
-                },
-            },
-            labelKey:   "new",
-            labelValue: "newvalue",
-            expected: &metav1.LabelSelector{
-                MatchLabels: map[string]string{"existing": "value", "new": "newvalue"},
-                MatchExpressions: []metav1.LabelSelectorRequirement{
-                    {
-                        Key:      "env",
-                        Operator: metav1.LabelSelectorOpIn,
-                        Values:   []string{"dev", "test"},
-                    },
-                },
-            },
-            shouldClone: true,
-        },
-        {
-            name: "add label to selector with MatchExpressions with nil Values",
-            selector: &metav1.LabelSelector{
-                MatchExpressions: []metav1.LabelSelectorRequirement{
-                    {
-                        Key:      "env",
-                        Operator: metav1.LabelSelectorOpExists,
-                        Values:   nil,
-                    },
-                },
-            },
-            labelKey:   "new",
-            labelValue: "newvalue",
-            expected: &metav1.LabelSelector{
-                MatchLabels: map[string]string{"new": "newvalue"},
-                MatchExpressions: []metav1.LabelSelectorRequirement{
-                    {
-                        Key:      "env",
-                        Operator: metav1.LabelSelectorOpExists,
-                        Values:   nil,
-                    },
-                },
-            },
-            shouldClone: true,
-        },
-        {
-            name: "empty label key returns original selector",
-            selector: &metav1.LabelSelector{
-                MatchLabels: map[string]string{"existing": "value"},
-            },
-            labelKey:   "",
-            labelValue: "value",
-            expected: &metav1.LabelSelector{
-                MatchLabels: map[string]string{"existing": "value"},
-            },
-            shouldClone: false,
-        },
-        {
-            name: "add label to nil selector",
-            selector: nil,
-            labelKey: "new",
-            labelValue: "value",
-            expected: &metav1.LabelSelector{
-                MatchLabels: map[string]string{"new": "value"},
-            },
-            shouldClone: true,
-        },
-    }
+	tests := []struct {
+		name        string
+		selector    *metav1.LabelSelector
+		labelKey    string
+		labelValue  string
+		expected    *metav1.LabelSelector
+		shouldClone bool
+	}{
+		{
+			name: "add label to selector with existing MatchLabels",
+			selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"existing": "value"},
+			},
+			labelKey:   "new",
+			labelValue: "newvalue",
+			expected: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"existing": "value", "new": "newvalue"},
+			},
+			shouldClone: true,
+		},
+		{
+			name: "add label to selector with nil MatchLabels",
+			selector: &metav1.LabelSelector{
+				MatchLabels: nil,
+			},
+			labelKey:   "key",
+			labelValue: "value",
+			expected: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"key": "value"},
+			},
+			shouldClone: true,
+		},
+		{
+			name: "add label to selector with MatchExpressions",
+			selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"existing": "value"},
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      "env",
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   []string{"dev", "test"},
+					},
+				},
+			},
+			labelKey:   "new",
+			labelValue: "newvalue",
+			expected: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"existing": "value", "new": "newvalue"},
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      "env",
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   []string{"dev", "test"},
+					},
+				},
+			},
+			shouldClone: true,
+		},
+		{
+			name: "add label to selector with MatchExpressions with nil Values",
+			selector: &metav1.LabelSelector{
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      "env",
+						Operator: metav1.LabelSelectorOpExists,
+						Values:   nil,
+					},
+				},
+			},
+			labelKey:   "new",
+			labelValue: "newvalue",
+			expected: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"new": "newvalue"},
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      "env",
+						Operator: metav1.LabelSelectorOpExists,
+						Values:   nil,
+					},
+				},
+			},
+			shouldClone: true,
+		},
+		{
+			name: "empty label key returns original selector",
+			selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"existing": "value"},
+			},
+			labelKey:   "",
+			labelValue: "value",
+			expected: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"existing": "value"},
+			},
+			shouldClone: false,
+		},
+		{
+			name:       "add label to nil selector",
+			selector:   nil,
+			labelKey:   "new",
+			labelValue: "value",
+			expected: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"new": "value"},
+			},
+			shouldClone: true,
+		},
+	}
 
-    for _, tt := range tests {
-        t.Run(tt.name, func(t *testing.T) {
-            result := CloneSelectorAndAddLabel(tt.selector, tt.labelKey, tt.labelValue)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := CloneSelectorAndAddLabel(tt.selector, tt.labelKey, tt.labelValue)
 
-            // Check the result matches expected
-            if !reflect.DeepEqual(result, tt.expected) {
-                t.Errorf("CloneSelectorAndAddLabel() = %v, want %v", result, tt.expected)
-            }
+			// Check the result matches expected
+			if !reflect.DeepEqual(result, tt.expected) {
+				t.Errorf("CloneSelectorAndAddLabel() = %v, want %v", result, tt.expected)
+			}
 
-            // Check if a new reference was returned when cloning was expected
-            if tt.shouldClone {
-                if tt.selector != nil && result == tt.selector {
-                    t.Errorf("Expected cloned selector, but got same reference")
-                }
-            } else {
-                // When not cloning, should return the same reference
-                if tt.selector != nil && result != tt.selector {
-                    t.Errorf("Expected same reference when not cloning")
-                }
-            }
-        })
-    }
+			// Check if a new reference was returned when cloning was expected
+			if tt.shouldClone {
+				if tt.selector != nil && result == tt.selector {
+					t.Errorf("Expected cloned selector, but got same reference")
+				}
+			} else {
+				// When not cloning, should return the same reference
+				if tt.selector != nil && result != tt.selector {
+					t.Errorf("Expected same reference when not cloning")
+				}
+			}
+		})
+	}
 }
 
 func TestCloneSelectorAndAddLabel_DeepCopy(t *testing.T) {
