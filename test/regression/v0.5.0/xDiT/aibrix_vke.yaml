@@ -53,36 +53,35 @@ spec:
               name: model-hostpath 
       containers: 
         - name: xdit-dev 
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:0.3.4 #aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5 
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:v0.8 #aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5 
           imagePullPolicy: Always 
           # command: ["sleep"]
           # args: ["3600"] # sleep for 1 hour
-          command: ["sh", "-c"]
-          args:
-          - |
-            cat > /models/config.json <<'EOF'
-            {
-              "nproc_per_node": 1,
-              "model": "/models/HunyuanDiT-v1.2-Diffusers",
-              "pipefusion_parallel_degree": 1,
-              "ulysses_degree": 1,
-              "ring_degree": 1,
-              "height": 512,
-              "width": 512,
-              "save_disk_path": "/tmp",
-              "use_cfg_parallel": false
-            }
-            EOF
-            sleep 36000
           # command: ["sh", "-c"]
           # args:
-          #   - |
-          #     cat > /models/config.json <<'EOF' { "nproc_per_node": 1, "model": "/models/HunyuanDiT-v1.2-Diffusers", "pipefusion_parallel_degree": 1, "ulysses_degree": 1, "ring_degree": 1, "height": 512, "width": 512, "save_disk_path": "/tmp", "use_cfg_parallel": false } EOF
-          #     python3 http-service/launch_host.py --config /models/config.json 
+          # - |
+          #   cat > /models/config.json <<'EOF'
+          #   {
+          #     "nproc_per_node": 1,
+          #     "model": "/models/HunyuanDiT-v1.2-Diffusers",
+          #     "pipefusion_parallel_degree": 1,
+          #     "ulysses_degree": 1,
+          #     "ring_degree": 1,
+          #     "height": 512,
+          #     "width": 512,
+          #     "save_disk_path": "/tmp",
+          #     "use_cfg_parallel": false
+          #   }
+          #   EOF
+          #   sleep 36000
+          command: ["sh", "-c"]
+          args:
+            - |
+              python3 entrypoints/launch.py --model_path /models/HunyuanDiT-v1.2-Diffusers
           env: []
           volumeMounts: 
             - mountPath: /models 
-              name: model-hostpath 
+              name: model-mountpath 
           resources: 
             limits: 
               nvidia.com/gpu: "1" 
@@ -95,8 +94,10 @@ spec:
           hostPath: 
             path: /root/models 
             type: DirectoryOrCreate 
-                
-                
+        - name: model-mountpath
+          hostPath: 
+            path: /mnt/vdb/models
+            type: DirectoryOrCreate                                
 --- 
 
 
@@ -116,11 +117,11 @@ spec:
     - name: serve 
       port: 8000 
       protocol: TCP 
-      targetPort: 8000 
-    - name: http 
-      port: 6000 
-      protocol: TCP 
       targetPort: 6000 
+    - name: http 
+      port: 8080 
+      protocol: TCP 
+      targetPort: 8080 
   selector: 
     model.aibrix.ai/name: hunyuan-dit 
   type: ClusterIP
