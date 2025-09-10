@@ -142,6 +142,8 @@ type RoleStatus struct {
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=='Ready')].status`,description="Whether the RoleSet is ready (True/False)"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`,description="Time this RoleSet was created"
 
 // RoleSet is the Schema for the rolesets API
 type RoleSet struct {
