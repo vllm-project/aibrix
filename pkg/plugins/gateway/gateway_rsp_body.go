@@ -128,7 +128,11 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			}
 			klog.ErrorS(ErrorUnknownResponse, "unexpected response", "requestID", requestID, "responseBody", responseBodyContent)
 			complete = true
-			return buildErrorResponse(envoyTypePb.StatusCode(res.Code), msg, HeaderErrorResponseUnknown, "true"), complete
+			code := envoyTypePb.StatusCode_InternalServerError
+			if res.Code >= 100 && res.Code < 600 {
+				code = envoyTypePb.StatusCode(res.Code)
+			}
+			return buildErrorResponse(code, msg, HeaderErrorResponseUnknown, "true"), complete
 		}
 		promptTokens = res.Usage.PromptTokens
 		completionTokens = res.Usage.CompletionTokens

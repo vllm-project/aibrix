@@ -292,8 +292,11 @@ func validateStringInputs(inputs []string) error {
 			return fmt.Errorf("input at index %d cannot be an empty string", i)
 		}
 
-		// Estimate token count for each string (rough approximation: 1 token ≈ 4 characters)
-		estimatedTokens := len(input) / 4
+		tokens, err := utils.TokenizeInputText(input)
+		if err != nil {
+			return fmt.Errorf("failed to tokenize input for validation: %w", err)
+		}
+		estimatedTokens := len(tokens)
 		if estimatedTokens > MaxInputTokensPerModel {
 			if len(inputs) == 1 {
 				return fmt.Errorf("input exceeds max tokens per model (%d), estimated tokens: %d",
