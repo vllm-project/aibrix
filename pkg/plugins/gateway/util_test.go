@@ -39,7 +39,7 @@ func Test_ValidateRequestBody(t *testing.T) {
 		{
 			message:     "unknown path",
 			requestPath: "/v1/unknown",
-			statusCode:  envoyTypePb.StatusCode_NotImplemented,
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
 		},
 		{
 			message:     "/v1/chat/completions json unmarhsal error",
