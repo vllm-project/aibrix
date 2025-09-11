@@ -542,7 +542,9 @@ func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, readyPodList
 				targetPod = pod
 			}
 		}
-		klog.InfoS("Lowest cost pod: %s", "podName", targetPod.Name)
+		if targetPod != nil {
+			klog.InfoS("Lowest cost pod: %s", "podName", targetPod.Name)
+		}
 	}
 
 	if targetPod == nil {
