@@ -18,28 +18,39 @@ package gateway
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/packages/param"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
+)
+
+const (
+	// https://github.com/openai/openai-go/blob/main/embedding.go#L126
+	MaxInputTokensPerModel = 8192
+	MaxTotalTokens         = 300000
+	MaxArrayDimensions     = 2048
 )
 
 // validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
 // nolint:nakedret
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	var streamOptions openai.ChatCompletionStreamOptionsParam
-	if requestPath == "/v1/chat/completions" {
-		var jsonMap map[string]json.RawMessage
-		if err := json.Unmarshal(requestBody, &jsonMap); err != nil {
-			klog.ErrorS(err, "error to unmarshal request body", "requestID", requestID, "requestBody", string(requestBody))
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
-			return
-		}
+	var jsonMap map[string]json.RawMessage
+	if err := json.Unmarshal(requestBody, &jsonMap); err != nil {
+		klog.ErrorS(err, "error to unmarshal request body", "requestID", requestID, "requestBody", string(requestBody))
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
 
+	switch requestPath {
+	case "/v1/chat/completions":
 		chatCompletionObj := openai.ChatCompletionNewParams{}
 		if err := json.Unmarshal(requestBody, &chatCompletionObj); err != nil {
 			klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
@@ -53,7 +64,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		if errRes = validateStreamOptions(requestID, user, &stream, streamOptions, jsonMap); errRes != nil {
 			return
 		}
-	} else if requestPath == "/v1/completions" {
+	case "/v1/completions":
 		// openai.CompletionsNewParams does not support json unmarshal for CompletionNewParamsPromptUnion in release v0.1.0-beta.10
 		// once supported, input request will be directly unmarshal into openai.CompletionsNewParams
 		type Completion struct {
@@ -69,7 +80,24 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		}
 		model = completionObj.Model
 		message = completionObj.Prompt
-	} else {
+	case "/v1/embeddings":
+		embeddingObj := openai.EmbeddingNewParams{}
+		if err := json.Unmarshal(requestBody, &embeddingObj); err != nil {
+			klog.ErrorS(err, "error to unmarshal embeddings object", "requestID", requestID, "requestBody", string(requestBody))
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		model = embeddingObj.Model
+		if err := ValidateEmbeddingInput(embeddingObj); err != nil {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, err.Error(), HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		_, ok := jsonMap["stream"]
+		if ok {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+	default:
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
@@ -214,4 +242,119 @@ func buildEnvoyProxyHeaders(headers []*configPb.HeaderValueOption, keyValues ...
 	}
 
 	return headers
+}
+
+// ValidateEmbeddingInput validates the input according to OpenAI embedding constraints
+func ValidateEmbeddingInput(embeddingObj openai.EmbeddingNewParams) error {
+	inputParam := embeddingObj.Input
+	switch input := embeddingNewParamsInputUnionAsAny(&inputParam).(type) {
+	case *string:
+		return validateStringInputs([]string{*input})
+	case *[]string:
+		return validateStringInputs(*input)
+	case *[]int:
+		return validateTokenInputs([][]int{*input})
+	case *[][]int:
+		return validateTokenInputs(*input)
+	default:
+		if input != nil {
+			return fmt.Errorf("input must be a string, []string, []int, or [][]int, got %T", input)
+		}
+		return nil
+	}
+}
+func embeddingNewParamsInputUnionAsAny(u *openai.EmbeddingNewParamsInputUnion) any {
+	if !param.IsOmitted(u.OfString) {
+		return &u.OfString.Value
+	} else if !param.IsOmitted(u.OfArrayOfStrings) {
+		return &u.OfArrayOfStrings
+	} else if !param.IsOmitted(u.OfArrayOfTokens) {
+		return &u.OfArrayOfTokens
+	} else if !param.IsOmitted(u.OfArrayOfTokenArrays) {
+		return &u.OfArrayOfTokenArrays
+	}
+	return nil
+}
+
+// validateStringInputs validates string inputs (both single string and array of strings)
+func validateStringInputs(inputs []string) error {
+	if len(inputs) == 0 {
+		return errors.New("input array cannot be empty")
+	}
+
+	totalEstimatedTokens := 0
+
+	for i, input := range inputs {
+		if input == "" {
+			if len(inputs) == 1 {
+				return errors.New("input cannot be an empty string")
+			}
+			return fmt.Errorf("input at index %d cannot be an empty string", i)
+		}
+
+		// Estimate token count for each string (rough approximation: 1 token ≈ 4 characters)
+		estimatedTokens := len(input) / 4
+		if estimatedTokens > MaxInputTokensPerModel {
+			if len(inputs) == 1 {
+				return fmt.Errorf("input exceeds max tokens per model (%d), estimated tokens: %d",
+					MaxInputTokensPerModel, estimatedTokens)
+			}
+			return fmt.Errorf("input at index %d exceeds max tokens per model (%d), estimated tokens: %d",
+				i, MaxInputTokensPerModel, estimatedTokens)
+		}
+
+		totalEstimatedTokens += estimatedTokens
+	}
+
+	if totalEstimatedTokens > MaxTotalTokens {
+		return fmt.Errorf("total tokens across all inputs exceeds maximum (%d), estimated total: %d",
+			MaxTotalTokens, totalEstimatedTokens)
+	}
+
+	return nil
+}
+
+// validateTokenInputs validates token inputs (both single token array and multiple token arrays)
+func validateTokenInputs(tokenArrays [][]int) error {
+	if len(tokenArrays) == 0 {
+		return errors.New("token arrays cannot be empty")
+	}
+
+	totalTokens := 0
+
+	for i, tokens := range tokenArrays {
+		if len(tokens) == 0 {
+			if len(tokenArrays) == 1 {
+				return errors.New("token array cannot be empty")
+			}
+			return fmt.Errorf("token array at index %d cannot be empty", i)
+		}
+
+		if len(tokens) > MaxInputTokensPerModel {
+			if len(tokenArrays) == 1 {
+				return fmt.Errorf("token array exceeds max tokens per model (%d), actual tokens: %d",
+					MaxInputTokensPerModel, len(tokens))
+			}
+			return fmt.Errorf("token array at index %d exceeds max tokens per model (%d), actual tokens: %d",
+				i, MaxInputTokensPerModel, len(tokens))
+		}
+
+		if len(tokens) > MaxArrayDimensions {
+			if len(tokenArrays) == 1 {
+				return fmt.Errorf("token array exceeds max dimensions (%d), actual dimensions: %d",
+					MaxArrayDimensions, len(tokens))
+			}
+			return fmt.Errorf("token array at index %d exceeds max dimensions (%d), actual dimensions: %d",
+				i, MaxArrayDimensions, len(tokens))
+		}
+
+		totalTokens += len(tokens)
+	}
+
+	if totalTokens > MaxTotalTokens {
+		return fmt.Errorf("total tokens across all inputs exceeds maximum (%d), actual total: %d",
+			MaxTotalTokens, totalTokens)
+	}
+
+	return nil
 }
