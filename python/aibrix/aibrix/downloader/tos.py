@@ -161,8 +161,10 @@ class TOSDownloaderV1(BaseDownloader):
         except Exception as e:
             raise ValueError(f"TOS bucket path {bucket_path} not exist for {e}.")
 
-        _file_name = bucket_path.split("/")[-1]
-        local_file = local_path.joinpath(_file_name).absolute()
+        relative_path = bucket_path.replace(self.bucket_path.rstrip("/") + "/", "")
+        local_file = local_path.joinpath(relative_path).absolute()
+        # Ensure parent directories exist
+        local_file.parent.mkdir(parents=True, exist_ok=True)
         tmp_file = (
             local_file.with_suffix(local_file.suffix + ".part")
             if local_file.suffix
@@ -189,7 +191,7 @@ class TOSDownloaderV1(BaseDownloader):
         total_length = meta_data.content_length
 
         with tqdm(
-            desc=_file_name, total=total_length, unit="b", unit_scale=True
+            desc=relative_path, total=total_length, unit="b", unit_scale=True
         ) if self.enable_progress_bar else nullcontext() as pbar:
 
             def download_progress(
@@ -198,7 +200,7 @@ class TOSDownloaderV1(BaseDownloader):
                 pbar.update(rw_once_bytes)
 
             download_file = get_local_download_paths(
-                local_path, _file_name, self._source
+                local_path, relative_path, self._source
             )
             with download_file.download_lock():
                 self.client.download_file(

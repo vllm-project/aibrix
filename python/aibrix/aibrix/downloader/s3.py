@@ -335,9 +335,11 @@ class S3BaseDownloader(BaseDownloader):
         except Exception as e:
             raise ValueError(f"S3 bucket path {bucket_path} not exist for {e}.")
 
-        _file_name = bucket_path.split("/")[-1]
-        local_file = local_path.joinpath(_file_name).absolute()
-        # Write to a temporary file to ensure atomic finalize
+        # Calculate relative path to preserve directory hierarchy
+        relative_path = bucket_path.replace(self.bucket_path.rstrip("/") + "/", "")
+        local_file = local_path.joinpath(relative_path).absolute()
+        # Ensure parent directories exist
+        local_file.parent.mkdir(parents=True, exist_ok=True)
         tmp_file = (
             local_file.with_suffix(local_file.suffix + ".part")
             if local_file.suffix
@@ -348,7 +350,7 @@ class S3BaseDownloader(BaseDownloader):
         etag = meta_data.get("ETag", "")
         file_size = meta_data.get("ContentLength", 0)
         meta_data_file = meta_file(
-            local_path=local_path, file_name=_file_name, source=self._source.value
+            local_path=local_path, file_name=relative_path, source=self._source.value
         )
 
         if not need_to_download(local_file, meta_data_file, file_size, etag):
@@ -374,7 +376,7 @@ class S3BaseDownloader(BaseDownloader):
         # download file
         total_length = int(meta_data.get("ContentLength", 0))
         with (
-            tqdm(desc=_file_name, total=total_length, unit="b", unit_scale=True)
+            tqdm(desc=relative_path, total=total_length, unit="b", unit_scale=True)
             if self.enable_progress_bar
             else nullcontext()
         ) as pbar:
@@ -383,7 +385,7 @@ class S3BaseDownloader(BaseDownloader):
                 pbar.update(bytes_transferred)
 
             download_file = get_local_download_paths(
-                local_path, _file_name, self._source
+                local_path, relative_path, self._source
             )
             with download_file.download_lock():
                 self.client.download_file(
