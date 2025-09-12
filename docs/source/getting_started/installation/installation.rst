@@ -16,7 +16,7 @@ Install AIBrix on Cloud Kubernetes Clusters
 
 
 Stable Version
-~~~~~~~~~~~~
+~~~~~~~~~~~~~~
 
 .. code:: bash
 
@@ -32,7 +32,7 @@ Stable Version
 
 
 Stable Version Using Helm
-~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Prerequisites
 ^^^^^^^^^^^^
@@ -67,7 +67,7 @@ Prerequisites
 
 
 Install AIBrix with Helm
-^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code:: bash
 
@@ -78,7 +78,7 @@ Install AIBrix with Helm
 
 
 Upgrade AIBrix with Helm
-^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code:: bash
 
@@ -86,7 +86,7 @@ Upgrade AIBrix with Helm
 
 
 Uninstall AIBrix with Helm
-^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code:: bash
 
@@ -96,7 +96,7 @@ Uninstall AIBrix with Helm
 
 
 Nightly Version
-~~~~~~~~~~~~
+~~~~~~~~~~~~~~
 
 .. code:: bash
 
@@ -127,7 +127,7 @@ Install Individual AIBrix Components
 
 
 Autoscaler
-~~~~~~~~~~~~
+~~~~~~~~~~
 
 .. code:: bash
 
@@ -135,7 +135,7 @@ Autoscaler
 
 
 Distributed Inference
-~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
 
 .. code:: bash
 
@@ -143,14 +143,14 @@ Distributed Inference
 
 
 Model Adapter(Lora)
-~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~
 
 .. code:: bash
 
     kubectl apply -k config/standalone/model-adapter-controller
 
 KV Cache
-~~~~~~~~~~~~
+~~~~~~~~
 
 .. code:: bash
 
