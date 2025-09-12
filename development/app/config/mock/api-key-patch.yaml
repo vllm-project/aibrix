@@ -2,6 +2,10 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mock-llama2-7b
+  labels:
+    model.aibrix.ai/name: "llama2-7b"
+    model.aibrix.ai/port: "8000"
+    adapter.model.aibrix.ai/enabled: "true"
 spec:
   replicas: 3
   selector:
