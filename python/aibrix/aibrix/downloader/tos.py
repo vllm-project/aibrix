@@ -175,7 +175,7 @@ class TOSDownloaderV1(BaseDownloader):
         etag = meta_data.etag
         file_size = meta_data.content_length
         meta_data_file = meta_file(
-            local_path=local_path, file_name=_file_name, source=self._source.value
+            local_path=local_path, file_name=relative_path, source=self._source.value
         )
 
         if not need_to_download(local_file, meta_data_file, file_size, etag):
