@@ -46,7 +46,7 @@ spec:
               value: cn-beijing 
             - name: LOG_LEVEL
               value: DEBUG  
-          image: aibrix-cn-beijing.cr.volces.com/aibrix/runtime:v0.3.0 
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.1-downloader-2
           name: init-model 
           volumeMounts: 
             - mountPath: /models 
@@ -55,25 +55,6 @@ spec:
         - name: xdit-dev 
           image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:v0.8 #aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5 
           imagePullPolicy: Always 
-          # command: ["sleep"]
-          # args: ["3600"] # sleep for 1 hour
-          # command: ["sh", "-c"]
-          # args:
-          # - |
-          #   cat > /models/config.json <<'EOF'
-          #   {
-          #     "nproc_per_node": 1,
-          #     "model": "/models/HunyuanDiT-v1.2-Diffusers",
-          #     "pipefusion_parallel_degree": 1,
-          #     "ulysses_degree": 1,
-          #     "ring_degree": 1,
-          #     "height": 512,
-          #     "width": 512,
-          #     "save_disk_path": "/tmp",
-          #     "use_cfg_parallel": false
-          #   }
-          #   EOF
-          #   sleep 36000
           command: ["sh", "-c"]
           args:
             - |
@@ -81,7 +62,7 @@ spec:
           env: []
           volumeMounts: 
             - mountPath: /models 
-              name: model-mountpath 
+              name: model-hostpath 
           resources: 
             limits: 
               nvidia.com/gpu: "1" 
@@ -97,7 +78,9 @@ spec:
         - name: model-mountpath
           hostPath: 
             path: /mnt/vdb/models
-            type: DirectoryOrCreate                                
+            type: DirectoryOrCreate   
+      nodeSelector:
+        kubernetes.io/hostname: 10.0.1.220                             
 --- 
 
 
