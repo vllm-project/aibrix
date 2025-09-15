@@ -18,9 +18,11 @@ package scaler
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/adapters"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/aggregation"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/algorithm"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/common"
@@ -61,7 +63,18 @@ func NewPipelineAutoScaler(
 
 	// Create pipeline components
 	collector := metrics.NewMetricCollector(config.MetricSource.MetricSourceType, fetcher)
-	aggregator := aggregation.NewMetricAggregator(strategy, fetcher, config.AggregationConfig)
+
+	// Create metrics client for aggregator
+	var metricsClient aggregation.MetricsClient
+	if strategy == autoscalingv1alpha1.KPA {
+		kpaClient := metrics.NewKPAMetricsClient(fetcher, config.AggregationConfig.StableWindow, config.AggregationConfig.PanicWindow)
+		metricsClient = adapters.NewKPAMetricsClientAdapter(kpaClient)
+	} else {
+		apaClient := metrics.NewAPAMetricsClient(fetcher, config.AggregationConfig.Window)
+		metricsClient = adapters.NewAPAMetricsClientAdapter(apaClient)
+	}
+
+	aggregator := aggregation.NewMetricAggregator(strategy, metricsClient, config.AggregationConfig)
 	engine := algorithm.NewScalingDecisionEngine(strategy, config.EngineConfig)
 
 	return &PipelineAutoScaler{
@@ -73,8 +86,18 @@ func NewPipelineAutoScaler(
 }
 
 func (s *PipelineAutoScaler) Scale(ctx context.Context, request types.ScaleRequest) (*types.ScaleResult, error) {
+	logger := klog.FromContext(ctx)
+	startTime := time.Now()
+
+	// Log pipeline start
+	logger.V(2).Info("Starting scaling pipeline",
+		"strategy", s.strategy,
+		"target", request.PodAutoscaler.Spec.ScaleTargetRef.Name,
+		"currentReplicas", request.CurrentReplicas)
+
 	// Ensure configuration is up to date
 	if err := s.UpdateConfiguration(request.PodAutoscaler); err != nil {
+		logger.Error(err, "Failed to update configuration")
 		return &types.ScaleResult{ScaleValid: false}, err
 	}
 
@@ -88,20 +111,43 @@ func (s *PipelineAutoScaler) Scale(ctx context.Context, request types.ScaleReque
 		Timestamp:    request.Timestamp,
 	}
 
+	logger.V(3).Info("Collecting metrics",
+		"collector", s.collector.GetCollectorType(),
+		"pods", len(request.Pods))
+
 	snapshot, err := s.collector.CollectMetrics(ctx, collectionSpec)
 	if err != nil {
+		logger.Error(err, "Failed to collect metrics")
 		return &types.ScaleResult{ScaleValid: false}, err
 	}
+
+	logger.V(3).Info("Metrics collected",
+		"values", len(snapshot.Values),
+		"source", snapshot.Source)
 
 	// Step 2: Process and aggregate metrics
+	logger.V(3).Info("Processing metrics snapshot")
 	if err := s.aggregator.ProcessSnapshot(snapshot); err != nil {
+		logger.Error(err, "Failed to process snapshot")
 		return &types.ScaleResult{ScaleValid: false}, err
 	}
 
-	aggregatedMetrics, err := s.aggregator.GetAggregatedMetrics(s.metricKey, request.Timestamp)
+	// Convert to types.MetricKey
+	metricKey := types.MetricKey{
+		Namespace:  s.metricKey.Namespace,
+		Name:       s.metricKey.Name,
+		MetricName: s.metricKey.MetricName,
+	}
+	aggregatedMetrics, err := s.aggregator.GetAggregatedMetrics(metricKey, request.Timestamp)
 	if err != nil {
+		logger.Error(err, "Failed to get aggregated metrics")
 		return &types.ScaleResult{ScaleValid: false}, err
 	}
+
+	logger.V(3).Info("Metrics aggregated",
+		"currentValue", aggregatedMetrics.CurrentValue,
+		"trend", aggregatedMetrics.Trend,
+		"confidence", aggregatedMetrics.Confidence)
 
 	// Step 3: Make scaling decision
 	scalingRequest := algorithm.ScalingRequest{
@@ -110,7 +156,11 @@ func (s *PipelineAutoScaler) Scale(ctx context.Context, request types.ScaleReque
 			Name:       request.PodAutoscaler.Spec.ScaleTargetRef.Name,
 			Kind:       request.PodAutoscaler.Spec.ScaleTargetRef.Kind,
 			APIVersion: request.PodAutoscaler.Spec.ScaleTargetRef.APIVersion,
-			MetricKey:  s.metricKey,
+			MetricKey: types.MetricKey{
+				Namespace:  s.metricKey.Namespace,
+				Name:       s.metricKey.Name,
+				MetricName: s.metricKey.MetricName,
+			},
 		},
 		CurrentReplicas:   request.CurrentReplicas,
 		AggregatedMetrics: aggregatedMetrics,
@@ -119,10 +169,23 @@ func (s *PipelineAutoScaler) Scale(ctx context.Context, request types.ScaleReque
 		Timestamp:         request.Timestamp,
 	}
 
+	logger.V(3).Info("Computing scaling recommendation",
+		"engine", s.engine.GetEngineType())
+
 	recommendation, err := s.engine.ComputeRecommendation(ctx, scalingRequest)
 	if err != nil {
+		logger.Error(err, "Failed to compute recommendation")
 		return &types.ScaleResult{ScaleValid: false}, err
 	}
+
+	// Log pipeline completion
+	duration := time.Since(startTime)
+	logger.V(2).Info("Scaling pipeline completed",
+		"strategy", s.strategy,
+		"desired", recommendation.DesiredReplicas,
+		"valid", recommendation.ScaleValid,
+		"reason", recommendation.Reason,
+		"duration", duration)
 
 	return &types.ScaleResult{
 		DesiredPodCount: recommendation.DesiredReplicas,
@@ -189,22 +252,89 @@ func (s *PipelineAutoScaler) createConstraints(pa autoscalingv1alpha1.PodAutosca
 
 func (s *PipelineAutoScaler) extractAggregationConfig(pa autoscalingv1alpha1.PodAutoscaler) aggregation.AggregationConfig {
 	// Extract from PA annotations or use defaults
-	return aggregation.AggregationConfig{
+	config := aggregation.AggregationConfig{
 		StableWindow: 60 * time.Second,
 		PanicWindow:  6 * time.Second,
 		Window:       60 * time.Second,
 		Granularity:  time.Second,
 	}
+
+	if pa.Annotations != nil {
+		// Parse stable window duration
+		if stableWindowStr, ok := pa.Annotations["autoscaling.aibrix.ai/stable-window"]; ok {
+			if duration, err := time.ParseDuration(stableWindowStr); err == nil {
+				config.StableWindow = duration
+			} else {
+				klog.V(4).InfoS("Failed to parse stable window duration", "value", stableWindowStr, "error", err)
+			}
+		}
+
+		// Parse panic window duration
+		if panicWindowStr, ok := pa.Annotations["autoscaling.aibrix.ai/panic-window"]; ok {
+			if duration, err := time.ParseDuration(panicWindowStr); err == nil {
+				config.PanicWindow = duration
+			} else {
+				klog.V(4).InfoS("Failed to parse panic window duration", "value", panicWindowStr, "error", err)
+			}
+		}
+
+		// Parse window duration (for APA)
+		if windowStr, ok := pa.Annotations["autoscaling.aibrix.ai/window"]; ok {
+			if duration, err := time.ParseDuration(windowStr); err == nil {
+				config.Window = duration
+			} else {
+				klog.V(4).InfoS("Failed to parse window duration", "value", windowStr, "error", err)
+			}
+		}
+
+		// Parse granularity
+		if granularityStr, ok := pa.Annotations["autoscaling.aibrix.ai/granularity"]; ok {
+			if duration, err := time.ParseDuration(granularityStr); err == nil {
+				config.Granularity = duration
+			} else {
+				klog.V(4).InfoS("Failed to parse granularity duration", "value", granularityStr, "error", err)
+			}
+		}
+	}
+
+	return config
 }
 
 func (s *PipelineAutoScaler) extractEngineConfig(pa autoscalingv1alpha1.PodAutoscaler) algorithm.EngineConfig {
-	return algorithm.EngineConfig{
+	config := algorithm.EngineConfig{
 		Strategy:       pa.Spec.ScalingStrategy,
-		PanicThreshold: 2.0, // Extract from annotations
+		PanicThreshold: 2.0,
 		StableWindow:   60 * time.Second,
 		PanicWindow:    6 * time.Second,
 		ScaleToZero:    false,
 	}
+
+	if pa.Annotations != nil {
+		// Parse panic threshold
+		if thresholdStr, ok := pa.Annotations["autoscaling.aibrix.ai/panic-threshold"]; ok {
+			if threshold, err := strconv.ParseFloat(thresholdStr, 64); err == nil {
+				config.PanicThreshold = threshold
+			} else {
+				klog.V(4).InfoS("Failed to parse panic threshold", "value", thresholdStr, "error", err)
+			}
+		}
+
+		// Parse scale to zero flag
+		if scaleToZeroStr, ok := pa.Annotations["autoscaling.aibrix.ai/scale-to-zero"]; ok {
+			if scaleToZero, err := strconv.ParseBool(scaleToZeroStr); err == nil {
+				config.ScaleToZero = scaleToZero
+			} else {
+				klog.V(4).InfoS("Failed to parse scale-to-zero flag", "value", scaleToZeroStr, "error", err)
+			}
+		}
+
+		// Re-use window configurations from aggregation config
+		aggConfig := s.extractAggregationConfig(pa)
+		config.StableWindow = aggConfig.StableWindow
+		config.PanicWindow = aggConfig.PanicWindow
+	}
+
+	return config
 }
 
 // AutoScalerConfig contains configuration for all components

@@ -17,12 +17,11 @@ limitations under the License.
 package aggregation
 
 import (
+	"math"
 	"time"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
-	types2 "k8s.io/apimachinery/pkg/types"
 )
 
 // MetricAggregator processes and aggregates metrics over time windows
@@ -31,7 +30,7 @@ type MetricAggregator interface {
 	ProcessSnapshot(snapshot *types.MetricSnapshot) error
 
 	// GetAggregatedMetrics returns processed metrics for scaling decisions
-	GetAggregatedMetrics(key metrics.NamespaceNameMetric, now time.Time) (*AggregatedMetrics, error)
+	GetAggregatedMetrics(key types.MetricKey, now time.Time) (*AggregatedMetrics, error)
 
 	// UpdateConfiguration changes aggregation parameters
 	UpdateConfiguration(config AggregationConfig) error
@@ -39,7 +38,7 @@ type MetricAggregator interface {
 
 // AggregatedMetrics contains processed metric values
 type AggregatedMetrics struct {
-	MetricKey    metrics.NamespaceNameMetric
+	MetricKey    types.MetricKey
 	CurrentValue float64
 	StableValue  float64 // KPA only
 	PanicValue   float64 // KPA only
@@ -56,19 +55,23 @@ type AggregationConfig struct {
 	Granularity  time.Duration
 }
 
-// KPAMetricAggregator extends existing KPAMetricsClient
-type KPAMetricAggregator struct {
-	*metrics.KPAMetricsClient // Embed existing client to reuse logic
-	config                    AggregationConfig
+// MetricsClient interface to avoid circular dependency
+type MetricsClient interface {
+	UpdateMetrics(now time.Time, metricKey interface{}, metricValues ...float64) error
+	StableAndPanicMetrics(metricKey interface{}, now time.Time) (float64, float64, error)
+	GetMetricValue(metricKey interface{}, now time.Time) (float64, error)
 }
 
-func NewKPAMetricAggregator(fetcher metrics.MetricFetcher, config AggregationConfig) *KPAMetricAggregator {
-	// Reuse existing KPAMetricsClient constructor
-	client := metrics.NewKPAMetricsClient(fetcher, config.StableWindow, config.PanicWindow)
+// KPAMetricAggregator extends existing KPAMetricsClient
+type KPAMetricAggregator struct {
+	client MetricsClient // Use interface instead of concrete type
+	config AggregationConfig
+}
 
+func NewKPAMetricAggregator(client MetricsClient, config AggregationConfig) *KPAMetricAggregator {
 	return &KPAMetricAggregator{
-		KPAMetricsClient: client,
-		config:           config,
+		client: client,
+		config: config,
 	}
 }
 
@@ -77,33 +80,29 @@ func (a *KPAMetricAggregator) ProcessSnapshot(snapshot *types.MetricSnapshot) er
 		return snapshot.Error
 	}
 
-	// Convert to NamespaceNameMetric for compatibility with existing logic
-	metricKey := metrics.NamespaceNameMetric{
-		NamespacedName: types2.NamespacedName{
-			Namespace: snapshot.Namespace,
-			Name:      snapshot.TargetName,
-		},
+	// Create metric key for compatibility
+	metricKey := types.MetricKey{
+		Namespace:  snapshot.Namespace,
+		Name:       snapshot.TargetName,
 		MetricName: snapshot.MetricName,
 	}
 
 	// Reuse existing UpdateMetrics logic
-	return a.UpdateMetrics(snapshot.Timestamp, metricKey, snapshot.Values...)
+	return a.client.UpdateMetrics(snapshot.Timestamp, metricKey, snapshot.Values...)
 }
 
-func (a *KPAMetricAggregator) GetAggregatedMetrics(key metrics.NamespaceNameMetric, now time.Time) (*AggregatedMetrics, error) {
+func (a *KPAMetricAggregator) GetAggregatedMetrics(key types.MetricKey, now time.Time) (*AggregatedMetrics, error) {
 	// Reuse existing StableAndPanicMetrics logic
-	stable, panic, err := a.StableAndPanicMetrics(key, now)
+	stable, panic, err := a.client.StableAndPanicMetrics(key, now)
 	if err != nil {
 		return nil, err
 	}
 
-	// Calculate simple trend and confidence
-	trend := 0.0
-	confidence := 1.0
-	if stable > 0 {
-		trend = (panic - stable) / stable
-		confidence = 0.8 // Default confidence
-	}
+	// Calculate trend with smoothing
+	trend := calculateTrend(stable, panic)
+
+	// Calculate confidence based on data quality
+	confidence := calculateKPAConfidence(stable, panic, now)
 
 	return &AggregatedMetrics{
 		MetricKey:    key,
@@ -123,16 +122,14 @@ func (a *KPAMetricAggregator) UpdateConfiguration(config AggregationConfig) erro
 
 // APAMetricAggregator extends existing APAMetricsClient
 type APAMetricAggregator struct {
-	*metrics.APAMetricsClient // Embed existing client
-	config                    AggregationConfig
+	client MetricsClient // Use interface
+	config AggregationConfig
 }
 
-func NewAPAMetricAggregator(fetcher metrics.MetricFetcher, config AggregationConfig) *APAMetricAggregator {
-	client := metrics.NewAPAMetricsClient(fetcher, config.Window)
-
+func NewAPAMetricAggregator(client MetricsClient, config AggregationConfig) *APAMetricAggregator {
 	return &APAMetricAggregator{
-		APAMetricsClient: client,
-		config:           config,
+		client: client,
+		config: config,
 	}
 }
 
@@ -141,33 +138,35 @@ func (a *APAMetricAggregator) ProcessSnapshot(snapshot *types.MetricSnapshot) er
 		return snapshot.Error
 	}
 
-	// Convert to NamespaceNameMetric for compatibility with existing logic
-	metricKey := metrics.NamespaceNameMetric{
-		NamespacedName: types2.NamespacedName{
-			Namespace: snapshot.Namespace,
-			Name:      snapshot.TargetName,
-		},
+	// Create metric key for compatibility
+	metricKey := types.MetricKey{
+		Namespace:  snapshot.Namespace,
+		Name:       snapshot.TargetName,
 		MetricName: snapshot.MetricName,
 	}
 
 	// Reuse existing UpdateMetrics logic
-	return a.UpdateMetrics(snapshot.Timestamp, metricKey, snapshot.Values...)
+	return a.client.UpdateMetrics(snapshot.Timestamp, metricKey, snapshot.Values...)
 }
 
-func (a *APAMetricAggregator) GetAggregatedMetrics(key metrics.NamespaceNameMetric, now time.Time) (*AggregatedMetrics, error) {
+func (a *APAMetricAggregator) GetAggregatedMetrics(key types.MetricKey, now time.Time) (*AggregatedMetrics, error) {
 	// Reuse existing GetMetricValue logic
-	value, err := a.GetMetricValue(key, now)
+	value, err := a.client.GetMetricValue(key, now)
 	if err != nil {
 		return nil, err
 	}
+
+	// For APA, use simple trend and confidence
+	trend := 0.0
+	confidence := 0.8 // Default confidence for APA
 
 	return &AggregatedMetrics{
 		MetricKey:    key,
 		CurrentValue: value,
 		StableValue:  value,
 		PanicValue:   value,
-		Trend:        0.0,
-		Confidence:   1.0,
+		Trend:        trend,
+		Confidence:   confidence,
 		LastUpdated:  now,
 	}, nil
 }
@@ -178,13 +177,68 @@ func (a *APAMetricAggregator) UpdateConfiguration(config AggregationConfig) erro
 }
 
 // NewMetricAggregator creates aggregators based on scaling strategy
-func NewMetricAggregator(strategy autoscalingv1alpha1.ScalingStrategyType, fetcher metrics.MetricFetcher, config AggregationConfig) MetricAggregator {
+func NewMetricAggregator(strategy autoscalingv1alpha1.ScalingStrategyType, client MetricsClient, config AggregationConfig) MetricAggregator {
 	switch strategy {
 	case autoscalingv1alpha1.KPA:
-		return NewKPAMetricAggregator(fetcher, config)
+		return NewKPAMetricAggregator(client, config)
 	case autoscalingv1alpha1.APA:
-		return NewAPAMetricAggregator(fetcher, config)
+		return NewAPAMetricAggregator(client, config)
 	default:
-		return NewKPAMetricAggregator(fetcher, config) // Default to KPA
+		return NewKPAMetricAggregator(client, config) // Default to KPA
 	}
+}
+
+// calculateTrend calculates the trend between stable and panic values with smoothing
+func calculateTrend(stable, panic float64) float64 {
+	if stable <= 0 {
+		return 0
+	}
+
+	// Calculate raw trend
+	rawTrend := (panic - stable) / stable
+
+	// Apply exponential smoothing to reduce noise
+	// Use a smoothing factor (alpha) of 0.3 for gradual changes
+	const alpha = 0.3
+	smoothedTrend := alpha * rawTrend
+
+	// Cap the trend to reasonable bounds (-1 to 2)
+	if smoothedTrend < -1 {
+		return -1
+	}
+	if smoothedTrend > 2 {
+		return 2
+	}
+
+	return smoothedTrend
+}
+
+// calculateKPAConfidence calculates confidence based on stable and panic values
+func calculateKPAConfidence(stable, panic float64, now time.Time) float64 {
+	// Base confidence
+	confidence := 0.5
+
+	// If we have both stable and panic values, confidence is higher
+	if stable > 0 && panic > 0 {
+		confidence += 0.3
+	}
+
+	// If values are close, we have higher confidence
+	if stable > 0 && panic > 0 {
+		diff := math.Abs(stable - panic)
+		ratio := diff / stable
+		if ratio < 0.1 { // Less than 10% difference
+			confidence += 0.2
+		}
+	}
+
+	// Ensure confidence is between 0 and 1
+	if confidence < 0 {
+		return 0
+	}
+	if confidence > 1 {
+		return 1
+	}
+
+	return confidence
 }

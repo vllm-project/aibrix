@@ -18,9 +18,12 @@ package metrics
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
+	"k8s.io/klog/v2"
 )
 
 // MetricCollector orchestrates metric collection from various sources
@@ -44,8 +47,35 @@ func NewPodMetricCollector(fetcher MetricFetcher) *PodMetricCollector {
 }
 
 func (c *PodMetricCollector) CollectMetrics(ctx context.Context, spec types.CollectionSpec) (*types.MetricSnapshot, error) {
-	// Reuse existing GetMetricsFromPods logic
-	values, err := GetMetricsFromPods(ctx, c.fetcher, spec.Pods, spec.MetricSource)
+	var values []float64
+	var collectErrors []error
+	successCount := 0
+
+	// Collect metrics from each pod
+	for _, pod := range spec.Pods {
+		value, err := c.fetcher.FetchPodMetrics(ctx, pod, spec.MetricSource)
+		if err != nil {
+			collectErrors = append(collectErrors, fmt.Errorf("pod %s/%s: %w", pod.Namespace, pod.Name, err))
+			continue
+		}
+		values = append(values, value)
+		successCount++
+	}
+
+	// Determine overall error status
+	var finalErr error
+	if len(collectErrors) > 0 {
+		if successCount == 0 {
+			// All collections failed
+			finalErr = fmt.Errorf("failed to collect metrics from all %d pods: %v", len(spec.Pods), combineErrors(collectErrors))
+		} else {
+			// Partial failure - log but don't fail
+			klog.V(4).InfoS("Partial metric collection failure",
+				"successful", successCount,
+				"failed", len(collectErrors),
+				"errors", collectErrors)
+		}
+	}
 
 	return &types.MetricSnapshot{
 		Namespace:  spec.Namespace,
@@ -54,7 +84,7 @@ func (c *PodMetricCollector) CollectMetrics(ctx context.Context, spec types.Coll
 		Values:     values,
 		Timestamp:  spec.Timestamp,
 		Source:     "pod",
-		Error:      err,
+		Error:      finalErr,
 	}, nil
 }
 
@@ -107,4 +137,22 @@ func NewMetricCollector(sourceType autoscalingv1alpha1.MetricSourceType, fetcher
 	default:
 		return NewPodMetricCollector(fetcher) // Default to pod collector
 	}
+}
+
+// combineErrors combines multiple errors into a single error
+func combineErrors(errors []error) error {
+	if len(errors) == 0 {
+		return nil
+	}
+	if len(errors) == 1 {
+		return errors[0]
+	}
+
+	var errStrings []string
+	for _, err := range errors {
+		if err != nil {
+			errStrings = append(errStrings, err.Error())
+		}
+	}
+	return fmt.Errorf("[%s]", strings.Join(errStrings, "; "))
 }

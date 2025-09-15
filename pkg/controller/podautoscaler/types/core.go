@@ -23,13 +23,20 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+// MetricKey identifies a specific metric
+type MetricKey struct {
+	Namespace  string
+	Name       string
+	MetricName string
+}
+
 // ScaleTarget represents what to scale
 type ScaleTarget struct {
 	Namespace  string
 	Name       string
 	Kind       string
 	APIVersion string
-	// MetricKey is handled at the controller level
+	MetricKey  MetricKey
 }
 
 // ScaleRequest contains everything needed for scaling

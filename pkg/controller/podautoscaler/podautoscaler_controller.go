@@ -27,7 +27,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/aggregation"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/algorithm"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
-	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
+	scalertypes "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 
@@ -687,7 +687,7 @@ func (r *PodAutoscalerReconciler) computeReplicasWithNewInterface(ctx context.Co
 	}
 
 	// Create scale request
-	scaleRequest := types.ScaleRequest{
+	scaleRequest := scalertypes.ScaleRequest{
 		PodAutoscaler:   pa,
 		CurrentReplicas: int32(currentReplicasInt64),
 		Pods:            podList.Items,
@@ -848,7 +848,7 @@ func (r *PodAutoscalerReconciler) updateMetricsForScaleLegacy(ctx context.Contex
 	}
 
 	// Get pod list managed by scaleTargetRef
-	podList, err := podutil.GetPodListByLabelSelector(ctx, r.Client, pa.Namespace, labelsSelector)
+	podList, err := podutils.GetPodListByLabelSelector(ctx, r.Client, pa.Namespace, labelsSelector)
 	if err != nil {
 		klog.ErrorS(err, "failed to get pod list by label selector")
 		return err
