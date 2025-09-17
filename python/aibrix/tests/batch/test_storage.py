@@ -15,7 +15,6 @@
 
 import json
 import os
-from pathlib import Path
 
 import aibrix.batch.storage as _storage
 
