@@ -26,8 +26,6 @@ from aibrix.metadata.core.httpx_client import HTTPXClientWrapper
 from aibrix.metadata.logger import init_logger
 from aibrix.metadata.setting import settings
 
-from .cache import JobCache
-
 logger = init_logger(__name__)
 router = APIRouter()
 
@@ -74,8 +72,6 @@ def build_app(args: argparse.Namespace):
     app.include_router(router)
     if not args.disable_batch_api:
         job_entity_manager: Optional[JobEntityManager] = None
-        if args.enable_k8s_job:
-            job_entity_manager = JobCache()
         app.state.job_controller = BatchDriver(job_entity_manager)
         app.include_router(
             batch.router, prefix=f"{settings.API_V1_STR}/batches", tags=["batches"]
@@ -109,12 +105,6 @@ def main():
         action="store_true",
         default=False,
         help="Disable batch api",
-    )
-    parser.add_argument(
-        "--enable-k8s-job",
-        action="store_true",
-        default=False,
-        help="Enable native kubernetes jobs as the job executor",
     )
     parser.add_argument(
         "--e2e-test",
