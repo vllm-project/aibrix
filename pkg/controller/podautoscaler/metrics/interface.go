@@ -82,7 +82,7 @@ type MetricClient interface {
 
 	GetMetricFromSource(ctx context.Context, source autoscalingv1alpha1.MetricSource) (float64, error)
 
-	// Obsoleted, please use UpdateMetrics
+	// Deprecated: Use UpdateMetrics instead.
 	UpdatePodListMetric(metricValues []float64, metricKey NamespaceNameMetric, now time.Time) error
 
 	UpdateMetrics(now time.Time, metricKey NamespaceNameMetric, metricValues ...float64) error

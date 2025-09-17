@@ -14,7 +14,16 @@ spec:
     singular: roleset
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - description: Whether the RoleSet is ready (True/False)
+      jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - description: Time this RoleSet was created
+      jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         properties:
@@ -41,6 +50,8 @@ spec:
                       type: string
                     podGroupSize:
                       format: int32
+                      maximum: 100
+                      minimum: 1
                       type: integer
                     replicas:
                       format: int32
@@ -3688,9 +3699,8 @@ spec:
                           x-kubernetes-int-or-string: true
                       type: object
                     upgradeOrder:
-                      default: 0
                       format: int32
-                      minimum: 0
+                      minimum: 1
                       type: integer
                   type: object
                 type: array
@@ -3811,6 +3821,11 @@ spec:
                     type: object
                 type: object
               updateStrategy:
+                default: Sequential
+                enum:
+                - Parallel
+                - Sequential
+                - Interleave
                 type: string
             type: object
           status:

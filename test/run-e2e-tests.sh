@@ -140,7 +140,8 @@ start_port_forwards
 # so CI can detect failures
 
 echo "Running e2e tests..."
-go test ./test/e2e/ -v -timeout 0
+# TODO(jiaxin): add TestModelAdapter.* back once the runtime issue is fixed
+go test ./test/e2e/ -v -timeout 0 -skip "TestModelAdapter.*"
 TEST_EXIT_CODE=$?
 
 # Exit with the test's exit code

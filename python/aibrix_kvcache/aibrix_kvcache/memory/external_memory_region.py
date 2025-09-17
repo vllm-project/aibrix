@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from typing import Callable
 
 import torch
 
@@ -18,17 +19,17 @@ from .memory_region import MemoryRegion
 
 
 class ExternalMemoryRegion(MemoryRegion):
-    """ExternalMemoryRegion represents an external continuous memory buffer.
-    Right now we only use it to support GDR.
-    """
+    """ExternalMemoryRegion represents an external continuous memory buffer."""
 
     def __init__(
         self,
         slab: torch.Tensor,
         addr: int,
-        len: int,
+        length: int,
+        on_release: Callable[[torch.Tensor, int, int], None] | None = None,
     ) -> None:
-        super().__init__(slab, addr, len)
+        super().__init__(slab, addr, length)
+        self._on_release = on_release
 
     def __repr__(self) -> str:
         return (
@@ -37,4 +38,5 @@ class ExternalMemoryRegion(MemoryRegion):
         )
 
     def destroy_unsafe(self):
-        pass
+        if self._on_release is not None:
+            self._on_release(self.slab, self.addr, self.length)

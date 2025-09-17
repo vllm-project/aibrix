@@ -128,7 +128,19 @@ func (r *RoleSetReconciler) calculateStatus(ctx context.Context, rs *orchestrati
 }
 
 func (r *RoleSetReconciler) calculateStatusForRole(ctx context.Context, rs *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (*orchestrationv1alpha1.RoleStatus, error) {
-	// collect pods of role
+	// Check if this role uses PodSet (podGroupSize > 1)
+	if role.PodGroupSize != nil && *role.PodGroupSize > 1 {
+		// Use PodSet-based status calculation
+		roleStatus, err := r.calculateStatusFromPodSets(ctx, rs, role)
+		if err != nil {
+			klog.Warningf("Failed to get PodSet status for role %s in RoleSet %s/%s: %v", role.Name, rs.Namespace, rs.Name, err)
+			// Fall back to zero values
+			return nil, err
+		}
+		return roleStatus, nil
+	}
+
+	// Use traditional pod-based status calculation for podGroupSize <= 1
 	roleSetRequirement, _ := labels.NewRequirement(constants.RoleSetNameLabelKey, selection.Equals, []string{rs.Name})
 	labelSelector := labels.NewSelector()
 	labelSelector = labelSelector.Add(*roleSetRequirement)
@@ -160,11 +172,77 @@ func (r *RoleSetReconciler) calculateStatusForRole(ctx context.Context, rs *orch
 	}, nil
 }
 
+func (r *RoleSetReconciler) calculateStatusFromPodSets(ctx context.Context, rs *orchestrationv1alpha1.RoleSet, role *orchestrationv1alpha1.RoleSpec) (*orchestrationv1alpha1.RoleStatus, error) {
+	// Get PodSets for this role
+	roleSetReq, _ := labels.NewRequirement(constants.RoleSetNameLabelKey, selection.Equals, []string{rs.Name})
+	roleReq, _ := labels.NewRequirement(constants.RoleNameLabelKey, selection.Equals, []string{role.Name})
+	labelSelector := labels.NewSelector().Add(*roleSetReq).Add(*roleReq)
+
+	podSetList := &orchestrationv1alpha1.PodSetList{}
+	err := r.Client.List(ctx, podSetList,
+		client.InNamespace(rs.Namespace),
+		client.MatchingLabelsSelector{Selector: labelSelector})
+	if err != nil {
+		return nil, err
+	}
+
+	var totalReplicas, readyReplicas int32
+	currentHash := ctrlutil.ComputeHash(&role.Template, nil)
+	var updatedReplicas, updatedReadyReplicas int32
+
+	for _, podSet := range podSetList.Items {
+		totalReplicas++
+		if isPodSetActive(&podSet) && isPodSetReady(&podSet) {
+			readyReplicas++
+		}
+
+		// Check if PodSet is updated (has current template hash)
+		if podSet.Labels[constants.RoleTemplateHashLabelKey] == currentHash {
+			updatedReplicas++
+			if isPodSetReady(&podSet) {
+				updatedReadyReplicas++
+			}
+		}
+	}
+
+	klog.V(4).Infof("roleName: %s, totalReplicas: %d, readyReplicas: %d, updatedReplicas: %d, updatedReadyReplicas: %d",
+		role.Name, totalReplicas, readyReplicas, updatedReplicas, updatedReadyReplicas)
+	return &orchestrationv1alpha1.RoleStatus{
+		Name:                 role.Name,
+		Replicas:             totalReplicas,
+		ReadyReplicas:        readyReplicas,
+		NotReadyReplicas:     totalReplicas - readyReplicas,
+		UpdatedReplicas:      updatedReplicas,
+		UpdatedReadyReplicas: updatedReadyReplicas,
+	}, nil
+}
+
 func (r *RoleSetReconciler) finalize(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet) (bool, error) {
-	// 1. check if all pods are deleted
 	roleSetRequirement, _ := labels.NewRequirement(constants.RoleSetNameLabelKey, selection.Equals, []string{roleSet.Name})
 	labelSelector := labels.NewSelector()
 	labelSelector = labelSelector.Add(*roleSetRequirement)
+
+	// 1. check if all podsets are delete for podGroupSize > 1
+	allPodSets := &orchestrationv1alpha1.PodSetList{}
+	if err := r.Client.List(ctx, allPodSets,
+		client.InNamespace(roleSet.Namespace),
+		client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
+		return false, err
+	} else if len(allPodSets.Items) != 0 {
+		// delete pods
+		for i := range allPodSets.Items {
+			if err = r.Client.Delete(ctx, &allPodSets.Items[i]); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return false, err
+			}
+		}
+		// let's wait for next reconcile to move to next step, it helps make sure the podsets resources are cleaned up.
+		return false, nil
+	}
+
+	// 2. check if all pods are deleted.
 	allPods := &v1.PodList{}
 	if err := r.Client.List(ctx, allPods,
 		client.InNamespace(roleSet.Namespace),

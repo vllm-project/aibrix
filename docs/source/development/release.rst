@@ -42,6 +42,21 @@ However, the fix may not able to be cherry-picked to ``release-0.3`` due to conf
 For patch version like ``v0.3.1``, please reuse the release branch ``release-0.3``, it should be created earlier from the minor version release.
 for patch release, we do not rebase ``main`` because it will introduce new features. All fixes have to be cherry-picked or cut PR against ``release-0.3`` directly.
 
+Performance Regression Testing against RC release
+-------------------------------------------------
+
+The ``test/regression/`` directory contains benchmark configurations for release testing:
+
+- **v0.2.1/**: performance benchmark baseline
+- **v0.3.0/**: KV cache variants
+- **v0.4.0/**: Helm-based templates for SGLang/VLLM testing
+
+Before each release, run performance benchmarks using configurations in ``test/regression/vX.Y.Z/``.
+
+.. note::
+    It's recommended to build specific test cases for each release since the focus is different.
+    It's also important to keep the test cases up-to-date with the latest release so we can also use previous tests cases against new versions.
+
 Release new version
 -------------------
 

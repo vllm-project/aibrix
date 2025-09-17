@@ -27,7 +27,7 @@ classifiers = [
 packages = [
     { include = "aibrix" },
 ]
-exclude = ["test"]
+exclude = ["tests"]
 
 [tool.poetry-dynamic-versioning]
 enable = true
@@ -78,6 +78,7 @@ kopf = {extras = ["uvloop"], version = "^1.37.2"}
 PyYAML = "^6.0.1"
 types-PyYAML = "^6.0.12.20240917"
 python-multipart = "^0.0.20"
+tenacity = "^9.0.0"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "1.11.1"

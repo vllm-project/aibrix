@@ -57,3 +57,6 @@ development/simulator/cache
 # python build artifacts
 python/aibrix/dist/
 python/aibrix/aibrix/batch/storage/data
+
+# setuptools-scm generated version files
+**/_version.py

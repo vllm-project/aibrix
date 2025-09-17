@@ -186,7 +186,7 @@ func (a *ApaAutoscaler) UpdateScaleTargetMetrics(ctx context.Context, metricKey 
 		return err
 	}
 
-	err = a.metricClient.UpdatePodListMetric(metricValues, metricKey, now)
+	err = a.metricClient.UpdateMetrics(now, metricKey, metricValues...)
 	if err != nil {
 		return err
 	}

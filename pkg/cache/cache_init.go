@@ -69,10 +69,11 @@ type Store struct {
 	modelRouterProvider ModelRouterProviderFunc // Function to get model router
 
 	// Metrics related fields
-	subscribers         []metrics.MetricSubscriber // List of metric subscribers
-	metrics             map[string]any             // Generic metric storage
-	pendingLoadProvider CappedLoadProvider         // Provider that defines load in terms of pending requests.
-	numRequestsTraces   int32                      // Request trace counter
+	subscribers          []metrics.MetricSubscriber    // List of metric subscribers
+	metrics              map[string]any                // Generic metric storage
+	pendingLoadProvider  CappedLoadProvider            // Provider that defines load in terms of pending requests.
+	numRequestsTraces    int32                         // Request trace counter
+	engineMetricsFetcher *metrics.EngineMetricsFetcher // Centralized typed metrics fetcher
 
 	// Request trace fields
 	enableTracing bool                                  // Default to load from enableGPUOptimizerTracing, can be configured.
@@ -137,7 +138,8 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 		requestTrace:          &utils.SyncMap[string, *RequestTrace]{},
 		modelRouterProvider:   modelRouterProvider,
 		podMetricsWorkerCount: defaultPodMetricsWorkerCount,
-		podMetricsJobs:        make(chan *Pod, 100), // Initialize the job channel with a buffer size of 100
+		podMetricsJobs:        make(chan *Pod, 100),              // Initialize the job channel with a buffer size of 100
+		engineMetricsFetcher:  metrics.NewEngineMetricsFetcher(), // Initialize centralized typed metrics fetcher
 		enableProfileCaching:  enableModelGPUProfileCaching,
 	}
 
@@ -155,6 +157,7 @@ func NewForTest() *Store {
 		initialized:          true,
 		enableTracing:        enableGPUOptimizerTracing,
 		enableProfileCaching: enableModelGPUProfileCaching,
+		engineMetricsFetcher: metrics.NewEngineMetricsFetcher(), // Initialize centralized typed metrics fetcher
 	}
 	if store.enableTracing {
 		store.requestTrace = &utils.SyncMap[string, *RequestTrace]{}
@@ -171,6 +174,10 @@ func NewWithPodsForTest(pods []*v1.Pod, model string) *Store {
 
 func NewWithPodsMetricsForTest(pods []*v1.Pod, model string, podMetrics map[string]map[string]metrics.MetricValue) *Store {
 	return InitWithPodsMetrics(InitWithPods(NewForTest(), pods, model), podMetrics)
+}
+
+func NewWithPodsModelMetricsForTest(pods []*v1.Pod, model string, podMetrics map[string]map[string]metrics.MetricValue) *Store {
+	return InitWithPodsModelMetrics(InitWithPods(NewForTest(), pods, model), podMetrics)
 }
 
 // InitModelRouterProvider initializes the cache store with model router provider for testing purposes, it can be repeated call for reset.
@@ -233,7 +240,7 @@ func InitWithAsyncPods(st *Store, pods []*v1.Pod, model string) <-chan *Store {
 	return ret
 }
 
-// InitWithPods initializes the cache store with pods metrics for testing purposes, it can be repeated call for reset.
+// InitWithPodsMetrics initializes the cache store with pods metrics for testing purposes, it can be repeated call for reset.
 func InitWithPodsMetrics(st *Store, podMetrics map[string]map[string]metrics.MetricValue) *Store {
 	st.metaPods.Range(func(key string, metaPod *Pod) bool {
 		_, podName, ok := utils.ParsePodKey(key)
@@ -243,6 +250,25 @@ func InitWithPodsMetrics(st *Store, podMetrics map[string]map[string]metrics.Met
 		if podmetrics, ok := podMetrics[podName]; ok {
 			for metricName, metric := range podmetrics {
 				if err := st.updatePodRecord(metaPod, "", metricName, metrics.PodMetricScope, metric); err != nil {
+					return false
+				}
+			}
+		}
+		return true
+	})
+	return st
+}
+
+// InitWithPodsModelMetrics initializes the cache store with pods modelMetrics for testing purposes, it can be repeated call for reset.
+func InitWithPodsModelMetrics(st *Store, podMetrics map[string]map[string]metrics.MetricValue) *Store {
+	st.metaPods.Range(func(key string, metaPod *Pod) bool {
+		_, podName, ok := utils.ParsePodKey(key)
+		if !ok {
+			return true
+		}
+		if podmetrics, ok := podMetrics[podName]; ok {
+			for metricName, metric := range podmetrics {
+				if err := st.updatePodRecord(metaPod, metaPod.Pod.Labels[modelIdentifier], metricName, metrics.PodModelMetricScope, metric); err != nil {
 					return false
 				}
 			}

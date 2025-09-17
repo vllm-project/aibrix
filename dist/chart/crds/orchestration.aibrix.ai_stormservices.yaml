@@ -3,7 +3,6 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    "helm.sh/resource-policy": keep
     controller-gen.kubebuilder.io/version: v0.16.1
   name: stormservices.orchestration.aibrix.ai
 spec:
@@ -15,7 +14,24 @@ spec:
     singular: stormservice
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - description: Desired number of replicas
+      jsonPath: .spec.replicas
+      name: Replicas
+      type: integer
+    - description: Whether the StormService is ready
+      jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - description: Whether the StormService is paused
+      jsonPath: .spec.paused
+      name: Paused
+      type: boolean
+    - description: Time this StormService was created
+      jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         properties:
@@ -109,6 +125,8 @@ spec:
                               type: string
                             podGroupSize:
                               format: int32
+                              maximum: 100
+                              minimum: 1
                               type: integer
                             replicas:
                               format: int32
@@ -3755,6 +3773,10 @@ spec:
                                   - type: string
                                   x-kubernetes-int-or-string: true
                               type: object
+                            upgradeOrder:
+                              format: int32
+                              minimum: 1
+                              type: integer
                           type: object
                         type: array
                       schedulingStrategy:
@@ -3874,6 +3896,11 @@ spec:
                             type: object
                         type: object
                       updateStrategy:
+                        default: Sequential
+                        enum:
+                        - Parallel
+                        - Sequential
+                        - Interleave
                         type: string
                     type: object
                 type: object
@@ -3890,6 +3917,10 @@ spec:
                     - type: string
                     x-kubernetes-int-or-string: true
                   type:
+                    default: RollingUpdate
+                    enum:
+                    - RollingUpdate
+                    - InPlaceUpdate
                     type: string
                 type: object
             required:

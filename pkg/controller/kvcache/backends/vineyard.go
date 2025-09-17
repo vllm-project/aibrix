@@ -42,9 +42,11 @@ func NewVineyardReconciler(c client.Client) *VineyardReconciler {
 
 func (r VineyardReconciler) Reconcile(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) (reconcile.Result, error) {
 	// Handle metadata Pods like etcd or redis in future.
-	err := r.reconcileMetadataService(ctx, kvCache)
-	if err != nil {
-		return ctrl.Result{}, err
+	if kvCache.Spec.Metadata != nil {
+		err := r.reconcileMetadataService(ctx, kvCache)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Handle Vineyard kvCache Deployment
@@ -63,7 +65,7 @@ func (r VineyardReconciler) Reconcile(ctx context.Context, kvCache *orchestratio
 }
 
 func (r *VineyardReconciler) reconcileMetadataService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
-	if kvCache.Spec.Metadata != nil && kvCache.Spec.Metadata.Etcd == nil && kvCache.Spec.Metadata.Redis == nil {
+	if kvCache.Spec.Metadata.Etcd == nil && kvCache.Spec.Metadata.Redis == nil {
 		return errors.New("either etcd or redis configuration is required")
 	}
 

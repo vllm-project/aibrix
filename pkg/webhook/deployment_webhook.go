@@ -29,6 +29,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
 // SetupDeploymentWebhookWithManager registers the webhook for Deployment in the manager.
@@ -76,7 +78,7 @@ func (r *DeploymentCustomDefaulter) injectAIBrixRuntime(deployment *appsv1.Deplo
 	// Get engine type from deployment template annotations, if specified
 	var engineType string
 	if annotations := deployment.GetAnnotations(); annotations != nil {
-		if engine, exists := annotations["aibrix.io/engine"]; exists && engine != "" {
+		if engine, exists := annotations[constants.ModelLabelEngine]; exists && engine != "" {
 			engineType = engine
 		}
 	}

@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,6 +64,18 @@ const (
 	ModelAdapterPodTemplateLabelKey   = "adapter.model.aibrix.ai/enabled"
 	ModelAdapterPodTemplateLabelValue = "true"
 
+	// Retry configuration constants
+	MaxLoadingRetries       = 5
+	RetryBackoffSeconds     = 5
+	PodReadinessTimeoutSecs = 60
+	HTTPTimeoutSeconds      = 30
+
+	// Annotation keys for tracking retry state
+	RetryCountAnnotationKey        = "adapter.model.aibrix.ai/retry-count"
+	LastRetryTimeAnnotationKey     = "adapter.model.aibrix.ai/last-retry-time"
+	PodReadinessCheckAnnotationKey = "adapter.model.aibrix.ai/pod-readiness-check-time"
+	ScheduledPodsAnnotationKey     = "adapter.model.aibrix.ai/scheduled-pods"
+
 	// Reasons for model adapter conditions
 	// Processing:
 
@@ -80,6 +93,10 @@ const (
 	StableInstanceFoundReason = "StableInstanceFound"
 	// ConditionNotReason is added when there's no condition found in the cluster.
 	ConditionNotReason = "ConditionNotFound"
+	// PodNotReadyReason is added when a pod is not ready for adapter loading
+	PodNotReadyReason = "PodNotReady"
+	// MaxRetriesExceededReason is added when max retries are exceeded for a pod
+	MaxRetriesExceededReason = "MaxRetriesExceeded"
 
 	// Available:
 
@@ -145,12 +162,6 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 	if err != nil {
 		return nil, err
 	}
-
-	klog.Info("Waiting for caches to sync")
-	if ok := cacher.WaitForCacheSync(context.TODO()); !ok {
-		return nil, errors.New("modeladapter controller: failed to sync cache")
-	}
-	klog.Info("All caches synced")
 
 	// Let's generate the clientset and use ModelAdapterLister here as well.
 	podLister := corelisters.NewPodLister(podInformer.(toolscache.SharedIndexInformer).GetIndexer())
@@ -522,36 +533,44 @@ func (r *ModelAdapterReconciler) reconcileReplicas(ctx context.Context, instance
 
 	// Scale up if needed
 	if currentReplicas < desiredReplicas {
-		// Get pods that are not yet scheduled
-		unscheduledPods := []corev1.Pod{}
+		// Get pods that are not yet scheduled and are truly ready for scheduling
+		candidatePods := []corev1.Pod{}
 		for _, pod := range activePods {
 			if !StringInSlice(instance.Status.Instances, pod.Name) {
-				unscheduledPods = append(unscheduledPods, pod)
+				// Only consider pods that are ready and have been stable for a reasonable time
+				if r.isPodReadyForScheduling(ctx, instance, &pod) {
+					candidatePods = append(candidatePods, pod)
+				}
 			}
 		}
 
 		// Schedule additional pods
 		neededReplicas := int(desiredReplicas - currentReplicas)
-		if len(unscheduledPods) >= neededReplicas {
-			newPods, err := r.schedulePods(ctx, instance, unscheduledPods, neededReplicas)
+		if len(candidatePods) >= neededReplicas {
+			selectedPods, err := r.schedulePods(ctx, instance, candidatePods, neededReplicas)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
 
-			for _, pod := range newPods {
-				instance.Status.Instances = append(instance.Status.Instances, pod.Name)
-			}
+			// Persist the scheduling decision in annotations
+			r.setScheduledPods(instance, getPodNames(selectedPods))
+			klog.InfoS("Selected pods for adapter scheduling", "ModelAdapter", klog.KObj(instance), "selectedPods", getPodNames(selectedPods))
 
 			instance.Status.Phase = modelv1alpha1.ModelAdapterScheduled
 			condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeScheduled), metav1.ConditionTrue,
-				"Scheduled", fmt.Sprintf("ModelAdapter %s has been allocated to %d pods: %v", klog.KObj(instance), len(instance.Status.Instances), instance.Status.Instances))
+				"Scheduled", fmt.Sprintf("ModelAdapter %s has selected %d pods for scheduling: %v", klog.KObj(instance), len(selectedPods), getPodNames(selectedPods)))
 			if err := r.updateStatus(ctx, instance, condition); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{Requeue: true}, nil
-		} else if len(unscheduledPods) > 0 {
-			// Not enough pods available, schedule what we can
-			klog.Warningf("Only %d pods available for model adapter %s, need %d more", len(unscheduledPods), klog.KObj(instance), neededReplicas)
+			// Continue to loading phase instead of returning early
+		} else if len(candidatePods) > 0 {
+			// Some pods available but not enough, try with what we have
+			klog.Infof("Only %d ready pods available for model adapter %s, need %d more, will wait", len(candidatePods), klog.KObj(instance), neededReplicas)
+			return ctrl.Result{RequeueAfter: time.Duration(RetryBackoffSeconds) * time.Second}, nil
+		} else {
+			// No ready pods available, wait for pods to become ready
+			klog.Infof("No ready pods available for model adapter %s, waiting for pods to become ready", klog.KObj(instance))
+			return ctrl.Result{RequeueAfter: time.Duration(RetryBackoffSeconds) * time.Second}, nil
 		}
 	} else if currentReplicas > desiredReplicas {
 		// Scale down - remove excess instances
@@ -608,40 +627,111 @@ func (r *ModelAdapterReconciler) schedulePods(ctx context.Context, instance *mod
 }
 
 func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance *modelv1alpha1.ModelAdapter) error {
-	if len(instance.Status.Instances) == 0 {
+	// Get all active pods matching the selector to determine loading targets
+	activePods, err := r.getActivePodsForModelAdapter(ctx, instance)
+	if err != nil {
+		return err
+	}
+
+	if len(activePods) == 0 {
+		klog.V(4).InfoS("No active pods found for ModelAdapter", "ModelAdapter", klog.KObj(instance))
 		return nil
 	}
 
+	// Create a map of active pods for quick lookup
+	activeMap := make(map[string]corev1.Pod, len(activePods))
+	for _, p := range activePods {
+		activeMap[p.Name] = p
+	}
+
+	// Get desired replicas (default to 1 if not specified)
+	desiredReplicas := int32(1)
+	if instance.Spec.Replicas != nil {
+		desiredReplicas = *instance.Spec.Replicas
+	}
+
+	// Track successful loadings
+	successfulLoadings := 0
+	var loadingErrors []string
+
+	// Try to load on pods that are already in instances list (already loaded previously)
 	for _, podName := range instance.Status.Instances {
-		targetPod := &corev1.Pod{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: podName}, targetPod); err != nil {
-			if apierrors.IsNotFound(err) {
-				return fmt.Errorf("pod %s/%s can not be found, skip loading", instance.GetName(), podName)
+		if pod, exists := activeMap[podName]; exists {
+			if r.isPodHealthy(&pod) {
+				successfulLoadings++
+			} else {
+				// Pod is no longer healthy, remove from instances
+				instance.Status.Instances = RemoveInstanceFromList(instance.Status.Instances, podName)
+				klog.InfoS("Removed unhealthy pod from instances list", "pod", podName, "ModelAdapter", klog.KObj(instance))
 			}
-			return err
-		}
-
-		if targetPod.DeletionTimestamp != nil {
-			klog.V(4).Infof("Skipping pod %s/%s because it is being deleted", targetPod.Namespace, targetPod.Name)
-			continue
-		}
-
-		urls := BuildURLs(targetPod.Status.PodIP, r.RuntimeConfig)
-
-		exists, err := r.modelAdapterExists(urls.ListModelsURL, instance)
-		if err != nil {
-			return err
-		}
-		if exists {
-			klog.V(4).Info("LoRA model has been registered previously, skipping registration")
-			continue
-		}
-
-		if err := r.loadModelAdapter(urls.LoadAdapterURL, instance); err != nil {
-			return err
+		} else {
+			// Pod no longer exists, remove from instances
+			instance.Status.Instances = RemoveInstanceFromList(instance.Status.Instances, podName)
+			klog.InfoS("Removed non-existent pod from instances list", "pod", podName, "ModelAdapter", klog.KObj(instance))
 		}
 	}
 
+	// Try to load on additional pods if we need more replicas
+	if successfulLoadings < int(desiredReplicas) {
+		neededReplicas := int(desiredReplicas) - successfulLoadings
+
+		// First, try to load on scheduled pods from annotations (respecting scheduler decision)
+		scheduledPods := r.getScheduledPods(instance)
+		candidatePods := []corev1.Pod{}
+
+		// Prioritize scheduled pods
+		for _, pod := range activePods {
+			if !StringInSlice(instance.Status.Instances, pod.Name) && r.isPodHealthy(&pod) {
+				if StringInSlice(scheduledPods, pod.Name) {
+					// Insert scheduled pods at the beginning (higher priority)
+					candidatePods = append([]corev1.Pod{pod}, candidatePods...)
+				} else {
+					// Add other pods at the end
+					candidatePods = append(candidatePods, pod)
+				}
+			}
+		}
+
+		// Try to load on candidate pods
+		loadedCount := 0
+		for _, pod := range candidatePods {
+			if loadedCount >= neededReplicas {
+				break
+			}
+
+			success, shouldRetry, err := r.tryLoadModelAdapterOnPod(ctx, instance, &pod)
+			if success {
+				// Only add to instances list after successful loading
+				instance.Status.Instances = append(instance.Status.Instances, pod.Name)
+				loadedCount++
+				klog.InfoS("Successfully loaded adapter on pod", "pod", pod.Name, "ModelAdapter", klog.KObj(instance))
+
+				// Clear scheduled pods annotation once we have successful loadings
+				if loadedCount == 1 {
+					r.clearScheduledPods(instance)
+				}
+			} else if shouldRetry {
+				// Log the error but continue trying other pods
+				loadingErrors = append(loadingErrors, fmt.Sprintf("pod %s: %v", pod.Name, err))
+				klog.V(4).InfoS("Loading failed on pod, will retry later", "pod", pod.Name, "error", err)
+			} else {
+				// Max retries exceeded for this pod, don't try again
+				loadingErrors = append(loadingErrors, fmt.Sprintf("pod %s: max retries exceeded", pod.Name))
+				klog.InfoS("Max retries exceeded for pod", "pod", pod.Name, "ModelAdapter", klog.KObj(instance))
+			}
+		}
+	}
+
+	// Check if we have any successful instances
+	if len(instance.Status.Instances) == 0 {
+		// No successful loadings, return error to trigger retry
+		if len(loadingErrors) > 0 {
+			return fmt.Errorf("failed to load adapter on any pods: %v", strings.Join(loadingErrors, "; "))
+		}
+		return fmt.Errorf("no suitable pods available for adapter loading")
+	}
+
+	klog.V(4).InfoS("ModelAdapter loading completed", "ModelAdapter", klog.KObj(instance), "instances", instance.Status.Instances)
 	return nil
 }
 
@@ -656,7 +746,9 @@ func (r *ModelAdapterReconciler) modelAdapterExists(url string, instance *modelv
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	}
 
-	c := &http.Client{}
+	c := &http.Client{
+		Timeout: time.Duration(HTTPTimeoutSeconds) * time.Second,
+	}
 	resp, err := c.Do(req)
 	if err != nil {
 		return false, err
@@ -728,7 +820,9 @@ func (r *ModelAdapterReconciler) loadModelAdapter(url string, instance *modelv1a
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	}
 
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: time.Duration(HTTPTimeoutSeconds) * time.Second,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -940,4 +1034,233 @@ func (r *ModelAdapterReconciler) inconsistentModelAdapterStatus(oldStatus, newSt
 	}
 
 	return false
+}
+
+// isPodReadyForScheduling checks if a pod is ready and stable for scheduling
+func (r *ModelAdapterReconciler) isPodReadyForScheduling(ctx context.Context, instance *modelv1alpha1.ModelAdapter, pod *corev1.Pod) bool {
+	if !utils.IsPodReady(pod) {
+		return false
+	}
+
+	// Check if pod has been ready for reasonable time to avoid flapping
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+			timeSinceReady := time.Since(condition.LastTransitionTime.Time)
+			if timeSinceReady < time.Duration(RetryBackoffSeconds)*time.Second {
+				klog.V(4).InfoS("Pod recently became ready, waiting for stability", "pod", pod.Name, "timeSinceReady", timeSinceReady)
+				return false
+			}
+			break
+		}
+	}
+
+	return true
+}
+
+// isPodHealthy checks if a pod is healthy and ready for adapter operations
+func (r *ModelAdapterReconciler) isPodHealthy(pod *corev1.Pod) bool {
+	return !utils.IsPodTerminating(pod) && utils.IsPodReady(pod)
+}
+
+// tryLoadModelAdapterOnPod attempts to load an adapter on a pod with retry logic
+// Returns (success, shouldRetry, error)
+func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, instance *modelv1alpha1.ModelAdapter, pod *corev1.Pod) (bool, bool, error) {
+	// Get retry count from annotations
+	retryCount, lastRetryTime := r.getRetryInfo(instance, pod.Name)
+
+	// Check if we should retry based on exponential backoff
+	backoffDuration := r.calculateExponentialBackoff(retryCount)
+	if time.Since(lastRetryTime) < backoffDuration {
+		return false, true, fmt.Errorf("waiting for exponential backoff: %v", backoffDuration)
+	}
+
+	// Check max retries
+	if retryCount >= MaxLoadingRetries {
+		r.recordRetryFailure(instance, pod.Name, "max retries exceeded")
+		return false, false, fmt.Errorf("max retries (%d) exceeded", MaxLoadingRetries)
+	}
+
+	// Update retry info
+	r.updateRetryInfo(instance, pod.Name, retryCount+1)
+
+	urls := BuildURLs(pod.Status.PodIP, r.RuntimeConfig)
+
+	// Check if adapter already exists
+	exists, err := r.modelAdapterExists(urls.ListModelsURL, instance)
+	if err != nil {
+		// Connection errors are common during pod startup, should retry
+		if r.isRetriableError(err) {
+			klog.V(4).InfoS("Retriable error checking adapter existence", "pod", pod.Name, "error", err)
+			return false, true, err
+		}
+		// Non-retriable error, don't retry on this pod
+		r.recordRetryFailure(instance, pod.Name, fmt.Sprintf("non-retriable error: %v", err))
+		return false, false, err
+	}
+
+	if exists {
+		klog.V(4).InfoS("LoRA adapter already exists on pod", "pod", pod.Name)
+		// Reset retry count on success
+		r.clearRetryInfo(instance, pod.Name)
+		return true, false, nil
+	}
+
+	// Try to load the adapter
+	if err := r.loadModelAdapter(urls.LoadAdapterURL, instance); err != nil {
+		if r.isRetriableError(err) {
+			klog.V(4).InfoS("Retriable error loading adapter", "pod", pod.Name, "error", err)
+			return false, true, err
+		}
+		// Non-retriable error
+		r.recordRetryFailure(instance, pod.Name, fmt.Sprintf("load error: %v", err))
+		return false, false, err
+	}
+
+	// Success - reset retry count
+	r.clearRetryInfo(instance, pod.Name)
+	klog.InfoS("Successfully loaded adapter on pod", "pod", pod.Name, "ModelAdapter", klog.KObj(instance))
+	return true, false, nil
+}
+
+// isRetriableError determines if an error should trigger a retry
+func (r *ModelAdapterReconciler) isRetriableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := strings.ToLower(err.Error())
+	// Common retriable errors during pod startup
+	retriableErrors := []string{
+		"connection refused",
+		"connection reset",
+		"timeout",
+		"no route to host",
+		"network is unreachable",
+		"temporary failure",
+		"service unavailable",
+		"bad gateway",
+	}
+
+	for _, retriable := range retriableErrors {
+		if strings.Contains(errStr, retriable) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// getRetryInfo gets retry count and last retry time from annotations
+func (r *ModelAdapterReconciler) getRetryInfo(instance *modelv1alpha1.ModelAdapter, podName string) (int32, time.Time) {
+	retryCountKey := fmt.Sprintf("%s.%s", RetryCountAnnotationKey, podName)
+	lastRetryTimeKey := fmt.Sprintf("%s.%s", LastRetryTimeAnnotationKey, podName)
+
+	var retryCount int32 = 0
+	var lastRetryTime time.Time
+
+	if instance.Annotations != nil {
+		if countStr, exists := instance.Annotations[retryCountKey]; exists {
+			if count, err := strconv.ParseInt(countStr, 10, 32); err == nil {
+				retryCount = int32(count)
+			}
+		}
+		if timeStr, exists := instance.Annotations[lastRetryTimeKey]; exists {
+			if t, err := time.Parse(time.RFC3339, timeStr); err == nil {
+				lastRetryTime = t
+			}
+		}
+	}
+
+	return retryCount, lastRetryTime
+}
+
+// updateRetryInfo updates retry count and time in annotations
+func (r *ModelAdapterReconciler) updateRetryInfo(instance *modelv1alpha1.ModelAdapter, podName string, retryCount int32) {
+	if instance.Annotations == nil {
+		instance.Annotations = make(map[string]string)
+	}
+
+	retryCountKey := fmt.Sprintf("%s.%s", RetryCountAnnotationKey, podName)
+	lastRetryTimeKey := fmt.Sprintf("%s.%s", LastRetryTimeAnnotationKey, podName)
+
+	instance.Annotations[retryCountKey] = strconv.FormatInt(int64(retryCount), 10)
+	instance.Annotations[lastRetryTimeKey] = time.Now().Format(time.RFC3339)
+}
+
+// clearRetryInfo removes retry annotations for a pod
+func (r *ModelAdapterReconciler) clearRetryInfo(instance *modelv1alpha1.ModelAdapter, podName string) {
+	if instance.Annotations == nil {
+		return
+	}
+
+	retryCountKey := fmt.Sprintf("%s.%s", RetryCountAnnotationKey, podName)
+	lastRetryTimeKey := fmt.Sprintf("%s.%s", LastRetryTimeAnnotationKey, podName)
+
+	delete(instance.Annotations, retryCountKey)
+	delete(instance.Annotations, lastRetryTimeKey)
+}
+
+// recordRetryFailure records a retry failure event
+func (r *ModelAdapterReconciler) recordRetryFailure(instance *modelv1alpha1.ModelAdapter, podName string, reason string) {
+	r.Recorder.Eventf(instance, corev1.EventTypeWarning, MaxRetriesExceededReason,
+		"Max retries exceeded for pod %s: %s", podName, reason)
+}
+
+// getPodNames extracts pod names from a list of pods
+func getPodNames(pods []corev1.Pod) []string {
+	names := make([]string, len(pods))
+	for i, pod := range pods {
+		names[i] = pod.Name
+	}
+	return names
+}
+
+// setScheduledPods persists the list of scheduled pods in annotations
+func (r *ModelAdapterReconciler) setScheduledPods(instance *modelv1alpha1.ModelAdapter, podNames []string) {
+	if instance.Annotations == nil {
+		instance.Annotations = make(map[string]string)
+	}
+	instance.Annotations[ScheduledPodsAnnotationKey] = strings.Join(podNames, ",")
+}
+
+// getScheduledPods retrieves the list of scheduled pods from annotations
+func (r *ModelAdapterReconciler) getScheduledPods(instance *modelv1alpha1.ModelAdapter) []string {
+	if instance.Annotations == nil {
+		return nil
+	}
+
+	scheduledPodsStr, exists := instance.Annotations[ScheduledPodsAnnotationKey]
+	if !exists || scheduledPodsStr == "" {
+		return nil
+	}
+
+	return strings.Split(scheduledPodsStr, ",")
+}
+
+// clearScheduledPods removes the scheduled pods annotation
+func (r *ModelAdapterReconciler) clearScheduledPods(instance *modelv1alpha1.ModelAdapter) {
+	if instance.Annotations == nil {
+		return
+	}
+	delete(instance.Annotations, ScheduledPodsAnnotationKey)
+}
+
+// calculateExponentialBackoff calculates the backoff duration using exponential backoff strategy
+func (r *ModelAdapterReconciler) calculateExponentialBackoff(retryCount int32) time.Duration {
+	// Exponential backoff: baseInterval * 2^retries
+	// Cap the maximum backoff to avoid excessive delays
+	maxBackoffSeconds := 300 // 5 minutes max
+
+	if retryCount == 0 {
+		return 0 // No backoff for first attempt
+	}
+
+	// Calculate 2^retryCount, but cap it to prevent overflow
+	multiplier := int32(1 << uint(retryCount))
+	if multiplier > int32(maxBackoffSeconds/RetryBackoffSeconds) {
+		multiplier = int32(maxBackoffSeconds / RetryBackoffSeconds)
+	}
+
+	backoffSeconds := RetryBackoffSeconds * int(multiplier)
+	return time.Duration(backoffSeconds) * time.Second
 }

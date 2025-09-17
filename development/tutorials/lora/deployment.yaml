@@ -22,7 +22,6 @@ spec:
       serviceAccountName: mocked-app-sa
       containers:
         - name: llm-engine
-          # TODO: update
           image: aibrix/vllm-mock:nightly
           ports:
             - containerPort: 8000

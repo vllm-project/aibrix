@@ -217,6 +217,7 @@ rules:
   - orchestration.aibrix.ai
   resources:
   - kvcaches
+  - podsets
   - rayclusterfleets
   - rayclusterreplicasets
   - rolesets
@@ -233,6 +234,7 @@ rules:
   - orchestration.aibrix.ai
   resources:
   - kvcaches/finalizers
+  - podsets/finalizers
   - rayclusterfleets/finalizers
   - rayclusterreplicasets/finalizers
   - rolesets/finalizers
@@ -243,6 +245,7 @@ rules:
   - orchestration.aibrix.ai
   resources:
   - kvcaches/status
+  - podsets/status
   - rayclusterfleets/status
   - rayclusterreplicasets/status
   - rolesets/status

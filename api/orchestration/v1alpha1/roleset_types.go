@@ -30,6 +30,8 @@ type RoleSetSpec struct {
 	Roles []RoleSpec `json:"roles,omitempty"`
 
 	// +optional
+	// +kubebuilder:validation:Enum={Parallel,Sequential,Interleave}
+	// +kubebuilder:default=Sequential
 	UpdateStrategy RoleSetUpdateStrategyType `json:"updateStrategy,omitempty"`
 
 	// +optional
@@ -65,15 +67,17 @@ type RoleSpec struct {
 	Replicas *int32 `json:"replicas,omitempty"`
 
 	// UpgradeOrder specifies the order in which this role should be upgraded.
-	// Lower values are upgraded first. If not specified, defaults to 0.
+	// Lower values are upgraded first. If not specified, roles upgrade after all explicitly ordered roles.
 	// +optional
-	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Type=integer
-	// +kubebuilder:default:=0
 	UpgradeOrder *int32 `json:"upgradeOrder,omitempty"`
 
 	// PodGroupSize is the number of pods to form a minimum role instance.
+	// Must be >= 1 if specified. For multi-node inference, set > 1.
 	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
 	PodGroupSize *int32 `json:"podGroupSize,omitempty"`
 
 	// +optional
@@ -138,6 +142,8 @@ type RoleStatus struct {
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=='Ready')].status`,description="Whether the RoleSet is ready (True/False)"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`,description="Time this RoleSet was created"
 
 // RoleSet is the Schema for the rolesets API
 type RoleSet struct {

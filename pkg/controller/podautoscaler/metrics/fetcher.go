@@ -18,14 +18,14 @@ package metrics
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
-	"io"
-	"net/http"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -49,124 +49,135 @@ const (
 	maxDelay                   = 5 * time.Second
 )
 
-// MetricFetcher defines an interface for fetching metrics. it could be Kubernetes metrics or Pod prometheus metrics.
+// MetricFetcher defines an interface for fetching metrics at the autoscaler level.
+// It works with Kubernetes concepts (pods, metric sources) and delegates to underlying fetchers.
 type MetricFetcher interface {
-	// Obseleted: Call FetchMetric instead.
+	// FetchPodMetrics fetches a metric from a pod using the autoscaler's metric source configuration
 	FetchPodMetrics(ctx context.Context, pod v1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error)
 
+	// FetchMetric fetches a metric using endpoint-level parameters (for backward compatibility and testing)
 	FetchMetric(ctx context.Context, protocol autoscalingv1alpha1.ProtocolType, endpoint, path, metricName string) (float64, error)
 }
 
 type abstractMetricsFetcher struct{}
 
-func (f *abstractMetricsFetcher) FetchMetric(ctx context.Context, pod v1.Pod, metricsPort int, metricName string) (float64, error) {
+func (f *abstractMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
 	return 0.0, fmt.Errorf("not implemented")
 }
 
-// RestMetricsFetcher implements MetricFetcher to fetch metrics from Pod's /metrics endpoint.
+func (f *abstractMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscalingv1alpha1.ProtocolType, endpoint, path, metricName string) (float64, error) {
+	return 0.0, fmt.Errorf("not implemented")
+}
+
+// RestMetricsFetcher implements MetricFetcher using the centralized EngineFetcher from pkg/metrics
 type RestMetricsFetcher struct {
 	// For unit test purpose only
-	test_url_setter func(string)
-	// Custom HTTP client
-	client *http.Client
+	testURLSetter func(string)
+	// Centralized engine fetcher with typed metrics
+	engineFetcher *metrics.EngineMetricsFetcher
 }
 
 var _ MetricFetcher = (*RestMetricsFetcher)(nil)
 
 func NewRestMetricsFetcher() *RestMetricsFetcher {
 	return &RestMetricsFetcher{
-		client: &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // Disable SSL verification
-			},
-		},
+		engineFetcher: metrics.NewEngineMetricsFetcher(),
+	}
+}
+
+// NewRestMetricsFetcherWithConfig creates a RestMetricsFetcher with custom configuration
+func NewRestMetricsFetcherWithConfig(config metrics.EngineMetricsFetcherConfig) *RestMetricsFetcher {
+	return &RestMetricsFetcher{
+		engineFetcher: metrics.NewEngineMetricsFetcherWithConfig(config),
 	}
 }
 
 func (f *RestMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
-	// Use /metrics to fetch pod's endpoint
-	return f.FetchMetric(ctx, source.ProtocolType, fmt.Sprintf("%s:%s", pod.Status.PodIP, source.Port), source.Path, source.TargetMetric)
-}
-
-func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscalingv1alpha1.ProtocolType, endpoint, path, metricName string) (float64, error) {
-	// Use http to fetch endpoint
-	url := fmt.Sprintf("%s://%s/%s", protocol, endpoint, strings.TrimLeft(path, "/"))
-	if f.test_url_setter != nil {
-		f.test_url_setter(url)
+	// Check for test URL setter (for unit tests)
+	if f.testURLSetter != nil {
+		pathSeparator := "/"
+		if strings.HasPrefix(source.Path, "/") {
+			pathSeparator = ""
+		}
+		url := fmt.Sprintf("%s://%s:%s%s%s", source.ProtocolType, pod.Status.PodIP, source.Port, pathSeparator, source.Path)
+		f.testURLSetter(url)
 		return 0.0, nil
 	}
 
-	// Create request with context, so that the request will be canceled if the context is canceled
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	// Use real pod information instead of fake pod creation
+	endpoint := fmt.Sprintf("%s:%s", pod.Status.PodIP, source.Port)
+	engineType := metrics.GetEngineType(pod)
+	identifier := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+
+	// Use the centralized engine fetcher with real pod information
+	metricValue, err := f.engineFetcher.FetchTypedMetric(ctx, endpoint, engineType, identifier, source.TargetMetric)
 	if err != nil {
-		return 0.0, fmt.Errorf("failed to create request to source %s: %v", url, err)
+		klog.Warningf("Failed to fetch metric %s from pod %s: %v. Returning zero value.",
+			source.TargetMetric, identifier, err)
+		// Return zero value with warning instead of error - business logic can decide how to handle
+		return 0.0, nil
 	}
 
-	var resp *http.Response
-	var lastErr error
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			backoffDelay := baseDelay * time.Duration(1<<uint(attempt-1))
-			// Cap the delay to prevent it from becoming too long
-			if backoffDelay > maxDelay {
-				backoffDelay = maxDelay
-			}
-			klog.V(4).InfoS("Backing off before retry", "attempt", attempt+1, "delay", backoffDelay)
-			time.Sleep(backoffDelay)
-		}
-		var err error
-		resp, err = f.client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			lastErr = nil // Success
-			break
-		}
-
-		if err := resp.Body.Close(); err != nil {
-			klog.ErrorS(err, "error closing response body")
-		}
-
-		// Don't retry on 4xx client errors.
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			lastErr = fmt.Errorf("client error: %s", resp.Status)
-			break
-		}
-		lastErr = fmt.Errorf("server error: %s", resp.Status)
-	}
-
-	if lastErr != nil {
-		return 0.0, fmt.Errorf("failed to fetch metrics from source %s: %v", url, lastErr)
-	}
-
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			// Handle the error here. For example, log it or take appropriate corrective action.
-			klog.ErrorS(err, "error closing response body")
-		}
-	}()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0.0, fmt.Errorf("failed to read response from source %s: %v", url, err)
-	}
-
-	metricValue, err := ParseMetricFromBody(body, metricName)
-	if err != nil {
-		return 0.0, fmt.Errorf("failed to parse metrics from source %s: %v", url, err)
-	}
-
-	klog.V(4).InfoS("Successfully parsed metrics", "metric", metricName, "source", url, "metricValue", metricValue)
-
-	return metricValue, nil
+	return metricValue.GetSimpleValue(), nil
 }
 
-func (f *RestMetricsFetcher) _get_url(protocol autoscalingv1alpha1.ProtocolType, endpoint, path string) string {
-	return fmt.Sprintf("%s://%s/%s", protocol, endpoint, strings.TrimLeft(path, "/"))
+// FetchMetric is deprecated. Use FetchPodMetrics instead which provides proper pod context.
+// This method creates a fake pod which loses important metadata and should be avoided.
+func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscalingv1alpha1.ProtocolType, endpoint, path, metricName string) (float64, error) {
+	// Check for test URL setter (for unit tests)
+	if f.testURLSetter != nil {
+		// Handle path that may or may not start with a slash
+		pathSeparator := "/"
+		if strings.HasPrefix(path, "/") {
+			pathSeparator = ""
+		}
+		url := fmt.Sprintf("%s://%s%s%s", protocol, endpoint, pathSeparator, path)
+		f.testURLSetter(url)
+		return 0.0, nil
+	}
+
+	// Parse endpoint to extract podIP and port using Go standard library
+	podIP, portStr, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return 0.0, fmt.Errorf("invalid endpoint format %s: %v", endpoint, err)
+	}
+
+	metricPort, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0.0, fmt.Errorf("invalid port in endpoint %s: %v", endpoint, err)
+	}
+
+	// Use the centralized engine fetcher directly with endpoint-based parameters
+	// Create a fake pod for engine type extraction (this could be improved in the future)
+	fakePod := v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("endpoint-%s", podIP),
+			Labels: map[string]string{
+				"engine": "vllm", // Default engine type - business logic should pass this properly
+			},
+		},
+		Status: v1.PodStatus{
+			PodIP: podIP,
+		},
+	}
+
+	engineType := metrics.GetEngineType(fakePod)
+	identifier := fmt.Sprintf("endpoint-%s", podIP)
+	fullEndpoint := fmt.Sprintf("%s:%d", podIP, metricPort)
+
+	// Use the centralized engine fetcher with endpoint-based parameters
+	metricValue, err := f.engineFetcher.FetchTypedMetric(ctx, fullEndpoint, engineType, identifier, metricName)
+	if err != nil {
+		klog.Warningf("Failed to fetch metric %s from endpoint %s: %v. Returning zero value.",
+			metricName, fullEndpoint, err)
+		// Return zero value with warning instead of error - business logic can decide how to handle
+		return 0.0, nil
+	}
+
+	return metricValue.GetSimpleValue(), nil
 }
+
+// Helper functions
 
 // ResourceMetricsFetcher fetches resource metrics from Kubernetes metrics API (metrics.k8s.io).
 type ResourceMetricsFetcher struct {
@@ -178,7 +189,12 @@ func NewResourceMetricsFetcher(metricsClient *versioned.Clientset) *ResourceMetr
 	return &ResourceMetricsFetcher{metricsClient: metricsClient}
 }
 
-func (f *ResourceMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, metricName string) (float64, error) {
+func (f *ResourceMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
+	// For resource metrics, we use the TargetMetric from the source
+	return f.fetchResourceMetric(ctx, pod, source.TargetMetric)
+}
+
+func (f *ResourceMetricsFetcher) fetchResourceMetric(ctx context.Context, pod v1.Pod, metricName string) (float64, error) {
 	podMetrics, err := f.metricsClient.MetricsV1beta1().PodMetricses(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch resource metrics for pod %s: %v", pod.Name, err)
@@ -208,7 +224,12 @@ func NewCustomMetricsFetcher(client custom_metrics.CustomMetricsClient) *CustomM
 }
 
 // FetchPodMetrics fetches custom metrics for a pod using the Custom Metrics API.
-func (f *CustomMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, metricName string) (float64, error) {
+func (f *CustomMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
+	// For custom metrics, we use the TargetMetric from the source
+	return f.fetchCustomMetric(ctx, pod, source.TargetMetric)
+}
+
+func (f *CustomMetricsFetcher) fetchCustomMetric(ctx context.Context, pod v1.Pod, metricName string) (float64, error) {
 	// Define a reference to the pod (using GroupResource)
 	podRef := types.NamespacedName{
 		Namespace: pod.Namespace,
@@ -245,12 +266,20 @@ func NewKubernetesMetricsFetcher(resourceFetcher *ResourceMetricsFetcher, custom
 	}
 }
 
-func (f *KubernetesMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, containerPort int, metricName string, metricType MetricType) (float64, error) {
+// FetchPodMetrics implements the MetricFetcher interface by delegating to appropriate sub-fetchers
+func (f *KubernetesMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
+	// Determine metric type based on source configuration
+	// For simplicity, assume ResourceMetrics for CPU/memory, CustomMetrics for others
+	metricType := CustomMetrics
+	if source.TargetMetric == "cpu" || source.TargetMetric == "memory" {
+		metricType = ResourceMetrics
+	}
+
 	switch metricType {
 	case ResourceMetrics:
-		return f.resourceFetcher.FetchPodMetrics(ctx, pod, metricName)
+		return f.resourceFetcher.FetchPodMetrics(ctx, pod, source)
 	case CustomMetrics:
-		return f.customFetcher.FetchPodMetrics(ctx, pod, metricName)
+		return f.customFetcher.FetchPodMetrics(ctx, pod, source)
 	default:
 		return 0, fmt.Errorf("unsupported metric type: %s", metricType)
 	}
