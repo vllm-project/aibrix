@@ -17,6 +17,10 @@ import os
 from abc import ABC, abstractmethod
 from enum import Enum
 
+from aibrix.metadata.logger import init_logger
+
+logger = init_logger(__name__)
+
 LOCAL_STORAGE_PATH_VAR = "LOCAL_STORAGE_PATH"
 
 
@@ -51,7 +55,7 @@ class PersistentStorage(ABC):
         pass
 
     def get_current_storage_type(self):
-        print("Current storage type: ", self._storage_type_name)
+        logger.info("Current storage type", type=self._storage_type_name)
         return self._storage_type_name
 
     @classmethod
@@ -68,7 +72,8 @@ class LocalDiskFiles(PersistentStorage):
     """
 
     def __init__(self):
-        print("Setup ENV VAR for local storage path! ")
+        self._storage_type_name = "LocalDiskFiles"
+        logger.info("Setting up ENV VAR for local storage path")
 
         if LOCAL_STORAGE_PATH_VAR in os.environ:
             self.directory_path = os.environ[LOCAL_STORAGE_PATH_VAR]
@@ -77,7 +82,11 @@ class LocalDiskFiles(PersistentStorage):
 
         self.directory_path = self.directory_path + "/data/"
         os.makedirs(self.directory_path, exist_ok=True)
-        print("Storage path is located: ", self.directory_path)
+        logger.info("Storage path is located", path=self.directory_path)
+
+    def get_base_path(self):
+        """Get base path of storage."""
+        return self.directory_path
 
     def write_job_input_data(self, job_id, inputDataFileName):
         """This writes requests file to local disk."""
@@ -92,12 +101,12 @@ class LocalDiskFiles(PersistentStorage):
                 request_list.append(data)
 
         num_valid_request = len(request_list)
-        print(f"Storage side receives {num_valid_request} request.")
+        logger.info("Storage side received requests", count=num_valid_request)
 
         directory_path = self.directory_path + str(job_id) + "/"
-        os.makedirs(directory_path)
+        os.makedirs(directory_path, exist_ok=True)
 
-        inputFileName = "input.json"
+        inputFileName = "input.jsonl"
         inputJsonName = directory_path + inputFileName
         with open(inputJsonName, "w") as file:
             for obj in request_list:
@@ -106,19 +115,21 @@ class LocalDiskFiles(PersistentStorage):
     def read_job_input_data(self, job_id, start_index=0, num_requests=-1):
         """Read job requests input from local disk."""
         directory_path = self.directory_path + str(job_id) + "/"
-        inputFileName = "input.json"
+        inputFileName = "input.jsonl"
         inputJsonName = directory_path + inputFileName
 
         request_inputs = []
         if not os.path.exists(inputJsonName):
-            print(f"job {job_id} does not exist in storage!")
+            logger.warning("Job does not exist in storage", job_id=job_id)
             return request_inputs
 
         with open(inputJsonName, "r") as file:
             for _ in range(start_index):
                 next(file)
                 if not file:
-                    print("read requests is out of index, not enough size.")
+                    logger.warning(
+                        "Read requests is out of index, not enough size", job_id=job_id
+                    )
                     return request_inputs
 
             if num_requests > 0:
@@ -135,17 +146,18 @@ class LocalDiskFiles(PersistentStorage):
                         continue
                     data = json.loads(line)
                     request_inputs.append(data)
-        # print("debug: ", len(request_inputs))
         return request_inputs
 
     def get_job_number_requests(self, job_id):
         """Get job requests length from local disk."""
         directory_path = self.directory_path + str(job_id) + "/"
-        inputFileName = "input.json"
+        inputFileName = "input.jsonl"
         inputJsonName = directory_path + inputFileName
 
         if not os.path.exists(inputJsonName):
-            print(f"job {job_id} does not exist in storage!")
+            logger.warning(
+                "Job does not exist in storage for request count", job_id=job_id
+            )
             return 0
 
         with open(inputJsonName, "r") as file:
@@ -156,19 +168,14 @@ class LocalDiskFiles(PersistentStorage):
     def write_job_output_data(self, job_id, start_index, output_list):
         """Write job results output as files."""
         directory_path = self.directory_path + str(job_id) + "/"
+        os.makedirs(directory_path, exist_ok=True)
 
-        if not os.path.exists(directory_path):
-            print(
-                f"Error: Job {job_id} does not exist, perhaps need to create Job first!"
-            )
-            return
-        output_file_path = directory_path + "output.json"
-
+        output_file_path = directory_path + "output.jsonl"
         with open(output_file_path, "a+") as file:
             for _ in range(start_index):
                 next(file, None)
                 if not file:
-                    print("writing requests is out of index.")
+                    logger.warning("Writing requests is out of index", job_id=job_id)  # type: ignore[call-arg]
                     return
 
             for obj in output_list:
@@ -181,17 +188,20 @@ class LocalDiskFiles(PersistentStorage):
 
         output_data = []
         if not os.path.exists(directory_path):
-            print(
-                f"Error: Job {job_id} does not exist, perhaps need to create Job first!"
-            )
+            logger.error(
+                "Job does not exist for reading output, perhaps need to create Job first",
+                job_id=job_id,
+            )  # type: ignore[call-arg]
             return output_data
-        output_file_path = directory_path + "output.json"
+        output_file_path = directory_path + "output.jsonl"
 
         with open(output_file_path, "r") as file:
             for _ in range(start_index):
                 next(file)
                 if not file:
-                    print("reading requests output is out of index.")
+                    logger.warning(
+                        "Reading requests output is out of index", job_id=job_id
+                    )  # type: ignore[call-arg]
                     return output_data
 
             num_lines = 0
@@ -210,26 +220,38 @@ class LocalDiskFiles(PersistentStorage):
         """Delete all input and output files for the job."""
         directory_path = self.directory_path + str(job_id) + "/"
 
-        input_file_path = directory_path + "input.json"
+        input_file_path = directory_path + "input.jsonl"
         try:
             os.remove(input_file_path)
         except FileNotFoundError:
-            print(f"Job ID {input_file_path} does not exist.")
+            logger.warning("Job input file does not exist", file_path=input_file_path)  # type: ignore[call-arg]
         except Exception as e:
-            print(f"Error: {e}")
+            logger.error(
+                "Error removing input file", file_path=input_file_path, error=str(e)
+            )  # type: ignore[call-arg]
 
-        output_file_path = directory_path + "output.json"
+        output_file_path = directory_path + "output.jsonl"
         if os.path.exists(output_file_path):
             try:
                 os.remove(output_file_path)
             except FileNotFoundError:
-                print(f"Job output {output_file_path} does not exist.")
+                logger.warning(
+                    "Job output file does not exist", file_path=output_file_path
+                )
             except Exception as e:
-                print(f"Error: {e}")
+                logger.error(
+                    "Error removing output file",
+                    file_path=output_file_path,
+                    error=str(e),
+                )  # type: ignore[call-arg]
 
         try:
             os.rmdir(directory_path)
         except FileNotFoundError:
-            print(f"Job Directory {directory_path} does not exist.")
+            logger.warning("Job directory does not exist", directory=directory_path)  # type: ignore[call-arg]
         except OSError as e:
-            print(f"Error: {e} - Job Directory is not empty or can't be deleted.")
+            logger.error(
+                "Error removing job directory - directory is not empty or can't be deleted",
+                directory=directory_path,
+                error=str(e),
+            )  # type: ignore[call-arg]

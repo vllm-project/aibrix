@@ -14,12 +14,17 @@
 
 import time
 
+from aibrix.batch.job_manager import JobManager
+from aibrix.metadata.logger import init_logger
+
+logger = init_logger(__name__)
+
 
 class RequestProxy:
-    def __init__(self, storage, manager):
+    def __init__(self, storage, manager) -> None:
         """ """
         self._storage = storage
-        self._job_manager = manager
+        self._job_manager: JobManager = manager
         self._inference_client = InferenceEngineClient()
 
     async def execute_queries(self, job_id):
@@ -30,34 +35,40 @@ class RequestProxy:
         """
         request_id = self._job_manager.get_job_next_request(job_id)
         if request_id == -1:
-            print(f"Job {job_id} has something wrong with metadata in job manager.")
+            logger.warning(
+                "Job has something wrong with metadata in job manager", job_id=job_id
+            )
             return
 
-        endpoint = self._job_manager.get_job_endpoint(job_id)
-        request_input = self.fetch_request_input(job_id, request_id)
+        job = self._job_manager.get_job(job_id)
+        request_input = self.fetch_request_input(job.spec.input_file_id, request_id)
 
-        print(f"executing job {job_id} request {request_id}")
+        logger.info("Executing job request", job_id=job_id, request_id=request_id)
         request_output = self._inference_client.inference_request(
-            endpoint, request_input
+            job.spec.endpoint, request_input
         )
-        self.store_output(job_id, request_id, request_output)
+        self.store_output(job.status.output_file_id, request_id, request_output)
 
         self.sync_job_status(job_id, request_id)
 
-    def fetch_request_input(self, job_id, request_id):
+    def fetch_request_input(self, input_id, request_id):
         """
         Read request input from storage. Now it only reads one request.
         Later we can add a list as a batch per call.
         """
         num_request = 1
-        requests = self._storage.get_job_input_requests(job_id, request_id, num_request)
+        requests = self._storage.get_job_input_requests(
+            input_id, request_id, num_request
+        )
+        if len(requests) == 0:
+            logger.warning("Can not read inputs from storage", file_id=input_id)
         return requests[0]
 
-    def store_output(self, job_id, request_id, result):
+    def store_output(self, output_id, request_id, result):
         """
         Write the request result back to storage.
         """
-        self._storage.put_job_results(job_id, request_id, [result])
+        self._storage.put_job_results(output_id, request_id, [result])
 
     def sync_job_status(self, job_id, reqeust_id):
         """

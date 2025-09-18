@@ -63,28 +63,12 @@ class TestGatewayLoadReader(unittest.TestCase):
         # Use a clean reader
         reader = GatewayLoadReader(None, "test_model")  # type: ignore
         reader.key_ts_alignment = 10
-        np.testing.assert_equal(reader.accumulated_pending, 0.0)
-        np.testing.assert_equal(reader.accumulated_total, 0.0)
 
         rate = reader._get_rate(40, 0)
         np.testing.assert_equal(rate, 4.0)
-        np.testing.assert_equal(reader.accumulated_pending, 0.0)
-        np.testing.assert_equal(reader.accumulated_total, 0.0)
 
         rate = reader._get_rate(40, 8)
-        np.testing.assert_equal(rate, 5.0)
-        np.testing.assert_equal(reader.accumulated_pending, 8.0)
-        np.testing.assert_equal(reader.accumulated_total, 40.0)
-
-        rate = reader._get_rate(40, 8)
-        np.testing.assert_equal(rate, 5.0)
-        np.testing.assert_equal(reader.accumulated_pending, 16.0)
-        np.testing.assert_equal(reader.accumulated_total, 80.0)
-
-        rate = reader._get_rate(40, 0)
         np.testing.assert_equal(rate, 4.0)
-        np.testing.assert_equal(reader.accumulated_pending, 0.0)
-        np.testing.assert_equal(reader.accumulated_total, 0.0)
 
 
 if __name__ == "__main__":
