@@ -101,7 +101,6 @@ gpuOptimizer:
       port: 6379
   tolerations: []
 
-
 gateway:
   envoyProxy:
     replicas: 1
