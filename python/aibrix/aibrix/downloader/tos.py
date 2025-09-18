@@ -161,7 +161,17 @@ class TOSDownloaderV1(BaseDownloader):
         except Exception as e:
             raise ValueError(f"TOS bucket path {bucket_path} not exist for {e}.")
 
-        relative_path = bucket_path.replace(self.bucket_path.rstrip("/") + "/", "")
+        if self._is_directory():
+            prefix = self.bucket_path.rstrip("/") + "/"
+            # For directory downloads, calculate path relative to the directory.
+            relative_path = (
+                bucket_path[len(prefix) :]
+                if bucket_path.startswith(prefix)
+                else bucket_path
+            )
+        else:
+            # For single file downloads, just use the filename.
+            relative_path = bucket_path.split("/")[-1]
         local_file = local_path.joinpath(relative_path).absolute()
         # Ensure parent directories exist
         local_file.parent.mkdir(parents=True, exist_ok=True)
