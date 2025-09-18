@@ -38,6 +38,7 @@ type ScalingContext interface {
 	GetMaxScaleUpRate() float64
 	GetMaxScaleDownRate() float64
 	GetCurrentUsePerPod() float64
+	SetCurrentUsePerPod(float64)
 	UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error
 	GetMinReplicas() int32
 	GetMaxReplicas() int32
@@ -138,13 +139,11 @@ func (b *BaseScalingContext) SetMaxReplicas(maxReplicas int32) {
 }
 
 func (b *BaseScalingContext) GetUpFluctuationTolerance() float64 {
-	//TODO implement me
-	panic("implement me")
+	return 0.1 // Default 10% tolerance
 }
 
 func (b *BaseScalingContext) GetDownFluctuationTolerance() float64 {
-	//TODO implement me
-	panic("implement me")
+	return 0.1 // Default 10% tolerance
 }
 
 func (b *BaseScalingContext) GetMaxScaleUpRate() float64 {

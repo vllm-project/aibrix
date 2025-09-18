@@ -81,6 +81,10 @@ func (m *MockScalingContext) GetCurrentUsePerPod() float64 {
 	return m.CurrentUsePerPod
 }
 
+func (m *MockScalingContext) SetCurrentUsePerPod(value float64) {
+	m.CurrentUsePerPod = value
+}
+
 // Replica constraints
 func (m *MockScalingContext) GetMinReplicas() int32 {
 	return m.MinReplicas
