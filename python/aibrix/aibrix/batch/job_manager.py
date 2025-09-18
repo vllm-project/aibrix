@@ -20,10 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import aibrix.batch.storage as _storage
-from aibrix.batch.scheduler import JobScheduler
-from aibrix.metadata.logger import init_logger
-
-from .job_entity import (
+from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobError,
     BatchJobErrorCode,
@@ -35,6 +32,8 @@ from .job_entity import (
     RequestCountStats,
     TypeMeta,
 )
+from aibrix.batch.scheduler import JobScheduler
+from aibrix.metadata.logger import init_logger
 
 
 # Custom exceptions for job creation
