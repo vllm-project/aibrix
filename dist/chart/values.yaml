@@ -31,6 +31,7 @@ controllerManager:
         initialDelaySeconds: 5
         periodSeconds: 10
   gatewayTimeoutSeconds: 120
+  tolerations: []
 
 gatewayPlugin:
   replicaCount: 1
@@ -78,7 +79,7 @@ gatewayPlugin:
       host: aibrix-redis-master
       port: 6379
   messageTimeout: "60s"
-
+  tolerations: []
 
 gpuOptimizer:
   replicaCount: 1
@@ -98,12 +99,13 @@ gpuOptimizer:
     redis:
       host: aibrix-redis-master
       port: 6379
-
+  tolerations: []
 
 gateway:
   envoyProxy:
     replicas: 1
     imagePullSecrets: []
+    tolerations: []
     container:
       envoy:
         image: envoyproxy/envoy:v1.33.2
@@ -128,7 +130,6 @@ gateway:
       timeout: 120s          # e.g., "120s" or "2m"
       connectTimeout: 6s     # e.g., "6s"
 
-
 metadata:
   service:
     replicas: 1
@@ -149,6 +150,7 @@ metadata:
         requests:
           cpu: 10m
           memory: 64Mi
+    tolerations: []
     redis:
       host: aibrix-redis-master
       port: 6379
