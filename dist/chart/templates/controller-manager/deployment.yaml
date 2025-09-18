@@ -60,3 +60,7 @@ spec:
         secret:
           defaultMode: 420
           secretName: aibrix-webhook-server-cert
+      {{- with .Values.controllerManager.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

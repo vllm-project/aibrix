@@ -46,6 +46,10 @@ spec:
             maxUnavailable: 1
             maxSurge: 1
         pod:
+          {{- with .Values.gateway.envoyProxy.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           affinity:
             podAntiAffinity:
               preferredDuringSchedulingIgnoredDuringExecution:
