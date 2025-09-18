@@ -207,6 +207,7 @@ def test_s3_atomic_write(monkeypatch, tmp_path):
 
     d = s3_mod.S3Downloader("s3://bucket/path/file.txt", model_name="m")
     d.download_model(local_path=str(tmp_path))
-    final = tmp_path / "m" / "file.txt"
+    
+    final = tmp_path / "m" / "path" / "file.txt"
     assert final.exists()
     assert not Path(str(final) + ".part").exists()
