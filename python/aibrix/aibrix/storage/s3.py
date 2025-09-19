@@ -21,9 +21,8 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from aibrix.storage.base import BaseStorage, StorageConfig
-from aibrix.storage.utils import ObjectMetadata
-
 from aibrix.storage.reader import Reader
+from aibrix.storage.utils import ObjectMetadata
 
 
 class S3Storage(BaseStorage):

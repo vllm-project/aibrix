@@ -20,9 +20,8 @@ import tos
 from tos.exceptions import TosClientError, TosServerError
 
 from aibrix.storage.base import BaseStorage, StorageConfig
-from aibrix.storage.utils import ObjectMetadata
-
 from aibrix.storage.reader import Reader
+from aibrix.storage.utils import ObjectMetadata
 
 
 class TOSPart:

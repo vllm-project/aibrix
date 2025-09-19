@@ -15,7 +15,6 @@
 from typing import Dict, Optional, Union
 
 from aibrix import envs
-
 from aibrix.storage.base import BaseStorage, StorageConfig
 from aibrix.storage.local import LocalStorage
 from aibrix.storage.redis import RedisStorage
