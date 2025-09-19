@@ -53,22 +53,25 @@ spec:
               name: model-hostpath 
       containers: 
         - name: xdit-dev 
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:v0.11 #aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5  python3 entrypoints/launch_video.py --model_path /models/CogVideoX1.5-5B
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:v0.20 #aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5  python3 entrypoints/launch_video.py --model_path /models/CogVideoX1.5-5B ./examples/run_cogvideo.sh 
           imagePullPolicy: Always 
           command: ["sh", "-c"]
           args:
             - |
-              while true; do sleep 3600; done
-          env: [] ## python3 entrypoints/launch.py --model_path /models/HunyuanDiT-v1.2-Diffusers
+              python3 entrypoints/launch_video.py --model_path /models/CogVideoX-2b --ulysses_parallel_degree 2 --ring_degree 2 --world_size 4 --host 0.0.0.0 --port 6000
+          env: [] ## python3 entrypoints/launch_video.py --model_path /models/CogVideoX-2b --ulysses_parallel_degree 2 --ring_degree 2 --world_size 4 --save_disk_path /tmp
+          # python entrypoints/client.py video "a cat playing with a ball" --frames 25 --fps 12
           volumeMounts: 
             - mountPath: /models 
               name: model-hostpath 
+            - mountPath: /dev/shm
+              name: dshm
           resources: 
             limits: 
-              nvidia.com/gpu: "1" 
+              nvidia.com/gpu: "4" 
               cpu: "10" # memory: "150G" 
             requests: 
-              nvidia.com/gpu: "1" 
+              nvidia.com/gpu: "4" 
               cpu: "10" # memory: "150G" 
       volumes: 
         - name: model-hostpath 
@@ -79,6 +82,10 @@ spec:
           hostPath: 
             path: /mnt/vdb/models
             type: DirectoryOrCreate   
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi   # <-- increase to something big enough (e.g. 16–64Gi)
       # nodeSelector:
       #   kubernetes.io/hostname: 10.0.1.220                             
 --- 
