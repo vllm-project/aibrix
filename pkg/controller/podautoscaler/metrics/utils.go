@@ -19,6 +19,7 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -29,6 +30,26 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
+
+// Constants for metric validation (duplicated here to avoid import cycle)
+const (
+	minValidMetricValue = -1e6
+	maxValidMetricValue = 1e6
+)
+
+// validateMetricValue checks if a metric value is within acceptable bounds
+func validateMetricValue(value float64) error {
+	if math.IsNaN(value) {
+		return fmt.Errorf("metric value is NaN")
+	}
+	if math.IsInf(value, 0) {
+		return fmt.Errorf("metric value is infinite")
+	}
+	if value < minValidMetricValue || value > maxValidMetricValue {
+		return fmt.Errorf("metric value %f is outside valid range [%f, %f]", value, minValidMetricValue, maxValidMetricValue)
+	}
+	return nil
+}
 
 func ParseMetricFromBody(body []byte, metricName string) (float64, error) {
 	lines := strings.Split(string(body), "\n")
@@ -110,28 +131,69 @@ func GetPodContainerMetric(ctx context.Context, fetcher MetricFetcher, pod corev
 }
 
 func GetMetricsFromPods(ctx context.Context, fetcher MetricFetcher, pods []corev1.Pod, source autoscalingv1alpha1.MetricSource) ([]float64, error) {
+	if len(pods) == 0 {
+		return []float64{}, nil
+	}
+
 	metrics := make([]float64, 0, len(pods))
 	var failedPods []string
-	var lastErrorMessage string
+	var errors []string
+
 	for _, pod := range pods {
-		// TODO: Let's optimize the performance for multi-metrics later.
+		// Skip pods that are not ready or in terminal state
+		if pod.Status.Phase != corev1.PodRunning {
+			klog.V(4).InfoS("Skipping pod not in running state", "pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name), "phase", pod.Status.Phase)
+			continue
+		}
+
+		// Check if pod has valid IP
+		if pod.Status.PodIP == "" {
+			klog.V(4).InfoS("Skipping pod without IP address", "pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
+			failedPods = append(failedPods, fmt.Sprintf("%s/%s (no IP)", pod.Namespace, pod.Name))
+			continue
+		}
+
 		metric, err := fetcher.FetchPodMetrics(ctx, pod, source)
 		if err != nil {
-			lastErrorMessage = err.Error()
+			errors = append(errors, err.Error())
 			failedPods = append(failedPods, fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
 			continue
 		}
+
+		// Validate metric value before adding to results
+		if err := validateMetricValue(metric); err != nil {
+			errors = append(errors, fmt.Sprintf("pod %s/%s: %v", pod.Namespace, pod.Name, err))
+			failedPods = append(failedPods, fmt.Sprintf("%s/%s (invalid value)", pod.Namespace, pod.Name))
+			continue
+		}
+
 		metrics = append(metrics, metric)
 	}
-	// If we fail to get metrics from some pods, we should log a warning message.
+
+	// Log detailed information about failures
 	if len(metrics) < len(pods) {
-		klog.Warningf("failed to get metrics from some pods: got %d/%d metrics. Failed pods: %v, with last error: %v", len(metrics), len(pods), failedPods, lastErrorMessage)
+		successRate := float64(len(metrics)) / float64(len(pods)) * 100
+		klog.Warningf("Partial metrics collection: got %d/%d metrics (%.1f%% success rate). Failed pods: %v",
+			len(metrics), len(pods), successRate, failedPods)
+		if len(errors) > 0 {
+			klog.V(4).InfoS("Metric collection errors", "errors", errors)
+		}
 	}
-	// If we fail to get metrics from all pods, we should return an error.
+
+	// Return error only if we couldn't get any metrics at all
 	if len(metrics) == 0 && len(pods) > 0 {
-		return nil, fmt.Errorf("failed to get metrics from any of the %d pods", len(pods))
+		return nil, fmt.Errorf("failed to get metrics from any of the %d pods. Last errors: %v", len(pods), errors[len(errors)-min(len(errors), 3):])
 	}
+
 	return metrics, nil
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func GetMetricFromSource(ctx context.Context, fetcher MetricFetcher, source autoscalingv1alpha1.MetricSource) (float64, error) {
@@ -144,5 +206,7 @@ func GetMetricFromSource(ctx context.Context, fetcher MetricFetcher, source auto
 			endpoint = fmt.Sprintf("%s:%s", u.Hostname(), source.Port)
 		}
 	}
+	// Note: This function uses FetchMetric for external endpoint-based fetching
+	// where no pod context is available. This is acceptable for external endpoints.
 	return fetcher.FetchMetric(ctx, source.ProtocolType, endpoint, source.Path, source.TargetMetric)
 }

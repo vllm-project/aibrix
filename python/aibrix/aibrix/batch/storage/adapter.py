@@ -21,7 +21,7 @@ from aibrix.batch.job_entity import BatchJob
 from aibrix.metadata.logger import init_logger
 from aibrix.storage.base import BaseStorage
 
-from .batch_metastore import delete_metadata, get_metadata, set_metadata
+from aibrix.batch.storage.batch_metastore import delete_metadata, get_metadata, set_metadata
 
 logger = init_logger(__name__)
 

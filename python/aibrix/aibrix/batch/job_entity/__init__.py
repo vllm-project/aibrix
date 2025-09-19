@@ -29,12 +29,6 @@ from .batch_job import (
     TypeMeta,
 )
 from .job_entity_manager import JobEntityManager
-from .k8s_transformer import (
-    JOB_ANNOTATION_PREFIX,
-    BatchJobTransformer,
-    JobAnnotationKey,
-    k8s_job_to_batch_job,
-)
 
 __all__ = [
     "BatchJob",
@@ -44,7 +38,6 @@ __all__ = [
     "BatchJobErrorCode",
     "BatchJobError",
     "BatchJobStatus",
-    "BatchJobTransformer",
     "CompletionWindow",
     "Condition",
     "ConditionStatus",
@@ -53,7 +46,4 @@ __all__ = [
     "ObjectMeta",
     "RequestCountStats",
     "TypeMeta",
-    "JOB_ANNOTATION_PREFIX",
-    "JobAnnotationKey",
-    "k8s_job_to_batch_job",
 ]

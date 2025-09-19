@@ -42,7 +42,7 @@ func SetupModelAdapterWebhook(mgr ctrl.Manager) error {
 		Complete()
 }
 
-//+kubebuilder:webhook:path=/mutate-model-aibrix-ai-v1alpha1-modeladapter,mutating=true,failurePolicy=fail,sideEffects=None,groups=model.aibrix.ai,resources=modeladapters,verbs=create;update,versions=v1alpha1,name=mmodeladapter.kb.io,admissionReviewVersions=v1
+//+kubebuilder:webhook:path=/mutate-model-aibrix-ai-v1alpha1-modeladapter,mutating=true,failurePolicy=ignore,sideEffects=None,groups=model.aibrix.ai,resources=modeladapters,verbs=create;update,versions=v1alpha1,name=mmodeladapter.kb.io,admissionReviewVersions=v1
 
 var _ webhook.CustomDefaulter = &ModelAdapterWebhook{}
 
@@ -51,7 +51,7 @@ func (w *ModelAdapterWebhook) Default(ctx context.Context, obj runtime.Object) e
 	return nil
 }
 
-//+kubebuilder:webhook:path=/validate-model-aibrix-ai-v1alpha1-modeladapter,mutating=false,failurePolicy=fail,sideEffects=None,groups=model.aibrix.ai,resources=modeladapters,verbs=create;update,versions=v1alpha1,name=vmodeladapter.kb.io,admissionReviewVersions=v1
+//+kubebuilder:webhook:path=/validate-model-aibrix-ai-v1alpha1-modeladapter,mutating=false,failurePolicy=ignore,sideEffects=None,groups=model.aibrix.ai,resources=modeladapters,verbs=create;update,versions=v1alpha1,name=vmodeladapter.kb.io,admissionReviewVersions=v1
 
 var _ webhook.CustomValidator = &ModelAdapterWebhook{}
 

@@ -25,6 +25,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/modeladapter"
 	"github.com/vllm-project/aibrix/pkg/controller/modelrouter"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler"
+	"github.com/vllm-project/aibrix/pkg/controller/podset"
 	"github.com/vllm-project/aibrix/pkg/controller/rayclusterfleet"
 	"github.com/vllm-project/aibrix/pkg/controller/rayclusterreplicaset"
 	"github.com/vllm-project/aibrix/pkg/controller/roleset"
@@ -79,6 +80,7 @@ func Initialize(mgr manager.Manager) error {
 	if features.IsControllerEnabled(features.StormServiceController) {
 		controllerAddFuncs = append(controllerAddFuncs, roleset.Add)
 		controllerAddFuncs = append(controllerAddFuncs, stormservice.Add)
+		controllerAddFuncs = append(controllerAddFuncs, podset.Add)
 	}
 
 	return nil

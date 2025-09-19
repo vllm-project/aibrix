@@ -137,6 +137,8 @@ const (
 type StormServiceUpdateStrategy struct {
 	// Type of update strategy. Can be "RollingUpdate". Default is RollingUpdate.
 	// +optional
+	// +kubebuilder:default=RollingUpdate
+	// +kubebuilder:validation:Enum={RollingUpdate,InPlaceUpdate}
 	Type StormServiceUpdateStrategyType `json:"type,omitempty"`
 
 	// +optional
@@ -156,9 +158,14 @@ const (
 	InPlaceUpdateStormServiceStrategyType StormServiceUpdateStrategyType = "InPlaceUpdate"
 )
 
+//+genclient
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.scalingTargetSelector
+// +kubebuilder:printcolumn:name="Replicas",type=integer,JSONPath=`.spec.replicas`,description="Desired number of replicas"
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=='Ready')].status`,description="Whether the StormService is ready"
+// +kubebuilder:printcolumn:name="Paused",type=boolean,JSONPath=`.spec.paused`,description="Whether the StormService is paused"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`,description="Time this StormService was created"
 
 // StormService is the Schema for the stormservices API
 type StormService struct {

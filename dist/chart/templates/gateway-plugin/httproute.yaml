@@ -1,0 +1,42 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: aibrix-reserved-router
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gateway-plugin
+spec:
+  parentRefs:
+    - name: aibrix-eg
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/chat/completions
+        - path:
+            type: PathPrefix
+            value: /v1/completions
+      backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: aibrix-reserved-router-models-endpoint
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gateway
+spec:
+  parentRefs:
+    - name: aibrix-eg
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/models
+      backendRefs:
+        - name: aibrix-metadata-service
+          port: 8090

@@ -12,11 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .allocator import MemoryRegion, TensorPoolAllocator
+from .allocator import ManagedMemoryRegion, TensorPoolAllocator
+from .external_memory_region import ExternalMemoryRegion
+from .memory_region import MemoryRegion
 from .ref_counted_obj import RefCountedObj
 
 __all__ = [
+    "ExternalMemoryRegion",
     "MemoryRegion",
+    "ManagedMemoryRegion",
     "TensorPoolAllocator",
     "RefCountedObj",
 ]

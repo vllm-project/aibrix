@@ -190,7 +190,7 @@ func buildErrorResponse(statusCode envoyTypePb.StatusCode, errBody string, heade
 				Headers: &extProcPb.HeaderMutation{
 					SetHeaders: buildEnvoyProxyHeaders([]*configPb.HeaderValueOption{}, headers...),
 				},
-				Body: errBody,
+				Body: generateErrorMessage(errBody, int(statusCode)),
 			},
 		},
 	}

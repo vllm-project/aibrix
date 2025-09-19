@@ -56,3 +56,16 @@ class RenameStandardRule(StandardRule):
             )
         metric.samples = _samples
         yield metric
+
+
+class PassthroughStandardRule(StandardRule):
+    def __init__(self, metric_name):
+        super().__init__("PASSTHROUGH")
+        self.metric_name = metric_name
+
+    def __call__(self, metric: Metric) -> Iterable[Metric]:
+        assert (
+            metric.name == self.metric_name
+        ), f"Metric name {metric.name} does not match Rule metric name {self.metric_name}"
+        # Return metric unchanged - pass through as-is
+        yield metric

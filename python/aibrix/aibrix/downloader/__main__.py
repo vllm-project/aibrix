@@ -15,12 +15,13 @@ def str_to_dict(s) -> Optional[Dict]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download model from HuggingFace")
+    parser = argparse.ArgumentParser(
+        description="Download model from HuggingFace, AWS S3, or TOS"
+    )
     parser.add_argument(
         "--model-uri",
         type=str,
         default="deepseek-ai/deepseek-coder-6.7b-instruct",
-        required=True,
         help="model uri from different source, support HuggingFace, AWS S3, TOS",
     )
     parser.add_argument(
@@ -48,13 +49,16 @@ def main():
         help="Extra config for download, like auth config, parallel config, etc.",
     )
     args = parser.parse_args()
-    download_model(
+    model_path = download_model(
         args.model_uri,
         args.local_dir,
         args.model_name,
         args.download_extra_config,
         args.enable_progress_bar,
     )
+    # Print the resolved model path for easier scripting
+    if model_path is not None:
+        print(str(model_path))
 
 
 if __name__ == "__main__":

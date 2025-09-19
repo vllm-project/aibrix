@@ -21,10 +21,10 @@ namePrefix: aibrix-orchestration-
 images:
   - name: controller
     newName: aibrix/controller-manager
-    newTag: v0.3.0
+    newTag: v0.4.1
   - name: quay.io/kuberay/operator
     newName: aibrix/kuberay-operator
-    newTag: v1.2.1-patch
+    newTag: v1.2.1-patch-20250726
 
 patches:
   - path: patch.yaml

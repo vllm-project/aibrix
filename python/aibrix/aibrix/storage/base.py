@@ -19,8 +19,8 @@ from dataclasses import dataclass
 from io import BytesIO, StringIO
 from typing import Any, AsyncIterator, BinaryIO, Optional, TextIO, Union
 
-from .reader import Reader
-from .utils import ObjectMetadata
+from aibrix.storage.reader import Reader
+from aibrix.storage.utils import ObjectMetadata
 
 
 @dataclass

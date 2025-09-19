@@ -17,9 +17,9 @@ from typing import BinaryIO, Optional, TextIO, Union
 
 import redis.asyncio as redis
 
-from .base import BaseStorage, StorageConfig
-from .reader import Reader
-from .utils import ObjectMetadata
+from aibrix.storage.base import BaseStorage, StorageConfig
+from aibrix.storage.reader import Reader
+from aibrix.storage.utils import ObjectMetadata
 
 
 class RedisStorage(BaseStorage):

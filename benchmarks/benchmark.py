@@ -13,6 +13,32 @@ from generator.workload_generator import workload_generator
 from argparse import Namespace
 from string import Template
 
+# Helper function to print all override-able parameters
+def print_override_help(config_path):
+    with open(config_path, 'r') as f:
+        content = os.path.expandvars(f.read())
+        config = yaml.safe_load(content)
+
+    print("\n========== OVERRIDE-ABLE PARAMETERS ==========")
+    print("Use --override key=value to override these parameters.")
+    print("Nested parameters can be accessed with dot notation (e.g., dataset_configs.synthetic_multiturn.shared_prefix_length)")
+    print("\nTop-level parameters:")
+    for key, value in config.items():
+        if not isinstance(value, dict):
+            print(f"  - {key}: {value}")
+        else:
+            print(f"\nNested parameters under '{key}':")
+            print_nested_parameters(value, prefix=f"{key}.")
+    print("\n=============================================")
+    sys.exit(0)
+
+def print_nested_parameters(config_dict, prefix=''):
+    for key, value in config_dict.items():
+        if isinstance(value, dict):
+            print_nested_parameters(value, prefix=f"{prefix}{key}.")
+        else:
+            print(f"  - {prefix}{key}: {value}")
+
 
 class BenchmarkRunner:
     def __init__(self, config_base="config/base.yaml", overrides=None):
@@ -170,12 +196,22 @@ class BenchmarkRunner:
             })
             
         elif workload_type == "synthetic":
-            args_dict.update({
-                "traffic_pattern_config": subconfig["traffic_file"],
-                "prompt_len_pattern_config": subconfig["prompt_len_file"],
-                "completion_len_pattern_config": subconfig["completion_len_file"],
-                "max_concurrent_sessions": subconfig.get("max_concurrent_sessions", 1),
-            })
+            if subconfig["use_preset_pattern"]:
+                patterns = subconfig["preset_patterns"]
+                pattern_args = {
+                    "traffic_pattern": patterns["traffic_pattern"],
+                    "prompt_len_pattern": patterns["prompt_len_pattern"],
+                    "completion_len_pattern": patterns["completion_len_pattern"],
+                }
+            else:
+                pattern_files = subconfig["pattern_files"]
+                pattern_args = {
+                    "traffic_pattern_config": pattern_files["traffic_file"],
+                    "prompt_len_pattern_config": pattern_files["prompt_len_file"],
+                    "completion_len_pattern_config": pattern_files["completion_len_file"],
+                }
+            pattern_args["max_concurrent_sessions"] = subconfig["pattern_files"].get("max_concurrent_sessions", 1)
+            args_dict.update(pattern_args)
             
         elif workload_type == "stat":
             args_dict.update({
@@ -236,6 +272,13 @@ class BenchmarkRunner:
     def run_client(self):
         logging.info("Running client to dispatch workload...")
         workload_file = self.config["workload_file"]  # Use the pre-defined workload_file
+        # Only add api_key if it's not None
+        # Special handling for API_KEY
+        if 'api_key' in self.config and self.config["api_key"] == '${API_KEY}':
+            # API_KEY was not set in environment variables
+            logging.warning('No API_KEY provided.')
+            # Set to None so it can be handled appropriately later
+            self.config["api_key"] = None
         
         args_dict = {
             "workload_path": workload_file,
@@ -286,12 +329,19 @@ class BenchmarkRunner:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run benchmark pipeline")
-    parser.add_argument("--stage", required=True, help="One of the stages [all, dataset, workload, client, analysis]")
+    parser = argparse.ArgumentParser(description="Run benchmark pipeline", add_help=True, formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument("--stage", help="Specify the benchmark stage to run. Possible stages:\n- all: Run all stages (dataset, workload, client, analysis)\n- dataset: Generate the dataset\n- workload: Generate the workload\n- client: Run the client to dispatch workload\n- analysis: Analyze the trace output")
     parser.add_argument("--config", required=True, help="Path to base config YAML")
-    parser.add_argument("--override", action="append", default=[], help="Override config values, e.g., --override time_scale=2.0 or target_qps=5")
+    parser.add_argument("--override", action="append", default=[], help="Override config values in the config file specified through --config, e.g., --override time_scale=2.0 or target_qps=5. Use 'help' to list all override-able parameters.")
+    
 
     args = parser.parse_args()
+
+    # Check if user asked for help on overrides
+    if 'help' in args.override:
+        print_override_help(args.config)
+    elif not args.stage:
+        parser.error("--stage is required")
 
     runner = BenchmarkRunner(config_base=args.config, overrides=args.override)
     runner.run(args.stage)

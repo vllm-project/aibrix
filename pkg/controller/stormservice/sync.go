@@ -24,6 +24,7 @@ import (
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/integer"
@@ -75,25 +76,39 @@ func (r *StormServiceReconciler) syncHeadlessService(ctx context.Context, servic
 			Name:      service.Name,
 			Namespace: service.Namespace,
 			Labels:    service.Labels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(service, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.StormServiceKind)),
+			},
 		},
 		Spec: corev1.ServiceSpec{
-			Type:      corev1.ServiceTypeClusterIP,
-			ClusterIP: corev1.ClusterIPNone,
-			Selector:  map[string]string{constants.StormServiceNameLabelKey: service.Name},
+			Type:                     corev1.ServiceTypeClusterIP,
+			ClusterIP:                corev1.ClusterIPNone,
+			Selector:                 map[string]string{constants.StormServiceNameLabelKey: service.Name},
+			PublishNotReadyAddresses: true,
 		},
 	}
 
 	headlessService := &corev1.Service{}
-	if err := r.Client.Get(ctx, client.ObjectKey{Name: service.Name, Namespace: service.Namespace}, headlessService); client.IgnoreNotFound(err) != nil {
-		return err
-	} else if err != nil {
-		// not found pg, need to create
-		if err = r.Client.Create(ctx, expectedService); err == nil {
-			r.EventRecorder.Eventf(service, corev1.EventTypeNormal, HeadlessServiceEventType, "Headless Service(discovery) %s synced", service.Name)
+	err := r.Client.Get(ctx, client.ObjectKey{Name: service.Name, Namespace: service.Namespace}, headlessService)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// service doesn't exist, create it
+			if createErr := r.Client.Create(ctx, expectedService); createErr != nil {
+				return fmt.Errorf("failed to create headless service: %w", createErr)
+			}
+			r.EventRecorder.Eventf(service, corev1.EventTypeNormal, HeadlessServiceEventType, "Headless Service(discovery) %s created", service.Name)
+			return nil
 		}
-		return err
+		return err // Return other errors immediately
 	}
 
+	if !isServiceEqual(headlessService, expectedService) {
+		headlessService.Spec = expectedService.Spec
+		if err := r.Client.Update(ctx, headlessService); err != nil {
+			return fmt.Errorf("failed to update headless service: %w", err)
+		}
+		r.EventRecorder.Eventf(service, corev1.EventTypeNormal, HeadlessServiceEventType, "Headless Service %s updated", service.Name)
+	}
 	return nil
 }
 

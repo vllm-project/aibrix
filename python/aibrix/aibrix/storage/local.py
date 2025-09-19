@@ -20,9 +20,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
-from .base import BaseStorage, StorageConfig
-from .reader import Reader
-from .utils import ObjectMetadata, generate_filename
+from aibrix.storage.base import BaseStorage, StorageConfig
+from aibrix.storage.reader import Reader
+from aibrix.storage.utils import ObjectMetadata, generate_filename
 
 LOCAL_STORAGE_PATH_VAR = "LOCAL_STORAGE_PATH"
 

@@ -18,7 +18,6 @@ package modelrouter
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 
@@ -36,6 +35,7 @@ import (
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
@@ -44,8 +44,8 @@ import (
 const (
 	// TODO (varun): cleanup model related identifiers and establish common consensus
 	modelHeaderIdentifier = "model"
-	modelIdentifier       = "model.aibrix.ai/name"
-	modelPortIdentifier   = "model.aibrix.ai/port"
+	modelIdentifier       = constants.ModelLabelName
+	modelPortIdentifier   = constants.ModelLabelPort
 	// TODO (varun): parameterize it or dynamically resolve it
 	aibrixEnvoyGateway          = "aibrix-eg"
 	aibrixEnvoyGatewayNamespace = "aibrix-system"
@@ -105,12 +105,6 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 		AddFunc:    modelRouter.addRouteFromRayClusterFleet,
 		DeleteFunc: modelRouter.deleteRouteFromRayClusterFleet,
 	})
-
-	klog.Info("Waiting for caches to sync")
-	if ok := cacher.WaitForCacheSync(context.TODO()); !ok {
-		return errors.New("modelrouter controller: failed to sync cache")
-	}
-	klog.Info("All caches synced")
 
 	return err
 }

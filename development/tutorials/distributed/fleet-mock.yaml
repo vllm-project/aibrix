@@ -1,0 +1,78 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: RayClusterFleet
+metadata:
+  labels:
+    app.kubernetes.io/name: aibrix
+    model.aibrix.ai/name: facebook-opt-13b
+  name: facebook-opt-13b
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: facebook-opt-13b
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        model.aibrix.ai/name: facebook-opt-13b
+      annotations:
+        ray.io/overwrite-container-cmd: "true"
+    spec:
+      rayVersion: "2.10.0"
+      headGroupSpec:
+        rayStartParams:
+          dashboard-host: '0.0.0.0'
+          block: 'false'
+        template:
+          metadata:
+            labels:
+              model.aibrix.ai/name: facebook-opt-13b
+          spec:
+            containers:
+              - name: ray-head
+                image: aibrix/vllm-mock:nightly
+                ports:
+                  - containerPort: 6379
+                    name: gcs-server
+                  - containerPort: 8265
+                    name: dashboard
+                  - containerPort: 10001
+                    name: client
+                  - containerPort: 8000
+                    name: service
+                command: ["/bin/bash", "-lc", "--"]
+                args: ["ulimit -n 65536; echo head; $KUBERAY_GEN_RAY_START_CMD; python3 app.py"]
+                resources:
+                  limits:
+                    cpu: 1000m
+                  requests:
+                    cpu: 200m
+      workerGroupSpecs:
+        - replicas: 2
+          minReplicas: 1
+          maxReplicas: 5
+          groupName: small-group
+          rayStartParams: {}
+          template:
+            metadata:
+              labels:
+                model.aibrix.ai/name: facebook-opt-13b
+            spec:
+              containers:
+                - name: ray-worker
+                  image: aibrix/vllm-mock:nightly
+                  command: [ "/bin/bash", "-lc", "--" ]
+                  args: [ "ulimit -n 65536; echo head; $KUBERAY_GEN_RAY_START_CMD;" ]
+                  lifecycle:
+                    preStop:
+                      exec:
+                        command: [ "/bin/sh","-c","ray stop" ]
+                  resources:
+                    limits:
+                      cpu: 1000m
+                    requests:
+                      cpu: 200m

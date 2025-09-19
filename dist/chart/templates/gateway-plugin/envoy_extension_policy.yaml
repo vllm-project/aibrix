@@ -1,0 +1,38 @@
+# templates/envoy-extension-policy.yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: aibrix-gateway-plugins-extension-policy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gateway-plugin
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: aibrix-reserved-router
+  extProc:
+    - backendRefs:
+        - name: aibrix-gateway-plugins
+          port: 50052
+      processingMode:
+        request:
+          body: Buffered
+        response:
+          body: Streamed
+      messageTimeout: {{ .Values.gatewayPlugin.messageTimeout }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: aibrix-skip-ext-proc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-gateway-plugin
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: aibrix-reserved-router-models-endpoint

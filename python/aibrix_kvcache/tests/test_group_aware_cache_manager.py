@@ -29,6 +29,7 @@ from aibrix_kvcache import (
     KVCacheBlockLayout,
     KVCacheConfig,
     ModelSpec,
+    TokenListView,
     cache_manager,
 )
 
@@ -146,7 +147,7 @@ def _test_put_and_get_aligned(
         rank, world_size, layout
     ) as cache_config:
         shape, spec, cache = cache_config
-        tokens = [i for i in range(32)]
+        tokens = TokenListView([i for i in range(32)])
         origin_tokens = copy.deepcopy(tokens)
         status = cache.allocate_for(None, tokens)
         assert status.is_ok()
@@ -203,9 +204,18 @@ def _test_stress_cache(
         for i in tqdm(range(200), desc="putting cache"):
             num_prefix_blocks = random.randint(0, 10)
             num_prefix_blocks = _bcast_object(num_prefix_blocks)
+            num_token_blocks = random.randint(16, 256)
+            ntokens = num_token_blocks * 16
+            ntokens = _bcast_object(ntokens)
+            tokens = [j for j in range(ntokens)]
+            random.shuffle(tokens)
+            tokens = _bcast_object(tokens)
             if num_prefix_blocks > 0:
                 prefix_tokens = [j for j in range(num_prefix_blocks * 16)]
                 prefix_tokens = _bcast_object(prefix_tokens)
+                all_tokens = TokenListView(prefix_tokens + tokens)
+                prefix_tokens = all_tokens[: num_prefix_blocks * 16]
+                tokens = all_tokens[num_prefix_blocks * 16 :]
                 status = cache.allocate_for(None, prefix_tokens)
                 assert status.is_ok()
                 put_handle = status.value
@@ -214,13 +224,8 @@ def _test_stress_cache(
 
             else:
                 prefix_tokens = None
+                tokens = TokenListView(tokens)
 
-            num_token_blocks = random.randint(16, 256)
-            ntokens = num_token_blocks * 16
-            ntokens = _bcast_object(ntokens)
-            tokens = [j for j in range(ntokens)]
-            random.shuffle(tokens)
-            tokens = _bcast_object(tokens)
             status = cache.allocate_for(prefix_tokens, tokens)
             assert status.is_ok()
             token_handle = status.value
@@ -229,7 +234,7 @@ def _test_stress_cache(
             token_tensors = [t.clone() for t in token_tensors]
             tokens = tokens[: len(token_handle) * 16]
             cache.put(prefix_tokens, tokens, token_handle)
-            query[i] = (prefix_tokens or [], tokens, token_tensors)
+            query[i] = (prefix_tokens or tokens[:0], tokens, token_tensors)
 
         if envs_name.endswith("async"):
             cache.flush()
@@ -283,4 +288,4 @@ def _test_stress_cache(
     "layout", [KVCacheBlockLayout.NCLD, KVCacheBlockLayout.LCND]
 )
 def test_stress_cache(envs, layout):
-    dist_run(_test_stress_cache, envs, 8, layout)
+    dist_run(_test_stress_cache, envs, 4, layout)

@@ -16,12 +16,12 @@ from typing import Dict, Optional, Union
 
 from aibrix import envs
 
-from .base import BaseStorage, StorageConfig
-from .local import LocalStorage
-from .redis import RedisStorage
-from .s3 import S3Storage
-from .tos import TOSStorage
-from .types import StorageType
+from aibrix.storage.base import BaseStorage, StorageConfig
+from aibrix.storage.local import LocalStorage
+from aibrix.storage.redis import RedisStorage
+from aibrix.storage.s3 import S3Storage
+from aibrix.storage.tos import TOSStorage
+from aibrix.storage.types import StorageType
 
 
 def create_storage(

@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import functools
 from concurrent.futures import Executor
+from contextlib import contextmanager
+from queue import Queue
 from typing import Any, List, Sequence, Tuple
 
 import infinistore
@@ -31,7 +32,6 @@ from . import Connector, ConnectorFeature
 logger = getLogger(__name__)
 
 
-@AsyncBase.async_wrap(delete="_delete")
 class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
     """InfiniStore connector."""
 
@@ -44,7 +44,12 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
         super().__init__(executor)
         self.config = config
         self.key_suffix = key_suffix
-        self.conn: infinistore.InfinityConnection | None = None
+
+        # rdma connection
+        self.rdma_conn: infinistore.InfinityConnection | None = None
+
+        # tcp connections
+        self.tcp_conns: Queue[infinistore.InfinityConnection] | None = None
 
     @classmethod
     def from_envs(
@@ -200,29 +205,63 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
     def _key(self, key: bytes) -> str:
         return key.hex() + self.key_suffix
 
+    @contextmanager
+    def _tcp_conn(self):
+        assert self.config.connection_type == infinistore.TYPE_TCP
+        assert self.tcp_conns is not None
+        conn = None
+        try:
+            conn = self.tcp_conns.get()
+            yield conn
+        finally:
+            if conn is not None:
+                self.tcp_conns.put(conn)
+
     @Status.capture_exception
     def open(self) -> Status:
         """Open a connection."""
-        if self.conn is None:
-            self.conn = infinistore.InfinityConnection(self.config)
-            self.conn.connect()
+        if self.config.connection_type == infinistore.TYPE_RDMA:
+            if self.rdma_conn is None:
+                self.rdma_conn = infinistore.InfinityConnection(self.config)
+                self.rdma_conn.connect()
+        else:
+            assert hasattr(self._executor, "_max_workers")
+            assert self.tcp_conns is None
+
+            self.tcp_conns = Queue(
+                maxsize=self._executor._max_workers  # type: ignore
+            )
+            for _ in range(self.tcp_conns.maxsize):
+                tcp_conn = infinistore.InfinityConnection(self.config)
+                tcp_conn.connect()
+                self.tcp_conns.put(tcp_conn)
         return Status.ok()
 
     @Status.capture_exception
     def close(self) -> Status:
         """Close a connection."""
-        if self.conn is not None:
-            self.conn.close()
-            self.conn = None
+        if self.rdma_conn is not None:
+            self.rdma_conn.close()
+            self.rdma_conn = None
+
+        if self.config.connection_type == infinistore.TYPE_TCP:
+            if self.tcp_conns is not None:
+                while not self.tcp_conns.empty():
+                    tcp_conn = self.tcp_conns.get()
+                    if tcp_conn is not None:
+                        tcp_conn.close()
+                del self.tcp_conns
+                self.tcp_conns = None
+
         return Status.ok()
 
     @Status.capture_exception
     def register_slabs(self, slabs: List[torch.Tensor]) -> Status:
-        assert self.conn is not None
+        assert self.rdma_conn is not None
         for slab in slabs:
             addr = slab.data_ptr()
-            length = slab.numel()
-            ret = self.conn.register_mr(addr, length)
+            length = slab.numel() * slab.itemsize
+            ret = self.rdma_conn.register_mr(addr, length)
             if ret != 0:
                 return Status(StatusCodes.INVALID)
         return Status.ok()
@@ -230,15 +269,32 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
     @Status.capture_exception
     async def exists(self, key: bytes) -> Status:
         """Check if key is in the store."""
-        assert self.conn is not None
-        if self.conn.check_exist(self._key(key)):
+        if self.config.connection_type == infinistore.TYPE_RDMA:
+            return await self.event_loop.run_in_executor(
+                self._executor, self._rdma_exists, key
+            )
+        else:
+            return await self.event_loop.run_in_executor(
+                self._executor, self._tcp_exists, key
+            )
+
+    def _rdma_exists(self, key: bytes) -> Status:
+        assert self.rdma_conn is not None
+        if self.rdma_conn.check_exist(self._key(key)):
             return Status.ok()
+        return Status(StatusCodes.NOT_FOUND)
+
+    def _tcp_exists(self, key: bytes) -> Status:
+        with self._tcp_conn() as conn:
+            assert conn is not None
+            if conn.check_exist(self._key(key)):
+                return Status.ok()
         return Status(StatusCodes.NOT_FOUND)
 
     def get_batches(
         self,
         keys: Sequence[Any],
-        mrs: Sequence[MemoryRegion],
+        mrs: Sequence[MemoryRegion],  # type: ignore
         batch_size: int,
     ) -> Sequence[Sequence[Tuple[bytes, MemoryRegion]]]:
         lists: List[List[Tuple[bytes, MemoryRegion]]] = []
@@ -257,7 +313,7 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
     async def mget(
         self, keys: Sequence[bytes], mrs: Sequence[MemoryRegion]
     ) -> Sequence[Status]:
-        assert self.conn is not None
+        assert self.rdma_conn is not None
         base_addr = mrs[0].slab.data_ptr()
         block_size = mrs[0].length
         blocks = [None] * len(mrs)
@@ -265,7 +321,9 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
             blocks[i] = (self._key(keys[i]), mr.addr)  # type: ignore
 
         try:
-            await self.conn.rdma_read_cache_async(blocks, block_size, base_addr)
+            await self.rdma_conn.rdma_read_cache_async(
+                blocks, block_size, base_addr
+            )
         except infinistore.InfiniStoreKeyNotFound:
             return [Status(StatusCodes.NOT_FOUND)] * len(mrs)
         return [Status.ok()] * len(mrs)
@@ -274,14 +332,16 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
     async def mput(
         self, keys: Sequence[bytes], mrs: Sequence[MemoryRegion]
     ) -> Sequence[Status]:
-        assert self.conn is not None
+        assert self.rdma_conn is not None
         base_addr = mrs[0].slab.data_ptr()
         block_size = mrs[0].length
         blocks = [None] * len(mrs)
         for i, mr in enumerate(mrs):
             blocks[i] = (self._key(keys[i]), mr.addr)  # type: ignore
 
-        await self.conn.rdma_write_cache_async(blocks, block_size, base_addr)
+        await self.rdma_conn.rdma_write_cache_async(
+            blocks, block_size, base_addr
+        )
         return [Status.ok()] * len(mrs)
 
     @Status.capture_exception
@@ -290,25 +350,25 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
         if self.config.connection_type == infinistore.TYPE_RDMA:
             return await self._rdma_get(key, mr)
         else:
-            tcp_get = functools.partial(self._tcp_get, key, mr)
             return await self.event_loop.run_in_executor(
-                self._executor, tcp_get
+                self._executor, self._tcp_get, key, mr
             )
 
     def _tcp_get(self, key: bytes, mr: MemoryRegion) -> Status:
         """Get a value via TCP."""
-        assert self.conn is not None
-        val = self.conn.tcp_read_cache(self._key(key))
-        if val is None or len(val) == 0:
-            return Status(StatusCodes.NOT_FOUND)
-        mr.fill(val)
-        return Status.ok()
+        with self._tcp_conn() as conn:
+            assert conn is not None
+            val = conn.tcp_read_cache(self._key(key))
+            if val is None or len(val) == 0:
+                return Status(StatusCodes.NOT_FOUND)
+            mr.fill(val)
+            return Status.ok()
 
     async def _rdma_get(self, key: bytes, mr: MemoryRegion) -> Status:
         """Get a value via RDMA."""
-        assert self.conn is not None
+        assert self.rdma_conn is not None
         try:
-            await self.conn.rdma_read_cache_async(
+            await self.rdma_conn.rdma_read_cache_async(
                 [(self._key(key), mr.addr)], mr.length, mr.slab.data_ptr()
             )
         except infinistore.InfiniStoreKeyNotFound:
@@ -321,28 +381,44 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
         if self.config.connection_type == infinistore.TYPE_RDMA:
             return await self._rdma_put(key, mr)
         else:
-            tcp_put = functools.partial(self._tcp_put, key, mr)
             return await self.event_loop.run_in_executor(
-                self._executor, tcp_put
+                self._executor, self._tcp_put, key, mr
             )
 
     async def _rdma_put(self, key: bytes, mr: MemoryRegion) -> Status:
         """Put a value via RDMA."""
-        assert self.conn is not None
-        await self.conn.rdma_write_cache_async(
+        assert self.rdma_conn is not None
+        await self.rdma_conn.rdma_write_cache_async(
             [(self._key(key), mr.addr)], mr.length, mr.slab.data_ptr()
         )
         return Status.ok()
 
     def _tcp_put(self, key: bytes, mr: MemoryRegion) -> Status:
         """Put a value via TCP."""
-        assert self.conn is not None
-        self.conn.tcp_write_cache(self._key(key), mr.data_ptr(), mr.length)
-        return Status.ok()
+        with self._tcp_conn() as conn:
+            assert conn is not None
+            conn.tcp_write_cache(self._key(key), mr.data_ptr(), mr.length)
+            return Status.ok()
 
     @Status.capture_exception
-    def _delete(self, key: bytes) -> Status:
+    async def delete(self, key: bytes) -> Status:
         """Delete a key."""
-        assert self.conn is not None
-        self.conn.delete_keys(self._key(key))
+        if self.config.connection_type == infinistore.TYPE_RDMA:
+            return await self.event_loop.run_in_executor(
+                self._executor, self._rdma_delete, key
+            )
+        else:
+            return await self.event_loop.run_in_executor(
+                self._executor, self._tcp_delete, key
+            )
+
+    def _rdma_delete(self, key: bytes) -> Status:
+        assert self.rdma_conn is not None
+        self.rdma_conn.delete_keys([self._key(key)])
         return Status.ok()
+
+    def _tcp_delete(self, key: bytes) -> Status:
+        with self._tcp_conn() as conn:
+            assert conn is not None
+            conn.delete_keys([self._key(key)])
+            return Status.ok()

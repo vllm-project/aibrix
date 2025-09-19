@@ -18,7 +18,9 @@ package roleset
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"strings"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 
@@ -50,9 +52,28 @@ func (m *RollingManagerSequential) Next(ctx context.Context, roleSet *orchestrat
 		klog.Infof("[RollingManagerSequential.Next] waiting for roleset %s/%s to be scaled", roleSet.Namespace, roleSet.Name)
 		return nil
 	}
-	// 2. do the rollout process for each role
-	// TODO: in future, consider the rollout sequence based on the role's priority
-	for _, role := range roleSet.Spec.Roles {
+
+	// 2. Sort roles by upgrade order
+	klog.Infof("[RollingManagerSequential.Next] sorting roleset roles by UpgradeOrder")
+	sortedRoles := sortRolesByUpgradeOrder(roleSet.Spec.Roles)
+	var sequenceLines []string
+	for i, role := range sortedRoles {
+		var orderStr string
+		if role.UpgradeOrder != nil {
+			orderStr = fmt.Sprintf("%d", *role.UpgradeOrder)
+		} else {
+			orderStr = "nil"
+		}
+		sequenceLines = append(sequenceLines, fmt.Sprintf("[%d] %s (Order=%s)", i+1, role.Name, orderStr))
+	}
+
+	klog.Infof("[RollingManagerSequential.Next] Upgrade sequence for %s/%s:\n%s",
+		roleSet.Namespace,
+		roleSet.Name,
+		strings.Join(sequenceLines, "\n"))
+
+	// 3. do the rollout process for each role by order
+	for _, role := range sortedRoles {
 		klog.Infof("[RollingManagerSequential.Next] start to rollout roleset %s/%s role %s", roleSet.Namespace, roleSet.Name, role.Name)
 		err := GetRoleSyncer(m.cli, &role).Rollout(ctx, roleSet, &role)
 		if err != nil {

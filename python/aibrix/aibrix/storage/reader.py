@@ -16,7 +16,7 @@ import asyncio
 from io import StringIO
 from typing import Any, Callable, Optional, Union
 
-from .utils import get_storage_loop_thread
+from aibrix.storage.utils import get_storage_loop_thread
 
 
 class SizeExceededError(Exception):

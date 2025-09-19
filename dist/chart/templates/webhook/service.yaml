@@ -1,0 +1,19 @@
+{{- if .Values.webhook.enable }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: aibrix-webhook-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-controller-manager
+spec:
+  ports:
+    - name: webhook
+      port: 443
+      protocol: TCP
+      targetPort: 9443
+  selector:
+    {{- include "chart.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-controller-manager
+{{- end }}

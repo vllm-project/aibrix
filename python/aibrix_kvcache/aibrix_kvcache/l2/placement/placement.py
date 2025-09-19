@@ -312,7 +312,9 @@ class BasePlacement(Placement[K, V]):
             return Status(StatusCodes.ERROR, "Connection not established")
         return await member.conn.exists(key)
 
-    async def get(self, key: K, mr: MemoryRegion) -> Status:
+    async def get(
+        self, key: K, mr: MemoryRegion | Sequence[MemoryRegion]
+    ) -> Status:
         """Get a value.
         Args:
             key: The key of the kv tensor.
@@ -328,7 +330,9 @@ class BasePlacement(Placement[K, V]):
             return Status(StatusCodes.ERROR, "Connection not established")
         return await member.conn.get(key, mr)
 
-    async def put(self, key: K, mr: MemoryRegion) -> Status:
+    async def put(
+        self, key: K, mr: MemoryRegion | Sequence[MemoryRegion]
+    ) -> Status:
         """Put a key value pair.
         Args:
             key: The key of the kv cache.
@@ -371,9 +375,9 @@ class BasePlacement(Placement[K, V]):
     def get_batches(
         self,
         keys: Sequence[Any],
-        mrs: Sequence[MemoryRegion],
+        mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
         batch_size: int,
-    ) -> Sequence[Sequence[Tuple[K, MemoryRegion]]]:
+    ) -> Sequence[Sequence[Tuple[K, MemoryRegion | Sequence[MemoryRegion]]]]:
         """Get a list of key MR batches that is used for mput and mget
         operations.
 
@@ -387,7 +391,9 @@ class BasePlacement(Placement[K, V]):
         raise NotImplementedError
 
     async def mget(
-        self, keys: Sequence[K], mrs: Sequence[MemoryRegion]
+        self,
+        keys: Sequence[K],
+        mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
     ) -> Sequence[Status]:
         """MGet a list of values. This function is optional and only connectors
         have mput_mget feature enabled can implement this function.
@@ -400,7 +406,9 @@ class BasePlacement(Placement[K, V]):
         raise NotImplementedError
 
     async def mput(
-        self, keys: Sequence[K], mrs: Sequence[MemoryRegion]
+        self,
+        keys: Sequence[K],
+        mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
     ) -> Sequence[Status]:
         """MPut a list of key value pairs. This function is optional and only
         connectors have mput_mget feature enabled can implement this function.

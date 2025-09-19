@@ -20,3 +20,5 @@ package v1alpha1
 type RayClusterFleetExpansion interface{}
 
 type RayClusterReplicaSetExpansion interface{}
+
+type StormServiceExpansion interface{}

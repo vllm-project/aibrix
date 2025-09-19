@@ -14,7 +14,7 @@
 from abc import ABC, abstractmethod
 from typing import Callable, Optional
 
-from .batch_job import BatchJob, BatchJobSpec
+from aibrix.batch.job_entity.batch_job import BatchJob, BatchJobSpec
 
 
 class JobEntityManager(ABC):
