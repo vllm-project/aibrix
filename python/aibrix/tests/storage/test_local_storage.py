@@ -191,28 +191,60 @@ class TestLocalStorage:
 
     @pytest.mark.asyncio
     async def test_path_traversal_protection(self, local_storage: LocalStorage):
-        """Test that path traversal attempts are handled safely."""
-        # These should be treated as regular keys, not path traversal
+        """Test that path traversal attempts are properly sanitized and denied."""
+        # These dangerous keys should be sanitized to prevent path traversal
         dangerous_keys = [
             "../etc/passwd",
             "../../sensitive/file.txt",
             "normal/../../../etc/hosts",
+            "../../../root/.ssh/id_rsa",
+            "..\\..\\windows\\system32\\config\\sam",  # Windows-style traversal
+            "....//....//etc/shadow",  # Double-dot traversal
+            "/etc/passwd",  # Absolute path
+            "~/../../etc/passwd",  # Home directory traversal
         ]
 
-        for key in dangerous_keys:
+        expected_sanitized_keys = [
+            "etc/passwd",  # "../etc/passwd" -> "etc/passwd"
+            "sensitive/file.txt",  # "../../sensitive/file.txt" -> "sensitive/file.txt"
+            "normal/etc/hosts",  # "normal/../../../etc/hosts" -> "normal/etc/hosts"
+            "root/.ssh/id_rsa",  # "../../../root/.ssh/id_rsa" -> "root/.ssh/id_rsa"
+            "windows/system32/config/sam",  # Windows path sanitized
+            "etc/shadow",  # "....//....//etc/shadow" -> "etc/shadow"
+            "etc/passwd",  # "/etc/passwd" -> "etc/passwd"
+            "~/etc/passwd",  # "~/../../etc/passwd" -> "~/etc/passwd"
+        ]
+
+        for i, key in enumerate(dangerous_keys):
             content = f"content for {key}"
             await local_storage.put_object(key, content)
 
-            # Should be stored safely within base directory
+            # Verify the key was sanitized
             full_path = local_storage._get_full_path(key)
+
+            # Should be stored safely within base directory
             assert (
                 local_storage.base_path in full_path.parents
                 or full_path == local_storage.base_path
-            )
+            ), f"Path {full_path} should be within base directory {local_storage.base_path}"
 
-            # Should be retrievable
+            # Verify the path doesn't contain traversal patterns
+            relative_path = full_path.relative_to(local_storage.base_path)
+            assert ".." not in str(
+                relative_path
+            ), f"Sanitized path should not contain '..' but got: {relative_path}"
+
+            # Should be retrievable with the original key
             result = await local_storage.get_object(key)
             assert result.decode("utf-8") == content
+
+            # Verify the actual stored filename matches expected sanitized version
+            expected_sanitized = expected_sanitized_keys[i]
+            assert str(
+                relative_path
+            ).startswith(
+                expected_sanitized.replace("/", os.sep)
+            ), f"Expected sanitized key '{expected_sanitized}' but got '{relative_path}'"
 
             # Cleanup
             await local_storage.delete_object(key)

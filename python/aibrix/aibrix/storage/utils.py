@@ -119,7 +119,10 @@ def generate_filename(
     content_type: Optional[str] = None,
     metadata: Optional[dict[str, str]] = None,
 ) -> str:
-    """Get full filesystem path for a key."""
+    """Get full filesystem path for a key with path traversal protection."""
+    # Sanitize the key to prevent path traversal attacks
+    sanitized_key = _sanitize_key(key)
+
     ext = ""
 
     # 1. Try to get extension from metadata's filename
@@ -138,4 +141,40 @@ def generate_filename(
             ext = "".join(c for c in ext if c.isalnum())
 
     # 3. Use pathlib for safer and more idiomatic path joining
-    return key + ext
+    return sanitized_key + ext
+
+
+def _sanitize_key(key: str) -> str:
+    """Sanitize a key to prevent path traversal attacks."""
+    # Remove any path traversal patterns
+    # First, normalize the key by replacing backslashes and handling multiple slashes
+    normalized = key.replace("\\", "/")
+
+    # Remove multiple consecutive slashes
+    while "//" in normalized:
+        normalized = normalized.replace("//", "/")
+
+    # Remove leading slash to prevent absolute paths
+    normalized = normalized.lstrip("/")
+
+    # Split by path separators and filter out dangerous components
+    parts = []
+    for part in normalized.split("/"):
+        # Skip empty parts, current directory references, parent directory references,
+        # and any part that contains only dots (like "...." which could be traversal attempts)
+        if (
+            part
+            and part != "."
+            and not part.startswith("..")
+            and not all(c == "." for c in part)
+        ):
+            parts.append(part)
+
+    # Join with forward slashes (will be handled properly by pathlib)
+    sanitized = "/".join(parts)
+
+    # If the original key was empty or only contained dangerous patterns, use a safe default
+    if not sanitized:
+        sanitized = "safe_key"
+
+    return sanitized

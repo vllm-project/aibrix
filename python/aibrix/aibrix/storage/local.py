@@ -22,7 +22,7 @@ from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
 from aibrix.storage.base import BaseStorage, StorageConfig
 from aibrix.storage.reader import Reader
-from aibrix.storage.utils import ObjectMetadata, generate_filename
+from aibrix.storage.utils import ObjectMetadata, _sanitize_key, generate_filename
 
 LOCAL_STORAGE_PATH_VAR = "LOCAL_STORAGE_PATH"
 
@@ -56,7 +56,8 @@ class LocalStorage(BaseStorage):
 
     def _get_metadata_path(self, key: str) -> Path:
         """Get metadata file path for a key."""
-        return self.base_path / f"{key}.metadata"
+        sanitized_key = _sanitize_key(key)
+        return self.base_path / f"{sanitized_key}.metadata"
 
     def _infer_content_type(self, key: str) -> Optional[str]:
         """Infer content type from file extension."""
