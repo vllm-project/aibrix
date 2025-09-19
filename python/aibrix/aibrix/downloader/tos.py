@@ -161,8 +161,20 @@ class TOSDownloaderV1(BaseDownloader):
         except Exception as e:
             raise ValueError(f"TOS bucket path {bucket_path} not exist for {e}.")
 
-        _file_name = bucket_path.split("/")[-1]
-        local_file = local_path.joinpath(_file_name).absolute()
+        if self._is_directory():
+            prefix = self.bucket_path.rstrip("/") + "/"
+            # For directory downloads, calculate path relative to the directory.
+            relative_path = (
+                bucket_path[len(prefix) :]
+                if bucket_path.startswith(prefix)
+                else bucket_path
+            )
+        else:
+            # For single file downloads, just use the filename.
+            relative_path = bucket_path.split("/")[-1]
+        local_file = local_path.joinpath(relative_path).absolute()
+        # Ensure parent directories exist
+        local_file.parent.mkdir(parents=True, exist_ok=True)
         tmp_file = (
             local_file.with_suffix(local_file.suffix + ".part")
             if local_file.suffix
@@ -173,7 +185,7 @@ class TOSDownloaderV1(BaseDownloader):
         etag = meta_data.etag
         file_size = meta_data.content_length
         meta_data_file = meta_file(
-            local_path=local_path, file_name=_file_name, source=self._source.value
+            local_path=local_path, file_name=relative_path, source=self._source.value
         )
 
         if not need_to_download(local_file, meta_data_file, file_size, etag):
@@ -189,7 +201,7 @@ class TOSDownloaderV1(BaseDownloader):
         total_length = meta_data.content_length
 
         with tqdm(
-            desc=_file_name, total=total_length, unit="b", unit_scale=True
+            desc=relative_path, total=total_length, unit="b", unit_scale=True
         ) if self.enable_progress_bar else nullcontext() as pbar:
 
             def download_progress(
@@ -198,7 +210,7 @@ class TOSDownloaderV1(BaseDownloader):
                 pbar.update(rw_once_bytes)
 
             download_file = get_local_download_paths(
-                local_path, _file_name, self._source
+                local_path, relative_path, self._source
             )
             with download_file.download_lock():
                 self.client.download_file(
