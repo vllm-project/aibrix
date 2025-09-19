@@ -17,7 +17,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.20.1
 	github.com/onsi/gomega v1.35.1
 	github.com/open-policy-agent/cert-controller v0.12.0
-	github.com/openai/openai-go v1.1.0
+	github.com/openai/openai-go v1.12.0
 	github.com/pebbe/zmq4 v1.2.10
 	github.com/pkoukk/tiktoken-go v0.1.7
 	github.com/pkoukk/tiktoken-go-loader v0.0.1
