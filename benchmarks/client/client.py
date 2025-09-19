@@ -62,15 +62,14 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
         try:
             async for chunk in response_stream:
                 if chunk.choices:
-                    if chunk.choices[0].delta.content is not None:
+                    delta = chunk.choices[0].delta
+                    output_text = delta.content
+                    if output_text is None:
+                        # Use getattr for safety as reasoning_content is not a standard field
+                        output_text = getattr(delta, 'reasoning_content', None)
+                    if output_text is not None:
                         if not first_response_time:
                             first_response_time = asyncio.get_event_loop().time()
-                        output_text = chunk.choices[0].delta.content
-                        text_chunks.append(output_text)
-                    elif chunk.choices[0].delta.reasoning_content is not None:
-                        if not first_response_time:
-                            first_response_time = asyncio.get_event_loop().time()
-                        output_text = chunk.choices[0].delta.reasoning_content
                         text_chunks.append(output_text)
                 if hasattr(chunk, 'usage') and chunk.usage is not None:
                     # For OpenAI, we expect to get complete usage stats, not partial ones to accumulate
