@@ -39,6 +39,13 @@ spec:
               value: {{ .Values.metadata.service.redis.host }}
             - name: REDIS_PORT
               value: "{{ .Values.metadata.service.redis.port }}"
+            {{- if .Values.metadata.redis.enablePassword }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aibrix-redis
+                  key: redis-password
+            {{- end }}
             - name: AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS
               value: "{{ .Values.metadata.service.metricRefreshIntervalMs }}"
             - name: POD_NAME

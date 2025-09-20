@@ -166,6 +166,8 @@ metadata:
         requests:
           cpu: 100m
           memory: 100Mi
+    enablePassword: false
+    password: ""
 
 # [CRDs]: To enable the CRDs
 crd:
