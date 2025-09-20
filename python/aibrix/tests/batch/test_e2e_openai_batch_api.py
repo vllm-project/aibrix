@@ -237,7 +237,7 @@ async def test_openai_batch_api_e2e():
         print(
             "\n🎉 E2E test completed successfully! All OpenAI Batch API endpoints working correctly."
         )
-        app.state.job_controller.clear_job(batch_id)
+        await app.state.job_controller.clear_job(batch_id)
 
 
 @pytest.mark.asyncio

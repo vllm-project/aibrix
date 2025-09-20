@@ -21,7 +21,6 @@ from enum import Enum
 from typing import Optional
 
 from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE, EXPIRE_INTERVAL
-from aibrix.batch.job_entity import BatchJobState
 from aibrix.metadata.logger import init_logger
 
 # JobManager will be passed as parameter to avoid circular import
@@ -188,14 +187,13 @@ class JobScheduler:
 
             # Every time when popping a job from queue,
             # we check if this job is in active state and we try starting the job.
-            while (
-                job_id
-                and (
-                    job_id in self._inactive_jobs
-                    or not self._job_manager.start_execute_job(job_id)
-                )
-                and not self._jobs_queue.empty()
+            while job_id and (
+                job_id in self._inactive_jobs
+                or not await self._job_manager.start_execute_job(job_id)
             ):
+                if self._jobs_queue.empty():
+                    job_id = None
+                    break
                 job_id = self._jobs_queue.get()
         else:
             logger.error("Unsupported scheduling policy", policy=str(self._policy))  # type: ignore[call-arg]
@@ -270,7 +268,7 @@ class JobScheduler:
             job_id = self._CC_controller._running_job_pool[i]
             # Do not schedule new job in since we need to adjust capacity
             # based on new pool size representing how much underlying resource.
-            if self._job_manager.get_job_status(job_id) == BatchJobState.COMPLETED:
+            if self._job_manager.get_job_status(job_id).is_finished():
                 self._CC_controller._running_job_pool[i] = None
 
         # Step 2, after the jobs' status are updated,
