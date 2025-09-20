@@ -19,6 +19,7 @@ package stormservice
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	apps "k8s.io/api/apps/v1"
@@ -53,12 +54,51 @@ func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchest
 	if scaling, err := r.scaling(ctx, stormService, current, currentRevision.Name, updateRevision.Name); err != nil {
 		r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, ScalingEventType, "scaling error %s", err.Error())
 		reconcileErr = err
-	} else if !stormService.Spec.Paused && !scaling { // skip rollout when paused and in scaling
-		// 2. check the rollout progress
-		reconcileErr = r.rollout(ctx, stormService, currentRevision.Name, updateRevision.Name)
-		if reconcileErr != nil {
-			r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, RolloutEventType, "rollout error %s", reconcileErr.Error())
+	} else if !scaling { // skip rollout when in scaling
+		// 2. check if canary deployment is enabled
+		if r.isCanaryEnabled(stormService) && currentRevision.Name != updateRevision.Name {
+			// Handle canary deployment
+			if result, err := r.processCanaryUpdate(ctx, stormService, currentRevision.Name, updateRevision.Name); err != nil {
+				r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, "CanaryError", "canary deployment error: %s", err.Error())
+				reconcileErr = err
+			} else if result.Requeue || result.RequeueAfter > 0 {
+				// Canary is still in progress, but we still need to trigger rollout with canary limits
+				if !stormService.Spec.Paused {
+					rolloutErr := r.canaryRollout(ctx, stormService, currentRevision.Name, updateRevision.Name)
+					if rolloutErr != nil {
+						klog.Errorf("Canary rollout error for %s/%s: %v", stormService.Namespace, stormService.Name, rolloutErr)
+						r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, RolloutEventType, "canary rollout error %s", rolloutErr.Error())
+					}
+				}
+				return result.RequeueAfter, nil
+			}
+			// Canary completed, continue with normal rollout logic
 		}
+
+		if !stormService.Spec.Paused {
+			// 2. check the rollout progress (traditional rollout or post-canary cleanup)
+			reconcileErr = r.rollout(ctx, stormService, currentRevision.Name, updateRevision.Name)
+			if reconcileErr != nil {
+				r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, RolloutEventType, "rollout error %s", reconcileErr.Error())
+			}
+		}
+	} else if scaling && r.isCanaryEnabled(stormService) && stormService.Status.CanaryStatus != nil {
+		// Scaling occurred during canary deployment - need to recalculate weight distribution
+		klog.Infof("Scaling occurred during canary deployment for StormService %s/%s, recalculating weight distribution",
+			stormService.Namespace, stormService.Name)
+
+		// Reapply current weight with new replica count
+		currentWeight := r.getCurrentWeight(stormService)
+		if currentWeight > 0 {
+			err := r.applyCanaryWeight(ctx, stormService, currentWeight,
+				stormService.Status.CanaryStatus.StableRevision, stormService.Status.CanaryStatus.CanaryRevision)
+			if err != nil {
+				klog.Errorf("Failed to recalculate canary weight after scaling: %v", err)
+				r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, "CanaryScalingError",
+					"Failed to recalculate canary weight after scaling: %v", err)
+			}
+		}
+		return DefaultRequeueAfter, nil
 	}
 	// 3. update status
 	if ready, err := r.updateStatus(ctx, stormService, reconcileErr, currentRevision, updateRevision, collisionCount); err != nil {
@@ -251,6 +291,63 @@ func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, curr
 }
 
 // Rollout: execute the deployment update logic
+// canaryRollout handles rollout with canary deployment limits
+func (r *StormServiceReconciler) canaryRollout(ctx context.Context, stormService *orchestrationv1alpha1.StormService, currentRevision, updatedRevision string) error {
+	if stormService.Status.CanaryStatus == nil {
+		// No canary status, use normal rollout
+		return r.rollout(ctx, stormService, currentRevision, updatedRevision)
+	}
+
+	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
+	if err != nil {
+		return err
+	}
+
+	var canaryLimit int32
+	if r.isReplicaMode(stormService) {
+		// In replica mode, calculate achievable canary limit based on constraints
+		totalReplicas := int32(1)
+		if stormService.Spec.Replicas != nil {
+			totalReplicas = *stormService.Spec.Replicas
+		}
+		currentWeight := r.getCurrentWeight(stormService)
+		desiredCanaryReplicas := int32(math.Ceil(float64(totalReplicas) * float64(currentWeight) / 100.0))
+		canaryLimit = r.calculateAchievableCanaryReplicas(stormService, allRoleSets, updatedRevision, desiredCanaryReplicas)
+	} else {
+		// In pooled mode, we need to update specific roles based on canary counts
+		// For now, we'll use a simplified approach
+		totalReplicas := int32(1)
+		if stormService.Spec.Replicas != nil {
+			totalReplicas = *stormService.Spec.Replicas
+		}
+		currentWeight := r.getCurrentWeight(stormService)
+		canaryLimit = int32(math.Ceil(float64(totalReplicas) * float64(currentWeight) / 100.0))
+	}
+
+	klog.Infof("Canary rollout for StormService %s/%s: limiting updates to %d RoleSets",
+		stormService.Namespace, stormService.Name, canaryLimit)
+
+	// Check how many RoleSets are already on the updated revision
+	updated, _ := filterRoleSetByRevision(allRoleSets, updatedRevision)
+	if len(updated) >= int(canaryLimit) {
+		// Already have enough updated RoleSets for this canary step
+		return nil
+	}
+
+	// Use modified rollout logic that respects canary limits
+	switch stormService.Spec.UpdateStrategy.Type {
+	case "":
+		// By default use RollingUpdate strategy
+		fallthrough
+	case orchestrationv1alpha1.RollingUpdateStormServiceStrategyType:
+		return r.canaryRollingUpdate(allRoleSets, stormService, currentRevision, updatedRevision, canaryLimit)
+	case orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType:
+		return r.canaryInPlaceUpdate(allRoleSets, stormService, currentRevision, updatedRevision, canaryLimit)
+	default:
+		return fmt.Errorf("unexpected stormService strategy type: %s", stormService.Spec.UpdateStrategy.Type)
+	}
+}
+
 func (r *StormServiceReconciler) rollout(ctx context.Context, stormService *orchestrationv1alpha1.StormService, currentRevision, updatedRevision string) error {
 	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
 	if err != nil {
@@ -283,6 +380,70 @@ func (r *StormServiceReconciler) rollout(ctx context.Context, stormService *orch
 // 1. Creating new RoleSets with the updated revision
 // 2. Deleting old RoleSets with the previous revision
 // The entire process adheres to MaxSurge and MaxUnavailable constraints
+// canaryRollingUpdate: rolling update logic for canary deployment with limits
+func (r *StormServiceReconciler) canaryRollingUpdate(allRoleSets []*orchestrationv1alpha1.RoleSet, stormService *orchestrationv1alpha1.StormService, currentRevision, updatedRevision string, canaryLimit int32) error {
+	minAvailable := MinAvailable(stormService)
+	activeRoleSets, _ := filterTerminatingRoleSets(allRoleSets)
+	ready, _ := filterReadyRoleSets(activeRoleSets)
+	readyCount := len(ready)
+	maxSurge := MaxSurge(stormService)
+
+	klog.Infof("canary rolling update for stormservice %s/%s, updatedRevision %s, canaryLimit %d, currReady %d, minAvailable %d, maxSurge %d",
+		stormService.Namespace, stormService.Name, updatedRevision, canaryLimit, len(ready), minAvailable, maxSurge)
+
+	// 1. delete outdated roleset, follow the max unavailable rule
+	updated, outdated := filterRoleSetByRevision(activeRoleSets, updatedRevision)
+	sortRoleSetByRevision(outdated, updatedRevision)
+
+	// For canary, we only delete if we have excess updated RoleSets beyond the canary limit
+	var toDelete []*orchestrationv1alpha1.RoleSet
+	if len(updated) > int(canaryLimit) {
+		// Delete excess updated RoleSets
+		for i := int(canaryLimit); i < len(updated) && readyCount > int(minAvailable); i++ {
+			if utils.IsRoleSetReady(updated[i]) {
+				toDelete = append(toDelete, updated[i])
+				readyCount--
+			}
+		}
+	}
+
+	_, err := r.deleteRoleSet(toDelete)
+	if err != nil {
+		return err
+	}
+
+	// 2. create roleset up to canary limit, follow the max surge rule
+	var totalReplicas int
+	if stormService.Spec.Replicas != nil {
+		totalReplicas = int(*stormService.Spec.Replicas)
+	}
+
+	// Calculate how many more updated RoleSets we need to reach canary limit
+	neededUpdated := int(canaryLimit) - len(updated)
+	if neededUpdated <= 0 {
+		return nil // Already have enough updated RoleSets
+	}
+
+	// Respect max surge rule, but limit to canary target
+	surge := utils.MinInt(totalReplicas+int(maxSurge)-len(allRoleSets), neededUpdated)
+	if surge < 0 {
+		surge = 0
+	}
+
+	_, err = r.createRoleSet(stormService, surge, updatedRevision)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// canaryInPlaceUpdate: in-place update logic for canary deployment
+func (r *StormServiceReconciler) canaryInPlaceUpdate(allRoleSets []*orchestrationv1alpha1.RoleSet, stormService *orchestrationv1alpha1.StormService, currentRevision, updatedRevision string, canaryLimit int32) error {
+	// For now, fall back to regular in-place update logic
+	// TODO: Implement canary-specific in-place update logic
+	return r.inPlaceUpdate(allRoleSets, stormService, currentRevision, updatedRevision)
+}
+
 func (r *StormServiceReconciler) rollingUpdate(allRoleSets []*orchestrationv1alpha1.RoleSet, stormService *orchestrationv1alpha1.StormService, currentRevision, updatedRevision string) error {
 	minAvailable := MinAvailable(stormService)
 	activeRoleSets, _ := filterTerminatingRoleSets(allRoleSets)
