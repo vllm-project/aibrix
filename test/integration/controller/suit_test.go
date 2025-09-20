@@ -83,9 +83,9 @@ func TestAPIs(t *testing.T) {
 var _ = BeforeSuite(func() {
 	// Initialize klog flags and set verbosity to 0 (suppress all info logs)
 	klog.InitFlags(nil)
-	flag.Set("v", "0")
-	flag.Set("logtostderr", "false")
-	flag.Set("alsologtostderr", "false")
+	_ = flag.Set("v", "0")
+	_ = flag.Set("logtostderr", "false")
+	_ = flag.Set("alsologtostderr", "false")
 
 	// Configure controller-runtime logger to only show errors
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(false)))
