@@ -34,7 +34,14 @@ import (
 func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
 	var term int64 // Identify the trace window
 
-	routingCtx, _ := ctx.(*types.RoutingContext)
+	routingCtx, ok := ctx.(*types.RoutingContext)
+	if !ok || routingCtx == nil {
+		klog.ErrorS(nil, "CRITICAL: context is not RoutingContext or is nil", "requestID", requestID, "contextType", fmt.Sprintf("%T", ctx))
+		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorRouting, RawValue: []byte("true")}}},
+			"internal routing context error"), "", nil, false, term
+	}
 	requestPath := routingCtx.ReqPath
 	routingAlgorithm := routingCtx.Algorithm
 
@@ -66,6 +73,15 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			fmt.Sprintf("error on getting pods for model %s", model)), model, routingCtx, stream, term
 	}
 
+	// Check if scheduler is enabled - if so, defer routing to the scheduler
+	if s.scheduler != nil {
+		// With scheduler enabled, we don't perform routing here
+		// Just validate the model exists and return nil to let Process handle scheduling
+		klog.InfoS("request body processed, deferring to scheduler", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream)
+		return nil, model, routingCtx, stream, term
+	}
+
+	// Legacy routing logic (when scheduler is not enabled)
 	headers := []*configPb.HeaderValueOption{}
 	if routingAlgorithm == routing.RouterNotSet {
 		if err := s.validateHTTPRouteStatus(ctx, model); err != nil {
