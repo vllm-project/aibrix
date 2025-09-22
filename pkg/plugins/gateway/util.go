@@ -75,7 +75,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		err := json.Unmarshal(requestBody, &completionObj)
 		if err != nil {
 			klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_InternalServerError, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		model = completionObj.Model
@@ -88,21 +88,24 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 			return
 		}
 		model = embeddingObj.Model
-		if err := ValidateEmbeddingInput(embeddingObj); err != nil {
+		if err := validateEmbeddingInput(embeddingObj); err != nil {
 			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, err.Error(), HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
-		_, ok := jsonMap["stream"]
+		streamVal, ok := jsonMap["stream"]
 		if ok {
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", HeaderErrorRequestBodyProcessing, "true")
-			return
+			var streamBool bool
+			if err := json.Unmarshal(streamVal, &streamBool); err != nil || streamBool {
+				errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", HeaderErrorRequestBodyProcessing, "true")
+				return
+			}
 		}
 	default:
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
-	klog.V(6).InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "message", message, "stream", stream, "streamOptions", streamOptions)
+	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "message", message, "stream", stream, "streamOptions", streamOptions)
 	return
 }
 
@@ -244,25 +247,26 @@ func buildEnvoyProxyHeaders(headers []*configPb.HeaderValueOption, keyValues ...
 	return headers
 }
 
-// ValidateEmbeddingInput validates the input according to OpenAI embedding constraints
-func ValidateEmbeddingInput(embeddingObj openai.EmbeddingNewParams) error {
+// validateEmbeddingInput validates the input according to OpenAI embedding constraints
+func validateEmbeddingInput(embeddingObj openai.EmbeddingNewParams) error {
 	inputParam := embeddingObj.Input
 	switch input := embeddingNewParamsInputUnionAsAny(&inputParam).(type) {
 	case *string:
 		return validateStringInputs([]string{*input})
 	case *[]string:
 		return validateStringInputs(*input)
-	case *[]int:
-		return validateTokenInputs([][]int{*input})
-	case *[][]int:
+	case *[]int64:
+		return validateTokenInputs([][]int64{*input})
+	case *[][]int64:
 		return validateTokenInputs(*input)
 	default:
 		if input != nil {
-			return fmt.Errorf("input must be a string, []string, []int, or [][]int, got %T", input)
+			return fmt.Errorf("input must be a string, []string, []int64, or [][]int64, got %T", input)
 		}
 		return nil
 	}
 }
+
 func embeddingNewParamsInputUnionAsAny(u *openai.EmbeddingNewParamsInputUnion) any {
 	if !param.IsOmitted(u.OfString) {
 		return &u.OfString.Value
@@ -318,7 +322,7 @@ func validateStringInputs(inputs []string) error {
 }
 
 // validateTokenInputs validates token inputs (both single token array and multiple token arrays)
-func validateTokenInputs(tokenArrays [][]int) error {
+func validateTokenInputs(tokenArrays [][]int64) error {
 	if len(tokenArrays) == 0 {
 		return errors.New("token arrays cannot be empty")
 	}
