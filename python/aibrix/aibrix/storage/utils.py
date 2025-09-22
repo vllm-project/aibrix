@@ -125,7 +125,7 @@ def generate_filename(
 
     # Check if the sanitized key already has an extension
     key_has_extension = "." in os.path.basename(sanitized_key)
-    
+
     ext = ""
 
     # 1. Try to get extension from metadata's filename
@@ -139,7 +139,7 @@ def generate_filename(
             ext = mapped_ext
         elif "/" in content_type:
             # Safely get the subtype from a MIME type like 'image/jpeg'
-            ext = content_type.split('/', 1)[1]
+            ext = content_type.split("/", 1)[1]
             # Sanitize the ext by keep digits alphabet
             ext = "." + "".join(c for c in ext if c.isalnum())
 

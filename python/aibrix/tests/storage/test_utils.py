@@ -19,9 +19,7 @@ Tests the utility functions used by storage implementations, particularly
 focusing on filename generation and path sanitization for security.
 """
 
-import pytest
-
-from aibrix.storage.utils import generate_filename, _sanitize_key
+from aibrix.storage.utils import _sanitize_key, generate_filename
 
 
 class TestGenerateFilename:
@@ -41,10 +39,10 @@ class TestGenerateFilename:
         """Test key with content types that have specific mappings."""
         result = generate_filename("image", content_type="image/jpeg")
         assert result == "image.jpg"
-        
+
         result = generate_filename("archive", content_type="application/x-tar")
         assert result == "archive.tar"
-        
+
         result = generate_filename("compressed", content_type="application/gzip")
         assert result == "compressed.gz"
 
@@ -56,7 +54,9 @@ class TestGenerateFilename:
     def test_key_with_metadata_filename(self):
         """Test key with filename in metadata takes precedence."""
         metadata = {"filename": "original.txt"}
-        result = generate_filename("key", content_type="application/json", metadata=metadata)
+        result = generate_filename(
+            "key", content_type="application/json", metadata=metadata
+        )
         assert result == "key.txt"  # Extension from metadata, not content_type
 
     def test_key_with_complex_content_type(self):
@@ -76,7 +76,7 @@ class TestGenerateFilename:
             "/etc/passwd",
             "~/../../etc/passwd",
         ]
-        
+
         expected_results = [
             "etc/passwd",
             "sensitive/file.txt",
@@ -87,10 +87,12 @@ class TestGenerateFilename:
             "etc/passwd",
             "~/etc/passwd",
         ]
-        
+
         for dangerous_key, expected in zip(dangerous_keys, expected_results):
             result = generate_filename(dangerous_key)
-            assert result == expected, f"Expected {expected} but got {result} for key {dangerous_key}"
+            assert (
+                result == expected
+            ), f"Expected {expected} but got {result} for key {dangerous_key}"
 
     def test_empty_or_dangerous_only_keys(self):
         """Test keys that are empty or contain only dangerous patterns."""
@@ -103,10 +105,12 @@ class TestGenerateFilename:
             "//",
             "\\\\",
         ]
-        
+
         for key in dangerous_only_keys:
             result = generate_filename(key)
-            assert result == "safe_key", f"Expected 'safe_key' but got '{result}' for key '{key}'"
+            assert (
+                result == "safe_key"
+            ), f"Expected 'safe_key' but got '{result}' for key '{key}'"
 
     def test_key_with_existing_extension_no_content_type_override(self):
         """Test that keys with existing extensions don't get additional extensions."""
@@ -133,7 +137,7 @@ class TestSanitizeKey:
             "file123",
             "CamelCaseFile",
         ]
-        
+
         for key in normal_keys:
             result = _sanitize_key(key)
             assert result == key, f"Normal key {key} should pass through unchanged"
@@ -148,10 +152,12 @@ class TestSanitizeKey:
             ("path/../../file", "path/file"),
             ("normal/../../../etc/hosts", "normal/etc/hosts"),
         ]
-        
+
         for input_key, expected in test_cases:
             result = _sanitize_key(input_key)
-            assert result == expected, f"Expected {expected} but got {result} for {input_key}"
+            assert (
+                result == expected
+            ), f"Expected {expected} but got {result} for {input_key}"
 
     def test_windows_path_traversal(self):
         """Test removal of Windows-style path traversal."""
@@ -161,10 +167,12 @@ class TestSanitizeKey:
             ("path\\..\\file", "path/file"),
             ("..\\..\\windows\\system32\\config\\sam", "windows/system32/config/sam"),
         ]
-        
+
         for input_key, expected in test_cases:
             result = _sanitize_key(input_key)
-            assert result == expected, f"Expected {expected} but got {result} for {input_key}"
+            assert (
+                result == expected
+            ), f"Expected {expected} but got {result} for {input_key}"
 
     def test_absolute_path_removal(self):
         """Test removal of absolute path indicators."""
@@ -174,10 +182,12 @@ class TestSanitizeKey:
             ("//double/slash", "double/slash"),
             ("///triple/slash", "triple/slash"),
         ]
-        
+
         for input_key, expected in test_cases:
             result = _sanitize_key(input_key)
-            assert result == expected, f"Expected {expected} but got {result} for {input_key}"
+            assert (
+                result == expected
+            ), f"Expected {expected} but got {result} for {input_key}"
 
     def test_dot_patterns(self):
         """Test handling of various dot patterns."""
@@ -187,10 +197,12 @@ class TestSanitizeKey:
             ("....//file", "file"),  # Multiple dots should be filtered
             ("..../..../etc/shadow", "etc/shadow"),
         ]
-        
+
         for input_key, expected in test_cases:
             result = _sanitize_key(input_key)
-            assert result == expected, f"Expected {expected} but got {result} for {input_key}"
+            assert (
+                result == expected
+            ), f"Expected {expected} but got {result} for {input_key}"
 
     def test_empty_and_dangerous_only_inputs(self):
         """Test inputs that are empty or contain only dangerous patterns."""
@@ -206,10 +218,12 @@ class TestSanitizeKey:
             "../../",
             "./",
         ]
-        
+
         for input_key in dangerous_only_inputs:
             result = _sanitize_key(input_key)
-            assert result == "safe_key", f"Expected 'safe_key' but got '{result}' for dangerous input '{input_key}'"
+            assert (
+                result == "safe_key"
+            ), f"Expected 'safe_key' but got '{result}' for dangerous input '{input_key}'"
 
     def test_mixed_separators(self):
         """Test handling of mixed path separators."""
@@ -218,10 +232,12 @@ class TestSanitizeKey:
             ("mixed\\..//path", "mixed/path"),
             ("complex\\../path/./file", "complex/path/file"),
         ]
-        
+
         for input_key, expected in test_cases:
             result = _sanitize_key(input_key)
-            assert result == expected, f"Expected {expected} but got {result} for {input_key}"
+            assert (
+                result == expected
+            ), f"Expected {expected} but got {result} for {input_key}"
 
     def test_special_characters_preserved(self):
         """Test that safe special characters are preserved."""
@@ -236,19 +252,26 @@ class TestSanitizeKey:
             ("file{1}", "file{1}"),
             ("file~backup", "file~backup"),
         ]
-        
+
         for input_key, expected in test_cases:
             result = _sanitize_key(input_key)
-            assert result == expected, f"Expected {expected} but got {result} for {input_key}"
+            assert (
+                result == expected
+            ), f"Expected {expected} but got {result} for {input_key}"
 
     def test_tilde_handling(self):
         """Test handling of tilde characters in paths."""
         test_cases = [
             ("~/file", "~/file"),  # Tilde at start is preserved
             ("path/~/file", "path/~/file"),  # Tilde in middle is preserved
-            ("~/../../etc/passwd", "~/etc/passwd"),  # Tilde preserved, traversal removed
+            (
+                "~/../../etc/passwd",
+                "~/etc/passwd",
+            ),  # Tilde preserved, traversal removed
         ]
-        
+
         for input_key, expected in test_cases:
             result = _sanitize_key(input_key)
-            assert result == expected, f"Expected {expected} but got {result} for {input_key}"
+            assert (
+                result == expected
+            ), f"Expected {expected} but got {result} for {input_key}"
