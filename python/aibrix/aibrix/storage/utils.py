@@ -123,6 +123,9 @@ def generate_filename(
     # Sanitize the key to prevent path traversal attacks
     sanitized_key = _sanitize_key(key)
 
+    # Check if the sanitized key already has an extension
+    key_has_extension = "." in os.path.basename(sanitized_key)
+    
     ext = ""
 
     # 1. Try to get extension from metadata's filename
@@ -130,15 +133,15 @@ def generate_filename(
         # os.path.splitext correctly includes the dot (e.g., '.txt')
         ext = os.path.splitext(filename)[1]
 
-    # 2. If no extension yet, try to derive from content_type
-    if ext != "" and content_type:
+    # 2. If no extension yet and key doesn't have extension, try to derive from content_type
+    if ext == "" and not key_has_extension and content_type:
         if mapped_ext := extension_map.get(content_type):
-            ext = f".{mapped_ext}"
+            ext = mapped_ext
         elif "/" in content_type:
             # Safely get the subtype from a MIME type like 'image/jpeg'
-            ext = f".{content_type.split('/', 1)[1]}"
+            ext = content_type.split('/', 1)[1]
             # Sanitize the ext by keep digits alphabet
-            ext = "".join(c for c in ext if c.isalnum())
+            ext = "." + "".join(c for c in ext if c.isalnum())
 
     # 3. Use pathlib for safer and more idiomatic path joining
     return sanitized_key + ext
