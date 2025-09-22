@@ -17,22 +17,99 @@ limitations under the License.
 package algorithm
 
 import (
+	"context"
+	"fmt"
 	"math"
 
-	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/common"
+	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
 	"k8s.io/klog/v2"
 )
 
-type KpaScalingAlgorithm struct{}
+// KPAAlgorithm implements Knative-style Pod Autoscaling with panic and stable windows
+type KPAAlgorithm struct {
+	config AlgorithmConfig
+}
 
-var _ ScalingAlgorithm = (*KpaScalingAlgorithm)(nil)
+// NewKPAAlgorithm creates a new KPA algorithm instance
+func NewKPAAlgorithm(config AlgorithmConfig) *KPAAlgorithm {
+	return &KPAAlgorithm{
+		config: config,
+	}
+}
+
+var _ ScalingAlgorithm = (*KPAAlgorithm)(nil)
 
 const (
 	MinScaleRate     = 1.0
 	DefaultTolerance = 0.0
 )
 
-func (a *KpaScalingAlgorithm) ComputeTargetReplicas(currentPodCount float64, context common.ScalingContext) int32 {
+// ComputeRecommendation calculates desired replica count for KPA strategy
+func (a *KPAAlgorithm) ComputeRecommendation(ctx context.Context, request ScalingRequest) (*ScalingRecommendation, error) {
+	metrics := request.AggregatedMetrics
+
+	// KPA logic: Choose between stable and panic metrics
+	var currentValue float64
+	var mode string
+
+	// Detect panic mode based on metrics
+	if a.shouldEnterPanicMode(metrics) {
+		currentValue = metrics.PanicValue
+		mode = "panic"
+		request.ScalingContext.SetInPanicMode(true)
+	} else {
+		currentValue = metrics.StableValue
+		mode = "stable"
+		request.ScalingContext.SetInPanicMode(false)
+	}
+
+	// Update context with current metrics
+	request.ScalingContext.SetStableValue(metrics.StableValue)
+	request.ScalingContext.SetPanicValue(metrics.PanicValue)
+
+	// Compute target replicas using KPA algorithm
+	desiredReplicas := a.computeTargetReplicas(float64(request.CurrentReplicas), request.ScalingContext)
+
+	// Apply constraints
+	desiredReplicas = applyConstraints(desiredReplicas, request.Constraints)
+
+	return &ScalingRecommendation{
+		DesiredReplicas: desiredReplicas,
+		Confidence:      metrics.Confidence,
+		Reason:          fmt.Sprintf("%s mode scaling", mode),
+		Algorithm:       "kpa",
+		ScaleValid:      true,
+		Metadata: map[string]interface{}{
+			"mode":          mode,
+			"stable_value":  metrics.StableValue,
+			"panic_value":   metrics.PanicValue,
+			"current_value": currentValue,
+		},
+	}, nil
+}
+
+// shouldEnterPanicMode determines if we should switch to panic mode
+func (a *KPAAlgorithm) shouldEnterPanicMode(metrics *types.AggregatedMetrics) bool {
+	if metrics.StableValue <= 0 {
+		return true
+	}
+	return metrics.PanicValue/metrics.StableValue > a.config.PanicThreshold
+}
+
+// GetAlgorithmType returns the algorithm type
+func (a *KPAAlgorithm) GetAlgorithmType() string {
+	return "kpa"
+}
+
+// UpdateConfiguration updates the algorithm configuration
+func (a *KPAAlgorithm) UpdateConfiguration(config AlgorithmConfig) error {
+	a.config = config
+	return nil
+}
+
+// computeTargetReplicas is the core KPA scaling logic (moved from ComputeTargetReplicas)
+func (a *KPAAlgorithm) computeTargetReplicas(currentPodCount float64, context scalingctx.ScalingContext) int32 {
 	// Get all the necessary values from context
 	observedStableValue := context.GetStableValue()
 	observedPanicValue := context.GetPanicValue()

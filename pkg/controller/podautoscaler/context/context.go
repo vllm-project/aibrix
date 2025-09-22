@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package common
+package context
 
 import (
 	"strconv"
@@ -30,7 +30,8 @@ const (
 	maxScaleDownRateLabel  = AutoscalingLabelPrefix + "max-scale-down-rate"
 )
 
-// ScalingContext defines the generalized common that holds all necessary data for scaling calculations.
+// ScalingContext defines the generalized context that holds all necessary data for scaling calculations.
+// This interface is maintained for backward compatibility, but algorithm.ScalingContext is preferred for new code.
 type ScalingContext interface {
 	GetTargetValue() float64
 	GetUpFluctuationTolerance() float64
@@ -38,6 +39,7 @@ type ScalingContext interface {
 	GetMaxScaleUpRate() float64
 	GetMaxScaleDownRate() float64
 	GetCurrentUsePerPod() float64
+	SetCurrentUsePerPod(float64)
 	UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error
 	GetMinReplicas() int32
 	GetMaxReplicas() int32
@@ -138,13 +140,11 @@ func (b *BaseScalingContext) SetMaxReplicas(maxReplicas int32) {
 }
 
 func (b *BaseScalingContext) GetUpFluctuationTolerance() float64 {
-	//TODO implement me
-	panic("implement me")
+	return 0.1 // Default 10% tolerance
 }
 
 func (b *BaseScalingContext) GetDownFluctuationTolerance() float64 {
-	//TODO implement me
-	panic("implement me")
+	return 0.1 // Default 10% tolerance
 }
 
 func (b *BaseScalingContext) GetMaxScaleUpRate() float64 {
