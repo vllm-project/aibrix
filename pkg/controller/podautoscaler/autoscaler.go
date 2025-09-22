@@ -19,6 +19,7 @@ package podautoscaler
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"time"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
@@ -33,23 +34,24 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// AutoScaler orchestrates the complete scaling pipeline
+// AutoScaler provides scaling decision capabilities based on metrics and algorithms.
+// This interface focuses purely on scaling logic without actual resource manipulation.
 type AutoScaler interface {
-	// Scale executes the complete scaling pipeline
-	Scale(ctx context.Context, request types.ScaleRequest) (*types.ScaleResult, error)
-
-	// ComputeDesiredReplicas performs metric-based scaling calculation only
-	// This method focuses on business logic without K8s resource management
+	// ComputeDesiredReplicas performs metric-based scaling calculation.
+	// This is the primary method for scaling decisions and returns only the recommendation.
+	// It does NOT perform any actual scaling operations.
 	ComputeDesiredReplicas(ctx context.Context, request ReplicaComputeRequest) (*ReplicaComputeResult, error)
 
-	// UpdateConfiguration updates scaler configuration
+	// UpdateConfiguration updates the autoscaler's strategy and parameters.
+	// This method optimizes performance by only recreating components when strategy changes.
 	UpdateConfiguration(pa autoscalingv1alpha1.PodAutoscaler) error
 
-	// GetStrategy returns the scaling strategy
+	// GetStrategy returns the currently configured scaling strategy.
 	GetStrategy() autoscalingv1alpha1.ScalingStrategyType
 }
 
-// ReplicaComputeRequest represents a request for replica calculation
+// ReplicaComputeRequest represents a request for replica calculation.
+// This type is used both for the public interface and internal pipeline processing.
 type ReplicaComputeRequest struct {
 	PodAutoscaler   autoscalingv1alpha1.PodAutoscaler
 	CurrentReplicas int32
@@ -73,11 +75,13 @@ type DefaultAutoScaler struct {
 	configExtractor *config.ConfigExtractor
 
 	// Current configuration (updated per request)
-	strategy     autoscalingv1alpha1.ScalingStrategyType
-	aggregator   aggregation.MetricAggregator
-	algorithm    algorithm.ScalingAlgorithm
-	metricKey    metrics.NamespaceNameMetric
-	metricSource autoscalingv1alpha1.MetricSource
+	strategy               autoscalingv1alpha1.ScalingStrategyType
+	lastConfiguredStrategy autoscalingv1alpha1.ScalingStrategyType
+	aggregator             aggregation.MetricAggregator
+	algorithm              algorithm.ScalingAlgorithm
+	metricKey              metrics.NamespaceNameMetric
+	metricSource           autoscalingv1alpha1.MetricSource
+	lastConfigHash         uint64 // Track configuration changes
 }
 
 // NewDefaultAutoScaler creates a new default autoscaler
@@ -131,22 +135,122 @@ func (a *DefaultAutoScaler) configureForStrategy(strategy autoscalingv1alpha1.Sc
 	a.strategy = strategy
 }
 
-func (a *DefaultAutoScaler) Scale(ctx context.Context, request types.ScaleRequest) (*types.ScaleResult, error) {
-	logger := klog.FromContext(ctx)
-	startTime := time.Now()
-
-	// Log pipeline start
-	logger.V(2).Info("Starting scaling pipeline",
-		"strategy", a.strategy,
-		"target", request.PodAutoscaler.Spec.ScaleTargetRef.Name,
-		"currentReplicas", request.CurrentReplicas)
-
+func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request ReplicaComputeRequest) (*ReplicaComputeResult, error) {
 	// Ensure configuration is up to date
 	if err := a.UpdateConfiguration(request.PodAutoscaler); err != nil {
-		logger.Error(err, "Failed to update configuration")
-		return &types.ScaleResult{ScaleValid: false}, fmt.Errorf("failed to update configuration for %s/%s: %w",
-			request.PodAutoscaler.Namespace, request.PodAutoscaler.Name, err)
+		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("failed to update configuration: %w", err)
 	}
+
+	// Execute the common scaling pipeline
+	recommendation, err := a.executeScalingPipeline(ctx, request)
+	if err != nil {
+		return &ReplicaComputeResult{Valid: false}, err
+	}
+
+	return &ReplicaComputeResult{
+		DesiredReplicas: recommendation.DesiredReplicas,
+		Algorithm:       recommendation.Algorithm,
+		Reason:          recommendation.Reason,
+		Valid:           recommendation.ScaleValid,
+	}, nil
+}
+
+func (a *DefaultAutoScaler) UpdateConfiguration(pa autoscalingv1alpha1.PodAutoscaler) error {
+	// Extract metric key and source
+	metricKey, metricSource, err := metrics.NewNamespaceNameMetric(&pa)
+	if err != nil {
+		return fmt.Errorf("failed to create metric key: %w", err)
+	}
+
+	// Calculate configuration hash for change detection
+	configHash := a.calculateConfigHash(pa)
+
+	// Check if we need to reconfigure components
+	strategyChanged := a.lastConfiguredStrategy != pa.Spec.ScalingStrategy
+	configChanged := a.lastConfigHash != configHash
+
+	a.metricKey = metricKey
+	a.metricSource = metricSource
+
+	// Only recreate components if strategy changed
+	if strategyChanged {
+		klog.V(3).InfoS("Strategy changed, reconfiguring components",
+			"oldStrategy", a.lastConfiguredStrategy,
+			"newStrategy", pa.Spec.ScalingStrategy)
+		a.configureForStrategy(pa.Spec.ScalingStrategy, metricSource)
+		a.lastConfiguredStrategy = pa.Spec.ScalingStrategy
+	}
+
+	// Update component configurations if config changed or components were recreated
+	if configChanged || strategyChanged {
+		if err := a.updateComponentConfigurations(pa); err != nil {
+			return fmt.Errorf("failed to update component configurations: %w", err)
+		}
+		a.lastConfigHash = configHash
+	}
+
+	return nil
+}
+
+// calculateConfigHash creates a hash of the configuration to detect changes
+func (a *DefaultAutoScaler) calculateConfigHash(pa autoscalingv1alpha1.PodAutoscaler) uint64 {
+	// Use a more robust hashing mechanism to reduce collision probability.
+	h := fnv.New64a()
+
+	// Strategy
+	_, _ = fmt.Fprint(h, string(pa.Spec.ScalingStrategy))
+
+	// Min/Max replicas
+	if pa.Spec.MinReplicas != nil {
+		_, _ = fmt.Fprintf(h, "%d", *pa.Spec.MinReplicas)
+	}
+	_, _ = fmt.Fprintf(h, "%d", pa.Spec.MaxReplicas)
+
+	// Metric sources
+	for _, source := range pa.Spec.MetricsSources {
+		_, _ = fmt.Fprint(h, string(source.MetricSourceType))
+		_, _ = fmt.Fprint(h, source.TargetMetric)
+		_, _ = fmt.Fprint(h, source.TargetValue)
+		_, _ = fmt.Fprint(h, source.Path)
+	}
+
+	return h.Sum64()
+}
+
+// updateComponentConfigurations updates existing component configurations
+func (a *DefaultAutoScaler) updateComponentConfigurations(pa autoscalingv1alpha1.PodAutoscaler) error {
+	// Update aggregator configuration if it exists
+	if a.aggregator != nil {
+		aggregationConfig, err := a.configExtractor.ExtractAggregationConfig(pa)
+		if err != nil {
+			return fmt.Errorf("failed to extract aggregation configuration: %w", err)
+		}
+		if err := a.aggregator.UpdateConfiguration(aggregationConfig); err != nil {
+			return fmt.Errorf("failed to update aggregator configuration: %w", err)
+		}
+	}
+
+	// Update algorithm configuration if it exists
+	if a.algorithm != nil {
+		algorithmConfig, err := a.configExtractor.ExtractAlgorithmConfig(pa)
+		if err != nil {
+			return fmt.Errorf("failed to extract algorithm configuration: %w", err)
+		}
+		if err := a.algorithm.UpdateConfiguration(algorithmConfig); err != nil {
+			return fmt.Errorf("failed to update algorithm configuration: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (a *DefaultAutoScaler) GetStrategy() autoscalingv1alpha1.ScalingStrategyType {
+	return a.strategy
+}
+
+// executeScalingPipeline contains the common scaling logic for replica computation
+func (a *DefaultAutoScaler) executeScalingPipeline(ctx context.Context, request ReplicaComputeRequest) (*algorithm.ScalingRecommendation, error) {
+	logger := klog.FromContext(ctx)
 
 	// Step 1: Collect metrics
 	collectionSpec := types.CollectionSpec{
@@ -165,8 +269,7 @@ func (a *DefaultAutoScaler) Scale(ctx context.Context, request types.ScaleReques
 	snapshot, err := metrics.CollectMetrics(ctx, collectionSpec, a.factory)
 	if err != nil {
 		logger.Error(err, "Failed to collect metrics")
-		return &types.ScaleResult{ScaleValid: false}, fmt.Errorf("failed to collect metrics for %s/%s: %w",
-			request.PodAutoscaler.Namespace, request.PodAutoscaler.Name, err)
+		return nil, fmt.Errorf("failed to collect metrics: %w", err)
 	}
 
 	logger.V(3).Info("Metrics collected",
@@ -177,10 +280,9 @@ func (a *DefaultAutoScaler) Scale(ctx context.Context, request types.ScaleReques
 	logger.V(3).Info("Processing metrics snapshot")
 	if err := a.aggregator.ProcessSnapshot(snapshot); err != nil {
 		logger.Error(err, "Failed to process snapshot")
-		return &types.ScaleResult{ScaleValid: false}, fmt.Errorf("failed to process metrics snapshot: %w", err)
+		return nil, fmt.Errorf("failed to process metrics snapshot: %w", err)
 	}
 
-	// Convert to types.MetricKey
 	metricKey := types.MetricKey{
 		Namespace:  a.metricKey.Namespace,
 		Name:       a.metricKey.Name,
@@ -189,11 +291,10 @@ func (a *DefaultAutoScaler) Scale(ctx context.Context, request types.ScaleReques
 	aggregatedMetrics, err := a.aggregator.GetAggregatedMetrics(metricKey, request.Timestamp)
 	if err != nil {
 		logger.Error(err, "Failed to get aggregated metrics")
-		return &types.ScaleResult{ScaleValid: false}, fmt.Errorf("failed to get aggregated metrics for %s: %w",
-			metricKey, err)
+		return nil, fmt.Errorf("failed to get aggregated metrics for %s: %w", metricKey, err)
 	}
 
-	// Enhance confidence with pod count awareness
+	// Step 3: Enhance confidence with pod count awareness
 	podCount := len(request.Pods)
 	if podCount > 0 {
 		// Simple pod-aware confidence enhancement
@@ -208,7 +309,7 @@ func (a *DefaultAutoScaler) Scale(ctx context.Context, request types.ScaleReques
 		"confidence", aggregatedMetrics.Confidence,
 		"podCount", len(request.Pods))
 
-	// Step 3: Make scaling decision
+	// Step 4: Make scaling decision
 	scalingRequest := algorithm.ScalingRequest{
 		Target: types.ScaleTarget{
 			Namespace:  request.PodAutoscaler.Namespace,
@@ -230,176 +331,10 @@ func (a *DefaultAutoScaler) Scale(ctx context.Context, request types.ScaleReques
 	recommendation, err := a.algorithm.ComputeRecommendation(ctx, scalingRequest)
 	if err != nil {
 		logger.Error(err, "Failed to compute recommendation")
-		return &types.ScaleResult{ScaleValid: false}, fmt.Errorf("failed to compute scaling recommendation: %w", err)
+		return nil, fmt.Errorf("failed to compute scaling recommendation: %w", err)
 	}
 
-	// Step 4: Execute scaling (embedded - no separate executor)
-	result, err := a.executeScale(ctx, recommendation, scalingRequest.Target, request.CurrentReplicas)
-	if err != nil {
-		logger.Error(err, "Failed to execute scaling")
-		return &types.ScaleResult{ScaleValid: false}, fmt.Errorf("failed to execute scaling: %w", err)
-	}
-
-	// Log pipeline completion
-	duration := time.Since(startTime)
-	logger.V(2).Info("Scaling pipeline completed",
-		"strategy", a.strategy,
-		"desired", result.DesiredPodCount,
-		"valid", result.ScaleValid,
-		"reason", result.Reason,
-		"duration", duration)
-
-	return result, nil
-}
-
-func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request ReplicaComputeRequest) (*ReplicaComputeResult, error) {
-	logger := klog.FromContext(ctx)
-
-	// Ensure configuration is up to date
-	if err := a.UpdateConfiguration(request.PodAutoscaler); err != nil {
-		logger.Error(err, "Failed to update configuration")
-		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("failed to update configuration: %w", err)
-	}
-
-	// Step 1: Collect metrics
-	collectionSpec := types.CollectionSpec{
-		Namespace:    a.metricKey.Namespace,
-		TargetName:   a.metricKey.Name,
-		MetricName:   a.metricKey.MetricName,
-		MetricSource: a.metricSource,
-		Pods:         request.Pods,
-		Timestamp:    request.Timestamp,
-	}
-
-	logger.V(3).Info("Collecting metrics for replica computation",
-		"source", a.metricSource.MetricSourceType,
-		"pods", len(request.Pods))
-
-	snapshot, err := metrics.CollectMetrics(ctx, collectionSpec, a.factory)
-	if err != nil {
-		logger.Error(err, "Failed to collect metrics")
-		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("failed to collect metrics: %w", err)
-	}
-
-	// Step 2: Process and aggregate metrics
-	if err := a.aggregator.ProcessSnapshot(snapshot); err != nil {
-		logger.Error(err, "Failed to process snapshot")
-		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("failed to process metrics snapshot: %w", err)
-	}
-
-	metricKey := types.MetricKey{
-		Namespace:  a.metricKey.Namespace,
-		Name:       a.metricKey.Name,
-		MetricName: a.metricKey.MetricName,
-	}
-	aggregatedMetrics, err := a.aggregator.GetAggregatedMetrics(metricKey, request.Timestamp)
-	if err != nil {
-		logger.Error(err, "Failed to get aggregated metrics")
-		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("failed to get aggregated metrics: %w", err)
-	}
-
-	// Enhance confidence with pod count awareness
-	podCount := len(request.Pods)
-	if podCount > 0 {
-		podConfidenceFactor := minFloat64(1.0, float64(podCount)/5.0)
-		aggregatedMetrics.Confidence = minFloat64(1.0, aggregatedMetrics.Confidence*0.7+podConfidenceFactor*0.3)
-	}
-
-	// Step 3: Make scaling decision
-	scalingRequest := algorithm.ScalingRequest{
-		Target: types.ScaleTarget{
-			Namespace:  request.PodAutoscaler.Namespace,
-			Name:       request.PodAutoscaler.Spec.ScaleTargetRef.Name,
-			Kind:       request.PodAutoscaler.Spec.ScaleTargetRef.Kind,
-			APIVersion: request.PodAutoscaler.Spec.ScaleTargetRef.APIVersion,
-			MetricKey:  metricKey,
-		},
-		CurrentReplicas:   request.CurrentReplicas,
-		AggregatedMetrics: aggregatedMetrics,
-		ScalingContext:    a.createScalingContext(request.PodAutoscaler),
-		Constraints:       a.createConstraints(request.PodAutoscaler),
-		Timestamp:         request.Timestamp,
-	}
-
-	recommendation, err := a.algorithm.ComputeRecommendation(ctx, scalingRequest)
-	if err != nil {
-		logger.Error(err, "Failed to compute recommendation")
-		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("failed to compute scaling recommendation: %w", err)
-	}
-
-	logger.V(3).Info("Computed scaling recommendation",
-		"currentReplicas", request.CurrentReplicas,
-		"desiredReplicas", recommendation.DesiredReplicas,
-		"algorithm", recommendation.Algorithm)
-
-	return &ReplicaComputeResult{
-		DesiredReplicas: recommendation.DesiredReplicas,
-		Algorithm:       recommendation.Algorithm,
-		Reason:          recommendation.Reason,
-		Valid:           recommendation.ScaleValid,
-	}, nil
-}
-
-func (a *DefaultAutoScaler) UpdateConfiguration(pa autoscalingv1alpha1.PodAutoscaler) error {
-	// Extract metric key and source
-	metricKey, metricSource, err := metrics.NewNamespaceNameMetric(&pa)
-	if err != nil {
-		return fmt.Errorf("failed to create metric key: %w", err)
-	}
-
-	a.metricKey = metricKey
-	a.metricSource = metricSource
-
-	// Configure strategy-specific components (this replaces on-demand creation)
-	a.configureForStrategy(pa.Spec.ScalingStrategy, metricSource)
-
-	// Update component configurations using ConfigExtractor if components exist
-	if a.aggregator != nil {
-		aggregationConfig, err := a.configExtractor.ExtractAggregationConfig(pa)
-		if err != nil {
-			return fmt.Errorf("failed to extract aggregation configuration: %w", err)
-		}
-		if err := a.aggregator.UpdateConfiguration(aggregationConfig); err != nil {
-			return fmt.Errorf("failed to update aggregator configuration: %w", err)
-		}
-	}
-
-	if a.algorithm != nil {
-		algorithmConfig, err := a.configExtractor.ExtractAlgorithmConfig(pa)
-		if err != nil {
-			return fmt.Errorf("failed to extract algorithm configuration: %w", err)
-		}
-		if err := a.algorithm.UpdateConfiguration(algorithmConfig); err != nil {
-			return fmt.Errorf("failed to update algorithm configuration: %w", err)
-		}
-	}
-
-	return nil
-}
-
-func (a *DefaultAutoScaler) GetStrategy() autoscalingv1alpha1.ScalingStrategyType {
-	return a.strategy
-}
-
-// executeScale performs the actual scaling operation
-func (a *DefaultAutoScaler) executeScale(ctx context.Context, recommendation *algorithm.ScalingRecommendation, target types.ScaleTarget, currentReplicas int32) (*types.ScaleResult, error) {
-	logger := klog.FromContext(ctx)
-
-	// For now, we just return the recommendation without actually scaling the resource
-	// In a full implementation, this would update the target resource's replica count
-	logger.V(3).Info("Scaling recommendation ready",
-		"target", target.Name,
-		"currentReplicas", currentReplicas,
-		"desiredReplicas", recommendation.DesiredReplicas,
-		"algorithm", recommendation.Algorithm)
-
-	return &types.ScaleResult{
-		DesiredPodCount: recommendation.DesiredReplicas,
-		ScaleValid:      recommendation.ScaleValid,
-		Reason:          recommendation.Reason,
-		Algorithm:       recommendation.Algorithm,
-		Metadata:        recommendation.Metadata,
-	}, nil
+	return recommendation, nil
 }
 
 // Helper methods
