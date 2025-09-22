@@ -73,6 +73,13 @@ spec:
               value: {{ .Values.gatewayPlugin.dependencies.redis.host }}
             - name: REDIS_PORT
               value: "{{ .Values.gatewayPlugin.dependencies.redis.port }}"
+            {{- if .Values.metadata.redis.enablePassword }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aibrix-redis
+                  key: redis-password
+            {{- end }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -85,7 +92,7 @@ spec:
             - name: {{ $key }}
               value: "{{ $val }}"
 {{- end }}
-          resources: {{ toYaml .Values.gatewayPlugin.resources | nindent 12 }}
+          resources: {{ toYaml .Values.gatewayPlugin.container.resources | nindent 12 }}
           livenessProbe:
             {{- toYaml .Values.gatewayPlugin.container.probes.liveness | nindent 12 }}
           readinessProbe:

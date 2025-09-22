@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"path/filepath"
 	"runtime"
@@ -26,6 +27,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/klog/v2"
 
 	"k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	"k8s.io/client-go/rest"
@@ -79,7 +81,14 @@ func TestAPIs(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
+	// Initialize klog flags and set verbosity to 0 (suppress all info logs)
+	klog.InitFlags(nil)
+	_ = flag.Set("v", "0")
+	_ = flag.Set("logtostderr", "false")
+	_ = flag.Set("alsologtostderr", "false")
+
+	// Configure controller-runtime logger to only show errors
+	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(false)))
 
 	ctx, cancel = context.WithCancel(context.TODO())
 

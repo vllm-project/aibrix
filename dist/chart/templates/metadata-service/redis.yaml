@@ -26,7 +26,15 @@ spec:
           image: {{ .Values.metadata.redis.container.image.repository }}:{{ .Values.metadata.redis.container.image.tag }}
           ports:
             - containerPort: 6379
-          resources: {{ toYaml .Values.metadata.redis.resources | nindent 12 }}
+          resources: {{ toYaml .Values.metadata.redis.container.resources | nindent 12 }}
+          {{- if .Values.metadata.redis.enablePassword }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aibrix-redis
+                  key: redis-password
+          {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -43,3 +51,16 @@ spec:
   selector:
     {{- include "chart.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-metadata-redis
+
+---
+
+{{- if .Values.metadata.redis.enablePassword }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aibrix-redis
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+data:
+  redis-password: {{ .Values.metadata.redis.password | b64enc }}
+{{- end }}

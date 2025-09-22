@@ -229,6 +229,15 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 								modelHeaderMatch,
 							},
 						},
+						{
+							Path: &gatewayv1.HTTPPathMatch{
+								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+								Value: ptr.To("/v1/embeddings"),
+							},
+							Headers: []gatewayv1.HTTPHeaderMatch{
+								modelHeaderMatch,
+							},
+						},
 					},
 					BackendRefs: []gatewayv1.HTTPBackendRef{
 						{
@@ -276,7 +285,7 @@ func (m *ModelRouter) createReferenceGrant(namespace string) {
 	}
 
 	if err := m.Client.Get(context.Background(), client.ObjectKeyFromObject(&referenceGrant), &referenceGrant); err == nil {
-		klog.InfoS("reference grant already exists", "referencegrant", referenceGrant.Name)
+		klog.V(4).InfoS("reference grant already exists", "referencegrant", referenceGrant.Name)
 		return
 	}
 
