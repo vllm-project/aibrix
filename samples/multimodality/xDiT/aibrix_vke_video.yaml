@@ -53,14 +53,13 @@ spec:
               name: model-hostpath 
       containers: 
         - name: xdit-dev 
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:v0.20 #aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5  python3 entrypoints/launch_video.py --model_path /models/CogVideoX1.5-5B ./examples/run_cogvideo.sh 
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:v0.20 
           imagePullPolicy: Always 
           command: ["sh", "-c"]
           args:
             - |
               python3 entrypoints/launch_video.py --model_path /models/CogVideoX-2b --ulysses_parallel_degree 2 --ring_degree 2 --world_size 4 --host 0.0.0.0 --port 6000
-          env: [] ## python3 entrypoints/launch_video.py --model_path /models/CogVideoX-2b --ulysses_parallel_degree 2 --ring_degree 2 --world_size 4 --save_disk_path /tmp
-          # python entrypoints/client.py video "a cat playing with a ball" --frames 25 --fps 12
+          env: [] 
           volumeMounts: 
             - mountPath: /models 
               name: model-hostpath 
@@ -85,9 +84,7 @@ spec:
         - name: dshm
           emptyDir:
             medium: Memory
-            sizeLimit: 16Gi   # <-- increase to something big enough (e.g. 16–64Gi)
-      # nodeSelector:
-      #   kubernetes.io/hostname: 10.0.1.220                             
+            sizeLimit: 16Gi               
 --- 
 
 
