@@ -89,9 +89,16 @@ const (
 type MetricSourceType string
 
 const (
-	// POD need to scan all k8s pods to fetch the data
+	// POD fetches metrics from individual pod endpoints (http[s]://pod_ip:port/path)
 	POD MetricSourceType = "pod"
-	// DOMAIN only need to access specified domain
+	// RESOURCE fetches metrics from Kubernetes resource metrics API (cpu, memory)
+	RESOURCE MetricSourceType = "resource"
+	// CUSTOM fetches metrics from Kubernetes custom metrics API
+	CUSTOM MetricSourceType = "custom"
+	// EXTERNAL fetches metrics from external services like gpu-optimizer (e.g., gpu-optimizer.aibrix-system.svc.cluster.local:8080)
+	EXTERNAL MetricSourceType = "external"
+	// DOMAIN is deprecated, use EXTERNAL instead
+	// +deprecated
 	DOMAIN MetricSourceType = "domain"
 )
 
@@ -104,17 +111,17 @@ const (
 
 // MetricSource defines an endpoint and path from which metrics are collected.
 type MetricSource struct {
-	// access an endpoint or scan a list of k8s pod
-	// +kubebuilder:validation:Enum={pod,domain}
+	// Specifies how to fetch metrics: from individual pods, Kubernetes APIs, or external services
+	// +kubebuilder:validation:Enum={pod,resource,custom,external,domain}
 	MetricSourceType MetricSourceType `json:"metricSourceType"`
-	// http or https
+	// Protocol for metric collection
 	// +kubebuilder:validation:Enum={http,https}
 	ProtocolType ProtocolType `json:"protocolType"`
-	// e.g. service1.example.com. meaningless for MetricSourceType.POD
+	// External service endpoint (e.g., gpu-optimizer.aibrix-system.svc.cluster.local). Only used for EXTERNAL type.
 	Endpoint string `json:"endpoint,omitempty"`
-	// e.g. /api/metrics/cpu
+	// Path to metrics endpoint (e.g., /api/metrics/cpu)
 	Path string `json:"path"`
-	// e.g. 8080. meaningless for MetricSourceType.DOMAIN
+	// Port for pod-level metrics. Only used for POD type.
 	Port string `json:"port,omitempty"`
 	// TargetMetric identifies the specific metric to monitor (e.g., kv_cache_utilization).
 	TargetMetric string `json:"targetMetric"`

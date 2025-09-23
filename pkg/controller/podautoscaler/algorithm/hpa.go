@@ -16,14 +16,45 @@ limitations under the License.
 
 package algorithm
 
-import "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/common"
+import (
+	"context"
+)
 
-// HpaScalingAlgorithm can be used by any scaler without customized algorithms
-type HpaScalingAlgorithm struct{}
+// HPAAlgorithm is a placeholder for HPA strategy (actual HPA is handled by K8s HPA resources)
+type HPAAlgorithm struct {
+	config AlgorithmConfig
+}
 
-var _ ScalingAlgorithm = (*HpaScalingAlgorithm)(nil)
+// NewHPAAlgorithm creates a new HPA algorithm instance
+func NewHPAAlgorithm(config AlgorithmConfig) *HPAAlgorithm {
+	return &HPAAlgorithm{
+		config: config,
+	}
+}
 
-func (a *HpaScalingAlgorithm) ComputeTargetReplicas(currentPodCount float64, context common.ScalingContext) int32 {
-	// TODO: implement me!
-	return int32(currentPodCount)
+var _ ScalingAlgorithm = (*HPAAlgorithm)(nil)
+
+// ComputeRecommendation for HPA just returns current replicas as HPA is managed by K8s
+func (a *HPAAlgorithm) ComputeRecommendation(ctx context.Context, request ScalingRequest) (*ScalingRecommendation, error) {
+	// HPA scaling is handled by Kubernetes HPA controller
+	// This is just a placeholder that maintains current state
+	return &ScalingRecommendation{
+		DesiredReplicas: request.CurrentReplicas,
+		Confidence:      1.0,
+		Reason:          "HPA managed by Kubernetes",
+		Algorithm:       "hpa",
+		ScaleValid:      true,
+		Metadata:        map[string]interface{}{},
+	}, nil
+}
+
+// GetAlgorithmType returns the algorithm type
+func (a *HPAAlgorithm) GetAlgorithmType() string {
+	return "hpa"
+}
+
+// UpdateConfiguration updates the algorithm configuration
+func (a *HPAAlgorithm) UpdateConfiguration(config AlgorithmConfig) error {
+	a.config = config
+	return nil
 }
