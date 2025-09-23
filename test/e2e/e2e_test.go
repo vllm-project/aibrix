@@ -27,6 +27,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const (
+	simModeName = "vllm-llama3-8b-instruct"
+)
+
 func TestBaseModelInference(t *testing.T) {
 	initializeClient(context.Background(), t)
 
@@ -35,12 +39,12 @@ func TestBaseModelInference(t *testing.T) {
 		Prompt: openai.CompletionNewParamsPromptUnion{
 			OfString: openai.String("Say this is a test"),
 		},
-		Model: modelName,
+		Model: simModeName,
 	})
 	if err != nil {
 		t.Fatalf("completions failed: %v", err)
 	}
-	assert.Equal(t, modelName, completion.Model)
+	assert.Equal(t, simModeName, completion.Model)
 	assert.NotEmpty(t, completion.Choices, "completion has no choices returned")
 	assert.NotEmpty(t, completion.Choices[0].Text, "chat completion has no message returned")
 	assert.Greater(t, completion.Usage.CompletionTokens, int64(0), "completion tokens are more than zero")
@@ -49,12 +53,12 @@ func TestBaseModelInference(t *testing.T) {
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("Say this is a test"),
 		},
-		Model: modelName,
+		Model: simModeName,
 	})
 	if err != nil {
 		t.Fatalf("chat completions failed: %v", err)
 	}
-	assert.Equal(t, modelName, chatCompletion.Model)
+	assert.Equal(t, simModeName, chatCompletion.Model)
 	assert.NotEmpty(t, chatCompletion.Choices, "chat completion has no choices returned")
 	assert.NotNil(t, chatCompletion.Choices[0].Message.Content, "chat completion has no message returned")
 }
@@ -82,7 +86,7 @@ func TestBaseModelInferenceFailures(t *testing.T) {
 		{
 			name:            "Invalid Routing Strategy",
 			apiKey:          apiKey,
-			modelName:       modelName,
+			modelName:       simModeName,
 			routingStrategy: "invalid-routing-strategy",
 			expectErrCode:   400,
 		},
