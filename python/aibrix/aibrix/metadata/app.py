@@ -25,6 +25,7 @@ from aibrix.metadata.api.v1 import batch, files
 from aibrix.metadata.core.httpx_client import HTTPXClientWrapper
 from aibrix.metadata.logger import init_logger
 from aibrix.metadata.setting import settings
+from aibrix.storage import create_storage
 
 logger = init_logger(__name__)
 router = APIRouter()
@@ -69,17 +70,27 @@ def build_app(args: argparse.Namespace):
         )
 
     app.state.httpx_client_wrapper = HTTPXClientWrapper()
+
     app.include_router(router)
+    # Initialize batches API
     if not args.disable_batch_api:
         job_entity_manager: Optional[JobEntityManager] = None
-        app.state.job_controller = BatchDriver(job_entity_manager)
+        app.state.job_controller = BatchDriver(
+            job_entity_manager,
+            storage_type=settings.STORAGE_TYPE,
+            metastore_type=settings.METASTORE_TYPE,
+        )
         app.include_router(
             batch.router, prefix=f"{settings.API_V1_STR}/batches", tags=["batches"]
         )  # mount batch api at /v1/batches
-        if args.e2e_test:
-            app.include_router(
-                files.router, prefix=f"{settings.API_V1_STR}/files", tags=["files"]
-            )  # mount files api at /v1/files
+        args.disable_file_api = False
+
+    # Initialize fiels API
+    if not args.disable_file_api:
+        app.state.storage = create_storage(settings.STORAGE_TYPE)
+        app.include_router(
+            files.router, prefix=f"{settings.API_V1_STR}/files", tags=["files"]
+        )  # mount files api at /v1/files
 
     return app
 
@@ -105,6 +116,12 @@ def main():
         action="store_true",
         default=False,
         help="Disable batch api",
+    )
+    parser.add_argument(
+        "--disable-file-api",
+        action="store_true",
+        default=False,
+        help="Disable file api",
     )
     parser.add_argument(
         "--e2e-test",
