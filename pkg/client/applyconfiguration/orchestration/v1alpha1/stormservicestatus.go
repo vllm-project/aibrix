@@ -24,18 +24,19 @@ import (
 // StormServiceStatusApplyConfiguration represents a declarative configuration of the StormServiceStatus type for use
 // with apply.
 type StormServiceStatusApplyConfiguration struct {
-	ObservedGeneration    *int64               `json:"observedGeneration,omitempty"`
-	Replicas              *int32               `json:"replicas,omitempty"`
-	ReadyReplicas         *int32               `json:"readyReplicas,omitempty"`
-	NotReadyReplicas      *int32               `json:"notReadyReplicas,omitempty"`
-	CurrentReplicas       *int32               `json:"currentReplicas,omitempty"`
-	UpdatedReplicas       *int32               `json:"updatedReplicas,omitempty"`
-	CurrentRevision       *string              `json:"currentRevision,omitempty"`
-	UpdateRevision        *string              `json:"updateRevision,omitempty"`
-	UpdatedReadyReplicas  *int32               `json:"updatedReadyReplicas,omitempty"`
-	Conditions            *v1alpha1.Conditions `json:"conditions,omitempty"`
-	CollisionCount        *int32               `json:"collisionCount,omitempty"`
-	ScalingTargetSelector *string              `json:"scalingTargetSelector,omitempty"`
+	ObservedGeneration    *int64                         `json:"observedGeneration,omitempty"`
+	Replicas              *int32                         `json:"replicas,omitempty"`
+	ReadyReplicas         *int32                         `json:"readyReplicas,omitempty"`
+	NotReadyReplicas      *int32                         `json:"notReadyReplicas,omitempty"`
+	CurrentReplicas       *int32                         `json:"currentReplicas,omitempty"`
+	UpdatedReplicas       *int32                         `json:"updatedReplicas,omitempty"`
+	CurrentRevision       *string                        `json:"currentRevision,omitempty"`
+	UpdateRevision        *string                        `json:"updateRevision,omitempty"`
+	UpdatedReadyReplicas  *int32                         `json:"updatedReadyReplicas,omitempty"`
+	Conditions            *v1alpha1.Conditions           `json:"conditions,omitempty"`
+	CollisionCount        *int32                         `json:"collisionCount,omitempty"`
+	ScalingTargetSelector *string                        `json:"scalingTargetSelector,omitempty"`
+	RoleStatuses          []RoleStatusApplyConfiguration `json:"roleStatuses,omitempty"`
 }
 
 // StormServiceStatusApplyConfiguration constructs a declarative configuration of the StormServiceStatus type for use with
@@ -137,5 +138,18 @@ func (b *StormServiceStatusApplyConfiguration) WithCollisionCount(value int32) *
 // If called multiple times, the ScalingTargetSelector field is set to the value of the last call.
 func (b *StormServiceStatusApplyConfiguration) WithScalingTargetSelector(value string) *StormServiceStatusApplyConfiguration {
 	b.ScalingTargetSelector = &value
+	return b
+}
+
+// WithRoleStatuses adds the given value to the RoleStatuses field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the RoleStatuses field.
+func (b *StormServiceStatusApplyConfiguration) WithRoleStatuses(values ...*RoleStatusApplyConfiguration) *StormServiceStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithRoleStatuses")
+		}
+		b.RoleStatuses = append(b.RoleStatuses, *values[i])
+	}
 	return b
 }
