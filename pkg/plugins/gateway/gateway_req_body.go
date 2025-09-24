@@ -93,13 +93,6 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 	term = s.cache.AddRequestCount(routingCtx, requestID, model)
 
-	headers = append(headers, &configPb.HeaderValueOption{
-		Header: &configPb.HeaderValue{
-			Key:      ":path",
-			RawValue: []byte("/generatevideo"),
-		},
-	})
-
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestBody{
 			RequestBody: &extProcPb.BodyResponse{

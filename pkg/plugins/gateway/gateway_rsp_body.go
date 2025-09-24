@@ -172,12 +172,20 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 }
 
 func isLanguageRequest(requestPath string) bool {
-	if strings.HasPrefix(requestPath, "/v1/image/generations") || strings.HasPrefix(requestPath, "/v1/video/generations") {
-		return false
+	nonLanguagePrefixes := []string{
+		"/v1/image/generations",
+		"/v1/video/generations",
+	}
+	for _, prefix := range nonLanguagePrefixes {
+		if strings.HasPrefix(requestPath, prefix) {
+			return false
+		}
 	}
 	return true
 }
 
+// processLanguageResponse processes output response for /chatcompletions, /completions and /embedding endpoints.
+// nolint:nakedret
 func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_ResponseBody) (processingRes *extProcPb.ProcessingResponse, complete bool, promptTokens, completionTokens, totalTokens int64) {
 	var res *OpenAIResponse
 	// Use request ID as a key to store per-request buffer
