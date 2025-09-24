@@ -117,7 +117,7 @@ spec:
       value:
         name: original_route
         match:
-          prefix: "/v1"
+          prefix: "/"
           headers:
           - name: "routing-strategy"
             string_match:

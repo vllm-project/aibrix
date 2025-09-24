@@ -100,6 +100,14 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 				return
 			}
 		}
+	case "/v1/image/generations", "/v1/video/generations":
+		imageGenerationObj := openai.ImageGenerateParams{}
+		if err := json.Unmarshal(requestBody, &imageGenerationObj); err != nil {
+			klog.ErrorS(err, "error to unmarshal image generations object", "requestID", requestID, "requestBody", string(requestBody))
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		model = imageGenerationObj.Model
 	default:
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", HeaderErrorRequestBodyProcessing, "true")
 		return
