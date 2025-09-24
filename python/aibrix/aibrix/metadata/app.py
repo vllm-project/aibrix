@@ -27,8 +27,6 @@ from aibrix.metadata.logger import init_logger
 from aibrix.metadata.setting import settings
 from aibrix.storage import create_storage
 
-from .cache import JobCache
-
 logger = init_logger(__name__)
 router = APIRouter()
 
@@ -77,8 +75,6 @@ def build_app(args: argparse.Namespace):
     # Initialize batches API
     if not args.disable_batch_api:
         job_entity_manager: Optional[JobEntityManager] = None
-        if args.enable_k8s_job:
-            job_entity_manager = JobCache()
         app.state.job_controller = BatchDriver(
             job_entity_manager,
             storage_type=settings.STORAGE_TYPE,
@@ -126,12 +122,6 @@ def main():
         action="store_true",
         default=False,
         help="Disable file api",
-    )
-    parser.add_argument(
-        "--enable-k8s-job",
-        action="store_true",
-        default=False,
-        help="Enable native kubernetes jobs as the job executor",
     )
     parser.add_argument(
         "--e2e-test",

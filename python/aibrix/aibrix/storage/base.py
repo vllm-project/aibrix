@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from io import BytesIO, StringIO
 from typing import Any, AsyncIterator, BinaryIO, Optional, TextIO, Union
 
-from .reader import Reader
-from .utils import ObjectMetadata
+from aibrix.storage.reader import Reader
+from aibrix.storage.utils import ObjectMetadata
 
 
 @dataclass
@@ -160,8 +162,16 @@ class BaseStorage(ABC):
         """
         pass
 
+    def is_native_multipart_supported(self) -> bool:
+        """Check if native multipart upload is supported.
+
+        Returns:
+            True if native multipart upload is supported, False otherwise
+        """
+        return False
+
     @abstractmethod
-    async def create_multipart_upload(
+    async def _native_create_multipart_upload(
         self,
         key: str,
         content_type: Optional[str] = None,
@@ -180,7 +190,7 @@ class BaseStorage(ABC):
         pass
 
     @abstractmethod
-    async def upload_part(
+    async def _native_upload_part(
         self,
         key: str,
         upload_id: str,
@@ -201,7 +211,7 @@ class BaseStorage(ABC):
         pass
 
     @abstractmethod
-    async def complete_multipart_upload(
+    async def _native_complete_multipart_upload(
         self,
         key: str,
         upload_id: str,
@@ -217,7 +227,7 @@ class BaseStorage(ABC):
         pass
 
     @abstractmethod
-    async def abort_multipart_upload(
+    async def _native_abort_multipart_upload(
         self,
         key: str,
         upload_id: str,
@@ -268,15 +278,13 @@ class BaseStorage(ABC):
             # Priority 1: Upload by lines
             if byline > 0:
                 small_parts = True
-                upload_id = await self._default_create_multipart_upload(
-                    key, content_type, metadata
+                upload_id = await self.create_multipart_upload(
+                    key, content_type, metadata, small_parts=True
                 )
                 await self._upload_by_lines(
                     reader, key, upload_id, byline, upload_parts
                 )
-                await self._default_complete_multipart_upload(
-                    key, upload_id, upload_parts
-                )
+                await self.complete_multipart_upload(key, upload_id, upload_parts)
                 return
 
             # Priority 3: Upload by parts (auto-determine chunk size)
@@ -295,46 +303,51 @@ class BaseStorage(ABC):
                     key, content_type, metadata
                 )
                 await self._upload_by_size(reader, key, upload_id, bysize, upload_parts)
-                await self.complete_multipart_upload(key, upload_id, upload_parts)
-            else:
-                small_parts = True
-                upload_id = await self._default_create_multipart_upload(
-                    key, content_type, metadata
-                )
-                await self._upload_by_size(reader, key, upload_id, bysize, upload_parts)
-                await self._default_complete_multipart_upload(
+                await self._native_complete_multipart_upload(
                     key, upload_id, upload_parts
                 )
+            else:
+                small_parts = True
+                upload_id = await self.create_multipart_upload(
+                    key, content_type, metadata, small_parts=True
+                )
+                await self._upload_by_size(reader, key, upload_id, bysize, upload_parts)
+                await self.complete_multipart_upload(key, upload_id, upload_parts)
 
         except Exception:
             if small_parts:
                 # Abort small parts upload on error
-                await self._default_abort_multipart_upload(key, upload_id)
+                await self.abort_multipart_upload(key, upload_id)
             else:
                 # Abort upload on error
-                await self.abort_multipart_upload(key, upload_id)
+                await self._native_abort_multipart_upload(key, upload_id)
             raise
 
-    async def _default_create_multipart_upload(
+    async def create_multipart_upload(
         self,
         key: str,
         content_type: Optional[str] = None,
         metadata: Optional[dict[str, str]] = None,
+        small_parts: bool = False,
     ) -> str:
         """Default implementation for multipart upload creation.
 
-        Creates a unique upload ID and stores upload metadata as a special object.
+        If small_parts is specified, creates a unique upload ID and stores upload metadata as a special object.
         Suitable for S3/TOS backends that don't have native multipart support for small files.
 
         Args:
             key: Object key/path
             content_type: MIME type of the content
             metadata: Additional metadata to store with object
+            small_part: Use implementation for small parts
 
         Returns:
             Upload ID for the multipart upload session
         """
-        import uuid
+        if not small_parts and self.is_native_multipart_supported():
+            return await self._native_create_multipart_upload(
+                key, content_type, metadata
+            )
 
         upload_id = str(uuid.uuid4())
 
@@ -349,16 +362,15 @@ class BaseStorage(ABC):
             "created_at": datetime.now().isoformat(),
         }
 
-        metadata_key = f".multipart/{upload_id}/metadata"
         await self.put_object(
-            metadata_key,
+            self._multipart_upload_key(upload_id),
             str(upload_metadata).encode("utf-8"),
             content_type="application/json",
         )
 
         return upload_id
 
-    async def _default_upload_part(
+    async def upload_part(
         self,
         key: str,
         upload_id: str,
@@ -379,22 +391,19 @@ class BaseStorage(ABC):
         Returns:
             ETag for the uploaded part
         """
-        import hashlib
+        # Use native_upload_part if metadata object doesn't exist
+        if self.is_native_multipart_supported() and not await self.object_exists(
+            self._multipart_upload_key(upload_id)
+        ):
+            return await self._native_upload_part(key, upload_id, part_number, data)
 
-        # Convert data to bytes for consistent handling
-        if isinstance(data, str):
-            part_data = data.encode("utf-8")
-        elif isinstance(data, bytes):
-            part_data = data
-        else:
-            # File-like object or Reader
-            reader = self._wrap_data(data)
-            part_data = reader.read_all()
+        part_data = self._wrap_data(data).read_all()
 
         # Store part as individual object
-        part_key = f".multipart/{upload_id}/part_{part_number:05d}"
         await self.put_object(
-            part_key, part_data, content_type="application/octet-stream"
+            self._multipart_upload_key(upload_id, f"part_{part_number:05d}"),
+            part_data,
+            content_type="application/octet-stream",
         )
 
         # Calculate ETag (MD5 hash)
@@ -402,7 +411,7 @@ class BaseStorage(ABC):
 
         return etag
 
-    async def _default_complete_multipart_upload(
+    async def complete_multipart_upload(
         self,
         key: str,
         upload_id: str,
@@ -418,15 +427,18 @@ class BaseStorage(ABC):
             upload_id: Upload ID from create_multipart_upload
             parts: List of parts with 'part_number' and 'etag' keys
         """
-        metadata_key = f".multipart/{upload_id}/metadata"
-
         try:
             # Get upload metadata
-            metadata_data = await self.get_object(metadata_key)
+            metadata_data = await self.get_object(self._multipart_upload_key(upload_id))
             upload_metadata = eval(
                 metadata_data.decode("utf-8")
             )  # Simple parsing for dict
         except Exception:
+            # Use _native_complete_multipart_upload if metadata object doesn't exist
+            if self.is_native_multipart_supported():
+                return await self._native_complete_multipart_upload(
+                    key, upload_id, parts
+                )
             raise ValueError(f"Upload ID {upload_id} not found or corrupted")
 
         content_type = upload_metadata.get("content_type")
@@ -440,14 +452,14 @@ class BaseStorage(ABC):
 
         for part in sorted_parts:
             part_number = part["part_number"]
-            part_key = f".multipart/{upload_id}/part_{part_number:05d}"
-
             try:
-                part_data = await self.get_object(part_key)
+                part_data = await self.get_object(
+                    self._multipart_upload_key(upload_id, f"part_{part_number:05d}")
+                )
                 aggregated_data.write(part_data)
             except Exception:
                 # Clean up and raise error
-                await self._default_abort_multipart_upload(key, upload_id)
+                await self.abort_multipart_upload(key, upload_id)
                 raise ValueError(
                     f"Failed to retrieve part {part_number} for upload {upload_id}"
                 )
@@ -457,9 +469,9 @@ class BaseStorage(ABC):
         await self.put_object(key, aggregated_data, content_type, metadata)
 
         # Clean up multipart upload objects
-        await self._default_abort_multipart_upload(key, upload_id)
+        await self.abort_multipart_upload(key, upload_id)
 
-    async def _default_abort_multipart_upload(
+    async def abort_multipart_upload(
         self,
         key: str,
         upload_id: str,
@@ -474,26 +486,30 @@ class BaseStorage(ABC):
             upload_id: Upload ID from create_multipart_upload
         """
         # List and delete all objects related to this upload
-        prefix = f".multipart/{upload_id}/"
-
+        prefix = self._multipart_upload_key(upload_id, "")
+        no_multipart_data = True
         try:
             objects_to_delete, _ = await self.list_objects(prefix)
 
             # Delete all related objects
             for obj_key in objects_to_delete:
                 try:
+                    no_multipart_data = False
                     await self.delete_object(obj_key)
                 except Exception:
                     # Continue deletion even if some objects fail
                     pass
-
         except Exception:
             # If listing fails, try to delete known objects
-            metadata_key = f".multipart/{upload_id}/metadata"
             try:
-                await self.delete_object(metadata_key)
+                await self.delete_object(self._multipart_upload_key(upload_id))
+                no_multipart_data = False
             except Exception:
                 pass
+
+        # Last attempt, nothing we can do for small parts
+        if no_multipart_data and self.is_native_multipart_supported():
+            await self._native_abort_multipart_upload(key, upload_id)
 
     async def _upload_by_lines(
         self,
@@ -525,7 +541,7 @@ class BaseStorage(ABC):
                 # Create TextIO/BinaryIO object for upload_part
                 current_buffer.seek(0)  # Reset to beginning for reading
 
-                etag = await self._default_upload_part(
+                etag = await self.upload_part(
                     key, upload_id, part_number, current_buffer
                 )
                 parts.append(
@@ -545,9 +561,7 @@ class BaseStorage(ABC):
         if line_count > 0:
             current_buffer.seek(0)  # Reset to beginning for reading
 
-            etag = await self._default_upload_part(
-                key, upload_id, part_number, current_buffer
-            )
+            etag = await self.upload_part(key, upload_id, part_number, current_buffer)
             parts.append(
                 {
                     "part_number": part_number,
@@ -572,11 +586,11 @@ class BaseStorage(ABC):
                 break
 
             if chunk_size >= self.config.multipart_threshold:
-                etag = await self.upload_part(key, upload_id, part_number, raw_chunk)
-            else:
-                etag = await self._default_upload_part(
+                etag = await self._native_upload_part(
                     key, upload_id, part_number, raw_chunk
                 )
+            else:
+                etag = await self.upload_part(key, upload_id, part_number, raw_chunk)
 
             parts.append(
                 {
@@ -670,6 +684,10 @@ class BaseStorage(ABC):
         """
         data = await self.get_object(source_key)
         await self.put_object(dest_key, data)
+
+    def _multipart_upload_key(self, upload_id: str, subkey: str = "metadata") -> str:
+        """Return the key for multipart upload metadata. For small parts multipart upload only."""
+        return f".multipart/{upload_id}/{subkey}"
 
     def _wrap_data(self, data: Union[bytes, str, BinaryIO, TextIO, Reader]) -> Reader:
         """Wrap data in Reader if necessary."""

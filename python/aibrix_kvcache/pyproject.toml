@@ -26,10 +26,11 @@ requires = [
     "packaging>=24.2",
     "setuptools>=77.0.3,<80.0.0",
     "setuptools-scm>=8.0",
-    "torch == 2.7.0",
+    "torch>=2.7.0",
     "wheel",
     "jinja2",
     "regex",
+    "numpy>=1.26.4",
 ]
 build-backend = "setuptools.build_meta"
 
@@ -70,3 +71,27 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [tool.codespell]
 ignore-words-list = "dout, te, indicies, subtile, ElementE"
+
+[tool.cibuildwheel]
+# Explicitly specify Python 3.11 and 3.12 for manylinux x86_64
+build = "cp31[12]-manylinux_x86_64"
+
+# CUDA arch list https://developer.nvidia.com/cuda-gpus
+environment = {TORCH_CUDA_ARCH_LIST = "7.0;7.5;8.0;8.6;8.9;9.0;10.0"}
+
+# Use PyTorch manylinux image for building (cuda 12.1)
+manylinux-x86_64-image = "docker.io/pytorch/manylinux2_28-builder:cuda12.1"
+
+[tool.cibuildwheel.linux]
+repair-wheel-command = """
+auditwheel repair \
+  --plat manylinux_2_28_x86_64 \
+  --exclude libtorch.so \
+  --exclude libcudart.so.12 \
+  --exclude libcuda.so.1 \
+  --exclude libtorch_cuda.so \
+  --exclude libtorch_cpu.so \
+  --exclude libc10_cuda.so \
+  --exclude libc10.so \
+  -w {dest_dir} {wheel}
+"""

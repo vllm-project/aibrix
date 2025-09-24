@@ -31,6 +31,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -132,9 +133,22 @@ func TestForwardRequest_UploadStreaming(t *testing.T) {
 
 	// Create forward request
 	forward := &forwardingRequest{
-		requestID: "test-streaming-upload",
-		phase:     forwarding,
+		requestID:    "test-streaming-upload",
+		phase:        forwarding,
+		responseChan: make(chan *extProcPb.ProcessingResponse, 1), // ADD THIS
 	}
+
+	// Add a mock response to prevent hanging
+	go func() {
+		forward.responseChan <- &extProcPb.ProcessingResponse{
+			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+				ImmediateResponse: &extProcPb.ImmediateResponse{
+					Status: &envoyTypePb.HttpStatus{Code: envoyTypePb.StatusCode_OK},
+					Body:   "test response",
+				},
+			},
+		}
+	}()
 
 	// Create pipe for testing - start a reader goroutine to prevent blocking
 	reader, writer := io.Pipe()
@@ -524,10 +538,16 @@ func TestContinueForward(t *testing.T) {
 	reader, writer := io.Pipe()
 	defer func() { _ = reader.Close() }()
 
+	// Start a goroutine to consume data from the pipe to prevent blocking
+	go func() {
+		_, _ = io.ReadAll(reader)
+	}()
+
 	forward := &forwardingRequest{
-		requestID: "test-continue",
-		writer:    writer,
-		phase:     forwarding,
+		requestID:    "test-continue",
+		writer:       writer,
+		phase:        forwarding,
+		responseChan: make(chan *extProcPb.ProcessingResponse, 1), // Initialize the channel
 	}
 
 	// Test intermediate chunk
@@ -550,7 +570,21 @@ func TestContinueForward(t *testing.T) {
 	assert.NotNil(t, bodyResp.GetResponse())
 	assert.Equal(t, forwardContinuing, forward.phase)
 
-	// Test final chunk
+	// Test final chunk - provide mock response to prevent hanging
+	go func() {
+		// Send a mock response to the channel to simulate the background goroutine
+		forward.responseChan <- &extProcPb.ProcessingResponse{
+			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+				ImmediateResponse: &extProcPb.ImmediateResponse{
+					Status: &envoyTypePb.HttpStatus{
+						Code: envoyTypePb.StatusCode_OK,
+					},
+					Body: "test response",
+				},
+			},
+		}
+	}()
+
 	finalReq := &extProcPb.ProcessingRequest{
 		Request: &extProcPb.ProcessingRequest_RequestBody{
 			RequestBody: &extProcPb.HttpBody{
@@ -562,10 +596,15 @@ func TestContinueForward(t *testing.T) {
 
 	finalResp := server.continueForward(ctx, "test-continue", finalReq, forward)
 
-	// Should return intermediate response and close writer
+	// Should return the mock response and close writer
 	assert.NotNil(t, finalResp)
 	assert.Equal(t, forwarded, forward.phase)
 	assert.Nil(t, forward.writer) // Should be closed
+	
+	// Verify we got the expected response
+	immediateResp := finalResp.GetImmediateResponse()
+	assert.NotNil(t, immediateResp)
+	assert.Equal(t, envoyTypePb.StatusCode_OK, immediateResp.GetStatus().GetCode())
 }
 
 func TestActiveForwardsContinuedRequest(t *testing.T) {
@@ -583,8 +622,13 @@ func TestActiveForwardsContinuedRequest(t *testing.T) {
 	}
 
 	// Create pipe to simulate active streaming
-	_, writer := io.Pipe()
+	reader, writer := io.Pipe()
 	forward.writer = writer
+
+	// Start a goroutine to consume data from the pipe to prevent blocking
+	go func() {
+		_, _ = io.ReadAll(reader)
+	}()
 
 	server.activeForwards.Store("continued-request", forward)
 
@@ -598,16 +642,17 @@ func TestActiveForwardsContinuedRequest(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
+	ctx := types.NewRoutingContext(context.Background(), RouterNotSet, "", "", "continued-request", "test")
+	ctx.ReqPath = "/v1/files"
 
 	// This should be detected as a continued request and handled differently
 	resp, model, routingCtx, stream, term := server.HandleRequestBody(
-		ctx, "continued-request", "/v1/files", req, utils.User{Name: "test"}, "")
+		ctx, "continued-request", req, utils.User{Name: "test"})
 
 	// Should get continue response
 	assert.NotNil(t, resp)
 	assert.Empty(t, model)
-	assert.Nil(t, routingCtx)
+	assert.Equal(t, ctx, routingCtx) // Should return the same context that was passed in
 	assert.False(t, stream)
 	assert.Equal(t, int64(0), term)
 

@@ -17,6 +17,7 @@ limitations under the License.
 package roleset
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -291,4 +292,123 @@ func makeNotReadyPod(name string) *corev1.Pod {
 	pod := makeReadyPod(name)
 	pod.Status.Conditions[0].Status = corev1.ConditionFalse
 	return pod
+}
+
+func TestSortRolesByUpgradeOrder(t *testing.T) {
+	int32Ptr := func(i int32) *int32 { return &i }
+
+	tests := []struct {
+		name     string
+		roles    []orchestrationv1alpha1.RoleSpec
+		expected []orchestrationv1alpha1.RoleSpec
+	}{
+		{
+			name:     "empty roles",
+			roles:    []orchestrationv1alpha1.RoleSpec{},
+			expected: []orchestrationv1alpha1.RoleSpec{},
+		},
+		{
+			name: "already sorted roles",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role1", UpgradeOrder: int32Ptr(1)},
+				{Name: "role2", UpgradeOrder: int32Ptr(2)},
+				{Name: "role3", UpgradeOrder: int32Ptr(3)},
+			},
+			expected: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role1", UpgradeOrder: int32Ptr(1)},
+				{Name: "role2", UpgradeOrder: int32Ptr(2)},
+				{Name: "role3", UpgradeOrder: int32Ptr(3)},
+			},
+		},
+		{
+			name: "unsorted roles",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role3", UpgradeOrder: int32Ptr(3)},
+				{Name: "role1", UpgradeOrder: int32Ptr(1)},
+				{Name: "role2", UpgradeOrder: int32Ptr(2)},
+			},
+			expected: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role1", UpgradeOrder: int32Ptr(1)},
+				{Name: "role2", UpgradeOrder: int32Ptr(2)},
+				{Name: "role3", UpgradeOrder: int32Ptr(3)},
+			},
+		},
+		{
+			name: "roles with nil upgrade order",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role3", UpgradeOrder: int32Ptr(2)},
+				{Name: "role1", UpgradeOrder: nil},
+				{Name: "role2", UpgradeOrder: int32Ptr(1)},
+			},
+			expected: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role2", UpgradeOrder: int32Ptr(1)},
+				{Name: "role3", UpgradeOrder: int32Ptr(2)},
+				{Name: "role1", UpgradeOrder: nil},
+			},
+		},
+		{
+			name: "roles with same upgrade order",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role1", UpgradeOrder: int32Ptr(1)},
+				{Name: "role2", UpgradeOrder: int32Ptr(1)},
+				{Name: "role3", UpgradeOrder: int32Ptr(1)},
+			},
+			expected: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role1", UpgradeOrder: int32Ptr(1)},
+				{Name: "role2", UpgradeOrder: int32Ptr(1)},
+				{Name: "role3", UpgradeOrder: int32Ptr(1)},
+			},
+		},
+		{
+			name: "mix of nil and non-nil upgrade orders",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role4", UpgradeOrder: int32Ptr(2)},
+				{Name: "role1", UpgradeOrder: nil},
+				{Name: "role2", UpgradeOrder: nil},
+				{Name: "role3", UpgradeOrder: int32Ptr(1)},
+			},
+			expected: []orchestrationv1alpha1.RoleSpec{
+				{Name: "role3", UpgradeOrder: int32Ptr(1)},
+				{Name: "role4", UpgradeOrder: int32Ptr(2)},
+				{Name: "role1", UpgradeOrder: nil},
+				{Name: "role2", UpgradeOrder: nil},
+			},
+		},
+		{
+			name: "multiple roles with explicit order and one missing (real-world scenario)",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "api-server", UpgradeOrder: int32Ptr(2)},
+				{Name: "database", UpgradeOrder: nil}, // Missing - should upgrade LAST
+				{Name: "cache", UpgradeOrder: int32Ptr(1)},
+				{Name: "monitoring", UpgradeOrder: int32Ptr(3)},
+			},
+			expected: []orchestrationv1alpha1.RoleSpec{
+				{Name: "cache", UpgradeOrder: int32Ptr(1)},      // First
+				{Name: "api-server", UpgradeOrder: int32Ptr(2)}, // Second
+				{Name: "monitoring", UpgradeOrder: int32Ptr(3)}, // Third
+				{Name: "database", UpgradeOrder: nil},           // Last (safest)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a copy of input roles to verify the original slice is not modified
+			originalRoles := make([]orchestrationv1alpha1.RoleSpec, len(tt.roles))
+			copy(originalRoles, tt.roles)
+
+			result := sortRolesByUpgradeOrder(tt.roles)
+			t.Logf("result len %d", len(result))
+
+			// Check if the result matches expected
+			if !reflect.DeepEqual(result, tt.expected) {
+				t.Errorf("sortRolesByUpgradeOrder() = %v, want %v", result, tt.expected)
+			}
+
+			// Verify the original slice was not modified
+			if !reflect.DeepEqual(tt.roles, originalRoles) {
+				t.Errorf("Original roles were modified: got %v, want %v", tt.roles, originalRoles)
+			}
+		})
+	}
 }

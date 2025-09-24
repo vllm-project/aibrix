@@ -24,6 +24,53 @@ User can submit a lora `Custom Resource <https://kubernetes.io/docs/concepts/ext
   :width: 70%
   :align: center
 
+ModelAdapter Lifecycle and Phase Transitions
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ModelAdapter goes through several distinct phases during its lifecycle. Understanding these phases helps users monitor and troubleshoot their LoRA deployments:
+
+**Phase Transition Flow:**
+
+::
+
+    Pending → Scheduled → Loading → Bound → Running
+       ↓         ↓         ↓        ↓        ↓
+    Starting  Pod      Adapter   Service   Ready for
+    reconcile Selected  Loading   Created   Inference
+
+**Phase Details:**
+
+1. **Pending**: Initial state when the ModelAdapter is first created. The controller starts reconciliation and validates the configuration.
+
+2. **Scheduled**: The controller has successfully identified and selected suitable pods that match the ``podSelector`` criteria. Pods are validated for readiness and stability before selection.
+
+3. **Loading**: The controller is actively loading the LoRA adapter onto the selected pods. This includes:
+   
+   - Downloading the adapter from the specified ``artifactURL`` 
+   - Registering the adapter with the vLLM engine
+   - Handling retry mechanisms with exponential backoff if loading fails
+
+4. **Bound**: The LoRA adapter has been successfully loaded onto the pods and the controller is creating the associated Kubernetes Service and EndpointSlice resources for service discovery.
+
+5. **Running**: The ModelAdapter is fully operational and ready to serve inference requests. The LoRA model is accessible through the gateway using the adapter name.
+
+**Error Handling and Reliability Features:**
+
+- **Retry Mechanism**: Up to 5 retry attempts per pod with exponential backoff (starting at 5 seconds)
+- **Pod Switching**: Automatic selection of alternative pods if loading fails on initial pods  
+- **Pod Health Validation**: Ensures pods are ready and stable before scheduling adapters
+- **Connection Error Handling**: Graceful handling of common startup errors like "connection refused"
+
+**Monitoring Phase Transitions:**
+
+You can monitor the current phase and detailed status using:
+
+.. code-block:: bash
+
+    kubectl describe modeladapter <adapter-name>
+
+The status section will show the current phase and transition history with timestamps and reasons for each state change.
+
 Model Adapter Service Discovery
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -81,12 +128,13 @@ Create lora model adapter
 .. literalinclude:: ../../../samples/adapter/adapter.yaml
    :language: yaml
 
-If you run ```kubectl describe modeladapter qwen-code-lora``, you will see the status of the lora adapter.
+If you run ```kubectl describe modeladapter qwen-code-lora``, you will see the status of the lora adapter progressing through different phases:
+
+**Phase 1: Pending**
 
 .. code-block:: bash
 
     $ kubectl describe modeladapter qwen-code-lora
-    .....
     Status:
       Conditions:
         Last Transition Time:  2025-02-16T19:14:50Z
@@ -94,8 +142,41 @@ If you run ```kubectl describe modeladapter qwen-code-lora``, you will see the s
         Reason:                ModelAdapterPending
         Status:                Unknown
         Type:                  Initialized
+      Phase:  Pending
+
+**Phase 2: Scheduled**
+
+.. code-block:: bash
+
+    $ kubectl describe modeladapter qwen-code-lora  
+    Status:
+      Conditions:
         Last Transition Time:  2025-02-16T19:14:50Z
-        Message:               ModelAdapter default/qwen-code-lora has been allocated to pod default/qwen-coder-1-5b-instruct-5587f4c57d-kml6s
+        Message:               Starting reconciliation
+        Reason:                ModelAdapterPending
+        Status:                Unknown
+        Type:                  Initialized
+        Last Transition Time:  2025-02-16T19:14:52Z
+        Message:               ModelAdapter default/qwen-code-lora has selected 1 pods for scheduling: [qwen-coder-1-5b-instruct-5587f4c57d-kml6s]
+        Reason:                Scheduled
+        Status:                True
+        Type:                  Scheduled
+      Phase:  Scheduled
+
+**Phase 3-5: Loading → Bound → Running**
+
+.. code-block:: bash
+
+    $ kubectl describe modeladapter qwen-code-lora
+    Status:
+      Conditions:
+        Last Transition Time:  2025-02-16T19:14:50Z
+        Message:               Starting reconciliation
+        Reason:                ModelAdapterPending
+        Status:                Unknown
+        Type:                  Initialized
+        Last Transition Time:  2025-02-16T19:14:52Z
+        Message:               ModelAdapter default/qwen-code-lora has selected 1 pods for scheduling: [qwen-coder-1-5b-instruct-5587f4c57d-kml6s]
         Reason:                Scheduled
         Status:                True
         Type:                  Scheduled
@@ -107,7 +188,6 @@ If you run ```kubectl describe modeladapter qwen-code-lora``, you will see the s
       Instances:
         qwen-coder-1-5b-instruct-5587f4c57d-kml6s
       Phase:  Running
-    Events:   <none>
 
 Send request using lora model name to the gateway.
 
@@ -141,6 +221,244 @@ This ensures that the LoRA adapter is correctly associated with the right pods.
 
     Note: this is only working with vLLM engine. If you use other engine, feel free to open an issue.
 
+
+Troubleshooting Phase Transitions
+----------------------------------
+
+If your ModelAdapter gets stuck in a particular phase, here are common issues and solutions:
+
+**Stuck in Pending Phase:**
+
+- Check if pods matching ``podSelector`` exist and are running
+- Verify that pods have the correct labels (``model.aibrix.ai/name`` and ``adapter.model.aibrix.ai/enabled=true``)
+- Ensure pods are in Ready state
+
+**Stuck in Scheduled Phase:**
+
+- This was a known issue in earlier versions that has been fixed
+- Check controller logs for any loading errors: ``kubectl logs -n aibrix-system deployment/aibrix-controller-manager``
+- Verify vLLM pods have ``VLLM_ALLOW_RUNTIME_LORA_UPDATING`` enabled
+
+**Stuck in Loading Phase:**
+
+- Check if the ``artifactURL`` is accessible and valid
+- For Hugging Face models, ensure the model path exists
+- Check authentication if using private repositories
+- Review controller logs for specific loading errors
+- The controller will retry up to 5 times with exponential backoff before switching to alternative pods
+
+**Failed to Reach Running Phase:**
+
+- Check if Kubernetes Service creation succeeded: ``kubectl get svc <adapter-name>``
+- Verify EndpointSlice creation: ``kubectl get endpointslices``
+- Check pod readiness and health status
+
+**Useful Commands for Debugging:**
+
+.. code-block:: bash
+
+    # Check ModelAdapter status
+    kubectl describe modeladapter <adapter-name>
+    
+    # Check controller logs
+    kubectl logs -n aibrix-system deployment/aibrix-controller-manager
+    
+    # Check pod logs
+    kubectl logs <pod-name>
+    
+    # Check services and endpoints
+    kubectl get svc,endpointslices -l model.aibrix.ai/name=<adapter-name>
+
+Reliability Features
+--------------------
+
+AIBrix ModelAdapter includes several advanced reliability features to ensure robust LoRA adapter deployments in production environments:
+
+Automatic Retry Mechanism
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The controller implements an intelligent retry system for adapter loading:
+
+- **Up to 5 retry attempts** per pod with exponential backoff
+- **Base interval of 5 seconds**, doubling on each retry (5s, 10s, 20s, 40s, 80s)
+- **Intelligent error detection** for retriable vs. non-retriable errors
+- **Graceful handling** of common startup errors like "connection refused"
+
+.. code-block:: yaml
+
+    # Retry behavior is automatic - no configuration needed
+    # Controller tracks retry state via annotations:
+    # - adapter.model.aibrix.ai/retry-count.<pod-name>
+    # - adapter.model.aibrix.ai/last-retry-time.<pod-name>
+
+Pod Switching and Failover
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When adapter loading fails on initial pods after maximum retries:
+
+- **Automatic pod selection** of alternative healthy pods
+- **Maintains desired replica count** by switching to available pods
+- **Preserves scheduler preferences** (least-adapters, default) for new selections
+- **Ensures eventual consistency** - adapters will load on healthy pods
+
+Pod Health Validation
+^^^^^^^^^^^^^^^^^^^^^^
+
+The controller implements comprehensive pod health checks:
+
+- **Readiness validation**: Pods must be in Ready state before selection
+- **Stability requirements**: Pods must be stable (ready for 5+ seconds) to avoid flapping
+- **Continuous monitoring**: Unhealthy pods are automatically removed from instances list
+- **Startup tolerance**: Handles pod startup delays gracefully
+
+Connection Error Handling
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Robust error handling for various network and startup conditions:
+
+.. code-block:: text
+
+    Retriable Errors (will trigger retry):
+    - "connection refused" 
+    - "connection reset"
+    - "timeout"
+    - "no route to host"
+    - "network is unreachable" 
+    - "temporary failure"
+    - "service unavailable"
+    - "bad gateway"
+
+    Non-Retriable Errors (will fail immediately):
+    - Authentication errors
+    - Invalid model format
+    - Configuration errors
+
+Advanced Configuration Examples
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**High-Availability Setup:**
+
+Here's a production-ready configuration demonstrating reliability features:
+
+.. literalinclude:: ../../../samples/adapter/adapter-reliability-demo.yaml
+   :language: yaml
+
+**Multi-Replica Distribution:**
+
+For load balancing across multiple pods:
+
+.. literalinclude:: ../../../samples/adapter/adapter-multi-replica.yaml
+   :language: yaml
+   :lines: 1-31
+
+**Testing Commands:**
+
+.. code-block:: bash
+
+    # 1. Apply the reliability demo adapter:
+    kubectl apply -f samples/adapter/adapter-reliability-demo.yaml
+    
+    # 2. Monitor phase transitions:
+    watch kubectl describe modeladapter reliability-demo-lora
+    
+    # 3. Check controller logs for retry behavior:
+    kubectl logs -n aibrix-system deployment/aibrix-controller-manager -f
+    
+    # 4. Test pod failure scenario (delete a pod to trigger switching):
+    kubectl delete pod <pod-name>
+    # Watch how controller handles pod loss and reschedules
+    
+    # 5. Verify final state:
+    kubectl get modeladapter reliability-demo-lora -o yaml
+
+Monitoring and Observability
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Phase Monitoring:**
+
+The reliability features are transparent through the standard ModelAdapter status:
+
+.. code-block:: bash
+
+    # Monitor real-time phase transitions
+    watch kubectl describe modeladapter <adapter-name>
+    
+    # Check for retry annotations (during loading failures)
+    kubectl get modeladapter <adapter-name> -o yaml | grep -A 5 annotations
+
+**Controller Logs:**
+
+Monitor retry behavior and pod switching in controller logs:
+
+.. code-block:: bash
+
+    # View retry attempts and pod switching
+    kubectl logs -n aibrix-system deployment/aibrix-controller-manager -f | grep -E "(retry|switching|pod)"
+    
+    # Example log entries:
+    # I0830 03:55:42.221143 1 modeladapter_controller.go:557] "Selected pods for adapter scheduling" ModelAdapter="default/my-lora" selectedPods=["pod-1"]
+    # I0830 03:55:45.331456 1 modeladapter_controller.go:987] "Retriable error loading adapter" pod="pod-1" error="connection refused"
+    # I0830 03:55:50.445789 1 modeladapter_controller.go:1120] "Successfully loaded adapter on pod" pod="pod-2" ModelAdapter="default/my-lora"
+
+**Events and Conditions:**
+
+Reliability events are recorded in the ModelAdapter status conditions:
+
+.. code-block:: bash
+
+    kubectl describe modeladapter <adapter-name>
+    
+    # Example events showing retry and recovery:
+    Events:
+      Type    Reason                 Message
+      ----    ------                 -------
+      Normal  Scheduled              ModelAdapter has selected 1 pods for scheduling: [pod-1]
+      Warning MaxRetriesExceeded     Max retries exceeded for pod pod-1: connection refused
+      Normal  Scheduled              ModelAdapter has selected 1 pods for scheduling: [pod-2]
+      Normal  Loaded                 Successfully loaded adapter on pod pod-2
+
+Best Practices for Production
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+1. **Deploy Multiple Base Model Replicas:**
+
+   .. code-block:: yaml
+   
+       # Ensure multiple pods are available for failover
+       spec:
+         replicas: 3  # At least 3 pods for reliability
+
+2. **Use Multiple Adapter Replicas:**
+
+   .. code-block:: yaml
+   
+       # Distribute adapter across multiple pods
+       spec:
+         replicas: 2  # Load adapter on 2 different pods
+
+3. **Configure Appropriate Health Checks:**
+
+   .. code-block:: yaml
+   
+       # In base model deployment
+       livenessProbe:
+         httpGet:
+           path: /health
+           port: 8000
+         initialDelaySeconds: 60
+         periodSeconds: 30
+         failureThreshold: 3
+
+4. **Monitor Adapter Health:**
+
+   .. code-block:: bash
+   
+       # Regular health monitoring
+       kubectl get modeladapters -o wide
+       kubectl describe modeladapter <name>
+       
+       # Set up alerts on phase transitions
+       kubectl get events --field-selector involvedObject.kind=ModelAdapter
 
 More configurations
 -------------------
@@ -208,3 +526,60 @@ and remove the ``
         - --health-probe-bind-address=:8081
         - --metrics-bind-address=0
         - --enable-runtime-sidecar # this line should be removed
+
+Runtime Metrics Configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The AIBrix runtime provides flexible metrics transformation options to handle different inference engines (vLLM, SGLang) and ensure compatibility. You can control metrics behavior using environment variables:
+
+**Default Mode (Recommended):**
+
+.. code-block:: bash
+
+    # Enable metrics transformation (default: enabled)
+    export METRICS_ENABLE_TRANSFORMATION=1
+    
+    # Disable raw passthrough mode (default: disabled) 
+    export METRICS_RAW_PASSTHROUGH_MODE=0
+
+This mode standardizes metrics from different engines to a common ``aibrix:`` namespace:
+
+- ``vllm:num_requests_waiting`` → ``aibrix:queue_size``
+- ``sglang:num_queue_reqs`` → ``aibrix:queue_size``
+- ``vllm:prompt_tokens_total`` → ``aibrix:prompt_tokens_total``
+- ``sglang:prompt_tokens_total`` → ``aibrix:prompt_tokens_total``
+
+**Raw Passthrough Mode (Debugging/Fallback):**
+
+.. code-block:: bash
+
+    # Return raw engine metrics unchanged
+    export METRICS_RAW_PASSTHROUGH_MODE=1
+
+Use this mode when:
+
+- Debugging metrics transformation issues
+- Different engines have scale/semantic differences
+- You need engine-specific metric names preserved
+- Fallback during transformation errors
+
+**Complete Transformation Disable (Emergency):**
+
+.. code-block:: bash
+
+    # Disable all transformation (forces raw passthrough)
+    export METRICS_ENABLE_TRANSFORMATION=0
+
+This is the safest fallback option that guarantees raw metrics regardless of any errors.
+
+**Automatic Error Recovery:**
+
+The runtime automatically falls back to raw passthrough mode if metrics transformation encounters errors, ensuring metrics collection never fails completely.
+
+**Configuration Priority:**
+
+1. ``METRICS_ENABLE_TRANSFORMATION=0`` forces raw passthrough (highest priority)
+2. ``METRICS_RAW_PASSTHROUGH_MODE=1`` enables raw mode when transformation is enabled
+3. Automatic fallback on transformation errors (lowest priority)
+
+This configuration affects the ``/metrics`` endpoint exposed by the AIBrix runtime sidecar.

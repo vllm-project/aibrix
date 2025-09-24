@@ -57,7 +57,10 @@ help: ## Display this help.
 ##@ Development
 
 GINKGO_VERSION ?= $(shell go list -m -f '{{.Version}}' github.com/onsi/ginkgo/v2)
-INTEGRATION_TARGET ?= ./test/integration/...
+INTEGRATION_ROOT ?= ./test/integration
+INTEGRATION_WEBHOOK_TARGET ?= $(INTEGRATION_ROOT)/webhook/...
+INTEGRATION_CONTROLLER_TARGET ?= $(INTEGRATION_ROOT)/controller/...
+INTEGRATION_TARGET ?= $(INTEGRATION_ROOT)/...
 
 GINKGO = $(shell pwd)/bin/ginkgo
 .PHONY: ginkgo
@@ -69,6 +72,41 @@ ginkgo: ## Download ginkgo locally if necessary.
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=controller-manager-role crd:maxDescLen=0,generateEmbeddedObjectMeta=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
+# Synchronize generated CRD files from 'bases/' to module-specific directories
+# such as 'orchestration/', 'autoscaling/', and 'model/'.
+# This ensures that kustomize overlays can reference the correct CRD files.
+# Depends on 'manifests' to ensure CRDs are up-to-date before syncing.
+.PHONY: sync-crds
+sync-crds: manifests
+	mkdir -p config/crd/orchestration
+	mkdir -p config/crd/autoscaling
+	mkdir -p config/crd/model
+
+	# Copy CRDs matching each module's domain
+	cp config/crd/bases/*orchestration.aibrix.ai_*.yaml config/crd/orchestration/ || true
+	cp config/crd/bases/*autoscaling.aibrix.ai_*.yaml config/crd/autoscaling/ || true
+	cp config/crd/bases/*model.aibrix.ai_*.yaml config/crd/model/ || true
+
+# Run all manifest generation and synchronization steps
+# Includes CRD syncing to module directories.
+.PHONY: manifests-all
+manifests-all: manifests sync-crds
+	@echo "✅ All manifests generated and synced to module directories."
+
+# Synchronize CRD files from 'config/crd/bases/' to Helm's 'crds/' directory.
+# This ensures Helm uses the canonical CRD definitions maintained in config/crd/.
+.PHONY: sync-crds-to-helm
+sync-crds-to-helm: manifests
+	@echo "🔄 Syncing CRDs from config/crd/bases/ to dist/chart/crds/"
+
+	# Ensure Helm crds directory exists
+	mkdir -p dist/chart/crds
+
+	# Copy all CRDs from bases to Helm crds/ (overwrite what helmify generated)
+	cp config/crd/bases/*.yaml dist/chart/crds/ || true
+
+	@echo "✅ CRDs synced to Helm chart"
+
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
@@ -77,6 +115,13 @@ generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and
 .PHONY: update-codegen
 update-codegen:
 	sh ./hack/update-codegen.sh
+
+.PHONY: verify
+verify: verify-codegen verify-crd
+
+.PHONY: verify-crd
+verify-crd:
+	hack/verify-crd-sync.sh
 
 .PHONY: verify-codegen
 verify-codegen:
@@ -91,8 +136,9 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+test: manifests generate fmt vet envtest ## Run unit tests.
+	@echo "Running unit tests only..."
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v '/e2e\|/integration') -coverprofile cover.out
 
 .PHONY: test-code-coverage
 test-code-coverage: test
@@ -100,12 +146,23 @@ test-code-coverage: test
 
 .PHONY: test-race-condition
 test-race-condition: manifests generate fmt vet envtest ## Run tests with race detection enabled.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test -race $$(go list ./... | grep -v /e2e)
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test -race $$(go list ./... | grep -v '/e2e\|/integration')
 
-.PHONY: test-integration
-test-integration: manifests fmt vet envtest ginkgo ## Run integration tests.
+.PHONY: test-integration test-integration-webhook test-integration-controller
+test-integration: manifests fmt vet envtest ginkgo
+	@echo "Running all integration tests..."
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
-	$(GINKGO) --junit-report=junit.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_TARGET)
+	$(GINKGO) --junit-report=junit.integration.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_TARGET)
+
+test-integration-webhook: manifests fmt vet envtest ginkgo
+	@echo "Running webhook integration tests only..."
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+	$(GINKGO) --junit-report=junit.webhook.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_WEBHOOK_TARGET)
+
+test-integration-controller: manifests fmt vet envtest ginkgo
+	@echo "Running controller integration tests only..."
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+	$(GINKGO) --junit-report=junit.controller.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_CONTROLLER_TARGET)
 
 # Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
 .PHONY: test-e2e  # Run the e2e tests against a Kind k8s instance that is spun up.
@@ -142,10 +199,17 @@ lint-all: licensecheck lint
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/controllers/main.go
 
-.PHONY: build-gateway
-build-gateway: fmt vet ## Build gateway plugin binary.
-	go build -o bin/gateway-plugin cmd/plugins/main.go
+.PHONY: build-controller-manager
+build-controller-manager: manifests generate fmt vet ## Build controller-manager binary without ZMQ.
+	CGO_ENABLED=0 go build -tags="nozmq" -o bin/controller-manager cmd/controllers/main.go
 
+.PHONY: build-gateway-plugins
+build-gateway-plugins: manifests generate fmt vet ## Build gateway-plugins binary with ZMQ.
+	CGO_ENABLED=1 go build -tags="zmq" -o bin/gateway-plugins cmd/plugins/main.go
+
+.PHONY: build-metadata-service
+build-metadata-service: manifests generate fmt vet ## Build metadata-service binary without ZMQ.
+	CGO_ENABLED=0 go build -o bin/metadata-service cmd/metadata/main.go
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/controllers/main.go

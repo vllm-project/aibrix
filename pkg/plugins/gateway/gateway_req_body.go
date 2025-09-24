@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"k8s.io/klog/v2"
@@ -31,10 +32,9 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-func (s *Server) HandleRequestBody(ctx context.Context, requestID string, requestPath string, req *extProcPb.ProcessingRequest,
-	user utils.User, routingAlgorithm types.RoutingAlgorithm) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
-	var routingCtx *types.RoutingContext
+func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
 	var term int64 // Identify the trace window
+	routingCtx, _ := ctx.(*types.RoutingContext)
 
 	// Check if this is a continued streaming request - if so, skip path check
 	if forwardReq, shouldForward := s.activeForwards.Load(requestID); shouldForward {
@@ -55,12 +55,23 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, reques
 		shouldUseStreaming := len(requestBody) > 1024*1024 || isMultipart // > 1MB or multipart
 		return s.forwardRequest(ctx, requestID, req, forwardReq, shouldUseStreaming), "", routingCtx, false, term
 	}
+	if routingCtx == nil {
+		return generateErrorResponse(envoyTypePb.StatusCode_BadRequest,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: HeaderErrorUnexpected, RawValue: []byte("true")}}},
+			"RoutingContext not available"), "", routingCtx, false, term
+	}
+	requestPath := routingCtx.ReqPath
+	routingAlgorithm := routingCtx.Algorithm
 
 	body := req.Request.(*extProcPb.ProcessingRequest_RequestBody)
 	model, message, stream, errRes := validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)
 	if errRes != nil {
 		return errRes, model, routingCtx, stream, term
 	}
+	routingCtx.Model = model
+	routingCtx.Message = message
+	routingCtx.ReqBody = body.RequestBody.GetBody()
 
 	// early reject the request if model doesn't exist.
 	if !s.cache.HasModel(model) {
@@ -81,9 +92,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, reques
 			fmt.Sprintf("error on getting pods for model %s", model)), model, routingCtx, stream, term
 	}
 
-	routingCtx = types.NewRoutingContext(ctx, routingAlgorithm, model, message, requestID, user.Name)
 	headers := []*configPb.HeaderValueOption{}
 	if routingAlgorithm == routing.RouterNotSet {
+		if err := s.validateHTTPRouteStatus(ctx, model); err != nil {
+			return buildErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable, err.Error(), HeaderErrorRouting, "true"), model, routingCtx, stream, term
+		}
 		headers = buildEnvoyProxyHeaders(headers, HeaderModel, model)
 		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream)
 	} else {
@@ -98,7 +111,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, reques
 		}
 		headers = buildEnvoyProxyHeaders(headers,
 			HeaderRoutingStrategy, string(routingAlgorithm),
-			HeaderTargetPod, targetPodIP)
+			HeaderTargetPod, targetPodIP,
+			"content-length", strconv.Itoa(len(routingCtx.ReqBody)),
+			"X-Request-Id", routingCtx.RequestID)
 		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream, "routingAlgorithm", routingAlgorithm, "targetPodIP", targetPodIP, "routingDuration", routingCtx.GetRoutingDelay())
 	}
 
@@ -110,6 +125,11 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, reques
 				Response: &extProcPb.CommonResponse{
 					HeaderMutation: &extProcPb.HeaderMutation{
 						SetHeaders: headers,
+					},
+					BodyMutation: &extProcPb.BodyMutation{
+						Mutation: &extProcPb.BodyMutation_Body{
+							Body: routingCtx.ReqBody,
+						},
 					},
 				},
 			},

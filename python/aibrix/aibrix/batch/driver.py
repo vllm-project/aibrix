@@ -17,14 +17,13 @@ from typing import Any, Dict, List, Optional
 
 import aibrix.batch.storage as _storage
 from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE
+from aibrix.batch.job_entity import JobEntityManager
 from aibrix.batch.job_manager import JobManager
 from aibrix.batch.request_proxy import RequestProxy
 from aibrix.batch.scheduler import JobScheduler
 from aibrix.batch.storage.batch_metastore import initialize_batch_metastore
 from aibrix.metadata.logger import init_logger
 from aibrix.storage import StorageType
-
-from .job_entity import JobEntityManager
 
 logger = init_logger(__name__)
 

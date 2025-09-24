@@ -1,0 +1,25 @@
+apiVersion: v2
+name: aibrix
+description: Cloud-native LLM inference infrastructure with distributed inference, KV caching, intelligent routing, and autoscaling capabilities
+type: application
+version: 0.4.1
+appVersion: "0.4.1"
+home: https://github.com/vllm-project/aibrix
+sources:
+  - https://github.com/vllm-project/aibrix
+keywords:
+  - ai
+  - ai-gateway
+  - llm
+  - inference
+  - kubernetes
+  - autoscaling
+  - distributed-kv-cache
+  - lora
+  - distributed-inference
+  - disaggregation
+maintainers:
+  - name: AIBrix Team
+    url: https://github.com/vllm-project/aibrix
+annotations:
+  category: AI Infra

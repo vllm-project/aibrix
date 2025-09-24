@@ -42,6 +42,10 @@ def mock_exsit_tos(mock_boto3):
 env_group = mock.Mock()
 env_group.DOWNLOADER_NUM_THREADS = 4
 env_group.DOWNLOADER_TOS_VERSION = "v2"
+env_group.DOWNLOADER_TOS_REGION = None
+env_group.DOWNLOADER_TOS_ENDPOINT = None
+env_group.DOWNLOADER_TOS_ACCESS_KEY = None
+env_group.DOWNLOADER_TOS_SECRET_KEY = None
 
 
 @mock.patch(ENVS_MODULE, env_group)
@@ -84,3 +88,16 @@ def test_get_downloader_tos_path_empty_path(mock_boto3):
     with pytest.raises(ArgNotCongiuredError) as exception:
         get_downloader("tos://bucket/")
     assert "`bucket_path` is not configured" in str(exception.value)
+
+
+@mock.patch(ENVS_MODULE, env_group)
+@mock.patch(S3_BOTO3_MODULE)
+def test_tos_v2_auth_omits_empty_ak_sk(mock_boto3):
+    # Ensure client exists and head_bucket succeeds
+    mock_exsit_tos(mock_boto3)
+
+    # Instantiate and verify auth config omits empty AK/SK
+    downloader = TOSDownloaderV2("tos://bucket/path", model_name="m")
+    cfg = downloader._get_auth_config()
+    assert "aws_access_key_id" not in cfg
+    assert "aws_secret_access_key" not in cfg

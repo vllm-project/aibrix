@@ -20,16 +20,19 @@ import pytest
 import torch
 
 from aibrix_kvcache import TokenListView
+from aibrix_kvcache.cache_hashable import BlockHashes
 from aibrix_kvcache.l1 import L1Cache
-from aibrix_kvcache.memory import MemoryRegion, TensorPoolAllocator
+from aibrix_kvcache.memory import (
+    ManagedMemoryRegion, MemoryRegion, TensorPoolAllocator
+)
 
 from .conftest import CACHE_DTYPE, release_mrs
 
 
 def check_tokens(
     mrs: Sequence[MemoryRegion],
-    prefix: TokenListView | None,
-    tokens: TokenListView,
+    prefix: TokenListView | BlockHashes | None,
+    tokens: TokenListView | BlockHashes,
     block_ntokens: int,
 ):
     if MemoryRegion.use_compact_layout():
@@ -60,7 +63,7 @@ def test_cache_initialization(cache_conf_fixture):
     assert cache.block_shape == tuple(shape)
 
 
-def test_put_and_get_aligned(cache_conf_fixture):
+def test_put_and_get_aligned(cache_key_fixture, cache_conf_fixture):
     shape, spec = cache_conf_fixture
     capacity_nbytes = 128 * spec.block_nbytes
 
@@ -71,7 +74,7 @@ def test_put_and_get_aligned(cache_conf_fixture):
         block_spec=spec,
     )
 
-    tokens = TokenListView([i for i in range(32)])
+    tokens = cache_key_fixture([i for i in range(32)], spec.block_ntokens)
     origin_tokens = copy.deepcopy(tokens)
     shape[spec.block_shape_token_dim] = 32
     kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
@@ -97,7 +100,7 @@ def test_put_and_get_aligned(cache_conf_fixture):
     release_mrs(mrs)
 
 
-def test_put_and_get_unaligned(cache_conf_fixture):
+def test_put_and_get_unaligned(cache_key_fixture, cache_conf_fixture):
     shape, spec = cache_conf_fixture
     capacity_nbytes = 128 * spec.block_nbytes
 
@@ -108,7 +111,7 @@ def test_put_and_get_unaligned(cache_conf_fixture):
         block_spec=spec,
     )
 
-    tokens = TokenListView([i for i in range(35)])
+    tokens = cache_key_fixture([i for i in range(35)], spec.block_ntokens)
     shape[spec.block_shape_token_dim] = len(tokens)
     kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
 
@@ -135,7 +138,9 @@ def test_put_and_get_unaligned(cache_conf_fixture):
 
 
 @pytest.mark.parametrize("eviction_policy", ["FIFO", "LRU", "S3FIFO"])
-def test_put_and_get_with_prefix(cache_conf_fixture, eviction_policy):
+def test_put_and_get_with_prefix(
+    cache_key_fixture, cache_conf_fixture, eviction_policy
+):
     shape, spec = cache_conf_fixture
     capacity_nbytes = 128 * spec.block_nbytes
 
@@ -148,7 +153,7 @@ def test_put_and_get_with_prefix(cache_conf_fixture, eviction_policy):
 
     tokens0 = [i for i in range(32)]
     tokens1 = [i for i in range(100, 135)]
-    all_tokens = TokenListView(tokens0 + tokens1)
+    all_tokens = cache_key_fixture(tokens0 + tokens1, spec.block_ntokens)
     tokens0 = all_tokens[:32]
     tokens1 = all_tokens[32:]
 
@@ -215,7 +220,7 @@ def test_put_and_get_with_prefix(cache_conf_fixture, eviction_policy):
 
 
 @pytest.mark.parametrize("eviction_policy", ["FIFO", "LRU", "S3FIFO"])
-def test_duplicated_puts(cache_conf_fixture, eviction_policy):
+def test_duplicated_puts(cache_key_fixture, cache_conf_fixture, eviction_policy):
     shape, spec = cache_conf_fixture
     capacity_nbytes = 128 * spec.block_nbytes
 
@@ -227,7 +232,7 @@ def test_duplicated_puts(cache_conf_fixture, eviction_policy):
     )
 
     for _ in range(10):
-        tokens = TokenListView([i for i in range(32)])
+        tokens = cache_key_fixture([i for i in range(32)], spec.block_ntokens)
         shape[spec.block_shape_token_dim] = len(tokens)
         kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
 
@@ -246,14 +251,14 @@ def test_duplicated_puts(cache_conf_fixture, eviction_policy):
             torch.cat(tensors, dim=spec.block_shape_token_dim),
             kv_tensors,
         )
-        assert len(cache) == MemoryRegion.calculate_size(
+        assert len(cache) == ManagedMemoryRegion.calculate_size(
             spec.block_nbytes, 16
-        ) + MemoryRegion.calculate_size(spec.block_nbytes, 32)
+        ) + ManagedMemoryRegion.calculate_size(spec.block_nbytes, 32)
         release_mrs(mrs)
 
 
 @pytest.mark.parametrize("eviction_policy", ["FIFO", "LRU", "S3FIFO"])
-def test_cache_eviction(cache_conf_fixture, eviction_policy):
+def test_cache_eviction(cache_key_fixture, cache_conf_fixture, eviction_policy):
     shape, spec = cache_conf_fixture
     capacity_nbytes = 128 * spec.block_nbytes
 
@@ -264,12 +269,12 @@ def test_cache_eviction(cache_conf_fixture, eviction_policy):
         block_spec=spec,
     )
 
-    per_put_nbytes = MemoryRegion.calculate_size(
+    per_put_nbytes = ManagedMemoryRegion.calculate_size(
         spec.block_nbytes, 16
-    ) + MemoryRegion.calculate_size(spec.block_nbytes, 32)
+    ) + ManagedMemoryRegion.calculate_size(spec.block_nbytes, 32)
     expected_capacity_nbytes = 0
     for i in range(0, capacity_nbytes, per_put_nbytes):
-        tokens = TokenListView([i * 64 + j for j in range(32)])
+        tokens = cache_key_fixture([i * 64 + j for j in range(32)], spec.block_ntokens)
         shape[spec.block_shape_token_dim] = len(tokens)
         kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
 
@@ -287,7 +292,7 @@ def test_cache_eviction(cache_conf_fixture, eviction_policy):
             break
 
     cap = len(cache)
-    tokens = TokenListView([640 + j for j in range(32)])
+    tokens = cache_key_fixture([640 + j for j in range(32)], spec.block_ntokens)
     shape[spec.block_shape_token_dim] = len(tokens)
     kv_tensors = torch.randn(*shape, dtype=CACHE_DTYPE)
     put_status = cache.put(None, tokens, kv_tensors)
@@ -300,7 +305,7 @@ def test_cache_eviction(cache_conf_fixture, eviction_policy):
 
 
 @pytest.mark.parametrize("eviction_policy", ["FIFO", "LRU", "S3FIFO"])
-def test_stress_cache(cache_conf_fixture, eviction_policy):
+def test_stress_cache(cache_key_fixture, cache_conf_fixture, eviction_policy):
     shape, spec = cache_conf_fixture
     capacity_nbytes = 4096 * spec.block_nbytes
 
@@ -321,7 +326,7 @@ def test_stress_cache(cache_conf_fixture, eviction_policy):
         tokens = [j for j in range(ntokens)]
         random.shuffle(tokens)
         
-        all_tokens = TokenListView(prefix_tokens + tokens)
+        all_tokens = cache_key_fixture(prefix_tokens + tokens, spec.block_ntokens)
         prefix_tokens = all_tokens[:num_prefix_blocks * spec.block_ntokens]
         tokens = all_tokens[num_prefix_blocks * spec.block_ntokens:]
 

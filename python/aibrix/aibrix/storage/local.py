@@ -16,14 +16,13 @@ import asyncio
 import hashlib
 import os
 import shutil
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
-from .base import BaseStorage, StorageConfig
-from .reader import Reader
-from .utils import ObjectMetadata, generate_filename
+from aibrix.storage.base import BaseStorage, StorageConfig
+from aibrix.storage.reader import Reader
+from aibrix.storage.utils import ObjectMetadata, _sanitize_key, generate_filename
 
 LOCAL_STORAGE_PATH_VAR = "LOCAL_STORAGE_PATH"
 
@@ -57,7 +56,8 @@ class LocalStorage(BaseStorage):
 
     def _get_metadata_path(self, key: str) -> Path:
         """Get metadata file path for a key."""
-        return self.base_path / f"{key}.metadata"
+        sanitized_key = _sanitize_key(key)
+        return self.base_path / f"{sanitized_key}.metadata"
 
     def _infer_content_type(self, key: str) -> Optional[str]:
         """Infer content type from file extension."""
@@ -385,33 +385,16 @@ class LocalStorage(BaseStorage):
                 None, shutil.copy2, source_metadata_path, dest_metadata_path
             )
 
-    async def create_multipart_upload(
+    async def _native_create_multipart_upload(
         self,
         key: str,
         content_type: Optional[str] = None,
         metadata: Optional[dict[str, str]] = None,
     ) -> str:
         """Create a multipart upload session for local storage."""
-        upload_id = str(uuid.uuid4())
-        upload_dir = self.base_path / ".uploads" / upload_id
-        upload_dir.mkdir(parents=True, exist_ok=True)
+        raise NotImplementedError("Multipart upload not needed for local storage")
 
-        # Store metadata for the upload
-        metadata_file = upload_dir / "metadata.json"
-        upload_metadata = {
-            "key": key,
-            "content_type": content_type,
-            "metadata": metadata or {},
-            "parts": {},
-        }
-
-        await asyncio.get_event_loop().run_in_executor(
-            None, self._write_json_file, metadata_file, upload_metadata
-        )
-
-        return upload_id
-
-    async def upload_part(
+    async def _native_upload_part(
         self,
         key: str,
         upload_id: str,
@@ -419,124 +402,36 @@ class LocalStorage(BaseStorage):
         data: Union[str, bytes, BinaryIO, TextIO, Reader],
     ) -> str:
         """Upload a part for a multipart upload."""
-        upload_dir = self.base_path / ".uploads" / upload_id
-        if not upload_dir.exists():
-            raise ValueError(f"Upload ID {upload_id} not found")
+        raise NotImplementedError("Multipart upload not needed for local storage")
 
-        # Convert data to bytes
-        if isinstance(data, str):
-            part_data = data.encode("utf-8")
-        elif isinstance(data, bytes):
-            part_data = data
-        elif isinstance(data, Reader):
-            # Handle Reader (async file-like object) - stream the data
-            chunks = []
-            async for chunk in data.iter_chunks():
-                chunks.append(chunk)
-            part_data = b"".join(chunks)
-        else:
-            # File-like object
-            content = data.read()
-            part_data = content.encode("utf-8") if isinstance(content, str) else content
-
-        # Write part to file
-        part_file = upload_dir / f"part_{part_number:05d}"
-        await asyncio.get_event_loop().run_in_executor(
-            None, self._write_bytes_file, part_file, part_data
-        )
-
-        # Calculate ETag (MD5 hash for local storage)
-        etag = hashlib.md5(part_data).hexdigest()
-
-        # Update metadata
-        metadata_file = upload_dir / "metadata.json"
-        metadata = await asyncio.get_event_loop().run_in_executor(
-            None, self._read_json_file, metadata_file
-        )
-        metadata["parts"][str(part_number)] = {
-            "etag": etag,
-            "size": len(part_data),
-        }
-
-        await asyncio.get_event_loop().run_in_executor(
-            None, self._write_json_file, metadata_file, metadata
-        )
-
-        return etag
-
-    async def complete_multipart_upload(
+    async def _native_complete_multipart_upload(
         self,
         key: str,
         upload_id: str,
         parts: list[dict[str, Union[str, int]]],
     ) -> None:
         """Complete a multipart upload by combining all parts."""
-        upload_dir = self.base_path / ".uploads" / upload_id
-        if not upload_dir.exists():
-            raise ValueError(f"Upload ID {upload_id} not found")
+        raise NotImplementedError("Multipart upload not needed for local storage")
 
-        # Read upload metadata to get content_type and metadata
-        metadata_file = upload_dir / "metadata.json"
-        upload_metadata = await asyncio.get_event_loop().run_in_executor(
-            None, self._read_json_file, metadata_file
-        )
-
-        content_type = upload_metadata.get("content_type")
-        metadata = upload_metadata.get("metadata", {})
-
-        # Sort parts by part number
-        sorted_parts = sorted(parts, key=lambda p: p["part_number"])
-
-        # Combine all parts into final file
-        final_path = self._get_full_path(key, content_type, metadata)
-        final_path.parent.mkdir(parents=True, exist_ok=True)
-
-        await asyncio.get_event_loop().run_in_executor(
-            None, self._combine_parts, upload_dir, sorted_parts, final_path
-        )
-
-        # Calculate metadata fields after file is created
-        def _get_file_metadata():
-            stat = final_path.stat()
-            content_length = stat.st_size
-
-            # Generate etag based on file size and modification time
-            etag_data = f"{content_length}-{stat.st_mtime}"
-            etag = hashlib.md5(etag_data.encode()).hexdigest()
-
-            last_modified = datetime.fromtimestamp(stat.st_mtime)
-            return content_length, etag, last_modified
-
-        (
-            file_content_length,
-            file_etag,
-            file_last_modified,
-        ) = await asyncio.get_event_loop().run_in_executor(None, _get_file_metadata)
-
-        # Store metadata with file information (requirement #2)
-        await self._store_metadata(
-            key,
-            content_type,
-            metadata,
-            file_content_length,
-            file_etag,
-            file_last_modified,
-        )
-
-        # Clean up upload directory
-        await asyncio.get_event_loop().run_in_executor(None, shutil.rmtree, upload_dir)
+    async def _native_abort_multipart_upload(
+        self,
+        key: str,
+        upload_id: str,
+    ) -> None:
+        """Abort a multipart upload and clean up."""
+        upload_dir = self.base_path / self._multipart_upload_key(upload_id, "")
+        if upload_dir.exists():
+            await asyncio.get_event_loop().run_in_executor(
+                None, shutil.rmtree, upload_dir
+            )
 
     async def abort_multipart_upload(
         self,
         key: str,
         upload_id: str,
     ) -> None:
-        """Abort a multipart upload and clean up."""
-        upload_dir = self.base_path / ".uploads" / upload_id
-        if upload_dir.exists():
-            await asyncio.get_event_loop().run_in_executor(
-                None, shutil.rmtree, upload_dir
-            )
+        """Call _native_abort_multipart_upload for local storage."""
+        await self._native_abort_multipart_upload(key, upload_id)
 
     def _write_json_file(self, path: Path, data: dict) -> None:
         """Write JSON data to file (synchronous helper)."""

@@ -53,4 +53,10 @@ benchmarks/*.sh
 # simulator cache and output
 development/simulator/simulator_output
 development/simulator/cache
+
+# python build artifacts
+python/aibrix/dist/
 python/aibrix/aibrix/batch/storage/data
+
+# setuptools-scm generated version files
+**/_version.py

@@ -17,9 +17,9 @@ from typing import BinaryIO, Optional, TextIO, Union
 
 import redis.asyncio as redis
 
-from .base import BaseStorage, StorageConfig
-from .reader import Reader
-from .utils import ObjectMetadata
+from aibrix.storage.base import BaseStorage, StorageConfig
+from aibrix.storage.reader import Reader
+from aibrix.storage.utils import ObjectMetadata
 
 
 class RedisStorage(BaseStorage):
@@ -301,30 +301,25 @@ class RedisStorage(BaseStorage):
             keys = filtered_keys[:limit] if limit is not None else filtered_keys
             has_more = limit is not None and len(filtered_keys) > limit
         else:
-            # For no prefix, we can use native Redis pagination directly
-            start = offset
-            end = offset + limit - 1 if limit is not None else -1
-
+            # For no prefix, get all keys first, then filter and paginate
+            # This ensures consistent pagination even when internal keys are present
             all_keys_with_timestamps = await redis_client.zrange(
-                "timestamps:all", start, end, withscores=False
+                "timestamps:all", 0, -1, withscores=False
             )
-            keys = []
+            all_user_keys = []
             for key_bytes in all_keys_with_timestamps:
                 key_str = key_bytes.decode("utf-8")
                 # Exclude internal keys
                 if not key_str.endswith(":index") and not key_str.startswith(
                     "timestamps:"
                 ):
-                    keys.append(key_str)
+                    all_user_keys.append(key_str)
 
-            # Check if there are more items for next page
-            has_more = False
-            if limit is not None and len(keys) == limit:
-                # Check if there's at least one more item after this page
-                next_item = await redis_client.zrange(
-                    "timestamps:all", start + limit, start + limit, withscores=False
-                )
-                has_more = len(next_item) > 0
+            # Apply pagination to filtered keys
+            paginated_keys = all_user_keys[offset:]
+
+            keys = paginated_keys[:limit] if limit is not None else paginated_keys
+            has_more = limit is not None and len(paginated_keys) > limit
 
         # Apply delimiter filtering if specified
         if delimiter and prefix:
@@ -397,7 +392,7 @@ class RedisStorage(BaseStorage):
         """
         raise NotImplementedError("head_object not supported for Redis storage")
 
-    async def create_multipart_upload(
+    async def _native_create_multipart_upload(
         self,
         key: str,
         content_type: Optional[str] = None,
@@ -412,7 +407,7 @@ class RedisStorage(BaseStorage):
         """
         raise NotImplementedError("Multipart upload not needed for Redis storage")
 
-    async def upload_part(
+    async def _native_upload_part(
         self,
         key: str,
         upload_id: str,
@@ -428,7 +423,7 @@ class RedisStorage(BaseStorage):
         """
         raise NotImplementedError("Multipart upload not needed for Redis storage")
 
-    async def complete_multipart_upload(
+    async def _native_complete_multipart_upload(
         self,
         key: str,
         upload_id: str,
@@ -443,7 +438,7 @@ class RedisStorage(BaseStorage):
         """
         raise NotImplementedError("Multipart upload not needed for Redis storage")
 
-    async def abort_multipart_upload(
+    async def _native_abort_multipart_upload(
         self,
         key: str,
         upload_id: str,

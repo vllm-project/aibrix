@@ -32,6 +32,7 @@ import (
 
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -82,7 +83,15 @@ func main() {
 		panic(err)
 	}
 
-	cache.InitForGateway(config, stopCh, redisClient, routing.ModelRouterFactory)
+	// Initialize cache with KV sync enabled for gateway
+	kvSyncEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheKVEventSyncEnabled, false)
+	remoteTokenizerEnabled := utils.LoadEnvBool(constants.EnvPrefixCacheUseRemoteTokenizer, false)
+
+	cache.InitWithOptions(config, stopCh, cache.InitOptions{
+		EnableKVSync:        kvSyncEnabled && remoteTokenizerEnabled,
+		RedisClient:         redisClient,
+		ModelRouterProvider: routing.ModelRouterFactory,
+	})
 
 	k8sClient, err := kubernetes.NewForConfig(config)
 	if err != nil {

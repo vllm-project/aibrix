@@ -1,0 +1,315 @@
+/*
+Copyright 2025 The Aibrix Team.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package algorithm
+
+import (
+	"testing"
+	"time"
+
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
+)
+
+// MockScalingContext implements the ScalingContext interface for testing purposes.
+type MockScalingContext struct {
+	TargetValue              float64
+	UpFluctuationTolerance   float64
+	DownFluctuationTolerance float64
+	MaxScaleUpRate           float64
+	MaxScaleDownRate         float64
+	CurrentUsePerPod         float64
+	MaxReplicas              int32
+	MinReplicas              int32
+
+	// Stable and Panic values
+	StableValue float64
+	PanicValue  float64
+
+	// Activation and Panic settings
+	ActivationScale int32
+	PanicThreshold  float64
+
+	// Panic mode state
+	InPanicMode  bool
+	MaxPanicPods int32
+
+	// Time windows
+	StableWindow   time.Duration
+	PanicWindow    time.Duration
+	ScaleDownDelay time.Duration
+}
+
+// Ensure MockScalingContext implements the ScalingContext interface
+var _ scalingctx.ScalingContext = (*MockScalingContext)(nil)
+
+// Basic scaling parameters
+func (m *MockScalingContext) GetTargetValue() float64 {
+	return m.TargetValue
+}
+
+func (m *MockScalingContext) GetUpFluctuationTolerance() float64 {
+	return m.UpFluctuationTolerance
+}
+
+func (m *MockScalingContext) GetDownFluctuationTolerance() float64 {
+	return m.DownFluctuationTolerance
+}
+
+func (m *MockScalingContext) GetMaxScaleUpRate() float64 {
+	return m.MaxScaleUpRate
+}
+
+func (m *MockScalingContext) GetMaxScaleDownRate() float64 {
+	return m.MaxScaleDownRate
+}
+
+func (m *MockScalingContext) GetCurrentUsePerPod() float64 {
+	return m.CurrentUsePerPod
+}
+
+func (m *MockScalingContext) SetCurrentUsePerPod(value float64) {
+	m.CurrentUsePerPod = value
+}
+
+// Replica constraints
+func (m *MockScalingContext) GetMinReplicas() int32 {
+	return m.MinReplicas
+}
+
+func (m *MockScalingContext) GetMaxReplicas() int32 {
+	return m.MaxReplicas
+}
+
+// Stable and Panic values
+func (m *MockScalingContext) GetStableValue() float64 {
+	return m.StableValue
+}
+
+func (m *MockScalingContext) SetStableValue(value float64) {
+	m.StableValue = value
+}
+
+func (m *MockScalingContext) GetPanicValue() float64 {
+	return m.PanicValue
+}
+
+func (m *MockScalingContext) SetPanicValue(value float64) {
+	m.PanicValue = value
+}
+
+// Activation scale
+func (m *MockScalingContext) GetActivationScale() int32 {
+	return m.ActivationScale
+}
+
+func (m *MockScalingContext) SetActivationScale(value int32) {
+	m.ActivationScale = value
+}
+
+// Panic threshold and mode
+func (m *MockScalingContext) GetPanicThreshold() float64 {
+	return m.PanicThreshold
+}
+
+func (m *MockScalingContext) GetInPanicMode() bool {
+	return m.InPanicMode
+}
+
+func (m *MockScalingContext) SetInPanicMode(inPanic bool) {
+	m.InPanicMode = inPanic
+}
+
+func (m *MockScalingContext) GetMaxPanicPods() int32 {
+	return m.MaxPanicPods
+}
+
+func (m *MockScalingContext) SetMaxPanicPods(pods int32) {
+	m.MaxPanicPods = pods
+}
+
+// Time windows
+func (m *MockScalingContext) GetStableWindow() time.Duration {
+	return m.StableWindow
+}
+
+func (m *MockScalingContext) GetPanicWindow() time.Duration {
+	return m.PanicWindow
+}
+
+func (m *MockScalingContext) GetScaleDownDelay() time.Duration {
+	return m.ScaleDownDelay
+}
+
+// UpdateByPaTypes - no-op for mock
+func (m *MockScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error {
+	return nil
+}
+
+func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
+	algorithm := &KPAAlgorithm{}
+
+	tests := []struct {
+		name            string
+		currentPodCount float64
+		context         *MockScalingContext
+		expected        int32
+		description     string
+	}{
+		{
+			name:            "stable_mode_basic_scaling",
+			currentPodCount: 2.0,
+			context: &MockScalingContext{
+				TargetValue:      10.0,
+				MaxScaleUpRate:   2.0,
+				MaxScaleDownRate: 2.0,
+				StableValue:      20.0, // 20/10 = 2 pods needed
+				PanicValue:       20.0,
+				ActivationScale:  1,
+				PanicThreshold:   2.0,
+				InPanicMode:      false,
+				MaxPanicPods:     0,
+				MinReplicas:      0,
+				MaxReplicas:      10,
+			},
+			expected:    2,
+			description: "Should scale to 2 pods based on stable value in stable mode",
+		},
+		{
+			name:            "panic_mode_scaling_up",
+			currentPodCount: 2.0,
+			context: &MockScalingContext{
+				TargetValue:      10.0,
+				MaxScaleUpRate:   2.0,
+				MaxScaleDownRate: 2.0,
+				StableValue:      30.0, // 30/10 = 3 pods needed
+				PanicValue:       40.0, // 40/10 = 4 pods needed
+				ActivationScale:  1,
+				PanicThreshold:   2.0,
+				InPanicMode:      true,
+				MaxPanicPods:     2,
+				MinReplicas:      0,
+				MaxReplicas:      10,
+			},
+			expected:    4,
+			description: "Should scale to 4 pods based on panic value in panic mode",
+		},
+		{
+			name:            "panic_mode_no_scale_down",
+			currentPodCount: 5.0,
+			context: &MockScalingContext{
+				TargetValue:      10.0,
+				MaxScaleUpRate:   2.0,
+				MaxScaleDownRate: 2.0,
+				StableValue:      20.0, // 20/10 = 2 pods needed
+				PanicValue:       20.0, // 20/10 = 2 pods needed
+				ActivationScale:  1,
+				PanicThreshold:   2.0,
+				InPanicMode:      true,
+				MaxPanicPods:     5, // Should not scale down below this
+				MinReplicas:      0,
+				MaxReplicas:      10,
+			},
+			expected:    5,
+			description: "Should not scale down below maxPanicPods in panic mode",
+		},
+		{
+			name:            "scale_to_zero",
+			currentPodCount: 1.0,
+			context: &MockScalingContext{
+				TargetValue:      10.0,
+				MaxScaleUpRate:   2.0,
+				MaxScaleDownRate: 2.0,
+				StableValue:      0.0, // No load, should scale to 0
+				PanicValue:       0.0,
+				ActivationScale:  1,
+				PanicThreshold:   2.0,
+				InPanicMode:      false,
+				MaxPanicPods:     0,
+				MinReplicas:      0,
+				MaxReplicas:      10,
+			},
+			expected:    0,
+			description: "Should scale to zero when no load",
+		},
+		{
+			name:            "activation_scale_from_zero",
+			currentPodCount: 0.0,
+			context: &MockScalingContext{
+				TargetValue:      10.0,
+				MaxScaleUpRate:   2.0,
+				MaxScaleDownRate: 2.0,
+				StableValue:      15.0, // 15/10 = 2 pods needed, but activation scale should apply
+				PanicValue:       15.0,
+				ActivationScale:  3, // Should scale to 3 when activating
+				PanicThreshold:   2.0,
+				InPanicMode:      false,
+				MaxPanicPods:     0,
+				MinReplicas:      0,
+				MaxReplicas:      10,
+			},
+			expected:    3,
+			description: "Should respect activation scale when scaling from zero",
+		},
+		{
+			name:            "max_scale_up_rate_limit",
+			currentPodCount: 2.0,
+			context: &MockScalingContext{
+				TargetValue:      10.0,
+				MaxScaleUpRate:   1.5, // Can only scale up by 50%
+				MaxScaleDownRate: 2.0,
+				StableValue:      100.0, // Would need 10 pods, but limited by scale up rate
+				PanicValue:       100.0,
+				ActivationScale:  1,
+				PanicThreshold:   2.0,
+				InPanicMode:      false,
+				MaxPanicPods:     0,
+				MinReplicas:      0,
+				MaxReplicas:      20,
+			},
+			expected:    3, // 2 * 1.5 = 3 (ceil)
+			description: "Should be limited by max scale up rate",
+		},
+		{
+			name:            "max_scale_down_rate_limit",
+			currentPodCount: 4.0,
+			context: &MockScalingContext{
+				TargetValue:      10.0,
+				MaxScaleUpRate:   2.0,
+				MaxScaleDownRate: 2.0, // Can scale down by 50% (4/2 = 2 minimum)
+				StableValue:      5.0, // Would need 1 pod, but limited by scale down rate
+				PanicValue:       5.0,
+				ActivationScale:  1,
+				PanicThreshold:   2.0,
+				InPanicMode:      false,
+				MaxPanicPods:     0,
+				MinReplicas:      0,
+				MaxReplicas:      10,
+			},
+			expected:    2, // 4/2 = 2 (floor)
+			description: "Should be limited by max scale down rate",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := algorithm.computeTargetReplicas(tt.currentPodCount, tt.context)
+			if result != tt.expected {
+				t.Errorf("computeTargetReplicas() = %d, expected %d. %s", result, tt.expected, tt.description)
+			}
+		})
+	}
+}

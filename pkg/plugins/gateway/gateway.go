@@ -54,7 +54,7 @@ type Server struct {
 	redisClient         *redis.Client
 	ratelimiter         ratelimiter.RateLimiter
 	client              kubernetes.Interface
-	gatewayClient       *gatewayapi.Clientset
+	gatewayClient       gatewayapi.Interface
 	requestCountTracker map[string]int
 	cache               cache.Cache
 	metricsServer       *metrics.Server
@@ -65,7 +65,7 @@ type Server struct {
 	activeForwards utils.SyncMap[string, *forwardingRequest]
 }
 
-func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient *gatewayapi.Clientset, forwardingAPIs map[string]string) *Server {
+func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient gatewayapi.Interface, forwardingAPIs map[string]string) *Server {
 	c, err := cache.Get()
 	if err != nil {
 		panic(err)
@@ -98,8 +98,6 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var rpm, traceTerm int64
 	var respErrorCode int
 	var model string
-	var requestPath string
-	var routingAlgorithm types.RoutingAlgorithm
 	var routerCtx *types.RoutingContext
 	var stream, isRespError bool
 	ctx := srv.Context()
@@ -158,10 +156,13 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 
 		switch v := req.Request.(type) {
 		case *extProcPb.ProcessingRequest_RequestHeaders:
-			resp, user, rpm, routingAlgorithm, requestPath, requestID = s.HandleRequestHeaders(ctx, requestID, req)
+			resp, user, rpm, routerCtx = s.HandleRequestHeaders(ctx, requestID, req)
+			if routerCtx != nil {
+				ctx = routerCtx
+			}
 
 		case *extProcPb.ProcessingRequest_RequestBody:
-			resp, model, routerCtx, stream, traceTerm = s.HandleRequestBody(ctx, requestID, requestPath, req, user, routingAlgorithm)
+			resp, model, routerCtx, stream, traceTerm = s.HandleRequestBody(ctx, requestID, req, user)
 			if s.isContinueAndReplaceResponse(resp) {
 				// Response of forwarded request will be streamed.
 				if streamingRequest, ok := s.activeForwards.Load(requestID); !ok {
@@ -261,6 +262,11 @@ func (s *Server) validateHTTPRouteStatus(ctx context.Context, model string) erro
 			}
 		}
 	}
+
+	if len(errMsg) == 0 {
+		return nil
+	}
+
 	return errors.New(strings.Join(errMsg, ", "))
 }
 

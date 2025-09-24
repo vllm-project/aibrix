@@ -17,21 +17,68 @@ limitations under the License.
 package algorithm
 
 import (
+	"context"
 	"math"
 
+	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 	"k8s.io/klog/v2"
-
-	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/common"
 )
 
-type ApaScalingAlgorithm struct{}
+// APAAlgorithm implements Application-specific Pod Autoscaling
+type APAAlgorithm struct {
+	config AlgorithmConfig
+}
 
-var _ ScalingAlgorithm = (*ApaScalingAlgorithm)(nil)
+// NewAPAAlgorithm creates a new APA algorithm instance
+func NewAPAAlgorithm(config AlgorithmConfig) *APAAlgorithm {
+	return &APAAlgorithm{
+		config: config,
+	}
+}
 
-// ComputeTargetReplicas - Apa's algorithm references and enhances the algorithm in the following paper:
+var _ ScalingAlgorithm = (*APAAlgorithm)(nil)
+
+// ComputeRecommendation calculates desired replica count for APA strategy
+func (a *APAAlgorithm) ComputeRecommendation(ctx context.Context, request ScalingRequest) (*ScalingRecommendation, error) {
+	metrics := request.AggregatedMetrics
+
+	// APA uses current value directly
+	request.ScalingContext.SetCurrentUsePerPod(metrics.CurrentValue)
+
+	// Compute target replicas using APA algorithm
+	desiredReplicas := a.computeTargetReplicas(float64(request.CurrentReplicas), request.ScalingContext)
+
+	// Apply constraints
+	desiredReplicas = applyConstraints(desiredReplicas, request.Constraints)
+
+	return &ScalingRecommendation{
+		DesiredReplicas: desiredReplicas,
+		Confidence:      metrics.Confidence,
+		Reason:          "apa scaling based on current metrics",
+		Algorithm:       "apa",
+		ScaleValid:      true,
+		Metadata: map[string]interface{}{
+			"current_value": metrics.CurrentValue,
+			"trend":         metrics.Trend,
+		},
+	}, nil
+}
+
+// GetAlgorithmType returns the algorithm type
+func (a *APAAlgorithm) GetAlgorithmType() string {
+	return "apa"
+}
+
+// UpdateConfiguration updates the algorithm configuration
+func (a *APAAlgorithm) UpdateConfiguration(config AlgorithmConfig) error {
+	a.config = config
+	return nil
+}
+
+// computeTargetReplicas - APA's algorithm references and enhances the algorithm in the following paper:
 // Huo, Qizheng, et al. "High Concurrency Response Strategy based on Kubernetes Horizontal Pod Autoscaler."
 // Journal of Physics: Conference Series. Vol. 2451. No. 1. IOP Publishing, 2023.
-func (a *ApaScalingAlgorithm) ComputeTargetReplicas(currentPodCount float64, context common.ScalingContext) int32 {
+func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context scalingctx.ScalingContext) int32 {
 	expectedUse := context.GetTargetValue()
 	upTolerance := context.GetUpFluctuationTolerance()
 	downTolerance := context.GetDownFluctuationTolerance()

@@ -18,14 +18,15 @@ package modelrouter
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/selection"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
@@ -36,6 +37,7 @@ import (
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
@@ -44,8 +46,8 @@ import (
 const (
 	// TODO (varun): cleanup model related identifiers and establish common consensus
 	modelHeaderIdentifier = "model"
-	modelIdentifier       = "model.aibrix.ai/name"
-	modelPortIdentifier   = "model.aibrix.ai/port"
+	modelIdentifier       = constants.ModelLabelName
+	modelPortIdentifier   = constants.ModelLabelPort
 	// TODO (varun): parameterize it or dynamically resolve it
 	aibrixEnvoyGateway          = "aibrix-eg"
 	aibrixEnvoyGatewayNamespace = "aibrix-system"
@@ -105,12 +107,6 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 		AddFunc:    modelRouter.addRouteFromRayClusterFleet,
 		DeleteFunc: modelRouter.deleteRouteFromRayClusterFleet,
 	})
-
-	klog.Info("Waiting for caches to sync")
-	if ok := cacher.WaitForCacheSync(context.TODO()); !ok {
-		return errors.New("modelrouter controller: failed to sync cache")
-	}
-	klog.Info("All caches synced")
 
 	return err
 }
@@ -235,6 +231,15 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 								modelHeaderMatch,
 							},
 						},
+						{
+							Path: &gatewayv1.HTTPPathMatch{
+								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+								Value: ptr.To("/v1/embeddings"),
+							},
+							Headers: []gatewayv1.HTTPHeaderMatch{
+								modelHeaderMatch,
+							},
+						},
 					},
 					BackendRefs: []gatewayv1.HTTPBackendRef{
 						{
@@ -282,7 +287,7 @@ func (m *ModelRouter) createReferenceGrant(namespace string) {
 	}
 
 	if err := m.Client.Get(context.Background(), client.ObjectKeyFromObject(&referenceGrant), &referenceGrant); err == nil {
-		klog.InfoS("reference grant already exists", "referencegrant", referenceGrant.Name)
+		klog.V(4).InfoS("reference grant already exists", "referencegrant", referenceGrant.Name)
 		return
 	}
 
@@ -341,21 +346,25 @@ func (m *ModelRouter) deleteHTTPRoute(namespace string, labels map[string]string
 }
 
 func (m *ModelRouter) deleteReferenceGrant(namespace string) {
-	// one reference grant per namespace is shared by all envoy gateway objects
-	// only delete reference grant object if all model deployments are deleted in the namespace
-	deploymentList := &appsv1.DeploymentList{}
-	err := m.Client.List(context.Background(), deploymentList, client.InNamespace(namespace))
+	selector, err := labels.NewRequirement(modelIdentifier, selection.Exists, nil)
 	if err != nil {
-		klog.ErrorS(err, "deleteReferenceGrant: unable to list all deployments")
+		klog.ErrorS(err, "Failed to create label requirement", "namespace", namespace)
 		return
 	}
-	for _, deployment := range deploymentList.Items {
-		_, ok := deployment.Labels[modelIdentifier]
-		if !ok {
-			continue
-		}
-		klog.InfoS("ignore delete reference grant, at least one model deployment shares same reference grant in the namesapce",
-			"namespace", namespace, "deployment", deployment.Name)
+
+	listOpts := &client.ListOptions{
+		Namespace:     namespace,
+		LabelSelector: labels.SelectorFromSet(labels.Set{}).Add(*selector),
+	}
+
+	var deploymentList appsv1.DeploymentList
+	if err := m.Client.List(context.Background(), &deploymentList, listOpts); err != nil {
+		klog.ErrorS(err, "Failed to list model deployments", "namespace", namespace)
+		return
+	}
+	if len(deploymentList.Items) > 0 {
+		klog.InfoS("Skip deleting ReferenceGrant: model deployment still exists",
+			"namespace", namespace, "existingDeployments", len(deploymentList.Items))
 		return
 	}
 
@@ -367,8 +376,10 @@ func (m *ModelRouter) deleteReferenceGrant(namespace string) {
 		},
 	}
 	if err := m.Client.Delete(context.Background(), &referenceGrant); err != nil {
-		klog.ErrorS(err, "fail to delete reference grant", "referencegrant", referenceGrantName)
-		return
+		if !apierrors.IsNotFound(err) {
+			klog.ErrorS(err, "Failed to delete ReferenceGrant", "name", referenceGrantName, "namespace", namespace)
+			return
+		}
 	}
 	klog.InfoS("delete reference grant", "referencegrant", referenceGrantName)
 }
