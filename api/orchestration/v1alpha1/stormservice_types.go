@@ -17,6 +17,9 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"strconv"
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -119,6 +122,10 @@ type StormServiceStatus struct {
 
 	// The label selector information of the pods belonging to the StormService object.
 	ScalingTargetSelector string `json:"scalingTargetSelector,omitempty"`
+
+	// CanaryStatus tracks the progress of canary deployments.
+	// +optional
+	CanaryStatus *CanaryStatus `json:"canaryStatus,omitempty"`
 }
 
 // These are valid conditions of a stormService.
@@ -146,6 +153,10 @@ type StormServiceUpdateStrategy struct {
 
 	// +optional
 	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty" protobuf:"bytes,2,opt,name=maxSurge"`
+
+	// Canary defines the canary deployment strategy for gradual rollouts.
+	// +optional
+	Canary *CanaryUpdateStrategy `json:"canary,omitempty"`
 }
 
 // +enum
@@ -183,6 +194,149 @@ type StormServiceList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []StormService `json:"items"`
+}
+
+// CanaryUpdateStrategy defines the canary deployment configuration
+type CanaryUpdateStrategy struct {
+	// Steps defines the sequence of canary deployment steps
+	Steps []CanaryStep `json:"steps,omitempty"`
+}
+
+// CanaryStep defines a single step in the canary deployment process
+type CanaryStep struct {
+	// SetWeight defines the percentage of traffic/replicas to route to the new version
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	SetWeight *int32 `json:"setWeight,omitempty"`
+
+	// Pause defines a pause in the canary deployment
+	// +optional
+	Pause *PauseStep `json:"pause,omitempty"`
+}
+
+// PauseStep defines pause behavior in canary deployments
+type PauseStep struct {
+	// Duration specifies how long to pause
+	// - String: "30s", "5m", etc. (parsed as time.Duration)
+	// - Int: seconds as integer
+	// - nil: manual pause requiring user intervention
+	// Resume manual pause by setting duration to "0" or 0
+	// +optional
+	Duration *intstr.IntOrString `json:"duration,omitempty"`
+}
+
+// DurationSeconds converts the pause duration to seconds
+// Returns:
+// - >= 0: pause duration in seconds
+// - 0: manual pause (nil duration) or resume (duration "0"/0)
+// - -1: invalid duration string
+func (p *PauseStep) DurationSeconds() int32 {
+	if p.Duration == nil {
+		return 0 // Manual pause
+	}
+
+	if p.Duration.Type == intstr.String {
+		// Try parsing as integer first
+		if s, err := strconv.ParseInt(p.Duration.StrVal, 10, 32); err == nil {
+			return int32(s)
+		}
+		// Try parsing as duration string
+		if d, err := time.ParseDuration(p.Duration.StrVal); err == nil {
+			return int32(d.Seconds())
+		}
+		return -1 // Invalid string
+	}
+
+	return p.Duration.IntVal
+}
+
+// IsManualPause returns true if this is a manual pause (nil duration)
+func (p *PauseStep) IsManualPause() bool {
+	return p.Duration == nil
+}
+
+// IsResume returns true if this represents a resume action (duration 0 or "0")
+func (p *PauseStep) IsResume() bool {
+	if p.Duration == nil {
+		return false
+	}
+	return p.DurationSeconds() == 0
+}
+
+// CanaryStatus tracks the progress of a canary deployment
+type CanaryStatus struct {
+	// CurrentStep is the index of the current step in the canary deployment
+	// +optional
+	CurrentStep int32 `json:"currentStep,omitempty"`
+
+	// PauseConditions indicates the reasons why the canary deployment is paused
+	// When paused, the first pause condition's StartTime indicates when the pause began
+	// +optional
+	PauseConditions []PauseCondition `json:"pauseConditions,omitempty"`
+
+	// NOTE: Removed StableRevision and CanaryRevision fields
+	// Use status.CurrentRevision for stable revision
+	// Use status.UpdateRevision for canary revision
+
+	// Phase indicates the current phase of the canary deployment
+	// +optional
+	Phase CanaryPhase `json:"phase,omitempty"`
+
+	// NOTE: Removed CanaryReplicas and StableReplicas fields for replica mode
+	// Use status.UpdatedReplicas for canary replica count
+	// Calculate stable replicas as: status.Replicas - status.UpdatedReplicas
+
+	// RoleCanaryCounts tracks per-role canary pod counts (pooled mode)
+	// TODO(jiaxin): use top level status instead once the separate PR is merged.
+	// +optional
+	RoleCanaryCounts map[string]int32 `json:"roleCanaryCounts,omitempty"`
+
+	// TotalCanaryPods is the total number of canary pods across all roles (pooled mode)
+	// +optional
+	TotalCanaryPods int32 `json:"totalCanaryPods,omitempty"`
+
+	// AbortedAt indicates when the canary deployment was aborted
+	// +optional
+	AbortedAt *metav1.Time `json:"abortedAt,omitempty"`
+
+	// Message provides details about the current canary state
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
+// CanaryPhase represents the phase of a canary deployment
+// +enum
+type CanaryPhase string
+
+const (
+	// CanaryPhaseInitializing indicates the canary deployment is starting
+	CanaryPhaseInitializing CanaryPhase = "Initializing"
+	// CanaryPhaseProgressing indicates the canary deployment is progressing through steps
+	CanaryPhaseProgressing CanaryPhase = "Progressing"
+	// CanaryPhasePaused indicates the canary deployment is paused
+	CanaryPhasePaused CanaryPhase = "Paused"
+	// CanaryPhaseCompleted indicates the canary deployment has completed successfully
+	CanaryPhaseCompleted CanaryPhase = "Completed"
+	// CanaryPhaseAborted indicates the canary deployment was aborted/rolled back
+	CanaryPhaseAborted CanaryPhase = "Aborted"
+)
+
+// PauseReason represents the reason for a pause condition
+// +enum
+type PauseReason string
+
+const (
+	// PauseReasonCanaryPauseStep indicates a pause at a canary step
+	PauseReasonCanaryPauseStep PauseReason = "CanaryPauseStep"
+)
+
+// PauseCondition represents a pause condition in the canary deployment
+type PauseCondition struct {
+	// Reason indicates why the canary deployment was paused
+	Reason PauseReason `json:"reason"`
+	// StartTime is when the pause condition was added
+	StartTime metav1.Time `json:"startTime"`
 }
 
 func init() {

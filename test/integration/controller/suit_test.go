@@ -20,6 +20,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -27,6 +28,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"go.uber.org/zap/zapcore"
 	"k8s.io/klog/v2"
 
 	"k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
@@ -81,14 +83,18 @@ func TestAPIs(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	// Initialize klog flags and set verbosity to 0 (suppress all info logs)
+	// Initialize klog flags and suppress all logging
 	klog.InitFlags(nil)
 	_ = flag.Set("v", "0")
 	_ = flag.Set("logtostderr", "false")
 	_ = flag.Set("alsologtostderr", "false")
+	_ = flag.Set("stderrthreshold", "FATAL")
 
-	// Configure controller-runtime logger to only show errors
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(false)))
+	// Configure controller-runtime logger to suppress all logs during tests
+	logf.SetLogger(zap.New(zap.WriteTo(io.Discard), zap.UseDevMode(false), zap.Level(zapcore.FatalLevel)))
+
+	// Also suppress klog by redirecting to discard
+	klog.SetOutput(io.Discard)
 
 	ctx, cancel = context.WithCancel(context.TODO())
 
