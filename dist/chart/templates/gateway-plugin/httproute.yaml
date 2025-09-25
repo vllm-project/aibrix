@@ -46,6 +46,9 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/models
+        - path:
+            type: PathPrefix
+            value: /view
       backendRefs:
         - name: aibrix-metadata-service
           port: 8090
