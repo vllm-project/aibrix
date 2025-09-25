@@ -30,6 +30,7 @@ from aibrix.openapi.protocol import (
     ErrorResponse,
     LoadLoraAdapterRequest,
     UnloadLoraAdapterRequest,
+    MultiModalityRequest,
 )
 
 logger = init_logger(__name__)
@@ -104,6 +105,84 @@ class VLLMInferenceEngine(InferenceEngine):
 
         return response
 
+    async def forward_mm_request(
+        self, request: MultiModalityRequest
+    ) -> Union[ErrorResponse, httpx.Response]:
+        
+        generate_url = urljoin(self.endpoint, "/v1/completion")
+
+        # Validate request parameters
+        validation_error = self._validate_mm_request(request)
+        if validation_error:
+            logger.error(f"Multi-modality request validation failed: {validation_error}")
+            return self._create_error_response(
+                validation_error,
+                err_type="ValidationError",
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
+
+        try:
+            response = await self._make_request(
+                "post", generate_url, json=request.model_dump()
+            )
+        except httpx.TimeoutException as e:
+            logger.error(
+                f"Timeout forwarding multi-modality request '{request}': {e}"
+            )
+            return self._create_error_response(
+                f"Timeout forwarding multi-modality request '{request}' - operation took too long",
+                err_type="TimeoutError",
+                status_code=HTTPStatus.REQUEST_TIMEOUT,
+            )
+        except httpx.ConnectError as e:
+            logger.error(f"Connection error forwarding multi-modality request '{request}': {e}")
+            return self._create_error_response(
+                f"Cannot connect to inference engine for multi-modality request '{request}'",
+                err_type="ConnectionError",
+                status_code=HTTPStatus.BAD_GATEWAY,
+            )
+        except httpx.RequestError as e:
+            logger.error(
+                f"Request error forwarding multi-modality request '{request}' : {e}"
+            )
+            return self._create_error_response(
+                f"Request failed for multi-modality reques '{request}'",
+                err_type="RequestError",
+                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+        except Exception as e:
+            logger.error(
+                f"Unexpected error forwarding multi-modality request '{request}': {e}"
+            )
+            return self._create_error_response(
+                f"Unexpected error forwarding multi-modality request '{request}'",
+                err_type="ServerError",
+                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+
+        if response.status_code != HTTPStatus.OK:
+            error_detail = ""
+            try:
+                error_detail = response.text
+            except Exception:
+                error_detail = "Unable to read error details"
+
+            logger.error(
+                f"Failed to forward multi-modality request '{request}' - "
+                f"Status: {response.status_code}, Error: {error_detail}"
+            )
+
+            return self._create_error_response(
+                f"Failed forward multi-modality request '{request}': {error_detail}",
+                err_type="ServerError",
+                status_code=HTTPStatus(value=response.status_code),
+            )
+
+        logger.info(
+            f"Successfully complete request '{request}'"
+        )
+        return response
+        
     async def load_lora_adapter(
         self, request: LoadLoraAdapterRequest
     ) -> Union[ErrorResponse, str]:
@@ -272,6 +351,26 @@ class VLLMInferenceEngine(InferenceEngine):
         logger.info(f"Successfully unloaded LoRA adapter '{lora_name}'")
         return f"Success: LoRA adapter '{lora_name}' unloaded successfully."
 
+    async def forward_mm_request(
+        self, request: LoadLoraAdapterRequest
+    ) -> Union[ErrorResponse, str]:
+        return self._create_error_response(
+            f"Inference engine {self.name} with version {self.version} "
+            "not support forward multi-modality request",
+            err_type="NotImplementedError",
+            status_code=HTTPStatus.NOT_IMPLEMENTED,
+        )
+        
+    async def forward_mm_response(
+        self, request: LoadLoraAdapterRequest
+    ) -> Union[ErrorResponse, str]:
+        return self._create_error_response(
+            f"Inference engine {self.name} with version {self.version} "
+            "not support forward multi-modality response",
+            err_type="NotImplementedError",
+            status_code=HTTPStatus.NOT_IMPLEMENTED,
+        )
+        
     async def list_models(self) -> Union[ErrorResponse, str]:
         model_list_url = urljoin(self.endpoint, "/v1/models")
 

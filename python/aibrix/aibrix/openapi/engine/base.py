@@ -42,7 +42,17 @@ class InferenceEngine(ABC):
         status_code: HTTPStatus = HTTPStatus.BAD_REQUEST,
     ) -> ErrorResponse:
         return ErrorResponse(message=message, type=err_type, code=status_code.value)
-
+    
+    async def forward_mm_request(
+        self, request: LoadLoraAdapterRequest
+    ) -> Union[ErrorResponse, str]:
+        return self._create_error_response(
+            f"Inference engine {self.name} with version {self.version} "
+            "not support forward multi-modality request",
+            err_type="NotImplementedError",
+            status_code=HTTPStatus.NOT_IMPLEMENTED,
+        )
+     
     async def load_lora_adapter(
         self, request: LoadLoraAdapterRequest
     ) -> Union[ErrorResponse, str]:
