@@ -1,4 +1,5 @@
 import argparse
+import mimetypes
 import os
 import shutil
 import time
@@ -7,15 +8,12 @@ from typing import Optional
 from urllib.parse import urljoin
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, Request, Response, HTTPException, Query
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.datastructures import State
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 from httpx import Headers
 from prometheus_client import make_asgi_app, multiprocess
 from starlette.routing import Mount
-import mimetypes
-
-from fastapi.responses import FileResponse
 
 from aibrix import __version__, envs
 from aibrix.config import EXCLUDE_METRICS_HTTP_ENDPOINTS
