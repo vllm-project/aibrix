@@ -79,6 +79,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationorchestrationv1alpha1.RoleSetTemplateSpecApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleSpec"):
 		return &applyconfigurationorchestrationv1alpha1.RoleSpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleStatus"):
+		return &applyconfigurationorchestrationv1alpha1.RoleStatusApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleUpdateStrategy"):
 		return &applyconfigurationorchestrationv1alpha1.RoleUpdateStrategyApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("SchedulingStrategy"):
