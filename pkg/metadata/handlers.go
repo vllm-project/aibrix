@@ -20,7 +20,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/redis/go-redis/v9"
@@ -52,6 +56,9 @@ func NewHTTPServer(addr string, redis *redis.Client) *http.Server {
 	r.HandleFunc("/DeleteUser", server.deleteUser).Methods("POST")
 	// OpenAI API related handlers
 	r.HandleFunc("/v1/models", server.models).Methods("GET")
+
+	r.HandleFunc("/view", server.view).Methods("POST") // Changed from GET to POST
+
 	// Health related handlers
 	r.HandleFunc("/healthz", server.healthz).Methods("GET")
 	r.HandleFunc("/readyz", server.readyz).Methods("GET")
@@ -73,6 +80,78 @@ func (s *httpServer) models(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, "%s", string(jsonBytes))
+}
+
+func (s *httpServer) view(w http.ResponseWriter, r *http.Request) {
+	var req ViewRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Validate required parameters
+	if req.IP == "" {
+		http.Error(w, "missing required parameter: ip", http.StatusBadRequest)
+		return
+	}
+	if req.Port == "" {
+		http.Error(w, "missing required parameter: port", http.StatusBadRequest)
+		return
+	}
+	if req.Path == "" {
+		http.Error(w, "missing required parameter: path", http.StatusBadRequest)
+		return
+	}
+	if !strings.HasPrefix(req.Path, "/") {
+		req.Path = "/" + req.Path
+	}
+
+	// Construct the download URL
+	downloadURL := fmt.Sprintf("http://%s:%s/view%s", req.IP, req.Port, req.Path)
+	klog.Infof("Attempting to download file from: %s", downloadURL)
+
+	// Make request to download the model
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	resp, err := client.Get(downloadURL)
+	if err != nil {
+		klog.Errorf("Failed to download file from %s: %v", downloadURL, err)
+		http.Error(w, fmt.Sprintf("failed to download file: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		klog.Errorf("Download failed with status %d from %s", resp.StatusCode, downloadURL)
+		http.Error(w, fmt.Sprintf("download failed with status: %d", resp.StatusCode), resp.StatusCode)
+		return
+	}
+
+	// Set appropriate headers for file download
+	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+	if contentLength := resp.Header.Get("Content-Length"); contentLength != "" {
+		w.Header().Set("Content-Length", contentLength)
+	}
+
+	// Extract filename from path for Content-Disposition
+	filename := filepath.Base(req.Path)
+	if filename == "." || filename == "/" {
+		filename = "model_file"
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+
+	// Stream the file content to the response
+	_, err = io.Copy(w, resp.Body)
+	if err != nil {
+		klog.Errorf("Failed to stream file: %v", err)
+		// Note: Can't send HTTP error here as headers are already written
+		return
+	}
+
+	klog.Infof("Successfully downloaded file from %s", downloadURL)
 }
 
 func (s *httpServer) createUser(w http.ResponseWriter, r *http.Request) {
@@ -198,4 +277,11 @@ func (s *httpServer) readyz(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "ready")
+}
+
+// Add this struct definition near the top of the file after the httpServer struct
+type ViewRequest struct {
+	IP   string `json:"ip"`
+	Port string `json:"port"`
+	Path string `json:"path"`
 }
