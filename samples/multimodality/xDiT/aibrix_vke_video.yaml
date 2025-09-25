@@ -1,9 +1,9 @@
 apiVersion: apps/v1 
 kind: Deployment 
 metadata:
-  name: hunyuan-dit 
+  name: cogvideox-2b 
   labels: 
-    model.aibrix.ai/name: hunyuan-dit 
+    model.aibrix.ai/name: cogvideox-2b 
     model.aibrix.ai/port: "6000" 
 spec: 
   replicas: 1 
@@ -14,11 +14,11 @@ spec:
     type: RollingUpdate 
   selector: 
     matchLabels: 
-      model.aibrix.ai/name: hunyuan-dit 
+      model.aibrix.ai/name: cogvideox-2b 
   template: 
     metadata: 
       labels: 
-        model.aibrix.ai/name: hunyuan-dit 
+        model.aibrix.ai/name: cogvideox-2b 
     spec: 
       initContainers: 
         - command:             
@@ -92,12 +92,12 @@ apiVersion: v1
 kind: Service 
 metadata: 
   labels: 
-    model.aibrix.ai/name: hunyuan-dit 
+    model.aibrix.ai/name: cogvideox-2b 
     prometheus-discovery: "true" 
   annotations: 
     prometheus.io/scrape: "true" 
     prometheus.io/port: "8080" 
-  name: hunyuan-dit # Note: The Service name must match the label value model.aibrix.ai/name in the Deployment 
+  name: cogvideox-2b # Note: The Service name must match the label value model.aibrix.ai/name in the Deployment 
   namespace: default 
 spec: 
   ports: 
@@ -110,5 +110,5 @@ spec:
       protocol: TCP 
       targetPort: 8080 
   selector: 
-    model.aibrix.ai/name: hunyuan-dit 
+    model.aibrix.ai/name: cogvideox-2b 
   type: ClusterIP
