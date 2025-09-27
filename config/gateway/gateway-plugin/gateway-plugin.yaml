@@ -182,6 +182,12 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/embeddings
+        - path:
+            type: PathPrefix
+            value: /v1/image/generations
+        - path:
+            type: PathPrefix
+            value: /v1/video/generations
       backendRefs:
         - name: aibrix-gateway-plugins
           port: 50052
