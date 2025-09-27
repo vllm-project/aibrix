@@ -1,4 +1,5 @@
 import argparse
+import mimetypes
 import os
 import shutil
 import time
@@ -7,9 +8,9 @@ from typing import Optional
 from urllib.parse import urljoin
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.datastructures import State
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from httpx import Headers
 from prometheus_client import make_asgi_app, multiprocess
 from starlette.routing import Mount
@@ -234,6 +235,49 @@ def nullable_str(val: str):
     if not val or val == "None":
         return None
     return val
+
+
+# view endpoint returns the file at file_path
+@router.get("/view/{file_path:path}")
+async def view_file_complete(file_path: str):
+    """
+    Return the entire file for download using path parameter.
+    Usage: GET /view/etc/hosts or GET /view/tmp/myfile.txt
+    """
+    try:
+        # Ensure absolute path
+        if not file_path.startswith("/"):
+            file_path = "/" + file_path
+
+        # Validate that the file exists
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+        # Determine the content type based on file extension
+        content_type, _ = mimetypes.guess_type(file_path)
+        if content_type is None:
+            content_type = "application/octet-stream"
+
+        filename = os.path.basename(file_path)
+
+        # Create FileResponse
+        response = FileResponse(
+            path=file_path, media_type=content_type, filename=filename
+        )
+
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+
+        return response
+
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+    except PermissionError:
+        raise HTTPException(
+            status_code=403, detail=f"Permission denied accessing file: {file_path}"
+        )
+    except Exception as e:
+        logger.error(f"Error serving file {file_path}: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 def main():
