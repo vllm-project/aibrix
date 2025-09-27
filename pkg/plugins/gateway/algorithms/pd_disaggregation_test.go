@@ -28,6 +28,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -165,25 +166,28 @@ func TestDoPrefillRequest(t *testing.T) {
 		}
 	}
 
-	createRouter := func(pods []*v1.Pod) *pdRouter {
+	createRouter := func(pods []*v1.Pod, metricsMap map[string]map[string]metrics.MetricValue) *pdRouter {
 		tokenizerObj, err := tokenizer.NewTokenizer("character", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
+		c := cache.NewWithPodsMetricsForTest(pods, "m1", metricsMap)
 		return &pdRouter{
 			prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
-			cache:              cache.NewWithPodsForTest(pods, "m1"),
+			cache:              c,
 			tokenizer:          tokenizerObj,
 		}
 	}
 
 	tests := []struct {
-		name        string
-		serverCode  int
-		serverResp  string
-		llmEngine   string
-		expectError bool
-		errorMsg    string
+		name             string
+		serverCode       int
+		serverResp       string
+		llmEngine        string
+		expectError      bool
+		errorMsg         string
+		podMetrics       map[string]map[string]metrics.MetricValue
+		expectedPodNames []string
 	}{
 		{
 			name:        "successful vllm prefill request",
@@ -205,6 +209,58 @@ func TestDoPrefillRequest(t *testing.T) {
 			llmEngine:   "sglang",
 			expectError: false,
 		},
+		{
+			name:        "async vllm prefill request, with imbalance load request",
+			serverCode:  http.StatusOK,
+			llmEngine:   "vllm",
+			expectError: false,
+			podMetrics: map[string]map[string]metrics.MetricValue{
+				"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+				"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 10}},
+				"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 6}},
+				"p4": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 12}},
+			},
+			expectedPodNames: []string{"p1"},
+		},
+		{
+			name:        "async sglang prefill request, with imbalance load request",
+			serverCode:  http.StatusOK,
+			llmEngine:   "sglang",
+			expectError: false,
+			podMetrics: map[string]map[string]metrics.MetricValue{
+				"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 10}},
+				"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+				"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 4}},
+				"p4": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 3}},
+			},
+			expectedPodNames: []string{"p2"},
+		},
+		{
+			name:        "async vllm prefill request, with no imbalance load request",
+			serverCode:  http.StatusOK,
+			llmEngine:   "vllm",
+			expectError: false,
+			podMetrics: map[string]map[string]metrics.MetricValue{
+				"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 9}},
+				"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 10}},
+				"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 8}},
+				"p4": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 12}},
+			},
+			expectedPodNames: []string{"p1", "p2", "p3", "p4"},
+		},
+		{
+			name:        "async sglang prefill request, with no imbalance load request",
+			serverCode:  http.StatusOK,
+			llmEngine:   "sglang",
+			expectError: false,
+			podMetrics: map[string]map[string]metrics.MetricValue{
+				"p1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 6}},
+				"p2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 1}},
+				"p3": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 4}},
+				"p4": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 3}},
+			},
+			expectedPodNames: []string{"p1", "p2", "p3", "p4"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -215,17 +271,22 @@ func TestDoPrefillRequest(t *testing.T) {
 			prefillPods := []*v1.Pod{
 				createPrefillPod("p1", tt.llmEngine),
 				createPrefillPod("p2", tt.llmEngine),
+				createPrefillPod("p3", tt.llmEngine),
+				createPrefillPod("p4", tt.llmEngine),
 			}
 
 			routingCtx := createRoutingCtx()
-			router := createRouter(prefillPods)
+			router := createRouter(prefillPods, tt.podMetrics)
 
-			_, err := router.doPrefillRequest(routingCtx, prefillPods, tt.llmEngine)
+			selectedPod, err := router.doPrefillRequest(routingCtx, prefillPods, tt.llmEngine)
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)
 			} else {
 				assert.NoError(t, err)
+				if tt.expectedPodNames != nil {
+					assert.Contains(t, tt.expectedPodNames, selectedPod.Name)
+				}
 				if tt.llmEngine == "sglang" {
 					time.Sleep(100 * time.Millisecond) // Wait for async goroutine
 				}

@@ -145,11 +145,22 @@ func (r *pdRouter) evaluatePrefixCache(ctx *types.RoutingContext, prefillPods []
 	matchedPods, prefixHashes := r.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
 
 	var prefillPod *v1.Pod
-	if len(matchedPods) > 0 {
+	// check for load imbalance first
+	targetPod, isImbalanced := getTargetPodOnLoadImbalance(r.cache, prefillPods)
+	if isImbalanced {
+		klog.InfoS("load imbalance detected, selecting least-loaded prefill pod",
+			"request_id", ctx.RequestID, "selected_pod", targetPod.Name)
+		prefillPod = targetPod
+	} else if len(matchedPods) > 0 {
 		prefillPod = getTargetPodFromMatchedPods(r.cache, prefillPods, matchedPods)
 	}
 	if prefillPod == nil {
 		prefillPod, err = utils.SelectRandomPod(prefillPods, rand.Intn)
+		if err == nil {
+			klog.V(4).InfoS("fallback to random prefill pod selection",
+				"request_id", ctx.RequestID,
+				"selected_pod", prefillPod.Name)
+		}
 	}
 
 	return prefillPod, prefixHashes, err
@@ -171,7 +182,17 @@ func (r *pdRouter) selectDecodePod(prefillPod *v1.Pod, decodePods []*v1.Pod) *v1
 		return nil
 	}
 
-	decodePod, _ := utils.SelectRandomPod(filteredDecodePods, rand.Intn)
+	// prefer decode pod with least running requests
+	decodePod := selectPodWithLeastRequestCount(r.cache, filteredDecodePods)
+	if decodePod != nil {
+		klog.V(5).InfoS("selected decode pod by least request count",
+			"prefill_pod", prefillPod.Name,
+			"decode_pod", decodePod.Name)
+		return decodePod
+	}
+
+	// fallback: random selection pods
+	decodePod, _ = utils.SelectRandomPod(filteredDecodePods, rand.Intn)
 	return decodePod
 }
 

@@ -180,7 +180,7 @@ func NewWithPodsModelMetricsForTest(pods []*v1.Pod, model string, podMetrics map
 	return InitWithPodsModelMetrics(InitWithPods(NewForTest(), pods, model), podMetrics)
 }
 
-// InitModelRouterProvider initializes the cache store with model router provider for testing purposes, it can be repeated call for reset.
+// InitWithModelRouterProvider initializes the cache store with model router provider for testing purposes, it can be repeated call for reset.
 // Call this function before InitWithPods for expected behavior.
 func InitWithModelRouterProvider(st *Store, modelRouterProvider ModelRouterProviderFunc) *Store {
 	st.modelRouterProvider = modelRouterProvider
@@ -196,7 +196,7 @@ func InitWithRequestTrace(st *Store) *Store {
 	return st
 }
 
-// InitWithRequestTrace initializes the cache store with request trace.
+// InitWithProfileCache initializes the cache store with request trace.
 func InitWithProfileCache(st *Store) *Store {
 	if !st.enableProfileCaching {
 		st.enableProfileCaching = true
