@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"k8s.io/apimachinery/pkg/types"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
