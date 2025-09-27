@@ -103,7 +103,23 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		For(&orchestrationv1alpha1.KVCache{}).
 		Owns(&corev1.Service{}).
 		Owns(&appsv1.Deployment{}).
-		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}, builder.WithPredicates(podWithLabelFilter(constants.KVCacheLabelKeyIdentifier))).
+		Watches(&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+				cacheName, ok := obj.GetLabels()[constants.KVCacheLabelKeyIdentifier]
+				if !ok {
+					return nil
+				}
+
+				return []ctrl.Request{
+					{
+						NamespacedName: types.NamespacedName{
+							Namespace: obj.GetNamespace(),
+							Name:      cacheName,
+						},
+					},
+				}
+			}),
+			builder.WithPredicates(podWithLabelFilter(constants.KVCacheLabelKeyIdentifier))).
 		Complete(r)
 	if err != nil {
 		return err
@@ -161,13 +177,6 @@ func (r *KVCacheReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	return backendHandler.Reconcile(ctx, kvCache)
-}
-
-// SetupWithManager sets up the controller with the Manager.
-func (r *KVCacheReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&orchestrationv1alpha1.KVCache{}).
-		Complete(r)
 }
 
 // getKVCacheBackendFromAnnotations returns the backend based on labels and annotations.
