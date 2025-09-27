@@ -2,8 +2,9 @@ import argparse
 import os
 import shutil
 import time
+import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from urllib.parse import urljoin
 
 import uvicorn
@@ -27,12 +28,14 @@ from aibrix.metrics.metrics import (
 )
 from aibrix.openapi.engine.base import InferenceEngine, get_inference_engine
 from aibrix.openapi.model import ModelManager
+import json
 from aibrix.openapi.protocol import (
     DownloadModelRequest,
     ErrorResponse,
     ListModelRequest,
     LoadLoraAdapterRequest,
     UnloadLoraAdapterRequest,
+    ChatCompletionRequest,
 )
 
 logger = init_logger(__name__)
@@ -143,6 +146,161 @@ async def unload_lora_adapter(request: UnloadLoraAdapterRequest, raw_request: Re
         return JSONResponse(content=response.model_dump(), status_code=response.code)
 
     return Response(status_code=200, content=response)
+
+@router.post("/v1/chat/completions")
+async def chat_completions(request: ChatCompletionRequest, raw_request: Request):
+    try:
+        if not request.model:
+            return JSONResponse(
+                content=ErrorResponse(
+                    message="Missing required parameter: model",
+                    type="ValidationError",
+                    code=400
+                ).model_dump(),
+                status_code=400
+            )
+            
+        if not request.messages or len(request.messages) == 0:
+            return JSONResponse(
+                content=ErrorResponse(
+                    message="Missing required parameter: messages",
+                    type="ValidationError",
+                    code=400
+                ).model_dump(),
+                status_code=400
+            )
+            
+        messages_content = []
+        for message in request.messages:
+            if not message.role or message.role not in ["system", "user", "assistant", "function"]:
+                return JSONResponse(
+                    content=ErrorResponse(
+                        message=f"Invalid message role: {message.role}",
+                        type="ValidationError",
+                        code=400
+                    ).model_dump(),
+                    status_code=400
+                )
+            
+            if isinstance(message.content, List[str]):
+                for contentPart in message.content:
+                    try:
+                        content_data = json.loads(contentPart)
+                        if "type" not in content_data:
+                            return JSONResponse(
+                            content=ErrorResponse(
+                                message=f"content part does not contains type field: {message}",
+                                type="ValidationError",
+                                code=400
+                            ).model_dump(),
+                            status_code=400
+                        )
+                        if isinstance(content_data, dict):
+                            if "image_url" == content_data["type"]:
+                                if "image_url" not in content_data:
+                                    return JSONResponse(
+                                    content=ErrorResponse(
+                                        message=f"content part does not contains image_url field: {message}",
+                                        type="ValidationError",
+                                        code=400
+                                    ).model_dump(),
+                                    status_code=400
+                                )
+                                image_url_dict = json.load(content_data["image_url"])
+                                if "url" not in image_url_dict:
+                                    return JSONResponse(
+                                    content=ErrorResponse(
+                                        message=f"content part does not contains url field in image_url: {message}",
+                                        type="ValidationError",
+                                        code=400
+                                    ).model_dump(),
+                                    status_code=400
+                                )
+                                image_url = image_url_dict["url"]
+                                # Fetch based on url
+                            if "video_url" == content_data["type"]:
+                                if "video_url" not in content_data:
+                                    return JSONResponse(
+                                    content=ErrorResponse(
+                                        message=f"content part does not contains video_url field: {message}",
+                                        type="ValidationError",
+                                        code=400
+                                    ).model_dump(),
+                                    status_code=400
+                                )
+                                video_url_dict = json.load(content_data["video_url"])
+                                if "url" not in video_url_dict:
+                                    return JSONResponse(
+                                    content=ErrorResponse(
+                                        message=f"content part does not contains url field in video_url: {message}",
+                                        type="ValidationError",
+                                        code=400
+                                    ).model_dump(),
+                                    status_code=400
+                                )
+                                video_url = video_url_dict["url"]
+                                # Fetch based on url
+                           
+                    except json.JSONDecodeError:
+                        # If contentPart is not valid JSON, use it as is
+                        return JSONResponse(
+                            content=ErrorResponse(
+                                message=f"content part isn't valid json: {message}",
+                                type="ValidationError",
+                                code=400
+                            ).model_dump(),
+                            status_code=400
+                        )
+                    messages_content.append({
+                        "role": message.role,
+                        "content": contentPart or "",
+                        "name": message.name
+                    })
+                
+            messages_content.append({
+                "role": message.role,
+                "content": message.content or "",
+                "name": message.name
+            })
+            
+        logger.info(f"Received chat completion request for model: {request.model}, messages count: {len(messages_content)}")
+        
+        prompt_tokens = sum(len(msg["content"]) for msg in messages_content) if messages_content else 0
+        completion_tokens = 20 
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": request.model,
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "This is a sample response from the chat completion endpoint."
+                    },
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens
+                }
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Error processing chat completion request: {str(e)}")
+        return JSONResponse(
+            content=ErrorResponse(
+                message=f"Error processing chat completion request: {str(e)}",
+                type="ServerError",
+                code=500
+            ).model_dump(),
+            status_code=500
+        )
 
 
 # /v1/models is a query to inference engine, this is different from following

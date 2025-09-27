@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -44,6 +44,8 @@ class UnloadLoraAdapterRequest(NoExtraBaseModel):
     lora_name: str
     lora_int_id: Optional[int] = Field(default=None)
 
+class MultiModalityRequest(NoExtraBaseModel):
+    json_body: str
 
 class DownloadModelRequest(NoProtectedBaseModel):
     model_uri: str
@@ -66,3 +68,49 @@ class ListModelRequest(NoExtraBaseModel):
 class ListModelResponse(NoExtraBaseModel):
     object: str = "list"
     data: List[ModelStatusCard] = Field(default_factory=list)
+
+
+class CompletionRequest(NoExtraBaseModel):
+    # Ordered by official OpenAI API documentation
+    # https://platform.openai.com/docs/api-reference/completions/create
+    model: Optional[str] = None
+    prompt: Optional[Union[list[int], list[list[int]], str, list[str]]] = None
+    best_of: Optional[int] = None
+    echo: Optional[bool] = False
+    frequency_penalty: Optional[float] = 0.0
+    logit_bias: Optional[dict[str, float]] = None
+    logprobs: Optional[int] = None
+    max_tokens: Optional[int] = 16
+    n: int = 1
+    presence_penalty: Optional[float] = 0.0
+    seed: Optional[int] = None
+    stop: Optional[Union[str, list[str]]] = []
+    stream: Optional[bool] = False
+    suffix: Optional[str] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    user: Optional[str] = None
+
+
+class ChatCompletionMessage(NoExtraBaseModel):
+    # https://platform.openai.com/docs/api-reference/chat/create
+    role: str
+    content: Optional[Union[str, List[str]]] = None
+    name: Optional[str] = None
+
+
+class ChatCompletionRequest(NoExtraBaseModel):
+    # Ordered by official OpenAI API documentation
+    # https://platform.openai.com/docs/api-reference/chat/create
+    model: Optional[str] = None
+    messages: Optional[List[ChatCompletionMessage]] = None
+    temperature: Optional[float] = 1.0
+    top_p: Optional[float] = 1.0
+    n: Optional[int] = 1
+    stream: Optional[bool] = False
+    stop: Optional[Union[str, List[str]]] = None
+    max_tokens: Optional[int] = None
+    presence_penalty: Optional[float] = 0.0
+    frequency_penalty: Optional[float] = 0.0
+    logit_bias: Optional[Dict[str, float]] = None
+    user: Optional[str] = None
