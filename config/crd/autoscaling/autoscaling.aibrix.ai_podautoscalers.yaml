@@ -14,7 +14,23 @@ spec:
     singular: podautoscaler
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.minReplicas
+      name: MINPODS
+      type: integer
+    - jsonPath: .spec.maxReplicas
+      name: MAXPODS
+      type: integer
+    - jsonPath: .status.actualScale
+      name: REPLICAS
+      type: integer
+    - jsonPath: .spec.scalingStrategy
+      name: STRATEGY
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         properties:

@@ -31,6 +31,11 @@ import (
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +kubebuilder:printcolumn:name="MINPODS",type="integer",JSONPath=".spec.minReplicas"
+// +kubebuilder:printcolumn:name="MAXPODS",type="integer",JSONPath=".spec.maxReplicas"
+// +kubebuilder:printcolumn:name="REPLICAS",type="integer",JSONPath=".status.actualScale"
+// +kubebuilder:printcolumn:name="STRATEGY",type="string",JSONPath=".spec.scalingStrategy"
+// +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 
 // PodAutoscaler is the Schema for the podautoscalers API, a resource to scale Kubernetes pods based on observed metrics.
 // The fields in the spec determine how the scaling behavior should be applied.
