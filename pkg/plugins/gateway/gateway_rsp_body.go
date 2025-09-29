@@ -227,6 +227,7 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 	return
 }
 
+// nolint:nakedret
 func (s *Server) processNonLanguangeResponse(ctx context.Context, b *extProcPb.ProcessingRequest_ResponseBody) (processingRes *extProcPb.ProcessingResponse) {
 	routerCtx, _ := ctx.(*types.RoutingContext)
 	if !routerCtx.SaveToRemoteStorage {

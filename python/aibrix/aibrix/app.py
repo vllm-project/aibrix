@@ -10,8 +10,7 @@ from urllib.parse import urljoin
 import uvicorn
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.datastructures import State
-from aibrix.storage.local import LocalStorage
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from httpx import Headers
 from prometheus_client import make_asgi_app, multiprocess
 from starlette.routing import Mount
@@ -36,6 +35,7 @@ from aibrix.openapi.protocol import (
     LoadLoraAdapterRequest,
     UnloadLoraAdapterRequest,
 )
+from aibrix.storage.local import LocalStorage
 
 logger = init_logger(__name__)
 router = APIRouter()
