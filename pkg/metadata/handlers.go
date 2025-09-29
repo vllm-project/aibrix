@@ -29,6 +29,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/redis/go-redis/v9"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
@@ -90,24 +91,36 @@ func (s *httpServer) view(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate required parameters
-	if req.IP == "" {
-		http.Error(w, "missing required parameter: ip", http.StatusBadRequest)
+	if req.RequestID == "" {
+		klog.ErrorS(errors.New("missing requestID"), "missing required parameter: requestID")
+		http.Error(w, "missing required parameter: requestID", http.StatusBadRequest)
 		return
 	}
-	if req.Port == "" {
-		http.Error(w, "missing required parameter: port", http.StatusBadRequest)
+
+	// Get RequestStore struct from Redis
+	data, err := s.redisClient.Get(r.Context(), req.RequestID).Result()
+	if err != nil {
+		klog.ErrorS(err, "Failed to get request data")
+		http.Error(w, fmt.Sprintf("Failed to get request data: %v", err), http.StatusInternalServerError)
 		return
 	}
-	if req.Path == "" {
-		http.Error(w, "missing required parameter: path", http.StatusBadRequest)
+
+	// Deserialize JSON data into RequestStore struct
+	var requestStore types.RequestStore
+	if err = json.Unmarshal([]byte(data), &requestStore); err != nil {
+		klog.ErrorS(err, "Failed to deserialize RequestStore")
+		http.Error(w, fmt.Sprintf("Failed to deserialize RequestStore: %v", err), http.StatusInternalServerError)
 		return
 	}
-	if !strings.HasPrefix(req.Path, "/") {
-		req.Path = "/" + req.Path
+
+	// Use the deserialized struct
+	reqPath := requestStore.Path
+	if !strings.HasPrefix(reqPath, "/") {
+		reqPath = "/" + reqPath
 	}
 
 	// Construct the download URL
-	downloadURL := fmt.Sprintf("http://%s:%s/view%s", req.IP, req.Port, req.Path)
+	downloadURL := fmt.Sprintf("http://%s:%s/view%s", requestStore.IP, requestStore.Port, reqPath)
 	klog.Infof("Attempting to download file from: %s", downloadURL)
 
 	// Make request to download the model
@@ -137,7 +150,7 @@ func (s *httpServer) view(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Extract filename from path for Content-Disposition
-	filename := filepath.Base(req.Path)
+	filename := filepath.Base(requestStore.Path)
 	if filename == "." || filename == "/" {
 		filename = "model_file"
 	}
@@ -281,7 +294,5 @@ func (s *httpServer) readyz(w http.ResponseWriter, r *http.Request) {
 
 // Add this struct definition near the top of the file after the httpServer struct
 type ViewRequest struct {
-	IP   string `json:"ip"`
-	Port string `json:"port"`
-	Path string `json:"path"`
+	RequestID string `json:"request-id"`
 }

@@ -17,10 +17,12 @@ limitations under the License.
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -114,9 +116,13 @@ func validateRequestBody(routingCtx *types.RoutingContext, requestBody []byte, u
 		}
 		model = imageGenerationObj.Model
 		_, ok := jsonMap["save_disk_path"]
-		if ok && routingCtx.Algorithm == routing.RouterNotSet {
-			routingCtx.Algorithm = routing.RouterRandom
+		if ok {
+			routingCtx.SaveToRemoteStorage = true
+			if routingCtx.Algorithm == routing.RouterNotSet {
+				routingCtx.Algorithm = routing.RouterRandom
+			}
 		}
+
 	default:
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", HeaderErrorRequestBodyProcessing, "true")
 		return
@@ -378,6 +384,21 @@ func validateTokenInputs(tokenArrays [][]int64) error {
 	if totalTokens > MaxTotalTokens {
 		return fmt.Errorf("total tokens across all inputs exceeds maximum (%d), actual total: %d",
 			MaxTotalTokens, totalTokens)
+	}
+
+	return nil
+}
+
+func (s *Server) writeStorageRequest(ctx context.Context, requestID string, requestStore types.RequestStore) error {
+	data, err := json.Marshal(requestStore)
+	if err != nil {
+		return err
+	}
+
+	// TODO: make storage path expiration configurable, default 1 day
+	status := s.redisClient.Set(ctx, requestID, data, 24*time.Hour)
+	if err := status.Err(); err != nil {
+		return err
 	}
 
 	return nil
