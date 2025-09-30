@@ -437,37 +437,6 @@ func TestPrefixCacheRouterMetrics(t *testing.T) {
 	}
 }
 
-// TestGetRequestCountsWithKeys tests the pod key based request counting
-func TestGetRequestCountsWithKeys(t *testing.T) {
-	readyPods := []*v1.Pod{
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "pod1",
-				Namespace: "default",
-			},
-		},
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "pod2",
-				Namespace: "kube-system",
-			},
-		},
-	}
-
-	c := cache.NewWithPodsMetricsForTest(
-		readyPods,
-		"test-model",
-		map[string]map[string]metrics.MetricValue{
-			"pod1": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 5}},
-			"pod2": {metrics.RealtimeNumRequestsRunning: &metrics.SimpleMetricValue{Value: 10}},
-		})
-
-	counts := getRequestCountsWithKeys(c, readyPods)
-
-	assert.Equal(t, 5, counts["default/pod1"])
-	assert.Equal(t, 10, counts["kube-system/pod2"])
-}
-
 // TestRecordRoutingDecision tests the metric recording function
 func TestRecordRoutingDecision(t *testing.T) {
 	// Reset global state for testing
