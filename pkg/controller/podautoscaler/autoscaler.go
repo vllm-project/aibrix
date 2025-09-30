@@ -69,17 +69,17 @@ type ReplicaComputeResult struct {
 
 // DefaultAutoScaler implements the complete scaling pipeline
 type DefaultAutoScaler struct {
-	// Core components
 	factory         metrics.MetricFetcherFactory
 	client          client.Client
 	configExtractor *config.ConfigExtractor
+	metricsClient   *metrics.MetricsClient
 
 	// Current configuration (updated per request)
 	strategy               autoscalingv1alpha1.ScalingStrategyType
 	lastConfiguredStrategy autoscalingv1alpha1.ScalingStrategyType
 	aggregator             aggregation.MetricAggregator
 	algorithm              algorithm.ScalingAlgorithm
-	metricKey              metrics.NamespaceNameMetric
+	metricKey              types.MetricKey
 	metricSource           autoscalingv1alpha1.MetricSource
 	lastConfigHash         uint64 // Track configuration changes
 }
@@ -89,45 +89,38 @@ func NewDefaultAutoScaler(
 	factory metrics.MetricFetcherFactory,
 	client client.Client,
 ) *DefaultAutoScaler {
+	// Create stable metrics client with default window durations
+	// Windows auto-initialize on first use based on the PodAutoscaler config
+	metricsClient := metrics.NewMetricsClient(time.Second)
+
+	// Create single aggregator for all strategies (doesn't depend on strategy)
+	aggregator := aggregation.NewMetricAggregator(metricsClient, aggregation.AggregationConfig{
+		StableWindow: 120 * time.Second,
+		PanicWindow:  15 * time.Second,
+		Window:       120 * time.Second,
+		Granularity:  time.Second,
+	})
+
 	return &DefaultAutoScaler{
 		factory:         factory,
 		client:          client,
 		configExtractor: config.NewConfigExtractor(),
+		metricsClient:   metricsClient,
+		aggregator:      aggregator,
 	}
 }
 
 // configureForStrategy configures the autoscaler for a specific strategy
 func (a *DefaultAutoScaler) configureForStrategy(strategy autoscalingv1alpha1.ScalingStrategyType, source autoscalingv1alpha1.MetricSource) {
-	// Create metrics client for this specific source
-	metricsClient := metrics.NewMetricsClient(a.factory.For(source), time.Second)
+	// MetricsClient and aggregator are already created and stable
+	// Windows are auto-initialized on first metric update with default durations
 
-	// Configure client and create aggregator based on strategy
-	if strategy == autoscalingv1alpha1.KPA {
-		metricsClient.ConfigureForStrategy(strategy, metrics.MetricsConfig{
-			StableWindow: 60 * time.Second,
-			PanicWindow:  6 * time.Second,
-		})
-		a.aggregator = aggregation.NewKPAMetricAggregator(metricsClient, aggregation.AggregationConfig{
-			StableWindow: 60 * time.Second,
-			PanicWindow:  6 * time.Second,
-			Granularity:  time.Second,
-		})
-	} else {
-		metricsClient.ConfigureForStrategy(strategy, metrics.MetricsConfig{
-			Window: 60 * time.Second,
-		})
-		a.aggregator = aggregation.NewAPAMetricAggregator(metricsClient, aggregation.AggregationConfig{
-			Window:      60 * time.Second,
-			Granularity: time.Second,
-		})
-	}
-
-	// Create algorithm for this strategy
+	// Only create algorithm based on strategy (this is the only strategy-specific component)
 	a.algorithm = algorithm.NewScalingAlgorithm(strategy, algorithm.AlgorithmConfig{
 		Strategy:       strategy,
+		StableWindow:   120 * time.Second,
+		PanicWindow:    15 * time.Second,
 		PanicThreshold: 2.0,
-		StableWindow:   60 * time.Second,
-		PanicWindow:    6 * time.Second,
 		ScaleToZero:    false,
 	})
 
@@ -166,6 +159,8 @@ func (a *DefaultAutoScaler) UpdateConfiguration(pa autoscalingv1alpha1.PodAutosc
 	configHash := a.calculateConfigHash(pa)
 
 	// Check if we need to reconfigure components
+	// TODO: address the locking issue.
+	// TODO: lastConfiguredStrategy could be empty, in this case, we do not need to print logs etc.
 	strategyChanged := a.lastConfiguredStrategy != pa.Spec.ScalingStrategy
 	configChanged := a.lastConfigHash != configHash
 
@@ -174,7 +169,7 @@ func (a *DefaultAutoScaler) UpdateConfiguration(pa autoscalingv1alpha1.PodAutosc
 
 	// Only recreate components if strategy changed
 	if strategyChanged {
-		klog.V(3).InfoS("Strategy changed, reconfiguring components",
+		klog.V(4).InfoS("Strategy changed, reconfiguring components",
 			"oldStrategy", a.lastConfiguredStrategy,
 			"newStrategy", pa.Spec.ScalingStrategy)
 		a.configureForStrategy(pa.Spec.ScalingStrategy, metricSource)
@@ -250,8 +245,7 @@ func (a *DefaultAutoScaler) GetStrategy() autoscalingv1alpha1.ScalingStrategyTyp
 
 // executeScalingPipeline contains the common scaling logic for replica computation
 func (a *DefaultAutoScaler) executeScalingPipeline(ctx context.Context, request ReplicaComputeRequest) (*algorithm.ScalingRecommendation, error) {
-	logger := klog.FromContext(ctx)
-
+	workloadKey := fmt.Sprintf("%s/%s", request.PodAutoscaler.Namespace, request.PodAutoscaler.Name)
 	// Step 1: Collect metrics
 	collectionSpec := types.CollectionSpec{
 		Namespace:    a.metricKey.Namespace,
@@ -262,49 +256,35 @@ func (a *DefaultAutoScaler) executeScalingPipeline(ctx context.Context, request 
 		Timestamp:    request.Timestamp,
 	}
 
-	logger.V(3).Info("Collecting metrics",
-		"source", a.metricSource.MetricSourceType,
-		"pods", len(request.Pods))
-
+	klog.InfoS("Collecting metrics", "source", workloadKey, "pods", len(request.Pods))
 	snapshot, err := metrics.CollectMetrics(ctx, collectionSpec, a.factory)
 	if err != nil {
-		logger.Error(err, "Failed to collect metrics")
-		return nil, fmt.Errorf("failed to collect metrics: %w", err)
+		return nil, fmt.Errorf("failed to collect metrics for %s: %w", workloadKey, err)
 	}
-
-	logger.V(3).Info("Metrics collected",
-		"values", len(snapshot.Values),
-		"source", snapshot.Source)
 
 	// Step 2: Process and aggregate metrics
-	logger.V(3).Info("Processing metrics snapshot")
-	if err := a.aggregator.ProcessSnapshot(snapshot); err != nil {
-		logger.Error(err, "Failed to process snapshot")
-		return nil, fmt.Errorf("failed to process metrics snapshot: %w", err)
+	klog.InfoS("Processing metrics snapshot", "source", workloadKey, "healthy metrics pods", len(snapshot.Values), "values", snapshot.Values)
+	if err := a.aggregator.ProcessSnapshot(a.metricKey, snapshot); err != nil {
+		return nil, fmt.Errorf("failed to process metrics snapshot for %s: %w", workloadKey, err)
 	}
-
-	metricKey := types.MetricKey{
-		Namespace:  a.metricKey.Namespace,
-		Name:       a.metricKey.Name,
-		MetricName: a.metricKey.MetricName,
-	}
-	aggregatedMetrics, err := a.aggregator.GetAggregatedMetrics(metricKey, request.Timestamp)
+	// Use the full metricKey with PaNamespace and PaName for proper multi-tenancy
+	aggregatedMetrics, err := a.aggregator.GetAggregatedMetrics(a.metricKey, request.Timestamp)
 	if err != nil {
-		logger.Error(err, "Failed to get aggregated metrics")
-		return nil, fmt.Errorf("failed to get aggregated metrics for %s: %w", metricKey, err)
+		return nil, fmt.Errorf("failed to get aggregated metrics for %s %s: %w", workloadKey, a.metricKey, err)
 	}
 
 	// Step 3: Enhance confidence with pod count awareness
-	podCount := len(request.Pods)
-	if podCount > 0 {
-		// Simple pod-aware confidence enhancement
-		// More pods = higher confidence (diminishing returns)
-		podConfidenceFactor := minFloat64(1.0, float64(podCount)/5.0)
-		aggregatedMetrics.Confidence = minFloat64(1.0, aggregatedMetrics.Confidence*0.7+podConfidenceFactor*0.3)
-	}
+	// TODO: enable confidence and pod count later
+	//podCount := len(request.Pods)
+	//if podCount > 0 {
+	//	// Simple pod-aware confidence enhancement
+	//	// More pods = higher confidence (diminishing returns)
+	//	podConfidenceFactor := minFloat64(1.0, float64(podCount)/5.0)
+	//	aggregatedMetrics.Confidence = minFloat64(1.0, aggregatedMetrics.Confidence*0.7+podConfidenceFactor*0.3)
+	//}
 
-	logger.V(3).Info("Metrics aggregated",
-		"currentValue", aggregatedMetrics.CurrentValue,
+	klog.InfoS("Metrics aggregated",
+		"averageValue", aggregatedMetrics.StableValue,
 		"trend", aggregatedMetrics.Trend,
 		"confidence", aggregatedMetrics.Confidence,
 		"podCount", len(request.Pods))
@@ -316,7 +296,7 @@ func (a *DefaultAutoScaler) executeScalingPipeline(ctx context.Context, request 
 			Name:       request.PodAutoscaler.Spec.ScaleTargetRef.Name,
 			Kind:       request.PodAutoscaler.Spec.ScaleTargetRef.Kind,
 			APIVersion: request.PodAutoscaler.Spec.ScaleTargetRef.APIVersion,
-			MetricKey:  metricKey,
+			MetricKey:  a.metricKey,
 		},
 		CurrentReplicas:   request.CurrentReplicas,
 		AggregatedMetrics: aggregatedMetrics,
@@ -325,14 +305,16 @@ func (a *DefaultAutoScaler) executeScalingPipeline(ctx context.Context, request 
 		Timestamp:         request.Timestamp,
 	}
 
-	logger.V(3).Info("Computing scaling recommendation",
+	klog.InfoS("Computing scaling recommendation", "source", workloadKey,
 		"algorithm", a.algorithm.GetAlgorithmType())
-
 	recommendation, err := a.algorithm.ComputeRecommendation(ctx, scalingRequest)
 	if err != nil {
-		logger.Error(err, "Failed to compute recommendation")
-		return nil, fmt.Errorf("failed to compute scaling recommendation: %w", err)
+		return nil, fmt.Errorf("failed to compute scaling recommendation for %s: %w", workloadKey, err)
 	}
+	klog.InfoS("Scaling recommendation computed",
+		"source", workloadKey,
+		"algorithm", a.algorithm.GetAlgorithmType(),
+		"recommendation", recommendation)
 
 	return recommendation, nil
 }

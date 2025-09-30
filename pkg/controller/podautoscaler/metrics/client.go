@@ -16,51 +16,35 @@ limitations under the License.
 package metrics
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
-
-	apitypes "k8s.io/apimachinery/pkg/types"
 )
 
 // AggregatorMetricsClient interface defines what aggregators need from metrics storage
 // This interface should be consumed by aggregators but defined where it's implemented
 type AggregatorMetricsClient interface {
-	UpdateMetrics(now time.Time, metricKey interface{}, metricValues ...float64) error
-	StableAndPanicMetrics(metricKey interface{}, now time.Time) (float64, float64, error)
-	GetMetricValue(metricKey interface{}, now time.Time) (float64, error)
-	GetTrendAnalysis(metricKey interface{}, now time.Time) (direction float64, velocity float64, confidence float64)
-	CalculatePodAwareConfidence(metricKey interface{}, podCount int, now time.Time) float64
+	UpdateMetrics(now time.Time, metricKey types.MetricKey, metricValues ...float64) error
+	GetMetricValue(metricKey types.MetricKey, now time.Time) (float64, float64, error)
+	GetTrendAnalysis(metricKey types.MetricKey, now time.Time) (direction float64, velocity float64, confidence float64)
+	CalculatePodAwareConfidence(metricKey types.MetricKey, podCount int, now time.Time) float64
 }
 
-// NamespaceNameMetric contains the namespace, name and the metric name
-type NamespaceNameMetric struct {
-	apitypes.NamespacedName // target deployment namespace and name
-	MetricName              string
-	PaNamespace             string
-	PaName                  string
-}
-
-// NewNamespaceNameMetric creates a NamespaceNameMetric based on the PodAutoscaler's metrics source.
+// NewNamespaceNameMetric creates a MetricKey based on the PodAutoscaler's metrics source.
 // For consistency, it will return the corresponding MetricSource.
 // Currently, it supports only a single metric source. In the future, this could be extended to handle multiple metric sources.
-func NewNamespaceNameMetric(pa *autoscalingv1alpha1.PodAutoscaler) (NamespaceNameMetric, autoscalingv1alpha1.MetricSource, error) {
+func NewNamespaceNameMetric(pa *autoscalingv1alpha1.PodAutoscaler) (types.MetricKey, autoscalingv1alpha1.MetricSource, error) {
 	if len(pa.Spec.MetricsSources) != 1 {
-		return NamespaceNameMetric{}, autoscalingv1alpha1.MetricSource{}, fmt.Errorf("metrics sources must be 1, but got %d", len(pa.Spec.MetricsSources))
+		return types.MetricKey{}, autoscalingv1alpha1.MetricSource{}, fmt.Errorf("metrics sources must be 1, but got %d", len(pa.Spec.MetricsSources))
 	}
 	metricSource := pa.Spec.MetricsSources[0]
-	return NamespaceNameMetric{
-		NamespacedName: apitypes.NamespacedName{
-			Namespace: pa.Namespace,
-			Name:      pa.Spec.ScaleTargetRef.Name,
-		},
+	return types.MetricKey{
+		Namespace:   pa.Namespace,
+		Name:        pa.Spec.ScaleTargetRef.Name,
 		MetricName:  metricSource.TargetMetric,
 		PaNamespace: pa.Namespace,
 		PaName:      pa.Name,
@@ -81,76 +65,91 @@ type PodMetric struct {
 // PodMetricsInfo contains pod metrics as a map from pod names to PodMetricsInfo
 type PodMetricsInfo map[string]PodMetric
 
-// MetricsClient provides a single metrics client for all scaling strategies
-// It can be configured with multiple time windows as needed
+// MetricsClient provides metric data storage (windows and history) for all scaling strategies
+// It does NOT fetch metrics - fetching is done separately via MetricFetcherFactory
+// IMPORTANT: This client is shared across multiple PodAutoscalers, so we need proper isolation
 type MetricsClient struct {
-	fetcher MetricFetcher
-
-	// Protects access to windows map
+	// Protects access to windows
 	mu sync.RWMutex
 
-	// Named windows for different purposes (e.g., "stable", "panic", "default")
-	windows map[string]*types.TimeWindow
+	// Simplified structure: direct fields for stable and panic windows
+	// metricKeyStr format: "paNamespace/paName/metricName"
+	stableWindows map[string]*types.TimeWindow
+	panicWindows  map[string]*types.TimeWindow // Optional, only used by KPA
 
 	// Historical tracking for trend analysis
-	history map[string]*types.MetricHistory
+	stableHistory map[string]*types.MetricHistory
+	panicHistory  map[string]*types.MetricHistory
 
 	// Default granularity for time windows
 	granularity time.Duration
 }
 
-// NewMetricsClient creates a new metrics client
-func NewMetricsClient(fetcher MetricFetcher, granularity time.Duration) *MetricsClient {
+// NewMetricsClient creates a new metrics client for storing metric windows and history
+func NewMetricsClient(granularity time.Duration) *MetricsClient {
 	return &MetricsClient{
-		fetcher:     fetcher,
-		windows:     make(map[string]*types.TimeWindow),
-		history:     make(map[string]*types.MetricHistory),
-		granularity: granularity,
+		stableWindows: make(map[string]*types.TimeWindow),
+		panicWindows:  make(map[string]*types.TimeWindow),
+		stableHistory: make(map[string]*types.MetricHistory),
+		panicHistory:  make(map[string]*types.MetricHistory),
+		granularity:   granularity,
 	}
 }
 
-// AddWindow adds a named time window with specified duration
-func (c *MetricsClient) AddWindow(name string, duration time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.windows[name] = types.NewTimeWindow(duration, c.granularity)
+// ensureWindowsForKey ensures windows exist for a specific metricKey
+// This does NOT wipe existing data, only creates if missing
+func (c *MetricsClient) ensureWindowsForKey(metricKeyStr string, config MetricsConfig) {
+	// Check if stable window already exists
+	if _, exists := c.stableWindows[metricKeyStr]; exists {
+		// Windows already configured, don't recreate
+		return
+	}
+
+	if _, exists := c.panicWindows[metricKeyStr]; exists {
+		// Windows already configured, don't recreate
+		return
+	}
+
+	// Determine window durations
+	stableWindowDuration := config.StableWindow
+	if stableWindowDuration == 0 {
+		stableWindowDuration = 120 * time.Second // Default
+	}
+
+	panicWindowDuration := config.PanicWindow
+	if panicWindowDuration == 0 {
+		panicWindowDuration = 15 * time.Second // Default
+	}
+
+	// Always create stable window and panic window (KPA and APA will decide whether to use it or not)
+	c.stableWindows[metricKeyStr] = types.NewTimeWindow(stableWindowDuration, c.granularity)
+	c.stableHistory[metricKeyStr] = types.NewMetricHistory(stableWindowDuration * 10)
+	c.panicWindows[metricKeyStr] = types.NewTimeWindow(panicWindowDuration, c.granularity)
+	c.panicHistory[metricKeyStr] = types.NewMetricHistory(panicWindowDuration * 10)
 }
 
 // ConfigureForStrategy sets up the client for a specific scaling strategy
+// IMPORTANT: This no longer wipes ALL data - it only ensures windows exist for the given metricKey
 func (c *MetricsClient) ConfigureForStrategy(strategy autoscalingv1alpha1.ScalingStrategyType, config MetricsConfig) {
+	// Legacy method kept for backward compatibility but does nothing
+	// Actual configuration happens in UpdateMetrics when metricKey is provided
+}
+
+// UpdateMetrics records metrics to all configured windows for the given metricKey
+// If windows don't exist for this metricKey, they are auto-initialized with default config
+func (c *MetricsClient) UpdateMetrics(now time.Time, metricKey types.MetricKey, metricValues ...float64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Clear existing windows and history
-	c.windows = make(map[string]*types.TimeWindow)
-	c.history = make(map[string]*types.MetricHistory)
+	metricKeyStr := metricKey.String()
 
-	switch strategy {
-	case autoscalingv1alpha1.KPA:
-		// KPA needs both stable and panic windows
-		c.windows["stable"] = types.NewTimeWindow(config.StableWindow, c.granularity)
-		c.windows["panic"] = types.NewTimeWindow(config.PanicWindow, c.granularity)
-		// Create longer history for trend analysis (10x window duration)
-		c.history["stable"] = types.NewMetricHistory(config.StableWindow * 10)
-		c.history["panic"] = types.NewMetricHistory(config.PanicWindow * 10)
-	case autoscalingv1alpha1.APA:
-		// APA needs a single window
-		c.windows["default"] = types.NewTimeWindow(config.Window, c.granularity)
-		c.history["default"] = types.NewMetricHistory(config.Window * 10)
-	default:
-		// Default configuration
-		c.windows["default"] = types.NewTimeWindow(60*time.Second, c.granularity)
-		c.history["default"] = types.NewMetricHistory(600 * time.Second)
-	}
-}
-
-// UpdateMetrics records metrics to all configured windows
-func (c *MetricsClient) UpdateMetrics(now time.Time, metricKey interface{}, metricValues ...float64) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if len(c.windows) == 0 {
-		return fmt.Errorf("no windows configured")
+	// Auto-initialize if needed
+	if _, exists := c.stableWindows[metricKeyStr]; !exists {
+		klog.V(4).InfoS("Auto-initializing default window for metricKey", "metricKey", metricKeyStr)
+		c.ensureWindowsForKey(metricKeyStr, MetricsConfig{
+			StableWindow: 120 * time.Second,
+			PanicWindow:  15 * time.Second,
+		})
 	}
 
 	if len(metricValues) == 0 {
@@ -164,98 +163,50 @@ func (c *MetricsClient) UpdateMetrics(now time.Time, metricKey interface{}, metr
 	}
 	avg := sum / float64(len(metricValues))
 
-	// Record in all windows and history
-	for name, window := range c.windows {
-		window.Record(now, avg)
-		klog.V(4).InfoS("Recorded metric", "window", name, "value", avg, "time", now)
-
-		// Also record in corresponding history for trend analysis
-		if history, exists := c.history[name]; exists {
-			history.Add(avg, now)
+	// Record in stable window (always present)
+	if stableWindow := c.stableWindows[metricKeyStr]; stableWindow != nil {
+		stableWindow.Record(now, avg)
+		if stableHist := c.stableHistory[metricKeyStr]; stableHist != nil {
+			stableHist.Add(avg, now)
 		}
 	}
+
+	// Record in panic window if it exists (KPA only)
+	if panicWindow := c.panicWindows[metricKeyStr]; panicWindow != nil {
+		panicWindow.Record(now, avg)
+		if panicHist := c.panicHistory[metricKeyStr]; panicHist != nil {
+			panicHist.Add(avg, now)
+		}
+	}
+
+	klog.V(4).InfoS("Recorded metric", "metricKey", metricKeyStr, "value", avg, "time", now,
+		"stableWindowSize", c.stableWindows[metricKeyStr].Size(),
+		"panicWindowSize", func() int {
+			if c.panicWindows[metricKeyStr] != nil {
+				return c.panicWindows[metricKeyStr].Size()
+			}
+			return 0
+		}())
 
 	return nil
 }
 
-// GetWindowValue returns the current value for a named window
-func (c *MetricsClient) GetWindowValue(name string, now time.Time) (float64, error) {
+// GetMetricValue returns the metric value from the stable window for a specific metricKey
+// Both KPA and APA use the stable window (APA doesn't use panic window)
+func (c *MetricsClient) GetMetricValue(metricKey types.MetricKey, now time.Time) (float64, float64, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	window, exists := c.windows[name]
-	if !exists {
-		return 0, fmt.Errorf("window %s not found", name)
+	metricKeyStr := metricKey.String()
+
+	stableWindow := c.stableWindows[metricKeyStr]
+	if stableWindow == nil {
+		return 0, 0, fmt.Errorf("no stable window configured for metricKey: %s", metricKeyStr)
 	}
 
-	value, err := window.Avg()
-	if err != nil {
-		return 0, err
-	}
-	return value, nil
-}
-
-// GetPodContainerMetric implements MetricClient interface
-func (c *MetricsClient) GetPodContainerMetric(ctx context.Context, pod corev1.Pod, source autoscalingv1alpha1.MetricSource) (PodMetricsInfo, time.Time, error) {
-	// Delegate to fetcher
-	value, err := c.fetcher.FetchPodMetrics(ctx, pod, source)
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-
-	info := PodMetricsInfo{
-		pod.Name: PodMetric{
-			Timestamp:   time.Now(),
-			Value:       int64(value * 1000), // Convert to milli-value
-			MetricsName: source.TargetMetric,
-		},
-	}
-
-	return info, time.Now(), nil
-}
-
-// GetMetricsFromPods implements MetricClient interface
-func (c *MetricsClient) GetMetricsFromPods(ctx context.Context, pods []corev1.Pod, source autoscalingv1alpha1.MetricSource) ([]float64, error) {
-	values := make([]float64, 0, len(pods))
-	for _, pod := range pods {
-		value, err := c.fetcher.FetchPodMetrics(ctx, pod, source)
-		if err != nil {
-			klog.V(4).InfoS("Failed to fetch pod metrics", "pod", pod.Name, "error", err)
-			continue
-		}
-		values = append(values, value)
-	}
-	return values, nil
-}
-
-// GetMetricFromSource implements MetricClient interface
-func (c *MetricsClient) GetMetricFromSource(ctx context.Context, source autoscalingv1alpha1.MetricSource) (float64, error) {
-	// For external metrics, we need to create a dummy pod since the interface requires one
-	// This is acceptable since external metrics don't actually use pod information
-	dummyPod := corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "external-source",
-			Namespace: "default",
-		},
-	}
-	return c.fetcher.FetchPodMetrics(ctx, dummyPod, source)
-}
-
-// UpdatePodListMetric implements MetricClient interface (deprecated)
-func (c *MetricsClient) UpdatePodListMetric(metricValues []float64, metricKey NamespaceNameMetric, now time.Time) error {
-	return c.UpdateMetrics(now, metricKey, metricValues...)
-}
-
-// StableAndPanicMetrics returns stable and panic window metrics for KPA
-func (c *MetricsClient) StableAndPanicMetrics(metricKey interface{}, now time.Time) (float64, float64, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	stableWindow, hasStable := c.windows["stable"]
-	panicWindow, hasPanic := c.windows["panic"]
-
-	if !hasStable || !hasPanic {
-		return 0, 0, fmt.Errorf("stable and panic windows not configured")
+	panicWindow := c.panicWindows[metricKeyStr]
+	if panicWindow == nil {
+		return 0, 0, fmt.Errorf("no panic window configured for metricKey: %s", metricKeyStr)
 	}
 
 	stableValue, err := stableWindow.Avg()
@@ -267,80 +218,45 @@ func (c *MetricsClient) StableAndPanicMetrics(metricKey interface{}, now time.Ti
 		return 0, 0, fmt.Errorf("failed to get panic value: %w", err)
 	}
 
+	klog.V(4).InfoS("[MetricClient] metrics window", "metricKey", metricKeyStr,
+		"size", stableWindow.Size(), "stableValue", stableValue, "panicValue", panicValue)
+
 	return stableValue, panicValue, nil
-}
-
-// GetMetricValue returns the metric value from the default or first window
-func (c *MetricsClient) GetMetricValue(metricKey interface{}, now time.Time) (float64, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	// Try default window first
-	if window, exists := c.windows["default"]; exists {
-		value, err := window.Avg()
-		if err != nil {
-			return 0, err
-		}
-		return value, nil
-	}
-
-	// Fall back to stable window for KPA
-	if window, exists := c.windows["stable"]; exists {
-		value, err := window.Avg()
-		if err != nil {
-			return 0, err
-		}
-		return value, nil
-	}
-
-	// Use any available window
-	for _, window := range c.windows {
-		value, err := window.Avg()
-		if err != nil {
-			return 0, err
-		}
-		return value, nil
-	}
-
-	return 0, fmt.Errorf("no windows configured")
 }
 
 // MetricsConfig holds configuration for metrics collection
 type MetricsConfig struct {
-	StableWindow time.Duration // For KPA
+	StableWindow time.Duration // Shared by APA and KPA
 	PanicWindow  time.Duration // For KPA
 	Window       time.Duration // For APA
 }
 
-// GetUnifiedStats returns stats for both stable and panic windows
-// APA can use just the stable stats, KPA can use both
-func (c *MetricsClient) GetUnifiedStats(metricKey interface{}, now time.Time) (stableStats, panicStats types.WindowStats, err error) {
+// GetUnifiedStats returns stats for both stable and panic windows for a specific metricKey
+func (c *MetricsClient) GetUnifiedStats(metricKey types.MetricKey, now time.Time) (stableStats, panicStats types.WindowStats, err error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// For KPA: return both stable and panic stats
-	if stableWindow, exists := c.windows["stable"]; exists {
-		stableStats = c.getStatsFromWindow(stableWindow, "stable")
-	}
-	if panicWindow, exists := c.windows["panic"]; exists {
-		panicStats = c.getStatsFromWindow(panicWindow, "panic")
+	metricKeyStr := metricKey.String()
+
+	// Get stable window stats (always present for both KPA and APA)
+	if stableWindow := c.stableWindows[metricKeyStr]; stableWindow != nil {
+		stableStats = c.getStatsFromWindow(stableWindow)
 	}
 
-	// For APA: use default window as stable, panic is empty
-	if defaultWindow, exists := c.windows["default"]; exists && stableStats.DataPoints == 0 {
-		stableStats = c.getStatsFromWindow(defaultWindow, "default")
-		// Panic stats remain empty for APA
+	// Get panic window stats (only present for KPA)
+	if panicWindow := c.panicWindows[metricKeyStr]; panicWindow != nil {
+		panicStats = c.getStatsFromWindow(panicWindow)
 	}
 
 	if stableStats.DataPoints == 0 {
-		return stableStats, panicStats, fmt.Errorf("no metrics available")
+		return stableStats, panicStats, fmt.Errorf("no metrics available for metricKey: %s", metricKeyStr)
 	}
 
 	return stableStats, panicStats, nil
 }
 
 // getStatsFromWindow extracts stats from a time window
-func (c *MetricsClient) getStatsFromWindow(window *types.TimeWindow, name string) types.WindowStats {
+func (c *MetricsClient) getStatsFromWindow(window *types.TimeWindow) types.WindowStats {
 	var stats types.WindowStats
 	stats.DataPoints = window.Size()
 
@@ -349,20 +265,20 @@ func (c *MetricsClient) getStatsFromWindow(window *types.TimeWindow, name string
 	}
 
 	avg, _ := window.Avg()
-	min, _ := window.Min()
-	max, _ := window.Max()
+	minVal, _ := window.Min()
+	maxVal, _ := window.Max()
 
 	stats.Mean = avg
-	stats.Min = min
-	stats.Max = max
+	stats.Min = minVal
+	stats.Max = maxVal
 
 	stats.LastUpdate = time.Now()
 
 	return stats
 }
 
-// GetEnhancedStats returns both window and historical statistics
-func (c *MetricsClient) GetEnhancedStats(metricKey interface{}, now time.Time) (windowStats, historyStats types.WindowStats, err error) {
+// GetEnhancedStats returns both window and historical statistics for a specific metricKey
+func (c *MetricsClient) GetEnhancedStats(metricKey types.MetricKey, now time.Time) (windowStats, historyStats types.WindowStats, err error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -378,71 +294,28 @@ func (c *MetricsClient) GetEnhancedStats(metricKey interface{}, now time.Time) (
 		windowStats = panicStats // Prefer panic if available
 	}
 
-	// Get historical stats for trend analysis
-	for _, windowName := range []string{"stable", "default"} {
-		if history, exists := c.history[windowName]; exists {
-			historyStats = history.GetStats(now)
-			break
-		}
+	metricKeyStr := metricKey.String()
+
+	// Get historical stats from stable history (used by both KPA and APA)
+	if history := c.stableHistory[metricKeyStr]; history != nil {
+		historyStats = history.GetStats(now)
 	}
 
 	return windowStats, historyStats, nil
 }
 
-// GetTrendAnalysis calculates trend direction and velocity
-func (c *MetricsClient) GetTrendAnalysis(metricKey interface{}, now time.Time) (direction float64, velocity float64, confidence float64) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+// TODO(Jeffwan): support tend and condidence later
 
-	// Try to get history from stable window first, then default
-	for _, windowName := range []string{"stable", "default"} {
-		if history, exists := c.history[windowName]; exists {
-			stats := history.GetStats(now)
-			if stats.DataPoints < 3 {
-				continue // Need at least 3 points for trend
-			}
-
-			// Calculate trend direction: positive = increasing load
-			if stats.Variance > 0 {
-				direction = (stats.Max - stats.Min) / stats.Mean
-				velocity = stats.StdDev / stats.Mean                       // Rate of change relative to mean
-				confidence = minFloat(1.0, float64(stats.DataPoints)/10.0) // More points = higher confidence
-			}
-			break
-		}
-	}
-
-	return direction, velocity, confidence
+// GetTrendAnalysis calculates trend direction and velocity (stubbed - returns zeros)
+func (c *MetricsClient) GetTrendAnalysis(metricKey types.MetricKey, now time.Time) (direction float64, velocity float64, confidence float64) {
+	// Stubbed out - trend analysis not needed for current implementation
+	return 0, 0, 0
 }
 
-// CalculatePodAwareConfidence combines pod count with statistical confidence
-func (c *MetricsClient) CalculatePodAwareConfidence(metricKey interface{}, podCount int, now time.Time) float64 {
-	_, historyStats, err := c.GetEnhancedStats(metricKey, now)
-	if err != nil {
-		return 0.5 // Default confidence
-	}
-
-	// Base confidence from data quality
-	baseConfidence := 0.5
-	if historyStats.DataPoints > 0 {
-		// More data points = higher confidence
-		dataConfidence := minFloat(1.0, float64(historyStats.DataPoints)/20.0)
-
-		// Low variance = higher confidence
-		varianceConfidence := 1.0
-		if historyStats.Mean > 0 && historyStats.Variance > 0 {
-			coefficientOfVariation := historyStats.StdDev / historyStats.Mean
-			varianceConfidence = maxFloat(0.1, 1.0-coefficientOfVariation)
-		}
-
-		baseConfidence = (dataConfidence + varianceConfidence) / 2.0
-	}
-
-	// Pod count factor: more pods = higher confidence (diminishing returns)
-	podConfidence := minFloat(1.0, float64(podCount)/5.0) // Confidence plateaus at 5+ pods
-
-	// Combined confidence
-	return minFloat(1.0, (baseConfidence*0.7)+(podConfidence*0.3))
+// CalculatePodAwareConfidence combines pod count with statistical confidence (stubbed - returns 0)
+func (c *MetricsClient) CalculatePodAwareConfidence(metricKey types.MetricKey, podCount int, now time.Time) float64 {
+	// Stubbed out - confidence calculation not needed for current implementation
+	return 0
 }
 
 // Compile-time interface verification

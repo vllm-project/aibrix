@@ -43,7 +43,7 @@ func (a *APAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 	metrics := request.AggregatedMetrics
 
 	// APA uses current value directly
-	request.ScalingContext.SetCurrentUsePerPod(metrics.CurrentValue)
+	request.ScalingContext.SetCurrentUsePerPod(metrics.StableValue)
 
 	// Compute target replicas using APA algorithm
 	desiredReplicas := a.computeTargetReplicas(float64(request.CurrentReplicas), request.ScalingContext)
@@ -58,7 +58,7 @@ func (a *APAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 		Algorithm:       "apa",
 		ScaleValid:      true,
 		Metadata: map[string]interface{}{
-			"current_value": metrics.CurrentValue,
+			"current_value": metrics.StableValue,
 			"trend":         metrics.Trend,
 		},
 	}, nil
@@ -84,7 +84,7 @@ func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 	downTolerance := context.GetDownFluctuationTolerance()
 	currentUsePerPod := context.GetCurrentUsePerPod()
 
-	klog.V(4).InfoS("--- APA Details", "currentPodCount", currentPodCount,
+	klog.V(4).InfoS("APA Details", "currentPodCount", currentPodCount,
 		"expectedUse", expectedUse, "upTolerance", upTolerance, "downTolerance", downTolerance,
 		"currentUsePerPod", currentUsePerPod, "current/expected", currentUsePerPod/expectedUse,
 	)
