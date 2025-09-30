@@ -50,7 +50,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
 	memcache "k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/restmapper"
@@ -84,6 +83,7 @@ const (
 	ReasonMetricsConfigError     = "MetricsConfigError"
 	ReasonInvalidSpec            = "InvalidSpec"
 	ReasonConfigured             = "Configured"
+	maxScalingHistorySize        = 5
 )
 
 var (
@@ -497,7 +497,7 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	// Step 3: Compute scaling decision
 	scaleDecision, err := r.computeScaleDecision(ctx, pa, scale, currentReplicas)
 	if err != nil {
-		setCurrentReplicasAndMetricsInStatus(&pa, currentReplicas)
+		setStatus(&pa, currentReplicas, currentReplicas, false, "FailedComputeScale", false, err)
 		if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
@@ -506,29 +506,28 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	}
 
 	// Step 4: Apply scaling if needed
+	var scaleError error
 	if scaleDecision.ShouldScale {
-		if err := r.applyScaling(ctx, &pa, targetGR, scale, scaleDecision); err != nil {
-			r.recordScaleError(&pa, "FailedRescale", err)
-			setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedUpdateScale", "unable to update target scale: %v", err)
-			setCurrentReplicasAndMetricsInStatus(&pa, currentReplicas)
-			if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
-				utilruntime.HandleError(updateErr)
-			}
-			return ctrl.Result{}, fmt.Errorf("failed to apply scaling for %s: %w", scaleReference, err)
+		scaleError = r.applyScaling(ctx, &pa, targetGR, scale, scaleDecision)
+		if scaleError != nil {
+			r.recordScaleError(&pa, "FailedRescale", scaleError)
+			setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedUpdateScale", "unable to update target scale: %v", scaleError)
+			klog.ErrorS(scaleError, "Failed to apply scaling", "PodAutoscaler", klog.KObj(&pa))
+		} else {
+			klog.InfoS("Successfully rescaled",
+				"PodAutoscaler", klog.KObj(&pa),
+				"currentReplicas", currentReplicas,
+				"desiredReplicas", scaleDecision.DesiredReplicas,
+				"reason", scaleDecision.Reason)
+			r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "SuccessfulRescale",
+				"New size: %d; reason: %s", scaleDecision.DesiredReplicas, scaleDecision.Reason)
 		}
-
-		r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "SuccessfulRescale",
-			"New size: %d; reason: %s", scaleDecision.DesiredReplicas, scaleDecision.Reason)
-
-		klog.InfoS("Successfully rescaled",
-			"PodAutoscaler", klog.KObj(&pa),
-			"currentReplicas", currentReplicas,
-			"desiredReplicas", scaleDecision.DesiredReplicas,
-			"reason", scaleDecision.Reason)
 	}
 
 	// Step 5: Update status
-	setStatus(&pa, currentReplicas, scaleDecision.DesiredReplicas, scaleDecision.ShouldScale)
+	setStatus(&pa, currentReplicas, scaleDecision.DesiredReplicas,
+		scaleDecision.ShouldScale, scaleDecision.Reason, scaleError == nil, scaleError)
+
 	r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "AlgorithmRun",
 		"%s algorithm completed. currentReplicas: %d, desiredReplicas: %d, shouldScale: %t",
 		pa.Spec.ScalingStrategy, currentReplicas, scaleDecision.DesiredReplicas, scaleDecision.ShouldScale)
@@ -604,24 +603,42 @@ func setCondition(pa *autoscalingv1alpha1.PodAutoscaler, conditionType string, s
 	pa.Status.Conditions = podutils.SetConditionInList(pa.Status.Conditions, conditionType, status, reason, message, args...)
 }
 
-// setCurrentReplicasAndMetricsInStatus sets the current replica count and metrics in the status of the PA.
-func setCurrentReplicasAndMetricsInStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas int32) {
-	setStatus(pa, currentReplicas, pa.Status.DesiredScale, false)
-}
-
 // setStatus recreates the status of the given PA, updating the current and
-// desired replicas, as well as the metric statuses
-func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredReplicas int32, rescale bool) {
+// desired replicas, as well as the metric statuses and optionally records a scaling decision
+func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredReplicas int32, rescale bool, reason string, success bool, err error) {
 	pa.Status = autoscalingv1alpha1.PodAutoscalerStatus{
-		ActualScale:   currentReplicas,
-		DesiredScale:  desiredReplicas,
-		LastScaleTime: pa.Status.LastScaleTime,
-		Conditions:    pa.Status.Conditions,
+		ActualScale:    currentReplicas,
+		DesiredScale:   desiredReplicas,
+		LastScaleTime:  pa.Status.LastScaleTime,
+		Conditions:     pa.Status.Conditions,
+		ScalingHistory: pa.Status.ScalingHistory, // preserve existing history
 	}
 
 	if rescale {
 		now := metav1.NewTime(time.Now())
 		pa.Status.LastScaleTime = &now
+	}
+	// Record scaling decision if it was a rescale attempt or if it failed
+	if rescale || !success {
+		decision := autoscalingv1alpha1.ScalingDecision{
+			Timestamp:     metav1.Now(),
+			PreviousScale: currentReplicas,
+			NewScale:      desiredReplicas,
+			Reason:        reason,
+			Success:       success,
+		}
+
+		if err != nil {
+			decision.Error = err.Error()
+		}
+
+		// First trim if at maximum size
+		if len(pa.Status.ScalingHistory) >= maxScalingHistorySize {
+			pa.Status.ScalingHistory = pa.Status.ScalingHistory[1:]
+		}
+
+		// Then append the new decision
+		pa.Status.ScalingHistory = append(pa.Status.ScalingHistory, decision)
 	}
 }
 
