@@ -45,8 +45,6 @@ type ScalingRequest struct {
 	CurrentReplicas   int32
 	AggregatedMetrics *types.AggregatedMetrics
 	ScalingContext    scalingctx.ScalingContext
-	Constraints       types.ScalingConstraints
-	Config            AlgorithmConfig // Algorithm-specific configuration
 	Timestamp         time.Time
 }
 
@@ -58,15 +56,6 @@ type ScalingRecommendation struct {
 	Algorithm       string
 	ScaleValid      bool
 	Metadata        map[string]interface{}
-}
-
-// AlgorithmConfig defines algorithm parameters
-type AlgorithmConfig struct {
-	Strategy       autoscalingv1alpha1.ScalingStrategyType
-	PanicThreshold float64
-	StableWindow   time.Duration
-	PanicWindow    time.Duration
-	ScaleToZero    bool
 }
 
 // NewScalingAlgorithm creates a stateless algorithm instance for the given strategy
@@ -84,13 +73,13 @@ func NewScalingAlgorithm(strategy autoscalingv1alpha1.ScalingStrategyType) Scali
 	}
 }
 
-// applyConstraints applies min/max replica constraints
-func applyConstraints(replicas int32, constraints types.ScalingConstraints) int32 {
-	if replicas < constraints.MinReplicas {
-		return constraints.MinReplicas
+// applyConstraints applies min/max replica constraints from ScalingContext
+func applyConstraints(replicas int32, context scalingctx.ScalingContext) int32 {
+	if replicas < context.GetMinReplicas() {
+		return context.GetMinReplicas()
 	}
-	if replicas > constraints.MaxReplicas {
-		return constraints.MaxReplicas
+	if replicas > context.GetMaxReplicas() {
+		return context.GetMaxReplicas()
 	}
 	return replicas
 }

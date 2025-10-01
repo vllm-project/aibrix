@@ -25,10 +25,15 @@ import (
 	"k8s.io/klog/v2"
 )
 
+const (
+	stableWindowDuration = 60 * time.Second
+	panicWindowDuration  = 6 * time.Second
+)
+
 // AggregatorMetricsClient interface defines what aggregators need from metrics storage
 // This interface should be consumed by aggregators but defined where it's implemented
 type AggregatorMetricsClient interface {
-	UpdateMetrics(now time.Time, metricKey types.MetricKey, config MetricsConfig, metricValues ...float64) error
+	UpdateMetrics(now time.Time, metricKey types.MetricKey, metricValues ...float64) error
 	GetMetricValue(metricKey types.MetricKey, now time.Time) (float64, float64, error)
 	GetTrendAnalysis(metricKey types.MetricKey, now time.Time) (direction float64, velocity float64, confidence float64)
 	CalculatePodAwareConfidence(metricKey types.MetricKey, podCount int, now time.Time) float64
@@ -97,8 +102,7 @@ func NewMetricsClient(granularity time.Duration) *MetricsClient {
 }
 
 // ensureWindowsForKey ensures windows exist for a specific metricKey
-// This does NOT wipe existing data, only creates if missing
-func (c *MetricsClient) ensureWindowsForKey(metricKeyStr string, config MetricsConfig) {
+func (c *MetricsClient) ensureWindowsForKey(metricKeyStr string) {
 	// Check if stable window already exists
 	if _, exists := c.stableWindows[metricKeyStr]; exists {
 		// Windows already configured, don't recreate
@@ -110,17 +114,6 @@ func (c *MetricsClient) ensureWindowsForKey(metricKeyStr string, config MetricsC
 		return
 	}
 
-	// Determine window durations
-	stableWindowDuration := config.StableWindow
-	if stableWindowDuration == 0 {
-		stableWindowDuration = 120 * time.Second // Default
-	}
-
-	panicWindowDuration := config.PanicWindow
-	if panicWindowDuration == 0 {
-		panicWindowDuration = 15 * time.Second // Default
-	}
-
 	// Always create stable window and panic window (KPA and APA will decide whether to use it or not)
 	c.stableWindows[metricKeyStr] = types.NewTimeWindow(stableWindowDuration, c.granularity)
 	c.stableHistory[metricKeyStr] = types.NewMetricHistory(stableWindowDuration * 10)
@@ -129,20 +122,14 @@ func (c *MetricsClient) ensureWindowsForKey(metricKeyStr string, config MetricsC
 }
 
 // UpdateMetrics records metrics to all configured windows for the given metricKey
-// If windows don't exist for this metricKey, they are auto-initialized with the provided config
-func (c *MetricsClient) UpdateMetrics(now time.Time, metricKey types.MetricKey, config MetricsConfig, metricValues ...float64) error {
+func (c *MetricsClient) UpdateMetrics(now time.Time, metricKey types.MetricKey, metricValues ...float64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	metricKeyStr := metricKey.String()
-
-	// Auto-initialize if needed, using the provided config from PodAutoscaler
 	if _, exists := c.stableWindows[metricKeyStr]; !exists {
-		klog.V(4).InfoS("Auto-initializing window for metricKey with config",
-			"metricKey", metricKeyStr,
-			"stableWindow", config.StableWindow,
-			"panicWindow", config.PanicWindow)
-		c.ensureWindowsForKey(metricKeyStr, config)
+		klog.V(4).InfoS("Auto-initializing windows for metricKey with internal defaults", "metricKey", metricKeyStr)
+		c.ensureWindowsForKey(metricKeyStr)
 	}
 
 	if len(metricValues) == 0 {
@@ -215,13 +202,6 @@ func (c *MetricsClient) GetMetricValue(metricKey types.MetricKey, now time.Time)
 		"size", stableWindow.Size(), "stableValue", stableValue, "panicValue", panicValue)
 
 	return stableValue, panicValue, nil
-}
-
-// MetricsConfig holds configuration for metrics collection
-type MetricsConfig struct {
-	StableWindow time.Duration // Shared by APA and KPA
-	PanicWindow  time.Duration // For KPA
-	Window       time.Duration // For APA
 }
 
 // GetUnifiedStats returns stats for both stable and panic windows for a specific metricKey

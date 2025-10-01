@@ -21,17 +21,12 @@ import (
 	"time"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
 	"k8s.io/klog/v2"
 )
 
-const (
-	AutoscalingLabelPrefix = "autoscaling.aibrix.ai/"
-	maxScaleUpRateLabel    = AutoscalingLabelPrefix + "max-scale-up-rate"
-	maxScaleDownRateLabel  = AutoscalingLabelPrefix + "max-scale-down-rate"
-)
-
 // ScalingContext defines the generalized context that holds all necessary data for scaling calculations.
-// This interface is maintained for backward compatibility, but algorithm.ScalingContext is preferred for new code.
+// This is the single source of truth for all scaling configuration, extracted per-PodAutoscaler.
 type ScalingContext interface {
 	GetTargetValue() float64
 	GetUpFluctuationTolerance() float64
@@ -54,9 +49,9 @@ type ScalingContext interface {
 	SetInPanicMode(bool)
 	GetMaxPanicPods() int32
 	SetMaxPanicPods(int32)
-	GetStableWindow() time.Duration
-	GetPanicWindow() time.Duration
-	GetScaleDownDelay() time.Duration
+	GetScaleUpCooldownWindow() time.Duration
+	GetScaleDownCooldownWindow() time.Duration
+	GetScaleToZero() bool
 }
 
 // BaseScalingContext provides a base implementation of the ScalingContext interface.
@@ -77,6 +72,18 @@ type BaseScalingContext struct {
 	MinReplicas int32
 	// The maximum number of replicas to which the target can be scaled up
 	MaxReplicas int32
+	// Tolerance for fluctuations in metrics before scaling up
+	UpFluctuationTolerance float64
+	// Tolerance for fluctuations in metrics before scaling down
+	DownFluctuationTolerance float64
+	// Cooldown window for scale-up decisions (prevents rapid scale-ups)
+	ScaleUpCooldownWindow time.Duration
+	// Cooldown window for scale-down decisions (prevents rapid scale-downs)
+	ScaleDownCooldownWindow time.Duration
+	// Scale to zero flag
+	ScaleToZero bool
+	// Panic threshold for KPA
+	PanicThreshold float64
 }
 
 var _ ScalingContext = (*BaseScalingContext)(nil)
@@ -84,11 +91,17 @@ var _ ScalingContext = (*BaseScalingContext)(nil)
 // NewBaseScalingContext creates a new instance of BaseScalingContext with default values.
 func NewBaseScalingContext() *BaseScalingContext {
 	return &BaseScalingContext{
-		MaxScaleUpRate:   2,     // Scale up rate of 200%, allowing rapid scaling
-		MaxScaleDownRate: 2,     // Scale down rate of 50%, for more gradual reduction
-		ScalingMetric:    "CPU", // Metric used for scaling, here set to CPU utilization
-		TargetValue:      30.0,  // Target CPU utilization set at 10%
-		TotalValue:       100.0, // Total CPU utilization capacity for pods is 100%
+		MaxScaleUpRate:           2,                 // Scale up rate of 200%, allowing rapid scaling
+		MaxScaleDownRate:         2,                 // Scale down rate of 50%, for more gradual reduction
+		ScalingMetric:            "CPU",             // Metric used for scaling, here set to CPU utilization
+		TargetValue:              30.0,              // Target CPU utilization set at 10%
+		TotalValue:               100.0,             // Total CPU utilization capacity for pods is 100%
+		UpFluctuationTolerance:   0.1,               // Default 10% tolerance for scale-up
+		DownFluctuationTolerance: 0.1,               // Default 10% tolerance for scale-down
+		ScaleUpCooldownWindow:    0 * time.Second,   // Default: no cooldown for scale-up
+		ScaleDownCooldownWindow:  300 * time.Second, // Default: 5 minutes cooldown for scale-down
+		ScaleToZero:              false,             // Default: do not scale to zero
+		PanicThreshold:           2.0,               // Default panic threshold for KPA
 	}
 }
 
@@ -110,18 +123,54 @@ func (b *BaseScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscal
 
 	for key, value := range pa.Annotations {
 		switch key {
-		case maxScaleUpRateLabel:
+		case types.MaxScaleUpRateLabel:
 			v, err := strconv.ParseFloat(value, 64)
 			if err != nil {
 				return err
 			}
 			b.MaxScaleUpRate = v
-		case maxScaleDownRateLabel:
+		case types.MaxScaleDownRateLabel:
 			v, err := strconv.ParseFloat(value, 64)
 			if err != nil {
 				return err
 			}
 			b.MaxScaleDownRate = v
+		case types.ScaleUpToleranceLabel:
+			v, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return err
+			}
+			b.UpFluctuationTolerance = v
+		case types.ScaleDownToleranceLabel:
+			v, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return err
+			}
+			b.DownFluctuationTolerance = v
+		case types.PanicThresholdLabel:
+			v, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return err
+			}
+			b.PanicThreshold = v
+		case types.ScaleUpCooldownWindowLabel:
+			v, err := time.ParseDuration(value)
+			if err != nil {
+				return err
+			}
+			b.ScaleUpCooldownWindow = v
+		case types.ScaleDownCooldownWindowLabel:
+			v, err := time.ParseDuration(value)
+			if err != nil {
+				return err
+			}
+			b.ScaleDownCooldownWindow = v
+		case types.ScaleToZeroLabel:
+			v, err := strconv.ParseBool(value)
+			if err != nil {
+				return err
+			}
+			b.ScaleToZero = v
 		}
 	}
 	return nil
@@ -140,11 +189,11 @@ func (b *BaseScalingContext) SetMaxReplicas(maxReplicas int32) {
 }
 
 func (b *BaseScalingContext) GetUpFluctuationTolerance() float64 {
-	return 0.1 // Default 10% tolerance
+	return b.UpFluctuationTolerance
 }
 
 func (b *BaseScalingContext) GetDownFluctuationTolerance() float64 {
-	return 0.1 // Default 10% tolerance
+	return b.DownFluctuationTolerance
 }
 
 func (b *BaseScalingContext) GetMaxScaleUpRate() float64 {
@@ -175,9 +224,6 @@ func (b *BaseScalingContext) GetMaxReplicas() int32 {
 	return b.MaxReplicas
 }
 
-// Missing methods - implementing with default/zero values for base implementation
-
-// Stable and Panic values - base implementation returns 0
 func (b *BaseScalingContext) GetStableValue() float64 {
 	return 0
 }
@@ -194,7 +240,6 @@ func (b *BaseScalingContext) SetPanicValue(value float64) {
 	// No-op in base implementation
 }
 
-// Activation scale - base implementation returns 1 (minimum valid value)
 func (b *BaseScalingContext) GetActivationScale() int32 {
 	return 1
 }
@@ -203,9 +248,8 @@ func (b *BaseScalingContext) SetActivationScale(value int32) {
 	// No-op in base implementation
 }
 
-// Panic mode state - base implementation returns false/0
 func (b *BaseScalingContext) GetPanicThreshold() float64 {
-	return 0
+	return b.PanicThreshold
 }
 
 func (b *BaseScalingContext) GetInPanicMode() bool {
@@ -224,15 +268,14 @@ func (b *BaseScalingContext) SetMaxPanicPods(pods int32) {
 	// No-op in base implementation
 }
 
-// Time windows - base implementation returns 0 duration
-func (b *BaseScalingContext) GetStableWindow() time.Duration {
-	return 0
+func (b *BaseScalingContext) GetScaleUpCooldownWindow() time.Duration {
+	return b.ScaleUpCooldownWindow
 }
 
-func (b *BaseScalingContext) GetPanicWindow() time.Duration {
-	return 0
+func (b *BaseScalingContext) GetScaleDownCooldownWindow() time.Duration {
+	return b.ScaleDownCooldownWindow
 }
 
-func (b *BaseScalingContext) GetScaleDownDelay() time.Duration {
-	return 0
+func (b *BaseScalingContext) GetScaleToZero() bool {
+	return b.ScaleToZero
 }

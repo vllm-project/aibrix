@@ -46,7 +46,7 @@ func (a *KPAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 	var mode string
 
 	// Detect panic mode based on metrics
-	if a.shouldEnterPanicMode(metrics, request.Config.PanicThreshold) {
+	if a.shouldEnterPanicMode(metrics, request.ScalingContext.GetPanicThreshold()) {
 		currentValue = metrics.PanicValue
 		mode = "panic"
 		request.ScalingContext.SetInPanicMode(true)
@@ -63,8 +63,8 @@ func (a *KPAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 	// Compute target replicas using KPA algorithm
 	desiredReplicas := a.computeTargetReplicas(float64(request.CurrentReplicas), request.ScalingContext)
 
-	// Apply constraints
-	desiredReplicas = applyConstraints(desiredReplicas, request.Constraints)
+	// Apply constraints from ScalingContext
+	desiredReplicas = applyConstraints(desiredReplicas, request.ScalingContext)
 
 	return &ScalingRecommendation{
 		DesiredReplicas: desiredReplicas,
@@ -95,6 +95,7 @@ func (a *KPAAlgorithm) shouldEnterPanicMode(metrics *types.AggregatedMetrics, pa
 }
 
 // computeTargetReplicas is the core KPA scaling logic
+// Tolerance is applied to prevent scaling for minor metric fluctuations.
 func (a *KPAAlgorithm) computeTargetReplicas(currentPodCount float64, context scalingctx.ScalingContext) int32 {
 	// Get all the necessary values from context
 	observedStableValue := context.GetStableValue()
@@ -103,14 +104,33 @@ func (a *KPAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 	panicThreshold := context.GetPanicThreshold()
 	inPanicMode := context.GetInPanicMode()
 	maxPanicPods := context.GetMaxPanicPods()
+	upTolerance := context.GetUpFluctuationTolerance()
+	downTolerance := context.GetDownFluctuationTolerance()
 
 	// Original scaling rate calculations
 	readyPodsCount := math.Max(0, currentPodCount)                                   // A little sanitizing.
 	maxScaleUp := math.Max(1, math.Ceil(context.GetMaxScaleUpRate()*readyPodsCount)) // Keep scale up non zero
 	maxScaleDown := math.Floor(readyPodsCount / context.GetMaxScaleDownRate())       // Make scale down zero-able
 
-	dspc := math.Ceil(observedStableValue / targetValue)
-	dppc := math.Ceil(observedPanicValue / targetValue)
+	// Establish scale-up and scale-down thresholds using tolerances
+	scaleUpThreshold := targetValue * (1 + upTolerance)
+	scaleDownThreshold := targetValue * (1 - downTolerance)
+
+	// Calculate desired replicas based on tolerance-adjusted targets
+	var dspc, dppc float64
+	if observedStableValue > scaleUpThreshold || observedStableValue < scaleDownThreshold {
+		dspc = math.Ceil(observedStableValue / targetValue)
+	} else {
+		// Within tolerance, maintain current replica count
+		dspc = currentPodCount
+	}
+
+	if observedPanicValue > scaleUpThreshold || observedPanicValue < scaleDownThreshold {
+		dppc = math.Ceil(observedPanicValue / targetValue)
+	} else {
+		// Within tolerance, maintain current replica count
+		dppc = currentPodCount
+	}
 
 	// We want to keep desired pod count in the [maxScaleDown, maxScaleUp] range.
 	desiredStablePodCount := int32(math.Min(math.Max(dspc, maxScaleDown), maxScaleUp))
@@ -135,7 +155,7 @@ func (a *KPAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 	klog.V(4).InfoS("KPA Details", "readyPodsCount", readyPodsCount,
 		"MaxScaleUpRate", context.GetMaxScaleUpRate(), "MaxScaleDownRate", context.GetMaxScaleDownRate(),
 		"TargetValue", targetValue, "PanicThreshold", panicThreshold,
-		"StableWindow", context.GetStableWindow(), "PanicWindow", context.GetPanicWindow(), "ScaleDownDelay", context.GetScaleDownDelay(),
+		"UpTolerance", upTolerance, "DownTolerance", downTolerance,
 		"dppc", dppc, "dspc", dspc, "desiredStablePodCount", desiredStablePodCount,
 		"isOverPanicThreshold", isOverPanicThreshold,
 	)
