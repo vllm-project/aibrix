@@ -27,16 +27,8 @@ import (
 )
 
 // KPAAlgorithm implements Knative-style Pod Autoscaling with panic and stable windows
-type KPAAlgorithm struct {
-	config AlgorithmConfig
-}
-
-// NewKPAAlgorithm creates a new KPA algorithm instance
-func NewKPAAlgorithm(config AlgorithmConfig) *KPAAlgorithm {
-	return &KPAAlgorithm{
-		config: config,
-	}
-}
+// This is a stateless struct that can be safely reused across goroutines
+type KPAAlgorithm struct{}
 
 var _ ScalingAlgorithm = (*KPAAlgorithm)(nil)
 
@@ -54,7 +46,7 @@ func (a *KPAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 	var mode string
 
 	// Detect panic mode based on metrics
-	if a.shouldEnterPanicMode(metrics) {
+	if a.shouldEnterPanicMode(metrics, request.Config.PanicThreshold) {
 		currentValue = metrics.PanicValue
 		mode = "panic"
 		request.ScalingContext.SetInPanicMode(true)
@@ -89,26 +81,20 @@ func (a *KPAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 	}, nil
 }
 
-// shouldEnterPanicMode determines if we should switch to panic mode
-func (a *KPAAlgorithm) shouldEnterPanicMode(metrics *types.AggregatedMetrics) bool {
-	if metrics.StableValue <= 0 {
-		return true
-	}
-	return metrics.PanicValue/metrics.StableValue > a.config.PanicThreshold
-}
-
 // GetAlgorithmType returns the algorithm type
 func (a *KPAAlgorithm) GetAlgorithmType() string {
 	return "kpa"
 }
 
-// UpdateConfiguration updates the algorithm configuration
-func (a *KPAAlgorithm) UpdateConfiguration(config AlgorithmConfig) error {
-	a.config = config
-	return nil
+// shouldEnterPanicMode determines if we should switch to panic mode
+func (a *KPAAlgorithm) shouldEnterPanicMode(metrics *types.AggregatedMetrics, panicThreshold float64) bool {
+	if metrics.StableValue <= 0 {
+		return true
+	}
+	return metrics.PanicValue/metrics.StableValue > panicThreshold
 }
 
-// computeTargetReplicas is the core KPA scaling logic (moved from ComputeTargetReplicas)
+// computeTargetReplicas is the core KPA scaling logic
 func (a *KPAAlgorithm) computeTargetReplicas(currentPodCount float64, context scalingctx.ScalingContext) int32 {
 	// Get all the necessary values from context
 	observedStableValue := context.GetStableValue()

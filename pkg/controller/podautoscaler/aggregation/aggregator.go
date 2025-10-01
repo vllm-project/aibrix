@@ -27,16 +27,14 @@ import (
 // MetricAggregator processes and aggregates metrics over time windows
 type MetricAggregator interface {
 	// ProcessSnapshot adds new metrics to aggregation windows
-	ProcessSnapshot(metricKey types.MetricKey, snapshot *types.MetricSnapshot) error
+	ProcessSnapshot(metricKey types.MetricKey, snapshot *types.MetricSnapshot, config metrics.MetricsConfig) error
 
 	// GetAggregatedMetrics returns processed metrics for scaling decisions
 	GetAggregatedMetrics(key types.MetricKey, now time.Time) (*types.AggregatedMetrics, error)
-
-	// UpdateConfiguration changes aggregation parameters
-	UpdateConfiguration(config AggregationConfig) error
 }
 
-// AggregationConfig defines aggregation parameters
+// AggregationConfig is kept for backward compatibility with config extraction
+// but is no longer used by the aggregator itself
 type AggregationConfig struct {
 	StableWindow time.Duration
 	PanicWindow  time.Duration
@@ -46,26 +44,26 @@ type AggregationConfig struct {
 
 // DefaultMetricAggregator is a single implementation for all strategies
 // It always returns both stable and panic values - the algorithm layer decides which to use
+// This is a stateless aggregator that delegates to MetricsClient
 type DefaultMetricAggregator struct {
 	client metrics.AggregatorMetricsClient
-	config AggregationConfig
 }
 
 // NewMetricAggregator creates a metric aggregator (same for all strategies)
-func NewMetricAggregator(client metrics.AggregatorMetricsClient, config AggregationConfig) *DefaultMetricAggregator {
+func NewMetricAggregator(client metrics.AggregatorMetricsClient) *DefaultMetricAggregator {
 	return &DefaultMetricAggregator{
 		client: client,
-		config: config,
 	}
 }
 
-func (a *DefaultMetricAggregator) ProcessSnapshot(metricKey types.MetricKey, snapshot *types.MetricSnapshot) error {
+func (a *DefaultMetricAggregator) ProcessSnapshot(metricKey types.MetricKey, snapshot *types.MetricSnapshot, config metrics.MetricsConfig) error {
 	if snapshot.Error != nil {
 		return snapshot.Error
 	}
 
 	// Use the provided metricKey which has correct PaNamespace/PaName
-	return a.client.UpdateMetrics(snapshot.Timestamp, metricKey, snapshot.Values...)
+	// Pass the config so that windows are initialized with user-configured values
+	return a.client.UpdateMetrics(snapshot.Timestamp, metricKey, config, snapshot.Values...)
 }
 
 func (a *DefaultMetricAggregator) GetAggregatedMetrics(key types.MetricKey, now time.Time) (*types.AggregatedMetrics, error) {
@@ -84,11 +82,6 @@ func (a *DefaultMetricAggregator) GetAggregatedMetrics(key types.MetricKey, now 
 		PanicValue:  panicVal,
 		LastUpdated: now,
 	}, nil
-}
-
-func (a *DefaultMetricAggregator) UpdateConfiguration(config AggregationConfig) error {
-	a.config = config
-	return nil
 }
 
 // calculateTrend calculates the trend between stable and panic values with smoothing

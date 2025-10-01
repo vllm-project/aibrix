@@ -29,15 +29,14 @@ import (
 )
 
 // ScalingAlgorithm computes target replicas based on metrics and context
+// Implementations must be stateless and thread-safe for concurrent use
 type ScalingAlgorithm interface {
 	// ComputeRecommendation calculates desired replica count based on aggregated metrics
+	// All configuration is passed via the request to keep the algorithm stateless
 	ComputeRecommendation(ctx context.Context, request ScalingRequest) (*ScalingRecommendation, error)
 
 	// GetAlgorithmType returns the algorithm type (kpa, apa, hpa)
 	GetAlgorithmType() string
-
-	// UpdateConfiguration updates algorithm parameters
-	UpdateConfiguration(config AlgorithmConfig) error
 }
 
 // ScalingRequest contains all data needed for scaling decision
@@ -47,6 +46,7 @@ type ScalingRequest struct {
 	AggregatedMetrics *types.AggregatedMetrics
 	ScalingContext    scalingctx.ScalingContext
 	Constraints       types.ScalingConstraints
+	Config            AlgorithmConfig // Algorithm-specific configuration
 	Timestamp         time.Time
 }
 
@@ -69,17 +69,18 @@ type AlgorithmConfig struct {
 	ScaleToZero    bool
 }
 
-// NewScalingAlgorithm creates the appropriate algorithm based on strategy
-func NewScalingAlgorithm(strategy autoscalingv1alpha1.ScalingStrategyType, config AlgorithmConfig) ScalingAlgorithm {
+// NewScalingAlgorithm creates a stateless algorithm instance for the given strategy
+// Instances can be safely cached and reused across goroutines
+func NewScalingAlgorithm(strategy autoscalingv1alpha1.ScalingStrategyType) ScalingAlgorithm {
 	switch strategy {
 	case autoscalingv1alpha1.KPA:
-		return NewKPAAlgorithm(config)
+		return &KPAAlgorithm{}
 	case autoscalingv1alpha1.APA:
-		return NewAPAAlgorithm(config)
+		return &APAAlgorithm{}
 	case autoscalingv1alpha1.HPA:
-		return NewHPAAlgorithm(config)
+		return &HPAAlgorithm{}
 	default:
-		return NewKPAAlgorithm(config) // Default to KPA
+		return &KPAAlgorithm{} // Default to KPA
 	}
 }
 
