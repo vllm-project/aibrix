@@ -21,55 +21,21 @@ spec:
         model.aibrix.ai/name: hunyuan-dit 
         model.aibrix.ai/port: "6000" 
     spec: 
-      initContainers: 
-        - command:             
-            - aibrix_download 
-            - --model-uri 
-            - tos://aibrix-artifact-testing/models/HunyuanDiT-v1.2-Diffusers/
-            - --local-dir 
-            - /models/ 
-          env: 
-            - name: DOWNLOADER_NUM_THREADS 
-              value: "16" 
-            - name: TOS_ACCESS_KEY 
-              valueFrom: 
-                secretKeyRef: 
-                  key: TOS_ACCESS_KEY 
-                  name: tos-credential 
-            - name: TOS_SECRET_KEY 
-              valueFrom: 
-                secretKeyRef: 
-                  key: TOS_SECRET_KEY 
-                  name: tos-credential 
-            - name: TOS_ENDPOINT 
-              value: https://tos-s3-cn-beijing.ivolces.com 
-            - name: TOS_REGION 
-              value: cn-beijing 
-            - name: LOG_LEVEL
-              value: DEBUG  
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.1-downloader-2
-          name: init-model 
-          volumeMounts: 
-            - mountPath: /models 
-              name: model-hostpath 
       containers: 
         - name: xdit-dev 
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:v0.20 #aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5 
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:v0.25 #aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5   # python3 entrypoints/launch.py --model_path /models/HunyuanDiT-v1.2-Diffusers --world_size 4 --pipefusion_parallel_degree 2 --ulysses_parallel_degree 2
           imagePullPolicy: Always 
           command: ["sh", "-c"]
           args:
             - |
-              python3 entrypoints/launch.py --model_path /models/HunyuanDiT-v1.2-Diffusers
+              python3 entrypoints/launch.py --model_path /models/HunyuanDiT-v1.2-Diffusers --world_size 4 --pipefusion_parallel_degree 2 --ulysses_parallel_degree 2
           env: []
-          volumeMounts: 
-            - mountPath: /models 
-              name: model-hostpath 
           resources: 
             limits: 
-              nvidia.com/gpu: "1" 
+              nvidia.com/gpu: "4" #"1" 
               cpu: "10" # memory: "150G" 
             requests: 
-              nvidia.com/gpu: "1" 
+              nvidia.com/gpu: "4" #"1" 
               cpu: "10" # memory: "150G" 
           volumeMounts:
             - mountPath: /models 
@@ -93,15 +59,13 @@ spec:
           volumeMounts:
             - name: shared-data
               mountPath: /shared
+      nodeSelector:
+        kubernetes.io/hostname: 192.168.0.6
       volumes: 
         - name: model-hostpath 
           hostPath: 
-            path: /root/models 
-            type: DirectoryOrCreate 
-        - name: model-mountpath
-          hostPath: 
-            path: /mnt/vdb/models
-            type: DirectoryOrCreate
+            path: /data01/models
+            type: Directory
         - name: shared-data
           emptyDir: {}  
 --- 

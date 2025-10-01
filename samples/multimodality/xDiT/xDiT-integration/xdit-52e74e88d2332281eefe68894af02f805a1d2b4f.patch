@@ -1,0 +1,755 @@
+diff --git a/docker/Dockerfile b/docker/Dockerfile
+index c275080..549652b 100644
+--- a/docker/Dockerfile
++++ b/docker/Dockerfile
+@@ -11,16 +11,27 @@ RUN pip install --no-cache-dir --upgrade pip
+ 
+ # Uninstall apex first
+ RUN pip uninstall -y apex
++RUN pip uninstall -y xfuser
+ 
+ # # Install flash_attn separately with --use-pep517 flag
+ # RUN pip install --no-cache-dir --use-pep517 flash-attn==2.6.3 flask
+ 
+-RUN pip install xfuser
++RUN pip install xfuser[diffusers,flash-attn,ray]
++RUN pip install fastapi
++RUN pip install uvicorn
+ 
+ RUN pip install flask
++# ensure numpy stays <2 to keep compatibility with the base pytorch wheel
++RUN pip uninstall -y opencv-python opencv-python-headless || true
++
++# install headless (safe for containers) and pin numpy
++RUN pip install --no-cache-dir "numpy<2" "opencv-python-headless==4.8.0.74"
++
++RUN pip install --no-cache-dir imageio imageio-ffmpeg
+ 
+ # Copy the entire comfyui-xdit directory into the container
+-COPY ./http-service /app/http-service
++COPY ./entrypoints /app/entrypoints
++COPY ./examples /app/examples   
+ 
+ # Change to the xDiT directory
+ WORKDIR /app
+diff --git a/entrypoints/client.py b/entrypoints/client.py
+new file mode 100755
+index 0000000..4896676
+--- /dev/null
++++ b/entrypoints/client.py
+@@ -0,0 +1,376 @@
++#!/usr/bin/env python3
++"""
++xDiT Client - A client for interacting with xDiT image and video generation servers.
++
++This client supports:
++- Image generation via /generate endpoint
++- Video generation via /generatevideo endpoint  
++- Handling both file path and base64 encoded responses
++- Automatic conversion of base64 content to files
++- Flexible configuration options
++"""
++
++import argparse
++import base64
++import json
++import os
++import sys
++import time
++from pathlib import Path
++from typing import Dict, Any, Optional
++
++import requests
++
++
++class XDiTClient:
++    """Client for xDiT image and video generation services."""
++    
++    def __init__(self, base_url: str = "http://localhost:6000", timeout: int = 300):
++        """
++        Initialize the xDiT client.
++        
++        Args:
++            base_url: Base URL of the xDiT server
++            timeout: Request timeout in seconds
++        """
++        self.base_url = base_url.rstrip('/')
++        self.timeout = timeout
++        self.session = requests.Session()
++        
++    def generate_image(self, 
++                      prompt: str,
++                      num_inference_steps: int = 50,
++                      seed: int = 42,
++                      cfg: float = 7.5,
++                      height: int = 1024,
++                      width: int = 1024,
++                      save_disk_path: Optional[str] = None,
++                      output_dir: str = "./output") -> Dict[str, Any]:
++        """
++        Generate an image using the xDiT image generation service.
++        
++        Args:
++            prompt: Text prompt for image generation
++            num_inference_steps: Number of inference steps
++            seed: Random seed for generation
++            cfg: Classifier-free guidance scale
++            height: Image height in pixels
++            width: Image width in pixels
++            save_disk_path: Server-side save path (if None, returns base64)
++            output_dir: Local directory to save decoded files
++            
++        Returns:
++            Dictionary containing generation results and file information
++        """
++        endpoint = f"{self.base_url}/generate"
++        
++        payload = {
++            "prompt": prompt,
++            "num_inference_steps": num_inference_steps,
++            "seed": seed,
++            "cfg": cfg,
++            "height": height,
++            "width": width
++        }
++        
++        if save_disk_path:
++            payload["save_disk_path"] = save_disk_path
++            
++        return self._make_request(endpoint, payload, output_dir, "image")
++    
++    def generate_video(self,
++                      prompt: str,
++                      num_inference_steps: int = 50,
++                      num_frames: int = 17,
++                      seed: int = 42,
++                      cfg: float = 7.5,
++                      height: int = 1024,
++                      width: int = 1024,
++                      fps: int = 8,
++                      save_disk_path: Optional[str] = None,
++                      output_dir: str = "./output") -> Dict[str, Any]:
++        """
++        Generate a video using the xDiT video generation service.
++        
++        Args:
++            prompt: Text prompt for video generation
++            num_inference_steps: Number of inference steps
++            num_frames: Number of video frames
++            seed: Random seed for generation
++            cfg: Classifier-free guidance scale
++            height: Video height in pixels
++            width: Video width in pixels
++            fps: Frames per second
++            save_disk_path: Server-side save path (if None, returns base64)
++            output_dir: Local directory to save decoded files
++            
++        Returns:
++            Dictionary containing generation results and file information
++        """
++        endpoint = f"{self.base_url}/generatevideo"
++        
++        payload = {
++            "prompt": prompt,
++            "num_inference_steps": num_inference_steps,
++            "num_frames": num_frames,
++            "seed": seed,
++            "cfg": cfg,
++            "height": height,
++            "width": width,
++            "fps": fps
++        }
++        
++        if save_disk_path:
++            payload["save_disk_path"] = save_disk_path
++            
++        return self._make_request(endpoint, payload, output_dir, "video")
++    
++    def _make_request(self, endpoint: str, payload: Dict[str, Any], 
++                     output_dir: str, content_type: str) -> Dict[str, Any]:
++        """
++        Make a request to the server and handle the response.
++        
++        Args:
++            endpoint: API endpoint URL
++            payload: Request payload
++            output_dir: Local output directory
++            content_type: Type of content ("image" or "video")
++            
++        Returns:
++            Dictionary containing results and file information
++        """
++        print(f"Making request to {endpoint}")
++        print(f"Payload: {json.dumps(payload, indent=2)}")
++        
++        try:
++            start_time = time.time()
++            response = self.session.post(
++                endpoint,
++                json=payload,
++                timeout=self.timeout,
++                headers={"Content-Type": "application/json"}
++            )
++            request_time = time.time() - start_time
++            
++            response.raise_for_status()
++            result = response.json()
++            
++            print(f"Server response received in {request_time:.2f}s")
++            print(f"Generation time: {result.get('elapsed_time', 'N/A')}")
++            print(f"Message: {result.get('message', 'N/A')}")
++            
++            # Handle the response based on whether it's a file path or base64 data
++            if result.get('save_to_disk', False):
++                # Server saved to disk, result contains file path
++                print(f"File saved on server: {result['output']}")
++                result['local_file'] = None
++                result['file_type'] = 'server_path'
++            else:
++                # Server returned base64 encoded data
++                print("Received base64 encoded data, decoding...")
++                local_file = self._decode_and_save(
++                    result['output'], 
++                    output_dir, 
++                    content_type,
++                    result.get('format', 'png' if content_type == 'image' else 'mp4')
++                )
++                result['local_file'] = local_file
++                result['file_type'] = 'base64_decoded'
++                print(f"File saved locally: {local_file}")
++            
++            return result
++            
++        except requests.exceptions.Timeout:
++            raise Exception(f"Request timed out after {self.timeout} seconds")
++        except requests.exceptions.RequestException as e:
++            raise Exception(f"Request failed: {str(e)}")
++        except json.JSONDecodeError:
++            raise Exception("Invalid JSON response from server")
++        except Exception as e:
++            raise Exception(f"Unexpected error: {str(e)}")
++    
++    def _decode_and_save(self, base64_data: str, output_dir: str, 
++                        content_type: str, file_format: str) -> str:
++        """
++        Decode base64 data and save to file.
++        
++        Args:
++            base64_data: Base64 encoded file data
++            output_dir: Output directory
++            content_type: Type of content ("image" or "video")
++            file_format: File format (e.g., "png", "mp4")
++            
++        Returns:
++            Path to the saved file
++        """
++        # Create output directory if it doesn't exist
++        os.makedirs(output_dir, exist_ok=True)
++        
++        # Generate filename with timestamp
++        timestamp = time.strftime("%Y%m%d-%H%M%S")
++        filename = f"generated_{content_type}_{timestamp}.{file_format}"
++        file_path = os.path.join(output_dir, filename)
++        
++        try:
++            # Decode base64 data
++            file_data = base64.b64decode(base64_data)
++            
++            # Write to file
++            with open(file_path, 'wb') as f:
++                f.write(file_data)
++                
++            print(f"Decoded {len(file_data)} bytes to {file_path}")
++            return file_path
++            
++        except Exception as e:
++            raise Exception(f"Failed to decode and save file: {str(e)}")
++    
++    def health_check(self) -> bool:
++        """
++        Check if the server is healthy and responsive.
++        
++        Returns:
++            True if server is healthy, False otherwise
++        """
++        try:
++            response = self.session.get(f"{self.base_url}/docs", timeout=5)
++            return response.status_code == 200
++        except:
++            return False
++
++
++def main():
++    """Main CLI interface for the xDiT client."""
++    parser = argparse.ArgumentParser(
++        description="xDiT Client - Generate images and videos using xDiT services",
++        formatter_class=argparse.RawDescriptionHelpFormatter,
++        epilog="""
++Examples:
++  # Generate an image
++  python client.py image "a cute rabbit" --steps 30 --seed 123
++
++  # Generate a video
++  python client.py video "a cat playing with a ball" --frames 25 --fps 12
++
++  # Use server-side saving
++  python client.py image "a landscape" --server-save-path /tmp/outputs
++
++  # Custom server URL
++  python client.py --url http://192.168.1.100:6000 image "a sunset"
++        """
++    )
++    
++    parser.add_argument('--url', default='http://localhost:6000',
++                       help='Base URL of the xDiT server (default: http://localhost:6000)')
++    parser.add_argument('--timeout', type=int, default=300,
++                       help='Request timeout in seconds (default: 300)')
++    parser.add_argument('--output-dir', default='./output',
++                       help='Local output directory for decoded files (default: ./output)')
++    
++    subparsers = parser.add_subparsers(dest='command', help='Available commands')
++    
++    # Image generation command
++    img_parser = subparsers.add_parser('image', help='Generate an image')
++    img_parser.add_argument('prompt', help='Text prompt for image generation')
++    img_parser.add_argument('--steps', type=int, default=50,
++                           help='Number of inference steps (default: 50)')
++    img_parser.add_argument('--seed', type=int, default=42,
++                           help='Random seed (default: 42)')
++    img_parser.add_argument('--cfg', type=float, default=7.5,
++                           help='Classifier-free guidance scale (default: 7.5)')
++    img_parser.add_argument('--height', type=int, default=1024,
++                           help='Image height (default: 1024)')
++    img_parser.add_argument('--width', type=int, default=1024,
++                           help='Image width (default: 1024)')
++    img_parser.add_argument('--server-save-path', type=str,
++                           help='Server-side save path (if not provided, returns base64)')
++    
++    # Video generation command
++    vid_parser = subparsers.add_parser('video', help='Generate a video')
++    vid_parser.add_argument('prompt', help='Text prompt for video generation')
++    vid_parser.add_argument('--steps', type=int, default=50,
++                           help='Number of inference steps (default: 50)')
++    vid_parser.add_argument('--frames', type=int, default=17,
++                           help='Number of video frames (default: 17)')
++    vid_parser.add_argument('--seed', type=int, default=42,
++                           help='Random seed (default: 42)')
++    vid_parser.add_argument('--cfg', type=float, default=7.5,
++                           help='Classifier-free guidance scale (default: 7.5)')
++    vid_parser.add_argument('--height', type=int, default=1024,
++                           help='Video height (default: 1024)')
++    vid_parser.add_argument('--width', type=int, default=1024,
++                           help='Video width (default: 1024)')
++    vid_parser.add_argument('--fps', type=int, default=8,
++                           help='Frames per second (default: 8)')
++    vid_parser.add_argument('--server-save-path', type=str,
++                           help='Server-side save path (if not provided, returns base64)')
++    
++    # Health check command
++    subparsers.add_parser('health', help='Check server health')
++    
++    args = parser.parse_args()
++    
++    if not args.command:
++        parser.print_help()
++        return 1
++    
++    # Initialize client
++    client = XDiTClient(base_url=args.url, timeout=args.timeout)
++    
++    try:
++        if args.command == 'health':
++            if client.health_check():
++                print("✅ Server is healthy and responsive")
++                return 0
++            else:
++                print("❌ Server is not responding")
++                return 1
++                
++        elif args.command == 'image':
++            result = client.generate_image(
++                prompt=args.prompt,
++                num_inference_steps=args.steps,
++                seed=args.seed,
++                cfg=args.cfg,
++                height=args.height,
++                width=args.width,
++                save_disk_path=args.server_save_path,
++                output_dir=args.output_dir
++            )
++            
++        elif args.command == 'video':
++            result = client.generate_video(
++                prompt=args.prompt,
++                num_inference_steps=args.steps,
++                num_frames=args.frames,
++                seed=args.seed,
++                cfg=args.cfg,
++                height=args.height,
++                width=args.width,
++                fps=args.fps,
++                save_disk_path=args.server_save_path,
++                output_dir=args.output_dir
++            )
++        
++        if args.command in ['image', 'video']:
++            print("\n" + "="*50)
++            print("GENERATION COMPLETE")
++            print("="*50)
++            print(f"Prompt: {args.prompt}")
++            print(f"Generation time: {result.get('elapsed_time', 'N/A')}")
++            print(f"File type: {result.get('file_type', 'N/A')}")
++            
++            if result.get('local_file'):
++                print(f"Local file: {result['local_file']}")
++            elif result.get('output'):
++                print(f"Server file: {result['output']}")
++                
++        return 0
++        
++    except Exception as e:
++        print(f"❌ Error: {str(e)}", file=sys.stderr)
++        return 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+\ No newline at end of file
+diff --git a/entrypoints/launch.py b/entrypoints/launch.py
+index 2f39f85..cfc9a07 100644
+--- a/entrypoints/launch.py
++++ b/entrypoints/launch.py
+@@ -77,6 +77,7 @@ class ImageGenerator:
+             "PixArt-XL-2-1024-MS": xFuserPixArtAlphaPipeline,
+             "PixArt-Sigma-XL-2-2K-MS": xFuserPixArtSigmaPipeline,
+             "stable-diffusion-3-medium-diffusers": xFuserStableDiffusion3Pipeline,
++            "stable-diffusion-3.5-large": xFuserStableDiffusion3Pipeline,
+             "HunyuanDiT-v1.2-Diffusers": xFuserHunyuanDiTPipeline,
+             "FLUX.1-schnell": xFuserFluxPipeline,
+             "FLUX.1-dev": xFuserFluxPipeline,
+@@ -108,7 +109,7 @@ class ImageGenerator:
+                 output_type="pil",
+                 generator=torch.Generator(device="cuda").manual_seed(request.seed),
+                 guidance_scale=request.cfg,
+-                max_sequence_length=self.input_config.max_sequence_length
++                #max_sequence_length=self.input_config.max_sequence_length
+             )
+             elapsed_time = time.time() - start_time
+ 
+@@ -201,6 +202,7 @@ if __name__ == "__main__":
+         ulysses_degree=args.ulysses_parallel_degree,
+         pipefusion_parallel_degree=args.pipefusion_parallel_degree,
+         use_cfg_parallel=args.use_cfg_parallel,
++        ring_degree=args.ring_degree,
+         dit_parallel_size=0,
+     )
+     
+diff --git a/entrypoints/launch_video.py b/entrypoints/launch_video.py
+new file mode 100644
+index 0000000..e565d73
+--- /dev/null
++++ b/entrypoints/launch_video.py
+@@ -0,0 +1,302 @@
++import os
++import time
++from cv2.gapi import video
++import torch
++import ray
++import io
++import logging
++import base64
++import tempfile
++from fastapi import FastAPI, HTTPException
++from pydantic import BaseModel
++from typing import Optional
++import argparse
++
++from xfuser import (
++    xFuserCogVideoXPipeline,
++    xFuserConsisIDPipeline,
++    xFuserLattePipeline,
++    xFuserArgs,
++)
++from xfuser.core.distributed import (
++    get_world_group,
++    get_data_parallel_rank,
++    get_data_parallel_world_size,
++    get_runtime_state,
++    is_dp_last_group,
++)
++from diffusers.utils import export_to_video
++# Define request model
++class GenerateRequest(BaseModel):
++    prompt: str
++    num_inference_steps: Optional[int] = 50
++    num_frames: Optional[int] = 17
++    seed: Optional[int] = 42
++    cfg: Optional[float] = 7.5
++    save_disk_path: Optional[str] = None
++    height: Optional[int] = 1024
++    width: Optional[int] = 1024
++    fps: Optional[int] = 8
++
++    # Add input validation
++    class Config:
++        json_schema_extra = {
++            "example": {
++                "prompt": "A little girl is riding a bicycle at high speed. Focused, detailed, realistic.",
++                "num_inference_steps": 50,
++                "seed": 42,
++                "cfg": 7.5,
++                "height": 1024,
++                "width": 1024
++            }
++        }
++
++app = FastAPI()
++
++@ray.remote(num_gpus=1)
++class VideoGenerator:
++    def __init__(self, xfuser_args: xFuserArgs, rank: int, world_size: int, disable_warmup: bool = False):
++        # Set PyTorch distributed environment variables
++        os.environ["RANK"] = str(rank)
++        os.environ["WORLD_SIZE"] = str(world_size)
++        os.environ["MASTER_ADDR"] = "127.0.0.1"
++        os.environ["MASTER_PORT"] = "29500"
++        
++        # Set memory optimization environment variables
++        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:128"
++        
++        # Set CUDA memory fraction to leave some memory for other processes
++        if torch.cuda.is_available():
++            torch.cuda.set_per_process_memory_fraction(0.9)
++        
++        self.rank = rank
++        self.disable_warmup = disable_warmup
++        self.setup_logger()
++        
++        # Clear any existing CUDA cache before initialization
++        torch.cuda.empty_cache()
++        
++        self.initialize_model(xfuser_args)
++
++    def setup_logger(self):
++        self.logger = logging.getLogger(__name__)
++        # Add console handler if not already present
++        if not self.logger.handlers:
++            console_handler = logging.StreamHandler()
++            console_handler.setLevel(logging.INFO)
++            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
++            console_handler.setFormatter(formatter)
++            self.logger.addHandler(console_handler)
++            self.logger.setLevel(logging.INFO)
++
++    def initialize_model(self, xfuser_args : xFuserArgs):
++
++        # init distributed environment in create_config
++        self.engine_config, self.input_config = xfuser_args.create_config()
++        # Remove use_resolution_binning if it exists to avoid compatibility issues
++        if hasattr(self.input_config, "use_resolution_binning"):
++            delattr(self.input_config, "use_resolution_binning")
++        model_name = self.engine_config.model_config.model.split("/")[-1]
++        pipeline_map = {
++            "CogVideoX1.5-5B": xFuserCogVideoXPipeline,
++            "CogVideoX-2b": xFuserCogVideoXPipeline,
++            "ConsisID-preview": xFuserConsisIDPipeline,
++            "Latte-1": xFuserLattePipeline,
++        }
++
++        PipelineClass = pipeline_map.get(model_name)
++        if PipelineClass is None:
++            raise NotImplementedError(f"{model_name} is currently not supported!")
++
++        self.logger.info(f"Initializing model {model_name} from {xfuser_args.model}")
++
++        self.pipe = PipelineClass.from_pretrained(
++            pretrained_model_name_or_path=xfuser_args.model,
++            engine_config=self.engine_config,
++            torch_dtype=torch.float16,
++        ).to("cuda")
++        self.pipe.vae.enable_tiling()
++        # Memory-efficient warmup run with smaller dimensions
++        if not self.disable_warmup:
++            try:
++                # Use smaller dimensions for warmup to reduce memory usage
++                warmup_height = min(self.input_config.height, 256)
++                warmup_width = min(self.input_config.width, 256)
++                warmup_frames = min(getattr(self.input_config, 'num_frames', 17), 9)
++                
++                _ = self.pipe(
++                    height=warmup_height,
++                    width=warmup_width,
++                    num_frames=warmup_frames,
++                    prompt="",
++                    num_inference_steps=1,
++                    generator=torch.Generator(device="cuda").manual_seed(42),
++                )
++                # Clear cache after warmup
++                torch.cuda.empty_cache()
++                self.logger.info(f"Warmup completed successfully with {warmup_height}x{warmup_width}, {warmup_frames} frames")
++            except Exception as e:
++                self.logger.warning(f"Warmup failed: {e}, continuing without warmup")
++                # Clear cache even if warmup fails
++                torch.cuda.empty_cache()
++        else:
++            self.logger.info("Warmup disabled to save memory")
++        
++        self.logger.info("Model initialization completed")
++
++    def cleanup(self):
++        """Clean up distributed environment and free memory"""
++        try:
++            if hasattr(self, 'pipe'):
++                del self.pipe
++            torch.cuda.empty_cache()
++            get_runtime_state().destroy_distributed_env()
++            self.logger.info("Cleanup completed")
++        except Exception as e:
++            self.logger.warning(f"Cleanup warning: {e}")
++
++    def generate(self, request: GenerateRequest):
++        try:
++            start_time = time.time()
++            output = self.pipe(
++                height=request.height,
++                width=request.width,
++                num_frames=request.num_frames,
++                prompt=request.prompt,
++                num_inference_steps=request.num_inference_steps,
++                output_type="pil",
++                generator=torch.Generator(device="cuda").manual_seed(request.seed),
++                guidance_scale=request.cfg,
++                max_sequence_length=getattr(self.input_config, 'max_sequence_length', 226)
++            )
++            elapsed_time = time.time() - start_time
++            
++            # Clear CUDA cache after generation to free memory
++            torch.cuda.empty_cache()
++
++            if self.pipe.is_dp_last_group():
++                if request.save_disk_path:
++                    timestamp = time.strftime("%Y%m%d-%H%M%S")
++                    filename = f"generated_video_{timestamp}.mp4"
++                    file_path = os.path.join(request.save_disk_path, filename)
++                    os.makedirs(request.save_disk_path, exist_ok=True)
++                    
++                    # Export video frames to MP4 file
++                    export_to_video(output.frames[0], file_path, fps=request.fps)
++                    
++                    return {
++                        "message": "Video generated successfully",
++                        "elapsed_time": f"{elapsed_time:.2f} sec",
++                        "output": file_path,
++                        "save_to_disk": True
++                    }
++                else:
++                    # For video output without saving to disk, we'll save to a temporary file
++                    # and then encode it as base64
++                    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as temp_file:
++                        temp_path = temp_file.name
++                    
++                    # Export video frames to temporary MP4 file
++                    export_to_video(output.frames[0], temp_path, fps=request.fps)
++                    
++                    # Read the video file and encode as base64
++                    with open(temp_path, "rb") as video_file:
++                        video_bytes = video_file.read()
++                        video_str = base64.b64encode(video_bytes).decode()
++                    
++                    # Clean up temporary file
++                    os.unlink(temp_path)
++                    
++                    return {
++                        "message": "Video generated successfully",
++                        "elapsed_time": f"{elapsed_time:.2f} sec",
++                        "output": video_str,
++                        "save_to_disk": False,
++                        "format": "mp4"
++                    }
++            return None
++        
++        except Exception as e:
++            self.logger.error(f"Error generating image: {str(e)}")
++            raise HTTPException(status_code=500, detail=str(e))
++
++class Engine:
++    def __init__(self, world_size: int, xfuser_args: xFuserArgs):
++        # Ensure Ray is initialized
++        if not ray.is_initialized():
++            ray.init()
++        
++        num_workers = world_size
++        self.workers = [
++            VideoGenerator.remote(xfuser_args, rank=rank, world_size=world_size, disable_warmup=args.disable_warmup)
++            for rank in range(num_workers)
++        ]
++        
++    async def generate(self, request: GenerateRequest):
++        results = ray.get([
++            worker.generate.remote(request)
++            for worker in self.workers
++        ])
++
++        return next(path for path in results if path is not None) 
++
++@app.post("/generatevideo")
++async def generate_video(request: GenerateRequest):
++    try:
++        # Add input validation
++        if not request.prompt:
++            raise HTTPException(status_code=400, detail="Prompt cannot be empty")
++        if request.height <= 0 or request.width <= 0:
++            raise HTTPException(status_code=400, detail="Height and width must be positive")
++        if request.num_inference_steps <= 0:
++            raise HTTPException(status_code=400, detail="num_inference_steps must be positive")
++            
++        result = await engine.generate(request)
++        return result
++    except Exception as e:
++        if isinstance(e, HTTPException):
++            raise e
++        raise HTTPException(status_code=500, detail=str(e))
++
++
++if __name__ == "__main__":
++    parser = argparse.ArgumentParser(description='xDiT HTTP Service')
++    parser.add_argument('--host', type=str, default='127.0.0.1', help='Host IP')
++    parser.add_argument('--port', type=str, default='6000', help='Host Port')
++    parser.add_argument('--model_path', type=str, help='Path to the model', required=True)
++    parser.add_argument('--world_size', type=int, default=1, help='Number of parallel workers')
++    parser.add_argument('--num_frames', type=int, default=17, help='Number of frames')
++    parser.add_argument('--height', type=int, default=512, help='Video height')
++    parser.add_argument('--width', type=int, default=512, help='Video width')
++    parser.add_argument('--pipefusion_parallel_degree', type=int, default=1, help='Degree of pipeline fusion parallelism')
++    parser.add_argument('--ulysses_parallel_degree', type=int, default=1, help='Degree of Ulysses parallelism')
++    parser.add_argument('--ring_degree', type=int, default=1, help='Degree of ring parallelism')
++    parser.add_argument('--save_disk_path', type=str, default='output', help='Path to save generated images')
++    parser.add_argument('--use_cfg_parallel', action='store_true', help='Whether to use CFG parallel')
++    parser.add_argument('--disable_warmup', action='store_true', help='Disable warmup to save memory')
++    args = parser.parse_args()
++
++    xfuser_args = xFuserArgs(
++        model=args.model_path,
++        trust_remote_code=True,
++        warmup_steps=1,
++        use_parallel_vae=False,
++        use_torch_compile=False,
++        ulysses_degree=args.ulysses_parallel_degree,
++        ring_degree = args.ring_degree,
++        pipefusion_parallel_degree=args.pipefusion_parallel_degree,
++        use_cfg_parallel=args.use_cfg_parallel,
++        dit_parallel_size=0,
++        num_frames=args.num_frames,
++        height=args.height,
++        width=args.width,
++    )
++    
++    engine = Engine(
++        world_size=args.world_size,
++        xfuser_args=xfuser_args
++    )
++    
++    # Start the server
++    import uvicorn
++    uvicorn.run(app, host=args.host, port=args.port)
+\ No newline at end of file
