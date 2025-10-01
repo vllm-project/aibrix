@@ -17,17 +17,26 @@ limitations under the License.
 package types
 
 import (
+	"fmt"
 	"time"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 )
 
-// MetricKey identifies a specific metric
+// MetricKey identifies a specific metric for a PodAutoscaler
 type MetricKey struct {
-	Namespace  string
-	Name       string
-	MetricName string
+	Namespace  string // Target workload namespace
+	Name       string // Target workload name
+	MetricName string // Metric name (e.g., "concurrency", "qps")
+	// PodAutoscaler identification for multi-tenancy
+	PaNamespace string // PodAutoscaler namespace
+	PaName      string // PodAutoscaler name
+}
+
+// String returns a unique string identifier for this metric key
+func (m MetricKey) String() string {
+	return fmt.Sprintf("%s/%s/%s", m.PaNamespace, m.PaName, m.MetricName)
 }
 
 // ScaleTarget represents what to scale
@@ -78,7 +87,7 @@ type MetricSnapshot struct {
 	Namespace  string
 	TargetName string
 	MetricName string
-	Values     []float64
+	Values     []float64 // TODO(Jeffwan): Prefill/Decode case needs extension
 	Timestamp  time.Time
 	Source     string
 	Error      error

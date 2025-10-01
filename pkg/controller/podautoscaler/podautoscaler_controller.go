@@ -738,11 +738,11 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(ctx context.Context, pa a
 
 	// Apply constraints
 	if desiredReplicas > pa.Spec.MaxReplicas {
-		klog.V(2).InfoS("Scaling adjustment: Algorithm recommended scaling above maximum limit",
+		klog.InfoS("Scaling adjustment: Algorithm recommended scaling above maximum limit",
 			"recommendedReplicas", desiredReplicas, "adjustedTo", pa.Spec.MaxReplicas)
 		desiredReplicas = pa.Spec.MaxReplicas
 	} else if desiredReplicas < minReplicas {
-		klog.V(2).InfoS("Scaling adjustment: Algorithm recommended scaling below minimum limit",
+		klog.InfoS("Scaling adjustment: Algorithm recommended scaling below minimum limit",
 			"recommendedReplicas", desiredReplicas, "adjustedTo", minReplicas)
 		desiredReplicas = minReplicas
 	}

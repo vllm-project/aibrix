@@ -145,7 +145,8 @@ func (a *KPAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 	// Now readyPodsCount can be 0, use max(1, readyPodsCount) to prevent error.
 	isOverPanicThreshold := dppc/math.Max(1, readyPodsCount) >= panicThreshold
 
-	klog.V(4).InfoS("--- KPA Details", "readyPodsCount", readyPodsCount,
+	// TODO: hard to distinguish the deployment from the logs
+	klog.V(4).InfoS("KPA Details", "readyPodsCount", readyPodsCount,
 		"MaxScaleUpRate", context.GetMaxScaleUpRate(), "MaxScaleDownRate", context.GetMaxScaleDownRate(),
 		"TargetValue", targetValue, "PanicThreshold", panicThreshold,
 		"StableWindow", context.GetStableWindow(), "PanicWindow", context.GetPanicWindow(), "ScaleDownDelay", context.GetScaleDownDelay(),
