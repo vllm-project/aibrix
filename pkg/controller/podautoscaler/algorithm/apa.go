@@ -40,8 +40,8 @@ func (a *APAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 	// Compute target replicas using APA algorithm
 	desiredReplicas := a.computeTargetReplicas(float64(request.CurrentReplicas), request.ScalingContext)
 
-	// Apply constraints
-	desiredReplicas = applyConstraints(desiredReplicas, request.Constraints)
+	// Apply constraints from ScalingContext
+	desiredReplicas = applyConstraints(desiredReplicas, request.ScalingContext)
 
 	return &ScalingRecommendation{
 		DesiredReplicas: desiredReplicas,
@@ -64,6 +64,7 @@ func (a *APAAlgorithm) GetAlgorithmType() string {
 // computeTargetReplicas - APA's algorithm references and enhances the algorithm in the following paper:
 // Huo, Qizheng, et al. "High Concurrency Response Strategy based on Kubernetes Horizontal Pod Autoscaler."
 // Journal of Physics: Conference Series. Vol. 2451. No. 1. IOP Publishing, 2023.
+// Tolerance is applied here to prevent scaling for minor metric fluctuations.
 func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context scalingctx.ScalingContext) int32 {
 	expectedUse := context.GetTargetValue()
 	upTolerance := context.GetUpFluctuationTolerance()
@@ -75,12 +76,14 @@ func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 		"currentUsePerPod", currentUsePerPod, "current/expected", currentUsePerPod/expectedUse,
 	)
 
+	// Tolerance check: only scale if metric exceeds tolerance thresholds
 	if currentUsePerPod/expectedUse > (1 + upTolerance) {
 		maxScaleUp := math.Ceil(context.GetMaxScaleUpRate() * currentPodCount)
 		expectedPods := int32(math.Ceil(currentPodCount * (currentUsePerPod / expectedUse)))
 		if float64(expectedPods) > maxScaleUp {
 			expectedPods = int32(maxScaleUp)
 		}
+		klog.V(4).InfoS("APA scaling up", "currentPods", currentPodCount, "expectedPods", expectedPods)
 		return expectedPods
 	} else if currentUsePerPod/expectedUse < (1 - downTolerance) {
 		maxScaleDown := math.Floor(currentPodCount / context.GetMaxScaleDownRate())
@@ -88,7 +91,9 @@ func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 		if float64(expectedPods) < maxScaleDown {
 			expectedPods = int32(maxScaleDown)
 		}
+		klog.V(4).InfoS("APA scaling down", "currentPods", currentPodCount, "expectedPods", expectedPods)
 		return expectedPods
 	}
+	klog.V(4).InfoS("APA within tolerance, no scaling", "currentPods", currentPodCount)
 	return int32(currentPodCount)
 }

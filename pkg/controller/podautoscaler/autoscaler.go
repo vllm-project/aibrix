@@ -25,7 +25,6 @@ import (
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/aggregation"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/algorithm"
-	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/config"
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
@@ -49,6 +48,7 @@ type AutoScaler interface {
 // This type is used both for the public interface and internal pipeline processing.
 type ReplicaComputeRequest struct {
 	PodAutoscaler   autoscalingv1alpha1.PodAutoscaler
+	ScalingContext  scalingctx.ScalingContext // Single source of truth for PA-level configuration
 	CurrentReplicas int32
 	Pods            []corev1.Pod
 	Timestamp       time.Time
@@ -66,11 +66,10 @@ type ReplicaComputeResult struct {
 // All components are stateless or thread-safe, allowing concurrent reconciliation
 type DefaultAutoScaler struct {
 	// Immutable shared components (all thread-safe)
-	factory         metrics.MetricFetcherFactory
-	client          client.Client
-	configExtractor *config.ConfigExtractor
-	metricsClient   *metrics.MetricsClient
-	aggregator      aggregation.MetricAggregator
+	factory       metrics.MetricFetcherFactory
+	client        client.Client
+	metricsClient *metrics.MetricsClient
+	aggregator    aggregation.MetricAggregator
 
 	// Algorithm cache (algorithms are stateless structs, can be safely reused)
 	mu             sync.RWMutex
@@ -90,12 +89,11 @@ func NewDefaultAutoScaler(
 	aggregator := aggregation.NewMetricAggregator(metricsClient)
 
 	return &DefaultAutoScaler{
-		factory:         factory,
-		client:          client,
-		configExtractor: config.NewConfigExtractor(),
-		metricsClient:   metricsClient,
-		aggregator:      aggregator,
-		algorithmCache:  make(map[autoscalingv1alpha1.ScalingStrategyType]algorithm.ScalingAlgorithm),
+		factory:        factory,
+		client:         client,
+		metricsClient:  metricsClient,
+		aggregator:     aggregator,
+		algorithmCache: make(map[autoscalingv1alpha1.ScalingStrategyType]algorithm.ScalingAlgorithm),
 	}
 }
 
@@ -132,17 +130,11 @@ func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request 
 		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("failed to create metric key: %w", err)
 	}
 
-	// Extract algorithm config from PodAutoscaler spec
-	algorithmConfig, err := a.configExtractor.ExtractAlgorithmConfig(request.PodAutoscaler)
-	if err != nil {
-		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("failed to extract algorithm config: %w", err)
-	}
-
 	// Get or create stateless algorithm instance (cached for reuse)
 	algo := a.getOrCreateAlgorithm(request.PodAutoscaler.Spec.ScalingStrategy)
 
 	// Execute the scaling pipeline with per-request state
-	recommendation, err := a.executeScalingPipeline(ctx, request, metricKey, metricSource, algo, algorithmConfig)
+	recommendation, err := a.executeScalingPipeline(ctx, request, metricKey, metricSource, algo)
 	if err != nil {
 		return &ReplicaComputeResult{Valid: false}, err
 	}
@@ -162,7 +154,6 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 	metricKey types.MetricKey,
 	metricSource autoscalingv1alpha1.MetricSource,
 	algo algorithm.ScalingAlgorithm,
-	algorithmConfig algorithm.AlgorithmConfig,
 ) (*algorithm.ScalingRecommendation, error) {
 	workloadKey := fmt.Sprintf("%s/%s", request.PodAutoscaler.Namespace, request.PodAutoscaler.Name)
 
@@ -182,14 +173,12 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		return nil, fmt.Errorf("failed to collect metrics for %s: %w", workloadKey, err)
 	}
 
+	// Use scaling context from request (single source of truth)
+	scalingContext := request.ScalingContext
+
 	// Step 2: Process and aggregate metrics
 	klog.InfoS("Processing metrics snapshot", "source", workloadKey, "healthy metrics pods", len(snapshot.Values), "values", snapshot.Values)
-	// Convert algorithmConfig to metricsConfig to propagate window sizes
-	metricsConfig := metrics.MetricsConfig{
-		StableWindow: algorithmConfig.StableWindow,
-		PanicWindow:  algorithmConfig.PanicWindow,
-	}
-	if err := a.aggregator.ProcessSnapshot(metricKey, snapshot, metricsConfig); err != nil {
+	if err := a.aggregator.ProcessSnapshot(metricKey, snapshot); err != nil {
 		return nil, fmt.Errorf("failed to process metrics snapshot for %s: %w", workloadKey, err)
 	}
 	// Use the full metricKey with PaNamespace and PaName for proper multi-tenancy
@@ -225,9 +214,7 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 		},
 		CurrentReplicas:   request.CurrentReplicas,
 		AggregatedMetrics: aggregatedMetrics,
-		ScalingContext:    a.createScalingContext(request.PodAutoscaler),
-		Constraints:       a.createConstraints(request.PodAutoscaler),
-		Config:            algorithmConfig,
+		ScalingContext:    scalingContext,
 		Timestamp:         request.Timestamp,
 	}
 
@@ -246,27 +233,3 @@ func (a *DefaultAutoScaler) executeScalingPipeline(
 }
 
 // Helper methods
-func (a *DefaultAutoScaler) createScalingContext(pa autoscalingv1alpha1.PodAutoscaler) scalingctx.ScalingContext {
-	// Create base context with defaults
-	ctx := scalingctx.NewBaseScalingContext()
-
-	// Update with PA-specific values
-	if err := ctx.UpdateByPaTypes(&pa); err != nil {
-		// Log error but continue with defaults
-		klog.ErrorS(err, "Failed to update scaling context from PodAutoscaler, using defaults")
-	}
-
-	return ctx
-}
-
-func (a *DefaultAutoScaler) createConstraints(pa autoscalingv1alpha1.PodAutoscaler) types.ScalingConstraints {
-	minReplicas := int32(1)
-	if pa.Spec.MinReplicas != nil {
-		minReplicas = *pa.Spec.MinReplicas
-	}
-
-	return types.ScalingConstraints{
-		MinReplicas: minReplicas,
-		MaxReplicas: pa.Spec.MaxReplicas,
-	}
-}

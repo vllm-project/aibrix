@@ -56,7 +56,6 @@ type MockScalingContext struct {
 // Ensure MockScalingContext implements the ScalingContext interface
 var _ scalingctx.ScalingContext = (*MockScalingContext)(nil)
 
-// Basic scaling parameters
 func (m *MockScalingContext) GetTargetValue() float64 {
 	return m.TargetValue
 }
@@ -85,7 +84,6 @@ func (m *MockScalingContext) SetCurrentUsePerPod(value float64) {
 	m.CurrentUsePerPod = value
 }
 
-// Replica constraints
 func (m *MockScalingContext) GetMinReplicas() int32 {
 	return m.MinReplicas
 }
@@ -94,7 +92,6 @@ func (m *MockScalingContext) GetMaxReplicas() int32 {
 	return m.MaxReplicas
 }
 
-// Stable and Panic values
 func (m *MockScalingContext) GetStableValue() float64 {
 	return m.StableValue
 }
@@ -141,17 +138,16 @@ func (m *MockScalingContext) SetMaxPanicPods(pods int32) {
 	m.MaxPanicPods = pods
 }
 
-// Time windows
-func (m *MockScalingContext) GetStableWindow() time.Duration {
-	return m.StableWindow
+func (m *MockScalingContext) GetScaleUpCooldownWindow() time.Duration {
+	return 0
 }
 
-func (m *MockScalingContext) GetPanicWindow() time.Duration {
-	return m.PanicWindow
+func (m *MockScalingContext) GetScaleDownCooldownWindow() time.Duration {
+	return 300 * time.Second
 }
 
-func (m *MockScalingContext) GetScaleDownDelay() time.Duration {
-	return m.ScaleDownDelay
+func (m *MockScalingContext) GetScaleToZero() bool {
+	return false
 }
 
 // UpdateByPaTypes - no-op for mock
