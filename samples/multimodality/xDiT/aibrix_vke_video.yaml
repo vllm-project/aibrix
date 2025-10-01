@@ -19,6 +19,7 @@ spec:
     metadata: 
       labels: 
         model.aibrix.ai/name: cogvideox-2b 
+        model.aibrix.ai/port: "6000" 
     spec: 
       initContainers: 
         - command:             
@@ -65,6 +66,8 @@ spec:
               name: model-hostpath 
             - mountPath: /dev/shm
               name: dshm
+            - name: shared-data
+              mountPath: /shared
           resources: 
             limits: 
               nvidia.com/gpu: "4" 
@@ -72,6 +75,23 @@ spec:
             requests: 
               nvidia.com/gpu: "4" 
               cpu: "10" # memory: "150G" 
+        - name: aibrix-runtime
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.1-mm1
+          command:
+            - aibrix_runtime
+            - --port
+            - "8080"
+          env:
+            - name: INFERENCE_ENGINE
+              value: vllm
+            - name: INFERENCE_ENGINE_ENDPOINT
+              value: http://localhost:8000
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - name: shared-data
+              mountPath: /shared
       volumes: 
         - name: model-hostpath 
           hostPath: 
@@ -84,7 +104,9 @@ spec:
         - name: dshm
           emptyDir:
             medium: Memory
-            sizeLimit: 16Gi               
+            sizeLimit: 16Gi   
+        - name: shared-data
+          emptyDir: {}              
 --- 
 
 
@@ -102,7 +124,7 @@ metadata:
 spec: 
   ports: 
     - name: serve 
-      port: 8000 
+      port: 6000 
       protocol: TCP 
       targetPort: 6000 
     - name: http 
