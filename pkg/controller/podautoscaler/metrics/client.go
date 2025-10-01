@@ -28,7 +28,7 @@ import (
 // AggregatorMetricsClient interface defines what aggregators need from metrics storage
 // This interface should be consumed by aggregators but defined where it's implemented
 type AggregatorMetricsClient interface {
-	UpdateMetrics(now time.Time, metricKey types.MetricKey, metricValues ...float64) error
+	UpdateMetrics(now time.Time, metricKey types.MetricKey, config MetricsConfig, metricValues ...float64) error
 	GetMetricValue(metricKey types.MetricKey, now time.Time) (float64, float64, error)
 	GetTrendAnalysis(metricKey types.MetricKey, now time.Time) (direction float64, velocity float64, confidence float64)
 	CalculatePodAwareConfidence(metricKey types.MetricKey, podCount int, now time.Time) float64
@@ -128,28 +128,21 @@ func (c *MetricsClient) ensureWindowsForKey(metricKeyStr string, config MetricsC
 	c.panicHistory[metricKeyStr] = types.NewMetricHistory(panicWindowDuration * 10)
 }
 
-// ConfigureForStrategy sets up the client for a specific scaling strategy
-// IMPORTANT: This no longer wipes ALL data - it only ensures windows exist for the given metricKey
-func (c *MetricsClient) ConfigureForStrategy(strategy autoscalingv1alpha1.ScalingStrategyType, config MetricsConfig) {
-	// Legacy method kept for backward compatibility but does nothing
-	// Actual configuration happens in UpdateMetrics when metricKey is provided
-}
-
 // UpdateMetrics records metrics to all configured windows for the given metricKey
-// If windows don't exist for this metricKey, they are auto-initialized with default config
-func (c *MetricsClient) UpdateMetrics(now time.Time, metricKey types.MetricKey, metricValues ...float64) error {
+// If windows don't exist for this metricKey, they are auto-initialized with the provided config
+func (c *MetricsClient) UpdateMetrics(now time.Time, metricKey types.MetricKey, config MetricsConfig, metricValues ...float64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	metricKeyStr := metricKey.String()
 
-	// Auto-initialize if needed
+	// Auto-initialize if needed, using the provided config from PodAutoscaler
 	if _, exists := c.stableWindows[metricKeyStr]; !exists {
-		klog.V(4).InfoS("Auto-initializing default window for metricKey", "metricKey", metricKeyStr)
-		c.ensureWindowsForKey(metricKeyStr, MetricsConfig{
-			StableWindow: 120 * time.Second,
-			PanicWindow:  15 * time.Second,
-		})
+		klog.V(4).InfoS("Auto-initializing window for metricKey with config",
+			"metricKey", metricKeyStr,
+			"stableWindow", config.StableWindow,
+			"panicWindow", config.PanicWindow)
+		c.ensureWindowsForKey(metricKeyStr, config)
 	}
 
 	if len(metricValues) == 0 {

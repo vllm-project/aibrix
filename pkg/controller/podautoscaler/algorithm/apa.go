@@ -25,16 +25,8 @@ import (
 )
 
 // APAAlgorithm implements Application-specific Pod Autoscaling
-type APAAlgorithm struct {
-	config AlgorithmConfig
-}
-
-// NewAPAAlgorithm creates a new APA algorithm instance
-func NewAPAAlgorithm(config AlgorithmConfig) *APAAlgorithm {
-	return &APAAlgorithm{
-		config: config,
-	}
-}
+// This is a stateless struct that can be safely reused across goroutines
+type APAAlgorithm struct{}
 
 var _ ScalingAlgorithm = (*APAAlgorithm)(nil)
 
@@ -67,12 +59,6 @@ func (a *APAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 // GetAlgorithmType returns the algorithm type
 func (a *APAAlgorithm) GetAlgorithmType() string {
 	return "apa"
-}
-
-// UpdateConfiguration updates the algorithm configuration
-func (a *APAAlgorithm) UpdateConfiguration(config AlgorithmConfig) error {
-	a.config = config
-	return nil
 }
 
 // computeTargetReplicas - APA's algorithm references and enhances the algorithm in the following paper:

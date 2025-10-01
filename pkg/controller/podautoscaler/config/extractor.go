@@ -22,7 +22,6 @@ import (
 	"time"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/aggregation"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/algorithm"
 	"k8s.io/klog/v2"
 )
@@ -48,13 +47,14 @@ func NewConfigExtractor() *ConfigExtractor {
 	}
 }
 
-// ExtractAggregationConfig extracts and validates aggregation configuration
-func (e *ConfigExtractor) ExtractAggregationConfig(pa autoscalingv1alpha1.PodAutoscaler) (aggregation.AggregationConfig, error) {
-	config := aggregation.AggregationConfig{
-		StableWindow: e.DefaultStableWindow,
-		PanicWindow:  e.DefaultPanicWindow,
-		Window:       e.DefaultWindow,
-		Granularity:  e.DefaultGranularity,
+// ExtractAlgorithmConfig extracts and validates algorithm configuration
+func (e *ConfigExtractor) ExtractAlgorithmConfig(pa autoscalingv1alpha1.PodAutoscaler) (algorithm.AlgorithmConfig, error) {
+	config := algorithm.AlgorithmConfig{
+		Strategy:       pa.Spec.ScalingStrategy,
+		PanicThreshold: e.DefaultPanicThreshold,
+		StableWindow:   e.DefaultStableWindow,
+		PanicWindow:    e.DefaultPanicWindow,
+		ScaleToZero:    false,
 	}
 
 	if pa.Annotations == nil {
@@ -85,57 +85,10 @@ func (e *ConfigExtractor) ExtractAggregationConfig(pa autoscalingv1alpha1.PodAut
 		}
 	}
 
-	// Parse window duration (for APA)
-	if windowStr, ok := pa.Annotations["autoscaling.aibrix.ai/window"]; ok {
-		duration, err := time.ParseDuration(windowStr)
-		if err != nil {
-			klog.V(4).InfoS("Failed to parse window duration", "value", windowStr, "error", err)
-		} else if err := e.validateDuration("window", duration, time.Second, 10*time.Minute); err != nil {
-			return config, fmt.Errorf("invalid window: %w", err)
-		} else {
-			config.Window = duration
-		}
-	}
-
-	// Parse granularity
-	if granularityStr, ok := pa.Annotations["autoscaling.aibrix.ai/granularity"]; ok {
-		duration, err := time.ParseDuration(granularityStr)
-		if err != nil {
-			klog.V(4).InfoS("Failed to parse granularity duration", "value", granularityStr, "error", err)
-		} else if err := e.validateDuration("granularity", duration, 100*time.Millisecond, time.Minute); err != nil {
-			return config, fmt.Errorf("invalid granularity: %w", err)
-		} else {
-			config.Granularity = duration
-		}
-	}
-
 	// Validate relationships
 	if config.PanicWindow > config.StableWindow {
 		return config, fmt.Errorf("panic window (%v) cannot be larger than stable window (%v)",
 			config.PanicWindow, config.StableWindow)
-	}
-
-	return config, nil
-}
-
-// ExtractAlgorithmConfig extracts and validates algorithm configuration
-func (e *ConfigExtractor) ExtractAlgorithmConfig(pa autoscalingv1alpha1.PodAutoscaler) (algorithm.AlgorithmConfig, error) {
-	// First get aggregation config for window values
-	aggConfig, err := e.ExtractAggregationConfig(pa)
-	if err != nil {
-		return algorithm.AlgorithmConfig{}, fmt.Errorf("failed to extract aggregation config: %w", err)
-	}
-
-	config := algorithm.AlgorithmConfig{
-		Strategy:       pa.Spec.ScalingStrategy,
-		PanicThreshold: e.DefaultPanicThreshold,
-		StableWindow:   aggConfig.StableWindow,
-		PanicWindow:    aggConfig.PanicWindow,
-		ScaleToZero:    false,
-	}
-
-	if pa.Annotations == nil {
-		return config, nil
 	}
 
 	// Parse panic threshold
