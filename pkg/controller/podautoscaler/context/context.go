@@ -105,6 +105,69 @@ func NewBaseScalingContext() *BaseScalingContext {
 	}
 }
 
+// annotationParser is a function type for parsing annotation values
+type annotationParser func(b *BaseScalingContext, value string) error
+
+// annotationParsers maps annotation keys to their parsing functions
+var annotationParsers = map[string]annotationParser{
+	types.MaxScaleUpRateLabel: func(b *BaseScalingContext, value string) error {
+		v, err := strconv.ParseFloat(value, 64)
+		if err == nil {
+			b.MaxScaleUpRate = v
+		}
+		return err
+	},
+	types.MaxScaleDownRateLabel: func(b *BaseScalingContext, value string) error {
+		v, err := strconv.ParseFloat(value, 64)
+		if err == nil {
+			b.MaxScaleDownRate = v
+		}
+		return err
+	},
+	types.ScaleUpToleranceLabel: func(b *BaseScalingContext, value string) error {
+		v, err := strconv.ParseFloat(value, 64)
+		if err == nil {
+			b.UpFluctuationTolerance = v
+		}
+		return err
+	},
+	types.ScaleDownToleranceLabel: func(b *BaseScalingContext, value string) error {
+		v, err := strconv.ParseFloat(value, 64)
+		if err == nil {
+			b.DownFluctuationTolerance = v
+		}
+		return err
+	},
+	types.PanicThresholdLabel: func(b *BaseScalingContext, value string) error {
+		v, err := strconv.ParseFloat(value, 64)
+		if err == nil {
+			b.PanicThreshold = v
+		}
+		return err
+	},
+	types.ScaleUpCooldownWindowLabel: func(b *BaseScalingContext, value string) error {
+		v, err := time.ParseDuration(value)
+		if err == nil {
+			b.ScaleUpCooldownWindow = v
+		}
+		return err
+	},
+	types.ScaleDownCooldownWindowLabel: func(b *BaseScalingContext, value string) error {
+		v, err := time.ParseDuration(value)
+		if err == nil {
+			b.ScaleDownCooldownWindow = v
+		}
+		return err
+	},
+	types.ScaleToZeroLabel: func(b *BaseScalingContext, value string) error {
+		v, err := strconv.ParseBool(value)
+		if err == nil {
+			b.ScaleToZero = v
+		}
+		return err
+	},
+}
+
 // UpdateByPaTypes should be invoked in any scaling context that embeds BaseScalingContext.
 func (b *BaseScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error {
 	source, err := autoscalingv1alpha1.GetPaMetricSources(*pa)
@@ -121,56 +184,12 @@ func (b *BaseScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscal
 	}
 	b.TargetValue = targetValue
 
+	// Parse annotations using registered parsers
 	for key, value := range pa.Annotations {
-		switch key {
-		case types.MaxScaleUpRateLabel:
-			v, err := strconv.ParseFloat(value, 64)
-			if err != nil {
+		if parser, ok := annotationParsers[key]; ok {
+			if err := parser(b, value); err != nil {
 				return err
 			}
-			b.MaxScaleUpRate = v
-		case types.MaxScaleDownRateLabel:
-			v, err := strconv.ParseFloat(value, 64)
-			if err != nil {
-				return err
-			}
-			b.MaxScaleDownRate = v
-		case types.ScaleUpToleranceLabel:
-			v, err := strconv.ParseFloat(value, 64)
-			if err != nil {
-				return err
-			}
-			b.UpFluctuationTolerance = v
-		case types.ScaleDownToleranceLabel:
-			v, err := strconv.ParseFloat(value, 64)
-			if err != nil {
-				return err
-			}
-			b.DownFluctuationTolerance = v
-		case types.PanicThresholdLabel:
-			v, err := strconv.ParseFloat(value, 64)
-			if err != nil {
-				return err
-			}
-			b.PanicThreshold = v
-		case types.ScaleUpCooldownWindowLabel:
-			v, err := time.ParseDuration(value)
-			if err != nil {
-				return err
-			}
-			b.ScaleUpCooldownWindow = v
-		case types.ScaleDownCooldownWindowLabel:
-			v, err := time.ParseDuration(value)
-			if err != nil {
-				return err
-			}
-			b.ScaleDownCooldownWindow = v
-		case types.ScaleToZeroLabel:
-			v, err := strconv.ParseBool(value)
-			if err != nil {
-				return err
-			}
-			b.ScaleToZero = v
 		}
 	}
 	return nil

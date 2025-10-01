@@ -936,12 +936,13 @@ func (r *PodAutoscalerReconciler) cleanOldRecommendations(key string, now time.T
 	cutoff := now.Add(-maxWindow)
 	history := r.recommendations[key]
 
-	firstValidIndex := 0
-	for firstValidIndex < len(history) && !history[firstValidIndex].timestamp.After(cutoff) {
-		firstValidIndex++
+	newHistory := history[:0]
+	for _, rec := range history {
+		if rec.timestamp.After(cutoff) {
+			newHistory = append(newHistory, rec)
+		}
 	}
-
-	r.recommendations[key] = history[firstValidIndex:]
+	r.recommendations[key] = newHistory
 }
 
 // createScalingContext creates a ScalingContext for the given PodAutoscaler

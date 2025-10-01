@@ -139,12 +139,14 @@ func buildHPABehavior(scalingContext scalingctx.ScalingContext) *autoscalingv2.H
 	// max-scale-up-rate: 2.0 means "can double" -> 100% increase
 	scaleUpPercent := int32((maxScaleUpRate - 1.0) * 100)
 	if scaleUpPercent < 0 {
+		klog.Warningf("max-scale-up-rate is %f, which is invalid (must be >= 1.0). Defaulting scale-up percentage to 100%%.", maxScaleUpRate)
 		scaleUpPercent = 100 // Minimum 100% to allow scaling
 	}
 
 	// max-scale-down-rate: 2.0 means "can halve" -> 50% decrease
 	scaleDownPercent := int32((1.0 - 1.0/maxScaleDownRate) * 100)
 	if scaleDownPercent < 0 {
+		klog.Warningf("max-scale-down-rate is %f, which is invalid (must be >= 1.0). Defaulting scale-down percentage to 100%%.", maxScaleDownRate)
 		scaleDownPercent = 100 // Minimum 100% to allow scaling
 	}
 
