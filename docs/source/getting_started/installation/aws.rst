@@ -12,7 +12,7 @@ An AIBrix cluster can either be deployed using the `AI on EKS <https://awslabs.g
 AI on EKS
 ---------
 
-`AI on EKS <https://awslabs.github.io/ai-on-eks/>`_ maintains a one line `deployment <https://awslabs.github.io/ai-on-eks/docs/infra/aibrix>`_ of AIBrix
+`AI on EKS <https://awslabs.github.io/ai-on-eks/>`_ provides a one-line `deployment <https://awslabs.github.io/ai-on-eks/docs/infra/aibrix>`_ of AIBrix.
 
 This deployment will create a VPC, subnets, EKS environment and deploy AIBrix.
 
