@@ -23,19 +23,19 @@ spec:
     spec: 
       containers: 
         - name: xdit-dev 
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:v0.25 #aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5   # python3 entrypoints/launch.py --model_path /models/HunyuanDiT-v1.2-Diffusers --world_size 4 --pipefusion_parallel_degree 2 --ulysses_parallel_degree 2
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:v0.28 #aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5   # python3 entrypoints/launch.py --model_path /models/HunyuanDiT-v1.2-Diffusers --world_size 4 --pipefusion_parallel_degree 2 --ulysses_parallel_degree 2
           imagePullPolicy: Always 
           command: ["sh", "-c"]
           args:
             - |
-              python3 entrypoints/launch.py --model_path /models/HunyuanDiT-v1.2-Diffusers --world_size 4 --pipefusion_parallel_degree 2 --ulysses_parallel_degree 2
+              python3 entrypoints/launch.py --model_path /models/HunyuanDiT-v1.2-Diffusers
           env: []
           resources: 
             limits: 
-              nvidia.com/gpu: "4" #"1" 
+              nvidia.com/gpu: "1" #"1" 
               cpu: "10" # memory: "150G" 
             requests: 
-              nvidia.com/gpu: "4" #"1" 
+              nvidia.com/gpu: "1" #"1" 
               cpu: "10" # memory: "150G" 
           volumeMounts:
             - mountPath: /models 
