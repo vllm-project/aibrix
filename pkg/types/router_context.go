@@ -58,9 +58,10 @@ type RoutingContext struct {
 	TraceTerm   int64     // Trace term identifier, available after AddRequestCount call.
 	RoutedTime  time.Time // Time consumed during routing.
 
-	ReqHeaders map[string]string
-	ReqBody    []byte
-	ReqPath    string
+	ReqHeaders          map[string]string
+	ReqBody             []byte
+	ReqPath             string
+	SaveToRemoteStorage bool
 
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]

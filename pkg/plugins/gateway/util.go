@@ -17,16 +17,20 @@ limitations under the License.
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
@@ -40,7 +44,10 @@ const (
 
 // validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
 // nolint:nakedret
-func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+func validateRequestBody(routingCtx *types.RoutingContext, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
+	requestID := routingCtx.RequestID
+	requestPath := routingCtx.ReqPath
+
 	var streamOptions openai.ChatCompletionStreamOptionsParam
 	var jsonMap map[string]json.RawMessage
 	if err := json.Unmarshal(requestBody, &jsonMap); err != nil {
@@ -108,6 +115,14 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 			return
 		}
 		model = imageGenerationObj.Model
+		_, ok := jsonMap["save_disk_path"]
+		if ok {
+			routingCtx.SaveToRemoteStorage = true
+			if routingCtx.Algorithm == routing.RouterNotSet {
+				routingCtx.Algorithm = routing.RouterRandom
+			}
+		}
+
 	default:
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", HeaderErrorRequestBodyProcessing, "true")
 		return
@@ -369,6 +384,21 @@ func validateTokenInputs(tokenArrays [][]int64) error {
 	if totalTokens > MaxTotalTokens {
 		return fmt.Errorf("total tokens across all inputs exceeds maximum (%d), actual total: %d",
 			MaxTotalTokens, totalTokens)
+	}
+
+	return nil
+}
+
+func (s *Server) writeStorageRequest(ctx context.Context, requestID string, requestStore types.RequestStore) error {
+	data, err := json.Marshal(requestStore)
+	if err != nil {
+		return err
+	}
+
+	// TODO: make storage path expiration configurable, default 1 day
+	status := s.redisClient.Set(ctx, requestID, data, 24*time.Hour)
+	if err := status.Err(); err != nil {
+		return err
 	}
 
 	return nil

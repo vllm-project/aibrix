@@ -35,14 +35,14 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	var term int64 // Identify the trace window
 
 	routingCtx, _ := ctx.(*types.RoutingContext)
-	requestPath := routingCtx.ReqPath
-	routingAlgorithm := routingCtx.Algorithm
-
 	body := req.Request.(*extProcPb.ProcessingRequest_RequestBody)
-	model, message, stream, errRes := validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)
+	model, message, stream, errRes := validateRequestBody(routingCtx, body.RequestBody.GetBody(), user)
 	if errRes != nil {
 		return errRes, model, routingCtx, stream, term
 	}
+
+	requestPath := routingCtx.ReqPath
+	routingAlgorithm := routingCtx.Algorithm
 	routingCtx.Model = model
 	routingCtx.Message = message
 	routingCtx.ReqBody = body.RequestBody.GetBody()

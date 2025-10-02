@@ -1,4 +1,5 @@
 import argparse
+import mimetypes
 import os
 import shutil
 import time
@@ -7,7 +8,7 @@ from typing import Optional
 from urllib.parse import urljoin
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.datastructures import State
 from fastapi.responses import JSONResponse
 from httpx import Headers
@@ -34,6 +35,7 @@ from aibrix.openapi.protocol import (
     LoadLoraAdapterRequest,
     UnloadLoraAdapterRequest,
 )
+from aibrix.storage.local import LocalStorage
 
 logger = init_logger(__name__)
 router = APIRouter()
@@ -234,6 +236,50 @@ def nullable_str(val: str):
     if not val or val == "None":
         return None
     return val
+
+
+# view endpoint returns the file from local pod
+@router.get("/view/{file_path:path}")
+async def view(file_path: str):
+    """
+    Return the entire file for download using path parameter.
+    Usage: GET /view/etc/hosts or GET /view/tmp/myfile.txt
+    """
+    try:
+        logger.info("Serving file: %s", file_path)
+        # Create a LocalStorage instance
+        storage = LocalStorage(
+            base_path="/"
+        )  # Use root as base path for absolute paths
+
+        # Use storage to read the file
+        file_data = await storage.get_object(file_path)
+
+        # Determine the content type based on file extension
+        content_type, _ = mimetypes.guess_type(file_path)
+        if content_type is None:
+            content_type = "application/octet-stream"
+
+        filename = os.path.basename(file_path)
+
+        # Return the file data as a response
+        response = Response(
+            content=file_data,
+            media_type=content_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+        return response
+
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+    except PermissionError:
+        raise HTTPException(
+            status_code=403, detail=f"Permission denied accessing file: {file_path}"
+        )
+    except Exception as e:
+        logger.error(f"Error serving file {file_path}: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 def main():
