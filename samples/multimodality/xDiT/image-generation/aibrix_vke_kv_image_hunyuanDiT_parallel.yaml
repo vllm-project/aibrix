@@ -1,9 +1,9 @@
 apiVersion: apps/v1 
 kind: Deployment 
 metadata:
-  name: sd-3 
+  name: hunyuan-dit 
   labels: 
-    model.aibrix.ai/name: sd-3 
+    model.aibrix.ai/name: hunyuan-dit 
     model.aibrix.ai/port: "6000" 
 spec: 
   replicas: 1 
@@ -14,28 +14,28 @@ spec:
     type: RollingUpdate 
   selector: 
     matchLabels: 
-      model.aibrix.ai/name: sd-3 
+      model.aibrix.ai/name: hunyuan-dit 
   template: 
     metadata: 
       labels: 
-        model.aibrix.ai/name: sd-3 
+        model.aibrix.ai/name: hunyuan-dit 
         model.aibrix.ai/port: "6000" 
     spec: 
       containers: 
         - name: xdit-dev 
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:v0.28 
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:customized-v1 
           imagePullPolicy: IfNotPresent 
           command: ["sh", "-c"]
           args:
             - |
-              sleep infinity
+              python3 entrypoints/launch.py --model_path /models/HunyuanDiT-v1.2-Diffusers --world_size 4 --pipefusion_parallel_degree 2 --ulysses_parallel_degree 2
           env: []
           resources: 
             limits: 
-              nvidia.com/gpu: "1" 
+              nvidia.com/gpu: "4" 
               cpu: "10" 
             requests: 
-              nvidia.com/gpu: "1" 
+              nvidia.com/gpu: "4" 
               cpu: "10" 
           volumeMounts:
             - mountPath: /models 
@@ -75,12 +75,12 @@ apiVersion: v1
 kind: Service 
 metadata: 
   labels: 
-    model.aibrix.ai/name: sd-3 
+    model.aibrix.ai/name: hunyuan-dit 
     prometheus-discovery: "true" 
   annotations: 
     prometheus.io/scrape: "true" 
     prometheus.io/port: "8080" 
-  name: sd-3 
+  name: hunyuan-dit 
   namespace: default 
 spec: 
   ports: 
@@ -93,5 +93,5 @@ spec:
       protocol: TCP 
       targetPort: 8080 
   selector: 
-    model.aibrix.ai/name: sd-3 
+    model.aibrix.ai/name: hunyuan-dit 
   type: ClusterIP
