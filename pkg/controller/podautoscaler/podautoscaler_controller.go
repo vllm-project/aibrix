@@ -76,16 +76,17 @@ const (
 	ConditionScalingActive = "ScalingActive"
 	ConditionAbleToScale   = "AbleToScale"
 
-	ReasonAsExpected             = "AsExpected"
-	ReasonReconcilingScaleDiff   = "ReconcilingScaleDiff"
-	ReasonStable                 = "Stable"
-	ReasonInvalidScalingStrategy = "InvalidScalingStrategy"
-	ReasonInvalidBounds          = "InvalidBounds"
-	ReasonMissingTargetRef       = "MissingScaleTargetRef"
-	ReasonMetricsConfigError     = "MetricsConfigError"
-	ReasonInvalidSpec            = "InvalidSpec"
-	ReasonConfigured             = "Configured"
-	maxScalingHistorySize        = 5
+	ReasonAsExpected                = "AsExpected"
+	ReasonReconcilingScaleDiff      = "ReconcilingScaleDiff"
+	ReasonStable                    = "Stable"
+	ReasonInvalidScalingStrategy    = "InvalidScalingStrategy"
+	ReasonInvalidBounds             = "InvalidBounds"
+	ReasonMissingTargetRef          = "MissingScaleTargetRef"
+	ReasonMetricsConfigError        = "MetricsConfigError"
+	ReasonInvalidSpec               = "InvalidSpec"
+	ReasonConfigured                = "Configured"
+	maxScalingHistorySize           = 5
+	minScalingHistoryRecordInterval = 5 * time.Second
 )
 
 var (
@@ -630,31 +631,49 @@ func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredRe
 		ScalingHistory: pa.Status.ScalingHistory, // preserve existing history
 	}
 
-	if rescale {
-		now := metav1.NewTime(time.Now())
-		pa.Status.LastScaleTime = &now
-	}
-	// Record scaling decision if it was a rescale attempt or if it failed
 	if rescale || !success {
-		decision := autoscalingv1alpha1.ScalingDecision{
-			Timestamp:     metav1.Now(),
-			PreviousScale: currentReplicas,
-			NewScale:      desiredReplicas,
-			Reason:        reason,
-			Success:       success,
+		now := metav1.NewTime(time.Now())
+
+		// Check if this is a genuine scaling event or just a quick follow-up reconciliation
+		var shouldRecordHistory bool
+		if len(pa.Status.ScalingHistory) == 0 {
+			shouldRecordHistory = true
+		} else {
+			lastScale := pa.Status.ScalingHistory[len(pa.Status.ScalingHistory)-1]
+			// Only record if:
+			// 1. More than minScalingHistoryRecordInterval have passed since last scaling decision, or
+			// 2. The desired scale is different from the last recorded scale, or
+			// 3. The success status has changed (success to failure or vice versa), or
+			// 4. There's a different error message
+			timeSinceLastScale := now.Time.Sub(lastScale.Timestamp.Time)
+			if timeSinceLastScale > minScalingHistoryRecordInterval ||
+				lastScale.NewScale != desiredReplicas ||
+				lastScale.Success != success ||
+				(err != nil && lastScale.Error != err.Error()) {
+				shouldRecordHistory = true
+			}
+		}
+		if shouldRecordHistory {
+			pa.Status.LastScaleTime = &now
+			decision := autoscalingv1alpha1.ScalingDecision{
+				Timestamp:     metav1.Now(),
+				PreviousScale: currentReplicas,
+				NewScale:      desiredReplicas,
+				Reason:        reason,
+				Success:       success,
+			}
+			if err != nil {
+				decision.Error = err.Error()
+			}
+			// First trim if at maximum size
+			if len(pa.Status.ScalingHistory) >= maxScalingHistorySize {
+				pa.Status.ScalingHistory = pa.Status.ScalingHistory[1:]
+			}
+
+			// Then append the new decision
+			pa.Status.ScalingHistory = append(pa.Status.ScalingHistory, decision)
 		}
 
-		if err != nil {
-			decision.Error = err.Error()
-		}
-
-		// First trim if at maximum size
-		if len(pa.Status.ScalingHistory) >= maxScalingHistorySize {
-			pa.Status.ScalingHistory = pa.Status.ScalingHistory[1:]
-		}
-
-		// Then append the new decision
-		pa.Status.ScalingHistory = append(pa.Status.ScalingHistory, decision)
 	}
 }
 
