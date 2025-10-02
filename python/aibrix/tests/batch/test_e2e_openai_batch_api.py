@@ -427,8 +427,6 @@ async def test_openai_batch_api_metadata_server_workflow(test_app):
         )
         await test_app.state.batch_driver.clear_job(batch_id)
 
-        assert False
-
 
 @pytest.mark.asyncio
 async def test_batch_api_error_handling():

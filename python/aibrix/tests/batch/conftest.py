@@ -28,7 +28,7 @@ from kubernetes import client, config
 
 from aibrix.logger import init_logger
 from aibrix.metadata.app import build_app
-from aibrix.metadata.cache.job import JobCache
+from aibrix.metadata.cache.job import JobCache, get_global_job_cache
 from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
 
@@ -78,8 +78,8 @@ def k8s_config():
 
             def test_api_call():
                 """Make a simple API call to test connectivity."""
-                # Use a very simple API call that should be fast
-                return v1.get_api_versions()
+                # Use a simple API call that exists on CoreV1Api
+                return v1.list_namespace(limit=1)
 
             # Use ThreadPoolExecutor with timeout to prevent hanging
             with ThreadPoolExecutor(max_workers=1) as executor:
@@ -140,6 +140,10 @@ def job_cache(kopf_operator, ensure_job_rbac):
     The kopf_operator fixture ensures the operator is running.
     Uses the unittest job template with the correct service account.
     """
+    job_cache = get_global_job_cache()
+    if job_cache:
+        return job_cache
+
     from pathlib import Path
 
     template_patch_path = (
@@ -186,6 +190,30 @@ def redis_config_available():
     # Check for AWS credentials
     if os.getenv("REDIS_HOST") is None:
         pytest.skip("Redis configuration not available")
+
+    import redis
+
+    def test_connection():
+        # Try to connect to Redis with a short timeout
+        client = redis.Redis(
+            host=os.environ.get("REDIS_HOST", "localhost"),
+            port=int(os.environ.get("REDIS_PORT", "6379")),
+            db=int(os.environ.get("REDIS_DB", "0")),
+            password=os.environ.get("REDIS_PASSWORD"),
+            socket_connect_timeout=2,
+            socket_timeout=2,
+            decode_responses=True,
+        )
+        # Test with a simple ping
+        return client.ping()
+
+    # Use ThreadPoolExecutor to enforce timeout
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(test_connection)
+        try:
+            future.result(timeout=5)  # 5 second timeout
+        except Exception as e:
+            pytest.skip(f"Redis access not available: {e}")
 
 
 @pytest.fixture(scope="session")
