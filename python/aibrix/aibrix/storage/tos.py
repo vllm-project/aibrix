@@ -19,7 +19,12 @@ from typing import BinaryIO, Optional, TextIO, Union
 import tos
 from tos.exceptions import TosClientError, TosServerError
 
-from aibrix.storage.base import BaseStorage, StorageConfig
+from aibrix.storage.base import (
+    BaseStorage,
+    PutObjectOptions,
+    StorageConfig,
+    StorageType,
+)
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata
 
@@ -52,14 +57,26 @@ class TOSStorage(BaseStorage):
         except (TosClientError, TosServerError) as e:
             raise ValueError(f"Failed to create TOS client: {e}")
 
+    def get_type(self) -> StorageType:
+        """Get the type of storage.
+
+        Returns:
+            Type of storage, set to StorageType.TOS
+        """
+        return StorageType.TOS
+
     async def put_object(
         self,
         key: str,
         data: Union[bytes, str, BinaryIO, TextIO, Reader],
         content_type: Optional[str] = None,
         metadata: Optional[dict[str, str]] = None,
-    ) -> None:
+        options: Optional[PutObjectOptions] = None,
+    ) -> bool:
         """Put an object to TOS."""
+        # Validate options (TOS doesn't support advanced options)
+        self._validate_put_options(options)
+
         # Unify all data types using Reader wrapper
         reader = self._wrap_data(data)
 
@@ -68,7 +85,7 @@ class TOSStorage(BaseStorage):
             size = reader.get_size()
             if size >= self.config.multipart_threshold:
                 await self.multipart_upload(key, reader, content_type, metadata)
-                return
+                return True
         except (OSError, IOError, ValueError):
             # Can't determine size, give up multipart upload
             pass
@@ -101,6 +118,8 @@ class TOSStorage(BaseStorage):
         # Close the reader if we created it
         if not isinstance(data, Reader):
             reader.close()
+
+        return True  # TOS storage always succeeds
 
     async def get_object(
         self,
