@@ -255,37 +255,6 @@ func (c *Store) updateHistogramMetricFromRawMetrics(pod *Pod, allMetrics map[str
 	}
 }
 
-// Deprecated: updateQueryLabelMetricFromRawMetrics is kept for backward compatibility.
-// Use updatePodMetricsFromTypedResult instead.
-func (c *Store) updateQueryLabelMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
-	podMetricPort := getPodMetricPort(pod)
-	for _, labelMetricName := range labelQueryMetricNames {
-		metric, exists := metrics.Metrics[labelMetricName]
-		if !exists {
-			klog.V(4).Infof("Cannot find %v in the metric list", labelMetricName)
-			continue
-		}
-		rawMetricName := metric.RawMetricName
-		scope := metric.MetricScope
-		metricFamily, exists := c.fetchMetrics(pod, allMetrics, rawMetricName)
-		if !exists {
-			klog.V(4).Infof("Cannot find %v in the pod metrics", rawMetricName)
-			continue
-		}
-		for _, familyMetric := range metricFamily.Metric {
-			modelName, _ := metrics.GetLabelValueForKey(familyMetric, "model_name")
-			labelValue, _ := metrics.GetLabelValueForKey(familyMetric, labelMetricName)
-			err := c.updatePodRecord(pod, modelName, labelMetricName, scope, &metrics.LabelValueMetricValue{Value: labelValue})
-			if err != nil {
-				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", labelMetricName, pod.Name, pod.Status.PodIP, podMetricPort, err)
-				continue
-			}
-
-			klog.V(5).InfoS("Successfully parsed metrics", "metric", labelMetricName, "model", modelName, "PodIP", pod.Status.PodIP, "Port", podMetricPort, "metricValue", labelValue)
-		}
-	}
-}
-
 func (c *Store) updateMetricFromPromQL(ctx context.Context, pod *Pod) {
 	podName := pod.Name
 	podMetricPort := getPodMetricPort(pod)

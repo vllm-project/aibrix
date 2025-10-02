@@ -80,7 +80,7 @@ type Metric struct {
 	MetricSource             MetricSource
 	MetricType               MetricType
 	PromQL                   string            // Optional: Only applicable for PromQL-based metrics
-	RawMetricName            string            // Optional: Only applicable for QueryLabel-based metrics
+	LabelKey                 string            // Optional: Only applicable for QueryLabel-based metrics
 	EngineMetricsNameMapping map[string]string // Optional: Mapping from engine type to raw metric name.
 	Description              string
 	MetricScope              MetricScope
