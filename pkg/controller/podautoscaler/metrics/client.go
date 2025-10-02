@@ -26,8 +26,8 @@ import (
 )
 
 const (
-	stableWindowDuration = 60 * time.Second
-	panicWindowDuration  = 6 * time.Second
+	stableWindowDuration = 180 * time.Second
+	panicWindowDuration  = 60 * time.Second
 )
 
 // AggregatorMetricsClient interface defines what aggregators need from metrics storage
@@ -198,8 +198,8 @@ func (c *MetricsClient) GetMetricValue(metricKey types.MetricKey, now time.Time)
 		return 0, 0, fmt.Errorf("failed to get panic value: %w", err)
 	}
 
-	klog.V(4).InfoS("[MetricClient] metrics window", "metricKey", metricKeyStr,
-		"size", stableWindow.Size(), "stableValue", stableValue, "panicValue", panicValue)
+	klog.InfoS("Metrics window aggregation", "metricKey", metricKeyStr,
+		"stableAvg", stableValue, "panicAvg", panicValue, "stableWindowValues", stableWindow.Values(), "panicWindowValues", panicWindow.Values())
 
 	return stableValue, panicValue, nil
 }

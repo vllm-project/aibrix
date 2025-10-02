@@ -57,6 +57,12 @@ type PodAutoscalerSpec struct {
 	// ScaleTargetRef points to scale-able resource that this PodAutoscaler should target and scale. e.g. Deployment
 	ScaleTargetRef corev1.ObjectReference `json:"scaleTargetRef"`
 
+	// SubTargetSelector selects a sub-component within the target resource
+	// For StormService/RoleSet: selects a role by roleName
+	// If not specified, scales the entire resource
+	// +optional
+	SubTargetSelector *SubTargetSelector `json:"subTargetSelector,omitempty"`
+
 	//// PodSelector allows for more flexible selection of pods to scale based on labels.
 	//PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 
@@ -75,6 +81,13 @@ type PodAutoscalerSpec struct {
 	// ScalingStrategy defines the strategy to use for scaling.
 	// +kubebuilder:validation:Enum={HPA,KPA,APA}
 	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`
+}
+
+// SubTargetSelector identifies a sub-component within the scale target
+type SubTargetSelector struct {
+	// RoleName selects a role within StormService or RoleSet
+	// +optional
+	RoleName string `json:"roleName,omitempty"`
 }
 
 // ScalingStrategyType defines the type for scaling strategies.
