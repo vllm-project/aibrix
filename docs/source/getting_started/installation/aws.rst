@@ -7,12 +7,18 @@ Amazon Web Services (AWS)
 Introduction
 ------------
 
-This module deploys an AIBrix cluster in its entirety onto AWS EKS Cluster. It is the quickest way to get up and running with AIBrix.
+An AIBrix cluster can either be deployed using the `AI on EKS <https://awslabs.github.io/ai-on-eks/>`_ project, which offers a simple deployment that will create a VPC, EKS cluster, and deploy AIBrix, or manually step-by-step.
 
-Quickstart
-----------
+AI on EKS
+---------
 
-Prerequisites
+`AI on EKS <https://awslabs.github.io/ai-on-eks/>`_ maintains a one line `deployment <https://awslabs.github.io/ai-on-eks/docs/infra/aibrix>`_ of AIBrix
+
+This deployment will create a VPC, subnets, EKS environment and deploy AIBrix.
+
+AI on EKS also includes `inference charts <https://awslabs.github.io/ai-on-eks/docs/blueprints/inference/inference-charts>`_ that can deploy AIBrix backed models
+
+Manually
 ~~~~~~~~~~~~~
 
 - `eksctl <https://eksctl.io/installation/>`_
