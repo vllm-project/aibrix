@@ -23,7 +23,7 @@ spec:
     spec: 
       containers: 
         - name: xdit-dev 
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:v0.28 #aibrix-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.8.5 
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:v0.28 
           imagePullPolicy: Always 
           command: ["sh", "-c"]
           args:
@@ -33,10 +33,10 @@ spec:
           resources: 
             limits: 
               nvidia.com/gpu: "1" 
-              cpu: "10" # memory: "150G" 
+              cpu: "10" 
             requests: 
               nvidia.com/gpu: "1" 
-              cpu: "10" # memory: "150G" 
+              cpu: "10" 
           volumeMounts:
             - mountPath: /models 
               name: model-hostpath 
@@ -80,7 +80,7 @@ metadata:
   annotations: 
     prometheus.io/scrape: "true" 
     prometheus.io/port: "8080" 
-  name: sd-3 # Note: The Service name must match the label value model.aibrix.ai/name in the Deployment 
+  name: sd-3 
   namespace: default 
 spec: 
   ports: 

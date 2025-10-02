@@ -75,7 +75,6 @@ spec:
             - --trust-remote-code
             - --no-enable-chunked-prefill
             - --disable-log-requests
-            # - --allowed-local-media-path
             - --swap-space
             - "0"
           env:
@@ -94,11 +93,9 @@ spec:
             limits:
               nvidia.com/gpu: "1"
               cpu: "10"
-              # memory: "150G"
             requests:
               nvidia.com/gpu: "1"
               cpu: "10"
-              # memory: "150G"
       volumes:
         - name: model-hostpath
           hostPath:
@@ -118,7 +115,7 @@ metadata:
   annotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8080"
-  name: llava-7b # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
+  name: llava-7b 
   namespace: default
 spec:
   ports:
