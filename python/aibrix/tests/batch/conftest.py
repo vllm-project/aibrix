@@ -64,21 +64,23 @@ def k8s_config():
                 logger.info("Loaded local Kubernetes configuration")
             except config.ConfigException as e:
                 pytest.skip(f"Kubernetes configuration not available: {e}")
-        
+
         # Test API server accessibility with reliable timeout
         try:
             v1 = client.CoreV1Api()
             api_host = v1.api_client.configuration.host
             if not api_host:
-                pytest.skip("Kubernetes configuration is invalid: no API server host found")
-            
+                pytest.skip(
+                    "Kubernetes configuration is invalid: no API server host found"
+                )
+
             logger.info(f"Testing Kubernetes API accessibility: {api_host}")
-            
+
             def test_api_call():
                 """Make a simple API call to test connectivity."""
                 # Use a very simple API call that should be fast
                 return v1.get_api_versions()
-            
+
             # Use ThreadPoolExecutor with timeout to prevent hanging
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(test_api_call)
@@ -87,13 +89,15 @@ def k8s_config():
                     future.result(timeout=10)
                     logger.info("Kubernetes API server accessibility verified")
                 except FutureTimeoutError:
-                    pytest.skip(f"Kubernetes API server timeout after 10 seconds: {api_host}")
+                    pytest.skip(
+                        f"Kubernetes API server timeout after 10 seconds: {api_host}"
+                    )
                 except Exception as e:
                     pytest.skip(f"Kubernetes API server not accessible: {e}")
-                    
+
         except Exception as e:
             pytest.skip(f"Failed to create Kubernetes API client: {e}")
-            
+
     except Exception as e:
         pytest.skip(f"Failed to initialize Kubernetes client: {e}")
 

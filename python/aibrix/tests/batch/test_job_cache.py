@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import os
-from pathlib import Path
 
 # Set required environment variable before importing
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
