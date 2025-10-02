@@ -24,7 +24,7 @@ spec:
       containers: 
         - name: xdit-dev 
           image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:v0.28  
-          imagePullPolicy: Always 
+          imagePullPolicy: IfNotPresent 
           command: ["sh", "-c"]
           args:
             - |
