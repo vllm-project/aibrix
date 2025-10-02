@@ -1,0 +1,84 @@
+# Example: Independent autoscaling for prefill and decode roles in StormService
+#
+# This demonstrates how to scale different rolesets based on their
+# specific metrics in StormService replica mode (replicas!=1).
+
+---
+# PodAutoscaler for prefill role
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: ss-replica-hpa
+  namespace: default
+  annotations:
+    autoscaling.aibrix.ai/storm-service-mode: "replica"
+spec:
+  scaleTargetRef:
+    apiVersion: orchestration.aibrix.ai/v1alpha1
+    kind: StormService
+    name: ss-replica
+
+  # optional for replica mode, if role is specified, it will only calculate metrics for specific role, if not specified, it will calculate metrics for all roles
+  subTargetSelector:
+    roleName: prefill
+
+  minReplicas: 2
+  maxReplicas: 20
+  scalingStrategy: APA
+
+  metricsSources:
+    - metricSourceType: pod
+      protocolType: http
+      port: "8000"
+      path: /metrics
+      targetMetric: "prefill_queue_length"
+      targetValue: "10"
+
+---
+# The StormService being autoscaled (replica mode)
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: ss-replica
+  namespace: default
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    maxSurge: 2
+    maxUnavailable: 1
+  replicas: 3  # Will be managed by PodAutoscaler
+  stateful: true
+  selector:
+    matchLabels:
+      app: ss-replica
+  template:
+    metadata:
+      labels:
+        app: ss-replica
+    spec:
+      roles:
+        - name: prefill
+          replicas: 1
+          stateful: true
+          template:
+            spec:
+              containers:
+                - name: prefill
+                  image: vllm/vllm-openai:latest
+                  ports:
+                    - containerPort: 8000
+                      name: metrics
+                  # ... other config
+
+        - name: decode
+          replicas: 1
+          stateful: true
+          template:
+            spec:
+              containers:
+                - name: decode
+                  image: vllm/vllm-openai:latest
+                  ports:
+                    - containerPort: 8000
+                      name: metrics
+                  # ... other config

@@ -62,6 +62,59 @@ Example APA yaml config
    :language: yaml
 
 
+StormService Role-Level Autoscaling
+------------------------------------
+
+For StormService in pooled mode (``replicas=1``), different roles (e.g., prefill and decode) can be autoscaled independently. This enables fine-grained control where each role scales based on its specific metrics.
+
+Use the ``subTargetSelector`` field to target a specific role within a StormService:
+
+.. code-block:: yaml
+
+    apiVersion: autoscaling.aibrix.ai/v1alpha1
+    kind: PodAutoscaler
+    metadata:
+      name: llm-prefill-autoscaler
+    spec:
+      scaleTargetRef:
+        apiVersion: orchestration.aibrix.ai/v1alpha1
+        kind: StormService
+        name: llm-xpyd
+
+      # Select the prefill role
+      subTargetSelector:
+        roleName: prefill
+
+      minReplicas: 2
+      maxReplicas: 20
+      scalingStrategy: APA
+      metricsSources:
+        - metricSourceType: pod
+          protocolType: http
+          port: "8000"
+          path: /metrics
+          targetMetric: "prefill_queue_length"
+          targetValue: "10"
+
+**Key features:**
+
+- Each role has its own PodAutoscaler with independent metrics and scaling policies
+- Works with StormService in pooled mode (``replicas=1``)
+- Supports different scaling strategies (HPA, KPA, APA) per role
+- Allows different min/max replicas and scaling behaviors per role
+
+**Complete example:**
+
+.. literalinclude:: ../../../../samples/autoscaler/stormservice-role-autoscaler.yaml
+   :language: yaml
+
+**When to use:**
+
+- **Pooled mode**: StormService with ``replicas=1`` where roles need independent scaling
+- **Different workload patterns**: Prefill and decode have different resource needs and traffic patterns
+- **Independent metrics**: Each role has its own metrics (e.g., queue length, batch utilization)
+
+
 Check autoscaling logs
 ----------------------
 

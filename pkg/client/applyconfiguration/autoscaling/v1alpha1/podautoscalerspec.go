@@ -25,11 +25,12 @@ import (
 // PodAutoscalerSpecApplyConfiguration represents a declarative configuration of the PodAutoscalerSpec type for use
 // with apply.
 type PodAutoscalerSpecApplyConfiguration struct {
-	ScaleTargetRef  *v1.ObjectReference                      `json:"scaleTargetRef,omitempty"`
-	MinReplicas     *int32                                   `json:"minReplicas,omitempty"`
-	MaxReplicas     *int32                                   `json:"maxReplicas,omitempty"`
-	MetricsSources  []MetricSourceApplyConfiguration         `json:"metricsSources,omitempty"`
-	ScalingStrategy *autoscalingv1alpha1.ScalingStrategyType `json:"scalingStrategy,omitempty"`
+	ScaleTargetRef    *v1.ObjectReference                      `json:"scaleTargetRef,omitempty"`
+	SubTargetSelector *SubTargetSelectorApplyConfiguration     `json:"subTargetSelector,omitempty"`
+	MinReplicas       *int32                                   `json:"minReplicas,omitempty"`
+	MaxReplicas       *int32                                   `json:"maxReplicas,omitempty"`
+	MetricsSources    []MetricSourceApplyConfiguration         `json:"metricsSources,omitempty"`
+	ScalingStrategy   *autoscalingv1alpha1.ScalingStrategyType `json:"scalingStrategy,omitempty"`
 }
 
 // PodAutoscalerSpecApplyConfiguration constructs a declarative configuration of the PodAutoscalerSpec type for use with
@@ -43,6 +44,14 @@ func PodAutoscalerSpec() *PodAutoscalerSpecApplyConfiguration {
 // If called multiple times, the ScaleTargetRef field is set to the value of the last call.
 func (b *PodAutoscalerSpecApplyConfiguration) WithScaleTargetRef(value v1.ObjectReference) *PodAutoscalerSpecApplyConfiguration {
 	b.ScaleTargetRef = &value
+	return b
+}
+
+// WithSubTargetSelector sets the SubTargetSelector field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the SubTargetSelector field is set to the value of the last call.
+func (b *PodAutoscalerSpecApplyConfiguration) WithSubTargetSelector(value *SubTargetSelectorApplyConfiguration) *PodAutoscalerSpecApplyConfiguration {
+	b.SubTargetSelector = value
 	return b
 }
 
