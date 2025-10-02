@@ -13,30 +13,15 @@
 # limitations under the License.
 from typing import Optional
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
+from aibrix.config import AIBrixSettings
 from aibrix.storage.types import StorageType
 
 
-class Settings(BaseSettings):
-    # Model configuration for Pydantic (v2)
-    # This tells Pydantic where to look for environment variables
-    # (e.g., in a .env file if it exists, or actual env vars)
-    model_config = SettingsConfigDict(
-        env_file=".env",  # Load environment variables from a .env file
-        env_file_encoding="utf-8",  # Encoding for the .env file
-        extra="ignore",  # Ignore extra environment variables not defined here
-    )
-
+class Settings(AIBrixSettings):
     # --- Application General Settings ---
     PROJECT_NAME: str = "AIBrix Extension API Server"
     PROJECT_VERSION: str = "1.0.0"
     API_V1_STR: str = "/v1"  # Base path for version 1 of your API
-
-    # --- Security Settings ---
-    SECRET_KEY: str = (
-        "test-secret-key-for-testing"  # No default, reserved for later use.
-    )
 
     # --- CORS (Cross-Origin Resource Sharing) Settings ---
     # List of origins that are allowed to make requests to your API
@@ -44,16 +29,12 @@ class Settings(BaseSettings):
     # Use ["*"] for development, but specify exact origins in production.
     BACKEND_CORS_ORIGINS: list[str] = ["*"]
 
-    # --- Logging Settings ---
-    LOG_LEVEL: str = "DEBUG"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
-    LOG_PATH: Optional[str] = None  # If None, logs to stdout
-
     # --- External Service URLs (if any) ---
     EXTERNAL_API_URL: Optional[str] = None  # Example: URL for an external microservice
 
     # --- File API settings ---
-    STORAGE_TYPE: StorageType = StorageType.LOCAL
-    METASTORE_TYPE: StorageType = StorageType.LOCAL
+    STORAGE_TYPE: StorageType = StorageType.AUTO
+    METASTORE_TYPE: StorageType = StorageType.AUTO
     MAX_FILE_SIZE: int = 1024 * 1024 * 1024  # 1G in bytes
 
 

@@ -1,0 +1,89 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: batch-job-template
+  namespace: default
+  labels:
+    app: aibrix-batch
+  annotations:
+    # Template annotations will be merged with BatchJobSpec annotations
+spec:
+  suspend: true # !!Important: creates the job in a paused state
+  template:
+    metadata:
+      labels:
+        app: aibrix-batch
+    spec:
+      serviceAccountName: job-reader-sa
+      automountServiceAccountToken: true
+      shareProcessNamespace: true # Allow worker to kill llm-engine
+      restartPolicy: Never
+      containers:
+      - name: batch-worker
+        image: aibrix/runtime:nightly
+        command:
+          - aibrix_batch_worker
+        env:
+        - name: JOB_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['job-name']
+        - name: JOB_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: JOB_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['batch.kubernetes.io/controller-uid']
+        - name: LLM_READY_ENDPOINT
+          value: "http://localhost:8000/ready" # keep consistent with llm-engine['readinessProbe']
+        # Batch job metadata from pod annotations
+        - name: BATCH_INPUT_FILE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.job.aibrix.ai/input-file-id']
+        - name: BATCH_ENDPOINT
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.job.aibrix.ai/endpoint']
+        - name: BATCH_OUTPUT_FILE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.job.aibrix.ai/output-file-id']
+        - name: BATCH_TEMP_OUTPUT_FILE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.job.aibrix.ai/temp-output-file-id']
+        - name: BATCH_ERROR_FILE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.job.aibrix.ai/error-file-id']
+        - name: BATCH_TEMP_ERROR_FILE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.job.aibrix.ai/temp-error-file-id']
+        - name: BATCH_OPTS_FAIL_AFTER_N_REQUESTS
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.job.aibrix.ai/opts.fail_after_n_requests']
+      - name: llm-engine
+        image: aibrix/vllm-mock:nightly
+        ports:
+          - containerPort: 8000
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            # Run llm engine. The '|| true' at the end ensures this line never fails.
+            WORKER_VICTIM=1 python app.py || true
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /ready
+            port: 8000
+            scheme: HTTP
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+  backoffLimit: 2
+  activeDeadlineSeconds: 86400  # 24 hours

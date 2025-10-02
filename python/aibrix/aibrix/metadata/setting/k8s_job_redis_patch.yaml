@@ -1,0 +1,15 @@
+# Patch for k8s_job_template.yaml to enable S3 testing with Kubernetes secrets
+apiVersion: batch/v1
+kind: Job
+spec:
+  template:
+    spec:
+      containers:
+      - name: batch-worker
+        env:
+        - name: REDIS_HOST
+          value: "aibrix-redis-master.aibrix-system.svc.cluster.local"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_DB
+          value: "0"

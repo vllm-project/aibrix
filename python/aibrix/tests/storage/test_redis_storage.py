@@ -342,3 +342,210 @@ async def test_redis_hierarchical_token_pagination():
 
     finally:
         await storage.close()
+
+
+def test_feature_detection():
+    """Test feature detection methods."""
+    storage = RedisStorage()
+
+    # Redis should support all advanced features
+    assert storage.is_ttl_supported() is True
+    assert storage.is_set_if_not_exists_supported() is True
+    assert storage.is_set_if_exists_supported() is True
+
+
+def test_put_object_options_validation():
+    """Test PutObjectOptions validation."""
+    from aibrix.storage.base import PutObjectOptions
+
+    # Valid options
+    options = PutObjectOptions()
+    assert options.ttl_seconds is None
+    assert options.ttl_milliseconds is None
+    assert options.set_if_not_exists is False
+    assert options.set_if_exists is False
+
+    # Valid options with TTL seconds
+    options = PutObjectOptions(ttl_seconds=60)
+    assert options.ttl_seconds == 60
+
+    # Valid conditional options
+    options = PutObjectOptions(set_if_not_exists=True)
+    assert options.set_if_not_exists is True
+
+    # Invalid: both conditions
+    with pytest.raises(
+        ValueError, match="Cannot specify both set_if_not_exists and set_if_exists"
+    ):
+        PutObjectOptions(set_if_not_exists=True, set_if_exists=True)
+
+    # Invalid: both TTL types
+    with pytest.raises(
+        ValueError, match="Cannot specify both ttl_seconds and ttl_milliseconds"
+    ):
+        PutObjectOptions(ttl_seconds=60, ttl_milliseconds=60000)
+
+
+def test_put_object_options_builder():
+    """Test PutObjectOptionsBuilder helper class."""
+    from aibrix.storage.base import PutObjectOptionsBuilder
+
+    # Test building with TTL seconds
+    options = PutObjectOptionsBuilder().ttl_seconds(60).build()
+    assert options.ttl_seconds == 60
+    assert options.ttl_milliseconds is None
+
+    # Test building with TTL milliseconds
+    options = PutObjectOptionsBuilder().ttl_milliseconds(60000).build()
+    assert options.ttl_milliseconds == 60000
+    assert options.ttl_seconds is None
+
+    # Test building with conditional operations
+    options = PutObjectOptionsBuilder().if_not_exists().build()
+    assert options.set_if_not_exists is True
+    assert options.set_if_exists is False
+
+    options = PutObjectOptionsBuilder().if_exists().build()
+    assert options.set_if_exists is True
+    assert options.set_if_not_exists is False
+
+    # Test chaining
+    options = PutObjectOptionsBuilder().ttl_seconds(300).if_not_exists().build()
+    assert options.ttl_seconds == 300
+    assert options.set_if_not_exists is True
+
+
+@requires_redis
+@pytest.mark.asyncio
+async def test_redis_put_object_with_ttl():
+    """Test Redis put_object with TTL options (requires Redis running)."""
+    storage = get_redis_storage()
+    try:
+        from aibrix.storage.base import PutObjectOptions
+
+        # Test TTL in seconds
+        options = PutObjectOptions(ttl_seconds=1)  # 1 second TTL
+        result = await storage.put_object("test_ttl_key", b"test_data", options=options)
+        assert result is True
+
+        # Verify data exists initially
+        data = await storage.get_object("test_ttl_key")
+        assert data == b"test_data"
+
+        # Wait for TTL to expire
+        await asyncio.sleep(1.1)
+
+        # Verify data expired
+        with pytest.raises(FileNotFoundError):
+            await storage.get_object("test_ttl_key")
+
+        # Test TTL in milliseconds
+        options = PutObjectOptions(ttl_milliseconds=500)  # 500ms TTL
+        result = await storage.put_object(
+            "test_ttl_ms_key", b"test_data_ms", options=options
+        )
+        assert result is True
+
+        # Verify data exists initially
+        data = await storage.get_object("test_ttl_ms_key")
+        assert data == b"test_data_ms"
+
+        # Wait for TTL to expire
+        await asyncio.sleep(0.6)
+
+        # Verify data expired
+        with pytest.raises(FileNotFoundError):
+            await storage.get_object("test_ttl_ms_key")
+
+    finally:
+        await storage.close()
+
+
+@requires_redis
+@pytest.mark.asyncio
+async def test_redis_put_object_conditional():
+    """Test Redis put_object conditional operations (requires Redis running)."""
+    storage = get_redis_storage()
+    try:
+        from aibrix.storage.base import PutObjectOptions
+
+        key = "test_conditional_key"
+
+        # Ensure key doesn't exist
+        await storage.delete_object(key)
+
+        # Test SET IF NOT EXISTS (NX) - should succeed
+        options = PutObjectOptions(set_if_not_exists=True)
+        result = await storage.put_object(key, b"first_value", options=options)
+        assert result is True
+
+        # Verify data was set
+        data = await storage.get_object(key)
+        assert data == b"first_value"
+
+        # Test SET IF NOT EXISTS again - should fail since key exists
+        result = await storage.put_object(key, b"second_value", options=options)
+        assert result is False
+
+        # Verify data unchanged
+        data = await storage.get_object(key)
+        assert data == b"first_value"
+
+        # Test SET IF EXISTS (XX) - should succeed since key exists
+        options = PutObjectOptions(set_if_exists=True)
+        result = await storage.put_object(key, b"updated_value", options=options)
+        assert result is True
+
+        # Verify data was updated
+        data = await storage.get_object(key)
+        assert data == b"updated_value"
+
+        # Delete key and test SET IF EXISTS - should fail
+        await storage.delete_object(key)
+        result = await storage.put_object(key, b"should_fail", options=options)
+        assert result is False
+
+        # Verify key doesn't exist
+        with pytest.raises(FileNotFoundError):
+            await storage.get_object(key)
+
+    finally:
+        await storage.close()
+
+
+@requires_redis
+@pytest.mark.asyncio
+async def test_redis_put_object_combined_options():
+    """Test Redis put_object with combined TTL and conditional options (requires Redis running)."""
+    storage = get_redis_storage()
+    try:
+        from aibrix.storage.base import PutObjectOptionsBuilder
+
+        key = "test_combined_key"
+
+        # Ensure key doesn't exist
+        await storage.delete_object(key)
+
+        # Test NX with TTL
+        options = PutObjectOptionsBuilder().ttl_seconds(2).if_not_exists().build()
+
+        result = await storage.put_object(key, b"ttl_nx_value", options=options)
+        assert result is True
+
+        # Verify data exists
+        data = await storage.get_object(key)
+        assert data == b"ttl_nx_value"
+
+        # Try to set again with NX - should fail
+        result = await storage.put_object(key, b"should_fail", options=options)
+        assert result is False
+
+        # Wait for TTL to expire
+        await asyncio.sleep(2.1)
+
+        # Verify data expired
+        with pytest.raises(FileNotFoundError):
+            await storage.get_object(key)
+
+    finally:
+        await storage.close()
