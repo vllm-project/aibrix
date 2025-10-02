@@ -363,7 +363,7 @@ var (
 			},
 			LabelKey: "running_lora_adapters",
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:running_lora_adapterslora_requests_info",
+				"vllm": "vllm:lora_requests_info",
 			},
 			Description: "Count of running Lora Adapters",
 		},
