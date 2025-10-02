@@ -8,7 +8,7 @@ The batch processing system consists of several key components:
 
 - **BatchDriver**: Main orchestrator that manages job lifecycle
 - **JobManager**: Handles job state management and tracking  
-- **RequestProxy**: Bridge between job management and inference execution
+- **JobDriver**: Bridge between job management and inference execution
 - **BatchWorker**: Script-based worker that runs in Kubernetes jobs
 
 ## Worker Architecture
