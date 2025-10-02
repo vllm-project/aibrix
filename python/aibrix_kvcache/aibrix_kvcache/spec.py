@@ -154,6 +154,14 @@ class ModelSpec:
 
     Args:
         max_model_len: Max length of a sequence (including prompt and output).
+        max_num_batched_tokens: Max num. of tokens to be processed in a single
+                                iteration. <= 0 means using kvcache's chunk size
+                                as the max num of batched tokens.
     """
 
     max_model_len: int
+    max_num_batched_tokens: int = -1
+
+    def __post_init__(self):
+        if self.max_model_len <= 0:
+            raise ValueError("max_model_len must be greater than 0.")
