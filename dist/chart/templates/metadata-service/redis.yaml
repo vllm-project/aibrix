@@ -17,7 +17,6 @@ spec:
     metadata:
       labels:
         {{- include "chart.labels" . | nindent 8 }}
-        {{- include "chart.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-metadata-redis
     spec:
       {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.metadata.redis.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}

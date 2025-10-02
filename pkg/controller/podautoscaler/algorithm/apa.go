@@ -25,16 +25,8 @@ import (
 )
 
 // APAAlgorithm implements Application-specific Pod Autoscaling
-type APAAlgorithm struct {
-	config AlgorithmConfig
-}
-
-// NewAPAAlgorithm creates a new APA algorithm instance
-func NewAPAAlgorithm(config AlgorithmConfig) *APAAlgorithm {
-	return &APAAlgorithm{
-		config: config,
-	}
-}
+// This is a stateless struct that can be safely reused across goroutines
+type APAAlgorithm struct{}
 
 var _ ScalingAlgorithm = (*APAAlgorithm)(nil)
 
@@ -43,13 +35,13 @@ func (a *APAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 	metrics := request.AggregatedMetrics
 
 	// APA uses current value directly
-	request.ScalingContext.SetCurrentUsePerPod(metrics.CurrentValue)
+	request.ScalingContext.SetCurrentUsePerPod(metrics.StableValue)
 
 	// Compute target replicas using APA algorithm
 	desiredReplicas := a.computeTargetReplicas(float64(request.CurrentReplicas), request.ScalingContext)
 
-	// Apply constraints
-	desiredReplicas = applyConstraints(desiredReplicas, request.Constraints)
+	// Apply constraints from ScalingContext
+	desiredReplicas = applyConstraints(desiredReplicas, request.ScalingContext)
 
 	return &ScalingRecommendation{
 		DesiredReplicas: desiredReplicas,
@@ -58,7 +50,7 @@ func (a *APAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 		Algorithm:       "apa",
 		ScaleValid:      true,
 		Metadata: map[string]interface{}{
-			"current_value": metrics.CurrentValue,
+			"current_value": metrics.StableValue,
 			"trend":         metrics.Trend,
 		},
 	}, nil
@@ -69,32 +61,29 @@ func (a *APAAlgorithm) GetAlgorithmType() string {
 	return "apa"
 }
 
-// UpdateConfiguration updates the algorithm configuration
-func (a *APAAlgorithm) UpdateConfiguration(config AlgorithmConfig) error {
-	a.config = config
-	return nil
-}
-
 // computeTargetReplicas - APA's algorithm references and enhances the algorithm in the following paper:
 // Huo, Qizheng, et al. "High Concurrency Response Strategy based on Kubernetes Horizontal Pod Autoscaler."
 // Journal of Physics: Conference Series. Vol. 2451. No. 1. IOP Publishing, 2023.
+// Tolerance is applied here to prevent scaling for minor metric fluctuations.
 func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context scalingctx.ScalingContext) int32 {
 	expectedUse := context.GetTargetValue()
 	upTolerance := context.GetUpFluctuationTolerance()
 	downTolerance := context.GetDownFluctuationTolerance()
 	currentUsePerPod := context.GetCurrentUsePerPod()
 
-	klog.V(4).InfoS("--- APA Details", "currentPodCount", currentPodCount,
+	klog.V(4).InfoS("APA Details", "currentPodCount", currentPodCount,
 		"expectedUse", expectedUse, "upTolerance", upTolerance, "downTolerance", downTolerance,
 		"currentUsePerPod", currentUsePerPod, "current/expected", currentUsePerPod/expectedUse,
 	)
 
+	// Tolerance check: only scale if metric exceeds tolerance thresholds
 	if currentUsePerPod/expectedUse > (1 + upTolerance) {
 		maxScaleUp := math.Ceil(context.GetMaxScaleUpRate() * currentPodCount)
 		expectedPods := int32(math.Ceil(currentPodCount * (currentUsePerPod / expectedUse)))
 		if float64(expectedPods) > maxScaleUp {
 			expectedPods = int32(maxScaleUp)
 		}
+		klog.V(4).InfoS("APA scaling up", "currentPods", currentPodCount, "expectedPods", expectedPods)
 		return expectedPods
 	} else if currentUsePerPod/expectedUse < (1 - downTolerance) {
 		maxScaleDown := math.Floor(currentPodCount / context.GetMaxScaleDownRate())
@@ -102,7 +91,9 @@ func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 		if float64(expectedPods) < maxScaleDown {
 			expectedPods = int32(maxScaleDown)
 		}
+		klog.V(4).InfoS("APA scaling down", "currentPods", currentPodCount, "expectedPods", expectedPods)
 		return expectedPods
 	}
+	klog.V(4).InfoS("APA within tolerance, no scaling", "currentPods", currentPodCount)
 	return int32(currentPodCount)
 }
