@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aibrix-api-extension-sa
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-api-extension
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aibrix-api-extension-clusterrole
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-api-extension
+rules:
+  - apiGroups: ["batch"] # for batch job watching
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["coordination.k8s.io"] # for kopf high availability
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apiextensions.k8s.io"] # required by kopf
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""] # required by kopf
+    resources: ["namespaces"]
+    verbs: ["list", "watch"]
+  - apiGroups: [""] # for ServiceAccount management
+    resources: ["serviceaccounts"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"] # for Role management
+    resources: ["roles"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"] # for RoleBinding management
+    resources: ["rolebindings"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aibrix-api-extension-clusterrole-binding
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-api-extension
+subjects:
+  - kind: ServiceAccount
+    name: aibrix-api-extension-sa
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: aibrix-api-extension-clusterrole
+  apiGroup: rbac.authorization.k8s.io

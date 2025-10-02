@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aibrix-api-extension
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-api-extension
+spec:
+  replicas: {{ .Values.apiExtension.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "chart.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: aibrix-api-extension
+  template:
+    metadata:
+      labels:
+        {{- include "chart.labels" . | nindent 8 }}
+        app.kubernetes.io/component: aibrix-api-extension
+    spec:
+      serviceAccountName: aibrix-api-extension-sa
+      automountServiceAccountToken: true
+      {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.apiExtension.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
+      containers:
+        - name: api-extension
+          image: {{ .Values.apiExtension.container.image.repository }}:{{ .Values.apiExtension.container.image.tag }}
+          command: 
+            - aibrix_api_extension
+            - --enable-k8s-job
+          ports:
+            - containerPort: 8100
+          resources: {{ toYaml .Values.apiExtension.container.resources | nindent 12 }}
+          # TODO: Add liveness and readiness probes
+          env:
+            # Metadata store configuration
+            - name: REDIS_HOST
+              value: {{ .Values.apiExtension.dependencies.redis.host }}
+            - name: REDIS_PORT
+              value: "{{ .Values.apiExtension.dependencies.redis.port }}"
+            {{- if .Values.metadata.redis.enablePassword }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aibrix-redis
+                  key: redis-password
+            {{- end }}
+            # Object store configuration
+            # TODO: Add object store config
+      {{- with .Values.apiExtension.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

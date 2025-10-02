@@ -169,6 +169,26 @@ metadata:
     enablePassword: false
     password: ""
 
+apiExtension:
+  replicaCount: 1
+  imagePullSecrets: []
+  container:
+    image:
+      repository: aibrix/runtime
+      tag: nightly
+    resources:
+      limits:
+        cpu: "1"
+        memory: 1Gi
+      requests:
+        cpu: "1"
+        memory: 1Gi
+  dependencies:
+    redis:
+      host: aibrix-redis-master
+      port: 6379
+  tolerations: []
+
 # [CRDs]: To enable the CRDs
 crd:
   # This option determines whether the CRDs are included
