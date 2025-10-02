@@ -83,10 +83,9 @@ curl -v http://localhost:8888/view \
     	"request-id": "104281eb-98de-4ffd-92e4-90e32118e028",
     	"path": "/shared/generated_image_20251002-224519.png"
   	}' -o generated_image_20251002-224519.png
-
 ```
 
-You could also emit the `save_disk_path` in the request and the response will contains base64 encoded image. 
+You could also emit the `save_disk_path` in the request and the response will contains base64 encoded image. For example, you could use the following script to decode binary image to an image file. 
 
 ```python
 import requests
@@ -123,3 +122,61 @@ else:
 ```
 
 ## Video Generation
+
+Apply a video model deployment file, for example:
+
+```
+kubectl apply -f video-generation/aibrix_vke_staging_video_cogvideo_parallel.yaml
+```
+
+Send a video generation request. For example:
+
+```
+curl -v "http://localhost:8888/v1/video/generations" \
+        -H "Content-Type: application/json" \
+        -H "routing-strategy: random" \
+        -d '{
+           "prompt": "Generate a 15-second cinematic 4K video of a futuristic floating city at sunset. The city features towering neon-lit skyscrapers with holographic advertisements, interconnected by glowing sky bridges. Flying vehicles zip through the air in intricate patterns, reflecting off glass surfaces. Include subtle fog and drifting clouds to enhance depth. The camera should start with a wide aerial shot, slowly panning down to street level, showing pedestrians with cybernetic augmentations interacting with autonomous robots. Incorporate dynamic lighting: the sun sets in the background casting long shadows, neon lights flicker, and reflections shimmer on wet streets. Add ambient environmental details: rain begins to fall, puddles ripple, leaves flutter in the breeze. Ensure smooth, natural motion for all objects, realistic physics for flying vehicles, and cinematic depth of field. Include soft orchestral music in the background that crescendos as the camera approaches street level. The overall mood is awe-inspiring, futuristic, and slightly mysterious.",
+           "model": "cogvideox-2b",
+           "num_inference_steps": 50,
+           "save_disk_path": "/shared"
+         }'
+```
+
+Sample output:
+
+```
+*   Trying 127.0.0.1:8888...
+* Connected to localhost (127.0.0.1) port 8888 (#0)
+> POST /v1/video/generations HTTP/1.1
+> Host: localhost:8888
+> User-Agent: curl/7.88.1
+> Accept: */*
+> Content-Type: application/json
+> routing-strategy: random
+> Content-Length: 1206
+> 
+< HTTP/1.1 200 OK
+< date: Thu, 02 Oct 2025 23:37:59 GMT
+< server: uvicorn
+< content-type: application/json
+< x-went-into-req-headers: true
+< request-id: 693d63ba-936b-4c9a-a78d-a754aab0bf3a
+< target-pod: 192.168.0.98:6000
+< transfer-encoding: chunked
+< 
+* Connection #0 to host localhost left intact
+{"message":"Video generated successfully","elapsed_time":"71.49 sec","output":"/shared/generated_video_20251002-233911.mp4","save_to_disk":true}
+
+```
+
+
+```
+curl -v http://localhost:8888/view \
+  -H "Content-Type: application/json" \
+  -d '{
+    	"request-id": "693d63ba-936b-4c9a-a78d-a754aab0bf3a",
+    	"path": "/shared/generated_video_20251002-233911.mp4"
+  	}' -o generated_video_20251002-233911.mp4
+
+```

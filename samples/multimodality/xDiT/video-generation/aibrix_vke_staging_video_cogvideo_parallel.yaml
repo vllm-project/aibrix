@@ -92,15 +92,13 @@ spec:
           volumeMounts:
             - name: shared-data
               mountPath: /shared
+      nodeSelector:
+        kubernetes.io/hostname: 192.168.0.6
       volumes: 
         - name: model-hostpath 
           hostPath: 
-            path: /root/models 
+            path: /data01/models
             type: DirectoryOrCreate 
-        - name: model-mountpath
-          hostPath: 
-            path: /mnt/vdb/models
-            type: DirectoryOrCreate   
         - name: dshm
           emptyDir:
             medium: Memory
@@ -119,7 +117,7 @@ metadata:
   annotations: 
     prometheus.io/scrape: "true" 
     prometheus.io/port: "8080" 
-  name: cogvideox-2b # Note: The Service name must match the label value model.aibrix.ai/name in the Deployment 
+  name: cogvideox-2b 
   namespace: default 
 spec: 
   ports: 
