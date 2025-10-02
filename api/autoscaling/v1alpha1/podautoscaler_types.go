@@ -134,6 +134,23 @@ type MetricSource struct {
 	TargetValue string `json:"targetValue"`
 }
 
+// ScalingDecision represents a single scaling decision made by the autoscaler
+type ScalingDecision struct {
+	// Timestamp when the scaling decision was made
+	Timestamp metav1.Time `json:"timestamp"`
+	// PreviousScale is the number of replicas before scaling
+	PreviousScale int32 `json:"previousScale"`
+	// NewScale is the number of replicas after scaling
+	NewScale int32 `json:"newScale"`
+	// Reason provides the explanation for the scaling decision
+	Reason string `json:"reason"`
+	// Success indicates whether the scaling operation succeeded
+	Success bool `json:"success"`
+	// Error message if the scaling failed
+	// +optional
+	Error string `json:"error,omitempty"`
+}
+
 // PodAutoscalerStatus defines the observed state of PodAutoscaler
 // including the current number of replicas, operational status, and other metrics.
 type PodAutoscalerStatus struct {
@@ -156,6 +173,11 @@ type PodAutoscalerStatus struct {
 	// Conditions is the set of conditions required for this autoscaler to scale its target,
 	// and indicates whether or not those conditions are met.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// ScalingHistory stores the last N scaling decisions
+	// +optional
+	// +kubebuilder:validation:MaxItems=5
+	ScalingHistory []ScalingDecision `json:"scalingHistory,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -159,6 +159,33 @@ spec:
               lastScaleTime:
                 format: date-time
                 type: string
+              scalingHistory:
+                items:
+                  properties:
+                    error:
+                      type: string
+                    newScale:
+                      format: int32
+                      type: integer
+                    previousScale:
+                      format: int32
+                      type: integer
+                    reason:
+                      type: string
+                    success:
+                      type: boolean
+                    timestamp:
+                      format: date-time
+                      type: string
+                  required:
+                  - newScale
+                  - previousScale
+                  - reason
+                  - success
+                  - timestamp
+                  type: object
+                maxItems: 5
+                type: array
             type: object
         type: object
     served: true

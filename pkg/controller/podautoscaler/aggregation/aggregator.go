@@ -20,7 +20,6 @@ import (
 	"math"
 	"time"
 
-	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
 )
@@ -28,154 +27,52 @@ import (
 // MetricAggregator processes and aggregates metrics over time windows
 type MetricAggregator interface {
 	// ProcessSnapshot adds new metrics to aggregation windows
-	ProcessSnapshot(snapshot *types.MetricSnapshot) error
+	ProcessSnapshot(metricKey types.MetricKey, snapshot *types.MetricSnapshot) error
 
 	// GetAggregatedMetrics returns processed metrics for scaling decisions
 	GetAggregatedMetrics(key types.MetricKey, now time.Time) (*types.AggregatedMetrics, error)
-
-	// UpdateConfiguration changes aggregation parameters
-	UpdateConfiguration(config AggregationConfig) error
 }
 
-// AggregationConfig defines aggregation parameters
-type AggregationConfig struct {
-	StableWindow time.Duration
-	PanicWindow  time.Duration
-	Window       time.Duration // For APA
-	Granularity  time.Duration
+// DefaultMetricAggregator is a single implementation for all strategies
+// It always returns both stable and panic values - the algorithm layer decides which to use
+// This is a stateless aggregator that delegates to MetricsClient
+type DefaultMetricAggregator struct {
+	client metrics.AggregatorMetricsClient
 }
 
-// KPAMetricAggregator extends existing KPAMetricsClient
-type KPAMetricAggregator struct {
-	client metrics.AggregatorMetricsClient // Use interface from metrics package
-	config AggregationConfig
-}
-
-func NewKPAMetricAggregator(client metrics.AggregatorMetricsClient, config AggregationConfig) *KPAMetricAggregator {
-	return &KPAMetricAggregator{
+// NewMetricAggregator creates a metric aggregator (same for all strategies)
+func NewMetricAggregator(client metrics.AggregatorMetricsClient) *DefaultMetricAggregator {
+	return &DefaultMetricAggregator{
 		client: client,
-		config: config,
 	}
 }
 
-func (a *KPAMetricAggregator) ProcessSnapshot(snapshot *types.MetricSnapshot) error {
+func (a *DefaultMetricAggregator) ProcessSnapshot(metricKey types.MetricKey, snapshot *types.MetricSnapshot) error {
 	if snapshot.Error != nil {
 		return snapshot.Error
 	}
 
-	// Create metric key for compatibility
-	metricKey := types.MetricKey{
-		Namespace:  snapshot.Namespace,
-		Name:       snapshot.TargetName,
-		MetricName: snapshot.MetricName,
-	}
-
-	// Reuse existing UpdateMetrics logic
+	// Use the provided metricKey which has correct PaNamespace/PaName
+	// Windows are auto-initialized with internal defaults on first use
 	return a.client.UpdateMetrics(snapshot.Timestamp, metricKey, snapshot.Values...)
 }
 
-func (a *KPAMetricAggregator) GetAggregatedMetrics(key types.MetricKey, now time.Time) (*types.AggregatedMetrics, error) {
-	// Reuse existing StableAndPanicMetrics logic
-	stable, panic, err := a.client.StableAndPanicMetrics(key, now)
+func (a *DefaultMetricAggregator) GetAggregatedMetrics(key types.MetricKey, now time.Time) (*types.AggregatedMetrics, error) {
+	// Always get stable value (all strategies use this)
+	stableVal, panicVal, err := a.client.GetMetricValue(key, now)
 	if err != nil {
 		return nil, err
 	}
 
-	// Get enhanced trend analysis from historical data
-	direction, _, trendConfidence := a.client.GetTrendAnalysis(key, now)
-
-	// Use sophisticated trend calculation if available, fallback to simple
-	trend := direction
-	if trendConfidence < 0.3 {
-		trend = calculateTrend(stable, panic) // Fallback to simple calculation
-	}
-
-	// Get enhanced confidence from pod-aware calculation
-	// Note: We don't have pod count here, but will be enhanced later in the pipeline
-	confidence := calculateKPAConfidence(stable, panic)
-
+	// Return both values - algorithm layer decides which to use
+	// For APA: stable == panic (both point to the same stable window)
+	// For KPA: stable and panic are different windows
 	return &types.AggregatedMetrics{
-		MetricKey:    key,
-		StableValue:  stable,
-		PanicValue:   panic,
-		CurrentValue: panic, // Use panic value as current
-		Trend:        trend,
-		Confidence:   confidence,
-		LastUpdated:  now,
+		MetricKey:   key,
+		StableValue: stableVal,
+		PanicValue:  panicVal,
+		LastUpdated: now,
 	}, nil
-}
-
-func (a *KPAMetricAggregator) UpdateConfiguration(config AggregationConfig) error {
-	a.config = config
-	return nil
-}
-
-// APAMetricAggregator extends existing APAMetricsClient
-type APAMetricAggregator struct {
-	client metrics.AggregatorMetricsClient // Use interface from metrics package
-	config AggregationConfig
-}
-
-func NewAPAMetricAggregator(client metrics.AggregatorMetricsClient, config AggregationConfig) *APAMetricAggregator {
-	return &APAMetricAggregator{
-		client: client,
-		config: config,
-	}
-}
-
-func (a *APAMetricAggregator) ProcessSnapshot(snapshot *types.MetricSnapshot) error {
-	if snapshot.Error != nil {
-		return snapshot.Error
-	}
-
-	// Create metric key for compatibility
-	metricKey := types.MetricKey{
-		Namespace:  snapshot.Namespace,
-		Name:       snapshot.TargetName,
-		MetricName: snapshot.MetricName,
-	}
-
-	// Reuse existing UpdateMetrics logic
-	return a.client.UpdateMetrics(snapshot.Timestamp, metricKey, snapshot.Values...)
-}
-
-func (a *APAMetricAggregator) GetAggregatedMetrics(key types.MetricKey, now time.Time) (*types.AggregatedMetrics, error) {
-	// Reuse existing GetMetricValue logic
-	value, err := a.client.GetMetricValue(key, now)
-	if err != nil {
-		return nil, err
-	}
-
-	// For APA, use simple trend and confidence
-	trend := 0.0
-	confidence := 0.8 // Default confidence for APA
-
-	return &types.AggregatedMetrics{
-		MetricKey:    key,
-		CurrentValue: value,
-		StableValue:  value,
-		PanicValue:   value,
-		Trend:        trend,
-		Confidence:   confidence,
-		LastUpdated:  now,
-	}, nil
-}
-
-func (a *APAMetricAggregator) UpdateConfiguration(config AggregationConfig) error {
-	a.config = config
-	return nil
-}
-
-// NewMetricAggregator creates aggregators based on scaling strategy
-func NewMetricAggregator(strategy autoscalingv1alpha1.ScalingStrategyType, client metrics.AggregatorMetricsClient, config AggregationConfig) MetricAggregator {
-	switch strategy {
-	case autoscalingv1alpha1.KPA:
-		return NewKPAMetricAggregator(client, config)
-	case autoscalingv1alpha1.APA:
-		return NewAPAMetricAggregator(client, config)
-	default:
-		return NewKPAMetricAggregator(client, config) // Default to KPA
-	}
 }
 
 // calculateTrend calculates the trend between stable and panic values with smoothing

@@ -18,6 +18,7 @@ package types
 
 import (
 	"math"
+	"sort"
 	"sync"
 	"time"
 )
@@ -175,17 +176,24 @@ func (tw *TimeWindow) Record(timestamp time.Time, value float64) {
 
 	// Clean old buckets
 	cutoff := timestamp.Add(-tw.duration).UnixNano() / int64(tw.granularity)
-	// TODO: improve performance to O(1)
 	for b := range tw.buckets {
 		if b < cutoff {
 			delete(tw.buckets, b)
 		}
 	}
 
-	// Update values slice for easy access
+	// Update values slice in time order for deterministic behavior
+	bucketKeys := make([]int64, 0, len(tw.buckets))
+	for b := range tw.buckets {
+		bucketKeys = append(bucketKeys, b)
+	}
+	sort.Slice(bucketKeys, func(i, j int) bool {
+		return bucketKeys[i] < bucketKeys[j]
+	})
+
 	tw.values = make([]float64, 0, len(tw.buckets))
-	for _, v := range tw.buckets {
-		tw.values = append(tw.values, v)
+	for _, b := range bucketKeys {
+		tw.values = append(tw.values, tw.buckets[b])
 	}
 }
 
@@ -251,4 +259,11 @@ func (tw *TimeWindow) Max() (float64, error) {
 // String returns a string representation of the time window
 func (tw *TimeWindow) String() string {
 	return "TimeWindow"
+}
+
+// Values returns all values in the window in chronological order
+func (tw *TimeWindow) Values() []float64 {
+	tw.mu.RLock()
+	defer tw.mu.RUnlock()
+	return tw.values
 }
