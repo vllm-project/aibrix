@@ -33,8 +33,6 @@ spec:
           env:
             - name: DOWNLOADER_NUM_THREADS
               value: "16"
-            # - name: DOWNLOADER_ALLOW_FILE_SUFFIX
-            #   value: json, safetensors
             - name: TOS_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
@@ -59,16 +57,9 @@ spec:
           image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm/vllm-openai:v0.9.2
           imagePullPolicy: Always
           command:
-            # - python3
-            # - -m
-            # - vllm.entrypoints.openai.api_server
-            # - --model
-            # - /models/dse-qwen2-2b-mrl-v1/
             - vllm
             - serve
             - /models/dse-qwen2-2b-mrl-v1/
-            # - --runner 
-            # - pooling 
             - --port
             - "8000"
             - --task
@@ -98,11 +89,9 @@ spec:
             limits:
               nvidia.com/gpu: "1"
               cpu: "10"
-              # memory: "150G"
             requests:
               nvidia.com/gpu: "1"
               cpu: "10"
-              # memory: "150G"
       volumes:
         - name: model-hostpath
           hostPath:
@@ -122,7 +111,7 @@ metadata:
   annotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8080"
-  name: dse-qwen # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
+  name: dse-qwen 
   namespace: default
 spec:
   ports:

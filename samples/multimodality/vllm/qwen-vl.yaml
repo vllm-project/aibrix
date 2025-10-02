@@ -71,7 +71,7 @@ spec:
             - --served-model-name
             - qwen-vl
             - --max-model-len
-            - "32000" # please modify this field if your gpu has more room
+            - "32000" 
             - --enable-prefix-caching
             - --disable-fastapi-docs
             - --trust-remote-code
@@ -97,11 +97,9 @@ spec:
             limits:
               nvidia.com/gpu: "1"
               cpu: "10"
-              # memory: "150G"
             requests:
               nvidia.com/gpu: "1"
               cpu: "10"
-              # memory: "150G"
       volumes:
         - name: model-hostpath
           hostPath:
@@ -121,7 +119,7 @@ metadata:
   annotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8080"
-  name: qwen-vl # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
+  name: qwen-vl 
   namespace: default
 spec:
   ports:
