@@ -26,7 +26,7 @@ def _test_redis_connectivity():
     """Test if Redis is accessible on localhost:6379."""
     try:
         import redis
-        
+
         def test_connection():
             # Try to connect to Redis with a short timeout
             client = redis.Redis(
@@ -36,11 +36,11 @@ def _test_redis_connectivity():
                 password=os.environ.get("REDIS_PASSWORD"),
                 socket_connect_timeout=2,
                 socket_timeout=2,
-                decode_responses=True
+                decode_responses=True,
             )
             # Test with a simple ping
             return client.ping()
-        
+
         # Use ThreadPoolExecutor to enforce timeout
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(test_connection)
@@ -50,7 +50,7 @@ def _test_redis_connectivity():
                 return False
             except Exception:
                 return False
-                
+
     except ImportError:
         # redis package not available
         return False
