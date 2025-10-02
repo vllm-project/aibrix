@@ -15,6 +15,8 @@
 import argparse
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -50,11 +52,50 @@ def run_operator_in_thread(stop_flag: threading.Event):
 
 @pytest.fixture(scope="session")
 def k8s_config():
-    """Initialize Kubernetes client."""
+    """Initialize Kubernetes client and test connectivity."""
     try:
-        config.load_incluster_config()
-    except config.ConfigException:
-        config.load_kube_config()
+        # Try to load in-cluster config first, then fallback to local config
+        try:
+            config.load_incluster_config()
+            logger.info("Loaded in-cluster Kubernetes configuration")
+        except config.ConfigException:
+            try:
+                config.load_kube_config()
+                logger.info("Loaded local Kubernetes configuration")
+            except config.ConfigException as e:
+                pytest.skip(f"Kubernetes configuration not available: {e}")
+        
+        # Test API server accessibility with reliable timeout
+        try:
+            v1 = client.CoreV1Api()
+            api_host = v1.api_client.configuration.host
+            if not api_host:
+                pytest.skip("Kubernetes configuration is invalid: no API server host found")
+            
+            logger.info(f"Testing Kubernetes API accessibility: {api_host}")
+            
+            def test_api_call():
+                """Make a simple API call to test connectivity."""
+                # Use a very simple API call that should be fast
+                return v1.get_api_versions()
+            
+            # Use ThreadPoolExecutor with timeout to prevent hanging
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(test_api_call)
+                try:
+                    # Wait maximum 10 seconds for the API call
+                    future.result(timeout=10)
+                    logger.info("Kubernetes API server accessibility verified")
+                except FutureTimeoutError:
+                    pytest.skip(f"Kubernetes API server timeout after 10 seconds: {api_host}")
+                except Exception as e:
+                    pytest.skip(f"Kubernetes API server not accessible: {e}")
+                    
+        except Exception as e:
+            pytest.skip(f"Failed to create Kubernetes API client: {e}")
+            
+    except Exception as e:
+        pytest.skip(f"Failed to initialize Kubernetes client: {e}")
 
 
 @pytest.fixture
