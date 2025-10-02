@@ -21,6 +21,37 @@ spec:
         model.aibrix.ai/name: sd-3 
         model.aibrix.ai/port: "6000" 
     spec: 
+      initContainers: 
+        - command:             
+            - aibrix_download 
+            - --model-uri 
+            - tos://aibrix-artifact-testing/models/stable-diffusion-3.5-large/
+            - --local-dir 
+            - /models/ 
+          env: 
+            - name: DOWNLOADER_NUM_THREADS 
+              value: "16" 
+            - name: TOS_ACCESS_KEY 
+              valueFrom: 
+                secretKeyRef: 
+                  key: TOS_ACCESS_KEY 
+                  name: tos-credential 
+            - name: TOS_SECRET_KEY 
+              valueFrom: 
+                secretKeyRef: 
+                  key: TOS_SECRET_KEY 
+                  name: tos-credential 
+            - name: TOS_ENDPOINT 
+              value: https://tos-s3-cn-beijing.ivolces.com 
+            - name: TOS_REGION 
+              value: cn-beijing 
+            - name: LOG_LEVEL
+              value: DEBUG  
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.1-mm1
+          name: init-model 
+          volumeMounts: 
+            - mountPath: /models 
+              name: model-hostpath 
       containers: 
         - name: xdit-dev 
           image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:customized-v1 
