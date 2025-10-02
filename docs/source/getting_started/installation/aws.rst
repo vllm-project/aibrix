@@ -19,6 +19,9 @@ This deployment will create a VPC, subnets, EKS environment and deploy AIBrix.
 AI on EKS also includes `inference charts <https://awslabs.github.io/ai-on-eks/docs/blueprints/inference/inference-charts>`_ that can deploy models to be served by AIBrix.
 
 Manually
+--------
+
+Prerequisites
 ~~~~~~~~~~~~~
 
 - `eksctl <https://eksctl.io/installation/>`_
