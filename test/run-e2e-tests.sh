@@ -58,6 +58,8 @@ if [ -n "$INSTALL_AIBRIX" ]; then
   make docker-build-all
   kind load docker-image aibrix/controller-manager:nightly aibrix/gateway-plugins:nightly aibrix/metadata-service:nightly aibrix/runtime:nightly
 
+  kubectl apply -k development/simulator
+
   kubectl apply -k config/dependency --server-side
   kubectl apply -k config/test
 
@@ -108,8 +110,9 @@ function cleanup {
     # Clean up k8s resources if INSTALL_AIBRIX is set
     kubectl delete --ignore-not-found=true -k config/test
     kubectl delete --ignore-not-found=true -k config/dependency
+    kubectl delete --ignore-not-found=true -k development/simulator
     cd development/app
-    kubectl delete -k config/mock
+    kubectl delete --ignore-not-found=true -k config/mock
     cd ../..
   else
     echo "Skipping k8s cleanup as INSTALL_AIBRIX is not set"
