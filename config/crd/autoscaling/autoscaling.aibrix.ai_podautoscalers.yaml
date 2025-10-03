@@ -107,6 +107,11 @@ spec:
                 - KPA
                 - APA
                 type: string
+              subTargetSelector:
+                properties:
+                  roleName:
+                    type: string
+                type: object
             required:
             - maxReplicas
             - scaleTargetRef
