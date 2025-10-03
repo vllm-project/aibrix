@@ -1,0 +1,14 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: batch-job-template
+  namespace: default
+spec:
+  template:
+    spec:
+      serviceAccountName: unittest-job-reader-sa  # Use unittest-specific service account
+      containers:
+      - name: batch-worker
+        image: aibrix/runtime:nightly
+      - name: llm-engine
+        image: aibrix/vllm-mock:nightly

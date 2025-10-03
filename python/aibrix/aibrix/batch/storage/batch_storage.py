@@ -13,16 +13,16 @@
 # limitations under the License.
 
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from aibrix.batch.job_entity import BatchJob
 from aibrix.batch.storage.adapter import BatchStorageAdapter
-from aibrix.metadata.logger import init_logger
+from aibrix.logger import init_logger
 from aibrix.storage import StorageType, create_storage
 
 logger = init_logger(__name__)
 
-p_storage = None
+p_storage: Optional[BatchStorageAdapter] = None
 
 
 def initialize_storage(storage_type=StorageType.AUTO, params={}):
@@ -38,12 +38,24 @@ def initialize_storage(storage_type=StorageType.AUTO, params={}):
 
     # Create new storage instance and wrap with adapter
     try:
+        logger.info(
+            "Initializing batch storage", storage_type=storage_type, params=params
+        )  # type: ignore[call-arg]
         storage = create_storage(storage_type, **params)
         p_storage = BatchStorageAdapter(storage)
-        logger.info(f"Initialized batch storage with type: {storage_type}")
     except Exception as e:
-        logger.error(f"Failed to initialize storage: {e}")
+        logger.error("Failed to initialize storage", error=str(e))  # type: ignore[call-arg]
         raise
+
+
+def get_storage_type() -> StorageType:
+    """Get the type of storage.
+
+    Returns:
+        Type of storage.
+    """
+    assert p_storage is not None
+    return p_storage.storage.get_type()
 
 
 async def upload_input_data(inputDataFileName: str) -> str:
@@ -88,24 +100,38 @@ async def read_job_next_request(
         yield data
 
 
-async def prepare_job_ouput_files(job: BatchJob) -> None:
+async def is_request_done(job: BatchJob, request_index: int) -> bool:
+    """Check if a request is done.
+
+    Args:
+        job: BatchJob
+        request_index: Index of the request being processed
+
+    Returns:
+        True if the request is done, False otherwise
+    """
+    assert p_storage is not None
+    return await p_storage.is_request_done(job, request_index)
+
+
+async def prepare_job_ouput_files(job: BatchJob) -> BatchJob:
     """Prepare job output files, including output and error file ids"""
     assert p_storage is not None
-    await p_storage.prepare_job_ouput_files(job)
+    return await p_storage.prepare_job_ouput_files(job)
 
 
 async def write_job_output_data(
-    job: BatchJob, start_index: int, output_list: List[Dict[str, Any]]
+    job: BatchJob, request_index: int, output_data: Dict[str, Any]
 ) -> None:
-    """Write job results to storage.
+    """Write job result to storage and unlock the request.
 
     Args:
-        job_id: Job identifier
-        start_index: Starting index for the results
-        output_list: List of result dictionaries
+        job: BatchJob object
+        request_index: Index of the request being processed
+        output_data: Single result dictionary
     """
     assert p_storage is not None
-    await p_storage.write_job_output_data(job, start_index, output_list)
+    await p_storage.write_job_output_data(job, request_index, output_data)
 
 
 async def finalize_job_output_data(job: BatchJob) -> None:

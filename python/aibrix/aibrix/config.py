@@ -11,6 +11,29 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from typing import Optional
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class AIBrixSettings(BaseSettings):
+    # This loads *only* from system environment variables
+    # Uncomment env_file and env_file_encoding to load from .env file
+    model_config = SettingsConfigDict(
+        # env_file=".env",  # Load environment variables from a .env file
+        # env_file_encoding="utf-8",  # Encoding for the .env file
+        extra="ignore",
+    )
+
+    # --- Security Settings ---
+    SECRET_KEY: str = (
+        "test-secret-key-for-testing"  # No default, reserved for later use.
+    )
+
+    # --- Logging Settings ---
+    LOG_LEVEL: str = "DEBUG"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    LOG_PATH: Optional[str] = "/tmp/aibrix/python.log"  # If None, logs to stdout only
+    LOG_FORMAT: str = "%(asctime)s - %(filename)s:%(lineno)d - %(funcName)s - %(levelname)s - %(message)s"
 
 
 DEFAULT_METRIC_COLLECTOR_TIMEOUT = 1

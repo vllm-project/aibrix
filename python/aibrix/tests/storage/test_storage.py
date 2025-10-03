@@ -39,12 +39,13 @@ class TestStorageFunctionality:
         key = "test/string.txt"
         content = "Hello, World! 🌍"
 
-        # Store string
-        await storage.put_object(key, content)
+        # Store string - should return True
+        result = await storage.put_object(key, content)
+        assert result is True
 
         # Retrieve and verify
-        result = await storage.get_object(key)
-        assert result.decode("utf-8") == content
+        data = await storage.get_object(key)
+        assert data.decode("utf-8") == content
 
         # Cleanup
         await storage.delete_object(key)
@@ -58,11 +59,12 @@ class TestStorageFunctionality:
         # Store string
         data = io.StringIO(content)
         assert isinstance(data, io.TextIOBase)
-        await storage.put_object(key, data)
+        result = await storage.put_object(key, data)
+        assert result is True
 
         # Retrieve and verify
-        result = await storage.get_object(key)
-        assert result.decode("utf-8") == content
+        data_result = await storage.get_object(key)
+        assert data_result.decode("utf-8") == content
 
         # Cleanup
         await storage.delete_object(key)
@@ -796,6 +798,80 @@ class TestStorageFunctionality:
         await storage.delete_object(key1)
         await storage.delete_object(key2)
         await storage.delete_object(key3)
+
+    @pytest.mark.asyncio
+    async def test_put_object_options_unsupported(self, storage: BaseStorage):
+        """Test that non-Redis storage backends reject unsupported options."""
+        from aibrix.storage.base import PutObjectOptions
+        from aibrix.storage.redis import RedisStorage
+
+        key = "test/options_unsupported.txt"
+        content = "test content"
+
+        # Skip this test for Redis storage since it supports all options
+        if isinstance(storage, RedisStorage):
+            pytest.skip("Redis storage supports all options")
+
+        # Test TTL not supported
+        options = PutObjectOptions(ttl_seconds=60)
+        with pytest.raises(ValueError, match="TTL not supported"):
+            await storage.put_object(key, content, options=options)
+
+        # Test SET IF NOT EXISTS not supported
+        options = PutObjectOptions(set_if_not_exists=True)
+        with pytest.raises(ValueError, match="SET IF NOT EXISTS not supported"):
+            await storage.put_object(key, content, options=options)
+
+        # Test SET IF EXISTS not supported
+        options = PutObjectOptions(set_if_exists=True)
+        with pytest.raises(ValueError, match="SET IF EXISTS not supported"):
+            await storage.put_object(key, content, options=options)
+
+    @pytest.mark.asyncio
+    async def test_put_object_options_none(self, storage: BaseStorage):
+        """Test that put_object works with options=None."""
+        key = "test/options_none.txt"
+        content = "test content with no options"
+
+        # Should work without options
+        result = await storage.put_object(key, content, options=None)
+        assert result is True
+
+        # Verify content
+        data = await storage.get_object(key)
+        assert data.decode("utf-8") == content
+
+        # Cleanup
+        await storage.delete_object(key)
+
+    def test_feature_detection_default(self, storage: BaseStorage):
+        """Test that storage backends correctly report feature support."""
+        from aibrix.storage.redis import RedisStorage
+
+        if isinstance(storage, RedisStorage):
+            # Redis should support all features
+            assert storage.is_ttl_supported() is True
+            assert storage.is_set_if_not_exists_supported() is True
+            assert storage.is_set_if_exists_supported() is True
+        else:
+            # Other storage backends should not support advanced features
+            assert storage.is_ttl_supported() is False
+            assert storage.is_set_if_not_exists_supported() is False
+            assert storage.is_set_if_exists_supported() is False
+
+    @pytest.mark.asyncio
+    async def test_put_object_return_type(self, storage: BaseStorage):
+        """Test that put_object returns boolean values correctly."""
+        key = "test/return_type.txt"
+        content = "test return type"
+
+        # Normal put should return True
+        result = await storage.put_object(key, content)
+        assert isinstance(result, bool)
+        assert result is True
+
+        # Cleanup
+        await storage.delete_object(key)
 
 
 # Conditionally add S3 and TOS storage to test parameters if available

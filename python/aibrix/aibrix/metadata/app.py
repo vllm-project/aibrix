@@ -13,17 +13,20 @@
 # limitations under the License.
 import argparse
 from contextlib import asynccontextmanager
-from typing import Optional
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 import uvicorn
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
+from kubernetes import config
 
 from aibrix.batch import BatchDriver
 from aibrix.batch.job_entity import JobEntityManager
+from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files
-from aibrix.metadata.core.httpx_client import HTTPXClientWrapper
-from aibrix.metadata.logger import init_logger
+from aibrix.metadata.cache import JobCache
+from aibrix.metadata.core import HTTPXClientWrapper, KopfOperatorWrapper
 from aibrix.metadata.setting import settings
 from aibrix.storage import create_storage
 
@@ -43,23 +46,57 @@ async def readiness_check():
     return JSONResponse(content={"status": "ready"}, status_code=200)
 
 
+@router.get("/status")
+async def status_check(request: Request):
+    """Get detailed status of all components."""
+    status: Dict[str, Any] = {
+        "httpx_client": {
+            "available": hasattr(request.app.state, "httpx_client_wrapper"),
+            "status": "initialized"
+            if hasattr(request.app.state, "httpx_client_wrapper")
+            else "not_initialized",
+        },
+        "kopf_operator": {
+            "available": hasattr(request.app.state, "kopf_operator_wrapper"),
+        },
+        "batch_driver": {
+            "available": hasattr(request.app.state, "batch_driver"),
+        },
+    }
+
+    # Get detailed kopf operator status if available
+    if hasattr(request.app.state, "kopf_operator_wrapper"):
+        kopf_status = request.app.state.kopf_operator_wrapper.get_status()
+        status["kopf_operator"].update(kopf_status)
+
+    return JSONResponse(content=status, status_code=200)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Code executed on startup
+    logger.info("Initializing FastAPI app...")
     if hasattr(app.state, "httpx_client_wrapper"):
         app.state.httpx_client_wrapper.start()
+    if hasattr(app.state, "kopf_operator_wrapper"):
+        app.state.kopf_operator_wrapper.start()
+    if hasattr(app.state, "batch_driver"):
+        await app.state.batch_driver.start()
     yield
 
     # Code executed on shutdown
-    if hasattr(app.state, "job_controller"):
-        await app.state.job_controller.close()
+    logger.info("Finalizing FastAPI app...")
+    if hasattr(app.state, "batch_driver"):
+        await app.state.batch_driver.stop()
+    if hasattr(app.state, "kopf_operator_wrapper"):
+        app.state.kopf_operator_wrapper.stop()
     if hasattr(app.state, "httpx_client_wrapper"):
         await app.state.httpx_client_wrapper.stop()
 
 
-def build_app(args: argparse.Namespace):
+def build_app(args: argparse.Namespace, params={}):
     if args.enable_fastapi_docs:
-        app = FastAPI(lifespan=lifespan, debug=False)
+        app = FastAPI(lifespan=lifespan, debug=False, redirect_slashes=False)
     else:
         app = FastAPI(
             lifespan=lifespan,
@@ -67,18 +104,32 @@ def build_app(args: argparse.Namespace):
             openapi_url=None,
             docs_url=None,
             redoc_url=None,
+            redirect_slashes=False,
         )
 
     app.state.httpx_client_wrapper = HTTPXClientWrapper()
+
+    # Initialize kopf operator wrapper if K8s jobs are enabled
+    if args.enable_k8s_job:
+        app.state.kopf_operator_wrapper = KopfOperatorWrapper(
+            namespace=getattr(args, "k8s_namespace", "default"),
+            startup_timeout=getattr(args, "kopf_startup_timeout", 30.0),
+            shutdown_timeout=getattr(args, "kopf_shutdown_timeout", 10.0),
+        )
 
     app.include_router(router)
     # Initialize batches API
     if not args.disable_batch_api:
         job_entity_manager: Optional[JobEntityManager] = None
-        app.state.job_controller = BatchDriver(
+        if args.enable_k8s_job:
+            # Get template_path from params if provided
+            job_entity_manager = JobCache(template_patch_path=args.k8s_job_patch)
+        app.state.batch_driver = BatchDriver(
             job_entity_manager,
             storage_type=settings.STORAGE_TYPE,
             metastore_type=settings.METASTORE_TYPE,
+            stand_alone=True,
+            params=params,
         )
         app.include_router(
             batch.router, prefix=f"{settings.API_V1_STR}/batches", tags=["batches"]
@@ -87,7 +138,7 @@ def build_app(args: argparse.Namespace):
 
     # Initialize fiels API
     if not args.disable_file_api:
-        app.state.storage = create_storage(settings.STORAGE_TYPE)
+        app.state.storage = create_storage(settings.STORAGE_TYPE, **params)
         app.include_router(
             files.router, prefix=f"{settings.API_V1_STR}/files", tags=["files"]
         )  # mount files api at /v1/files
@@ -124,6 +175,36 @@ def main():
         help="Disable file api",
     )
     parser.add_argument(
+        "--enable-k8s-job",
+        action="store_true",
+        default=False,
+        help="Enable native kubernetes jobs as the job executor",
+    )
+    parser.add_argument(
+        "--k8s-namespace",
+        type=str,
+        default="default",
+        help="Kubernetes namespace to monitor for jobs (default: default)",
+    )
+    parser.add_argument(
+        "--k8s-job-patch",
+        type=Path,
+        default=None,
+        help="Patch to customize k8s job template",
+    )
+    parser.add_argument(
+        "--kopf-startup-timeout",
+        type=float,
+        default=30.0,
+        help="Timeout in seconds for kopf operator startup (default: 30.0)",
+    )
+    parser.add_argument(
+        "--kopf-shutdown-timeout",
+        type=float,
+        default=10.0,
+        help="Timeout in seconds for kopf operator shutdown (default: 10.0)",
+    )
+    parser.add_argument(
         "--e2e-test",
         action="store_true",
         default=False,
@@ -131,7 +212,17 @@ def main():
     )
     args = parser.parse_args()
 
-    logger.info(f"Using {args} to startup {settings.PROJECT_NAME}")
+    global logger
+    logging_basic_config(settings)
+    logger = init_logger(__name__)  # Reset logger
+
+    try:
+        config.load_incluster_config()
+    except Exception:
+        # Local debug
+        config.load_kube_config()
+
+    logger.info(f"Using {args} to startup app", project=settings.PROJECT_NAME)  # type: ignore[call-arg]
     app = build_app(args=args)
     uvicorn.run(app, host=args.host, port=args.port)
 

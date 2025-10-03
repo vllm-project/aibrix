@@ -17,9 +17,10 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from io import BytesIO, StringIO
-from typing import Any, AsyncIterator, BinaryIO, Optional, TextIO, Union
+from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
 from aibrix.storage.reader import Reader
+from aibrix.storage.types import StorageType
 from aibrix.storage.utils import ObjectMetadata
 
 
@@ -40,6 +41,58 @@ class StorageConfig:
     readline_buffer_size: int = 8192  # 8KB buffer for readline
 
 
+@dataclass
+class PutObjectOptions:
+    """Options for put_object operations with advanced features."""
+
+    # TTL support
+    ttl_seconds: Optional[int] = None
+    ttl_milliseconds: Optional[int] = None
+
+    # Conditional operations
+    set_if_not_exists: bool = False  # Like Redis NX
+    set_if_exists: bool = False  # Like Redis XX
+
+    def __post_init__(self):
+        """Validate options."""
+        if self.set_if_not_exists and self.set_if_exists:
+            raise ValueError("Cannot specify both set_if_not_exists and set_if_exists")
+
+        if self.ttl_seconds is not None and self.ttl_milliseconds is not None:
+            raise ValueError("Cannot specify both ttl_seconds and ttl_milliseconds")
+
+
+class PutObjectOptionsBuilder:
+    """Helper class to construct PutObjectOptions."""
+
+    def __init__(self):
+        self._options = PutObjectOptions()
+
+    def ttl_seconds(self, seconds: int) -> "PutObjectOptionsBuilder":
+        """Set TTL in seconds."""
+        self._options.ttl_seconds = seconds
+        return self
+
+    def ttl_milliseconds(self, milliseconds: int) -> "PutObjectOptionsBuilder":
+        """Set TTL in milliseconds."""
+        self._options.ttl_milliseconds = milliseconds
+        return self
+
+    def if_not_exists(self) -> "PutObjectOptionsBuilder":
+        """Only set if key doesn't exist (like Redis NX)."""
+        self._options.set_if_not_exists = True
+        return self
+
+    def if_exists(self) -> "PutObjectOptionsBuilder":
+        """Only set if key exists (like Redis XX)."""
+        self._options.set_if_exists = True
+        return self
+
+    def build(self) -> PutObjectOptions:
+        """Build the options object."""
+        return self._options
+
+
 class BaseStorage(ABC):
     """Base class for all storage implementations.
 
@@ -48,10 +101,44 @@ class BaseStorage(ABC):
     - Multipart uploads for large files
     - Range gets for partial file reads
     - Readline functionality backed by range gets
+    - Advanced put_object options (TTL, conditional operations)
     """
 
     def __init__(self, config: Optional[StorageConfig] = None):
         self.config = config or StorageConfig()
+
+    @abstractmethod
+    def get_type(self) -> StorageType:
+        """Get the type of storage.
+
+        Returns:
+            Type of storage
+        """
+        pass
+
+    def is_ttl_supported(self) -> bool:
+        """Check if TTL (Time To Live) is supported.
+
+        Returns:
+            True if TTL is supported, False otherwise
+        """
+        return False
+
+    def is_set_if_not_exists_supported(self) -> bool:
+        """Check if conditional SET IF NOT EXISTS is supported.
+
+        Returns:
+            True if SET IF NOT EXISTS is supported, False otherwise
+        """
+        return False
+
+    def is_set_if_exists_supported(self) -> bool:
+        """Check if conditional SET IF EXISTS is supported.
+
+        Returns:
+            True if SET IF EXISTS is supported, False otherwise
+        """
+        return False
 
     @abstractmethod
     async def put_object(
@@ -59,8 +146,9 @@ class BaseStorage(ABC):
         key: str,
         data: Union[bytes, str, BinaryIO, TextIO, Reader],
         content_type: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-    ) -> None:
+        metadata: Optional[dict[str, str]] = None,
+        options: Optional[PutObjectOptions] = None,
+    ) -> bool:
         """Put an object to storage.
 
         Args:
@@ -68,6 +156,13 @@ class BaseStorage(ABC):
             data: Data to write (bytes, string, or file-like object)
             content_type: MIME type of the content
             metadata: Additional metadata to store with object
+            options: Advanced options for put operation
+
+        Returns:
+            True if object was stored, False if conditional operation failed
+
+        Raises:
+            ValueError: If unsupported options are specified
         """
         pass
 
@@ -239,6 +334,34 @@ class BaseStorage(ABC):
             upload_id: Upload ID from create_multipart_upload
         """
         pass
+
+    def _validate_put_options(self, options: Optional[PutObjectOptions]) -> None:
+        """Validate put_object options against backend capabilities.
+
+        Args:
+            options: Options to validate
+
+        Raises:
+            ValueError: If unsupported options are specified
+        """
+        if options is None:
+            return
+
+        if options.ttl_seconds is not None or options.ttl_milliseconds is not None:
+            if not self.is_ttl_supported():
+                raise ValueError(
+                    f"TTL not supported by {self.get_type().value} storage"
+                )
+
+        if options.set_if_not_exists and not self.is_set_if_not_exists_supported():
+            raise ValueError(
+                f"SET IF NOT EXISTS not supported by {self.get_type().value} storage"
+            )
+
+        if options.set_if_exists and not self.is_set_if_exists_supported():
+            raise ValueError(
+                f"SET IF EXISTS not supported by {self.get_type().value} storage"
+            )
 
     async def multipart_upload(
         self,

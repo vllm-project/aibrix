@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import Field
 
-from aibrix.metadata.logger import init_logger
+from aibrix.logger import init_logger
 from aibrix.metadata.setting.config import settings
 from aibrix.openapi.protocol import NoExtraBaseModel
 from aibrix.storage import BaseStorage, Reader, SizeExceededError, generate_filename
@@ -112,7 +112,8 @@ def _create_error_response(
     return {"error": error_data}
 
 
-@router.post("/")
+@router.post("/", include_in_schema=False)
+@router.post("")
 async def create_file(
     request: Request,
     file: UploadFile = File(..., description="The file to upload"),
@@ -143,10 +144,10 @@ async def create_file(
 
         # Generate metadata
         created_at = int(time.time())
-        metadata = {
-            "filename": file.filename,
+        metadata: dict[str, str] = {
+            "filename": file.filename or "",
             "purpose": purpose.value,
-            "created_at": created_at,
+            "created_at": str(created_at),  # requires all value a string.
         }
         try:
             await storage.put_object(
@@ -181,7 +182,7 @@ async def create_file(
     except Exception as e:
         logger.error("Unexpected error uploading file", error=str(e))  # type: ignore[call-arg]
         error_response = _create_error_response("Internal server error")
-        raise HTTPException(status_code=500, detail=error_response)
+        raise  # HTTPException(status_code=500, detail=error_response)
 
 
 @router.get("/{file_id}/content")

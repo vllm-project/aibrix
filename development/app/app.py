@@ -162,7 +162,7 @@ models = [
 # the metrics and results in lots of meaningless requests that we do not want to log.
 def disable_endpoint_logs():
     """Disable logs for requests to specific endpoints."""
-    disabled_endpoints = ('/', '/healthz', '/metrics')
+    disabled_endpoints = ('/', '/health', '/ready', '/metrics')
     parent_log_request = serving.WSGIRequestHandler.log_request
 
     def log_request(self, *args, **kwargs):
@@ -175,6 +175,13 @@ def disable_endpoint_logs():
 app = Flask(__name__)
 disable_endpoint_logs()
 
+@app.route('/health', methods=['GET'])
+def health():
+    return {"status": "ok"}, 200
+
+@app.route('/ready', methods=['GET'])
+def ready():
+    return {"status": "ready"}, 200
 
 @app.route('/v1/models', methods=['GET'])
 @auth.login_required

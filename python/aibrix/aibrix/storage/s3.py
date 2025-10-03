@@ -20,7 +20,12 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from aibrix.storage.base import BaseStorage, StorageConfig
+from aibrix.storage.base import (
+    BaseStorage,
+    PutObjectOptions,
+    StorageConfig,
+    StorageType,
+)
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata
 
@@ -64,14 +69,26 @@ class S3Storage(BaseStorage):
         except ClientError as e:
             raise ValueError(f"Bucket {bucket_name} not accessible: {e}")
 
+    def get_type(self) -> StorageType:
+        """Get the type of storage.
+
+        Returns:
+            Type of storage, set to StorageType.S3
+        """
+        return StorageType.S3
+
     async def put_object(
         self,
         key: str,
         data: Union[bytes, str, BinaryIO, TextIO, Reader],
         content_type: Optional[str] = None,
         metadata: Optional[dict[str, str]] = None,
-    ) -> None:
+        options: Optional[PutObjectOptions] = None,
+    ) -> bool:
         """Put an object to S3."""
+        # Validate options (S3 doesn't support advanced options)
+        self._validate_put_options(options)
+
         # Unify all data types using Reader wrapper
         reader = self._wrap_s3_data(data)
 
@@ -83,7 +100,7 @@ class S3Storage(BaseStorage):
                 size = len(reader)
             if size >= self.config.multipart_threshold:
                 await self.multipart_upload(key, reader, content_type, metadata)
-                return
+                return True
         except (OSError, IOError, ValueError):
             # Can't determine size, give up multipart upload
             pass
@@ -110,6 +127,8 @@ class S3Storage(BaseStorage):
             # Close the reader if we created it
             if isinstance(reader, Reader) and not isinstance(data, Reader):
                 reader.close()
+
+        return True  # S3 storage always succeeds
 
     async def get_object(
         self,

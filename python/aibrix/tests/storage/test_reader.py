@@ -254,7 +254,7 @@ class TestReader:
         """Test Reader with custom async file-like objects."""
         test_data = b"Hello, async custom world!"
 
-        init_storage_loop_thread()
+        init_storage_loop_thread("test_reader_with_custom_async_file_object")
 
         class AsyncFileObject:
             def __init__(self, data: bytes):
@@ -919,7 +919,7 @@ class TestReader:
         def size_limiter(bytes_read, bytes_to_read):
             return bytes_read + bytes_to_read <= 10
 
-        init_storage_loop_thread()
+        init_storage_loop_thread("test_reader_size_limiter_with_async_file_object")
 
         class AsyncFileObject:
             def __init__(self, data: bytes):
