@@ -58,5 +58,8 @@ development/simulator/cache
 python/aibrix/dist/
 python/aibrix/aibrix/batch/storage/data
 
+# downloaded xdit artifacts
+samples/multimodality/xDiT/xDiT-integration/xDiT
+
 # setuptools-scm generated version files
 **/_version.py
