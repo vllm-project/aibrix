@@ -88,6 +88,9 @@ type BaseScalingContext struct {
 	// Stable and Panic values
 	StableValue float64
 	PanicValue  float64
+
+	// Panic mode state
+	InPanicMode bool
 }
 
 var _ ScalingContext = (*BaseScalingContext)(nil)
@@ -276,11 +279,11 @@ func (b *BaseScalingContext) GetPanicThreshold() float64 {
 }
 
 func (b *BaseScalingContext) GetInPanicMode() bool {
-	return false
+	return b.InPanicMode
 }
 
 func (b *BaseScalingContext) SetInPanicMode(inPanic bool) {
-	// No-op in base implementation
+	b.InPanicMode = inPanic
 }
 
 func (b *BaseScalingContext) GetMaxPanicPods() int32 {
