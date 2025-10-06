@@ -1,4 +1,25 @@
-# AIBrix Benchmark
+
+# AIBrix Benchmark 
+
+This document explains the parameters in `config.yaml` for **AIBrix benchmarks**, including their purpose, types, usage, and interactions. The config controls **dataset generation**, **workload scheduling**, **benchmark client**, and **analysis**.
+
+---
+
+## Table of Contents
+
+1. [Bencmark Overview](#benchmark-overview)  
+1. [Preliminary](#preliminary)  
+1. [Using This Benchmark](#using-this-benchmark)  
+1. [Dataset Generation](#dataset-generation)  
+2. [Workload Generation](#workload-generation)  
+3. [Dispatch Workload Using Client](#dispatch-workload-using-client)  
+4. [Analyze Section](#analyze-section)  
+5. [Notes & Usage](#notes--usage)  
+6. [Example Config](#example-config)
+
+---
+
+## Benchmark Overview
 
 AIBrix Benchmark contains the following components:
 - Dataset (Prompt) Generation
@@ -22,7 +43,9 @@ kubectl -n envoy-gateway-system port-forward ${service_name} 8888:80 &
 export API_KEY="${your_api_key}"
 ```
 
-## Run benchmark end-to-end
+## Using This Benchmark
+
+### Run benchmark end-to-end
 To run all steps using the default setting, try
 
 ```bash
@@ -35,7 +58,8 @@ Each step can also be run separately. All configurations are stored in [config.y
 python benchmark.py --stage all --config config.yaml --override endpoint="http://localhost:8000"
 ```
 
-## Run dataset generator
+
+## Dataset Generation
 
 As shown in the diagram above, the workload generator would expect to accept either time-series traces (e.g., Open-source LLM trace, Grafana exported time-series metrics, see this for more details) or a synthetic prompt file which could be hand-tuned by users (i.e., synthetic dataset format).
 A synthetic dataset format needs to be in one of the two formats:
@@ -77,7 +101,59 @@ The first two types generate synthetic prompts and the second two types convert 
 
 For details of the dataset generator, check out [README](./generator/dataset-generator/README.md). All tunable parameters are set under ```config/dataset```.
 
-## Run workload generator
+
+### Configuring Dataset Generation
+
+Sections in the configuration file below controls how dataset are generated.
+
+```yaml
+dataset:
+  generator: ...
+  constant: ...
+  stat: ...
+  logs: ...
+  trace: ...
+```
+
+#### `dataset.generator`
+
+- **Type**: string  
+- **Values**: `"constant"`, `"stat"`, `"logs"`, `"trace"`  
+- **Purpose**: Selects dataset generation method.  
+- **Usage**: Only the sub-section corresponding to the generator is activated.
+
+#### `dataset.constant`
+
+Used when `generator: "constant"`  
+
+- **input_len**: `int` — Fixed input length in tokens.  
+- **output_len**: `int` — Fixed output length in tokens.
+
+#### `dataset.stat`
+
+Used when `generator: "stat"`  
+
+- **dist**: `string` — Distribution type (`"normal"`, `"uniform"`, etc.)  
+- **mean**: `float` — Mean of the distribution.  
+- **std**: `float` — Standard deviation.  
+- **min**/**max**: `int` — Optional bounds for truncation.
+
+#### `dataset.logs`
+
+Used when `generator: "logs"`  
+
+- **path**: `string` — Path to a log file containing dataset entries.
+
+#### `dataset.trace`
+
+Used when `generator: "trace"`  
+
+- **path**: `string` — Path to a trace file for replaying real request patterns.
+
+---
+
+## Workload Generation
+
 The workload generator specifies the time and requests to be dispatched in a workload. A workload generator accepts either trace/metrics files (where either time and requests are specified, or QPS/input/output volume are specified) or a synthetic dataset format that contains prompts and possibly sessions. There are different ways to use the workload generator.
 
 ![workload](./image/aibrix-benchmark-workload.png)
@@ -128,7 +204,55 @@ The workload generator will produce a workload file that looks like the followin
 
 Details of the workload generator can be found [here](generator/workload-generator/README.md).
 
-## Run workload using client
+### Configuring Workload Generation
+
+The following section within the configuration file controls workload generation process including request arrival patterns, input/output distributions, and traffic simulation.
+
+```yaml
+workload:
+  generator: ...
+  constant: ...
+  synthetic: ...
+  stat: ...
+  azure: ...
+  mooncake: ...
+```
+
+#### `workload.generator`
+
+- **Type**: string  
+- **Values**: `"constant"`, `"synthetic"`, `"stat"`, `"azure"`, `"mooncake"`  
+- **Purpose**: Selects request scheduling / workload generation strategy.
+
+#### `workload.constant`
+
+- **rps**: `float` — Constant requests per second.
+
+#### `workload.synthetic`
+
+- **arrival**: Controls interarrival time  
+  - **dist**: Distribution type (`poisson`, `uniform`, `exponential`)  
+  - **mean**, **std**, **min**, **max**  
+
+- **input**: Input length distribution  
+  - **dist**, **mean**, **std**, **min**, **max**  
+
+- **output**: Output length distribution  
+  - **dist**, **mean**, **std**, **min**, **max**  
+
+#### `workload.stat`
+
+- Similar to `dataset.stat` but for arrival rates, input, and output lengths.
+
+#### `workload.azure` / `workload.mooncake`
+
+- Used to replay real-world trace workloads.  
+- Parameters typically include trace file paths, scaling, and playback speed.
+
+---
+
+## Dispatch Workload Using Client
+
 ```bash
 python benchmark.py --stage client --config config.yaml
 ```
@@ -137,13 +261,73 @@ The benchmark client supports both batch and streaming modes. Streaming mode sup
 
 ![dataset](./image/aibrix-benchmark-client.png)
 
-## Run analysis
+### Configuring Client
+
+The following section in the configuration file defines how requests are sent to the inference service.
+
+```yaml
+client:
+  endpoint: ...
+  model: ...
+  mode: ...
+  concurrency: ...
+  streaming: ...
+  batch: ...
+```
+
+#### Common Parameters
+
+- **endpoint**: `string` — Inference server URL.  
+- **model**: `string` — Model to query.  
+- **mode**: `string` — `"batch"` or `"streaming"`.  
+- **concurrency**: `int` — Number of simultaneous requests.  
+- **timeout**: `float` — Request timeout in seconds.
+
+#### Streaming Mode
+
+- **enable_intra_metrics**: `bool` — Collect intra-request metrics like TTFT or TPOT.
+
+#### Batch Mode
+
+- **batch_size**: `int` — Number of requests per batch.  
+- **batch_delay**: Optional delay between batches.
+
+---
+
+## Analyze Section
 
 Run analysis on benchmark results using:
 ```bash
 python benchmark.py --stage analysis --config config.yaml
 ```
 Configure path and performance target via [config.yaml](config.yaml).
+
+### Configuring Analyzer
+The section below controls metrics, thresholds, and output locations of analyzer.
+
+```yaml
+analyze:
+  out_dir: ...
+  slo_latency: ...
+  slo_throughput: ...
+  metrics: ...
+```
+
+- **out_dir**: `string` — Directory to write results.  
+- **slo_latency**: `float` — Latency threshold for SLA evaluation (seconds).  
+- **slo_throughput**: `float` — Throughput threshold (requests/sec).  
+- **metrics**: `list[string]` — Metrics to compute (e.g., `latency`, `throughput`, `error_rate`).
+
+
+
+
+
+
+
+
+
+
+
 
 
 
