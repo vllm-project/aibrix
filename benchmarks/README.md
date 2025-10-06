@@ -8,14 +8,13 @@ This document explains the parameters in `config.yaml` for **AIBrix benchmarks**
 ## Table of Contents
 
 1. [Bencmark Overview](#benchmark-overview)  
-1. [Preliminary](#preliminary)  
-1. [Using This Benchmark](#using-this-benchmark)  
-1. [Dataset Generation](#dataset-generation)  
-2. [Workload Generation](#workload-generation)  
-3. [Dispatch Workload Using Client](#dispatch-workload-using-client)  
-4. [Analyze Section](#analyze-section)  
-5. [Notes & Usage](#notes--usage)  
-6. [Example Config](#example-config)
+2. [Preliminary](#preliminary)  
+3. [Using This Benchmark](#using-this-benchmark)  
+4. [Dataset Generation](#dataset-generation)  
+5. [Workload Generation](#workload-generation)  
+6. [Dispatch Workload Using Client](#dispatch-workload-using-client)  
+7. [Analyze Section](#analyze-section)  
+
 
 ---
 
@@ -45,19 +44,25 @@ export API_KEY="${your_api_key}"
 
 ## Using This Benchmark
 
-### Run benchmark end-to-end
-To run all steps using the default setting, try
+All benchmark usage depends on a configuration file. A sample configuration file could be found [here](config.yaml).
+
+**Run benchmark end-to-end**: To run all steps using the default setting, try
 
 ```bash
 python benchmark.py --stage all --config config.yaml
 ```
 
-Each step can also be run separately. All configurations are stored in [config.yaml](config.yaml) file. To override any configuration parameter from the command line, do something like
-
+**Run benchmark by step**: Each step can also be run separately. This ensures files from the generation phase (dataset or workload) could be re-used across runs. 
+ 
 ```bash
-python benchmark.py --stage all --config config.yaml --override endpoint="http://localhost:8000"
+python benchmark.py --stage client --config config.yaml
 ```
 
+**Overriding Parameters Using Runtime Parameters**: To override any configuration parameter from the command line, do something like
+
+```bash
+python benchmark.py --stage client --config config.yaml --override endpoint="http://localhost:8000"
+```
 
 ## Dataset Generation
 
