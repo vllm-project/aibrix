@@ -131,27 +131,20 @@ func TestShardedCache_Cleanup(t *testing.T) {
 	cache.UpdateState("session2", 0, 1*time.Second, 0)
 	time.Sleep(10 * time.Millisecond)
 
-	// Trigger cleanup on all shards
-	cache.StartCleanupRoutine(1500 * time.Millisecond)
+	// Start cleanup routine with short interval
+	stop := cache.StartCleanupRoutine(100*time.Millisecond, 1500*time.Millisecond)
+	defer stop()
 
-	// Wait for the cleanup commands to be processed by all shards
-	time.Sleep(100 * time.Millisecond)
+	// Wait for cleanup to run
+	time.Sleep(200 * time.Millisecond)
 
-	// To check existence, we need a GetState that returns a bool
-	// Let's assume we have implemented opGetFullState as discussed
+	// Check that session1 was cleaned up (should not exist)
+	state1, exists1 := cache.GetState("session1")
+	assert.False(t, exists1, "session1 should have been cleaned up")
+	assert.Equal(t, SessionState{}, state1, "Cleaned session should return zero value")
 
-	// opGetFullState for session1
-	shard1 := cache.getShard("session1")
-	respChan1 := make(chan fullStateResponse, 1)
-	shard1.requests <- cacheRequest{op: opGetFullState, sessionID: "session1", fullStateResponseChan: respChan1}
-	response1 := <-respChan1
-	// The manager should have created a new empty state, because the old one was deleted.
-	assert.Equal(t, time.Duration(0), response1.state.CriticalPathServiceTime, "session1 should have been cleaned and recreated as empty")
-
-	// opGetFullState for session2
-	shard2 := cache.getShard("session2")
-	respChan2 := make(chan fullStateResponse, 1)
-	shard2.requests <- cacheRequest{op: opGetFullState, sessionID: "session2", fullStateResponseChan: respChan2}
-	response2 := <-respChan2
-	assert.NotEqual(t, time.Duration(0), response2.state.CriticalPathServiceTime, "session2 should be fresh and remain")
+	// Check that session2 still exists (fresh)
+	state2, exists2 := cache.GetState("session2")
+	assert.True(t, exists2, "session2 should still exist")
+	assert.NotEqual(t, time.Duration(0), state2.CriticalPathServiceTime, "session2 should have non-zero CST")
 }
