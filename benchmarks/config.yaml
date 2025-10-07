@@ -40,7 +40,7 @@ dataset_configs:
 # ---------------
 # Workload config
 dataset_file: ${dataset_dir}/${prompt_type}.jsonl
-workload_type: "constant"  # Options: constant, synthetic, constant, azure, mooncake
+workload_type: "constant"  # Options: constant, synthetic, stat, azure, mooncake
 interval_ms: 1000
 duration_ms: 10000
 workload_dir: "./output/workload/${workload_type}"
