@@ -177,9 +177,9 @@ async def send_request_batch(client: openai.AsyncOpenAI,
         history = None if session_id is None else session_history,
         history_lock = None if session_id is None else session_history_lock) 
     start_time = time.time()
-    # Initialize dispatch_time early to prevent UnboundLocalError if exception occurs
-    # before actual dispatch (e.g., during prepare_prompt or sleep)
-    dispatch_time = start_time
+    start_time = time.time()
+    target_pod = ""
+    try:
     target_pod = ""
     try:
         logging.warning(f"send_request_batch: Prepare to launch task after {target_time - start_time} target_time {target_time} start_time {start_time}")
