@@ -130,6 +130,116 @@ To set the type of dataset to be generated, set the environment variable `prompt
 
 For details of the dataset generator, check out the `dataset_generator <https://github.com/vllm-project/aibrix/blob/main/benchmarks/generator/dataset_generator>`_ directory.
 
+Parameters
+~~~~~~~~~~
+
+
+Dataset Configuration
+=====================
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 15 25 40
+
+   * - **Parameter**
+     - **Type**
+     - **Values**
+     - **Description**
+   * - ``dataset.generator``
+     - string
+     - ``"constant"``, ``"stat"``, ``"logs"``, ``"trace"``
+     - Selects the dataset generation method. Only the sub-section corresponding to the generator type is used.
+
+Constant Generator
+------------------
+
+Used when ``generator: "constant"``
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 15 20 45
+
+   * - **Parameter**
+     - **Type**
+     - **Default / Example**
+     - **Description**
+   * - ``dataset.constant.input_len``
+     - int
+     - e.g. ``512``
+     - Fixed input length in tokens.
+   * - ``dataset.constant.output_len``
+     - int
+     - e.g. ``128``
+     - Fixed output length in tokens.
+
+Statistical Generator
+---------------------
+
+Used when ``generator: "stat"``
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 15 25 40
+
+   * - **Parameter**
+     - **Type**
+     - **Values / Example**
+     - **Description**
+   * - ``dataset.stat.dist``
+     - string
+     - ``"normal"``, ``"uniform"``
+     - Distribution type used for dataset sampling.
+   * - ``dataset.stat.mean``
+     - float
+     - e.g. ``512.0``
+     - Mean of the distribution.
+   * - ``dataset.stat.std``
+     - float
+     - e.g. ``128.0``
+     - Standard deviation of the distribution.
+   * - ``dataset.stat.min`` / ``dataset.stat.max``
+     - int
+     - Optional
+     - Optional truncation bounds.
+
+Logs Generator
+--------------
+
+Used when ``generator: "logs"``
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 15 25 40
+
+   * - **Parameter**
+     - **Type**
+     - **Example**
+     - **Description**
+   * - ``dataset.logs.path``
+     - string
+     - ``/path/to/logs.jsonl``
+     - Path to a log file containing dataset entries.
+
+Trace Generator
+---------------
+
+Used when ``generator: "trace"``
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 15 25 40
+
+   * - **Parameter**
+     - **Type**
+     - **Example**
+     - **Description**
+   * - ``dataset.trace.path``
+     - string
+     - ``/path/to/trace.jsonl``
+     - Path to a trace file for replaying real request patterns.
+
+
+
 Run Workload Generator
 ----------------------
 
@@ -192,6 +302,9 @@ To choose a different workload type, set the environment variable `workload_type
 
 For details of the workload generator, check out the `workload_generator <https://github.com/vllm-project/aibrix/blob/main/benchmarks/generator/workload_generator>`_ directory.
 
+Parameters
+~~~~~~~~~~
+
 Run Benchmark Client
 --------------------
 
@@ -208,6 +321,9 @@ The benchmark client can be run using:
 
     python benchmark.py --stage client --config config.yaml
 
+Parameters
+~~~~~~~~~~
+
 Run Analysis
 ------------
 
@@ -218,3 +334,6 @@ Run analysis on the benchmark results using:
     python benchmark.py --stage analysis --config config.yaml
 
 Configure the path and performance target via `config.yaml <https://github.com/vllm-project/aibrix/blob/main/benchmarks/config.yaml>`_ or command line arguments.
+
+Parameters
+~~~~~~~~~~

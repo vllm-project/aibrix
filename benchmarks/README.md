@@ -120,40 +120,59 @@ dataset_dir: ...
 prompt_type: ...
 ```
 
-#### `dataset.generator`
+#### `dataset_dir`
+
+- **Type**: string    
+- **Purpose**: Selects dataset generation path.  
+- **Usage**: Specify the output directory where the dataset file is stored.
+
+#### `prompt_type`
 
 - **Type**: string  
-- **Values**: `"constant"`, `"stat"`, `"logs"`, `"trace"`  
-- **Purpose**: Selects dataset generation method.  
-- **Usage**: Only the sub-section corresponding to the generator is activated.
+- **Values**: `"synthetic_multiturn"`, `"synthetic_shared"`, `"sharegpt"`, `"client_trace"`  
+- **Purpose**: Select the dataset type.   
+- **Usage**:  Specifies dataset type described above.    
 
-#### `dataset.constant`
+#### `dataset_configs.synthetic_multiturn`
 
-Used when `generator: "constant"`  
+Used when `prompt_type: "synthetic_multiturn"`  
 
-- **input_len**: `int` — Fixed input length in tokens.  
-- **output_len**: `int` — Fixed output length in tokens.
+- **dataset_configs.synthetic_multiturn.shared_prefix_length**: `int` — Length of the shared prefix (simulating shared system prompt). Default: `0`.
+- **dataset_configs.synthetic_multiturn.prompt_length**: `int` — Length of the prompt (mean). Default: `80`.
+- **dataset_configs.synthetic_multiturn.prompt_std**: `int` — Length of the prompt (std). Default: `472`.
+- **dataset_configs.synthetic_multiturn.num_turns**: `float` — Number of turns (mean). Default: `3.55`.
+- **dataset_configs.synthetic_multiturn.num_turns_std**: `float` — Number of turns (std). Default: `2.89`.
+- **dataset_configs.synthetic_multiturn.num_sessions**: `int` — Number of sessions (mean). Default: `1000`.
+- **dataset_configs.synthetic_multiturn.num_sessions_std**: `int` — Number of sessions (std). Default: `1`.
 
-#### `dataset.stat`
 
-Used when `generator: "stat"`  
 
-- **dist**: `string` — Distribution type (`"normal"`, `"uniform"`, etc.)  
-- **mean**: `float` — Mean of the distribution.  
-- **std**: `float` — Standard deviation.  
-- **min**/**max**: `int` — Optional bounds for truncation.
+#### `dataset_configs.synthetic_shared`
 
-#### `dataset.logs`
+Used when `prompt_type: "synthetic_shared"`  
 
-Used when `generator: "logs"`  
+- **dataset_configs.synthetic_shared.num_dataset_configs**: `int` — Number of configurations. Default: `3`.
+- **dataset_configs.synthetic_shared.prompt_length**: `str` — Lengths of the prompt. Use `','` to separate multiple configurations. Default: `"3997,5868,2617"`.
+- **dataset_configs.synthetic_shared.prompt_std**: `str` — Standard deviations of the prompt length. Use `','` to separate multiple configurations. Default: `"17,28,1338"`.
+- **dataset_configs.synthetic_shared.shared_prop**: `str` — Proportions of shared content. Use `','` to separate multiple configurations. Default: `"0.95,0.97,0.03"`.
+- **dataset_configs.synthetic_shared.shared_prop_std**: `str` — Standard deviations of shared proportion. Use `','` to separate multiple configurations. Default: `"0.00001,0.00001,0.00001"`.
+- **dataset_configs.synthetic_shared.num_samples**: `str` — Number of samples per prefix. Use `','` to separate multiple configurations. Default: `"12,8,79"`.
+- **dataset_configs.synthetic_shared.num_prefix**: `str` — Number of prefixes. Use `','` to separate multiple configurations. Default: `"1,1,1"`.
 
-- **path**: `string` — Path to a log file containing dataset entries.
 
-#### `dataset.trace`
 
-Used when `generator: "trace"`  
+#### `dataset_configs.sharegpt`
 
-- **path**: `string` — Path to a trace file for replaying real request patterns.
+Used when `prompt_type: "sharegpt"`  
+
+- **dataset_configs.sharegpt.target_dataset**: `str` — Path to the shareGPT dataset. Default: `/tmp/ShareGPT_V3_unfiltered_cleaned_split.json`.
+
+
+#### `dataset_configs.client_trace`
+
+Used when `generator: "client_trace"`  
+
+- **dataset_configs.client_trace.trace**: `string` — Path to a trace file for replaying real request patterns.
 
 ---
 
@@ -224,17 +243,60 @@ interval_ms: ...
 duration_ms: ...
 ```
 
-#### `workload.generator`
+#### `dataset_file`
+
+- **Type**: string  
+- **Default Values**: `"${dataset_dir}/${prompt_type}.jsonl"`  
+- **Purpose**: Path to the dataset file used for workload generation.
+
+#### `workload_type`
 
 - **Type**: string  
 - **Values**: `"constant"`, `"synthetic"`, `"stat"`, `"azure"`, `"mooncake"`  
 - **Purpose**: Selects request scheduling / workload generation strategy.
 
-#### `workload.constant`
+#### `interval_ms`
 
-- **rps**: `float` — Constant requests per second.
+- **Type**: int  
+- **Default Values**: `1000`  
+- **Purpose**: Default sampling period in ms.
 
-#### `workload.synthetic`
+#### `duration_ms`
+
+- **Type**: int  
+- **Default Values**: `10000`  
+- **Purpose**: Default length of the workload in ms.
+
+#### `workload_configs.synthetic`
+
+Used when `workload_type: "synthetic"`  
+
+- **workload_configs.synthetic.use_preset_pattern**: `boolean` — Whether to use preset traffic and length patterns. Default: `true`.
+- **workload_configs.synthetic.max_concurrent_sessions**: `int` — Maximum number of concurrent sessions within the workload.
+
+Used when `workload_configs.synthetic.use_preset_pattern: true` 
+- **workload_configs.synthetic.preset_patterns.traffic_pattern**: `str` — Traffic pattern used for synthetic workload. Choices: `quick_rising`, `slow_rising`, `slight_fluctuation`, `severe_fluctuation`. Default: `None`.
+- **workload_configs.synthetic.preset_patterns.prompt_len_pattern**: `str` — Prompt length pattern for synthetic workload. Choices: `quick_rising`, `slow_rising`, `slight_fluctuation`, `severe_fluctuation`. Default: `None`.
+- **workload_configs.synthetic.preset_patterns.completion_len_pattern**: `str` — Completion length pattern for synthetic workload. Choices: `quick_rising`, `slow_rising`, `slight_fluctuation`, `severe_fluctuation`. Default: `None`.
+
+Used when `workload_configs.synthetic.use_preset_pattern: false` 
+- **workload_configs.synthetic.pattern_files.traffic_file**: `str` — Traffic configuration file for synthetic workload. Default: `None`.
+- **workload_configs.synthetic.pattern_files.prompt_len_file**: `str` — Prompt length configuration file for synthetic workload. Default: `None`.
+- **workload_configs.synthetic.pattern_files.completion_len_file**: `str` — Completion length configuration file for synthetic workload. Default: `None`.
+
+
+#### `workload_configs.constant`
+
+Used when `workload_type: "synthetic"`  
+
+- **target_qps**: `int` — Target QPS for the workload. Default: `1`.
+- **target_prompt_len**: `int` — Target prompt length for the workload. Default: `None`.
+- **target_completion_len**: `int` — Target completion length for the workload. Default: `None`.
+- **max_concurrent_sessions**: `int` — Maximum number of concurrent sessions within the workload.
+
+
+
+
 
 - **arrival**: Controls interarrival time  
   - **dist**: Distribution type (`poisson`, `uniform`, `exponential`)  
@@ -245,6 +307,12 @@ duration_ms: ...
 
 - **output**: Output length distribution  
   - **dist**, **mean**, **std**, **min**, **max**  
+
+
+#### `workload.constant`
+
+- **rps**: `float` — Constant requests per second.
+
 
 #### `workload.stat`
 
