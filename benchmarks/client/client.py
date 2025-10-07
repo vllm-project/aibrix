@@ -9,13 +9,13 @@ import traceback
 import threading
 
 
-from typing import List, Dict, Callable
+from typing import List, Dict, Callable, Optional, Set, Tuple
 from client.utils import (load_workload, prepare_prompt, update_response, create_client)
 
 logging.basicConfig(level=logging.INFO)
-session_history = dict()
+session_history: Dict[str, List[Dict]] = {}
 session_history_lock = threading.Lock()  # Use threading lock for thread safety
-pending_sessioned_requests = dict()
+pending_sessioned_requests: Dict[str, List[Tuple[Dict, float]]] = {}
 completed_sessions = asyncio.Queue()
 
 async def send_request_streaming(client: openai.AsyncOpenAI,
@@ -34,10 +34,6 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
         history = None if session_id is None else session_history,
         history_lock = None if session_id is None else session_history_lock) 
     start_time = time.time()
-    start_time = time.time()
-    first_response_time = None
-    target_pod = ""
-    target_request_id = ""
     first_response_time = None
     target_pod = ""
     target_request_id = ""
@@ -102,7 +98,10 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
                 history = session_history,
                 history_lock = session_history_lock,
             )
-            await completed_sessions.put(session_id)
+            try:
+                await completed_sessions.put(session_id)
+            except Exception as e:
+                logging.error(f"Failed to signal session completion: {e}")
         
         result = {
             "request_id": request_id,
@@ -177,9 +176,6 @@ async def send_request_batch(client: openai.AsyncOpenAI,
         history = None if session_id is None else session_history,
         history_lock = None if session_id is None else session_history_lock) 
     start_time = time.time()
-    start_time = time.time()
-    target_pod = ""
-    try:
     target_pod = ""
     try:
         logging.warning(f"send_request_batch: Prepare to launch task after {target_time - start_time} target_time {target_time} start_time {start_time}")
@@ -265,20 +261,21 @@ async def send_request_batch(client: openai.AsyncOpenAI,
             await completed_sessions.put(session_id)
         return error_result
 
-async def benchmark_launch(api_key: str,
-                              endpoint: str,
-                              max_retries: int,
-                              scale_factor: float,
-                              timeout: float,
-                              routing_strategy: str,
-                              load_struct: List,
-                              output_file: io.TextIOWrapper,
-                              model: str,
-                              max_output=int,
-                              send_request_func=Callable,
-                              duration_limit: float = None,
-                              max_concurrent_sessions: int = None,
-                              ):
+async def benchmark_launch(
+    api_key: str,
+    endpoint: str,
+    max_retries: int,
+    scale_factor: float,
+    timeout: float,
+    routing_strategy: str,
+    load_struct: List[Dict],
+    output_file: io.TextIOWrapper,
+    model: str,
+    max_output: int,
+    send_request_func: Callable,
+    duration_limit: Optional[float] = None,
+    max_concurrent_sessions: Optional[int] = None,
+) -> None:
     request_id = 0
     base_time = time.time()
     num_requests = 0
@@ -288,8 +285,6 @@ async def benchmark_launch(api_key: str,
     try:
         # Track active sessions for max_concurrent_sessions limit
         active_sessions = set()
-        session_capacity_available = asyncio.Event()
-        session_capacity_available.set()  # Initially available
 
         if max_concurrent_sessions is not None:
             logging.info(f"Max concurrent sessions limit: {max_concurrent_sessions}")
@@ -324,16 +319,8 @@ async def benchmark_launch(api_key: str,
         pending_new_sessions = []  # Queue for sessions that couldn't start due to capacity limit
 
         async def start_session_if_capacity_available(request, session_id):
-            """Start a new session, waiting for capacity if necessary.
-
-            If max_concurrent_sessions is set and reached, this will block until
-            a session completes and frees up capacity.
-            """
-            if max_concurrent_sessions is not None and session_id is not None:
-                # Wait until there's capacity
-                while len(active_sessions) >= max_concurrent_sessions:
-                    await session_capacity_available.wait()
-                    session_capacity_available.clear()
+            """Start a new session if capacity is available."""
+            if session_id is not None:
                 active_sessions.add(session_id)
                 logging.info(f"Starting session {session_id}. Active sessions: {len(active_sessions)}/{max_concurrent_sessions}")
             send(request)
@@ -385,12 +372,12 @@ async def benchmark_launch(api_key: str,
                     pending_sessioned_requests.pop(done_session_id, None)
             else:
                 # Session has no more pending requests, so it's truly complete
-                if max_concurrent_sessions is not None and done_session_id in active_sessions:
+                if done_session_id in active_sessions:
                     active_sessions.remove(done_session_id)
                     logging.info(f"Session {done_session_id} completed. Active sessions: {len(active_sessions)}/{max_concurrent_sessions}")
 
-                    # Start a new session from pending if capacity is available
-                    if len(pending_sessioned_requests) > 0:
+                    # Start new sessions from pending to maintain capacity
+                    while len(pending_sessioned_requests) > 0 and (max_concurrent_sessions is None or len(active_sessions) < max_concurrent_sessions):
                         # Find the first pending session and start it
                         next_session_id = next(iter(pending_sessioned_requests))
                         first_request, target_time = pending_sessioned_requests[next_session_id].pop(0)
