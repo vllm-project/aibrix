@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_core import core_schema
@@ -40,9 +41,9 @@ class CompletionWindow(str, Enum):
 
     TWENTY_FOUR_HOURS = "24h"
 
-    def expires_at(self) -> float:
+    def expires_at(self) -> int:
         """Returns the expiration time of the completion window."""
-        return 86400.0  # Return default value
+        return 86400  # Return default value
 
 
 class BatchJobState(str, Enum):
@@ -51,20 +52,9 @@ class BatchJobState(str, Enum):
     CREATED = "created"
     VALIDATING = "validating"
     IN_PROGRESS = "in_progress"
-    FINALIZING = "finalizing"
-    COMPLETED = "completed"
-    EXPIRED = "expired"
-    FAILED = "failed"
     CANCELLING = "cancelling"
-    CANCELED = "canceled"
-
-    def is_finished(self):
-        return self in [
-            BatchJobState.COMPLETED,
-            BatchJobState.FAILED,
-            BatchJobState.CANCELED,
-            BatchJobState.EXPIRED,
-        ]
+    FINALIZING = "finalizing"
+    FINALIZED = "finalized"
 
 
 class BatchJobErrorCode(str, Enum):
@@ -75,15 +65,19 @@ class BatchJobErrorCode(str, Enum):
     INVALID_COMPLETION_WINDOW = "invalid_completion_window"
     INVALID_METADATA = "invalid_metadata"
     AUTHENTICATION_ERROR = "authentication_error"
+    INFERENCE_FAILED = "inference_failed"
+    PREPARE_OUTPUT_ERROR = "prepare_output_failed"
+    FINALIZING_ERROR = "finalizing_failed"
     UNKNOWN_ERROR = "unknown_error"
 
 
 class ConditionType(str, Enum):
     """Types of conditions for batch job status."""
 
-    READY = "Ready"
-    PROCESSING = "Processing"
-    FAILED = "Failed"
+    COMPLETED = "completed"
+    EXPIRED = "expired"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class ConditionStatus(str, Enum):
@@ -126,22 +120,25 @@ class Condition(NoExtraBaseModel):
 
 
 class BatchJobSpec(NoExtraBaseModel):
-    """Defines the desired state of a Batch job, which is OpenAI batch compatible."""
+    """Defines the specification of a Batch job input."""
 
     input_file_id: str = Field(
         description="The ID of an uploaded file that contains the requests for the batch",
     )
-    endpoint: BatchJobEndpoint = Field(
+    endpoint: str = Field(
         description="The API endpoint to be used for all requests in the batch"
     )
-    completion_window: CompletionWindow = Field(
-        default=CompletionWindow.TWENTY_FOUR_HOURS,
+    completion_window: int = Field(
+        default=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
         description="The time window for completion",
     )
     metadata: Optional[Dict[str, str]] = Field(
         default=None,
         description="Set of up to 16 key-value pairs to attach to the batch object",
-        max_length=16,
+    )
+    opts: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="System-only options for internal use (e.g., fail_after_n_requests)",
     )
 
     @classmethod
@@ -151,6 +148,7 @@ class BatchJobSpec(NoExtraBaseModel):
         endpoint: str,
         completion_window: str = CompletionWindow.TWENTY_FOUR_HOURS.value,
         metadata: Optional[Dict[str, str]] = None,
+        opts: Optional[Dict[str, str]] = None,
     ) -> "BatchJobSpec":
         """Create BatchJobSpec from string parameters with validation.
 
@@ -159,6 +157,7 @@ class BatchJobSpec(NoExtraBaseModel):
             endpoint: The API endpoint as string
             completion_window: The completion window as string
             metadata: Optional metadata dictionary
+            opts: Optional system options dictionary
 
         Returns:
             BatchJobSpec instance
@@ -178,9 +177,10 @@ class BatchJobSpec(NoExtraBaseModel):
 
         return cls(
             input_file_id=input_file_id,
-            endpoint=validated_endpoint,
-            completion_window=validated_completion_window,
+            endpoint=validated_endpoint.value,
+            completion_window=validated_completion_window.expires_at(),
             metadata=metadata,
+            opts=opts,
         )
 
     @staticmethod
@@ -276,25 +276,71 @@ class BatchJobError(Exception):
     def __get_pydantic_core_schema__(cls, source, handler) -> core_schema.CoreSchema:
         """
         Returns the pydantic-core schema for this class, allowing it to be
-        used directly within Pydantic models.
+        used directly within Pydantic models for both validation and serialization.
         """
-        # This defines the schema for the arguments to __init__
-        arguments_schema = core_schema.model_fields_schema(
-            {
-                "code": core_schema.model_field(core_schema.str_schema()),
-                "message": core_schema.model_field(core_schema.str_schema()),
-                "param": core_schema.model_field(
-                    core_schema.nullable_schema(core_schema.str_schema())
-                ),
-                "line": core_schema.model_field(
-                    core_schema.nullable_schema(core_schema.str_schema())
-                ),
+
+        # def serialize_batch_job_error(instance: "BatchJobError") -> Dict[str, Any]:
+        #     """Custom serializer for BatchJobError."""
+        #     return {
+        #         "code": instance.code,
+        #         "message": instance.message,
+        #         "param": instance.param,
+        #         "line": instance.line,
+        #     }
+
+        def validate_batch_job_error(value) -> "BatchJobError":
+            """Custom validator for BatchJobError."""
+            if isinstance(value, cls):
+                return value
+            elif isinstance(value, dict):
+                return cls(
+                    code=BatchJobErrorCode(value["code"]),
+                    message=value["message"],
+                    param=value.get("param"),
+                    line=value.get("line"),
+                )
+            else:
+                raise ValueError(f"Cannot convert {type(value)} to BatchJobError")
+
+        return core_schema.no_info_plain_validator_function(
+            function=validate_batch_job_error,
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                function=cls.json_serializer,
+                return_schema=core_schema.dict_schema(),
+            ),
+        )
+
+    @classmethod
+    def json_serializer(cls, obj: Any):
+        """Handles types that the default JSON serializer doesn't know."""
+        if isinstance(obj, cls):
+            return {
+                "code": obj.code,
+                "message": obj.message,
+                "param": obj.param,
+                "line": obj.line,
             }
+
+        return obj
+
+    def __deepcopy__(self, memo):
+        """
+        Provides a custom implementation for deep copying this object.
+        """
+        # Create a new instance by calling __init__ with the current object's data.
+        # This correctly provides all the required arguments.
+        new_copy = self.__class__(
+            code=BatchJobErrorCode(self.code),
+            message=self.message,
+            param=self.param,
+            line=self.line,
         )
-        return core_schema.call_schema(
-            arguments_schema,
-            function=cls,
-        )
+
+        # Standard practice: store the new object in the memo dictionary
+        # to handle potential circular references during the copy.
+        memo[id(self)] = new_copy
+
+        return new_copy
 
 
 class BatchJobStatus(NoExtraBaseModel):
@@ -352,6 +398,11 @@ class BatchJobStatus(NoExtraBaseModel):
         alias="finalizingAt",
         description="Timestamp of when the batch job started finalizing",
     )
+    finalized_at: Optional[datetime] = Field(
+        default=None,
+        alias="finalizedAt",
+        description="Timestamp of when the batch job was finalized, will be copied to completed_at, failed_at, expired_at, and cancelled_at based on condition",
+    )
     completed_at: Optional[datetime] = Field(
         default=None,
         alias="completedAt",
@@ -378,10 +429,75 @@ class BatchJobStatus(NoExtraBaseModel):
         description="Timestamp of when the batch job get cancelled",
     )
 
-    conditions: Optional[Condition] = Field(
+    conditions: Optional[List[Condition]] = Field(
         default=None,
         description="Conditions represent the latest available observations of the batch job's state",
     )
+
+    @property
+    def finished(self) -> bool:
+        return self.state == BatchJobState.FINALIZED
+
+    @property
+    def completed(self) -> bool:
+        return self.finished and self.check_condition(ConditionType.COMPLETED)
+
+    @property
+    def failed(self) -> bool:
+        return (
+            self.finished
+            and self.check_condition(ConditionType.FAILED)
+            and not self.check_condition(ConditionType.EXPIRED)
+        )
+
+    @property
+    def expired(self) -> bool:
+        return self.finished and self.check_condition(ConditionType.EXPIRED)
+
+    @property
+    def cancelled(self) -> bool:
+        return self.finished and self.check_condition(ConditionType.CANCELLED)
+
+    @property
+    def condition(self) -> Optional[ConditionType]:
+        """If mutiple conditions exists, expired > failed > cancelled > completed"""
+        if self.conditions is None:
+            return None
+        elif self.check_condition(ConditionType.EXPIRED):
+            return ConditionType.EXPIRED
+        elif self.check_condition(ConditionType.FAILED):
+            return ConditionType.FAILED
+        elif self.check_condition(ConditionType.CANCELLED):
+            return ConditionType.CANCELLED
+        elif self.check_condition(ConditionType.COMPLETED):
+            return ConditionType.COMPLETED
+        else:
+            return None
+
+    def check_condition(self, type: ConditionType) -> bool:
+        if self.conditions is None:
+            return False
+
+        for condition in self.conditions:
+            if condition.type == type:
+                return True
+
+        return False
+
+    def get_condition(self, type: ConditionType) -> Optional[Condition]:
+        if self.conditions is None:
+            return None
+
+        for condition in self.conditions:
+            if condition.type == type:
+                return condition
+
+        return None
+
+    def add_condition(self, condition: Condition):
+        if self.conditions is None:
+            self.conditions = []
+        self.conditions.append(condition)
 
 
 class BatchJob(NoExtraBaseModel):
@@ -397,8 +513,17 @@ class BatchJob(NoExtraBaseModel):
     spec: BatchJobSpec = Field(description="Desired state of the batch job")
     status: BatchJobStatus = Field(description="Observed state of the batch job")
 
+    def copy(self):
+        return BatchJob(
+            sessionID=self.session_id,
+            typeMeta=self.type_meta,
+            metadata=self.metadata,
+            spec=self.spec,
+            status=copy.deepcopy(self.status),
+        )
+
     @classmethod
-    def create_new(
+    def new(
         cls,
         name: str,
         namespace: str,
@@ -408,6 +533,24 @@ class BatchJob(NoExtraBaseModel):
         metadata: Optional[Dict[str, str]] = None,
     ) -> "BatchJob":
         """Create a new BatchJob with default values."""
+        return cls.new_from_spec(
+            name,
+            namespace,
+            spec=BatchJobSpec(
+                input_file_id=input_file_id,
+                endpoint=endpoint.value,
+                completion_window=completion_window.expires_at(),
+                metadata=metadata,
+            ),
+        )
+
+    @classmethod
+    def new_from_spec(
+        cls,
+        name: str,
+        namespace: str,
+        spec: BatchJobSpec,
+    ) -> "BatchJob":
         return cls(
             typeMeta=TypeMeta(apiVersion="batch.aibrix.ai/v1alpha1", kind="BatchJob"),
             metadata=ObjectMeta(
@@ -417,12 +560,27 @@ class BatchJob(NoExtraBaseModel):
                 resourceVersion=None,
                 deletionTimestamp=None,
             ),
-            spec=BatchJobSpec(
-                input_file_id=input_file_id,
-                endpoint=endpoint,
-                completion_window=completion_window,
-                metadata=metadata,
+            spec=spec,
+            status=BatchJobStatus(
+                jobID=str(uuid.uuid4()),
+                state=BatchJobState.CREATED,
+                createdAt=datetime.now(timezone.utc),
             ),
+        )
+
+    @classmethod
+    def new_local(
+        cls,
+        spec: BatchJobSpec,
+    ) -> "BatchJob":
+        return cls(
+            typeMeta=TypeMeta(apiVersion="", kind="LocalBatchJob"),
+            metadata=ObjectMeta(
+                creationTimestamp=datetime.now(timezone.utc),
+                resourceVersion=None,
+                deletionTimestamp=None,
+            ),
+            spec=spec,
             status=BatchJobStatus(
                 jobID=str(uuid.uuid4()),
                 state=BatchJobState.CREATED,

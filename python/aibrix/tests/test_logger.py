@@ -15,7 +15,7 @@
 
 import pytest
 
-from aibrix.metadata.logger import init_logger
+from aibrix.logger import init_logger
 
 
 def test_init_logger_basic_functionality():

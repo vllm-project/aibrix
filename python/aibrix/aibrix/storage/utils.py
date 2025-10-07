@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
 import os
-import threading
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
+
+from aibrix.metadata.core import AsyncLoopThread
 
 extension_map = {
     "image/jpeg": ".jpg",
@@ -55,51 +55,13 @@ class ObjectMetadata:
     expires: Optional[datetime] = None
 
 
-class AsyncLoopThread(threading.Thread):
-    def __init__(self):
-        super().__init__(daemon=True)
-        self.loop = None
-        self.started_event = threading.Event()
-
-    def run(self):
-        """The entry point for the new thread."""
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
-
-        # Signal that the loop is created and running
-        self.started_event.set()
-
-        # This will run until loop.stop() is called
-        self.loop.run_forever()
-
-        # Cleanly close the loop
-        self.loop.close()
-
-    def start(self):
-        """Starts the thread and waits for the loop to be ready."""
-        super().start()
-        # Block until the 'run' method has set up the loop
-        self.started_event.wait()
-
-    def stop(self):
-        """Stops the event loop and waits for the thread to exit."""
-        if self.loop:
-            # Schedule loop.stop() to be called from within the loop's thread
-            self.loop.call_soon_threadsafe(self.loop.stop)
-        self.join()
-
-    def submit_coroutine(self, coro):
-        """Submits a coroutine to the event loop from any thread."""
-        return asyncio.run_coroutine_threadsafe(coro, self.loop)
-
-
 storage_loop_thread: Optional[AsyncLoopThread] = None
 
 
-def init_storage_loop_thread():
+def init_storage_loop_thread(name: str):
     global storage_loop_thread
     if storage_loop_thread is None:
-        storage_loop_thread = AsyncLoopThread()
+        storage_loop_thread = AsyncLoopThread(name)
         storage_loop_thread.start()
 
 

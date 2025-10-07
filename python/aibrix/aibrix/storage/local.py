@@ -20,7 +20,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
-from aibrix.storage.base import BaseStorage, StorageConfig
+from aibrix.storage.base import (
+    BaseStorage,
+    PutObjectOptions,
+    StorageConfig,
+    StorageType,
+)
 from aibrix.storage.reader import Reader
 from aibrix.storage.utils import ObjectMetadata, _sanitize_key, generate_filename
 
@@ -82,14 +87,26 @@ class LocalStorage(BaseStorage):
         }
         return content_type_map.get(suffix)
 
+    def get_type(self) -> StorageType:
+        """Get the type of storage.
+
+        Returns:
+            Type of storage, set to StorageType.LOCAL
+        """
+        return StorageType.LOCAL
+
     async def put_object(
         self,
         key: str,
         data: Union[bytes, str, BinaryIO, TextIO, Reader],
         content_type: Optional[str] = None,
         metadata: Optional[dict[str, str]] = None,
-    ) -> None:
+        options: Optional[PutObjectOptions] = None,
+    ) -> bool:
         """Put an object to local filesystem."""
+        # Validate options (local storage doesn't support advanced options)
+        self._validate_put_options(options)
+
         # Infer content type from file extension if not provided
         if content_type is None:
             content_type = self._infer_content_type(key)
@@ -130,6 +147,8 @@ class LocalStorage(BaseStorage):
             file_etag,
             file_last_modified,
         )
+
+        return True  # Local storage always succeeds
 
     def _write_file(self, path: Path, reader: Reader) -> None:
         """Write data to file (synchronous helper)."""
