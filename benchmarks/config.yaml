@@ -96,6 +96,15 @@ streaming_enabled: true # Options: true, false
 output_token_limit: 128
 timeout_second: 60.0
 max_retries: 0
+# Client-side duration limit in seconds
+# Set to a number (e.g., 240) to cancel pending requests after that time
+# Set to null to wait for ALL requests to complete (no time limit)
+client_duration_limit: null  # null = wait for all tasks, or number like 240 for 4 minutes
+# Client-side max concurrent sessions limit (runtime enforcement)
+# This limits how many sessions can be ACTIVE at once during benchmark execution
+# Note: This is separate from workload generator's max_concurrent_sessions which only affects workload generation
+# Set to null/none for unlimited, or a number to limit concurrent active sessions
+client_max_concurrent_sessions: null  # Example: 10 would limit to 10 active sessions at a time
 
 # ---------------
 # OPTIONAL: ANALYSIS

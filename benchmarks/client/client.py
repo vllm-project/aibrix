@@ -9,13 +9,13 @@ import traceback
 import threading
 
 
-from typing import List, Dict, Callable
+from typing import List, Dict, Callable, Optional, Set, Tuple
 from client.utils import (load_workload, prepare_prompt, update_response, create_client)
 
 logging.basicConfig(level=logging.INFO)
-session_history = dict()
+session_history: Dict[str, List[Dict]] = {}
 session_history_lock = threading.Lock()  # Use threading lock for thread safety
-pending_sessioned_requests = dict()
+pending_sessioned_requests: Dict[str, List[Tuple[Dict, float]]] = {}
 completed_sessions = asyncio.Queue()
 
 async def send_request_streaming(client: openai.AsyncOpenAI,
@@ -98,7 +98,10 @@ async def send_request_streaming(client: openai.AsyncOpenAI,
                 history = session_history,
                 history_lock = session_history_lock,
             )
-            await completed_sessions.put(session_id)
+            try:
+                await completed_sessions.put(session_id)
+            except Exception as e:
+                logging.error(f"Failed to signal session completion: {e}")
         
         result = {
             "request_id": request_id,
@@ -258,61 +261,177 @@ async def send_request_batch(client: openai.AsyncOpenAI,
             await completed_sessions.put(session_id)
         return error_result
 
-async def benchmark_launch(api_key: str,
-                              endpoint: str,
-                              max_retries: int,
-                              scale_factor: float,
-                              timeout: float,
-                              routing_strategy: str,
-                              load_struct: List,
-                              output_file: io.TextIOWrapper,
-                              model: str,
-                              max_output=int,
-                              send_request_func=Callable,
-                              ):
+async def benchmark_launch(
+    api_key: str,
+    endpoint: str,
+    max_retries: int,
+    scale_factor: float,
+    timeout: float,
+    routing_strategy: str,
+    load_struct: List[Dict],
+    output_file: io.TextIOWrapper,
+    model: str,
+    max_output: int,
+    send_request_func: Callable,
+    duration_limit: Optional[float] = None,
+    max_concurrent_sessions: Optional[int] = None,
+) -> None:
     request_id = 0
     base_time = time.time()
     num_requests = 0
     tasks: List[asyncio.Task] = []
     client = create_client(api_key, endpoint, max_retries, timeout, routing_strategy)
-    def send(request):
-        nonlocal request_id
-        task = asyncio.create_task(
-            send_request_func(
-                client=client,
-                model=model,
-                max_output=max_output,
-                request=request,  
-                output_file=output_file,
-                request_id=request_id,
-                session_id=request.get("session_id", None) if "session_id" in request else None,
-                target_time=target_time,
+
+    try:
+        # Track active sessions for max_concurrent_sessions limit
+        active_sessions = set()
+
+        if max_concurrent_sessions is not None:
+            logging.info(f"Max concurrent sessions limit: {max_concurrent_sessions}")
+
+        # Set workload duration based on duration_limit parameter
+        # If duration_limit is None, don't set a time limit (wait for all tasks)
+        if duration_limit is None:
+            workload_duration = None
+            logging.info("No duration limit set. Benchmark will wait for all tasks to complete.")
+        else:
+            workload_duration = duration_limit
+            logging.info(f"Duration limit set to {workload_duration:.1f}s")
+
+        def send(request):
+            nonlocal request_id, num_requests
+            task = asyncio.create_task(
+                send_request_func(
+                    client=client,
+                    model=model,
+                    max_output=max_output,
+                    request=request,
+                    output_file=output_file,
+                    request_id=request_id,
+                    session_id=request.get("session_id", None) if "session_id" in request else None,
+                    target_time=target_time,
+                )
             )
-        )
-        request_id += 1
-        tasks.append(task)
-    initiated_sessions = set()
-    for requests_dict in load_struct:
-        ts = int(requests_dict["timestamp"] * scale_factor)
-        requests = requests_dict["requests"]
-        target_time = base_time + ts / 1000.0
-        for i in range(len(requests)):
-            session_id = requests[i].get("session_id", None) if "session_id" in requests[0] else None
-            if session_id == None or session_id not in initiated_sessions:
-                send(requests[i])
-                initiated_sessions.add(session_id)
+            request_id += 1
+            num_requests += 1
+            tasks.append(task)
+        initiated_sessions = set()
+        pending_new_sessions = []  # Queue for sessions that couldn't start due to capacity limit
+
+        async def start_session_if_capacity_available(request, session_id):
+            """Start a new session if capacity is available."""
+            if session_id is not None:
+                active_sessions.add(session_id)
+                logging.info(f"Starting session {session_id}. Active sessions: {len(active_sessions)}/{max_concurrent_sessions}")
+            send(request)
+            initiated_sessions.add(session_id)
+
+        for requests_dict in load_struct:
+            ts = int(requests_dict["timestamp"] * scale_factor)
+            requests = requests_dict["requests"]
+            target_time = base_time + ts / 1000.0
+            for i in range(len(requests)):
+                session_id = requests[i].get("session_id", None) if "session_id" in requests[0] else None
+                if session_id is None or session_id not in initiated_sessions:
+                    # Check if we can start a new session without blocking
+                    if max_concurrent_sessions is None or len(active_sessions) < max_concurrent_sessions:
+                        await start_session_if_capacity_available(requests[i], session_id)
+                    else:
+                        # Can't start now, add to pending new sessions queue with timing info
+                        logging.info(f"Session {session_id} cannot start yet (capacity full). Adding first request to pending.")
+                        pending_new_sessions.append((requests[i], target_time))
+                        initiated_sessions.add(session_id)  # Mark as initiated so future requests go to pending_sessioned_requests
+                else:
+                    logging.info(f"Adding request for session {session_id} to pending queue. Pending count: {len(pending_sessioned_requests.get(session_id, [])) + 1}")
+                    pending_sessioned_requests.setdefault(session_id, []).append((requests[i], target_time))
+
+        # Merge pending_new_sessions into pending_sessioned_requests
+        for req, ttime in pending_new_sessions:
+            sid = req.get("session_id")
+            if sid is not None:
+                pending_sessioned_requests.setdefault(sid, []).insert(0, (req, ttime))  # Insert at beginning since it's the first request
+
+        logging.info(f"Finished processing all workload entries. Pending sessions: {len(pending_sessioned_requests)}, Pending requests: {sum(len(v) for v in pending_sessioned_requests.values())}")
+
+        while len(pending_sessioned_requests) != 0:
+            # Check if duration limit has been exceeded
+            if workload_duration is not None:
+                elapsed = time.time() - base_time
+                if elapsed >= workload_duration:
+                    logging.warning(f"Duration limit ({workload_duration:.1f}s) reached. Stopping session processing. {len(pending_sessioned_requests)} sessions remain pending.")
+                    break
+
+            logging.info(f"Waiting for session to complete. Pending sessions: {len(pending_sessioned_requests)}")
+            done_session_id = await completed_sessions.get()
+            logging.info(f"Session {done_session_id} signaled completion")
+
+            if done_session_id in pending_sessioned_requests:
+                next_request, target_time = pending_sessioned_requests[done_session_id].pop(0)
+                send(next_request)
+                if len(pending_sessioned_requests[done_session_id]) == 0:
+                    pending_sessioned_requests.pop(done_session_id, None)
             else:
-                pending_sessioned_requests.setdefault(session_id,[]).append(requests[i])  
-    while len(pending_sessioned_requests) != 0:
-        done_session_id = await completed_sessions.get()
-        if done_session_id in pending_sessioned_requests:
-            next_request = pending_sessioned_requests[done_session_id].pop(0)
-            send(next_request)
-            if len(pending_sessioned_requests[done_session_id]) == 0:
-                pending_sessioned_requests.pop(done_session_id, None)
-                
-    await asyncio.gather(*tasks)
-    logging.warning(f"All {num_requests} requests completed for deployment.")
+                # Session has no more pending requests, so it's truly complete
+                if done_session_id in active_sessions:
+                    active_sessions.remove(done_session_id)
+                    logging.info(f"Session {done_session_id} completed. Active sessions: {len(active_sessions)}/{max_concurrent_sessions}")
+
+                    # Start new sessions from pending to maintain capacity
+                    while len(pending_sessioned_requests) > 0 and (max_concurrent_sessions is None or len(active_sessions) < max_concurrent_sessions):
+                        # Find the first pending session and start it
+                        next_session_id = next(iter(pending_sessioned_requests))
+                        first_request, target_time = pending_sessioned_requests[next_session_id].pop(0)
+                        if len(pending_sessioned_requests[next_session_id]) == 0:
+                            pending_sessioned_requests.pop(next_session_id, None)
+
+                        # Start the new session
+                        active_sessions.add(next_session_id)
+                        logging.info(f"Starting session {next_session_id}. Active sessions: {len(active_sessions)}/{max_concurrent_sessions}")
+                        send(first_request)
+
+        # Wait for tasks with duration limit
+        logging.info(f"All {num_requests} tasks created. Waiting for completion...")
+
+        if workload_duration is not None:
+            elapsed = time.time() - base_time
+            remaining = workload_duration - elapsed
+
+            if remaining > 0:
+                logging.info(f"Waiting up to {remaining:.1f}s more for tasks to complete (total duration: {workload_duration:.1f}s)")
+                try:
+                    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=remaining)
+                    logging.info("All tasks completed within workload duration.")
+                except asyncio.TimeoutError:
+                    pending_count = sum(1 for task in tasks if not task.done())
+                    logging.warning(f"Workload duration ({workload_duration:.1f}s) reached. Cancelling {pending_count} pending requests...")
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            else:
+                logging.warning(f"Workload duration already exceeded by {-remaining:.1f}s. Cancelling pending tasks...")
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+            completed_count = sum(1 for task in tasks if task.done() and not task.cancelled())
+            cancelled_count = sum(1 for task in tasks if task.cancelled())
+            logging.warning(f"Benchmark complete. Total: {num_requests}, Completed: {completed_count}, Cancelled: {cancelled_count}")
+        else:
+            await asyncio.gather(*tasks)
+            logging.warning(f"All {num_requests} requests completed for deployment.")
+    finally:
+        # Ensure OpenAI client is properly closed to prevent connection leaks
+        # This runs regardless of whether the benchmark completed successfully,
+        # was cancelled due to timeout, or encountered an error
+        logging.info("Closing OpenAI client...")
+        try:
+            await client.close()
+            logging.info("OpenAI client closed successfully.")
+        except Exception as e:
+            # Log but don't raise - cleanup failures shouldn't crash the program
+            logging.warning(f"Error while closing OpenAI client: {e}")
 
 
 def main(args):
@@ -321,6 +440,15 @@ def main(args):
     with open(args.output_file_path, 'w', encoding='utf-8') as output_file:
         load_struct = load_workload(args.workload_path)
         send_request_func = send_request_streaming if args.streaming else send_request_batch
+        
+        # Get duration limit from args if provided
+        duration_limit = args.duration_limit if hasattr(args, 'duration_limit') else None
+        if duration_limit:
+            logging.info(f"Duration limit set to {duration_limit:.1f}s (from command line)")
+        
+        # Get max_concurrent_sessions from args if provided
+        max_concurrent_sessions = args.max_concurrent_sessions if hasattr(args, 'max_concurrent_sessions') else None
+        
         start_time = time.time()
         asyncio.run(benchmark_launch(
             api_key = args.api_key,
@@ -334,6 +462,8 @@ def main(args):
             model=args.model,
             max_output=args.output_token_limit,
             send_request_func=send_request_func,
+            duration_limit=duration_limit,
+            max_concurrent_sessions=max_concurrent_sessions,
         ))
         end_time = time.time()
         logging.info(f"Benchmark completed in {end_time - start_time:.2f} seconds")
@@ -352,6 +482,8 @@ if __name__ == "__main__":
     parser.add_argument('--time-scale', type=float, default=1.0, help="Scaling factor for workload's logical time.")
     parser.add_argument('--timeout-second', type=float, default=60.0, help="Timeout for each request in seconds.")
     parser.add_argument('--max-retries', type=int, default=0, help="Number of maximum retries for each request.")
+    parser.add_argument('--duration-limit', type=float, default=None, help="Duration limit in seconds. Benchmark stops after this time, cancelling pending requests. If not set, uses workload's last timestamp.")
+    parser.add_argument('--max-concurrent-sessions', type=int, default=None, help="Maximum number of sessions that can run concurrently. Only applies to sessioned workloads.")
 
     args = parser.parse_args()
     main(args)

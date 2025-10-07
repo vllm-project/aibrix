@@ -280,6 +280,13 @@ class BenchmarkRunner:
             # Set to None so it can be handled appropriately later
             self.config["api_key"] = None
         
+        # Get client_duration_limit (in seconds)
+        duration_limit = self.config.get("client_duration_limit", None)
+        
+        # Get client_max_concurrent_sessions from client config (runtime enforcement)
+        # This is separate from workload generator's max_concurrent_sessions
+        max_concurrent_sessions = self.config.get("client_max_concurrent_sessions", None)
+        
         args_dict = {
             "workload_path": workload_file,
             "endpoint": self.config["endpoint"],
@@ -292,6 +299,8 @@ class BenchmarkRunner:
             "time_scale": self.config.get("time_scale", 1.0),
             "timeout_second": self.config.get("timeout_second", 60.0),
             "max_retries": self.config.get("max_retries", 0),
+            "duration_limit": duration_limit,
+            "max_concurrent_sessions": max_concurrent_sessions,
         }
         args = Namespace(**args_dict)
         logging.info(f"Running client with args: {args}")
