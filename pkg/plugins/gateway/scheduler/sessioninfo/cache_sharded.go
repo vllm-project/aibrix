@@ -29,15 +29,6 @@ var hasherPool = sync.Pool{
 	},
 }
 
-// SessionState holds all the scheduling-relevant information for a single session
-type SessionState struct {
-	SessionID               string        // The session ID
-	CriticalPathServiceTime time.Duration // The critical path service time
-	TotalWaitTime           time.Duration // The total wait time (anti-starvation)
-	PodAffinity             string        // The pod affinity (later may needed)
-	LastActivityTimestamp   time.Time     // The last activity timestamp
-}
-
 // --- Internal channel communication structs ---
 type cacheOp int // operation code for cacheRequest
 
@@ -97,22 +88,23 @@ type cacheShard struct {
 func (s *cacheShard) run(wg *sync.WaitGroup) {
 	defer wg.Done()
 	for req := range s.requests {
-		state, exists := s.sessions[req.sessionID]
-		if !exists {
-			state = &SessionState{
-				SessionID:             req.sessionID,
-				LastActivityTimestamp: time.Now(),
-			}
-			s.sessions[req.sessionID] = state
-		}
 		switch req.op {
 		case opGetForScheduler:
-			// Return a struct with the required values.
+			// Get or create session for scheduler
+			state, exists := s.sessions[req.sessionID]
+			if !exists {
+				state = &SessionState{
+					SessionID:             req.sessionID,
+					LastActivityTimestamp: time.Now(),
+				}
+				s.sessions[req.sessionID] = state
+			}
 			req.schedulerInfoRespChan <- schedulerInfoResponse{
 				cst:      state.CriticalPathServiceTime,
 				waitTime: state.TotalWaitTime,
 			}
 		case opGetFullState:
+			// Only return existing state, don't create
 			state, exists := s.sessions[req.sessionID]
 			if !exists {
 				req.fullStateResponseChan <- fullStateResponse{state: nil}
@@ -121,6 +113,15 @@ func (s *cacheShard) run(wg *sync.WaitGroup) {
 			stateCopy := *state
 			req.fullStateResponseChan <- fullStateResponse{state: &stateCopy}
 		case opUpdateState:
+			// Get or create session for update
+			state, exists := s.sessions[req.sessionID]
+			if !exists {
+				state = &SessionState{
+					SessionID:             req.sessionID,
+					LastActivityTimestamp: time.Now(),
+				}
+				s.sessions[req.sessionID] = state
+			}
 			payload := req.updatePayload
 			state.TotalWaitTime += payload.waitTime
 			newPathLength := payload.inheritedCST + payload.executionTime
@@ -129,6 +130,15 @@ func (s *cacheShard) run(wg *sync.WaitGroup) {
 			}
 			state.LastActivityTimestamp = time.Now()
 		case opUpdateAffinity:
+			// Get or create session for affinity update
+			state, exists := s.sessions[req.sessionID]
+			if !exists {
+				state = &SessionState{
+					SessionID:             req.sessionID,
+					LastActivityTimestamp: time.Now(),
+				}
+				s.sessions[req.sessionID] = state
+			}
 			state.PodAffinity = req.affinityPayload
 		case opCleanup:
 			payload := req.cleanupPayload
@@ -215,7 +225,8 @@ func (sc *ShardedSessionCache) UpdateAffinity(sessionID, podName string) {
 }
 
 // GetState is provided for testing and debugging.
-func (sc *ShardedSessionCache) GetState(sessionID string) (*SessionState, bool) {
+// Returns a copy of the session state to ensure thread safety.
+func (sc *ShardedSessionCache) GetState(sessionID string) (SessionState, bool) {
 	shard := sc.getShard(sessionID)
 	respChan := make(chan fullStateResponse, 1)
 	shard.requests <- cacheRequest{
@@ -224,20 +235,49 @@ func (sc *ShardedSessionCache) GetState(sessionID string) (*SessionState, bool) 
 		fullStateResponseChan: respChan,
 	}
 	info := <-respChan
-	state, exists := info.state, info.state != nil
-	return state, exists
+	if info.state == nil {
+		return SessionState{}, false
+	}
+	// Return a copy to match the interface signature
+	return *info.state, true
 }
 
 // StartCleanupRoutine starts a background goroutine that periodically
-func (sc *ShardedSessionCache) StartCleanupRoutine(timeout time.Duration) {
-	req := cacheRequest{
-		op: opCleanup,
-		cleanupPayload: cleanupPayload{
-			timeout: timeout,
-		},
-	}
-	for _, shard := range sc.shards {
-		shard.requests <- req
+// cleans up stale sessions across all shards.
+// Returns a stop function that can be called to halt the cleanup routine.
+func (sc *ShardedSessionCache) StartCleanupRoutine(interval, timeout time.Duration) (stop func()) {
+	ticker := time.NewTicker(interval)
+	done := make(chan struct{})
+
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				// Send cleanup request to all shards
+				req := cacheRequest{
+					op: opCleanup,
+					cleanupPayload: cleanupPayload{
+						timeout: timeout,
+					},
+				}
+				for _, shard := range sc.shards {
+					// Use select to avoid panic if channel is closed
+					select {
+					case shard.requests <- req:
+					case <-done:
+						// Stop signal received while sending
+						return
+					}
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	return func() {
+		close(done)
 	}
 }
 
