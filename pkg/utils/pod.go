@@ -265,6 +265,17 @@ func FilterPodByName(podname string, pods []*v1.Pod) (*v1.Pod, bool) {
 	return nil, false
 }
 
+// FilterPodsByLabel filters pods that have a specific label key-value pair
+func FilterPodsByLabel(pods []*v1.Pod, labelKey, labelValue string) []*v1.Pod {
+	var filtered []*v1.Pod
+	for _, pod := range pods {
+		if value, exists := pod.Labels[labelKey]; exists && value == labelValue {
+			filtered = append(filtered, pod)
+		}
+	}
+	return filtered
+}
+
 // DeploymentNameFromPod extracts the deployment name from the pod using two methods:
 // 1. If the pod has a label with the key "app.kubernetes.io/name", its value is considered the deployment name.
 // 2. If the pod has an owner reference of kind "ReplicaSet", the deployment name is extracted from the owner reference's name.
