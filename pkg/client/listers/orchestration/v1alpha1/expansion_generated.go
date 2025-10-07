@@ -32,3 +32,11 @@ type RayClusterReplicaSetListerExpansion interface{}
 // RayClusterReplicaSetNamespaceListerExpansion allows custom methods to be added to
 // RayClusterReplicaSetNamespaceLister.
 type RayClusterReplicaSetNamespaceListerExpansion interface{}
+
+// StormServiceListerExpansion allows custom methods to be added to
+// StormServiceLister.
+type StormServiceListerExpansion interface{}
+
+// StormServiceNamespaceListerExpansion allows custom methods to be added to
+// StormServiceNamespaceLister.
+type StormServiceNamespaceListerExpansion interface{}

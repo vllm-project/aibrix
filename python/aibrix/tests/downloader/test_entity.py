@@ -203,3 +203,24 @@ def test_download_model_status():
         with prepare_model_dir(local_path, model_name, source, files_with_status):
             download_model = DownloadModel.infer_from_local_path(local_path)[0]
             assert download_model.status == ModelDownloadStatus.NO_OPERATION
+
+
+def test_infer_from_model_path_uses_metadata(tmp_path: Path):
+    # Ensure infer_from_model_path picks up files when only .metadata exists
+    src = RemoteSource.S3
+    model_name = "model"
+    model_base_dir = tmp_path.joinpath(model_name)
+    cache_sub_dir = (DOWNLOAD_CACHE_DIR % src.value).strip("/")
+    cache_dir = model_base_dir.joinpath(cache_sub_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create only metadata (no .lock and no actual file) to simulate completed state
+    meta_path = cache_dir.joinpath("weights.bin.metadata")
+    meta_path.write_text("etag")
+
+    model = DownloadModel.infer_from_model_path(
+        local_path=tmp_path, model_name=model_name, source=src
+    )
+    assert model is not None
+    names = {df.file_path.name for df in model.download_files}
+    assert "weights.bin" in names

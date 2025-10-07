@@ -30,6 +30,10 @@ spec:
                       }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen2.5-7B
+                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/engine: sglang
             spec:
               containers:
                 - name: prefill
@@ -92,6 +96,10 @@ spec:
                       }
                     }
                   ]
+              labels:
+                model.aibrix.ai/name: qwen2.5-7B
+                model.aibrix.ai/port: "30000"
+                model.aibrix.ai/engine: sglang
             spec:
               containers:
                 - name: decode

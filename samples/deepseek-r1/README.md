@@ -98,8 +98,8 @@ While we can provide some general recommendations, due to limited resources, we 
 We encourage the community to contribute by submitting a Pull Request (PR) to help improve our support for different clouds.
 
 ```
-kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.3.0/aibrix-dependency-v0.3.0.yaml
-kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.3.0/aibrix-core-v0.3.0.yaml
+kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.4.0/aibrix-dependency-v0.4.0.yaml
+kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.4.0/aibrix-core-v0.4.0.yaml
 ```
 
 ## How AIBrix support deepseek-r1

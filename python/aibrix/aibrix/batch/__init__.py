@@ -11,6 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from .driver import BatchDriver
 
-
-__all__ = ["create_batch_input", "retrieve_batch_job_content"]
+__all__ = ["BatchDriver"]

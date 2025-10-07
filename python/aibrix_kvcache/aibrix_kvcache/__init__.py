@@ -15,14 +15,19 @@
 # Always import version first
 from .version import __version__, __version_tuple__  # isort:skip
 
-from .cache_handle import KVCacheHandle, MemoryRegionKVCacheHandle
-from .cache_hashable import TokenListView
+from .cache_handle import (
+    GDRKVCacheHandle,
+    KVCacheHandle,
+    MemoryRegionKVCacheHandle,
+)
+from .cache_hashable import BlockHashes, KVCacheKey, TokenListView
 from .cache_manager import (
     BaseKVCacheManager,
     GroupAwareKVCacheManager,
     KVCacheManager,
 )
 from .config import KVCacheConfig
+from .memory import ExternalMemoryRegion, MemoryRegion
 from .metrics import KVCacheMetrics
 from .spec import *
 from .status import Status, StatusCodes
@@ -31,8 +36,13 @@ __all__ = [
     "__version__",
     "__version_tuple__",
     "KVCacheHandle",
+    "ExternalMemoryRegion",
+    "MemoryRegion",
     "MemoryRegionKVCacheHandle",
+    "GDRKVCacheHandle",
     "TokenListView",
+    "BlockHashes",
+    "KVCacheKey",
     "BaseKVCacheManager",
     "GroupAwareKVCacheManager",
     "KVCacheManager",

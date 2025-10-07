@@ -65,7 +65,7 @@ func AddLabel(labels map[string]string, labelKey, labelValue string) map[string]
 	return labels
 }
 
-// Clones the given selector and returns a new selector with the given key and value added.
+// Use DeepCopy to clone the selector, or create new one if nil
 // Returns the given selector, if labelKey is empty.
 func CloneSelectorAndAddLabel(selector *metav1.LabelSelector, labelKey, labelValue string) *metav1.LabelSelector {
 	if labelKey == "" {
@@ -73,34 +73,21 @@ func CloneSelectorAndAddLabel(selector *metav1.LabelSelector, labelKey, labelVal
 		return selector
 	}
 
-	// Clone.
-	newSelector := new(metav1.LabelSelector)
-
-	// TODO(madhusudancs): Check if you can use deepCopy_extensions_LabelSelector here.
-	newSelector.MatchLabels = make(map[string]string)
-	if selector.MatchLabels != nil {
-		for key, val := range selector.MatchLabels {
-			newSelector.MatchLabels[key] = val
-		}
-	}
-	newSelector.MatchLabels[labelKey] = labelValue
-
-	if selector.MatchExpressions != nil {
-		newMExps := make([]metav1.LabelSelectorRequirement, len(selector.MatchExpressions))
-		for i, me := range selector.MatchExpressions {
-			newMExps[i].Key = me.Key
-			newMExps[i].Operator = me.Operator
-			if me.Values != nil {
-				newMExps[i].Values = make([]string, len(me.Values))
-				copy(newMExps[i].Values, me.Values)
-			} else {
-				newMExps[i].Values = nil
-			}
-		}
-		newSelector.MatchExpressions = newMExps
+	// Use DeepCopy to clone the selector
+	var newSelector *metav1.LabelSelector
+	if selector != nil {
+		newSelector = selector.DeepCopy()
 	} else {
-		newSelector.MatchExpressions = nil
+		newSelector = &metav1.LabelSelector{}
 	}
+
+	// Initialize MatchLabels if nil
+	if newSelector.MatchLabels == nil {
+		newSelector.MatchLabels = make(map[string]string)
+	}
+
+	// Add the new label
+	newSelector.MatchLabels[labelKey] = labelValue
 
 	return newSelector
 }

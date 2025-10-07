@@ -24,6 +24,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	modelapi "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
 
 var _ = ginkgo.Describe("modelAdapter default and validation", func() {
@@ -63,98 +64,62 @@ var _ = ginkgo.Describe("modelAdapter default and validation", func() {
 		},
 		ginkgo.Entry("normal creation", &testValidatingCase{
 			adapter: func() *modelapi.ModelAdapter {
-				adapter := modelapi.ModelAdapter{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-adapter",
-						Namespace: ns.Name,
-					},
-					Spec: modelapi.ModelAdapterSpec{
-						ArtifactURL: "s3://test-bucket/test-model",
-						PodSelector: &metav1.LabelSelector{},
-					},
-				}
-				return &adapter
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("s3://test-bucket/test-model").
+					PodSelector(&metav1.LabelSelector{}).
+					Obj()
 			},
 			failed: false,
 		}),
 		ginkgo.Entry("adapter creation with invalid artifactURL should be failed", &testValidatingCase{
 			adapter: func() *modelapi.ModelAdapter {
-				adapter := modelapi.ModelAdapter{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-adapter",
-						Namespace: ns.Name,
-					},
-					Spec: modelapi.ModelAdapterSpec{
-						ArtifactURL: "aabbcc",
-						PodSelector: &metav1.LabelSelector{},
-					},
-				}
-				return &adapter
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("aabbcc").
+					PodSelector(&metav1.LabelSelector{}).
+					Obj()
 			},
 			failed: true,
 		}),
 		ginkgo.Entry("adapter creation with empty artifactURL should be failed", &testValidatingCase{
 			adapter: func() *modelapi.ModelAdapter {
-				adapter := modelapi.ModelAdapter{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-adapter",
-						Namespace: ns.Name,
-					},
-					Spec: modelapi.ModelAdapterSpec{
-						ArtifactURL: "",
-						PodSelector: &metav1.LabelSelector{},
-					},
-				}
-				return &adapter
-			},
-			failed: true,
-		}),
-		ginkgo.Entry("adapter creation with empty podSelector should be failed", &testValidatingCase{
-			adapter: func() *modelapi.ModelAdapter {
-				adapter := modelapi.ModelAdapter{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-adapter",
-						Namespace: ns.Name,
-					},
-					Spec: modelapi.ModelAdapterSpec{
-						ArtifactURL: "s3://test-bucket/test-model",
-						PodSelector: &metav1.LabelSelector{},
-						Replicas:    ptr.To[int32](0),
-					},
-				}
-				return &adapter
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("").
+					PodSelector(&metav1.LabelSelector{}).
+					Obj()
 			},
 			failed: true,
 		}),
 		ginkgo.Entry("adapter creation with replicas less than 0 should be failed", &testValidatingCase{
 			adapter: func() *modelapi.ModelAdapter {
-				adapter := modelapi.ModelAdapter{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-adapter",
-						Namespace: ns.Name,
-					},
-					Spec: modelapi.ModelAdapterSpec{
-						ArtifactURL: "s3://test-bucket/test-model",
-						PodSelector: nil,
-					},
-				}
-				return &adapter
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("s3://test-bucket/test-model").
+					PodSelector(&metav1.LabelSelector{}).
+					Replicas(ptr.To[int32](0)).
+					Obj()
+			},
+			failed: true,
+		}),
+		ginkgo.Entry("adapter creation with empty podSelector should be failed", &testValidatingCase{
+			adapter: func() *modelapi.ModelAdapter {
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("s3://test-bucket/test-model").
+					PodSelector(nil).
+					Obj()
 			},
 			failed: true,
 		}),
 		ginkgo.Entry("adapter creation with unsupported schema should be failed", &testValidatingCase{
 			adapter: func() *modelapi.ModelAdapter {
-				adapter := modelapi.ModelAdapter{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-adapter",
-						Namespace: ns.Name,
-					},
-					Spec: modelapi.ModelAdapterSpec{
-						ArtifactURL: "ms://",
-						PodSelector: &metav1.LabelSelector{},
-					},
-				}
-				return &adapter
+				return wrapper.MakeModelAdapter("test-adapter").
+					Namespace(ns.Name).
+					ArtifactURL("ms://").
+					PodSelector(&metav1.LabelSelector{}).
+					Obj()
 			},
 			failed: true,
 		}),

@@ -10,18 +10,19 @@ KVCache Offloading
 .. note::
     The AIBrix KVCache Offloading framework can be used as a standalone component — there’s no need to install the entire AIBrix stack.
 
+.. note::
+    Since v0.4.0, both vLLM V0 and V1 connectors are supported.
+
 .. warning::
     Currently, only FlashAttention and XFormers are supported.
 
-.. warning::
-    Currently, only the vLLM v0 connector is supported. The v1 connector is under development and is expected to be released in v0.4.0.
-
+.. _l1_cache_example:
 
 L1 Cache Example
 ----------------
 
 .. note::
-    We use a customized version of vLLM integrated with *AIBrix Offloading Connector* to showcase the usage.
+    We use a customized version of vLLM integrated with *AIBrix Offloading Connectors* to showcase the usage.
 
 
 Before deploying the inference engine, please use ``kubectl get pods -n aibrix-system`` and ``kubectl get pods -n envoy-gateway-system`` to ensure ``envoy-gateway`` and ``aibrix-gateway`` are running. Other components are optional.
@@ -62,7 +63,8 @@ Now let's use the following yaml to create an engine deployment:
 
 
 .. note::
-    ``AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB`` needs to choose a proper value based on the pod memory resource requirement. For instance, if the pod memory resource requirement is ``P`` GB and the estimated memory consumption of the inference engine is ``E`` GB, we can set ``AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB`` to ``P / tensor-parallel-size - E``.
+    * If you prefer to use vLLM V0, please set ``VLLM_USE_V1`` to ``0`` and change the value of ``--kv-transfer-config`` from ``'{"kv_connector":"AIBrixOffloadingConnectorV1Type1", "kv_role":"kv_both"}'`` to ``'{"kv_connector":"AIBrixOffloadingConnector", "kv_role":"kv_both"}'``
+    * ``AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB`` needs to choose a proper value based on the pod memory resource requirement. For instance, if the pod memory resource requirement is ``P`` GB and the estimated memory consumption of the inference engine is ``E`` GB, we can set ``AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB`` to ``P / tensor-parallel-size - E``.
 
 Now let's use ``kubectl get pods`` command to ensure the inference service is running:
 
@@ -137,6 +139,8 @@ and its output would be:
     nd Python dependencies are correctly installed as per the VLLM requirements.\n- **Resources:** Adjust CPU and memory allocations based on your system's capacity to handle the VLLM's computational demands.\n- **Volumes:** Consider using a persistent volume to store the VLLM model for longer-term use.\n\nBy following these steps, you'll have a containerized version of OpenAI's VLLM ready to run, ensuring security, efficiency, and ease of use.","tool_calls":[]},"logprobs":null,"finish_reason":"stop","stop_reason":null}],"usage":{"prompt_tokens":12,"total_tokens":1887,"completion_tokens":1875,"prompt_tokens_details":null},"prompt_logprobs":null}
 
 
+.. _l2_cache_example:
+
 L2 Cache Example
 ----------------
 
@@ -193,7 +197,8 @@ Now let's use the following yaml to create an engine deployment:
 
 
 .. note::
-    * In this example, we set ``AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED=0`` to explictly disable ``L1Cache`` and use ``L2Cache`` only.
+    * If you prefer to use vLLM V0, please set ``VLLM_USE_V1`` to ``0`` and change the value of ``--kv-transfer-config`` from ``'{"kv_connector":"AIBrixOffloadingConnectorV1Type1", "kv_role":"kv_both"}'`` to ``'{"kv_connector":"AIBrixOffloadingConnector", "kv_role":"kv_both"}'``
+    * In this example, we set ``AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED=0`` to explicitly disable ``L1Cache`` and use ``L2Cache`` only.
     * Current version only supports using ``InfiniStore`` with RDMA transport. Please ensure ``AIBRIX_KV_CACHE_OL_INFINISTORE_CONNECTION_TYPE=RDMA`` is configured.
     * For InfiniBand, please set ``AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE=IB``. For RoCE, please keep the default value ``Ethernet``.
     * ``AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST`` is used to configure which RDMA device can be used by the engine to access remote KV cache servers. For instance, if you allocate 8 GPUs for the engine pod and set ``AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST="mlx5_1,mlx5_2"``, then engine processes using GPU 0 to 3 will use ``mlx5_1``, and engine processes using GPU 4 to 7 will use ``mlx5_2``.
@@ -276,3 +281,46 @@ and its output would be:
     <
     {"id":"chatcmpl-dce54e48-3c47-4d08-8ff9-dcec429fd486","object":"chat.completion","created":1747806244,"model":"deepseek-r1-distill-llama-8b","choices":[{"index":0,"message":{"role":"assistant","reasoning_content":null,"content":"Okay, so I'm trying to create a container for VLLM-OpenAI. I'm a bit new to this, so I need to figure out where to start. I know that VLLM stands for Very Large Language Model, and OpenAI has their own models like GPT-4 and others. But I'm not exactly sure how to create a container for it. \n\nFirst, I think I need to understand what a container is. From what I remember, containers are like lightweight virtual machines that you can use to package up an application and its dependencies. Docker is a popular tool for creating and managing these containers. So, I probably need to use Docker to create a container that runs VLLM-OpenAI.\n\nI should check if there's an official Docker image for VLLM-OpenAI. Maybe OpenAI provides one? If not, I might have to build one myself. Building from source code would mean I need access to the model's codebase, which I'm not sure about. I should look up if there's a public repository for VLLM-OpenAI.\n\nWait, I think OpenAI has released some of their models as open-source, but I'm not certain about VLLM specifically. I should search for \"VLLM-OpenAI Docker\" or \"VLLM-OpenAI container\" to see if someone has already created a container. Maybe there's a GitHub repository or a Docker Hub page with the image.\n\nIf I can't find an existing image, I'll have to create one myself. To do that, I need to know what dependencies the model requires. VLLM is based on LLMs, so it probably needs libraries like PyTorch or TensorFlow. Also, it might require specific versions of Python or other tools. I should look up the installation instructions for VLLM-OpenAI to identify the necessary dependencies.\n\nI'll need a Dockerfile. The Dockerfile will include a base image, install the dependencies, and copy the model's code. I should make sure to use the correct Python version, as some models might have compatibility issues. I'll also need a requirements.txt file to list all the necessary Python packages and their versions.\n\nOnce the Dockerfile is set up, I can build the container using Docker. The command would be something like `docker build -t vllm-openai .` where `vllm-openai` is the name of the container. After building, I can run it with `docker run -it vllm-openai`, which will start an interactive session.\n\nI should also consider how to manage the model once the container is running. Do I need to pass it a prompt through stdin? How does it handle outputs? I should look up the usage instructions for VLLM-OpenAI to know how to interact with it within the container.\n\nAnother thing to think about is resource usage. VLLM models are computationally intensive, so I need to make sure the container has enough resources allocated. This can be done when running the container with options like `--cpuset` or `--memory` if necessary.\n\nI'm a bit worried about the size of the model. VLLM might have a large embedding size, so the container might become quite large. I should check if there are optimized versions or ways to reduce the model size without losing too much performance.\n\nAlso, I should think about versioning. If I create a container, I should name it something that includes the version number, like `vllm-openai-1.0`. This way, I can easily update to newer versions by rebuilding the container.\n\nI wonder if there are any specific commands or tools needed to run VLLM-OpenAI in a container. Maybe I need to use a specific framework or tooling that's already included in the container. I should make sure I have all the necessary command-line tools installed before trying to run it.\n\nI should also test the container locally to see if it works. Maybe start with a simple prompt to see if the model responds. If it doesn't, I'll need to troubleshoot whether it's an issue with the container setup or the model configuration.\n\nIn summary, my steps would be:\n1. Search for existing V* Connection #0 to host localhost left intact
     LLM-OpenAI containers or Docker images.\n2. If none found, create a new Dockerfile and requirements.txt.\n3. Install necessary dependencies and copy the model code.\n4. Build and run the container using Docker.\n5. Test the container with a sample input.\n6. Adjust resources and configurations as needed.\n\nI might run into issues like dependency conflicts or missing packages, so I should be prepared to update versions or check the model's documentation for specific requirements. Also, understanding how the model expects inputs and outputs is crucial for effective use.\n\nI think I've got a basic plan. Now, I'll try to find the existing resources or proceed to set up the Dockerfile if necessary. Let me start by searching for VLLM-OpenAI Docker container on GitHub or Docker Hub to see if someone else has done this before.\n</think>\n\nTo create a container for VLLM-OpenAI, follow these organized steps:\n\n1. **Search for Existing Containers**:\n   - Check Docker Hub or GitHub for existing VLLM-OpenAI containers. If found, use them as they may already be configured.\n\n2. **Prepare Your Environment**:\n   - Ensure you have Docker installed on your system.\n\n3. **Set Up the Project Structure**:\n   - Create a directory for your project.\n   - Within it, create a `Dockerfile` and a `requirements.txt` file.\n\n4. **Dockerfile Setup**:\n   - Use a base image that matches your system's requirements (e.g., `python:3.9-slim`).\n   - Install necessary dependencies from `requirements.txt`.\n   - Copy the VLLM-OpenAI code into the container.\n\n5. **requirements.txt**:\n   - List all Python packages needed, including specific versions, such as `transformers` and `torch`.\n\n6. **Build the Container**:\n   - Use the command `docker build -t vllm-openai .` to build the container.\n\n7. **Run the Container**:\n   - Start the container with `docker run -it vllm-openai` for an interactive session.\n\n8. **Test the Container**:\n   - Issue a test command to ensure the model responds, e.g., `echo \"Hello, how are you?\" | docker run -it vllm-openai`.\n\n9. **Optimize Resources**:\n   - Adjust resource allocation with options like `--cpuset` or `--memory` to handle computational demands.\n\n10. **Versioning**:\n    - Name your container with versioning, such as `vllm-openai-1.0`.\n\n11. **Troubleshooting**:\n    - If issues arise, check for dependency conflicts or review the model's documentation for specific requirements.\n\n12. **Documentation and Usage**:\n    - Familiarize yourself with how VLLM-OpenAI expects inputs and outputs for effective utilization.\n\nBy following these steps, you can efficiently create and manage a container for VLLM-OpenAI, ensuring it runs smoothly within your environment.","tool_calls":[]},"logprobs":null,"finish_reason":"stop","stop_reason":null}],"usage":{"prompt_tokens":12,"total_tokens":1505,"completion_tokens":1493,"prompt_tokens_details":null},"prompt_logprobs":null}
+
+Profiling Example
+-----------------
+
+To profile the AIBrix Offloading Connectors, before launching the inference engines, you need to start the profiling service with the following sample YAML file:
+
+.. literalinclude:: ../../../samples/kvcache/profiling/profiling_svc.yaml
+   :language: yaml
+   :linenos:
+
+.. code-block:: console
+
+    $ kubectl apply -f samples/kvcache/profiling/profiling_svc.yaml
+
+.. code-block:: console
+
+    $ kubectl get svc
+    NAME                       TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+    aibrix-kvcache-profiling   ClusterIP   10.70.106.217   <none>        4040/TCP   80m
+
+Once the profiling service is running, let's set up port forwarding so that we can browse the profiling results and flamegraphs from local:
+
+* Run ``kubectl port-forward svc/aibrix-kvcache-profiling 4040:4040 &`` to set up port forwarding
+
+Now let's launch the inference engine with the following environment variables set in engine's YAML file (please refer to :ref:`l1_cache_example` and :ref:`l2_cache_example` for more details).
+
+.. code-block:: yaml
+
+    env:
+      - name: AIBRIX_KV_CACHE_OL_PROFILING_ENABLED
+        value: "1"
+      - name: AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS
+        value: "http://aibrix-kvcache-profiling:4040"
+
+Run a task to generate requests to the inference engine, and you can browse the profiling results and flamegraphs from local after a while:
+
+* Open `http://localhost:4040` in your browser
+* Adjust the query parameters as illustrated in the following figure to show the flamegraph of AIBrix Offloading Connectors
+
+.. figure:: ../assets/images/aibrix-kvcache-profiling.png
+  :alt: aibrix-kvcache-profiling
+  :width: 99%
+  :align: center

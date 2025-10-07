@@ -20,7 +20,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List
 
-from .cache_hashable import TokenListView
+from .cache_args import parse_kvcache_api_args
 from .status import Status
 from .utils import cpu_perf_timer, human_readable_bytes
 
@@ -174,12 +174,12 @@ class MetricRecorder(ABC):
 class OpMetrics(Metrics):
     """Op metrics."""
 
-    num_ops: int = 0
-    num_errors: int = 0
-    num_errors_by_reason: Dict[str, int] = {}
-    num_prefixes: List[int] = []
-    num_tokens: List[int] = []
-    num_fetched_tokens: List[int] = []
+    num_ops: int
+    num_errors: int
+    num_errors_by_reason: Dict[str, int]
+    num_prefixes: List[int]
+    num_tokens: List[int]
+    num_fetched_tokens: List[int]
     op_lat_ms: List[int]
     op_breadowns: List[Breakdowns]
 
@@ -191,6 +191,15 @@ class OpMetrics(Metrics):
         enable_time_measurement: bool = True,
         enable_breakdown_measurement: bool = True,
     ) -> None:
+        self.num_ops = 0
+        self.num_errors = 0
+        self.num_errors_by_reason = {}
+        self.num_prefixes = []
+        self.num_tokens = []
+        self.num_fetched_tokens = []
+        self.op_lat_ms = []
+        self.op_breadowns = []
+
         self._op = op
         self._is_error = is_error
         self._block_ntokens = block_ntokens
@@ -393,8 +402,8 @@ class UsageMetrics(Metrics):
     """Usage metrics."""
 
     resource: MetricRecorder.Resource
-    capacity_nbytes: int = 0
-    used_nbytes: int = 0
+    capacity_nbytes: int
+    used_nbytes: int
 
     def __init__(
         self,
@@ -403,6 +412,7 @@ class UsageMetrics(Metrics):
     ) -> None:
         self.resource = resource
         self.capacity_nbytes = capacity_nbytes
+        self.used_nbytes = 0
 
     def update(self, used_nbytes: int) -> None:
         self.used_nbytes = used_nbytes
@@ -471,8 +481,8 @@ class BaseCacheMetrics(Metrics, MetricRecorder):
     put_metrics: OpMetrics
     get_metrics: OpMetrics
     exists_metrics: OpMetrics
-    num_tokens_hit: int = 0
-    num_tokens_miss: int = 0
+    num_tokens_hit: int
+    num_tokens_miss: int
 
     def __init__(
         self,
@@ -486,6 +496,9 @@ class BaseCacheMetrics(Metrics, MetricRecorder):
         self._block_ntokens = block_ntokens
         self._enable_time_measurement = enable_time_measurement
         self._enable_breakdown_measurement = enable_breakdown_measurement
+
+        self.num_tokens_hit = 0
+        self.num_tokens_miss = 0
         self.put_metrics = OpMetrics(
             MetricRecorder.OP.PUT,
             lambda status: not status.is_ok(),
@@ -871,20 +884,19 @@ class MeasurableBase:
             @functools.wraps(func)
             async def async_wrapper(
                 self,
-                prefix: TokenListView | None,
-                tokens: TokenListView,
                 *args,
                 **kwargs,
             ):
                 with cpu_perf_timer(
                     self._enable_time_measurement
                 ) as get_lat_ms:
-                    status = await func(self, prefix, tokens, *args, **kwargs)
+                    prefix, query, _ = parse_kvcache_api_args(*args, **kwargs)
+                    status = await func(self, *args, **kwargs)
                 if self._recorder:
                     self._recorder.record(
                         op,
                         0 if prefix is None else len(prefix),
-                        len(tokens),
+                        len(query),  # type: ignore
                         status,
                         get_lat_ms(),
                     )
@@ -893,20 +905,19 @@ class MeasurableBase:
             @functools.wraps(func)
             def wrapper(
                 self,
-                prefix: TokenListView | None,
-                tokens: TokenListView,
                 *args,
                 **kwargs,
             ):
                 with cpu_perf_timer(
                     self._enable_time_measurement
                 ) as get_lat_ms:
-                    status = func(self, prefix, tokens, *args, **kwargs)
+                    prefix, query, _ = parse_kvcache_api_args(*args, **kwargs)
+                    status = func(self, *args, **kwargs)
                 if self._recorder:
                     self._recorder.record(
                         op,
                         0 if prefix is None else len(prefix),
-                        len(tokens),
+                        len(query),  # type: ignore
                         status,
                         get_lat_ms(),
                     )

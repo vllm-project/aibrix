@@ -17,9 +17,9 @@ from typing import Iterator, Sequence, Tuple
 
 import torch
 
-from ..cache_hashable import TokenCacheKey, TokenListView
+from ..cache_hashable import KVCacheKey, KVCacheKeyTypes
 from ..common.absl_logging import getLogger, log_every_n_seconds
-from ..memory import MemoryRegion, TensorPoolAllocator
+from ..memory import ManagedMemoryRegion, MemoryRegion, TensorPoolAllocator
 from ..metrics import L1CacheMetrics, MeasurableBase, MetricRecorder
 from ..profiling import nvtx_range
 from ..spec import KVCacheBlockSpec
@@ -141,15 +141,15 @@ class L1Cache(MeasurableBase):
     @MeasurableBase.measure(MetricRecorder.OP.EXISTS)
     def exists(
         self,
-        prefix: TokenListView | None,
-        tokens: TokenListView,
+        prefix: KVCacheKeyTypes | None,
+        query: KVCacheKeyTypes,
     ) -> Status[int]:
         """Check if the kv cache corresponding to given prefix and
-        tokens exists.
+        query tokens exists.
 
         Args:
-            prefix: The prefix of the kv cache. E.g., [1, 2, 3]
-            tokens: The tokens of the kv cache. E.g., [4, 5, 6, 7]
+            prefix: The prefix tokens/block hashes of the kv cache.
+            query: The query tokens/block hashes of the kv cache.
         Returns:
             Number of blocks existing in the kv cache service.
         """
@@ -157,8 +157,8 @@ class L1Cache(MeasurableBase):
             return Status(StatusCodes.INVALID)
 
         total = 0
-        for key in self._cache_block_keys(prefix, tokens):
-            cache_key = TokenCacheKey(*key)
+        for key in self._cache_block_keys(prefix, query):
+            cache_key = KVCacheKey(*key)
             if cache_key in self._eviction_policy:
                 total += 1
             else:
@@ -169,16 +169,16 @@ class L1Cache(MeasurableBase):
     @MeasurableBase.measure(MetricRecorder.OP.PUT)
     def put(
         self,
-        prefix: TokenListView | None,
-        tokens: TokenListView,
+        prefix: KVCacheKeyTypes | None,
+        query: KVCacheKeyTypes,
         kv_tensors: torch.Tensor
         | Sequence[torch.Tensor]
         | Sequence[MemoryRegion],
     ) -> Status[int]:
         """Put kv tensors to the cache.
         Args:
-            prefix (TokenListView | None): The prefix tokens of the kv tensors.
-            tokens (TokenListView): The tokens of the kv tensors.
+            prefix: The prefix tokens/block hashes of the kv tensors.
+            query: The query tokens/block hashes of the kv tensors.
             kv_tensors: The kv tensors.
         Returns:
             The status of the put operation and the number of blocks.
@@ -186,21 +186,21 @@ class L1Cache(MeasurableBase):
         if isinstance(kv_tensors, torch.Tensor) or isinstance(
             kv_tensors[0], torch.Tensor
         ):
-            return self._put_tensors_impl(prefix, tokens, kv_tensors)  # type: ignore[arg-type]
+            return self._put_tensors_impl(prefix, query, kv_tensors)  # type: ignore[arg-type]
         else:
-            return self._put_mrs_impl(prefix, tokens, kv_tensors)  # type: ignore[arg-type]
+            return self._put_mrs_impl(prefix, query, kv_tensors)  # type: ignore[arg-type]
 
     def _put_tensors_impl(
         self,
-        prefix: TokenListView | None,
-        tokens: TokenListView,
+        prefix: KVCacheKeyTypes | None,
+        query: KVCacheKeyTypes,
         kv_tensors: torch.Tensor | Sequence[torch.Tensor],
     ) -> Status[int]:
         """Put kv tensors to the cache.
         Args:
-            prefix (TokenListView | None): The prefix tokens of the kv tensors.
-            tokens (TokenListView): The tokens of the kv tensors.
-            kv_tensors (torch.Tensor | Sequence[torch.Tensor]): The kv tensors.
+            prefix: The prefix tokens/block hashes of the kv tensors.
+            query: The query tokens/block hashes of the kv tensors.
+            kv_tensors: The kv tensors.
         Returns:
             The status of the put operation and the number of blocks.
         """
@@ -214,11 +214,11 @@ class L1Cache(MeasurableBase):
             )
 
         if isinstance(kv_tensors, torch.Tensor):
-            if len(tokens) != kv_tensors.shape[self.block_shape_token_dim]:
+            if len(query) != kv_tensors.shape[self.block_shape_token_dim]:
                 return Status(
                     StatusCodes.INVALID,
                     (
-                        f"Number of tokens {len(tokens)} is not equal to the "
+                        f"Number of tokens {len(query)} is not equal to the "
                         f"number of tokens in key tensors "
                         f"{kv_tensors.shape[self.block_shape_token_dim]}."
                     ),
@@ -232,29 +232,29 @@ class L1Cache(MeasurableBase):
                         f"to block shape {self.block_shape}."
                     ),
                 )
-            if len(tokens) != len(kv_tensors) * self.block_ntokens:
+            if len(query) != len(kv_tensors) * self.block_ntokens:
                 return Status(
                     StatusCodes.INVALID,
                     (
-                        f"Number of tokens {len(tokens)} is not equal to the "
+                        f"Number of tokens {len(query)} is not equal to the "
                         f"number of tokens in key tensors "
                         f"{len(kv_tensors) * self.block_ntokens}."
                     ),
                 )
 
         # If it is not a full block, we don't need to cache it.
-        if len(tokens) // self.block_ntokens == 0:
+        if len(query) // self.block_ntokens == 0:
             return Status.ok(0)
 
-        num_tokens = len(tokens)
+        num_tokens = len(query)
         num_blocks = num_tokens // self.block_ntokens
 
         sizes = [
-            MemoryRegion.calculate_size(
-                self.block_nbytes, len(block_prefix) + len(block_tokens)
+            ManagedMemoryRegion.calculate_size(
+                self.block_nbytes, len(block_prefix) + len(block_query)
             )
-            for block_prefix, block_tokens in self._cache_block_keys(
-                prefix, tokens
+            for block_prefix, block_query in self._cache_block_keys(
+                prefix, query
             )
         ]
 
@@ -280,6 +280,7 @@ class L1Cache(MeasurableBase):
         block_mr_shape[self.block_shape_token_dim] = self.block_ntokens
         with cpu_perf_timer() as get_copy_dur_ms:
             for i, block_mr in enumerate(block_mrs):
+                assert isinstance(block_mr, ManagedMemoryRegion)
                 block_mr.block_nbytes = self.block_nbytes
                 cached_tensors = block_mr.to_tensor(
                     self.block_dtype, tuple(block_mr_shape)
@@ -293,7 +294,7 @@ class L1Cache(MeasurableBase):
         )
 
         put_status = self._put_mrs_impl(
-            prefix, tokens, block_mrs, with_check=False
+            prefix, query, block_mrs, with_check=False
         )
         if not put_status.is_ok():
             # failed to put all the blocks, release the allocated MRs
@@ -305,21 +306,21 @@ class L1Cache(MeasurableBase):
 
     def _put_mrs_impl(
         self,
-        prefix: TokenListView | None,
-        tokens: TokenListView,
+        prefix: KVCacheKeyTypes | None,
+        query: KVCacheKeyTypes,
         kv_mrs: Sequence[MemoryRegion],
         with_check: bool = True,
     ) -> Status[int]:
         """Put kv mrs to the cache.
         Args:
-            prefix (TokenListView | None): The prefix tokens of the kv mrs.
-            tokens (TokenListView): The tokens of the kv mrs.
-            kv_mrs (Sequence[MemoryRegion]): The kv memory regions.
-            with_check (bool): Whether to check the validity of the kv mrs.
+            prefix: The prefix tokens/block hashes of the kv mrs.
+            query: The query tokens/block hashes of the kv mrs.
+            kv_mrs: The kv memory regions.
+            with_check: Whether to check the validity of the kv mrs.
         Returns:
             The status of the put operation and the number of blocks.
         """
-        num_tokens = len(tokens)
+        num_tokens = len(query)
         num_blocks = len(kv_mrs)
 
         if with_check:
@@ -349,16 +350,17 @@ class L1Cache(MeasurableBase):
         assert len(kv_mrs) == num_blocks
 
         bi = 0
-        for block_prefix, block_tokens in self._cache_block_keys(
-            prefix, tokens[: num_blocks * self.block_ntokens]
+        for block_prefix, block_query in self._cache_block_keys(
+            prefix, query[: num_blocks * self.block_ntokens]
         ):
             if bi >= len(kv_mrs):
                 break
             block_mr = kv_mrs[bi]
+            assert isinstance(block_mr, ManagedMemoryRegion)
             if not MemoryRegion.use_compact_layout():
-                block_mr.pack_tokens(prefix=block_prefix, tokens=block_tokens)
+                block_mr.pack_tokens(prefix=block_prefix, query=block_query)
             block_mr.seal()
-            block_key = TokenCacheKey(block_prefix, block_tokens)
+            block_key = KVCacheKey(block_prefix, block_query)
             if not self._eviction_policy.put(block_key, block_mr).is_ok():
                 break
             bi += 1
@@ -369,15 +371,15 @@ class L1Cache(MeasurableBase):
     @MeasurableBase.measure(MetricRecorder.OP.ACQUIRE)
     def acquire(
         self,
-        prefix: TokenListView | None,
-        tokens: TokenListView,
+        prefix: KVCacheKeyTypes | None,
+        query: KVCacheKeyTypes,
     ) -> Status[Sequence[MemoryRegion]]:
         """Acquire cache handle pointing to the kv tensors such that the
         upper layer can access these tensors in a zero-copy way.
 
         Args:
-            prefix (TokenListView | None): The prefix tokens of the kv tensors.
-            tokens (TokenListView): The tokens of the kv tensors.
+            prefix: The prefix tokens/block hashes of the kv tensors.
+            query: The query tokens/block hashes of the kv tensors.
         Returns:
             The memory regions corresponding to the tokens.
         """
@@ -385,8 +387,8 @@ class L1Cache(MeasurableBase):
             return Status(StatusCodes.INVALID)
 
         mrs = []
-        for key in self._cache_block_keys(prefix, tokens):
-            status = self._eviction_policy.get(TokenCacheKey(*key))
+        for key in self._cache_block_keys(prefix, query):
+            status = self._eviction_policy.get(KVCacheKey(*key))
             if status.is_ok():
                 mrs.append(status.value)
             else:
@@ -399,54 +401,54 @@ class L1Cache(MeasurableBase):
 
     @nvtx_range("delete", "kv_cache_ol.L1Cache")
     def delete(
-        self, prefix: TokenListView | None, tokens: TokenListView
+        self, prefix: KVCacheKeyTypes | None, query: KVCacheKeyTypes
     ) -> Status:
         """Delete kv tensors from the cache.
         Args:
-            prefix (TokenListView | None): The prefix tokens of the kv tensors.
-            tokens (TokenListView): The tokens of the kv tensors.
+            prefix: The prefix tokens/block hashes of the kv tensors.
+            query: The query tokens/block hashes of the kv tensors.
         """
         if prefix is not None and len(prefix) % self.block_ntokens != 0:
             return Status(StatusCodes.INVALID)
 
-        for key in self._cache_block_keys(prefix, tokens):
-            self._eviction_policy.delete(TokenCacheKey(*key))
+        for key in self._cache_block_keys(prefix, query):
+            self._eviction_policy.delete(KVCacheKey(*key))
         return Status.ok()
 
     def _cache_block_keys(
-        self, prefix: TokenListView | None, tokens: TokenListView
-    ) -> Iterator[Tuple[TokenListView, TokenListView]]:
+        self, prefix: KVCacheKeyTypes | None, query: KVCacheKeyTypes
+    ) -> Iterator[Tuple[KVCacheKeyTypes, KVCacheKeyTypes]]:
         """Get the cache block keys of the kv tensors.
         Args:
-            prefix (TokenListView | None): The prefix tokens of the kv tensors.
-            tokens (TokenListView): The tokens of the kv tensors.
+            prefix: The prefix tokens/block hashes of the kv tensors.
+            query: The query tokens/block hashes of the kv tensors.
         Returns:
             The cache block keys of the kv tensors.
         """
-        return L1Cache.cache_block_keys(prefix, tokens, self.block_ntokens)
+        yield from L1Cache.cache_block_keys(prefix, query, self.block_ntokens)
 
     @staticmethod
     def cache_block_keys(
-        prefix: TokenListView | None,
-        tokens: TokenListView,
+        prefix: KVCacheKeyTypes | None,
+        query: KVCacheKeyTypes,
         block_ntokens: int,
-    ) -> Iterator[Tuple[TokenListView, TokenListView]]:
+    ) -> Iterator[Tuple[KVCacheKeyTypes, KVCacheKeyTypes]]:
         """Get the cache block keys of the kv tensors.
         Args:
-            prefix (TokenListView | None): The prefix tokens of the kv tensors.
-            tokens (TokenListView): The tokens of the kv tensors.
-            block_ntokens (int): The number of tokens in a block.
+            prefix: The prefix tokens/block hashes of the kv tensors.
+            query: The query tokens/block hashes of the kv tensors.
+            block_ntokens: The number of tokens in a block.
         Returns:
             The cache block keys of the kv tensors.
         """
         if prefix is not None:
-            all = prefix + tokens
+            all = prefix + query
             prefix_len = len(prefix)
         else:
-            all = tokens
+            all = query
             prefix_len = 0
 
-        num_blocks = len(tokens) // block_ntokens
+        num_blocks = len(query) // block_ntokens
         for _ in range(num_blocks):
             yield (
                 all[:prefix_len],

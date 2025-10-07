@@ -35,6 +35,10 @@ func (c *FakeOrchestrationV1alpha1) RayClusterReplicaSets(namespace string) v1al
 	return &FakeRayClusterReplicaSets{c, namespace}
 }
 
+func (c *FakeOrchestrationV1alpha1) StormServices(namespace string) v1alpha1.StormServiceInterface {
+	return &FakeStormServices{c, namespace}
+}
+
 // RESTClient returns a RESTClient that is used to communicate
 // with API server by this client implementation.
 func (c *FakeOrchestrationV1alpha1) RESTClient() rest.Interface {

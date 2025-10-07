@@ -19,6 +19,7 @@ import (
 	"errors"
 
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
@@ -34,7 +35,7 @@ import (
 )
 
 const (
-	modelIdentifier = "model.aibrix.ai/name"
+	modelIdentifier = constants.ModelLabelName
 	nodeType        = "ray.io/node-type"
 	nodeWorker      = "worker"
 )
@@ -115,6 +116,11 @@ func (c *Store) addPod(obj interface{}) {
 
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
 	c.debugInfo()
+
+	// Notify KV event manager
+	if c.kvEventManager != nil {
+		c.kvEventManager.OnPodAdd(pod)
+	}
 }
 
 func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
@@ -160,19 +166,27 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 
 	klog.V(4).Infof("POD UPDATED: %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
 	c.debugInfo()
+
+	// Notify KV event manager
+	if c.kvEventManager != nil {
+		c.kvEventManager.OnPodUpdate(oldPod, newPod)
+	}
 }
 
 func (c *Store) deletePod(obj interface{}) {
 	var namespace, name string
 	var hasModelLabel bool
+	var pod *v1.Pod
 	switch obj := obj.(type) {
 	case *v1.Pod:
+		pod = obj
 		namespace, name = obj.Namespace, obj.Name
 		_, hasModelLabel = obj.Labels[modelIdentifier]
 	case cache.DeletedFinalStateUnknown:
-		if pod, ok := obj.Obj.(*v1.Pod); ok {
-			namespace, name = pod.Namespace, pod.Name
-			_, hasModelLabel = pod.Labels[modelIdentifier]
+		if p, ok := obj.Obj.(*v1.Pod); ok {
+			pod = p
+			namespace, name = p.Namespace, p.Name
+			_, hasModelLabel = p.Labels[modelIdentifier]
 			break
 		}
 
@@ -189,6 +203,11 @@ func (c *Store) deletePod(obj interface{}) {
 	_, existed := c.metaPods.Load(utils.GeneratePodKey(namespace, name))
 	if !hasModelLabel && !existed {
 		return
+	}
+
+	// Notify KV event manager first (before lock)
+	if c.kvEventManager != nil && pod != nil {
+		c.kvEventManager.OnPodDelete(pod)
 	}
 
 	c.mu.Lock()

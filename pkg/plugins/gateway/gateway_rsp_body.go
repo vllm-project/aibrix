@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/ssestream"
@@ -35,12 +36,21 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
+type OpenAIResponse struct {
+	Model string `json:"model"`
+	Usage *struct {
+		PromptTokens     int64 `json:"prompt_tokens"`
+		CompletionTokens int64 `json:"completion_tokens"`
+		TotalTokens      int64 `json:"total_tokens"`
+	} `json:"usage"`
+	Code int `json:"code"`
+}
+
 func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 
-	var res openai.ChatCompletion
-	var usage openai.CompletionUsage
-	var promptTokens, completionTokens int64
+	var processingRes *extProcPb.ProcessingResponse
+	var promptTokens, completionTokens, totalTokens int64
 	var headers []*configPb.HeaderValueOption
 	complete := hasCompleted
 	routerCtx, _ := ctx.(*types.RoutingContext)
@@ -67,7 +77,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			evt := streaming.Current()
 			if len(evt.Choices) == 0 {
 				// Do not overwrite model, res can be empty.
-				usage = evt.Usage
+				promptTokens = evt.Usage.PromptTokens
+				totalTokens = evt.Usage.TotalTokens
+				completionTokens = evt.Usage.CompletionTokens
 			}
 		}
 		if err := streaming.Err(); err != nil {
@@ -81,66 +93,21 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				err.Error()), complete
 		}
 	} else {
-		// Use request ID as a key to store per-request buffer
-		// Retrieve or create buffer
-		buf, _ := requestBuffers.LoadOrStore(requestID, &bytes.Buffer{})
-		buffer := buf.(*bytes.Buffer)
-		// Append data to per-request buffer
-		buffer.Write(b.ResponseBody.Body)
-
-		if !b.ResponseBody.EndOfStream {
-			// Partial data received, wait for more chunks, we just return a common response here.
-			return &extProcPb.ProcessingResponse{
-				Response: &extProcPb.ProcessingResponse_ResponseBody{
-					ResponseBody: &extProcPb.BodyResponse{
-						Response: &extProcPb.CommonResponse{},
-					},
-				},
-			}, complete
-		}
-
-		// Last part received, process the full response
-		finalBody := buffer.Bytes()
-		// Clean up the buffer after final processing
-		requestBuffers.Delete(requestID)
-
-		if err := json.Unmarshal(finalBody, &res); err != nil {
-			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
-			complete = true
-			return generateErrorResponse(
-				envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderErrorResponseUnmarshal, RawValue: []byte("true"),
-				}}},
-				err.Error()), complete
-		} else if len(res.Model) == 0 {
-			msg := ErrorUnknownResponse.Error()
-			responseBodyContent := string(b.ResponseBody.GetBody())
-			if len(responseBodyContent) != 0 {
-				msg = responseBodyContent
+		if isLanguageRequest(routerCtx.ReqPath) {
+			processingRes, complete, promptTokens, completionTokens, totalTokens = processLanguageResponse(requestID, b)
+			if processingRes != nil {
+				return processingRes, complete
 			}
-			klog.ErrorS(err, "unexpected response", "requestID", requestID, "responseBody", responseBodyContent)
-			complete = true
-			return generateErrorResponse(
-				envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: HeaderErrorResponseUnknown, RawValue: []byte("true"),
-				}}},
-				msg), complete
 		}
-		// Do not overwrite model, res can be empty.
-		usage = res.Usage
 	}
 
 	var requestEnd string
-	if usage.TotalTokens != 0 {
+	if totalTokens != 0 {
 		complete = true
-		// Update promptTokens and completeTokens
-		promptTokens = usage.PromptTokens
-		completionTokens = usage.CompletionTokens
+
 		// Count token per user.
 		if user.Name != "" {
-			tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), res.Usage.TotalTokens)
+			tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), totalTokens)
 			if err != nil {
 				return generateErrorResponse(
 					envoyTypePb.StatusCode_InternalServerError,
@@ -202,4 +169,78 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			},
 		},
 	}, complete
+}
+
+func isLanguageRequest(requestPath string) bool {
+	nonLanguagePrefixes := []string{
+		"/v1/image/generations",
+		"/v1/video/generations",
+	}
+	for _, prefix := range nonLanguagePrefixes {
+		if strings.HasPrefix(requestPath, prefix) {
+			return false
+		}
+	}
+	return true
+}
+
+// processLanguageResponse processes output response for /chatcompletions, /completions and /embedding endpoints.
+// nolint:nakedret
+func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_ResponseBody) (processingRes *extProcPb.ProcessingResponse, complete bool, promptTokens, completionTokens, totalTokens int64) {
+	var res *OpenAIResponse
+	// Use request ID as a key to store per-request buffer
+	// Retrieve or create buffer
+	buf, _ := requestBuffers.LoadOrStore(requestID, &bytes.Buffer{})
+	buffer := buf.(*bytes.Buffer)
+	// Append data to per-request buffer
+	buffer.Write(b.ResponseBody.Body)
+
+	if !b.ResponseBody.EndOfStream {
+		// Partial data received, wait for more chunks, we just return a common response here.
+		processingRes = &extProcPb.ProcessingResponse{
+			Response: &extProcPb.ProcessingResponse_ResponseBody{
+				ResponseBody: &extProcPb.BodyResponse{
+					Response: &extProcPb.CommonResponse{},
+				},
+			},
+		}
+		return
+	}
+
+	// Last part received, process the full response
+	finalBody := buffer.Bytes()
+	// Clean up the buffer after final processing
+	requestBuffers.Delete(requestID)
+
+	if err := json.Unmarshal(finalBody, &res); err != nil {
+		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+		complete = true
+		processingRes = buildErrorResponse(envoyTypePb.StatusCode_InternalServerError, err.Error(), HeaderErrorResponseUnmarshal, "true")
+		return
+	}
+
+	if len(res.Model) == 0 {
+		msg := ErrorUnknownResponse.Error()
+		responseBodyContent := string(b.ResponseBody.GetBody())
+		if len(responseBodyContent) != 0 {
+			msg = responseBodyContent
+		}
+		klog.ErrorS(ErrorUnknownResponse, "unexpected response", "requestID", requestID, "responseBody", responseBodyContent)
+
+		code := envoyTypePb.StatusCode_InternalServerError
+		if res.Code >= 100 && res.Code < 600 {
+			code = envoyTypePb.StatusCode(res.Code)
+		}
+
+		complete = true
+		processingRes = buildErrorResponse(code, msg, HeaderErrorResponseUnknown, "true")
+		return
+	}
+
+	if res.Usage != nil {
+		promptTokens = res.Usage.PromptTokens
+		completionTokens = res.Usage.CompletionTokens
+		totalTokens = res.Usage.TotalTokens
+	}
+	return
 }

@@ -16,14 +16,31 @@ limitations under the License.
 
 package algorithm
 
-import "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/common"
+import (
+	"context"
+)
 
-// HpaScalingAlgorithm can be used by any scaler without customized algorithms
-type HpaScalingAlgorithm struct{}
+// HPAAlgorithm is a placeholder for HPA strategy (actual HPA is handled by K8s HPA resources)
+// This is a stateless struct that can be safely reused across goroutines
+type HPAAlgorithm struct{}
 
-var _ ScalingAlgorithm = (*HpaScalingAlgorithm)(nil)
+var _ ScalingAlgorithm = (*HPAAlgorithm)(nil)
 
-func (a *HpaScalingAlgorithm) ComputeTargetReplicas(currentPodCount float64, context common.ScalingContext) int32 {
-	// TODO: implement me!
-	return int32(currentPodCount)
+// ComputeRecommendation for HPA just returns current replicas as HPA is managed by K8s
+func (a *HPAAlgorithm) ComputeRecommendation(ctx context.Context, request ScalingRequest) (*ScalingRecommendation, error) {
+	// HPA scaling is handled by Kubernetes HPA controller
+	// This is just a placeholder that maintains current state
+	return &ScalingRecommendation{
+		DesiredReplicas: request.CurrentReplicas,
+		Confidence:      1.0,
+		Reason:          "HPA managed by Kubernetes",
+		Algorithm:       "hpa",
+		ScaleValid:      true,
+		Metadata:        map[string]interface{}{},
+	}, nil
+}
+
+// GetAlgorithmType returns the algorithm type
+func (a *HPAAlgorithm) GetAlgorithmType() string {
+	return "hpa"
 }

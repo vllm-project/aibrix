@@ -35,6 +35,9 @@ if TYPE_CHECKING:
     # to -1, which means we will use engine's block size.
     AIBRIX_KV_CACHE_OL_BLOCK_SIZE: int = -1
     AIBRIX_KV_CACHE_OL_CHUNK_SIZE: int = 512
+    # Maximum sequence length. Defaults to -1, which means no limit.
+    # If set, we will ignore tokens beyond this length.
+    AIBRIX_KV_CACHE_OL_MAX_SEQ_LEN: int = -1
     AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED: bool = True
     AIBRIX_KV_CACHE_OL_BREAKDOWN_MEASUREMENT_ENABLED: bool = True
     # Whether to validate the token in L2 cache. Defaults to False.
@@ -91,6 +94,9 @@ if TYPE_CHECKING:
     # Mock Connector
     AIBRIX_KV_CACHE_OL_MOCK_USE_RDMA: bool = False
     AIBRIX_KV_CACHE_OL_MOCK_USE_MPUT_MGET: bool = False
+    AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_PUT: bool = False
+    AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_GET: bool = False
+    AIBRIX_KV_CACHE_OL_MOCK_USE_NOOP: bool = False
 
     # RocksDB Env Vars
     AIBRIX_KV_CACHE_OL_ROCKSDB_ROOT: str = os.path.expanduser(
@@ -160,6 +166,9 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     ),
     "AIBRIX_KV_CACHE_OL_CHUNK_SIZE": lambda: int(
         os.getenv("AIBRIX_KV_CACHE_OL_CHUNK_SIZE", "512")
+    ),
+    "AIBRIX_KV_CACHE_OL_MAX_SEQ_LEN": lambda: int(
+        os.getenv("AIBRIX_KV_CACHE_OL_MAX_SEQ_LEN", "-1")
     ),
     "AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED", "1")
@@ -268,6 +277,18 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     ),
     "AIBRIX_KV_CACHE_OL_MOCK_USE_MPUT_MGET": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_MOCK_USE_MPUT_MGET", "0").strip().lower()
+        in ("1", "true")
+    ),
+    "AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_PUT": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_PUT", "0").strip().lower()
+        in ("1", "true")
+    ),
+    "AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_GET": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_MOCK_USE_GDR_GET", "0").strip().lower()
+        in ("1", "true")
+    ),
+    "AIBRIX_KV_CACHE_OL_MOCK_USE_NOOP": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_MOCK_USE_NOOP", "0").strip().lower()
         in ("1", "true")
     ),
     # ================== RocksDB Env Vars ==================

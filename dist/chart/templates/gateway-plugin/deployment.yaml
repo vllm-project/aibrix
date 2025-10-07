@@ -23,6 +23,10 @@ spec:
         {{- include "chart.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-gateway-plugin
     spec:
+      {{- with .Values.gatewayPlugin.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -48,6 +52,7 @@ spec:
                     operator: NotIn
                     values:
                       - "true"
+      {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.gatewayPlugin.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
       initContainers:
         - name: init-c
           image: {{ .Values.gatewayPlugin.initContainer.image.repository }}:{{ .Values.gatewayPlugin.initContainer.image.tag }}
@@ -55,7 +60,7 @@ spec:
       containers:
         - name: gateway-plugin
           image: {{ .Values.gatewayPlugin.container.image.repository }}:{{ .Values.gatewayPlugin.container.image.tag }}
-          imagePullPolicy: {{ .Values.gatewayPlugin.container.image.pullPolicy }}
+          imagePullPolicy: {{ .Values.gatewayPlugin.container.image.imagePullPolicy | default "IfNotPresent" }}
           ports:
             - name: gateway
               containerPort: 50052
@@ -68,6 +73,13 @@ spec:
               value: {{ .Values.gatewayPlugin.dependencies.redis.host }}
             - name: REDIS_PORT
               value: "{{ .Values.gatewayPlugin.dependencies.redis.port }}"
+            {{- if .Values.metadata.redis.enablePassword }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aibrix-redis
+                  key: redis-password
+            {{- end }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -80,7 +92,7 @@ spec:
             - name: {{ $key }}
               value: "{{ $val }}"
 {{- end }}
-          resources: {{ toYaml .Values.gatewayPlugin.resources | nindent 12 }}
+          resources: {{ toYaml .Values.gatewayPlugin.container.resources | nindent 12 }}
           livenessProbe:
             {{- toYaml .Values.gatewayPlugin.container.probes.liveness | nindent 12 }}
           readinessProbe:

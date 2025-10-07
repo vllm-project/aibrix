@@ -135,3 +135,52 @@ End-to-end tests for this algorithm can be found in [vtc_routing_test.go](../../
 
 ### Other VTC variants
 The VTC paper and reference implementation ([slora/server/router](https://github.com/Ying1123/VTC-artifact/tree/main/slora/server/router)) describe other VTC variants like `vtc-fair` (pure fairness), `vtc-max-fair`, and `vtc-pred` (using length prediction). Adapting these variants for use within the Aibrix Kubernetes routing context, which involves selecting specific pods rather than managing a single request queue, is a potential area for future enhancement.
+
+## Prefill-Decode Disaggregation
+
+Below is the pseudo-code for prefix-cache aware routing.
+
+
+```shell
+// Route take all ready pods for that model and later are filtered for Prefill and Decode.
+func Route(readyPods *[]v1.Pod) {
+    prefillPods, decodePods := filterPrefillAndDecodePods(readPods)
+
+    doPrefillRequest(prefillPods)
+
+    // randomly selects decode worker
+    return selectDecode(decodePods)
+}
+
+func filterPrefillAndDecodePods(readyPods *[]v1.Pod) {
+    prefillPods := filterBasedOfLabelSelector("role-name=prefill")
+    decodePods := filterBasedOfLabelSelector("role-name=decode")
+
+    return prefillPods, decodePods
+}
+
+// selects prefill worker and sends prefill request (based of engine)
+func doPrefillRequest(prefillPods) {
+
+    // check if any prefill pod already have shared prefix hence re-use kv-cache 
+    // if no prefix sharing then use load-balancing to select prefill worker
+    prefillPod := evaluatePrefixCache(prefillPods)
+
+    // get inference engine using pod labels
+    llmEngine := labelValue("model.aibrix.ai/engine")
+    
+    if llmEngine == "sglang" {
+        async prefill_request() // for sglang send async prefill request
+    } else {
+        sync prefill_request()
+    }
+
+    return
+}
+```
+
+- **AIBRIX_PREFILL_REQUEST_TIMEOUT**
+
+    AIBrix gateway is an external processing plugin for envoy proxy which handles inference request validation, selection of target worker and more, but request forwarding to inference engine is done by envoy proxy.
+    
+    Prefill-Decode disaggregation is a special scenario, where prefill request is directly sent to inference engine by AIBrix gateway plugin and decode request is fowarded by envoy proxy. For prefill request if needed timeout can be configured using env variable, default is <ins>**_60s_**</ins>.

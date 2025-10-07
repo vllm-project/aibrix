@@ -14,7 +14,7 @@
 
 
 from aibrix_kvcache import TokenListView
-from aibrix_kvcache.memory import MemoryRegion, TensorPoolAllocator
+from aibrix_kvcache.memory import ManagedMemoryRegion, TensorPoolAllocator
 
 from .conftest import randomize_mrs
 
@@ -24,7 +24,7 @@ def test_pack_unpack_basic(compact_layout_enabled):
     max_ntokens = 57
     expected_mr_nbytes = block_nbytes if compact_layout_enabled else 256
     assert (
-        MemoryRegion.calculate_size(
+        ManagedMemoryRegion.calculate_size(
             block_nbytes=block_nbytes, ntokens=max_ntokens
         )
         == expected_mr_nbytes
@@ -42,7 +42,7 @@ def test_pack_unpack_basic(compact_layout_enabled):
     assert mr.unpack_tokens()[1] is None
     orig_tensor = mr.to_tensor().clone()
     orig_tokens = TokenListView(tuple(range(16)))
-    mr.pack_tokens(tokens=orig_tokens)
+    mr.pack_tokens(query=orig_tokens)
     mr.seal()
     prefix_from_mr, tokens_from_mr = mr.unpack_tokens()
     # check if tokens are unpacked correctly
@@ -56,7 +56,7 @@ def test_pack_unpack_basic(compact_layout_enabled):
     all = TokenListView(temp)
     orig_prefix = all[:16]
     orig_tokens = all[16:]
-    mr.pack_tokens(prefix=orig_prefix, tokens=orig_tokens)
+    mr.pack_tokens(prefix=orig_prefix, query=orig_tokens)
     mr.seal()
     prefix_from_mr, tokens_from_mr = mr.unpack_tokens()
     assert len(prefix_from_mr) == len(orig_prefix)
@@ -70,7 +70,7 @@ def test_pack_unpack_max(compact_layout_enabled):
     max_ntokens = 57
     expected_mr_nbytes = block_nbytes if compact_layout_enabled else 256
     assert (
-        MemoryRegion.calculate_size(
+        ManagedMemoryRegion.calculate_size(
             block_nbytes=block_nbytes, ntokens=max_ntokens
         )
         == expected_mr_nbytes
@@ -88,7 +88,7 @@ def test_pack_unpack_max(compact_layout_enabled):
     assert mr.unpack_tokens()[1] is None
     orig_tensor = mr.to_tensor().clone()
     orig_tokens = TokenListView(tuple(range(max_ntokens)))
-    mr.pack_tokens(tokens=orig_tokens)
+    mr.pack_tokens(query=orig_tokens)
     mr.seal()
     _, tokens_from_mr = mr.unpack_tokens()
     # check if tokens are unpacked correctly

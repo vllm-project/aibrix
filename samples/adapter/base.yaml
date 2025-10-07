@@ -4,11 +4,13 @@ metadata:
   labels:
     model.aibrix.ai/name: qwen-coder-1-5b-instruct # Note: The label value `model.aibrix.ai/name` here must match with the service name.
     model.aibrix.ai/port: "8000"
-    adapter.model.aibrix.ai/enabled: "true"
+    adapter.model.aibrix.ai/enabled: "true" # Required for LoRA adapter support
   name: qwen-coder-1-5b-instruct
   namespace: default
 spec:
-  replicas: 1
+  # Increase replicas for better adapter reliability and load distribution
+  # Allows multiple LoRA adapters to be distributed across pods
+  replicas: 3
   selector:
     matchLabels:
       model.aibrix.ai/name: qwen-coder-1-5b-instruct
@@ -16,6 +18,7 @@ spec:
     metadata:
       labels:
         model.aibrix.ai/name: qwen-coder-1-5b-instruct
+        adapter.model.aibrix.ai/enabled: "true"
     spec:
       containers:
         - command:
@@ -38,8 +41,12 @@ spec:
           imagePullPolicy: Always
           name: vllm-openai
           env:
+            # REQUIRED: Enable runtime LoRA updating for ModelAdapter support
             - name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
               value: "True"
+            # Optional: Increase timeout for better reliability during adapter loading
+            - name: VLLM_LORA_MODULES_LOADING_TIMEOUT
+              value: "300"
           ports:
             - containerPort: 8000
               protocol: TCP
@@ -48,6 +55,24 @@ spec:
               nvidia.com/gpu: "1"
             requests:
               nvidia.com/gpu: "1"
+          # Health checks for better pod reliability
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health  
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
         - name: aibrix-runtime
           image: aibrix/runtime:v0.3.0
           command:

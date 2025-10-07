@@ -86,19 +86,29 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	routingCtx.ReqPath = requestPath
 	routingCtx.ReqHeaders = reqHeaders
 
+	headers := []*configPb.HeaderValueOption{}
+	headers = append(headers, &configPb.HeaderValueOption{
+		Header: &configPb.HeaderValue{
+			Key:      HeaderWentIntoReqHeaders,
+			RawValue: []byte("true"),
+		},
+	})
+
+	switch requestPath {
+	case "/v1/image/generations":
+		headers = buildEnvoyProxyHeaders(headers, ":path", "/generate")
+	case "/v1/video/generations":
+		headers = buildEnvoyProxyHeaders(headers, ":path", "/generatevideo")
+	default:
+		break
+	}
+
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestHeaders{
 			RequestHeaders: &extProcPb.HeadersResponse{
 				Response: &extProcPb.CommonResponse{
 					HeaderMutation: &extProcPb.HeaderMutation{
-						SetHeaders: []*configPb.HeaderValueOption{
-							{
-								Header: &configPb.HeaderValue{
-									Key:      HeaderWentIntoReqHeaders,
-									RawValue: []byte("true"),
-								},
-							},
-						},
+						SetHeaders: headers,
 					},
 					ClearRouteCache: true,
 				},

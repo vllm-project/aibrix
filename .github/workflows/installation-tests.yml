@@ -163,12 +163,21 @@ jobs:
 
       - name: Deploy Workload
         run: |
-          cd development/app
-          kubectl apply -k config/mock
+          cd development/app/config/mock
+          kustomize edit set image aibrix/vllm-mock=aibrix/vllm-mock:${{ github.sha }}
+          kustomize edit set image aibrix/runtime=aibrix/runtime:${{ github.sha }}
+          kubectl apply -k .
 
       - name: Check pod status
         run: |
-          sleep 45s
+          sleep 60s
+          
+          # Verify the mock deployment status.
+          # This pod runs two containers: `llm-engine` (app) and `aibrix-runtime` (sidecar).
+          # We iterate on the runtime often; missing Poetry deps or startup errors
+          # can cause CrashLoopBackOff. Make CI failures self-diagnosable by:
+          #  1) describing the pod to capture conditions/events, and
+          #  2) dumping the *previous* crash logs from `aibrix-runtime`.
           kubectl get pods --all-namespaces
           kubectl wait pod --all --for=condition=ready --all-namespaces --timeout=300s
 

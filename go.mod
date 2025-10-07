@@ -17,7 +17,8 @@ require (
 	github.com/onsi/ginkgo/v2 v2.20.1
 	github.com/onsi/gomega v1.35.1
 	github.com/open-policy-agent/cert-controller v0.12.0
-	github.com/openai/openai-go v1.1.0
+	github.com/openai/openai-go v1.12.0
+	github.com/pebbe/zmq4 v1.2.10
 	github.com/pkoukk/tiktoken-go v0.1.7
 	github.com/pkoukk/tiktoken-go-loader v0.0.1
 	github.com/prometheus/client_golang v1.20.2
@@ -25,6 +26,7 @@ require (
 	github.com/prometheus/common v0.55.0
 	github.com/ray-project/kuberay/ray-operator v1.2.1
 	github.com/redis/go-redis/v9 v9.6.1
+	github.com/shamaton/msgpack/v2 v2.1.1
 	github.com/stretchr/testify v1.10.0
 	go.uber.org/atomic v1.11.0
 	google.golang.org/grpc v1.65.0
@@ -35,7 +37,7 @@ require (
 	k8s.io/code-generator v0.31.2
 	k8s.io/klog/v2 v2.130.1
 	k8s.io/kube-openapi v0.0.0-20240620174524-b456828f718b
-	k8s.io/metrics v0.29.6
+	k8s.io/metrics v0.31.2
 	k8s.io/utils v0.0.0-20240711033017-18e509b52bc8
 	sigs.k8s.io/controller-runtime v0.19.1
 	sigs.k8s.io/gateway-api v1.0.0

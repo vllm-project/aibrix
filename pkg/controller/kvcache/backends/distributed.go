@@ -26,7 +26,6 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 type DistributedReconciler struct {
@@ -56,20 +55,10 @@ func (r *DistributedReconciler) Reconcile(ctx context.Context, kvCache *orchestr
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileRedisService(ctx, kvCache); err != nil {
-		return reconcile.Result{}, err
-	}
-
-	if err := r.reconcileWatcherPodServiceAccount(ctx, r.Backend.BuildWatcherPodServiceAccount(kvCache)); err != nil {
-		return reconcile.Result{}, err
-	}
-
-	if err := r.reconcileWatcherPodRole(ctx, r.Backend.BuildWatcherPodRole(kvCache)); err != nil {
-		return reconcile.Result{}, err
-	}
-
-	if err := r.reconcileWatcherPodRoleBinding(ctx, r.Backend.BuildWatcherPodRoleBinding(kvCache)); err != nil {
-		return reconcile.Result{}, err
+	if kvCache.Spec.Metadata != nil && kvCache.Spec.Metadata.Redis != nil {
+		if err := r.reconcileRedisService(ctx, kvCache); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Handle infinistore kvCache Deployment
@@ -82,9 +71,23 @@ func (r *DistributedReconciler) Reconcile(ctx context.Context, kvCache *orchestr
 		return ctrl.Result{}, err
 	}
 
-	// Handle Hpkv/infinistore watcher Pod
-	if err := r.ReconcilePodObject(ctx, r.Backend.BuildWatcherPod(kvCache)); err != nil {
-		return ctrl.Result{}, err
+	if kvCache.Spec.Watcher != nil {
+		if err := r.reconcileWatcherPodServiceAccount(ctx, r.Backend.BuildWatcherPodServiceAccount(kvCache)); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		if err := r.reconcileWatcherPodRole(ctx, r.Backend.BuildWatcherPodRole(kvCache)); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		if err := r.reconcileWatcherPodRoleBinding(ctx, r.Backend.BuildWatcherPodRoleBinding(kvCache)); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		// Handle Hpkv/infinistore watcher Pod
+		if err := r.ReconcilePodObject(ctx, r.Backend.BuildWatcherPod(kvCache)); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	return ctrl.Result{}, nil

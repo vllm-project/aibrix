@@ -14,19 +14,72 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package algorithm provides scaling algorithms for different autoscaling strategies.
+// Each strategy (KPA, APA, HPA) has its own algorithm implementation that computes
+// target replicas based on metrics and scaling context.
 package algorithm
 
-import "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/common"
+import (
+	"context"
+	"time"
 
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
+)
+
+// ScalingAlgorithm computes target replicas based on metrics and context
+// Implementations must be stateless and thread-safe for concurrent use
 type ScalingAlgorithm interface {
-	// ComputeTargetReplicas calculates the number of replicas needed based on current metrics
-	// and the provided scaling specifications.
-	//
-	// Parameters:
-	// currentPodCount - the current number of ready pods
-	// context - an interface that provides access to scaling parameters like target values and tolerances
-	//
-	// Returns:
-	// int32 - the calculated target number of replicas
-	ComputeTargetReplicas(currentPodCount float64, context common.ScalingContext) int32
+	// ComputeRecommendation calculates desired replica count based on aggregated metrics
+	// All configuration is passed via the request to keep the algorithm stateless
+	ComputeRecommendation(ctx context.Context, request ScalingRequest) (*ScalingRecommendation, error)
+
+	// GetAlgorithmType returns the algorithm type (kpa, apa, hpa)
+	GetAlgorithmType() string
+}
+
+// ScalingRequest contains all data needed for scaling decision
+type ScalingRequest struct {
+	Target            types.ScaleTarget
+	CurrentReplicas   int32
+	AggregatedMetrics *types.AggregatedMetrics
+	ScalingContext    scalingctx.ScalingContext
+	Timestamp         time.Time
+}
+
+// ScalingRecommendation contains the scaling decision
+type ScalingRecommendation struct {
+	DesiredReplicas int32
+	Confidence      float64
+	Reason          string
+	Algorithm       string
+	ScaleValid      bool
+	Metadata        map[string]interface{}
+}
+
+// NewScalingAlgorithm creates a stateless algorithm instance for the given strategy
+// Instances can be safely cached and reused across goroutines
+func NewScalingAlgorithm(strategy autoscalingv1alpha1.ScalingStrategyType) ScalingAlgorithm {
+	switch strategy {
+	case autoscalingv1alpha1.KPA:
+		return &KPAAlgorithm{}
+	case autoscalingv1alpha1.APA:
+		return &APAAlgorithm{}
+	case autoscalingv1alpha1.HPA:
+		return &HPAAlgorithm{}
+	default:
+		return &KPAAlgorithm{} // Default to KPA
+	}
+}
+
+// applyConstraints applies min/max replica constraints from ScalingContext
+func applyConstraints(replicas int32, context scalingctx.ScalingContext) int32 {
+	if replicas < context.GetMinReplicas() {
+		return context.GetMinReplicas()
+	}
+	if replicas > context.GetMaxReplicas() {
+		return context.GetMaxReplicas()
+	}
+	return replicas
 }

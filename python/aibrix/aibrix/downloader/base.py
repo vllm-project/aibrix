@@ -145,18 +145,21 @@ class BaseDownloader(ABC):
                 f"use {num_threads} threads to download."
             )
 
-            executor = ThreadPoolExecutor(num_threads)
-            futures = [
-                executor.submit(
-                    self.download,
-                    local_path=local_path,
-                    bucket_path=file,
-                    bucket_name=self.bucket_name,
-                    enable_range=False,
-                )
-                for file in filtered_files
-            ]
-            wait(futures)
+            with ThreadPoolExecutor(num_threads) as executor:
+                futures = [
+                    executor.submit(
+                        self.download,
+                        local_path=local_path,
+                        bucket_path=file,
+                        bucket_name=self.bucket_name,
+                        enable_range=False,
+                    )
+                    for file in filtered_files
+                ]
+                # Wait for completion and surface any exceptions from workers.
+                wait(futures)
+                for f in futures:
+                    f.result()
 
         else:
             logger.info(

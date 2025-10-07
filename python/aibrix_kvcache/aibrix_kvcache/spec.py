@@ -87,6 +87,7 @@ class KVCacheBlockSpec:
     def __post_init__(self):
         if self.block_ntokens <= 0:
             raise ValueError("block_ntokens must be greater than 0.")
+        self.engine_block_ntokens = self.block_ntokens
         # If AIBRIX_KV_CACHE_OL_BLOCK_SIZE is set, use it to override
         # block spec's block_ntokens
         configured_block_ntokens = envs.AIBRIX_KV_CACHE_OL_BLOCK_SIZE
@@ -104,17 +105,30 @@ class KVCacheBlockSpec:
             * self.tensor_spec.head_size
             * self.block_dtype.itemsize
         )
-        self.block_shape: Tuple[int, ...] = self._get_block_shape()
+        self.engine_block_nbytes: int = (
+            2
+            * self.engine_block_ntokens
+            * len(self.tensor_spec.layers)
+            * len(self.tensor_spec.heads)
+            * self.tensor_spec.head_size
+            * self.block_dtype.itemsize
+        )
+        self.block_shape: Tuple[int, ...] = self._get_block_shape(
+            self.block_ntokens
+        )
+        self.engine_block_shape: Tuple[int, ...] = self._get_block_shape(
+            self.engine_block_ntokens
+        )
         self.block_shape_token_dim: int = 0
         if self.block_layout == KVCacheBlockLayout.NCLD:
             self.block_shape_token_dim = 0
         else:
             self.block_shape_token_dim = 2
 
-    def _get_block_shape(self) -> Tuple[int, ...]:
+    def _get_block_shape(self, block_ntokens: int) -> Tuple[int, ...]:
         if self.block_layout == KVCacheBlockLayout.NCLD:
             return (
-                self.block_ntokens,
+                block_ntokens,
                 2,
                 len(self.tensor_spec.layers),
                 len(self.tensor_spec.heads),
@@ -124,7 +138,7 @@ class KVCacheBlockSpec:
             return (
                 len(self.tensor_spec.layers),
                 2,
-                self.block_ntokens,
+                block_ntokens,
                 len(self.tensor_spec.heads),
                 self.tensor_spec.head_size,
             )
@@ -140,6 +154,14 @@ class ModelSpec:
 
     Args:
         max_model_len: Max length of a sequence (including prompt and output).
+        max_num_batched_tokens: Max num. of tokens to be processed in a single
+                                iteration. <= 0 means using kvcache's chunk size
+                                as the max num of batched tokens.
     """
 
     max_model_len: int
+    max_num_batched_tokens: int = -1
+
+    def __post_init__(self):
+        if self.max_model_len <= 0:
+            raise ValueError("max_model_len must be greater than 0.")

@@ -22,6 +22,8 @@ import pytest
 
 from aibrix import envs
 from aibrix.config import DOWNLOAD_CACHE_DIR
+from aibrix.downloader.base import BaseDownloader
+from aibrix.downloader.entity import RemoteSource
 from aibrix.downloader.utils import (
     check_file_exist,
     infer_model_name,
@@ -154,3 +156,56 @@ def test_infer_model_name():
 
     model_name = infer_model_name("s3://bucket/path/to/model")
     assert model_name == "model"
+
+
+class FailingDownloader(BaseDownloader):
+    _source = RemoteSource.UNKNOWN
+
+    def _valid_config(self):
+        pass
+
+    def _is_directory(self) -> bool:
+        return True
+
+    def _directory_list(self, path: str):
+        return ["a.txt", "b.txt", "c.txt"]
+
+    def _support_range_download(self) -> bool:
+        return False
+
+    def download(
+        self, local_path: Path, bucket_path: str, bucket_name=None, enable_range=True
+    ):
+        if bucket_path == "b.txt":
+            raise RuntimeError("boom")
+        # simulate success
+        (local_path / bucket_path).write_text("ok")
+
+
+def test_threadpool_exceptions_surface(tmp_path: Path):
+    dl = FailingDownloader(
+        model_uri="mock://x",
+        model_name="m",
+        bucket_path="p",
+        bucket_name=None,
+    )
+    with pytest.raises(RuntimeError):
+        dl.download_directory(local_path=tmp_path)
+
+
+def test_cli_prints_model_path(monkeypatch, capsys, tmp_path: Path):
+    # Monkeypatch downloader.download_model to return a path
+    import aibrix.downloader.__main__ as cli
+
+    def fake_download_model(
+        model_uri, local_dir, model_name, download_extra_config, enable_progress_bar
+    ):
+        return tmp_path / "m"
+
+    monkeypatch.setattr(cli, "download_model", fake_download_model)
+
+    # Simulate args
+    monkeypatch.setattr("sys.argv", ["aibrix_download", "--model-uri", "repo/name"])
+    cli.main()
+    out = capsys.readouterr().out.strip()
+    assert out.endswith("/m") or out.endswith("\\m")

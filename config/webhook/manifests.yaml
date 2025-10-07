@@ -10,8 +10,28 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate-apps-v1-deployment
+  failurePolicy: Ignore
+  name: medeployment.aibrix.ai
+  rules:
+  - apiGroups:
+    - apps
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - deployments
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-orchestration-aibrix-ai-v1alpha1-kvcache
-  failurePolicy: Fail
+  failurePolicy: Ignore
   name: mkvcache-v1alpha1.kb.io
   rules:
   - apiGroups:
@@ -31,7 +51,7 @@ webhooks:
       name: webhook-service
       namespace: system
       path: /mutate-model-aibrix-ai-v1alpha1-modeladapter
-  failurePolicy: Fail
+  failurePolicy: Ignore
   name: mmodeladapter.kb.io
   rules:
   - apiGroups:
@@ -50,9 +70,9 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-orchestration-aibrix-ai-v1alpha1-kvcache
-  failurePolicy: Fail
-  name: vkvcache-v1alpha1.kb.io
+      path: /mutate-orchestration-aibrix-ai-v1alpha1-stormservice
+  failurePolicy: Ignore
+  name: mstormservice.kb.io
   rules:
   - apiGroups:
     - orchestration.aibrix.ai
@@ -62,7 +82,7 @@ webhooks:
     - CREATE
     - UPDATE
     resources:
-    - kvcaches
+    - stormservices
   sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -76,8 +96,48 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-apps-v1-deployment
+  failurePolicy: Ignore
+  name: vedeployment.aibrix.ai
+  rules:
+  - apiGroups:
+    - apps
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - deployments
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-orchestration-aibrix-ai-v1alpha1-kvcache
+  failurePolicy: Ignore
+  name: vkvcache-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - orchestration.aibrix.ai
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - kvcaches
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-model-aibrix-ai-v1alpha1-modeladapter
-  failurePolicy: Fail
+  failurePolicy: Ignore
   name: vmodeladapter.kb.io
   rules:
   - apiGroups:
@@ -89,4 +149,24 @@ webhooks:
     - UPDATE
     resources:
     - modeladapters
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-orchestration-aibrix-ai-v1alpha1-stormservice
+  failurePolicy: Ignore
+  name: vstormservice.kb.io
+  rules:
+  - apiGroups:
+    - orchestration.aibrix.ai
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - stormservices
   sideEffects: None

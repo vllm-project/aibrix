@@ -137,7 +137,7 @@ class HPKVConnector(Connector[bytes, torch.Tensor], AsyncBase):
         assert self.conn is not None
         for slab in slabs:
             addr = slab.data_ptr()
-            length = slab.numel()
+            length = slab.numel() * slab.itemsize
             reg_buf = self.conn.reg_memory(addr, length)
             if reg_buf == 0:
                 return Status(StatusCodes.INVALID)

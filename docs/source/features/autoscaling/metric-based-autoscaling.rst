@@ -27,7 +27,7 @@ While HPA and KPA are widely used, they are not specifically designed and optimi
 Metrics
 -------
 
-AiBrix supports all the vllm metrics. Please refer to https://docs.vllm.ai/en/stable/serving/metrics.html
+AiBrix supports all the vllm metrics. Please refer to https://docs.vllm.ai/en/stable/design/metrics.html
 
 How to deploy autoscaling policy
 --------------------------------

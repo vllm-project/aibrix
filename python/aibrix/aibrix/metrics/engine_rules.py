@@ -14,27 +14,93 @@
 
 from typing import Dict
 
-from aibrix.metrics.standard_rules import RenameStandardRule, StandardRule
+from aibrix.metrics.standard_rules import (
+    PassthroughStandardRule,
+    RenameStandardRule,
+    StandardRule,
+)
 
-# Standard rule accroding to https://docs.google.com/document/d/1SpSp1E6moa4HSrJnS4x3NpLuj88sMXr2tbofKlzTZpk
+# vLLM metric standard rules - complete coverage
 VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
-    "vllm:request_success": RenameStandardRule(
-        "vllm:request_success", "aibrix:request_success"
-    ),
+    # Core performance metrics - map to aibrix namespace
     "vllm:num_requests_waiting": RenameStandardRule(
         "vllm:num_requests_waiting", "aibrix:queue_size"
-    ),
-    "vllm:time_to_first_token_seconds": RenameStandardRule(
-        "vllm:time_to_first_token_seconds", "aibrix:time_to_first_token_seconds"
     ),
     "vllm:gpu_cache_usage_perc": RenameStandardRule(
         "vllm:gpu_cache_usage_perc", "aibrix:gpu_cache_usage_perc"
     ),
+    # Token processing metrics
+    "vllm:prompt_tokens_total": RenameStandardRule(
+        "vllm:prompt_tokens_total", "aibrix:prompt_tokens_total"
+    ),
+    "vllm:generation_tokens_total": RenameStandardRule(
+        "vllm:generation_tokens_total", "aibrix:generation_tokens_total"
+    ),
+    # Latency metrics
+    "vllm:time_to_first_token_seconds": RenameStandardRule(
+        "vllm:time_to_first_token_seconds", "aibrix:time_to_first_token_seconds"
+    ),
     "vllm:time_per_output_token_seconds": RenameStandardRule(
-        "vllm:time_per_output_token_seconds", "aibrix:time_per_output_token"
+        "vllm:time_per_output_token_seconds", "aibrix:time_per_output_token_seconds"
     ),
     "vllm:e2e_request_latency_seconds": RenameStandardRule(
-        "vllm:e2e_request_latency_seconds", "aibrix:e2e_request_latency"
+        "vllm:e2e_request_latency_seconds", "aibrix:e2e_request_latency_seconds"
+    ),
+    # Request success metrics
+    "vllm:request_success_total": RenameStandardRule(
+        "vllm:request_success_total", "aibrix:request_success_total"
+    ),
+}
+
+# SGLang metric standard rules - complete coverage
+SGLANG_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
+    # Core performance metrics - map to aibrix namespace
+    "sglang:num_queue_reqs": RenameStandardRule(
+        "sglang:num_queue_reqs", "aibrix:queue_size"
+    ),
+    "sglang:gen_throughput": RenameStandardRule(
+        "sglang:gen_throughput", "aibrix:generation_throughput"
+    ),
+    # Token processing metrics
+    "sglang:prompt_tokens_total": RenameStandardRule(
+        "sglang:prompt_tokens_total", "aibrix:prompt_tokens_total"
+    ),
+    "sglang:generation_tokens_total": RenameStandardRule(
+        "sglang:generation_tokens_total", "aibrix:generation_tokens_total"
+    ),
+    # Latency metrics
+    "sglang:time_to_first_token_seconds": RenameStandardRule(
+        "sglang:time_to_first_token_seconds", "aibrix:time_to_first_token_seconds"
+    ),
+    "sglang:time_per_output_token_seconds": RenameStandardRule(
+        "sglang:time_per_output_token_seconds", "aibrix:time_per_output_token_seconds"
+    ),
+    "sglang:e2e_request_latency_seconds": RenameStandardRule(
+        "sglang:e2e_request_latency_seconds", "aibrix:e2e_request_latency_seconds"
+    ),
+    # Cache and utilization metrics
+    "sglang:cache_hit_rate": RenameStandardRule(
+        "sglang:cache_hit_rate", "aibrix:cache_hit_rate"
+    ),
+    "sglang:token_usage": RenameStandardRule(
+        "sglang:token_usage", "aibrix:token_usage"
+    ),
+    # Pass-through SGLang-specific metrics for debugging
+    "sglang:num_running_reqs": PassthroughStandardRule("sglang:num_running_reqs"),
+    "sglang:num_used_tokens": PassthroughStandardRule("sglang:num_used_tokens"),
+    "sglang:func_latency_seconds": PassthroughStandardRule(
+        "sglang:func_latency_seconds"
+    ),
+}
+
+# Enhanced vLLM rules with pass-through for debugging metrics
+ENHANCED_VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
+    **VLLM_METRIC_STANDARD_RULES,
+    # Pass-through vLLM-specific metrics for debugging
+    "vllm:num_requests_running": PassthroughStandardRule("vllm:num_requests_running"),
+    "vllm:request_prompt_tokens": PassthroughStandardRule("vllm:request_prompt_tokens"),
+    "vllm:request_generation_tokens": PassthroughStandardRule(
+        "vllm:request_generation_tokens"
     ),
 }
 
@@ -42,7 +108,12 @@ VLLM_METRIC_STANDARD_RULES: Dict[str, StandardRule] = {
 
 
 def get_metric_standard_rules(engine: str) -> Dict[str, StandardRule]:
-    if engine.lower() == "vllm":
-        return VLLM_METRIC_STANDARD_RULES
+    engine_lower = engine.lower()
+    if engine_lower == "vllm":
+        return ENHANCED_VLLM_METRIC_STANDARD_RULES
+    elif engine_lower == "sglang":
+        return SGLANG_METRIC_STANDARD_RULES
     else:
-        raise ValueError(f"Engine {engine} is not supported.")
+        raise ValueError(
+            f"Engine {engine} is not supported. Supported engines: vllm, sglang"
+        )

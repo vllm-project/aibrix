@@ -13,18 +13,29 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from typing import Sequence
+from typing import List, Sequence, TypeAlias
 
 import numpy as np
 from farmhash import FarmHash32
 
 from .common import CachedPyObjectBase
+from .utils import hash_combine_128
 
 
 class KVCacheHashable(ABC):
     """
     A hashable object that can be used to index a KV cache block.
     """
+
+    @property
+    @abstractmethod
+    def prefix(self):
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def query(self):
+        raise NotImplementedError
 
     @abstractmethod
     def __hash__(self) -> int:
@@ -36,6 +47,39 @@ class KVCacheHashable(ABC):
 
     @abstractmethod
     def __len__(self) -> int:
+        """Number of tokens"""
+        raise NotImplementedError
+
+
+class KVCacheIds(ABC):
+    """
+    A KVCacheIds is a sequence of block ids (e.g., block hashes) or tokens.
+    """
+
+    @abstractmethod
+    def __getitem__(self, index):
+        """Get item by token index"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def __add__(self, other):
+        raise NotImplementedError
+
+    @abstractmethod
+    def __iter__(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    def __hash__(self) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    def __eq__(self, other) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def __len__(self) -> int:
+        """Number of tokens"""
         raise NotImplementedError
 
 
@@ -48,7 +92,7 @@ class TokenListViewMeta:
     pass
 
 
-class TokenListView(CachedPyObjectBase):
+class TokenListView(CachedPyObjectBase, KVCacheIds):
     """
     A TokenListView is a view of a list of tokens.
     """
@@ -85,10 +129,8 @@ class TokenListView(CachedPyObjectBase):
         self._meta_ = meta or TokenListViewMeta()
 
     def __len__(self):
+        """Number of tokens"""
         return self._stop - self._start
-
-    def __contains__(self, item):
-        raise TypeError("contains is not supported for TokenListView")
 
     def __repr__(self):
         return (
@@ -185,39 +227,239 @@ class TokenListView(CachedPyObjectBase):
         return bytes_per_token * ntokens
 
 
-class BaseKVCacheHashable(KVCacheHashable, CachedPyObjectBase):
+BlockHashList: TypeAlias = List[str]
+
+
+def is_block_hash_list_type(data) -> bool:
+    if not isinstance(data, List):
+        return False
+
+    if not all(isinstance(item, str) for item in data):
+        return False
+
+    return True
+
+
+class BlockHashes(CachedPyObjectBase, KVCacheIds):
     """
-    Base class for a hashable object that uses all tokens to compute the hash.
+    A BlockHashes is a sequence of block hashes
     """
 
-    def __init__(self, prefix: TokenListView | None, tokens: TokenListView):
-        self.prefix = prefix
-        self.tokens = tokens
+    def __init__(self, data: BlockHashList, block_ntokens: int):
+        self._data = data
+        self.block_ntokens = block_ntokens
 
-        if prefix is not None:
-            self._all_tokens = prefix + tokens
-        else:
-            self._all_tokens = tokens
+        if not is_block_hash_list_type(data):
+            raise TypeError(f"Only support {BlockHashList}, got {type(data)}")
+
+    def __len__(self):
+        return len(self._data) * self.block_ntokens
+
+    def __repr__(self):
+        return f"BlockHashes(data=[len={len(self._data)}])"
+
+    def __str__(self):
+        return self.__repr__()
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            start, stop, _ = index.indices(len(self))
+            assert start % self.block_ntokens == 0, (
+                f"start ({start}) of token index must be multiple of block "
+                f"size ({self.block_ntokens})"
+            )
+            assert stop % self.block_ntokens == 0, (
+                f"stop ({stop}) of token index must be multiple of block "
+                f"size ({self.block_ntokens})"
+            )
+            if index.step is None:
+                step = self.block_ntokens
+            else:
+                step = index.step
+                assert step % self.block_ntokens == 0, (
+                    f"step ({step}) of token index must be multiple of block "
+                    f"size ({self.block_ntokens})"
+                )
+
+            start = start // self.block_ntokens
+            stop = stop // self.block_ntokens
+            step = step // self.block_ntokens
+            return BlockHashes(self._data[start:stop:step], self.block_ntokens)
+
+        # Handle single index
+        return self._data[index]
+
+    def __add__(self, other):
+        if not isinstance(other, BlockHashes):
+            raise TypeError(
+                "Can only concatenate BlockHashes with another BlockHashes"
+            )
+        if self.block_ntokens != other.block_ntokens:
+            raise ValueError(
+                "self and other should have the same block_ntokens"
+            )
+        return BlockHashes(self._data + other._data, self.block_ntokens)
+
+    def __iter__(self):
+        yield from self._data.__iter__()
+
+    def __eq__(self, other):
+        if not isinstance(other, BlockHashes):
+            return False
+        # we assume a block hash includes the information of both position and
+        # all tokens belonging to this block, therefore, we only need to check
+        # the last block hash and num of blocks to see if two BlockHashes are
+        # the same
+        return self._data[-1] == other._data[-1] and len(self._data) == len(
+            other._data
+        )
+
+    def __ne__(self, value):
+        return not self.__eq__(value)
 
     def __hash__(self) -> int:
-        return self._all_tokens.__hash__()
+        # use the last block hash and num of blocks for calculating the hash
+        return hash_combine_128(hash(self._data[-1]), len(self._data))
+
+
+class TokenCacheKey(KVCacheHashable, CachedPyObjectBase):
+    """
+    A cache key that compounds prefix and query tokens.
+    Args:
+        prefix (TokenListView | None): The prefix tokens of the kv tensors.
+        query (TokenListView): The query tokens of the kv tensors.
+    """
+
+    def __init__(self, prefix: TokenListView | None, query: TokenListView):
+        self._prefix = prefix
+        self._query = query
+
+        if prefix is not None:
+            self._all_tokens = prefix + query
+        else:
+            self._all_tokens = query
+
+    @property
+    def prefix(self):
+        return self._prefix
+
+    @property
+    def query(self):
+        return self._query
+
+    def __hash__(self) -> int:
+        return hash(self._all_tokens)
 
     def __eq__(self, other) -> bool:
-        if not isinstance(other, BaseKVCacheHashable):
+        if not isinstance(other, TokenCacheKey):
             return False
         return self._all_tokens == other._all_tokens
 
-
-class TokenCacheKey(BaseKVCacheHashable):
-    """
-    A cache key that compounds prefix and tokens.
-    Args:
-        prefix (TokenListView | None): The prefix tokens of the kv tensors.
-        tokens (TokenListView): The tokens of the kv tensors.
-    """
-
-    def __init__(self, prefix: TokenListView | None, tokens: TokenListView):
-        super().__init__(prefix, tokens)
-
     def __len__(self) -> int:
         return len(self._all_tokens)
+
+    def __str__(self) -> str:
+        return f"TokenCacheKey(prefix={self._prefix}, query={self._query})"
+
+
+class BlockCacheKey(KVCacheHashable, CachedPyObjectBase):
+    """
+    A cache key that compounds prefix and query blocks.
+    Args:
+        prefix: The prefix block hashes of the kv tensors.
+        query: The query block hashes of the kv tensors.
+        block_ntokens: Number of tokens in a block.
+    """
+
+    def __init__(
+        self,
+        prefix: BlockHashes | BlockHashList | None,
+        query: BlockHashes | BlockHashList,
+        block_ntokens: int,
+    ):
+        if isinstance(prefix, BlockHashes) or prefix is None:
+            self._prefix = prefix
+        else:
+            self._prefix = BlockHashes(prefix, block_ntokens)
+
+        if isinstance(query, BlockHashes):
+            self._query = query
+        else:
+            self._query = BlockHashes(query, block_ntokens)
+
+    @property
+    def prefix(self):
+        return self._prefix
+
+    @property
+    def query(self):
+        return self._query
+
+    def __hash__(self) -> int:
+        return hash(self.query)
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, BlockCacheKey):
+            return False
+        return self.query == other.query
+
+    def __len__(self) -> int:
+        prefix_len = len(self._prefix) if self._prefix is not None else 0
+        return prefix_len + len(self._query)
+
+    def __str__(self) -> str:
+        return f"BlockCacheKey(prefix={self._prefix}, query={self._query})"
+
+
+KVCacheKeyTypes: TypeAlias = TokenListView | BlockHashes
+
+
+class KVCacheKey(KVCacheHashable):
+    """
+    A cache key that compounds prefix and query tokens.
+    Args:
+        prefix: The prefix tokens or prefix block hashes.
+        query: The query tokens or query block hashes.
+    """
+
+    def __init__(
+        self,
+        prefix: KVCacheKeyTypes | None,
+        query: KVCacheKeyTypes,
+    ):
+        assert query is not None, "query should not be None"
+
+        query_type = type(query)
+        if prefix is not None:
+            assert type(prefix) is query_type, (
+                f"{type(prefix)} is not {query_type}"
+            )
+
+        if query_type is TokenListView:
+            self._key: KVCacheHashable = TokenCacheKey(prefix, query)  # type: ignore
+        elif query_type is BlockHashes:
+            if prefix is not None:
+                assert prefix.block_ntokens == query.block_ntokens  # type: ignore
+            self._key = BlockCacheKey(prefix, query, query.block_ntokens)  # type: ignore
+        else:
+            raise TypeError(
+                "Only TokenListView and BlockHashes are support, "
+                f"got {query_type}"
+            )
+
+    @property
+    def prefix(self):
+        return self._key.prefix
+
+    @property
+    def query(self):
+        return self._key.query
+
+    def __hash__(self) -> int:
+        return hash(self._key)
+
+    def __eq__(self, other) -> bool:
+        return self._key == other._key
+
+    def __len__(self) -> int:
+        return len(self._key)

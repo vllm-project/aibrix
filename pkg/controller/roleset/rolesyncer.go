@@ -623,6 +623,15 @@ func (s *StatelessRoleSyncer) CheckCurrentStep(ctx context.Context, roleSet *orc
 }
 
 func GetRoleSyncer(cli client.Client, role *orchestrationv1alpha1.RoleSpec) RoleRollingSyncer {
+	// Check if role requires PodSet (podGroupSize > 1)
+	if role.PodGroupSize != nil && *role.PodGroupSize > 1 {
+		return &PodSetRoleSyncer{
+			cli:             cli,
+			computeHashFunc: ctrlutil.ComputeHash,
+		}
+	}
+
+	// Use existing pod-based syncers for podGroupSize <= 1
 	if role.Stateful {
 		return &StatefulRoleSyncer{
 			cli:             cli,

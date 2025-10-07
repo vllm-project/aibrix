@@ -120,11 +120,31 @@ class TOSDownloaderV1(BaseDownloader):
         return True
 
     def _directory_list(self, path: str) -> List[str]:
-        # TODO cache list_objects_type2 result to avoid too many requests
-        objects_out = self.client.list_objects_type2(
-            self.bucket_name, prefix=path, delimiter="/"
-        )
-        return [obj.key for obj in objects_out.contents]
+        # Recursively list all objects under the prefix with best-effort pagination
+        prefix = path if path.endswith("/") else f"{path}/"
+        keys: List[str] = []
+        continuation_token: Optional[str] = None
+        while True:
+            kwargs = {"prefix": prefix}
+            if continuation_token:
+                kwargs["continuation_token"] = continuation_token
+            try:
+                resp = self.client.list_objects_type2(self.bucket_name, **kwargs)
+            except TypeError:
+                # SDK may not support continuation; fall back to single call
+                resp = self.client.list_objects_type2(self.bucket_name, prefix=prefix)
+                keys.extend([obj.key for obj in getattr(resp, "contents", [])])
+                break
+
+            keys.extend([obj.key for obj in getattr(resp, "contents", [])])
+            is_truncated = getattr(resp, "is_truncated", False)
+            if not is_truncated:
+                break
+            continuation_token = getattr(resp, "next_continuation_token", None)
+            if not continuation_token:
+                break
+
+        return keys
 
     def _support_range_download(self) -> bool:
         return True
@@ -141,14 +161,31 @@ class TOSDownloaderV1(BaseDownloader):
         except Exception as e:
             raise ValueError(f"TOS bucket path {bucket_path} not exist for {e}.")
 
-        _file_name = bucket_path.split("/")[-1]
-        local_file = local_path.joinpath(_file_name).absolute()
+        if self._is_directory():
+            prefix = self.bucket_path.rstrip("/") + "/"
+            # For directory downloads, calculate path relative to the directory.
+            relative_path = (
+                bucket_path[len(prefix) :]
+                if bucket_path.startswith(prefix)
+                else bucket_path
+            )
+        else:
+            # For single file downloads, just use the filename.
+            relative_path = bucket_path.split("/")[-1]
+        local_file = local_path.joinpath(relative_path).absolute()
+        # Ensure parent directories exist
+        local_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp_file = (
+            local_file.with_suffix(local_file.suffix + ".part")
+            if local_file.suffix
+            else Path(str(local_file) + ".part")
+        )
 
         # check if file exist
         etag = meta_data.etag
         file_size = meta_data.content_length
         meta_data_file = meta_file(
-            local_path=local_path, file_name=_file_name, source=self._source.value
+            local_path=local_path, file_name=relative_path, source=self._source.value
         )
 
         if not need_to_download(local_file, meta_data_file, file_size, etag):
@@ -164,7 +201,7 @@ class TOSDownloaderV1(BaseDownloader):
         total_length = meta_data.content_length
 
         with tqdm(
-            desc=_file_name, total=total_length, unit="b", unit_scale=True
+            desc=relative_path, total=total_length, unit="b", unit_scale=True
         ) if self.enable_progress_bar else nullcontext() as pbar:
 
             def download_progress(
@@ -173,14 +210,14 @@ class TOSDownloaderV1(BaseDownloader):
                 pbar.update(rw_once_bytes)
 
             download_file = get_local_download_paths(
-                local_path, _file_name, self._source
+                local_path, relative_path, self._source
             )
             with download_file.download_lock():
                 self.client.download_file(
                     bucket=bucket_name,
                     key=bucket_path,
                     file_path=str(
-                        local_file
+                        tmp_file
                     ),  # TOS client does not support Path, convert it to str
                     task_num=task_num,
                     data_transfer_listener=download_progress
@@ -188,6 +225,7 @@ class TOSDownloaderV1(BaseDownloader):
                     else None,
                     **download_kwargs,
                 )
+                tmp_file.replace(local_file)
                 save_meta_data(meta_data_file, etag)
 
 
@@ -210,17 +248,17 @@ class TOSDownloaderV2(S3BaseDownloader):
         )  # type: ignore
 
     def _get_auth_config(self) -> Dict[str, Optional[str]]:
-        return {
-            "region_name": self.download_extra_config.region
-            or envs.DOWNLOADER_TOS_REGION
-            or "",
-            "endpoint_url": self.download_extra_config.endpoint
-            or envs.DOWNLOADER_TOS_ENDPOINT
-            or "",
-            "aws_access_key_id": self.download_extra_config.ak
-            or envs.DOWNLOADER_TOS_ACCESS_KEY
-            or "",
-            "aws_secret_access_key": self.download_extra_config.sk
-            or envs.DOWNLOADER_TOS_SECRET_KEY
-            or "",
-        }
+        cfg: Dict[str, Optional[str]] = {}
+        region = self.download_extra_config.region or envs.DOWNLOADER_TOS_REGION
+        if region:
+            cfg["region_name"] = region
+        endpoint = self.download_extra_config.endpoint or envs.DOWNLOADER_TOS_ENDPOINT
+        if endpoint:
+            cfg["endpoint_url"] = endpoint
+        ak = self.download_extra_config.ak or envs.DOWNLOADER_TOS_ACCESS_KEY
+        sk = self.download_extra_config.sk or envs.DOWNLOADER_TOS_SECRET_KEY
+        # Only set AK/SK if both provided; otherwise let default chain/IRSA resolve
+        if ak and sk:
+            cfg["aws_access_key_id"] = ak
+            cfg["aws_secret_access_key"] = sk
+        return cfg

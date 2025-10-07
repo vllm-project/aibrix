@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"k8s.io/klog/v2"
 
 	v1 "k8s.io/api/core/v1"
@@ -33,7 +34,7 @@ import (
 
 const (
 	NAMESPACE            = "aibrix-system"
-	modelPortIdentifier  = "model.aibrix.ai/port"
+	modelPortIdentifier  = constants.ModelLabelPort
 	defaultPodMetricPort = 8000
 )
 

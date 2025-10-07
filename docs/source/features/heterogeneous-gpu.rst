@@ -127,3 +127,57 @@ A new label label ``model.aibrix.ai/min_replicas`` is added to specifies the min
 
 Important: The ``minReplicas`` field in the PodAutoscaler spec must be set to 0 to allow proper scaling behavior. Setting it to any value greater than 0 will interfere with the GPU optimizer's scaling decisions. For instance, if the GPU optimizer determines an optimal configuration of ``{v100: 0, l20: 4}`` but the v100 PodAutoscaler has ``minReplicas: 1``, the system won't be able to scale the v100 down to 0 as recommended.
 
+Routing Support
+---------------
+
+During the performance evaluation, we observed that the existing routing policy does not adequately account for the varying serving capacities of heterogeneous GPUs. Specifically, the subsequent plot illustrates that the current routing strategy fails to adhere to the specified Service Level Objective (SLO).
+
+.. figure:: ../assets/images/slo_routing/motivation.png
+  :alt: SLO Routing Motivation Plot
+  :width: 70%
+  :align: center
+
+The experimental configuration is as follows:
+
+- SLO: P99 latency per token ≤ 0.05 seconds.
+- Workloads: A mixed workload comprising `ShareGPT <https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered>`_ (7 RPS) and CodeGeneration tasks (4 RPS), characterized by long prompts (over 4K tokens) and short responses (32-64 tokens).
+- GPUs: A heterogeneous GPU environment consisting of NVIDIA A10 and NVIDIA L20 GPUs.
+
+Our experiments indicate that an ideal routing scenario (Oracle) would assign ShareGPT workloads exclusively to A10 GPUs and CodeGeneration workloads exclusively to L20 GPUs. However, the existing routing policy (woRouting) randomly distributes requests between A10 and L20 GPUs, failing to replicate this ideal scenario. For comparative purposes, we also evaluated a scenario where all requests are handled solely by the more capable L20 GPUs (Scalar). Results demonstrated that although GPU optimizers can identify an optimal GPU configuration (Oracle Cost), the current routing policy results in significant performance degradation, queue accumulation at the gateway, unstable GPU configurations, and consistent violations of the SLO.
+
+SLO routing policy was introduced in version v0.4.0 to address performance issues in heterogeneous GPU deployments. Requests must explicitly specify the ``routing-strategy: slo`` header to enable the SLO routing policy. Additionally, profiling data for each workload on each GPU is required to activate this policy effectively.
+
+An example request applying the SLO routing policy is shown below:
+
+.. code-block:: bash
+
+    curl -v http://localhost:8888/v1/chat/completions \
+		-H "model: llama2-7b" \
+		-H "Content-Type: application/json" \
+		-H "Authorization: Bearer [api_key]" \
+		-H "routing-strategy: slo" \
+		-d '{ \
+			"model": "llama2-7b", \
+			"messages": [{"role": "user", "content": "Say this is a test!"}], \
+			"temperature": 0.7 \
+		}'
+
+In the same experimental settings, the SLO routing policy demonstrated its capability to achieve the targeted performance objectives.
+
+.. figure:: ../assets/images/slo_routing/evaluation.png
+  :alt: SLO Routing Motivation Plot
+  :width: 70%
+  :align: center
+
+The SLO routing policy currently supports three variations: ``slo-pack-load``, ``slo-least-load``, and ``slo-least-load-pulling``(default policy when ``slo`` is specified). Each variation routes requests to GPUs likely to meet their respective SLOs but differ in handling requests among GPUs of the same type:
+
+- ``slo-pack-load``: Prefers consolidating requests onto a single GPU if profiling suggests no SLO violation.
+- ``slo-least-load``: Prefers routing requests to the least-loaded GPU of the same type, ignoring SLO violation predictions from profiling.
+- ``slo-least-load-pulling``: Prefers routing requests to the least-loaded GPU of the same type. Requests predicted to violate the SLO are queued at the gateway and rejected if the SLO has already been breached.
+
+The following figure compares the performance of the ``slo/slo-least-load-pulling`` and ``slo-pack-load`` variations. ``least-request`` policy is used as the baseline for a fair comparison.
+
+.. figure:: ../assets/images/slo_routing/variation_comparison.png
+  :alt: SLO Routing Motivation Plot
+  :width: 70%
+  :align: center

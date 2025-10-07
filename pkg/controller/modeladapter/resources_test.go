@@ -21,6 +21,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -36,15 +37,16 @@ func TestBuildModelAdapterEndpointSlice(t *testing.T) {
 		},
 	}
 
-	// Mock input for Pod
-	pod := &corev1.Pod{
+	// Mock input for Pods
+	pod := corev1.Pod{
 		Status: corev1.PodStatus{
 			PodIP: "192.168.1.1",
 		},
 	}
+	pods := []corev1.Pod{pod}
 
 	// Call the function to test
-	endpointSlice := buildModelAdapterEndpointSlice(instance, pod)
+	endpointSlice := buildModelAdapterEndpointSlice(instance, pods)
 
 	// Check EndpointSlice metadata
 	assert.Equal(t, "test-instance", endpointSlice.Name)
@@ -87,7 +89,7 @@ func TestBuildModelAdapterService(t *testing.T) {
 	assert.Equal(t, "test-instance", service.Name)
 	assert.Equal(t, "default", service.Namespace)
 	assert.Equal(t, map[string]string{
-		"model.aibrix.ai/name":         "test-model",
+		constants.ModelLabelName:       "test-model",
 		"adapter.model.aibrix.ai/name": "test-instance",
 	}, service.Labels)
 

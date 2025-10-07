@@ -31,6 +31,11 @@ import (
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +kubebuilder:printcolumn:name="MINPODS",type="integer",JSONPath=".spec.minReplicas"
+// +kubebuilder:printcolumn:name="MAXPODS",type="integer",JSONPath=".spec.maxReplicas"
+// +kubebuilder:printcolumn:name="REPLICAS",type="integer",JSONPath=".status.actualScale"
+// +kubebuilder:printcolumn:name="STRATEGY",type="string",JSONPath=".spec.scalingStrategy"
+// +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 
 // PodAutoscaler is the Schema for the podautoscalers API, a resource to scale Kubernetes pods based on observed metrics.
 // The fields in the spec determine how the scaling behavior should be applied.
@@ -89,9 +94,16 @@ const (
 type MetricSourceType string
 
 const (
-	// POD need to scan all k8s pods to fetch the data
+	// POD fetches metrics from individual pod endpoints (http[s]://pod_ip:port/path)
 	POD MetricSourceType = "pod"
-	// DOMAIN only need to access specified domain
+	// RESOURCE fetches metrics from Kubernetes resource metrics API (cpu, memory)
+	RESOURCE MetricSourceType = "resource"
+	// CUSTOM fetches metrics from Kubernetes custom metrics API
+	CUSTOM MetricSourceType = "custom"
+	// EXTERNAL fetches metrics from external services like gpu-optimizer (e.g., gpu-optimizer.aibrix-system.svc.cluster.local:8080)
+	EXTERNAL MetricSourceType = "external"
+	// DOMAIN is deprecated, use EXTERNAL instead
+	// +deprecated
 	DOMAIN MetricSourceType = "domain"
 )
 
@@ -104,22 +116,39 @@ const (
 
 // MetricSource defines an endpoint and path from which metrics are collected.
 type MetricSource struct {
-	// access an endpoint or scan a list of k8s pod
-	// +kubebuilder:validation:Enum={pod,domain}
+	// Specifies how to fetch metrics: from individual pods, Kubernetes APIs, or external services
+	// +kubebuilder:validation:Enum={pod,resource,custom,external,domain}
 	MetricSourceType MetricSourceType `json:"metricSourceType"`
-	// http or https
+	// Protocol for metric collection
 	// +kubebuilder:validation:Enum={http,https}
 	ProtocolType ProtocolType `json:"protocolType"`
-	// e.g. service1.example.com. meaningless for MetricSourceType.POD
+	// External service endpoint (e.g., gpu-optimizer.aibrix-system.svc.cluster.local). Only used for EXTERNAL type.
 	Endpoint string `json:"endpoint,omitempty"`
-	// e.g. /api/metrics/cpu
+	// Path to metrics endpoint (e.g., /api/metrics/cpu)
 	Path string `json:"path"`
-	// e.g. 8080. meaningless for MetricSourceType.DOMAIN
+	// Port for pod-level metrics. Only used for POD type.
 	Port string `json:"port,omitempty"`
 	// TargetMetric identifies the specific metric to monitor (e.g., kv_cache_utilization).
 	TargetMetric string `json:"targetMetric"`
 	// TargetValue sets the desired threshold for the metric (e.g., 50 for 50% utilization).
 	TargetValue string `json:"targetValue"`
+}
+
+// ScalingDecision represents a single scaling decision made by the autoscaler
+type ScalingDecision struct {
+	// Timestamp when the scaling decision was made
+	Timestamp metav1.Time `json:"timestamp"`
+	// PreviousScale is the number of replicas before scaling
+	PreviousScale int32 `json:"previousScale"`
+	// NewScale is the number of replicas after scaling
+	NewScale int32 `json:"newScale"`
+	// Reason provides the explanation for the scaling decision
+	Reason string `json:"reason"`
+	// Success indicates whether the scaling operation succeeded
+	Success bool `json:"success"`
+	// Error message if the scaling failed
+	// +optional
+	Error string `json:"error,omitempty"`
 }
 
 // PodAutoscalerStatus defines the observed state of PodAutoscaler
@@ -144,6 +173,11 @@ type PodAutoscalerStatus struct {
 	// Conditions is the set of conditions required for this autoscaler to scale its target,
 	// and indicates whether or not those conditions are met.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// ScalingHistory stores the last N scaling decisions
+	// +optional
+	// +kubebuilder:validation:MaxItems=5
+	ScalingHistory []ScalingDecision `json:"scalingHistory,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -172,7 +206,7 @@ const (
 // GetPaMetricSources Currently, we don't support metric resources that are more than one yet.
 func GetPaMetricSources(pa PodAutoscaler) (MetricSource, error) {
 	if len(pa.Spec.MetricsSources) != 1 {
-		return MetricSource{}, fmt.Errorf("for now we only support one MetricsSource")
+		return MetricSource{}, fmt.Errorf("for now we only support one MetricsSource, but got %d", len(pa.Spec.MetricsSources))
 	}
 	return pa.Spec.MetricsSources[0], nil
 }

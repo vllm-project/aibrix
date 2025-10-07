@@ -150,7 +150,7 @@ func validateInferenceWithClient(t *testing.T, client openai.Client, modelName s
 }
 
 func validateAllPodsAreReady(t *testing.T, client *kubernetes.Clientset, expectedPodCount int) {
-	err := wait.PollUntilContextTimeout(context.Background(), 100*time.Millisecond, 10*time.Second,
+	err := wait.PollUntilContextTimeout(context.Background(), 1*time.Second, 30*time.Second,
 		true, func(ctx context.Context) (bool, error) {
 			podList, err := client.CoreV1().Pods("default").List(ctx, v1.ListOptions{})
 			if err != nil {

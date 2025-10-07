@@ -20,6 +20,7 @@ spec:
     spec:
       serviceAccountName: aibrix-gpu-optimizer
       automountServiceAccountToken: true
+      {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.gpuOptimizer.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
       containers:
         - name: gpu-optimizer
           image: {{ .Values.gpuOptimizer.container.image.repository }}:{{ .Values.gpuOptimizer.container.image.tag }}
@@ -31,3 +32,16 @@ spec:
           env:
             - name: REDIS_HOST
               value: {{ .Values.gpuOptimizer.dependencies.redis.host }}
+            - name: REDIS_PORT
+              value: "{{ .Values.gpuOptimizer.dependencies.redis.port }}"
+           {{- if .Values.metadata.redis.enablePassword }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aibrix-redis
+                  key: redis-password
+            {{- end }}
+      {{- with .Values.gpuOptimizer.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

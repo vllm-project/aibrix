@@ -68,13 +68,21 @@ The routing framework is designed to be highly pluggable, typically following th
 
 .. code-block:: golang
 
-    type RoutingStrategy interface {
-        // Compute scores for all candidate pods and select the best
-        Route(request *RequestContext, pods []PodMetrics) (*SelectedPod, error)
+    // Router defines the interface for routing logic to select target pods.
+    type Router interface {
+        // Route selects a target pod from the provided list of pods.
+        // The input pods is guaranteed to be non-empty and contain only routable pods.
+        Route(ctx *RoutingContext, readyPodList PodList) (string, error)
     }
+
+**Parameter and Return Value Details:**
+
+- `ctx *RoutingContext`: Contains request-level info such as headers, model name ....
+- `readyPodList PodList`: A list of candidate pods that are ready and eligible for routing. This list is pre-filtered and guaranteed to be non-empty.
+- **Returns**: The ip address of the selected pod, or an error if selection fails.
 
 To add a new algorithm:
 
-- Implement the `RoutingStrategy` interface (in Go, Python or WASM depending on plugin mode).
+- Implement the `Router` interface (in Go, Python or WASM depending on plugin mode).
 - Register the strategy name via the router’s registry.
 - Specify it via HTTP header `routing-strategy: your-strategy` or through policy config.

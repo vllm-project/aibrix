@@ -7,7 +7,7 @@ metadata:
   name: aibrix-controller-manager
   namespace: {{ .Release.Namespace }}
 spec:
-  replicas: {{ .Values.controllerManager.replicaCount }}
+  replicas: {{ .Values.controllerManager.replicas }}
   selector:
     matchLabels:
       {{- include "chart.selectorLabels" . | nindent 6 }}
@@ -18,6 +18,7 @@ spec:
         {{- include "chart.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-controller-manager
     spec:
+      {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.controllerManager.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
       containers:
       - args:
         - --leader-elect
@@ -59,3 +60,7 @@ spec:
         secret:
           defaultMode: 420
           secretName: aibrix-webhook-server-cert
+      {{- with .Values.controllerManager.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -79,7 +79,7 @@ class HuggingFaceDownloader(BaseDownloader):
         logger.debug(
             f"Downloader {self.__class__.__name__} initialized."
             f"HF Settings are followed: \n"
-            f"hf_token={self.hf_token}, \n"
+            f"hf_token={'<redacted>' if self.hf_token else None}, \n"
             f"hf_endpoint={self.hf_endpoint}"
         )
 

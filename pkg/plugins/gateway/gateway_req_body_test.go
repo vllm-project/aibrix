@@ -23,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -223,11 +224,23 @@ func Test_handleRequestBody(t *testing.T) {
 							RawValue: []byte("1.2.3.4:8000"),
 						},
 					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:      "content-length",
+							RawValue: []byte("74"),
+						},
+					},
+					{
+						Header: &configPb.HeaderValue{
+							Key:      "X-Request-Id",
+							RawValue: []byte("test-request-id"),
+						},
+					},
 				},
 				model:      "test-model",
 				stream:     false,
 				term:       1,
-				routingCtx: &types.RoutingContext{},
+				routingCtx: &types.RoutingContext{RequestID: "test-request-id"},
 			},
 			validate: func(t *testing.T, tt *testCase, resp *extProcPb.ProcessingResponse, model string, routingCtx *types.RoutingContext, stream bool, term int64) {
 				assert.Equal(t, tt.expected.statusCode, envoyTypePb.StatusCode_OK)
@@ -588,9 +601,36 @@ func Test_handleRequestBody(t *testing.T) {
 				tt.mockSetup(mockCache, mockRouter)
 			}
 
+			mockGW := &MockGatewayClient{}
+			mockGWv1 := &MockGatewayV1Client{}
+			mockHTTP := &MockHTTPRouteClient{}
+
+			mockGW.On("GatewayV1").Return(mockGWv1)
+			mockGWv1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP)
+
+			route := &gatewayv1.HTTPRoute{
+				Status: gatewayv1.HTTPRouteStatus{
+					RouteStatus: gatewayv1.RouteStatus{
+						Parents: []gatewayv1.RouteParentStatus{{
+							Conditions: []metav1.Condition{{
+								Type:   string(gatewayv1.RouteConditionAccepted),
+								Reason: string(gatewayv1.RouteReasonAccepted),
+								Status: metav1.ConditionTrue,
+							}, {
+								Type:   string(gatewayv1.RouteConditionResolvedRefs),
+								Reason: string(gatewayv1.RouteReasonResolvedRefs),
+								Status: metav1.ConditionTrue,
+							}},
+						}},
+					},
+				},
+			}
+			mockHTTP.On("Get", mock.Anything, "test-model-router", mock.Anything).Return(route, nil)
+
 			// Create server with mock cache
 			server := &Server{
-				cache: mockCache,
+				cache:         mockCache,
+				gatewayClient: mockGW,
 			}
 
 			// Create request for the test case

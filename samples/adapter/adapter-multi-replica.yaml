@@ -1,0 +1,47 @@
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelAdapter
+metadata:
+  name: sample-lora-multi-replica
+  namespace: default
+  labels:
+    model.aibrix.ai/name: "sample-lora-multi-replica"
+    model.aibrix.ai/port: "8000"
+spec:
+  # REQUIRED: Base model that this LoRA adapter extends
+  baseModel: qwen-coder-1-5b-instruct
+  
+  # Specify the number of replicas for the adapter
+  # The adapter will be loaded on this many pods matching the selector
+  # Provides high availability and load distribution
+  replicas: 3
+  
+  # Pod selector to identify which pods can host this adapter
+  # Requires pods to have both labels for proper selection
+  podSelector:
+    matchLabels:
+      model.aibrix.ai/name: qwen-coder-1-5b-instruct
+      adapter.model.aibrix.ai/enabled: "true"
+  
+  # URL for the LoRA adapter artifact
+  # Using a real Hugging Face model for this example
+  artifactURL: "huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora"
+  
+  # Optional: Scheduler for pod selection (defaults to "default")
+  # "least-adapters" scheduler distributes adapters evenly across pods
+  schedulerName: least-adapters
+  
+  # Optional: Additional configuration for the LoRA adapter
+  # These are passed to the vLLM engine during loading
+  additionalConfig:
+    # LoRA rank parameter - affects adapter size and quality
+    rank: "16"
+    # LoRA alpha parameter - scaling factor for adapter weights  
+    alpha: "32"
+    # Optional: Custom timeout for loading operations
+    timeout: "120s"
+  
+  # Multi-replica behavior:
+  # - Controller ensures adapters are loaded on exactly 3 different pods
+  # - Automatic failover if any pod becomes unavailable
+  # - Load balancing across all healthy replicas
+  # - Service discovery includes all replica endpoints

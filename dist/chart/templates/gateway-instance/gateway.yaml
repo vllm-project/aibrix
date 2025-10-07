@@ -34,9 +34,6 @@ kind: EnvoyProxy
 metadata:
   name: aibrix-custom-proxy-config
   namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "chart.labels" . | nindent 4 }}
-    app.kubernetes.io/component: aibrix-gateway
 spec:
   provider:
     type: Kubernetes
@@ -49,6 +46,10 @@ spec:
             maxUnavailable: 1
             maxSurge: 1
         pod:
+          {{- with .Values.gateway.envoyProxy.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           affinity:
             podAntiAffinity:
               preferredDuringSchedulingIgnoredDuringExecution:
@@ -59,11 +60,7 @@ spec:
                         - key: app.kubernetes.io/name
                           operator: In
                           values:
-                          - {{ include "chart.name" . }}
-                        - key: app.kubernetes.io/component
-                          operator: In
-                          values:
-                          - aibrix-gateway
+                          - envoy
                     topologyKey: "kubernetes.io/hostname"
             nodeAffinity:
               preferredDuringSchedulingIgnoredDuringExecution:
@@ -81,9 +78,10 @@ spec:
               template:
                 metadata:
                   labels:
-                    {{- include "chart.labels" . | nindent 20 }}
-                    app.kubernetes.io/component: aibrix-gateway
+                    app.kubernetes.io/name: envoy
+                    app.kubernetes.io/component: proxy
                 spec:
+                  {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.gateway.envoyProxy.imagePullSecrets "globalSecrets") | nindent 18 }}
                   containers:
                     - name: envoy
                       image: {{ .Values.gateway.envoyProxy.container.envoy.image }}
@@ -131,7 +129,7 @@ spec:
         value:
           name: original_route
           match:
-            prefix: "/v1"
+            prefix: "/"
             headers:
               - name: "routing-strategy"
                 string_match:

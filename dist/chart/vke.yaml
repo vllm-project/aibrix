@@ -1,10 +1,14 @@
 # [Core]: AIBrix Deployment Configurations
+global:
+  imagePullSecrets: []
+
 controllerManager:
   replicas: 1
+  imagePullSecrets: []
   container:
     image:
       repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
-      tag: d5ca8d6b58520edc221eabf22b0cb35a8c651051
+      tag: v0.4.1
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -13,10 +17,25 @@ controllerManager:
       requests:
         cpu: 10m
         memory: 64Mi
+    probes:
+      liveness:
+        httpGet:
+          path: /healthz
+          port: 8081
+        initialDelaySeconds: 15
+        periodSeconds: 20
+      readiness:
+        httpGet:
+          path: /readyz
+          port: 8081
+        initialDelaySeconds: 5
+        periodSeconds: 10
   gatewayTimeoutSeconds: 120
+  tolerations: []
 
 gatewayPlugin:
   replicaCount: 1
+  imagePullSecrets: []
   initContainer:
     image:
       repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/busybox
@@ -24,15 +43,14 @@ gatewayPlugin:
   container:
     image:
       repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins
-      tag: d5ca8d6b58520edc221eabf22b0cb35a8c651051
-      pullPolicy: IfNotPresent
-
+      tag: v0.4.1
+      imagePullPolicy: IfNotPresent
     resources:
       limits:
-        cpu: 1
+        cpu: "1"
         memory: 1Gi
       requests:
-        cpu: 1
+        cpu: "1"
         memory: 1Gi
     envs:
       AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"
@@ -40,20 +58,21 @@ gatewayPlugin:
       AIBRIX_PREFIX_CACHE_BLOCK_SIZE: "128"
       AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT: "16"
       AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: "2"
+      AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
   dependencies:
     redis:
       host: aibrix-redis-master
       port: 6379
-  messageTimeout: "5s"
-
+  messageTimeout: "60s"
+  tolerations: []
 
 gpuOptimizer:
   replicaCount: 1
+  imagePullSecrets: []
   container:
     image:
       repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
-      tag: d5ca8d6b58520edc221eabf22b0cb35a8c651051
-
+      tag: v0.4.1
     resources:
       limits:
         cpu: 500m
@@ -61,24 +80,26 @@ gpuOptimizer:
       requests:
         cpu: 10m
         memory: 64Mi
-
   dependencies:
     redis:
       host: aibrix-redis-master
-
+      port: 6379
+  tolerations: []
 
 gateway:
   envoyProxy:
     replicas: 1
+    imagePullSecrets: []
+    tolerations: []
     container:
       envoy:
         image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy:v1.33.2
         resources:
           requests:
-            cpu: 1
+            cpu: "1"
             memory: 1Gi
           limits:
-            cpu: 1
+            cpu: "1"
             memory: 1Gi
       shutdownManager:
         image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/gateway:v1.2.8
@@ -98,6 +119,7 @@ gateway:
 metadata:
   service:
     replicas: 1
+    imagePullSecrets: []
     initContainer:
       image:
         repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/busybox
@@ -105,8 +127,8 @@ metadata:
     container:
       image:
         repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/metadata-service
-        tag: d5ca8d6b58520edc221eabf22b0cb35a8c651051
-        pullPolicy: IfNotPresent
+        tag: v0.4.1
+        imagePullPolicy: IfNotPresent
       resources:
         limits:
           cpu: 500m
@@ -114,16 +136,18 @@ metadata:
         requests:
           cpu: 10m
           memory: 64Mi
+    tolerations: []
     redis:
       host: aibrix-redis-master
       port: 6379
     metricRefreshIntervalMs: "3600000"
   redis:
     replicas: 1
+    imagePullSecrets: []
     container:
       image:
         repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/redis
-        tag: 7.4
+        tag: "7.4"
       resources:
         requests:
           cpu: 100m
@@ -157,10 +181,3 @@ prometheus:
 # [CERT-MANAGER]: To enable cert-manager injection to webhooks set true
 certmanager:
   enable: false
-
-
-# TODO: manage common labels
-# app.kubernetes.io/component: aibrix-controller-manager
-# app.kubernetes.io/managed-by: kubectl
-# app.kubernetes.io/name: aibrix
-# app.kubernetes.io/version: nightly

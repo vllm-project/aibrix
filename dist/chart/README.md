@@ -126,7 +126,6 @@ kubectl get all -n aibrix-system
 Upgrade to the latest chart version:
 ```
 helm upgrade aibrix dist/chart -n aibrix-system
-
 ```
 
 

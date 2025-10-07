@@ -1,6 +1,10 @@
 # [Core]: AIBrix Deployment Configurations
+global:
+  imagePullSecrets: []
+
 controllerManager:
-  replicaCount: 1
+  replicas: 1
+  imagePullSecrets: []
   container:
     image:
       repository: aibrix/controller-manager
@@ -17,19 +21,21 @@ controllerManager:
       liveness:
         httpGet:
           path: /healthz
-          port: health
+          port: 8081
         initialDelaySeconds: 15
         periodSeconds: 20
       readiness:
         httpGet:
           path: /readyz
-          port: health
+          port: 8081
         initialDelaySeconds: 5
         periodSeconds: 10
   gatewayTimeoutSeconds: 120
+  tolerations: []
 
 gatewayPlugin:
   replicaCount: 1
+  imagePullSecrets: []
   initContainer:
     image:
       repository: busybox
@@ -38,13 +44,13 @@ gatewayPlugin:
     image:
       repository: aibrix/gateway-plugins
       tag: nightly
-      pullPolicy: IfNotPresent
+      imagePullPolicy: IfNotPresent
     resources:
       limits:
-        cpu: 1
+        cpu: "1"
         memory: 1Gi
       requests:
-        cpu: 1
+        cpu: "1"
         memory: 1Gi
     probes:
       liveness:
@@ -67,15 +73,17 @@ gatewayPlugin:
       AIBRIX_PREFIX_CACHE_BLOCK_SIZE: "128"
       AIBRIX_PREFIX_CACHE_POD_RUNNING_REQUEST_IMBALANCE_ABS_COUNT: "16"
       AIBRIX_PREFIX_CACHE_STANDARD_DEVIATION_FACTOR: "2"
+      AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
   dependencies:
     redis:
       host: aibrix-redis-master
       port: 6379
-  messageTimeout: "5s"
-
+  messageTimeout: "60s"
+  tolerations: []
 
 gpuOptimizer:
   replicaCount: 1
+  imagePullSecrets: []
   container:
     image:
       repository: aibrix/runtime
@@ -90,20 +98,23 @@ gpuOptimizer:
   dependencies:
     redis:
       host: aibrix-redis-master
-
+      port: 6379
+  tolerations: []
 
 gateway:
   envoyProxy:
     replicas: 1
+    imagePullSecrets: []
+    tolerations: []
     container:
       envoy:
         image: envoyproxy/envoy:v1.33.2
         resources:
           requests:
-            cpu: 1
+            cpu: "1"
             memory: 1Gi
           limits:
-            cpu: 1
+            cpu: "1"
             memory: 1Gi
       shutdownManager:
         image: envoyproxy/gateway:v1.2.8
@@ -119,10 +130,10 @@ gateway:
       timeout: 120s          # e.g., "120s" or "2m"
       connectTimeout: 6s     # e.g., "6s"
 
-
 metadata:
   service:
     replicas: 1
+    imagePullSecrets: []
     initContainer:
       image:
         repository: busybox
@@ -131,7 +142,7 @@ metadata:
       image:
         repository: aibrix/metadata-service
         tag: nightly
-        pullPolicy: IfNotPresent
+        imagePullPolicy: IfNotPresent
       resources:
         limits:
           cpu: 500m
@@ -139,20 +150,24 @@ metadata:
         requests:
           cpu: 10m
           memory: 64Mi
+    tolerations: []
     redis:
       host: aibrix-redis-master
       port: 6379
     metricRefreshIntervalMs: "3600000"
   redis:
     replicas: 1
+    imagePullSecrets: []
     container:
       image:
         repository: redis
-        tag: 7.4
+        tag: "7.4"
       resources:
         requests:
           cpu: 100m
           memory: 100Mi
+    enablePassword: false
+    password: ""
 
 # [CRDs]: To enable the CRDs
 crd:

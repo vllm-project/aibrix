@@ -349,9 +349,9 @@ var (
 			MetricType: MetricType{
 				Query: QueryLabel,
 			},
-			RawMetricName: "lora_requests_info",
+			LabelKey: "max_lora",
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:max_lora",
+				"vllm": "vllm:lora_requests_info",
 			},
 			Description: "Max count of Lora Adapters",
 		},
@@ -361,9 +361,9 @@ var (
 			MetricType: MetricType{
 				Query: QueryLabel,
 			},
-			RawMetricName: "lora_requests_info",
+			LabelKey: "running_lora_adapters",
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:running_lora_adapters",
+				"vllm": "vllm:lora_requests_info",
 			},
 			Description: "Count of running Lora Adapters",
 		},
@@ -373,9 +373,9 @@ var (
 			MetricType: MetricType{
 				Query: QueryLabel,
 			},
-			RawMetricName: "lora_requests_info",
+			LabelKey: "waiting_lora_adapters",
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:waiting_lora_adapters",
+				"vllm": "vllm:lora_requests_info",
 			},
 			Description: "Count of waiting Lora Adapters",
 		},

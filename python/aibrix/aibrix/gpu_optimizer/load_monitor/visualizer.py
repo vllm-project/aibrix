@@ -165,7 +165,7 @@ def make_color(color, alpha=1):
     return f"rgba({rgb[0]*255}, {rgb[1]*255}, {rgb[2]*255}, {alpha})"
 
 
-def update_graph(n, model_name):
+def update_graph(n, model_name) -> Any:
     # Reset initial figure
     if n == 0:
         figure.last = dash.no_update

@@ -1,0 +1,33 @@
+apiVersion: model.aibrix.ai/v1alpha1
+kind: ModelAdapter
+metadata:
+  name: reliability-demo-lora
+  namespace: default
+  labels:
+    model.aibrix.ai/name: "reliability-demo-lora"
+    model.aibrix.ai/port: "8000"
+spec:
+  # Base model that this LoRA adapter extends
+  baseModel: qwen-coder-1-5b-instruct
+  
+  # Pod selector for reliable pod selection
+  podSelector:
+    matchLabels:
+      model.aibrix.ai/name: qwen-coder-1-5b-instruct
+      adapter.model.aibrix.ai/enabled: "true"
+  
+  # URL for the LoRA adapter artifact  
+  artifactURL: huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora
+  
+  # Enable multiple replicas for high availability
+  replicas: 2
+  
+  # Use least-adapters scheduler for better distribution
+  schedulerName: least-adapters
+  
+  # Additional configuration example
+  additionalConfig:
+    # Custom parameters passed to vLLM
+    max_model_len: "4096"
+    # Optional: API key for authentication
+    # api-key: "your-api-key-here"

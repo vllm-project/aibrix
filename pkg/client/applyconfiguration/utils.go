@@ -43,6 +43,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &autoscalingv1alpha1.PodAutoscalerSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PodAutoscalerStatus"):
 		return &autoscalingv1alpha1.PodAutoscalerStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ScalingDecision"):
+		return &autoscalingv1alpha1.ScalingDecisionApplyConfiguration{}
 
 		// Group=model, Version=v1alpha1
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelAdapter"):
@@ -53,6 +55,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationmodelv1alpha1.ModelAdapterStatusApplyConfiguration{}
 
 		// Group=orchestration, Version=v1alpha1
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("Condition"):
+		return &applyconfigurationorchestrationv1alpha1.ConditionApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("DisruptionTolerance"):
+		return &applyconfigurationorchestrationv1alpha1.DisruptionToleranceApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleet"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterFleetApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleetCondition"):
@@ -69,6 +75,26 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationorchestrationv1alpha1.RayClusterReplicaSetStatusApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterTemplateSpec"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterTemplateSpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleSetSpec"):
+		return &applyconfigurationorchestrationv1alpha1.RoleSetSpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleSetTemplateSpec"):
+		return &applyconfigurationorchestrationv1alpha1.RoleSetTemplateSpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleSpec"):
+		return &applyconfigurationorchestrationv1alpha1.RoleSpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleStatus"):
+		return &applyconfigurationorchestrationv1alpha1.RoleStatusApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RoleUpdateStrategy"):
+		return &applyconfigurationorchestrationv1alpha1.RoleUpdateStrategyApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("SchedulingStrategy"):
+		return &applyconfigurationorchestrationv1alpha1.SchedulingStrategyApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("StormService"):
+		return &applyconfigurationorchestrationv1alpha1.StormServiceApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("StormServiceSpec"):
+		return &applyconfigurationorchestrationv1alpha1.StormServiceSpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("StormServiceStatus"):
+		return &applyconfigurationorchestrationv1alpha1.StormServiceStatusApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("StormServiceUpdateStrategy"):
+		return &applyconfigurationorchestrationv1alpha1.StormServiceUpdateStrategyApplyConfiguration{}
 
 	}
 	return nil

@@ -186,10 +186,39 @@ vllm:avg_generation_throughput_toks_per_s{model_name="llama2-7b"} 20.0
 
 #### Update Override Metrics
 
+You can dynamically override specific metric values via the `/set_metrics` endpoint.
+
+### Supported Override Keys
+
+The following keys can be included in the JSON payload to override metrics:
+
+- `total` – base total requests (used to derive other defaults)
+- `success_total` → `vllm:request_success_total`
+- `prompt_tokens_total` → `vllm:prompt_tokens_total`
+- `generation_tokens_total` → `vllm:generation_tokens_total`
+- `running` → `vllm:num_requests_running`
+- `waiting` → `vllm:num_requests_waiting`
+- `swapped` → `vllm:num_requests_swapped`
+- `avg_prompt_throughput` → `vllm:avg_prompt_throughput_toks_per_s`
+- `avg_generation_throughput` → `vllm:avg_generation_throughput_toks_per_s`
+- `gpu_cache_usage_perc` → `vllm:gpu_cache_usage_perc`
+- `cpu_cache_usage_perc` → `vllm:cpu_cache_usage_perc`
+- `model_name` – sets the `model_name` label on all metrics
+
+> Note: Histogram metrics (e.g., latency, token counts) are randomly generated and cannot be overridden.
+
+### Examples
+
 ```bash
-# check metrics
+# Check current metrics
 curl -X GET http://localhost:8000/metrics
 
-# override metrics
-curl -X POST http://localhost:8000/set_metrics -H "Content-Type: application/json" -d '{"gpu_cache_usage_perc": 75.0}'
-```
+# Override GPU cache usage and running requests
+curl -X POST http://localhost:8000/set_metrics \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gpu_cache_usage_perc": 75.0,
+    "running": 50,
+    "waiting": 10,
+    "success_total": 200
+  }'
