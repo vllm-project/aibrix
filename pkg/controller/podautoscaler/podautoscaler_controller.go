@@ -530,6 +530,15 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 		return ctrl.Result{}, fmt.Errorf("failed to compute scaling decision for %s: %w", scaleReference, err)
 	}
 
+	// Only emit event if we should scale
+	if scaleDecision.ShouldScale {
+		r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "AlgorithmRun",
+			"%s algorithm completed. currentReplicas: %d, desiredReplicas: %d, shouldScale: %t",
+			pa.Spec.ScalingStrategy, currentReplicas, scaleDecision.DesiredReplicas, scaleDecision.ShouldScale)
+	} else {
+		klog.V(4).InfoS("Skipping event: no change in replica count", "replicas", currentReplicas)
+	}
+
 	// Step 4: Apply scaling if needed
 	var scaleError error
 	if scaleDecision.ShouldScale {
@@ -553,10 +562,6 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	// Step 5: Update status
 	setStatus(&pa, currentReplicas, scaleDecision.DesiredReplicas,
 		scaleDecision.ShouldScale, scaleDecision.Reason, scaleError == nil, scaleError)
-
-	r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "AlgorithmRun",
-		"%s algorithm completed. currentReplicas: %d, desiredReplicas: %d, shouldScale: %t",
-		pa.Spec.ScalingStrategy, currentReplicas, scaleDecision.DesiredReplicas, scaleDecision.ShouldScale)
 
 	if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
 		return ctrl.Result{}, err
