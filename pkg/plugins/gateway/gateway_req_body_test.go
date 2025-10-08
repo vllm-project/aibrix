@@ -628,9 +628,11 @@ func Test_handleRequestBody(t *testing.T) {
 			mockHTTP.On("Get", mock.Anything, "test-model-router", mock.Anything).Return(route, nil)
 
 			// Create server with mock cache
+			// Enable legacy mode for these tests since they test HandleRequestBody's direct routing behavior
 			server := &Server{
 				cache:         mockCache,
 				gatewayClient: mockGW,
+				useLegacyMode: true, // These tests expect direct routing behavior (legacy mode)
 			}
 
 			// Create request for the test case
@@ -658,6 +660,173 @@ func Test_handleRequestBody(t *testing.T) {
 			// Verify all mock expectations were met
 			mockCache.AssertExpectations(subtest)
 			mockRouter.AssertExpectations(subtest)
+		})
+	}
+}
+
+// Test_handleRequestBody_StateMachine tests HandleRequestBody in state machine mode (default mode)
+// In state machine mode, HandleRequestBody should return nil to defer routing to the scheduler
+func Test_handleRequestBody_StateMachine(t *testing.T) {
+	// Initialize routing algorithms
+	routingalgorithms.Init()
+
+	tests := []struct {
+		name        string
+		requestBody string
+		user        utils.User
+		routingAlgo types.RoutingAlgorithm
+		mockSetup   func(*MockCache)
+		expectNil   bool // Should response be nil?
+		expectModel string
+		expectTerm  int64
+	}{
+		{
+			name:        "state machine mode - valid model should return nil",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "random",
+			mockSetup: func(mockCache *MockCache) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
+						{
+							Status: v1.PodStatus{
+								PodIP:      "1.2.3.4",
+								Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				// Note: AddRequestCount should NOT be called in state machine mode
+			},
+			expectNil:   true,
+			expectModel: "test-model",
+			expectTerm:  0, // No AddRequestCount call
+		},
+		{
+			name:        "state machine mode - model not found should return error",
+			requestBody: `{"model": "unknown-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "",
+			mockSetup: func(mockCache *MockCache) {
+				mockCache.On("HasModel", "unknown-model").Return(false)
+			},
+			expectNil:   false, // Error response should not be nil
+			expectModel: "unknown-model",
+			expectTerm:  0,
+		},
+		{
+			name:        "state machine mode - no ready pods should return error",
+			requestBody: `{"model": "test-model", "messages": [{"role": "user", "content": "test"}]}`,
+			user: utils.User{
+				Name: "test-user",
+			},
+			routingAlgo: "",
+			mockSetup: func(mockCache *MockCache) {
+				mockCache.On("HasModel", "test-model").Return(true)
+				podList := &utils.PodArray{
+					Pods: []*v1.Pod{
+						{
+							Status: v1.PodStatus{
+								PodIP: "1.2.3.4",
+								Conditions: []v1.PodCondition{
+									{
+										Type:   v1.PodReady,
+										Status: v1.ConditionFalse, // Not ready
+									},
+								},
+							},
+						},
+					},
+				}
+				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+			},
+			expectNil:   false, // Error response should not be nil
+			expectModel: "test-model",
+			expectTerm:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(subtest *testing.T) {
+			// Initialize mock cache
+			mockCache := &MockCache{Cache: cache.NewForTest()}
+			if tt.mockSetup != nil {
+				tt.mockSetup(mockCache)
+			}
+
+			mockGW := &MockGatewayClient{}
+			mockGWv1 := &MockGatewayV1Client{}
+			mockHTTP := &MockHTTPRouteClient{}
+
+			mockGW.On("GatewayV1").Return(mockGWv1)
+			mockGWv1.On("HTTPRoutes", "aibrix-system").Return(mockHTTP)
+
+			route := &gatewayv1.HTTPRoute{
+				Status: gatewayv1.HTTPRouteStatus{
+					RouteStatus: gatewayv1.RouteStatus{
+						Parents: []gatewayv1.RouteParentStatus{{
+							Conditions: []metav1.Condition{{
+								Type:   string(gatewayv1.RouteConditionAccepted),
+								Reason: string(gatewayv1.RouteReasonAccepted),
+								Status: metav1.ConditionTrue,
+							}, {
+								Type:   string(gatewayv1.RouteConditionResolvedRefs),
+								Reason: string(gatewayv1.RouteReasonResolvedRefs),
+								Status: metav1.ConditionTrue,
+							}},
+						}},
+					},
+				},
+			}
+			mockHTTP.On("Get", mock.Anything, "test-model-router", mock.Anything).Return(route, nil)
+
+			// Create server in STATE MACHINE mode (useLegacyMode = false, which is the default)
+			server := &Server{
+				cache:         mockCache,
+				gatewayClient: mockGW,
+				useLegacyMode: false, // State machine mode
+			}
+
+			// Create request
+			req := &extProcPb.ProcessingRequest{
+				Request: &extProcPb.ProcessingRequest_RequestBody{
+					RequestBody: &extProcPb.HttpBody{
+						Body: []byte(tt.requestBody),
+					},
+				},
+			}
+
+			// Call HandleRequestBody
+			routingCtx := types.NewRoutingContext(context.Background(), tt.routingAlgo, tt.expectModel, "", "test-request-id", tt.user.Name)
+			routingCtx.ReqPath = "/v1/chat/completions"
+			resp, model, returnedCtx, stream, term := server.HandleRequestBody(
+				routingCtx,
+				"test-request-id",
+				req,
+				tt.user,
+			)
+
+			// Validate response
+			if tt.expectNil {
+				assert.Nil(subtest, resp, "response should be nil in state machine mode for valid requests")
+			} else {
+				assert.NotNil(subtest, resp, "response should not be nil for error cases")
+			}
+
+			assert.Equal(subtest, tt.expectModel, model)
+			assert.Equal(subtest, tt.expectTerm, term)
+			assert.NotNil(subtest, returnedCtx)
+			assert.Equal(subtest, tt.expectModel, returnedCtx.Model)
+			assert.False(subtest, stream) // These test cases don't use streaming
+
+			// Verify all mock expectations were met
+			mockCache.AssertExpectations(subtest)
 		})
 	}
 }

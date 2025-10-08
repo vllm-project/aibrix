@@ -73,15 +73,15 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			fmt.Sprintf("error on getting pods for model %s", model)), model, routingCtx, stream, term
 	}
 
-	// Check if scheduler is enabled - if so, defer routing to the scheduler
-	if s.scheduler != nil {
-		// With scheduler enabled, we don't perform routing here
+	// Check if we're in legacy mode or state machine mode
+	if !s.useLegacyMode {
+		// State machine mode: defer routing to the scheduler
 		// Just validate the model exists and return nil to let Process handle scheduling
 		klog.InfoS("request body processed, deferring to scheduler", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream)
 		return nil, model, routingCtx, stream, term
 	}
 
-	// Legacy routing logic (when scheduler is not enabled)
+	// Legacy routing logic (when useLegacyMode is true)
 	headers := []*configPb.HeaderValueOption{}
 	if routingAlgorithm == routing.RouterNotSet {
 		if err := s.validateHTTPRouteStatus(ctx, model); err != nil {

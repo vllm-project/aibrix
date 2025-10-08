@@ -89,7 +89,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 
 	// For legacy Process function (non-state machine), we need to handle routing here
 	// For state machine version, this function is only used to extract headers info
-	if s.scheduler == nil {
+	if s.useLegacyMode {
 		// Legacy mode: complete routing in RequestHeaders phase
 		klog.InfoS("legacy mode: completing processing in RequestHeaders phase", "requestID", requestID)
 

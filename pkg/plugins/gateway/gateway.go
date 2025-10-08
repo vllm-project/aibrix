@@ -98,6 +98,10 @@ type Server struct {
 
 	// Cleanup function for session cache
 	sessionCleanupStop func()
+
+	// useLegacyMode controls whether to use legacy processing mode (default: false)
+	// When true, scheduler-based routing is disabled and legacy routing is used
+	useLegacyMode bool
 }
 
 func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayClient gatewayapi.Interface) *Server {
@@ -128,11 +132,27 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface, gatewayCl
 		scheduler:           sched,
 		sessionCache:        sessionCache,
 		sessionCleanupStop:  sessionCleanupStop,
+		useLegacyMode:       false, // Default to state machine mode
 	}
 }
 
-// Process delegates to the state machine implementation
+// SetLegacyMode enables or disables legacy processing mode
+// This should be called before starting to process requests
+func (s *Server) SetLegacyMode(enabled bool) {
+	s.useLegacyMode = enabled
+	if enabled {
+		klog.InfoS("legacy mode enabled - scheduler-based routing will be disabled")
+	} else {
+		klog.InfoS("state machine mode enabled - using scheduler-based routing")
+	}
+}
+
+// Process delegates to the appropriate implementation based on useLegacyMode flag
 func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
+	if s.useLegacyMode {
+		klog.InfoS("using legacy processing mode")
+		return s.ProcessLegacy(srv)
+	}
 	return s.ProcessStateMachine(srv)
 }
 
