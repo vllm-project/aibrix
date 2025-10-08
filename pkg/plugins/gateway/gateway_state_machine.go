@@ -275,10 +275,16 @@ func (s *Server) handleRequestBody(srv extProcPb.ExternalProcessor_ProcessServer
 	// CRITICAL: Session ID is required - client must provide it in headers
 	// If finalSessionID equals requestID, it means no real session ID was found (fallback was used)
 	if finalSessionID == state.requestID {
-		klog.ErrorS(nil, "session ID is required but not provided in headers",
-			"requestID", state.requestID, "path", state.routerCtx.ReqPath,
-			"headerSessionID", state.sessionID)
-		return fmt.Errorf("session ID is required but not found in headers for request %s", state.requestID)
+		klog.ErrorS(nil, "session ID is required but not provided in headers, sending 400 Bad Request",
+			"requestID", state.requestID, "path", state.routerCtx.ReqPath)
+
+		errResp := generateErrorResponse(envoyTypePb.StatusCode_BadRequest,
+			nil, "session ID is required but not provided in X-Session-ID header")
+		if err := srv.Send(errResp); err != nil {
+			klog.ErrorS(err, "failed to send missing session ID error response", "requestID", state.requestID)
+		}
+		state.currentState = stateDone
+		return nil
 	}
 
 	klog.InfoS("using session ID from headers", "requestID", state.requestID, "sessionID", finalSessionID)
