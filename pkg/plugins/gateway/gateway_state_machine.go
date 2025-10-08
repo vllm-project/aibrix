@@ -55,9 +55,7 @@ func (s *Server) ProcessStateMachine(srv extProcPb.ExternalProcessor_ProcessServ
 	errChan := make(chan error, 1)
 
 	klog.InfoS("new request stream started", "requestID", state.requestID)
-	klog.InfoS("DEBUG: line 57 reached", "requestID", state.requestID)
-	klog.InfoS("about to start message receive goroutine", "requestID", state.requestID)
-	klog.InfoS("DEBUG: line 59 reached", "requestID", state.requestID)
+	klog.V(3).InfoS("about to start message receive goroutine", "requestID", state.requestID)
 	defer func() {
 		if r := recover(); r != nil {
 			klog.ErrorS(nil, "panic in Process function", "requestID", state.requestID, "panic", r)
@@ -211,8 +209,7 @@ func (s *Server) handleRequestHeaders(srv extProcPb.ExternalProcessor_ProcessSer
 	_, user, rpm, routerCtx := s.HandleRequestHeaders(srv.Context(), state.requestID, req)
 	state.user, state.rpm, state.routerCtx = user, rpm, routerCtx
 
-	// DEBUG: Check if routerCtx is nil after HandleRequestHeaders
-	klog.InfoS("DEBUG: HandleRequestHeaders returned", "requestID", state.requestID, "routerCtxIsNil", routerCtx == nil)
+	klog.V(4).InfoS("HandleRequestHeaders returned", "requestID", state.requestID, "routerCtxIsNil", routerCtx == nil)
 
 	// Extract temporary Session ID from headers only (no SessionCache interaction yet)
 	if routerCtx != nil {
