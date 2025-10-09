@@ -1,7 +1,7 @@
 # Deploying AIBrix with xDiT
 ## Prerequisites
 ### Download xDiT and patch to xDiT
-1. Download patch from [xDiT-intergation/xdit-52e74e88d2332281eefe68894af02f805a1d2b4f.patch](xDiT-intergation/xdit-52e74e88d2332281eefe68894af02f805a1d2b4f.patch). The following steps assume the patch will be in your current path and apply this patch automatically while using `Dockerfile`. 
+1. Download patch from [xDiT-integration/xdit-52e74e88d2332281eefe68894af02f805a1d2b4f.patch](xDiT-integration/xdit-52e74e88d2332281eefe68894af02f805a1d2b4f.patch). The following steps assume the patch will be in your current path and apply this patch automatically while using `Dockerfile`. 
 2. Download xDiT source code from [xdit-project/xDiT](https://github.com/xdit-project/xDiT) and copy patch file.
 ```bash
 # remove if xDiT exists
@@ -32,8 +32,10 @@ Here we assumes the image we build is `aibrix-container-registry-cn-beijing.cr.v
 Apply the following deployment file to your cluster.
 
 ```
-kubectl apply -f image-intergation/aibrix_vke_kv_image_sd_parallel.yaml
+kubectl apply -f image-generation/aibrix_vke_kv_image_sd_parallel.yaml
 ```
+
+> Note that we use nodeSelector: kubernetes.io/hostname: 192.168.0.6 in our deployment file to specify the node that we use for deployment. This should be re-configured as needed. 
 
 Forward AIBrix port
 
