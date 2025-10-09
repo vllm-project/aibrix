@@ -19,14 +19,14 @@ images:
   newName: aibrix-cn-beijing.cr.volces.com/aibrix/redis
   newTag: latest
 - name: aibrix/gateway-plugins
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins
-  newTag: v0.4.0
+  newName: aibrix-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+  newTag: v0.4.1
 - name: aibrix/metadata-service
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/metadata-service
-  newTag: v0.4.0
+  newName: aibrix-cn-beijing.cr.volces.com/aibrix/metadata-service
+  newTag: v0.4.1
 - name: aibrix/controller-manager
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
-  newTag: v0.4.0
+  newName: aibrix-cn-beijing.cr.volces.com/aibrix/controller-manager
+  newTag: v0.4.1
 - name: aibrix/runtime
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
-  newTag: v0.4.0
+  newName: aibrix-cn-beijing.cr.volces.com/aibrix/runtime
+  newTag: v0.4.1
