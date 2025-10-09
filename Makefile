@@ -90,7 +90,7 @@ sync-crds: manifests
 # Run all manifest generation and synchronization steps
 # Includes CRD syncing to module directories.
 .PHONY: manifests-all
-manifests-all: manifests sync-crds
+manifests-all: manifests sync-crds sync-crds-to-helm
 	@echo "✅ All manifests generated and synced to module directories."
 
 # Synchronize CRD files from 'config/crd/bases/' to Helm's 'crds/' directory.
