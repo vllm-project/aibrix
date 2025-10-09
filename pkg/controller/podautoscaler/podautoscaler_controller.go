@@ -39,6 +39,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/config"
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/monitor"
 	"k8s.io/apimachinery/pkg/labels"
 	ktypes "k8s.io/apimachinery/pkg/types"
 
@@ -150,6 +151,7 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		autoScaler:          autoScaler,
 		RuntimeConfig:       runtimeConfig,
 		recommendations:     make(map[string][]timestampedRecommendation),
+		monitor:             monitor.New(),
 	}
 
 	return reconciler, nil
@@ -241,6 +243,8 @@ type PodAutoscalerReconciler struct {
 	// Recommendation history for cooldown windows (key: namespace/name)
 	recommendationsMu sync.RWMutex
 	recommendations   map[string][]timestampedRecommendation
+
+	monitor monitor.Monitor
 }
 
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers,verbs=get;list;watch;create;update;patch;delete
@@ -529,6 +533,7 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 		r.EventRecorder.Event(&pa, corev1.EventTypeWarning, "FailedComputeScale", err.Error())
 		return ctrl.Result{}, fmt.Errorf("failed to compute scaling decision for %s: %w", scaleReference, err)
 	}
+	r.monitor.RecordScaleAction(pa.Namespace, pa.Name, scaleDecision.Algorithm, scaleDecision.Reason, scaleDecision.DesiredReplicas)
 
 	// Only emit event if we should scale
 	if scaleDecision.ShouldScale {
@@ -820,6 +825,8 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(
 		} else {
 			reason = "All metrics below target"
 		}
+	} else {
+		reason = "stable"
 	}
 
 	return &ScaleDecision{
