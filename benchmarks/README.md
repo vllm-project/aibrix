@@ -7,13 +7,13 @@ This document explains the parameters in `config.yaml` for **AIBrix benchmarks**
 
 ## Table of Contents
 
-1. [Bencmark Overview](#benchmark-overview)  
-2. [Preliminary](#preliminary)  
-3. [Using This Benchmark](#using-this-benchmark)  
-4. [Dataset Generation](#dataset-generation)  
-5. [Workload Generation](#workload-generation)  
-6. [Dispatch Workload Using Client](#dispatch-workload-using-client)  
-7. [Benchmark Analysis](#benchmark-analysis)  
+1. [Benchmark Overview](#benchmark-overview)  
+1. [Preliminary](#preliminary)  
+1. [Using This Benchmark](#using-this-benchmark)  
+1. [Dataset Generation](#dataset-generation)  
+1. [Workload Generation](#workload-generation)  
+1. [Dispatch Workload Using Client](#dispatch-workload-using-client)  
+1. [Benchmark Analysis](#benchmark-analysis)  
 
 
 ---
