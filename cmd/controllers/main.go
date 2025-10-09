@@ -49,7 +49,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
-	"github.com/vllm-project/aibrix/pkg/config"
+	cfg "github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/controller"
 	"github.com/vllm-project/aibrix/pkg/controller/modeladapter"
 	apiwebhook "github.com/vllm-project/aibrix/pkg/webhook"
@@ -123,6 +123,10 @@ func main() {
 	var enableRuntimeSidecar bool
 	var disableWebhook bool
 	var debugMode bool
+	var qps float64
+	var burst int
+	flag.Float64Var(&qps, "kube-api-qps", 100, "Maximum QPS to use while talking with Kubernetes API")
+	flag.IntVar(&burst, "kube-api-burst", 100, "Maximum burst for throttle while talking with Kubernetes API")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -168,6 +172,27 @@ func main() {
 
 	features.InitControllers(controllers)
 
+	var config *rest.Config
+	var err error
+
+	// ref: https://github.com/kubernetes-sigs/controller-runtime/issues/878#issuecomment-1002204308
+	kubeConfigPath := flag.Lookup("kubeconfig").Value.String()
+	if kubeConfigPath == "" {
+		setupLog.Info("using in-cluster configuration")
+		config = ctrl.GetConfigOrDie()
+	} else {
+		setupLog.Info(fmt.Sprintf("using configuration from '%s'", kubeConfigPath))
+		config, err = clientcmd.BuildConfigFromFlags("", kubeConfigPath)
+	}
+
+	if err != nil {
+		setupLog.Error(err, "failed to build config from flags")
+		os.Exit(1)
+	}
+
+	config.QPS = float32(qps)
+	config.Burst = burst
+
 	if err := RegisterSchemas(scheme); err != nil {
 		setupLog.Error(err, "unable to register schemas")
 		os.Exit(1)
@@ -189,7 +214,7 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	runtimeConfig := config.NewRuntimeConfig(enableRuntimeSidecar, debugMode, modeladapterSchedulerPolicy)
+	runtimeConfig := cfg.NewRuntimeConfig(enableRuntimeSidecar, debugMode, modeladapterSchedulerPolicy)
 
 	var webhookServer webhook.Server
 	if !disableWebhook {
@@ -198,7 +223,7 @@ func main() {
 		})
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr, err := ctrl.NewManager(config, ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress:   metricsAddr,
@@ -233,21 +258,6 @@ func main() {
 	setupLog.Info("starting cache")
 	stopCh := make(chan struct{})
 	defer close(stopCh)
-	var config *rest.Config
-
-	// ref: https://github.com/kubernetes-sigs/controller-runtime/issues/878#issuecomment-1002204308
-	kubeConfig := flag.Lookup("kubeconfig").Value.String()
-	if kubeConfig == "" {
-		setupLog.Info("using in-cluster configuration")
-		config, err = rest.InClusterConfig()
-	} else {
-		setupLog.Info(fmt.Sprintf("using configuration from '%s'", kubeConfig))
-		config, err = clientcmd.BuildConfigFromFlags("", kubeConfig)
-	}
-
-	if err != nil {
-		panic(err)
-	}
 
 	if features.IsControllerEnabled(features.ModelAdapterController) {
 		// cache is enabled for model adapter scheduling.
@@ -308,7 +318,7 @@ func main() {
 }
 
 // TODO: if the argument list will grow, we should create a ControllerSetupOptions struct instead.
-func setupControllers(mgr ctrl.Manager, runtimeConfig config.RuntimeConfig, certsReady chan struct{}, disableWebhook bool) {
+func setupControllers(mgr ctrl.Manager, runtimeConfig cfg.RuntimeConfig, certsReady chan struct{}, disableWebhook bool) {
 	// The controllers won't work until the webhooks are operating,
 	// and the webhook won't work until the certs are all in places.
 	if disableWebhook {
