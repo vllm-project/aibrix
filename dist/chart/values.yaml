@@ -146,15 +146,14 @@ metadata:
       resources:
         limits:
           cpu: 500m
-          memory: 256Mi
+          memory: 512Mi
         requests:
-          cpu: 10m
-          memory: 64Mi
+          cpu: 50m
+          memory: 128Mi
     tolerations: []
     redis:
       host: aibrix-redis-master
       port: 6379
-    metricRefreshIntervalMs: "3600000"
   redis:
     replicas: 1
     imagePullSecrets: []

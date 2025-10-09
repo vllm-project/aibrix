@@ -16,15 +16,17 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import redis.asyncio as redis
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 from kubernetes import config
 
+from aibrix import envs
 from aibrix.batch import BatchDriver
 from aibrix.batch.job_entity import JobEntityManager
 from aibrix.logger import init_logger, logging_basic_config
-from aibrix.metadata.api.v1 import batch, files
+from aibrix.metadata.api.v1 import batch, files, models, users
 from aibrix.metadata.cache import JobCache
 from aibrix.metadata.core import HTTPXClientWrapper, KopfOperatorWrapper
 from aibrix.metadata.setting import settings
@@ -40,10 +42,18 @@ async def liveness_check():
     return JSONResponse(content={"status": "ok"}, status_code=200)
 
 
-@router.get("/ready")
-async def readiness_check():
-    # Check if the inference engine is ready
-    return JSONResponse(content={"status": "ready"}, status_code=200)
+@router.get("/readyz")
+async def readiness_check(request: Request):
+    # Check if Redis is ready
+    try:
+        if hasattr(request.app.state, "redis_client"):
+            await request.app.state.redis_client.ping()
+        return JSONResponse(content={"status": "ready"}, status_code=200)
+    except Exception as e:
+        logger.error(f"Redis health check failed: {e}")
+        return JSONResponse(
+            content={"status": "not ready", "error": str(e)}, status_code=503
+        )
 
 
 @router.get("/status")
@@ -76,6 +86,19 @@ async def status_check(request: Request):
 async def lifespan(app: FastAPI):
     # Code executed on startup
     logger.info("Initializing FastAPI app...")
+
+    # Initialize Redis client
+    app.state.redis_client = redis.Redis(
+        host=envs.STORAGE_REDIS_HOST or "localhost",
+        port=envs.STORAGE_REDIS_PORT,
+        db=envs.STORAGE_REDIS_DB,
+        password=envs.STORAGE_REDIS_PASSWORD,
+        decode_responses=False,
+    )
+    logger.info(
+        f"Redis client initialized: {envs.STORAGE_REDIS_HOST}:{envs.STORAGE_REDIS_PORT}"
+    )
+
     if hasattr(app.state, "httpx_client_wrapper"):
         app.state.httpx_client_wrapper.start()
     if hasattr(app.state, "kopf_operator_wrapper"):
@@ -92,6 +115,9 @@ async def lifespan(app: FastAPI):
         app.state.kopf_operator_wrapper.stop()
     if hasattr(app.state, "httpx_client_wrapper"):
         await app.state.httpx_client_wrapper.stop()
+    if hasattr(app.state, "redis_client"):
+        await app.state.redis_client.aclose()
+        logger.info("Redis client closed")
 
 
 def build_app(args: argparse.Namespace, params={}):
@@ -118,6 +144,17 @@ def build_app(args: argparse.Namespace, params={}):
         )
 
     app.include_router(router)
+
+    # Initialize models API
+    app.include_router(
+        models.router, prefix=f"{settings.API_V1_STR}/models", tags=["models"]
+    )
+    logger.info("Models API mounted at /v1/models")
+
+    # Initialize user CRUD API
+    app.include_router(users.router, tags=["users"])
+    logger.info("User CRUD API mounted")
+
     # Initialize batches API
     if not args.disable_batch_api:
         job_entity_manager: Optional[JobEntityManager] = None

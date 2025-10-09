@@ -19,21 +19,35 @@ spec:
         app.kubernetes.io/component: aibrix-metadata-service
     spec:
       {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.metadata.service.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
+      serviceAccountName: aibrix-metadata-service
       initContainers:
-        - name: init-c
+        - name: init-redis
           image: {{ .Values.metadata.service.initContainer.image.repository }}:{{ .Values.metadata.service.initContainer.image.tag }}
           command:
             - 'sh'
             - '-c'
-            - 'until echo "ping" | nc {{ .Values.metadata.service.redis.host }} {{ .Values.metadata.service.redis.port }} -w 1 | grep -c PONG; do echo waiting for service {{ .Values.metadata.service.redis.host }}; sleep 2; done'
+            - 'until echo "ping" | nc {{ .Values.metadata.service.redis.host }} {{ .Values.metadata.service.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done'
       containers:
         - name: metadata-service
           image: {{ .Values.metadata.service.container.image.repository }}:{{ .Values.metadata.service.container.image.tag }}
           imagePullPolicy: {{ .Values.metadata.service.container.image.imagePullPolicy | default "IfNotPresent" }}
+          command: ["python", "-m", "aibrix.metadata.app"]
+          args: ["--host=0.0.0.0", "--port=8090"]
           ports:
             - containerPort: 8090
           resources: {{ toYaml .Values.metadata.service.container.resources | nindent 12 }}
-          # TODO: add liveness and readiness probes
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8090
+            initialDelaySeconds: 5
+            periodSeconds: 5
           env:
             - name: REDIS_HOST
               value: {{ .Values.metadata.service.redis.host }}
@@ -46,8 +60,6 @@ spec:
                   name: aibrix-redis
                   key: redis-password
             {{- end }}
-            - name: AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS
-              value: "{{ .Values.metadata.service.metricRefreshIntervalMs }}"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -60,4 +72,3 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: aibrix-gateway-plugins
