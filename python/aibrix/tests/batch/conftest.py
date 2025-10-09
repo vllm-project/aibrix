@@ -140,12 +140,10 @@ def job_cache(kopf_operator, ensure_job_rbac):
     The kopf_operator fixture ensures the operator is running.
     Uses the unittest job template with the correct service account.
     """
-    job_cache = get_global_job_cache()
-    if job_cache:
-        return job_cache
-
     from pathlib import Path
 
+    # Always create a new JobCache with the custom template for this test
+    # Don't reuse global cache as it may have different configuration
     template_patch_path = (
         Path(__file__).parent / "testdata" / "k8s_job_patch_unittest.yaml"
     )
