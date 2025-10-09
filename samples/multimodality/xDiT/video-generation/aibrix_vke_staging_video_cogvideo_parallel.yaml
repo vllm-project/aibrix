@@ -4,7 +4,7 @@ metadata:
   name: cogvideox-2b 
   labels: 
     model.aibrix.ai/name: cogvideox-2b 
-    model.aibrix.ai/port: "6000" 
+    model.aibrix.ai/port: "8000" 
 spec: 
   replicas: 1 
   strategy: 
@@ -19,7 +19,7 @@ spec:
     metadata: 
       labels: 
         model.aibrix.ai/name: cogvideox-2b 
-        model.aibrix.ai/port: "6000" 
+        model.aibrix.ai/port: "8000" 
     spec: 
       initContainers: 
         - command:             
@@ -59,7 +59,7 @@ spec:
           command: ["sh", "-c"]
           args:
             - |
-              python3 entrypoints/launch_video.py --model_path /models/CogVideoX-2b --ulysses_parallel_degree 2 --ring_degree 2 --world_size 4 --host 0.0.0.0 --port 6000
+              python3 entrypoints/launch_video.py --model_path /models/CogVideoX-2b --ulysses_parallel_degree 2 --ring_degree 2 --world_size 4 --host 0.0.0.0 --port 8000
           env: [] 
           volumeMounts: 
             - mountPath: /models 
@@ -122,9 +122,9 @@ metadata:
 spec: 
   ports: 
     - name: serve 
-      port: 6000 
+      port: 8000 
       protocol: TCP 
-      targetPort: 6000 
+      targetPort: 8000 
     - name: http 
       port: 8080 
       protocol: TCP 

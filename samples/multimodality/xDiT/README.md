@@ -180,3 +180,5 @@ curl -v http://localhost:8888/view \
   	}' -o generated_video_20251002-233911.mp4
 
 ```
+
+[aibrix_vke_staging_video_cogvideo_parallel.yaml](./video-generation/aibrix_vke_staging_video_cogvideo_parallel.yaml) demonstrate a distributed deployment where multiple GPUs are used to deploy a parallelized video generation model [CogVideoX-2b](https://huggingface.co/zai-org/CogVideoX-2b). [aibrix_vke_staging_video_hunyuanvideo.yaml](video-generation/aibrix_vke_staging_video_hunyuanvideo.yaml) has also been successfully tested on H20-96G GPU for [hunyuanvideo-community/HunyuanVideo](https://huggingface.co/hunyuanvideo-community/HunyuanVideo). There are ongoing issues with deploying parallelized HunyuanVideo model ([link](https://github.com/xdit-project/xDiT/issues/516)) and ongoing PR that attempts to fix it ([link](https://github.com/huggingface/diffusers/pull/12316)). We will be updating the distributed deployment once these issues are resolved. 
