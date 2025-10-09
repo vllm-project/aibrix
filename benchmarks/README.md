@@ -109,7 +109,7 @@ For details of the dataset generator, check out [README](./generator/dataset-gen
 
 ### Configuring Dataset Generation
 
-Sections in the configuration file below controls how dataset are generated.
+Sections in the configuration file below control how dataset are generated.
 
 ```yaml
 # ---------------
