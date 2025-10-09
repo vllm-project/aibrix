@@ -21,7 +21,7 @@ Test Coverage:
 """
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -49,9 +49,18 @@ pytestmark = pytest.mark.skipif(
 class TestK8sModelDiscovery:
     """Tests for K8sModelDiscovery class."""
 
+    @patch("kubernetes.config.load_kube_config")
+    @patch("kubernetes.config.load_incluster_config")
     @patch("kubernetes.client.CoreV1Api")
-    def test_get_base_models_from_pods(self, mock_core_v1):
+    def test_get_base_models_from_pods(
+        self, mock_core_v1, mock_incluster_config, mock_kube_config
+    ):
         """Test getting base models from pods."""
+        from kubernetes import config as k8s_config
+
+        # Mock config loading to avoid real K8s config
+        mock_incluster_config.side_effect = k8s_config.ConfigException("Not in cluster")
+
         # Mock pods with model label
         mock_pod1 = V1Pod(
             metadata=V1ObjectMeta(
@@ -116,9 +125,18 @@ class TestK8sModelDiscovery:
         # Should only include Running pods, exclude Ray workers and duplicates
         assert models == {"llama-3-8b", "mistral-7b"}
 
+    @patch("kubernetes.config.load_kube_config")
+    @patch("kubernetes.config.load_incluster_config")
     @patch("kubernetes.client.CustomObjectsApi")
-    def test_get_adapter_models_from_crds(self, mock_custom_objects):
+    def test_get_adapter_models_from_crds(
+        self, mock_custom_objects, mock_incluster_config, mock_kube_config
+    ):
         """Test getting adapter models from ModelAdapter CRDs."""
+        from kubernetes import config as k8s_config
+
+        # Mock config loading to avoid real K8s config
+        mock_incluster_config.side_effect = k8s_config.ConfigException("Not in cluster")
+
         mock_adapters = {
             "items": [
                 {
@@ -139,10 +157,23 @@ class TestK8sModelDiscovery:
 
         assert models == {"lora-adapter-1", "lora-adapter-2"}
 
+    @patch("kubernetes.config.load_kube_config")
+    @patch("kubernetes.config.load_incluster_config")
     @patch("kubernetes.client.CustomObjectsApi")
     @patch("kubernetes.client.CoreV1Api")
-    def test_get_all_models(self, mock_core_v1, mock_custom_objects):
+    def test_get_all_models(
+        self,
+        mock_core_v1,
+        mock_custom_objects,
+        mock_incluster_config,
+        mock_kube_config,
+    ):
         """Test getting all models (base + adapters)."""
+        from kubernetes import config as k8s_config
+
+        # Mock config loading to avoid real K8s config
+        mock_incluster_config.side_effect = k8s_config.ConfigException("Not in cluster")
+
         # Mock base models
         mock_pod = V1Pod(
             metadata=V1ObjectMeta(
@@ -188,12 +219,11 @@ class TestModelsAPI:
     ):
         """Test /v1/models/ endpoint returns model list."""
         from argparse import Namespace
+
         from kubernetes import config as k8s_config
 
         # Mock config loading to avoid real K8s config
-        mock_incluster_config.side_effect = k8s_config.ConfigException(
-            "Not in cluster"
-        )
+        mock_incluster_config.side_effect = k8s_config.ConfigException("Not in cluster")
 
         # Mock K8s responses
         mock_pod1 = V1Pod(

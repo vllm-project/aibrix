@@ -116,7 +116,7 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, "httpx_client_wrapper"):
         await app.state.httpx_client_wrapper.stop()
     if hasattr(app.state, "redis_client"):
-        await app.state.redis_client.aclose()
+        await app.state.redis_client.aclose()  # type: ignore[attr-defined]
         logger.info("Redis client closed")
 
 

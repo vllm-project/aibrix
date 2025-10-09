@@ -28,7 +28,7 @@ from kubernetes import client, config
 
 from aibrix.logger import init_logger
 from aibrix.metadata.app import build_app
-from aibrix.metadata.cache.job import JobCache, get_global_job_cache
+from aibrix.metadata.cache.job import JobCache
 from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
 

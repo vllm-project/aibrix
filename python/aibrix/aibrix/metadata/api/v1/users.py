@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 from typing import Optional
 
 import redis.asyncio as redis
@@ -157,9 +156,7 @@ async def update_user(request: Request, user: User) -> UserResponse:
     exists = await redis_client.exists(key)
     if not exists:
         logger.warning(f"Cannot update non-existent user: {user.name}")
-        raise HTTPException(
-            status_code=404, detail=f"User: {user.name} does not exist"
-        )
+        raise HTTPException(status_code=404, detail=f"User: {user.name} does not exist")
 
     # Update user
     await redis_client.set(key, user.model_dump_json())
@@ -189,9 +186,7 @@ async def delete_user(request: Request, user: User) -> UserResponse:
     exists = await redis_client.exists(key)
     if not exists:
         logger.warning(f"Cannot delete non-existent user: {user.name}")
-        raise HTTPException(
-            status_code=404, detail=f"User: {user.name} does not exist"
-        )
+        raise HTTPException(status_code=404, detail=f"User: {user.name} does not exist")
 
     # Delete user
     await redis_client.delete(key)
