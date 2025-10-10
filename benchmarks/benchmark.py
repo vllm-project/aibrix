@@ -227,10 +227,21 @@ class BenchmarkRunner:
         elif workload_type == "azure":
             if not Path(subconfig["trace_path"]).is_file():
                 logging.info("Downloading Azure dataset...")
-                subprocess.run([
-                    "wget", "https://raw.githubusercontent.com/Azure/AzurePublicDataset/refs/heads/master/data/AzureLLMInferenceTrace_conv.csv",
-                    "-O", subconfig["trace_path"]
-                ], check=True)
+                if subconfig["trace_type"] == "conv":
+                    subprocess.run([
+                        "wget", "https://raw.githubusercontent.com/Azure/AzurePublicDataset/refs/heads/master/data/AzureLLMInferenceTrace_conv.csv",
+                        "-O", subconfig["trace_path"]
+                    ], check=True)
+                elif subconfig["trace_type"] == "code":
+                    subprocess.run([
+                        "wget", "https://raw.githubusercontent.com/Azure/AzurePublicDataset/refs/heads/master/data/AzureLLMInferenceTrace_code.csv",
+                        "-O", subconfig["trace_path"]
+                    ], check=True)
+                else:
+                    trace_type = subconfig["trace_type"]
+                    logging.error(f"Unknown trace type: {trace_type}")
+                    logging.error("Choose among [conv|code]")
+                    sys.exit(1)
             args_dict.update({
                 "traffic_file": subconfig["trace_path"],
                 "group_interval_seconds": 1,

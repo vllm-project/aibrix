@@ -40,7 +40,7 @@ dataset_configs:
 # ---------------
 # Workload config
 dataset_file: ${dataset_dir}/${prompt_type}.jsonl
-workload_type: "constant"  # Options: constant, synthetic, constant, azure, mooncake
+workload_type: "constant"  # Options: constant, synthetic, stat, azure, mooncake
 interval_ms: 1000
 duration_ms: 10000
 workload_dir: "./output/workload/${workload_type}"
@@ -56,7 +56,7 @@ workload_configs:
       traffic_file: "scenarios/autoscaling/workload-configs/predefined/traffic-configs/HighSlow.json"
       prompt_len_file: "scenarios/autoscaling/workload-configs/predefined/prompt-len-configs/HighSlow.json"
       completion_len_file: "scenarios/autoscaling/workload-configs/predefined/completion-len-configs/HighSlow.json"
-      max_concurrent_sessions: 2
+    max_concurrent_sessions: 2
 
   constant:
     target_qps: 1

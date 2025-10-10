@@ -470,7 +470,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Workload Generator')
+    parser = argparse.ArgumentParser(description='Workload Generator Client')
     parser.add_argument("--workload-path", type=str, default=None, help="File path to the workload file.")
     parser.add_argument("--model", type=str, default=None, help="Default target model (if workload does not contains target model).")
     parser.add_argument('--endpoint', type=str, required=True)
