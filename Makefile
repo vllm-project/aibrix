@@ -208,8 +208,9 @@ build-gateway-plugins: manifests generate fmt vet ## Build gateway-plugins binar
 	CGO_ENABLED=1 go build -tags="zmq" -o bin/gateway-plugins cmd/plugins/main.go
 
 .PHONY: build-metadata-service
-build-metadata-service: manifests generate fmt vet ## Build metadata-service binary without ZMQ.
-	CGO_ENABLED=0 go build -o bin/metadata-service cmd/metadata/main.go
+build-metadata-service: ## Metadata service is now Python-based, use docker-build-metadata-service instead.
+	@echo "Metadata service is now Python-based. Use 'make docker-build-metadata-service' to build the Docker image."
+	@echo "The Go-based metadata service has been deprecated."
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/controllers/main.go
@@ -248,7 +249,7 @@ docker-build-runtime: ## Build docker image with the AI Runtime.
 	$(call build_and_tag,runtime,Dockerfile.runtime)
 
 .PHONY: docker-build-metadata-service
-docker-build-metadata-service: ## Build docker image with the metadata-service.
+docker-build-metadata-service: ## Build docker image with the metadata-service (Python).
 	$(call build_and_tag,metadata-service,Dockerfile.metadata)
 
 .PHONY: docker-build-kvcache-watcher
@@ -272,7 +273,7 @@ docker-push-runtime: ## Push docker image with the AI Runtime.
 	$(call push_image,runtime)
 
 .PHONY: docker-push-metadata-service
-docker-push-metadata-service: ## Push docker image with the metadata-service.
+docker-push-metadata-service: ## Push docker image with the metadata-service (Python).
 	$(call push_image,metadata-service)
 
 .PHONY: docker-push-kvcache-watcher
