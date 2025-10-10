@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/ssestream"
@@ -52,6 +53,8 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	var processingRes *extProcPb.ProcessingResponse
 	var promptTokens, completionTokens, totalTokens int64
 	var headers []*configPb.HeaderValueOption
+	headers = buildEnvoyProxyHeaders(headers, HeaderRequestID, requestID)
+
 	complete := hasCompleted
 	routerCtx, _ := ctx.(*types.RoutingContext)
 
@@ -98,6 +101,12 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			if processingRes != nil {
 				return processingRes, complete
 			}
+		} else if !isLanguageRequest(routerCtx.ReqPath) {
+			processingRes = s.processNonLanguangeResponse(ctx, b)
+			if processingRes != nil {
+				return processingRes, true
+			}
+			totalTokens = 1
 		}
 	}
 
@@ -116,41 +125,14 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 					}}},
 					err.Error()), complete
 			}
-
-			headers = append(headers,
-				&configPb.HeaderValueOption{
-					Header: &configPb.HeaderValue{
-						Key:      HeaderUpdateRPM,
-						RawValue: []byte(fmt.Sprintf("%d", rpm)),
-					},
-				},
-				&configPb.HeaderValueOption{
-					Header: &configPb.HeaderValue{
-						Key:      HeaderUpdateTPM,
-						RawValue: []byte(fmt.Sprintf("%d", tpm)),
-					},
-				},
-			)
+			headers = buildEnvoyProxyHeaders(headers, HeaderUpdateRPM, fmt.Sprintf("%d", rpm),
+				HeaderUpdateTPM, fmt.Sprintf("%d", tpm))
 			requestEnd = fmt.Sprintf(requestEnd+"rpm: %d, tpm: %d, ", rpm, tpm)
 		}
 
 		if routerCtx != nil && routerCtx.HasRouted() {
-			targetPodIP := routerCtx.TargetAddress()
-			headers = append(headers,
-				&configPb.HeaderValueOption{
-					Header: &configPb.HeaderValue{
-						Key:      HeaderTargetPod,
-						RawValue: []byte(targetPodIP),
-					},
-				},
-				&configPb.HeaderValueOption{
-					Header: &configPb.HeaderValue{
-						Key:      HeaderRequestID,
-						RawValue: []byte(requestID),
-					},
-				},
-			)
-			requestEnd = fmt.Sprintf(requestEnd+"targetPod: %s", targetPodIP)
+			headers = buildEnvoyProxyHeaders(headers, HeaderTargetPod, routerCtx.TargetAddress())
+			requestEnd = fmt.Sprintf(requestEnd+"targetPod: %s", routerCtx.TargetAddress())
 		}
 
 		klog.Infof("request end, requestID: %s - %s", requestID, requestEnd)
@@ -242,5 +224,39 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 		completionTokens = res.Usage.CompletionTokens
 		totalTokens = res.Usage.TotalTokens
 	}
+	return
+}
+
+// nolint:nakedret
+func (s *Server) processNonLanguangeResponse(ctx context.Context, b *extProcPb.ProcessingRequest_ResponseBody) (processingRes *extProcPb.ProcessingResponse) {
+	routerCtx, _ := ctx.(*types.RoutingContext)
+	if !routerCtx.SaveToRemoteStorage {
+		return
+	}
+
+	var jsonMap map[string]interface{}
+	if err := json.Unmarshal(b.ResponseBody.GetBody(), &jsonMap); err != nil {
+		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+			err.Error(), HeaderErrorResponseUnmarshal, "true")
+	}
+
+	storagePath, ok := jsonMap["output"].(string)
+	if !ok {
+		klog.ErrorS(ErrorUnknownResponse, "path not found in response", "requestID", routerCtx.RequestID, "responseBody", string(b.ResponseBody.GetBody()))
+		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError, "path not found in response")
+	}
+
+	if err := s.writeStorageRequest(ctx, routerCtx.RequestID, types.RequestStore{
+		RequestID:  routerCtx.RequestID,
+		Status:     true,
+		IP:         strings.Split(routerCtx.TargetAddress(), ":")[0],
+		Port:       "8080",
+		Path:       storagePath,
+		UpdateTime: time.Now(),
+	}); err != nil {
+		klog.ErrorS(err, "error to store request response in redis", "requestID", routerCtx.RequestID)
+		return buildErrorResponse(envoyTypePb.StatusCode_InternalServerError, err.Error())
+	}
+
 	return
 }

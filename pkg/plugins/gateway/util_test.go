@@ -24,6 +24,7 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go"
 	"github.com/stretchr/testify/assert"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -138,7 +139,7 @@ func Test_ValidateRequestBody(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("1", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, stream, errRes := validateRequestBody(&types.RoutingContext{RequestID: "1", ReqPath: tt.requestPath}, tt.requestBody, tt.user)
 
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
@@ -312,7 +313,7 @@ func Test_ValidateRequestBody_Embeddings(t *testing.T) {
 	}
 
 	for _, tt := range testCases {
-		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		model, messages, stream, errRes := validateRequestBody(&types.RoutingContext{RequestID: "test-request-id", ReqPath: tt.requestPath}, tt.requestBody, tt.user)
 		t.Log(tt.message)
 		if tt.statusCode == 200 {
 			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
