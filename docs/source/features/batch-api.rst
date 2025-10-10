@@ -369,7 +369,7 @@ The metadata server requires configuration for batch processing:
 
 .. code-block:: bash
 
-    # Enable Batch API
+    # Enable Batch API (note: set to false to enable)
     --disable-batch-api=false
 
     # Enable Kubernetes Job execution
