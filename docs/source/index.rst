@@ -47,6 +47,7 @@ Documentation
    :maxdepth: 1
    :caption: User Manuals
 
+   features/batch-api.rst
    features/lora-dynamic-loading.rst
    features/gateway-plugins.rst
    features/multi-node-inference.rst

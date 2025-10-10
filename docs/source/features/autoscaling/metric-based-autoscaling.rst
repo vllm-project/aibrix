@@ -67,34 +67,8 @@ StormService Role-Level Autoscaling
 
 For StormService in pooled mode (``replicas=1``), different roles (e.g., prefill and decode) can be autoscaled independently. This enables fine-grained control where each role scales based on its specific metrics.
 
-Use the ``subTargetSelector`` field to target a specific role within a StormService:
-
-.. code-block:: yaml
-
-    apiVersion: autoscaling.aibrix.ai/v1alpha1
-    kind: PodAutoscaler
-    metadata:
-      name: llm-prefill-autoscaler
-    spec:
-      scaleTargetRef:
-        apiVersion: orchestration.aibrix.ai/v1alpha1
-        kind: StormService
-        name: llm-xpyd
-
-      # Select the prefill role
-      subTargetSelector:
-        roleName: prefill
-
-      minReplicas: 2
-      maxReplicas: 20
-      scalingStrategy: APA
-      metricsSources:
-        - metricSourceType: pod
-          protocolType: http
-          port: "8000"
-          path: /metrics
-          targetMetric: "prefill_queue_length"
-          targetValue: "10"
+Use the ``subTargetSelector`` field to target a specific role within a StormService. Please also add the annotation `autoscaling.aibrix.ai/storm-service-mode: "pool"` in PodAutoscaler object for aibrix autoscaler to better
+distinguish the ``replicas=1`` scenarios.
 
 **Key features:**
 
@@ -105,7 +79,7 @@ Use the ``subTargetSelector`` field to target a specific role within a StormServ
 
 **Complete example:**
 
-.. literalinclude:: ../../../../samples/autoscaler/stormservice-role-autoscaler.yaml
+.. literalinclude:: ../../../../samples/autoscaling/stormservice-pool.yaml
    :language: yaml
 
 **When to use:**
