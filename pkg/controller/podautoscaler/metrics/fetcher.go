@@ -142,17 +142,25 @@ func (f *ResourceMetricsFetcher) fetchResourceMetric(ctx context.Context, pod v1
 		return 0.0, nil
 	}
 
+	var total float64
 	for _, container := range podMetrics.Containers {
 		switch source.TargetMetric {
 		case "cpu":
-			return float64(container.Usage.Cpu().MilliValue()), nil
+			total += float64(container.Usage.Cpu().MilliValue())
 		case "memory":
-			return float64(container.Usage.Memory().Value()), nil
+			total += float64(container.Usage.Memory().Value())
+		default:
+			klog.Warningf("Unsupported resource metric: %s", source.TargetMetric)
+			return 0.0, fmt.Errorf("unsupported resource metric: %s", source.TargetMetric)
 		}
 	}
 
-	klog.Warningf("Resource metric %s not found for pod %s. Returning zero value.", source.TargetMetric, pod.Name)
-	return 0.0, nil
+	klog.V(4).InfoS("Aggregated resource metric for pod",
+		"pod", pod.Name,
+		"metric", source.TargetMetric,
+		"value", total)
+
+	return total, nil
 }
 
 // CustomMetricsFetcher handles Kubernetes custom metrics
