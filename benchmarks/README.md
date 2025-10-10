@@ -212,7 +212,7 @@ Below are the workload types that are currently being supported. The ```workload
 
 **1. The "constant" and "synthetic" workload type**
 - The workload generator can generate two types of *synthetic load patterns*. Multiple workload configurations can be hand-tuned (e.g., traffic/QPS distribution, input request token lengths distribution, output token lengths distribution, maximum concurrent sessions, etc.):
-    - Constant load (**constant**): The mean load (QPS/input length/output length) stays constant with sampled explential distribution interval fluctuation.
+    - Constant load (**constant**): The mean load (QPS/input length/output length) stays constant with sampled exponential distribution interval fluctuation.
     - Synthetic fluctuation load (**synthetic**): The loads (QPS/input length/output length) fluctuate based on configurable parameters.
 
 **2. The "stat" workload type**
