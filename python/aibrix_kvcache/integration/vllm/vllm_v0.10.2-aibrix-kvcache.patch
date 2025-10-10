@@ -1,0 +1,4510 @@
+diff --git a/vllm/distributed/kv_transfer/kv_connector/factory.py b/vllm/distributed/kv_transfer/kv_connector/factory.py
+index 670f9c26b..bc81d5b04 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/factory.py
++++ b/vllm/distributed/kv_transfer/kv_connector/factory.py
+@@ -106,3 +106,18 @@ KVConnectorFactory.register_connector(
+     "MultiConnector",
+     "vllm.distributed.kv_transfer.kv_connector.v1.multi_connector",
+     "MultiConnector")
++
++KVConnectorFactory.register_connector(
++    "AIBrixOffloadingConnectorV1Type1",
++    "vllm.distributed.kv_transfer.kv_connector.v1"
++    ".aibrix_offloading_connector_type1", "AIBrixOffloadingConnector")
++
++KVConnectorFactory.register_connector(
++    "AIBrixOffloadingConnectorV1Type2",
++    "vllm.distributed.kv_transfer.kv_connector.v1"
++    ".aibrix_offloading_connector_type2", "AIBrixOffloadingConnector")
++
++KVConnectorFactory.register_connector(
++    "AIBrixOffloadingConnectorV1Type3",
++    "vllm.distributed.kv_transfer.kv_connector.v1"
++    ".aibrix_offloading_connector_type3", "AIBrixOffloadingConnector")
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type1.py b/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type1.py
+new file mode 100644
+index 000000000..964058c8b
+--- /dev/null
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type1.py
+@@ -0,0 +1,1409 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import enum
++import logging
++from dataclasses import dataclass, field
++from functools import wraps
++from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar
++
++import numpy as np
++import torch
++import torch.distributed as dist
++from aibrix_kvcache import (BaseKVCacheManager, GroupAwareKVCacheManager,
++                            KVCacheBlockLayout, KVCacheBlockSpec,
++                            KVCacheConfig, KVCacheMetrics, KVCacheTensorSpec,
++                            ModelSpec, TokenListView)
++from aibrix_kvcache._custom_ops import (reshape_and_cache_multi_layer,
++                                        reshape_and_offload_multi_layer)
++from aibrix_kvcache.common.absl_logging import (getLogger, log_every_n_seconds,
++                                                log_if)
++from aibrix_kvcache.common.cached_pyobject import CachedPyObjectBase
++from aibrix_kvcache.metrics import (MS_BUCKETS, TOKEN_BUCKETS,
++                                    BaseMetricsExporter,
++                                    KVCacheMetricsExporter, Metrics)
++from aibrix_kvcache.profiling import tag_wrapper
++from aibrix_kvcache.utils import perf_timer
++
++import vllm.envs
++from vllm.attention import get_attn_backend
++# from vllm.v1.attention.backends.flashinfer import FlashInferBackend
++# from vllm.v1.attention.backends.flex_attention import FlexAttentionBackend
++# from vllm.v1.attention.backends.triton_attn import TritonAttentionBackend
++from vllm.distributed import (get_tp_group, get_world_group,
++                              init_model_parallel_group)
++from vllm.distributed.kv_transfer.kv_connector.v1.base import (
++    KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole)
++from vllm.distributed.kv_transfer.kv_transfer_metrics import (
++    KVTransferMetrics, KVTransferMetricsExporter)
++from vllm.utils import get_kv_cache_torch_dtype, round_down, round_up
++from vllm.v1.attention.backends.flash_attn import FlashAttentionBackend
++
++if TYPE_CHECKING:
++    from vllm.attention.backends.abstract import AttentionMetadata
++    from vllm.config import VllmConfig
++    from vllm.forward_context import ForwardContext
++    from vllm.v1.core.kv_cache_manager import KVCacheBlocks
++    from vllm.v1.core.sched.output import SchedulerOutput
++    from vllm.v1.request import Request
++
++logger = getLogger(__name__)
++
++OFFLOADING_CONNECTOR_SKIP_THRESHOLD = 8
++OFFLOADING_CONNECTOR_SUPPORTED_ATTN_BACKENDS = {
++    FlashAttentionBackend.get_name(): KVCacheBlockLayout.LCND,
++}
++
++T = TypeVar('T')
++
++
++def delegate_to(
++        member_name: str) -> Callable[[Callable[..., T]], Callable[..., T]]:
++    """
++    Decorator that delegates a method call to a member object.
++    
++    Args:
++        member_name: The name of the member attribute to delegate to.
++    """
++
++    def decorator(method: Callable[..., T]) -> Callable[..., T]:
++
++        @wraps(method)
++        def wrapper(self, *args, **kwargs) -> T:
++            member = getattr(self, member_name)
++            assert member is not None, f"{member_name} is not set"
++            member_method = getattr(member, method.__name__)
++            return member_method(*args, **kwargs)
++
++        return wrapper
++
++    return decorator
++
++
++class AIBrixOffloadingConnectorSyncGranularity(enum.Enum):
++    """The sync granularity used by AIBrix offloading connectors.
++    NONE: no synchronization among TP participants.
++    PER_OP: sync up the min num. of tokens fetched by each TP participant after
++            each GET/ACUQUIRE operation.
++    PER_BATCH: sync up the min num. of tokens fetched by each TP participant
++               after each batch.
++    """
++    NONE = enum.auto()
++    PER_OP = enum.auto()
++    PER_BATCH = enum.auto()
++
++
++class AIBrixOffloadingConnectorOpMetrics(Metrics):
++    """Op metrics."""
++
++    class OP(enum.Enum):
++        SEND = enum.auto()
++        RECV = enum.auto()
++
++    def __init__(
++        self,
++        op: OP,
++        enable_time_measurement: bool = True,
++    ) -> None:
++        self.num_ops: int = 0
++        self.total_tokens: int = 0
++        self.total_sent_or_recved_tokens: int = 0
++        self.num_prefixes: list[int] = []
++        self.num_tokens: list[int] = []
++        self.num_sent_or_recved_tokens: list[int] = []
++        self.op_lat_ms: Optional[list[int]] = None
++
++        self._op = op
++        self._enable_time_measurement = enable_time_measurement
++        self._init_optionals()
++
++    def _init_optionals(self) -> None:
++        if self._enable_time_measurement:
++            self.op_lat_ms = []
++
++    def add(
++        self,
++        num_prefix: int,
++        num_tokens: int,
++        num_sent_or_recved_tokens: int,
++        lat_ms: int,
++    ) -> None:
++        self.num_ops += 1
++        self.total_tokens += num_tokens
++        self.total_sent_or_recved_tokens += num_sent_or_recved_tokens
++        self.num_sent_or_recved_tokens.append(num_sent_or_recved_tokens)
++        self.num_prefixes.append(num_prefix)
++        self.num_tokens.append(num_tokens)
++        if self._enable_time_measurement:
++            self.op_lat_ms.append(lat_ms)
++
++    def reset(self) -> None:
++        self.num_prefixes = []
++        self.num_tokens = []
++        self.num_sent_or_recved_tokens = []
++        self._init_optionals()
++
++    def summary(self) -> str:
++        iter_len = len(self.num_prefixes)
++        total_prefixes = sum(self.num_prefixes)
++        avg_prefixes = total_prefixes / iter_len if iter_len > 0 else 0
++        total_tokens = sum(self.num_tokens)
++        avg_tokens = total_tokens / iter_len if iter_len > 0 else 0
++        total_sent_or_recved_tokens = sum(self.num_sent_or_recved_tokens)
++        avg_sent_or_recved_tokens = (total_sent_or_recved_tokens /
++                                     iter_len if iter_len > 0 else 0)
++        summary = f"{self._op.name}: Num. of ops: {self.num_ops}, " \
++                  f"Total num. of tokens: {self.total_tokens}, "
++        if self._op is AIBrixOffloadingConnectorOpMetrics.OP.SEND:
++            summary += f"Total num. of sent tokens: " \
++                       f"{self.total_sent_or_recved_tokens}, "
++        else:
++            summary += f"Total num. of received tokens: " \
++                       f"{self.total_sent_or_recved_tokens}, "
++        summary += f"Num. of prefixes (iter): total={total_prefixes}, " \
++                   f"avg={avg_prefixes:.2f}, " \
++                   f"Num. of tokens (iter): total={total_tokens}, " \
++                   f"avg={avg_tokens:.2f}"
++        if self._op is AIBrixOffloadingConnectorOpMetrics.OP.SEND:
++            summary += f", Num. of sent tokens (iter): " \
++                       f"total={total_sent_or_recved_tokens}, " \
++                       f"avg={avg_sent_or_recved_tokens:.2f}"
++        else:
++            summary += f", Num. of received tokens (iter): " \
++                       f"total={total_sent_or_recved_tokens}, " \
++                       f"avg={avg_sent_or_recved_tokens:.2f}"
++        if self._enable_time_measurement:
++            total_lat_ms = sum(self.op_lat_ms)
++            avg_lat_ms = total_lat_ms / iter_len if iter_len > 0 else 0
++            summary += f", Latency (iter, ms): total={total_lat_ms:.2f}, " \
++                       f"avg={avg_lat_ms:.2f}"
++        if self._op is AIBrixOffloadingConnectorOpMetrics.OP.RECV:
++            hit_rate = (self.total_sent_or_recved_tokens * 100 /
++                        self.total_tokens) if self.total_tokens > 0 else 0
++            summary += f", Hit rate: {hit_rate:.2f}%"
++        return summary
++
++
++class AIBrixOffloadingConnectorOpMetricsExporter(BaseMetricsExporter):
++    OP_TYPE_LABELNAME = "op_type"
++
++    def __init__(self, *, prefix, labelnames, counter_cls, gauge_cls,
++                 histogram_cls) -> None:
++        labelnames = labelnames or []
++        labelnames.append(self.OP_TYPE_LABELNAME)
++
++        super().__init__(
++            prefix=f"{prefix}ol_connector_",
++            labelnames=labelnames,
++            counter_cls=counter_cls,
++            gauge_cls=gauge_cls,
++            histogram_cls=histogram_cls,
++        )
++
++        self._init_exporter_fields()
++
++    def _init_exporter_fields(self) -> None:
++        self.counter_num_ops = self._counter_cls(
++            name=f"{self._prefix}num_ops",
++            documentation="Cumulative number of operations.",
++            labelnames=self._labelnames)
++        self.histogram_iteration_prefixes = self._histogram_cls(
++            name=f"{self._prefix}iteration_prefixes",
++            documentation="Histogram of number of prefixes per iteration.",
++            labelnames=self._labelnames,
++            buckets=TOKEN_BUCKETS)
++        self.histogram_iteration_tokens = self._histogram_cls(
++            name=f"{self._prefix}iteration_tokens",
++            documentation="Histogram of number of tokens per iteration.",
++            labelnames=self._labelnames,
++            buckets=TOKEN_BUCKETS)
++        self.histogram_iteration_sent_tokens = self._histogram_cls(
++            name=f"{self._prefix}iteration_sent_tokens",
++            documentation=("Histogram of number of sent tokens "
++                           "per iteration."),
++            labelnames=self._labelnames,
++            buckets=TOKEN_BUCKETS)
++        self.histogram_iteration_received_tokens = self._histogram_cls(
++            name=f"{self._prefix}iteration_received_tokens",
++            documentation=("Histogram of number of received tokens "
++                           "per iteration."),
++            labelnames=self._labelnames,
++            buckets=TOKEN_BUCKETS)
++        self.histogram_iteration_op_lat_ms = self._histogram_cls(
++            name=f"{self._prefix}iteration_op_lat_ms",
++            documentation=("Histogram of operation latencies "
++                           "per iteration in ms."),
++            labelnames=self._labelnames,
++            buckets=MS_BUCKETS)
++
++    def export(
++        self,
++        labels: dict[str, str],
++        metrics: AIBrixOffloadingConnectorOpMetrics,
++    ) -> None:
++        labels = labels.copy()
++
++        labels[self.OP_TYPE_LABELNAME] = metrics._op.name.lower()
++        self._export_op_metrics(labels, metrics)
++
++    def _export_op_metrics(
++        self,
++        labels: dict[str, str],
++        metrics: AIBrixOffloadingConnectorOpMetrics,
++    ) -> None:
++        self._export_counter(self.counter_num_ops, labels,
++                             len(metrics.num_prefixes))
++        self._export_histogram(self.histogram_iteration_prefixes, labels,
++                               metrics.num_prefixes)
++        self._export_histogram(self.histogram_iteration_tokens, labels,
++                               metrics.num_tokens)
++        if metrics._op is AIBrixOffloadingConnectorOpMetrics.OP.SEND:
++            self._export_histogram(self.histogram_iteration_sent_tokens,
++                                   labels, metrics.num_sent_or_recved_tokens)
++        else:
++            self._export_histogram(self.histogram_iteration_received_tokens,
++                                   labels, metrics.num_sent_or_recved_tokens)
++        if metrics._enable_time_measurement:
++            self._export_histogram(self.histogram_iteration_op_lat_ms, labels,
++                                   metrics.op_lat_ms)
++
++
++class AIBrixOffloadingConnectorMetrics(KVTransferMetrics):
++
++    def __init__(self, metrics: KVCacheMetrics) -> None:
++        self._cache_metrics = metrics
++        self._time_measurement_enabled = (
++            self._cache_metrics.time_measurement_enabled)
++        self._send_metrics = AIBrixOffloadingConnectorOpMetrics(
++            AIBrixOffloadingConnectorOpMetrics.OP.SEND,
++            enable_time_measurement=self._time_measurement_enabled,
++        )
++        self._recv_metrics = AIBrixOffloadingConnectorOpMetrics(
++            AIBrixOffloadingConnectorOpMetrics.OP.RECV,
++            enable_time_measurement=self._time_measurement_enabled,
++        )
++
++    @property
++    def time_measurement_enabled(self) -> bool:
++        return self._time_measurement_enabled
++
++    def reset(self) -> None:
++        self._cache_metrics.reset()
++        self._send_metrics.reset()
++        self._recv_metrics.reset()
++
++    def __str__(self) -> str:
++        return f"AIBrixOffloadingConnector metrics: " \
++               f"{self._send_metrics.summary()}" \
++               f"\n\t{self._recv_metrics.summary()}" \
++               f"\n\t{self._cache_metrics.summary()}"
++
++    # NOTE: Functions `log` and `findCaller` are used as a workaround to
++    # log metrics on the worker side, will be removed once the worker is
++    # able to transfer metrics to the scheduler.
++    def log(self, level, msg, *args) -> None:
++        logger.log(level, str(self))
++        self.reset()
++
++    def findCaller(self) -> tuple[str, int, str, str | None]:
++        return logger.findCaller()
++
++
++class AIBrixOffloadingConnectorMetricsExporter(KVTransferMetricsExporter):
++    """Metrics for AIBrixOffloadingConnector."""
++
++    def __init__(self, *, prefix, labelnames, gauge_cls, counter_cls,
++                 histogram_cls):
++        self.kv_cache_metrics_exporter = KVCacheMetricsExporter(
++            prefix=prefix,
++            labelnames=labelnames,
++            gauge_cls=gauge_cls,
++            counter_cls=counter_cls,
++            histogram_cls=histogram_cls,
++        )
++        self.ol_connector_op_metrics_exporter = \
++            AIBrixOffloadingConnectorOpMetricsExporter(
++            prefix=prefix,
++            labelnames=labelnames,
++            gauge_cls=gauge_cls,
++            counter_cls=counter_cls,
++            histogram_cls=histogram_cls,
++        )
++
++    def export(
++        self,
++        *,
++        metrics: KVTransferMetrics,
++        labels: dict[str, str],
++    ):
++        self.kv_cache_metrics_exporter.export(
++            metrics=metrics._cache_metrics,
++            labels=labels,
++        )
++        self.ol_connector_op_metrics_exporter.export(
++            metrics=metrics._send_metrics,
++            labels=labels,
++        )
++        self.ol_connector_op_metrics_exporter.export(
++            metrics=metrics._recv_metrics,
++            labels=labels,
++        )
++
++
++@dataclass
++class AIBrixOffloadingConnectorCachedMeta:
++    context_tokens: np.ndarray = field(default_factory=lambda: np.array([]))
++    context_tokens_offset: int = 0
++    context_tokens_view: Optional[TokenListView] = None
++
++    context_slot_mapping: Optional[torch.Tensor] = None
++    context_slot_mapping_offset: int = 0
++
++    def __init__(self, prompt_len: int) -> None:
++        self.context_tokens = np.empty(prompt_len, dtype=np.int32)
++        self.context_slot_mapping = torch.empty(
++            prompt_len,
++            dtype=torch.long,
++            device="cuda",
++        )
++
++    def get_context_tokens(self) -> list[int]:
++        return self.context_tokens[:self.context_tokens_offset]
++
++    def get_context_tokens_view(self) -> TokenListView:
++        if self.context_tokens_view is None:
++            self.context_tokens_view = TokenListView(self.get_context_tokens())
++        return self.context_tokens_view
++
++    def extend(
++        self,
++        tokens: tuple[int, list[int]],
++        slot_mapping: Optional[tuple[int, torch.Tensor]],
++    ):
++        if tokens:
++            offset = tokens[0]
++            length = len(tokens[1])
++            self.context_tokens[offset:offset + length] = tokens[1]
++            self.context_tokens_offset = offset + length
++            self.context_tokens_view = None
++
++        if slot_mapping is None:
++            return
++        offset = slot_mapping[0]
++        length = min(
++            slot_mapping[1].shape[0],
++            self.context_slot_mapping.shape[0] - offset,
++        )
++        self.context_slot_mapping[offset : offset + length] = \
++            slot_mapping[1][:length]
++        self.context_slot_mapping_offset = offset + length
++
++
++class AIBrixOffloadingConnectorRequestState(enum.IntEnum):
++    INIT = enum.auto()
++    WAITING_FOR_ALLOC = enum.auto()
++    WAITING_FOR_SEND = enum.auto()
++    WAITING_FOR_RECV = enum.auto()
++    SENDING = enum.auto()
++    RECEIVING = enum.auto()
++
++
++@dataclass
++class AIBrixOffloadingConnectorRequestMetadata(CachedPyObjectBase):
++    req_id: str = ""
++    prompt_len: int = -1
++    context_len: int = -1
++    query_len: int = -1  # num of tokens to send/recv
++    load_len: int = -1  # num of tokens to load
++    # a tuple of offset and
++    # 1. all token ids for a new request
++    # 2. new token ids for a cached request
++    seq_token_ids: tuple[int, list[int]] = field(default_factory=tuple)
++    # a tuple of offset and
++    # 1. all slot mapping for a new request
++    # 2. new slot mapping for a cached request
++    seq_slot_mapping: Optional[tuple[int, torch.Tensor]] = None
++    state: AIBrixOffloadingConnectorRequestState = (
++        AIBrixOffloadingConnectorRequestState.INIT)
++    resumed_from_preemption: bool = False
++
++    def __str__(self) -> str:
++        seq_slot_mapping_off = (
++            "None" if self.seq_slot_mapping is None else \
++                str(self.seq_slot_mapping[0])
++        )
++        seq_slot_mapping_len = (
++            "None" if self.seq_slot_mapping is None else \
++                str(self.seq_slot_mapping[1].shape[0])
++        )
++        seq_token_ids_off = (
++            "None" if not self.seq_token_ids else \
++                str(self.seq_token_ids[0])
++        )
++        seq_token_ids_len = ("None" if not self.seq_token_ids
++                             or len(self.seq_token_ids) < 2 else str(
++                                 len(self.seq_token_ids[1])))
++        return (f"AIBrixOffloadingConnectorRequestMetadata["
++                f"req_id={self.req_id}, "
++                f"prompt_len={self.prompt_len}, "
++                f"context_len={self.context_len}, "
++                f"query_len={self.query_len}, "
++                f"load_len={self.load_len}, "
++                f"offset(seq_token_ids)={seq_token_ids_off}, "
++                f"len(seq_token_ids)={seq_token_ids_len}, "
++                f"offset(seq_slot_mapping)={seq_slot_mapping_off}, "
++                f"len(seq_slot_mapping)={seq_slot_mapping_len}, "
++                f"state={self.state.name}, "
++                f"resumed_from_preemption={self.resumed_from_preemption}]")
++
++    def __repr__(self):
++        return self.__str__()
++
++
++class AIBrixOffloadingConnectorMetadata(KVConnectorMetadata):
++
++    def __init__(self,
++                 requests: dict[str,
++                                AIBrixOffloadingConnectorRequestMetadata]):
++        # Requests that need to load from external kvcache.
++        self.requests = requests
++        self.finished_requests_ids: set[str] = set()
++        self.total_num_scheduled_tokens: int = 0
++        self.side_channel_host: str = ""
++        self.side_channel_port: int = -1
++
++    def __getitem__(self,
++                    key: str) -> AIBrixOffloadingConnectorRequestMetadata:
++        return self.requests[key]
++
++    def __contains__(self, key: str) -> bool:
++        return key in self.requests
++
++    def __iter__(self):
++        return iter(self.requests)
++
++    def __next__(self):
++        return next(self.requests)
++
++    def __len__(self):
++        return len(self.requests)
++
++    def items(self):
++        return self.requests.items()
++
++    def upsert_request(
++        self,
++        request_id: str,
++        **kwargs,
++    ) -> None:
++        self.requests.setdefault(
++            request_id,
++            AIBrixOffloadingConnectorRequestMetadata()).__dict__.update(
++                req_id=request_id, **kwargs)
++
++    def pop_request(
++        self,
++        request_id: str,
++    ) -> AIBrixOffloadingConnectorRequestMetadata | None:
++        return self.requests.pop(request_id, None)
++
++    def finish_request(self, request_id: str) -> None:
++        self.finished_requests_ids.add(request_id)
++        self.pop_request(request_id)
++
++    def get(self, predicate: Callable) -> "AIBrixOffloadingConnectorMetadata":
++        requests = {k: v for k, v in self.requests.items() if predicate(v)}
++        return AIBrixOffloadingConnectorMetadata(requests=requests)
++
++    def filter_requests(self, predicate: Callable) -> None:
++        self.requests = {
++            k: v
++            for k, v in self.requests.items() if not predicate(v)
++        }
++
++    def extend(self, other: "AIBrixOffloadingConnectorMetadata") -> None:
++        self.requests.update(other.requests)
++
++    def clear(self) -> None:
++        self.requests.clear()
++        self.finished_requests_ids.clear()
++
++    def __str__(self) -> str:
++        return f"AIBrixOffloadingConnectorMetadata: {self.__dict__}"
++
++
++class AIBrixOffloadingConnectorScheduler:
++
++    def __init__(self, config: "VllmConfig"):
++        self.kv_role = config.kv_transfer_config.kv_role
++        self.engine_block_ntokens = config.cache_config.block_size
++
++        self._scheduler_meta = AIBrixOffloadingConnectorMetadata({})
++
++    def build_connector_meta(
++            self, scheduler_output: "SchedulerOutput") -> KVConnectorMetadata:
++        # 1. remove finished requests
++        for req_id in scheduler_output.finished_req_ids:
++            self._scheduler_meta.pop_request(req_id)
++
++        # 2. new requests
++        for req in scheduler_output.scheduled_new_reqs:
++            req_id = req.req_id
++
++            prompt_len = len(req.prompt_token_ids)
++            context_len = req.num_computed_tokens
++            query_len = scheduler_output.num_scheduled_tokens[req_id]
++
++            if context_len >= prompt_len:
++                continue
++
++            (block_ids, ) = req.block_ids
++            slot_mapping = self._block_ids_to_slot_mapping(block_ids)
++
++            self._scheduler_meta.upsert_request(
++                req_id,
++                prompt_len=prompt_len,
++                context_len=context_len,
++                query_len=query_len,
++                seq_token_ids=(0, req.prompt_token_ids),
++                seq_slot_mapping=(0, slot_mapping),
++                state=AIBrixOffloadingConnectorRequestState.WAITING_FOR_RECV,
++            )
++
++        # 3. cached requests
++        cached_reqs = scheduler_output.scheduled_cached_reqs
++        req_ids = cached_reqs.req_ids
++        for i in range(len(req_ids)):
++            req_id = req_ids[i]
++
++            if req_id not in self._scheduler_meta:
++                continue
++
++            req_meta = self._scheduler_meta[req_id]
++
++            prompt_len = req_meta.prompt_len
++            context_len = min(cached_reqs.num_computed_tokens[i], prompt_len)
++            query_len = min(
++                scheduler_output.num_scheduled_tokens[req_id],
++                prompt_len - context_len,
++            )
++
++            if context_len >= prompt_len:
++                continue
++
++            if cached_reqs.resumed_from_preemption[i]:
++                logger.debug(
++                    "Got preempt Request[id=%s, context_len=%d, query_len=%d]",
++                    req_id,
++                    context_len,
++                    query_len,
++                )
++                (block_ids, ) = cached_reqs.new_block_ids[i]
++                seq_slot_mapping = (0,
++                                    self._block_ids_to_slot_mapping(block_ids))
++            elif cached_reqs.new_block_ids[i] is not None:
++                (block_ids, ) = cached_reqs.new_block_ids[i]
++                seq_slot_mapping = (
++                    round_up(context_len, self.engine_block_ntokens),
++                    self._block_ids_to_slot_mapping(block_ids),
++                )
++            else:
++                seq_slot_mapping = None
++
++            self._scheduler_meta.upsert_request(
++                req_id,
++                prompt_len=prompt_len,
++                context_len=context_len,
++                query_len=query_len,
++                seq_token_ids=None,
++                seq_slot_mapping=seq_slot_mapping,
++                state=AIBrixOffloadingConnectorRequestState.WAITING_FOR_RECV,
++                resumed_from_preemption=cached_reqs.resumed_from_preemption[i],
++            )
++
++        # 4. keep requests that are in the WAITING_FOR_RECV state
++        meta = self._scheduler_meta.get(lambda req: req.state == \
++                AIBrixOffloadingConnectorRequestState.WAITING_FOR_RECV
++            )
++
++        logger.debug("SCHEDULER: build_connector_meta, meta=%s", meta.__dict__)
++
++        # 5. update scheduled requests
++        for req_id in meta:
++            self._scheduler_meta.upsert_request(
++                req_id,
++                state=AIBrixOffloadingConnectorRequestState.RECEIVING,
++            )
++
++        # 6. attach finished requests
++        meta.finished_requests_ids = self._scheduler_meta.finished_requests_ids
++        self._scheduler_meta.finished_requests_ids = set()
++
++        logger.debug(
++            "Num. of scheduled requests: %s",
++            len(
++                self._scheduler_meta.get(lambda req: req.state == \
++                    AIBrixOffloadingConnectorRequestState.RECEIVING
++                )),
++        )
++        return meta
++
++    def request_finished(
++        self,
++        request: "Request",
++        block_ids: list[int],
++    ) -> tuple[bool, Optional[dict[str, Any]]]:
++        req_id = request.request_id
++        logger.debug("SCHEDULER: Request[id=%s] finished", req_id)
++
++        self._scheduler_meta.finish_request(req_id)
++        return False, None
++
++    def _block_ids_to_slot_mapping(self, block_ids: list[int]) -> torch.Tensor:
++        block_ids_tensor = torch.tensor(block_ids)
++        num_blocks = block_ids_tensor.shape[0]
++        block_offsets = torch.arange(0, self.engine_block_ntokens)
++        slot_mapping = block_offsets.reshape((1, self.engine_block_ntokens)) + \
++                block_ids_tensor.reshape((num_blocks, 1)) * \
++                    self.engine_block_ntokens
++        return slot_mapping.flatten()
++
++
++class AIBrixOffloadingConnectorWorker:
++    """AIBrixOffloadingConnectorWorker carries out the data-plane operations.
++    """
++
++    def __init__(self, config: "VllmConfig"):
++        self._init_worker(config)
++
++    def _init_worker(
++        self,
++        config: "VllmConfig",
++        max_num_batched_tokens: int = -1,
++        tp_aware: bool = True,
++        multi_threaded: bool = False,
++    ):
++        cache_config = config.cache_config
++        model_config = config.model_config
++        parallel_config = config.parallel_config
++
++        tp_size = parallel_config.tensor_parallel_size
++        num_kv_heads = model_config.get_num_kv_heads(parallel_config)
++        head_size = model_config.get_head_size()
++
++        rank = get_tp_group().rank_in_group
++        kv_head_ids = list(
++            range(num_kv_heads * rank, num_kv_heads * (rank + 1)))
++        layer_ids = list(
++            range(*model_config.get_layers_start_end_indices(parallel_config)))
++        num_layers = len(layer_ids)
++
++        block_ntokens = cache_config.block_size
++        block_dtype = get_kv_cache_torch_dtype(cache_config.cache_dtype,
++                                               model_config.dtype)
++
++        kv_cache_dtype = cache_config.cache_dtype
++
++        self.attn_backend = get_attn_backend(
++            model_config.get_head_size(),
++            model_config.dtype,
++            kv_cache_dtype,
++            block_ntokens,
++            model_config.is_attention_free,
++            use_mla=model_config.use_mla,
++        )
++
++        block_spec = KVCacheBlockSpec(
++            block_ntokens=block_ntokens,
++            block_dtype=block_dtype,
++            block_layout=self._get_block_layout(),
++            tensor_spec=KVCacheTensorSpec(
++                heads=kv_head_ids,
++                layers=layer_ids,
++                head_size=head_size,
++            ),
++        )
++
++        kv_config = KVCacheConfig(
++            block_spec=block_spec,
++            model_spec=ModelSpec(
++                model_config.max_model_len,
++                max_num_batched_tokens,
++            ),
++            multi_threaded=multi_threaded,
++        )
++
++        self.kv_group: dist.ProcessGroup | None = None
++        if parallel_config.tensor_parallel_size == 1 or not tp_aware:
++            self.cache = BaseKVCacheManager(config=kv_config)
++        else:
++            backend = torch.distributed.get_backend(get_world_group()\
++                .device_group)
++            world_size = parallel_config.world_size
++            dp_size = parallel_config.data_parallel_size
++            pp_size = parallel_config.pipeline_parallel_size
++            # the layout order is: ExternalDP x DP x PP x TP
++            # ExternalDP is the data parallel group that is not part of the
++            # model, every dp rank can generate independently (in verl
++            # integration).
++            # DP is the data parallel group that is part of the model,
++            # all the ranks in the same DP group should generate simultaneously,
++            # i.e. the `generate` call in the same DP group should be called
++            # together, otherwise it will cause deadlock.
++            # to get group_ranks for each dimension, transpose that dimension to
++            # the last dimension, then reshape to 2D, then unbind the last
++            # dimension
++            all_ranks = torch.arange(world_size).reshape(
++                -1, dp_size, pp_size, tp_size)
++
++            # Build the kv model-parallel groups.
++            group_ranks = all_ranks.view(-1, tp_size).unbind(0)
++            group_ranks = [x.tolist() for x in group_ranks]
++
++            kv_group = init_model_parallel_group(
++                group_ranks,
++                get_world_group().local_rank,
++                backend,
++                group_name="kvcache",
++            )
++            assert rank == kv_group.rank_in_group
++
++            sync_granularity = vllm.envs.VLLM_AIBRIX_SYNC_GRANULARITY
++            if (AIBrixOffloadingConnectorSyncGranularity.NONE.name ==
++                    sync_granularity):
++                self.cache = BaseKVCacheManager(config=kv_config)
++            elif (AIBrixOffloadingConnectorSyncGranularity.PER_OP.name ==
++                  sync_granularity):
++                self.cache = GroupAwareKVCacheManager(
++                    config=kv_config, process_group=kv_group.cpu_group)
++            elif (AIBrixOffloadingConnectorSyncGranularity.PER_BATCH.name ==
++                  sync_granularity):
++                self.cache = BaseKVCacheManager(config=kv_config)
++                self.kv_group = kv_group.cpu_group
++                self._coll_tensor = torch.empty(
++                    (config.scheduler_config.max_num_seqs * 3),
++                    dtype=torch.int32,
++                )
++            else:
++                raise ValueError(
++                    f"Unknown sync granularity {sync_granularity}")
++
++        self.rank = rank
++        self.head_size = head_size
++        self.tp_size = tp_size
++        self.num_kv_heads = num_kv_heads
++        self.num_layers = num_layers
++        self.kv_head_ids = kv_head_ids
++        self.layer_ids = layer_ids
++        self.engine_block_ntokens = block_ntokens
++        self.cache_block_ntokens = self.cache.block_size
++        self.block_dtype = block_dtype
++        self.block_shape = block_spec.block_shape
++        self.block_spec = block_spec
++        self.block_layout = block_spec.block_layout
++        self.chunk_size = self.cache.chunk_size
++        self.cache_feature = self.cache.feature
++        self.kv_cache_dtype = kv_cache_dtype
++
++        # KV caches and kv scales will be init'ed later
++        self.no_compile_layers = config.compilation_config.\
++            static_forward_context
++        self.kv_caches: dict[str, torch.Tensor] | None = None
++        self.layers_kv_caches: list[torch.Tensor] | None = None
++        self.k_scales: list[torch.Tensor] | None = None
++        self.v_scales: list[torch.Tensor] | None = None
++
++        self._meta_cache: dict[str, AIBrixOffloadingConnectorCachedMeta] = {}
++        # metrics
++        self._metrics = AIBrixOffloadingConnectorMetrics(self.cache.metrics)
++        logger.info(
++            "AIBrixOffloadingConnector is initialized, "
++            "engine_block_ntokens=%d, cache_block_ntokens=%d",
++            self.engine_block_ntokens,
++            self.cache_block_ntokens,
++        )
++
++    def __del__(self) -> None:
++        if getattr(self, "cache", None) is not None:
++            self.cache.close()
++            self.cache = None
++
++    def _get_block_layout(self) -> KVCacheBlockLayout:
++
++        if self.attn_backend.get_name() in \
++            OFFLOADING_CONNECTOR_SUPPORTED_ATTN_BACKENDS:
++            return KVCacheBlockLayout(
++                OFFLOADING_CONNECTOR_SUPPORTED_ATTN_BACKENDS[
++                    self.attn_backend.get_name()])
++        raise NotImplementedError(
++            f"Only support attn backends in "
++            f"{list(OFFLOADING_CONNECTOR_SUPPORTED_ATTN_BACKENDS.keys())}. "
++            f"{self.attn_backend.get_name()} is used.")
++
++    def _update_meta_cache(
++        self,
++        metadata: AIBrixOffloadingConnectorMetadata,
++    ) -> None:
++        # remove finished requests
++        for req_id in metadata.finished_requests_ids:
++            if req_id in self._meta_cache:
++                self._meta_cache.pop(req_id)
++
++        for req_id, meta in metadata.items():
++            if req_id not in self._meta_cache:
++                self._meta_cache[req_id] = AIBrixOffloadingConnectorCachedMeta(
++                    meta.prompt_len)
++            elif meta.resumed_from_preemption:
++                self._meta_cache[req_id].context_slot_mapping_offset = 0
++                self._meta_cache[req_id].context_slot_mapping.zero_()
++
++            seq_meta_cache = self._meta_cache[req_id]
++            seq_meta_cache.extend(meta.seq_token_ids, meta.seq_slot_mapping)
++
++    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]) -> None:
++        self.kv_caches = kv_caches
++        layer_names = self.no_compile_layers.keys()
++        self.layers_kv_caches = [
++            self.kv_caches[layer_name] for layer_name in layer_names
++        ]
++        self.layer_name_idx_mapping = {
++            layer_name: idx
++            for idx, layer_name in enumerate(layer_names)
++        }
++        layers = self.no_compile_layers.values()
++        self.k_scales = [layer._k_scale for layer in layers]
++        self.v_scales = [layer._v_scale for layer in layers]
++
++    @tag_wrapper({
++        "connector": "AIBrixOffloadingConnectorV1Type1",
++        "func": "start_load_kv_before_update"
++    })
++    def start_load_kv_before_update(
++        self,
++        metadata: AIBrixOffloadingConnectorMetadata,
++    ) -> dict[str, int]:
++        self._update_meta_cache(metadata)
++
++        stats = {}
++        for seq_request_id, seq_request_meta in metadata.items():
++            num_fetched_tokens = self._recv_kv_sync_impl(seq_request_meta)
++            stats[seq_request_id] = num_fetched_tokens
++
++        if len(stats) > 0 and self.kv_group is not None:
++            for idx, (seq_request_id, seq_request_meta) in \
++                enumerate(metadata.items()):
++                self._coll_tensor[idx] = stats.get(seq_request_id, 0)
++            dist.all_reduce(self._coll_tensor[:idx], dist.ReduceOp.MIN,
++                            self.kv_group)
++
++            for idx, (seq_request_id, seq_request_meta) in \
++                enumerate(metadata.items()):
++                if self._coll_tensor[idx] > 0:
++                    stats[seq_request_id] = self._coll_tensor[idx].item()
++                else:
++                    stats.pop(seq_request_id, None)
++
++        for seq_request_id, num_fetched_tokens in stats.items():
++            seq_request_meta = metadata[seq_request_id]
++            # update seq_request_meta
++            seq_request_meta.query_len -= num_fetched_tokens
++            seq_request_meta.context_len += num_fetched_tokens
++
++            seq_request_meta.state = \
++                AIBrixOffloadingConnectorRequestState.WAITING_FOR_SEND
++
++        return stats
++
++    def _recv_kv_sync_impl(
++        self,
++        seq_request_meta: AIBrixOffloadingConnectorRequestMetadata,
++    ) -> int:
++        logger.debug("_recv_kv_sync_impl: %s", seq_request_meta)
++        seq_request_id = seq_request_meta.req_id
++        seq_cached_meta = self._meta_cache[seq_request_id]
++        seq_all_tokens = seq_cached_meta.get_context_tokens_view()
++        assert seq_all_tokens is not None, "seq_all_tokens is None"
++        seq_context_len = seq_request_meta.context_len
++
++        prompt_len = seq_request_meta.prompt_len
++        query_len = seq_request_meta.query_len
++
++        # align to block boundary
++        aligned_context_len = round_down(seq_context_len,
++                                         self.cache_block_ntokens)
++        actual_query_len = seq_context_len + query_len - aligned_context_len
++        aligned_query_len = round_down(actual_query_len,
++                                       self.cache_block_ntokens)
++        shift_len = seq_context_len - aligned_context_len
++
++        assert prompt_len >= aligned_context_len + aligned_query_len, \
++            f"{prompt_len}<{aligned_context_len}+{aligned_query_len}"
++
++        threshold = max(
++            OFFLOADING_CONNECTOR_SKIP_THRESHOLD * self.engine_block_ntokens,
++            self.cache_block_ntokens,
++        )
++        if aligned_query_len < threshold:
++            logger.debug(
++                "Skip Request[id=%s, context_len=%d, query_len=%d]",
++                seq_request_id,
++                aligned_context_len,
++                aligned_query_len,
++            )
++            return 0
++
++        prefix = seq_all_tokens[:aligned_context_len]
++        tokens = seq_all_tokens[aligned_context_len:aligned_context_len +
++                                aligned_query_len]
++
++        if self._metrics.time_measurement_enabled:
++            start = torch.cuda.Event(enable_timing=True)
++            end = torch.cuda.Event(enable_timing=True)
++            start.record()
++
++        seq_recv_len = 0
++        for (
++                chunk_prefix,
++                chunk_tokens,
++                next_tokens,
++                _,
++        ) in self.cache.cache_chunk_keys(prefix, tokens):
++            if next_tokens and len(next_tokens) > 0:
++                # prefetch
++                self.cache.prefetch(chunk_prefix + chunk_tokens, next_tokens)
++
++            # get KV caches from offloading service
++            status = self.cache.acquire(chunk_prefix, chunk_tokens)
++
++            if not status.is_ok():
++                if not status.is_not_found():
++                    log_every_n_seconds(
++                        logger,
++                        logging.ERROR,
++                        "Failed to get from offloading service: %s",
++                        3,
++                        str(status),
++                    )
++                break
++
++            num_fetched_tokens, handle = status.value
++            kv_blocks = handle.to_tensors()
++
++            offset = len(chunk_prefix)
++            length = num_fetched_tokens
++
++            chunk_slot_mapping = seq_cached_meta.context_slot_mapping[
++                offset:offset + length]
++
++            with perf_timer() as get_kernel_onload_dur_ms:
++                reshape_and_cache_multi_layer(
++                    kv_blocks,
++                    self.layers_kv_caches,
++                    chunk_slot_mapping,
++                    self.engine_block_ntokens,
++                    self.kv_cache_dtype,
++                    self.k_scales,
++                    self.v_scales,
++                    self.block_layout.name,
++                )
++
++            logger.info(
++                "Request[id=%s] onloads %d tokens in %.4f ms",
++                seq_request_id,
++                length,
++                get_kernel_onload_dur_ms(),
++            )
++
++            # update recv_len
++            seq_recv_len += num_fetched_tokens - shift_len
++            # reset shift_len
++            shift_len = 0
++
++            # release handle
++            handle.release()
++
++            if num_fetched_tokens < len(chunk_tokens):
++                # didn't receive all tokens for current chunk, break
++                break
++
++        log_if(
++            logger,
++            logging.INFO,
++            "Request[id=%s, prompt_len=%d, context_len=%d] reused %d tokens",
++            seq_recv_len > 0,
++            seq_request_id,
++            prompt_len,
++            seq_context_len,
++            seq_recv_len,
++        )
++
++        if self._metrics.time_measurement_enabled:
++            end.record()
++            end.synchronize()
++            lat_ms = start.elapsed_time(end)
++            self._metrics._recv_metrics.add(aligned_context_len,
++                                            aligned_query_len, seq_recv_len,
++                                            lat_ms)
++
++        return seq_recv_len
++
++    @tag_wrapper({
++        "connector": "AIBrixOffloadingConnectorV1Type1",
++        "func": "wait_for_save"
++    })
++    def wait_for_save(
++        self,
++        metadata: AIBrixOffloadingConnectorMetadata,
++    ) -> None:
++        assert self.layers_kv_caches is not None, "layers_kv_caches is None"
++
++        for seq_request_id, seq_request_meta in metadata.items():
++            if seq_request_meta.query_len == 0:
++                continue
++            self._send_kv_sync_impl(seq_request_meta)
++
++        if self._metrics.time_measurement_enabled:
++            log_every_n_seconds(self._metrics, logging.INFO, "UNUSED", 10)
++
++    def _send_kv_sync_impl(
++        self,
++        seq_request_meta: AIBrixOffloadingConnectorRequestMetadata,
++    ) -> None:
++        logger.debug("_send_kv_sync_impl: %s", seq_request_meta)
++        seq_request_id = seq_request_meta.req_id
++        seq_context_len = seq_request_meta.context_len
++        seq_cached_meta = self._meta_cache[seq_request_id]
++        seq_all_tokens = seq_cached_meta.get_context_tokens_view()
++        assert seq_all_tokens is not None, "seq_all_tokens is None"
++        prompt_len = seq_request_meta.prompt_len
++        query_len = seq_request_meta.query_len
++
++        # align to block boundary
++        aligned_context_len = round_down(seq_context_len,
++                                         self.cache_block_ntokens)
++        actual_query_len = seq_context_len + query_len - aligned_context_len
++        aligned_query_len = round_down(actual_query_len,
++                                       self.cache_block_ntokens)
++
++        assert prompt_len >= aligned_context_len + aligned_query_len, \
++            f"{prompt_len}<{aligned_context_len}+{aligned_query_len}"
++
++        prefix = seq_all_tokens[:aligned_context_len]
++        tokens = seq_all_tokens[aligned_context_len:aligned_context_len +
++                                aligned_query_len]
++
++        if self._metrics.time_measurement_enabled:
++            start = torch.cuda.Event(enable_timing=True)
++            end = torch.cuda.Event(enable_timing=True)
++            start.record()
++
++        total_sent = 0
++        for (
++                chunk_prefix,
++                chunk_tokens,
++                _,
++                all,
++        ) in self.cache.cache_chunk_keys(prefix, tokens):
++            # |----------- seq_context_len ---------|- offset -|
++            # |- aligned_context_len -|- shift_len -|
++            #                         |--- n * chunk_size -----|
++            # |----------------- chunk_prefix -----------------|- tokens -|
++            #                         |-------- (n + 1) * chunk_size -----|
++            chunk_size = len(chunk_tokens)
++            offset = len(chunk_prefix)
++            length = chunk_size
++
++            exists_status = self.cache.exists(chunk_prefix, chunk_tokens)
++            if exists_status.is_ok():
++                num_existing_tokens = exists_status.value
++                logger.info(
++                    "Request[id=%s] send(%d) encounters %d existing tokens",
++                    seq_request_id, length, num_existing_tokens)
++                if chunk_size - num_existing_tokens < self.cache_block_ntokens:
++                    continue
++                else:
++                    # partially exists
++                    offset += num_existing_tokens
++                    length -= num_existing_tokens
++                    new_chunk_prefix_len = len(
++                        chunk_prefix) + num_existing_tokens
++                    chunk_prefix = all[:new_chunk_prefix_len]
++                    chunk_tokens = all[
++                        new_chunk_prefix_len:new_chunk_prefix_len + length]
++
++            # allocate space for KV caches
++            status = self.cache.allocate_for(chunk_prefix, chunk_tokens)
++            if not status.is_ok():
++                log_every_n_seconds(logger, logging.ERROR,
++                                    "Failed to allocate : %s", 3, str(status))
++                break
++            handle = status.value
++            tensors = handle.to_tensors()
++            length = len(tensors) * self.cache_block_ntokens
++
++            chunk_slot_mapping = seq_cached_meta.context_slot_mapping[
++                offset:offset + length]
++
++            with perf_timer() as get_kernel_offload_dur_ms:
++                reshape_and_offload_multi_layer(
++                    tensors,
++                    self.layers_kv_caches,
++                    chunk_slot_mapping,
++                    self.engine_block_ntokens,
++                    self.kv_cache_dtype,
++                    self.k_scales,
++                    self.v_scales,
++                    self.block_layout.name,
++                )
++
++            logger.info("Request[id=%s] offloads %d tokens in %.4f ms",
++                        seq_request_id, length, get_kernel_offload_dur_ms())
++
++            # put KV caches to offloading service
++            status = self.cache.put(chunk_prefix, chunk_tokens[:length],
++                                    handle)
++            if not status.is_ok():
++                # TODO: notify other ranks in the group to stop sending
++                # if this is a fatal error
++                log_every_n_seconds(logger, logging.ERROR,
++                                    "Failed to put to offloading service: %s",
++                                    3, str(status))
++                break
++
++            put_ntokens = status.get()
++            total_sent += put_ntokens
++            if put_ntokens != length:
++                break
++
++        log_if(
++            logger,
++            logging.INFO,
++            "Request[id=%s, prompt_len=%d, context_len=%d] sent %d tokens",
++            total_sent > 0,
++            seq_request_id,
++            prompt_len,
++            seq_context_len,
++            total_sent,
++        )
++
++        if self._metrics.time_measurement_enabled:
++            end.record()
++            end.synchronize()
++            lat_ms = start.elapsed_time(end)
++            self._metrics._send_metrics.add(aligned_context_len,
++                                            aligned_query_len, total_sent,
++                                            lat_ms)
++
++
++class AIBrixOffloadingConnector(KVConnectorBase_V1):
++    """AIBrixOffloadingConnector is a KVConnector that offloads KV caches
++    to the kv cache offloading service.
++    """
++
++    def __init__(self, config: "VllmConfig", role: KVConnectorRole):
++        super().__init__(vllm_config=config, role=role)
++
++        self.connector_scheduler: Optional[
++            AIBrixOffloadingConnectorScheduler] = None
++
++        self.connector_worker: Optional[AIBrixOffloadingConnectorWorker] = None
++        if role == KVConnectorRole.SCHEDULER:
++            self.connector_scheduler = AIBrixOffloadingConnectorScheduler(
++                config)
++        elif role == KVConnectorRole.WORKER:
++            self.connector_worker = AIBrixOffloadingConnectorWorker(config)
++
++    # ==============================
++    # Worker-side methods
++    # ==============================
++
++    @delegate_to("connector_worker")
++    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
++        """
++        Initialize with the KV caches. Useful for pre-registering the
++        KV Caches in the KVConnector (e.g. for NIXL).
++
++        Args: kv_caches:
++            dictionary of layer names, kv cache
++        """
++        pass
++
++    def start_load_kv_before_update(self, **kwargs) -> dict[str, int]:
++        """
++        Start loading the KV cache from the connector to vLLM's paged
++        KV buffer before gpu runner updating its states.
++
++        Args:
++            **kwargs: additional arguments for the load operation
++
++        Returns:
++            dict[str, int]: a dictionary of request ids and the number of
++            tokens loaded for each request.
++        """
++        assert self.connector_worker is not None
++        assert isinstance(
++            self._connector_metadata,
++            AIBrixOffloadingConnectorMetadata,
++        )
++        return self.connector_worker.start_load_kv_before_update(
++            self._connector_metadata)
++
++    def start_load_kv(self, forward_context: "ForwardContext",
++                      **kwargs) -> None:
++        """
++        Start loading the KV cache from the connector to vLLM's paged
++        KV buffer. This is called from the forward context before the
++        forward pass to enable async loading during model execution.
++
++        Args:
++            forward_context (ForwardContext): the forward context.
++            **kwargs: additional arguments for the load operation
++
++        Note:
++            The number of elements in kv_caches and layer_names should be 
++            the same.
++            
++        """
++        return
++
++    def wait_for_layer_load(self, layer_name: str) -> None:
++        """
++        Block until the KV for a specific layer is loaded into vLLM's
++        paged buffer. This is called from within attention layer to ensure
++        async copying from start_load_kv is complete.
++        
++        This interface will be useful for layer-by-layer pipelining.
++
++        Args:
++            layer_name: the name of that layer
++        """
++        """Not supported yet"""
++        pass
++
++    def save_kv_layer(self, layer_name: str, kv_layer: torch.Tensor,
++                      attn_metadata: "AttentionMetadata", **kwargs) -> None:
++        """
++        Start saving a layer of KV cache from vLLM's paged buffer 
++        to the connector. This is called from within attention layer to
++        enable async copying during execution.
++
++        Args:
++            layer_name (str): the name of the layer.
++            kv_layer (torch.Tensor): the paged KV buffer of the current 
++                layer in vLLM.
++            attn_metadata (AttentionMetadata): the attention metadata.
++            **kwargs: additional arguments for the save operation.
++        """
++        """Not supported yet"""
++        pass
++
++    def wait_for_save(self) -> None:
++        """
++        Block until all the save operations is done. This is called
++        as the forward context exits to ensure that the async saving
++        from save_kv_layer is complete before finishing the forward.
++
++        This prevents overwrites of paged KV buffer before saving done.
++        """
++        assert self.connector_worker is not None
++        assert isinstance(
++            self._connector_metadata,
++            AIBrixOffloadingConnectorMetadata,
++        )
++        self.connector_worker.wait_for_save(self._connector_metadata)
++
++    def get_finished(
++        self, finished_req_ids: set[str]
++    ) -> tuple[Optional[set[str]], Optional[set[str | tuple[str, int]]]]:
++        """
++        Notifies worker-side connector ids of requests that have
++        finished generating tokens.
++
++        Returns:
++            ids of requests that have finished asynchronous transfer
++            (requests that previously returned True from request_finished()),
++            tuple of (sending/saving ids, recving/loading ids or
++            (recving/loading id, num. of recv'ed/loaded tokens) pairs).
++            The finished saves/sends req ids must belong to a set provided in a
++            call to this method (this call or a prior one).
++        """
++        return None, None
++
++    # ==============================
++    # Scheduler-side methods
++    # ==============================
++
++    def get_num_new_matched_tokens(
++        self,
++        request: "Request",
++        num_computed_tokens: int,
++    ) -> tuple[int, bool]:
++        """
++        Get number of new tokens that can be loaded from the
++        external KV cache beyond the num_computed_tokens.
++        
++        Args:
++            request (Request): the request object.
++            num_computed_tokens (int): the number of locally
++                computed tokens for this request
++
++        Returns:
++            A tuple with the following elements:
++                - The number of tokens that can be loaded from the 
++                  external KV cache beyond what is already computed.
++                - `True` if external KV cache tokens will be loaded
++                  asynchronously (between scheduler steps). Must be
++                  'False' if the first element is 0.
++        """
++        return 0, False
++
++    def update_state_after_alloc(self, request: "Request",
++                                 blocks: "KVCacheBlocks",
++                                 num_external_tokens: int):
++        """
++        Update KVConnector state after block allocation.
++
++        If get_num_new_matched_tokens previously returned True for a
++        request, this function may be called twice for that same request -
++        first when blocks are allocated for the connector tokens to be
++        asynchronously loaded into, and second when any additional blocks
++        are allocated, after the load/transfer is complete.
++
++        Args:
++            request (Request): the request object.
++            blocks (KVCacheBlocks): the blocks allocated for the request.
++            num_external_tokens (int): the number of tokens that will be
++                loaded from the external KV cache.
++        """
++        return
++
++    @delegate_to("connector_scheduler")
++    def build_connector_meta(
++            self, scheduler_output: "SchedulerOutput") -> KVConnectorMetadata:
++        """
++        Build the connector metadata for this step.
++
++        This function should NOT modify fields in the scheduler_output.
++        Also, calling this function will reset the state of the connector.
++
++        Args:
++            scheduler_output (SchedulerOutput): the scheduler output object.
++        """
++        pass
++
++    @delegate_to("connector_scheduler")
++    def request_finished(
++        self,
++        request: "Request",
++        block_ids: list[int],
++    ) -> tuple[bool, Optional[dict[str, Any]]]:
++        """
++        Called when a request has finished, before its blocks are freed.
++
++        Returns:
++            True if the request is being saved/sent asynchronously and blocks
++            should not be freed until the request_id is returned from
++            get_finished().
++            Optional KVTransferParams to be included in the request outputs
++            returned by the engine.
++        """
++        pass
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type2.py b/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type2.py
+new file mode 100644
+index 000000000..c5783ef7b
+--- /dev/null
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type2.py
+@@ -0,0 +1,744 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import logging
++import time
++from typing import TYPE_CHECKING, Any, Optional
++
++import torch
++import torch.distributed as dist
++from aibrix_kvcache import KVCacheBlockLayout, KVCacheHandle
++from aibrix_kvcache._custom_ops import (reshape_and_cache_multi_layer,
++                                        reshape_and_offload_multi_layer)
++from aibrix_kvcache.common.absl_logging import (getLogger, log_every_n_seconds,
++                                                log_if)
++from aibrix_kvcache.profiling import tag_wrapper
++
++# from vllm.v1.attention.backends.flashinfer import FlashInferBackend
++# from vllm.v1.attention.backends.flex_attention import FlexAttentionBackend
++# from vllm.v1.attention.backends.triton_attn import TritonAttentionBackend
++from vllm.distributed.kv_transfer.kv_connector.v1.base import (
++    KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole)
++from vllm.utils import round_down
++from vllm.v1.attention.backends.flash_attn import FlashAttentionBackend
++
++from .aibrix_offloading_connector_type1 import (
++    AIBrixOffloadingConnectorMetadata,
++    AIBrixOffloadingConnectorRequestMetadata,
++    AIBrixOffloadingConnectorRequestState)
++from .aibrix_offloading_connector_type1 import (
++    AIBrixOffloadingConnectorScheduler as AIBrixOffloadingConnectorSchedulerType1)
++from .aibrix_offloading_connector_type1 import (
++    AIBrixOffloadingConnectorWorker as AIBrixOffloadingConnectorWorkerType1)
++from .aibrix_offloading_connector_type1 import delegate_to
++
++if TYPE_CHECKING:
++    from vllm.attention.backends.abstract import AttentionMetadata
++    from vllm.config import VllmConfig
++    from vllm.forward_context import ForwardContext
++    from vllm.v1.core.kv_cache_manager import KVCacheBlocks
++    from vllm.v1.core.sched.output import SchedulerOutput
++    from vllm.v1.request import Request
++
++logger = getLogger(__name__)
++
++OFFLOADING_CONNECTOR_SKIP_THRESHOLD = 8
++OFFLOADING_CONNECTOR_SUPPORTED_ATTN_BACKENDS = {
++    FlashAttentionBackend.get_name(): KVCacheBlockLayout.LCND,
++}
++
++
++class AIBrixOffloadingConnectorScheduler(
++        AIBrixOffloadingConnectorSchedulerType1):
++
++    def __init__(self, config: "VllmConfig"):
++        super().__init__(config)
++
++
++class AIBrixOffloadingConnectorWorker(AIBrixOffloadingConnectorWorkerType1):
++    """AIBrixOffloadingConnectorWorker carries out the data-plane operations.
++    """
++
++    def __init__(self, config: "VllmConfig"):
++        self._init_worker(
++            config,
++            max_num_batched_tokens=config.scheduler_config.
++            max_num_batched_tokens,
++        )
++        # create streams on current device that are dedicated for sends and
++        # recvs
++        self._send_stream = torch.cuda.Stream()
++        self._recv_stream = torch.cuda.Stream()
++        self._send_slot_mapping = torch.empty(
++            config.scheduler_config.max_num_batched_tokens,
++            dtype=torch.long,
++            device="cuda",
++        )
++        self._recv_slot_mapping = torch.empty(
++            config.scheduler_config.max_num_batched_tokens,
++            dtype=torch.long,
++            device="cuda",
++        )
++
++        self._allocated_kvcache_handles: dict[str, KVCacheHandle] = {}
++        self._acquired_kvcache_handles: dict[str, KVCacheHandle] = {}
++        self._send_lengths: dict[str, tuple[int, int]] = {}
++
++    def _get_block_layout(self) -> KVCacheBlockLayout:
++
++        if self.attn_backend.get_name() in \
++            OFFLOADING_CONNECTOR_SUPPORTED_ATTN_BACKENDS:
++            return KVCacheBlockLayout(
++                OFFLOADING_CONNECTOR_SUPPORTED_ATTN_BACKENDS[
++                    self.attn_backend.get_name()])
++        raise NotImplementedError(
++            f"Only support attn backends in "
++            f"{list(OFFLOADING_CONNECTOR_SUPPORTED_ATTN_BACKENDS.keys())}. "
++            f"{self.attn_backend.get_name()} is used.")
++
++    def _release_allocated_kvcache_handles(self):
++        for seq_request_id in self._allocated_kvcache_handles:
++            self._allocated_kvcache_handles[seq_request_id].release()
++        self._allocated_kvcache_handles.clear()
++
++    def _release_acquired_kvcache_handles(self):
++        for seq_request_id in self._acquired_kvcache_handles:
++            self._acquired_kvcache_handles[seq_request_id].release()
++        self._acquired_kvcache_handles.clear()
++
++    @tag_wrapper({
++        "connector": "AIBrixOffloadingConnectorV1Type2",
++        "func": "start_load_kv_before_update"
++    })
++    def start_load_kv_before_update(
++        self,
++        metadata: AIBrixOffloadingConnectorMetadata,
++    ) -> dict[str, int]:
++        self._update_meta_cache(metadata)
++
++        stats = {}
++        if self.kv_group is not None:
++            for seq_request_id, seq_request_meta in metadata.items():
++                num_fetched_tokens = self._recv_kv_impl(seq_request_meta)
++                if num_fetched_tokens > 0:
++                    stats[seq_request_id] = num_fetched_tokens
++
++            if len(stats) > 0:
++                for idx, (seq_request_id, seq_request_meta) in \
++                    enumerate(metadata.items()):
++                    self._coll_tensor[idx] = stats.get(seq_request_id, 0)
++                dist.all_reduce(self._coll_tensor[:idx], dist.ReduceOp.MIN,
++                                self.kv_group)
++
++                for idx, (seq_request_id, seq_request_meta) in \
++                    enumerate(metadata.items()):
++                    if self._coll_tensor[idx] > 0:
++                        stats[seq_request_id] = self._coll_tensor[idx].item()
++                    else:
++                        stats.pop(seq_request_id, None)
++
++        for seq_request_id, seq_request_meta in metadata.items():
++            if self.kv_group is None:
++                num_fetched_tokens = self._recv_kv_impl(seq_request_meta)
++            else:
++                num_fetched_tokens = stats.get(seq_request_id, 0)
++
++            if num_fetched_tokens > 0:
++                stats[seq_request_id] = num_fetched_tokens
++                self._send_lengths[seq_request_id] = (
++                    seq_request_meta.context_len + num_fetched_tokens,
++                    seq_request_meta.query_len - num_fetched_tokens)
++            else:
++                self._send_lengths[seq_request_id] = (
++                    seq_request_meta.context_len, seq_request_meta.query_len)
++
++            seq_request_meta.state = \
++                AIBrixOffloadingConnectorRequestState.WAITING_FOR_SEND
++
++            if seq_request_id not in self._acquired_kvcache_handles:
++                continue
++
++        # load the first layer
++        layer_name = list(self.no_compile_layers.keys())[0]
++        self._start_load_kv(metadata, layer_name)
++
++        return stats
++
++    def _recv_kv_impl(
++        self,
++        seq_request_meta: AIBrixOffloadingConnectorRequestMetadata,
++    ) -> int:
++        logger.debug("_recv_kv_impl: %s", seq_request_meta)
++        seq_request_id = seq_request_meta.req_id
++        seq_cached_meta = self._meta_cache[seq_request_id]
++        seq_all_tokens = seq_cached_meta.get_context_tokens_view()
++        assert seq_all_tokens is not None, "seq_all_tokens is None"
++        seq_context_len = seq_request_meta.context_len
++
++        prompt_len = seq_request_meta.prompt_len
++        query_len = seq_request_meta.query_len
++
++        # align to block boundary
++        aligned_context_len = round_down(seq_context_len,
++                                         self.cache_block_ntokens)
++        actual_query_len = seq_context_len + query_len - aligned_context_len
++        aligned_query_len = round_down(actual_query_len,
++                                       self.cache_block_ntokens)
++        shift_len = seq_context_len - aligned_context_len
++
++        assert prompt_len >= aligned_context_len + aligned_query_len, \
++            f"{prompt_len}<{aligned_context_len}+{aligned_query_len}"
++
++        threshold = max(
++            OFFLOADING_CONNECTOR_SKIP_THRESHOLD * self.engine_block_ntokens,
++            self.cache_block_ntokens,
++        )
++        if aligned_query_len < threshold:
++            logger.debug(
++                "Skip Request[id=%s, context_len=%d, query_len=%d]",
++                seq_request_id,
++                aligned_context_len,
++                aligned_query_len,
++            )
++            return 0
++
++        prefix = seq_all_tokens[:aligned_context_len]
++        tokens = seq_all_tokens[aligned_context_len:aligned_context_len +
++                                aligned_query_len]
++
++        if self._metrics.time_measurement_enabled:
++            start = time.perf_counter()
++
++        seq_recv_len = 0
++
++        # get KV caches from offloading service
++        status = self.cache.acquire(prefix, tokens)
++
++        if not status.is_ok():
++            if not status.is_not_found():
++                log_every_n_seconds(
++                    logger,
++                    logging.ERROR,
++                    "Failed to get from offloading service: %s",
++                    3,
++                    str(status),
++                )
++            if self._metrics.time_measurement_enabled:
++                end = time.perf_counter()
++                lat_ms = (end - start) * 1000
++                self._metrics._recv_metrics.add(aligned_context_len,
++                                                aligned_query_len, 0, lat_ms)
++            return 0
++
++        num_fetched_tokens, handle = status.value
++        self._acquired_kvcache_handles[seq_request_id] = handle
++
++        # update recv_len
++        seq_recv_len += num_fetched_tokens - shift_len
++
++        log_if(
++            logger,
++            logging.INFO,
++            "Request[id=%s, prompt_len=%d, context_len=%d] reused %d tokens",
++            seq_recv_len > 0,
++            seq_request_id,
++            prompt_len,
++            seq_context_len,
++            seq_recv_len,
++        )
++
++        if self._metrics.time_measurement_enabled:
++            end = time.perf_counter()
++            lat_ms = (end - start) * 1000
++            self._metrics._recv_metrics.add(aligned_context_len,
++                                            aligned_query_len, seq_recv_len,
++                                            lat_ms)
++
++        return seq_recv_len
++
++    def _start_load_kv(
++        self,
++        metadata: AIBrixOffloadingConnectorMetadata,
++        layer_name: str,
++    ):
++        lid = self.layer_name_idx_mapping[layer_name]
++        layer_tensors: list[torch.Tensor] = []
++        slot_mapping_offset = 0
++
++        for seq_request_id in self._acquired_kvcache_handles:
++            if self._acquired_kvcache_handles[seq_request_id] is None:
++                continue
++            handle = self._acquired_kvcache_handles[seq_request_id]
++            seq_cached_meta = self._meta_cache[seq_request_id]
++            seq_context_len = metadata[seq_request_id].context_len
++            aligned_context_len = round_down(seq_context_len,
++                                             self.cache_block_ntokens)
++
++            kv_blocks = handle.to_tensors()
++            num_fetched_tokens = len(kv_blocks) * self.cache_block_ntokens
++
++            offset = aligned_context_len
++            length = num_fetched_tokens
++
++            self._recv_slot_mapping[slot_mapping_offset:slot_mapping_offset +
++                                    length].copy_(
++                                        seq_cached_meta.
++                                        context_slot_mapping[offset:offset +
++                                                             length])
++            slot_mapping_offset += length
++            # We are using LCND layout, so the tensors can be split by layers
++            layer_tensors.extend([t[lid:lid + 1] for t in kv_blocks])
++
++        if slot_mapping_offset == 0:
++            return
++
++        with torch.cuda.stream(self._recv_stream):
++            reshape_and_cache_multi_layer(
++                layer_tensors,
++                [self.layers_kv_caches[lid]],
++                self._recv_slot_mapping[:slot_mapping_offset],
++                self.engine_block_ntokens,
++                self.kv_cache_dtype,
++                [self.k_scales[lid]],
++                [self.v_scales[lid]],
++                self.block_layout.name,
++            )
++
++    def wait_for_layer_load(self, metadata: AIBrixOffloadingConnectorMetadata,
++                            layer_name: str) -> None:
++        # wait until kv layer is loaded
++        self._recv_stream.synchronize()
++        curr_layer_idx = self.layer_name_idx_mapping[layer_name]
++        if curr_layer_idx == self.num_layers - 1:
++            # release acquired handles once we finished onloading the last
++            # layer
++            self._release_acquired_kvcache_handles()
++        else:
++            # start to load next layer
++            next_layer_idx = curr_layer_idx + 1
++            next_layer = list(self.no_compile_layers.keys())[next_layer_idx]
++            self._start_load_kv(metadata, next_layer)
++
++    def save_kv_layer(
++        self,
++        metadata: AIBrixOffloadingConnectorMetadata,
++        layer_name: str,
++        kv_layer: torch.Tensor,
++        attn_metadata: "AttentionMetadata",
++    ) -> None:
++
++        is_first_layer = self.layer_name_idx_mapping[layer_name] == 0
++        lid = self.layer_name_idx_mapping[layer_name]
++        layer_tensors: list[torch.Tensor] = []
++        slot_mapping_offset = 0
++
++        if is_first_layer:
++            for seq_req_id in self._send_lengths:
++                seq_context_len, seq_query_len = \
++                    self._send_lengths[seq_req_id]
++                if seq_query_len == 0:
++                    continue
++                # allocate staging buffers that can hold kvcache for all layers
++                seq_request_meta = metadata[seq_req_id]
++                handle = self._allocate_for_request(seq_request_meta)
++                if handle is None:
++                    continue
++                else:
++                    self._allocated_kvcache_handles[seq_req_id] = handle
++
++        for seq_req_id, _ in self._allocated_kvcache_handles.items():
++            if seq_req_id not in self._allocated_kvcache_handles or \
++                self._allocated_kvcache_handles[seq_req_id] is None:
++                return
++
++            seq_cached_meta = self._meta_cache[seq_req_id]
++            seq_context_len, _ = self._send_lengths[seq_req_id]
++            aligned_context_len = round_down(seq_context_len,
++                                             self.cache_block_ntokens)
++
++            seq_allocated_handle = self._allocated_kvcache_handles[seq_req_id]
++            seq_allocated_tensors = seq_allocated_handle.to_tensors()
++            seq_num_tokens = len(
++                seq_allocated_tensors) * self.cache_block_ntokens
++            self._send_slot_mapping[
++                slot_mapping_offset:slot_mapping_offset +
++                seq_num_tokens].copy_(seq_cached_meta.context_slot_mapping[
++                    aligned_context_len:aligned_context_len + seq_num_tokens])
++            slot_mapping_offset += seq_num_tokens
++
++            # We are using LCND layout, so the tensors can be split by layers
++            layer_tensors.extend(
++                [t[lid:lid + 1] for t in seq_allocated_tensors])
++
++        if slot_mapping_offset == 0:
++            return
++
++        # wait for compute on current stream
++        curr_stream = torch.cuda.current_stream()
++        self._send_stream.wait_stream(curr_stream)
++
++        # use send stream to carry out async copy from HBM to DRAM
++        with torch.cuda.stream(self._send_stream):
++            reshape_and_offload_multi_layer(
++                layer_tensors,
++                [kv_layer],
++                self._send_slot_mapping[:slot_mapping_offset],
++                self.engine_block_ntokens,
++                self.kv_cache_dtype,
++                [self.k_scales[lid]],
++                [self.v_scales[lid]],
++                self.block_layout.name,
++            )
++
++    def _allocate_for_request(
++        self,
++        seq_request_meta: AIBrixOffloadingConnectorRequestMetadata,
++    ) -> Optional[KVCacheHandle]:
++        seq_request_id = seq_request_meta.req_id
++        seq_context_len, query_len = self._send_lengths[seq_request_id]
++        seq_cached_meta = self._meta_cache[seq_request_id]
++        seq_all_tokens = seq_cached_meta.get_context_tokens_view()
++        assert seq_all_tokens is not None, "seq_all_tokens is None"
++        prompt_len = seq_request_meta.prompt_len
++
++        # align to block boundary
++        aligned_context_len = round_down(seq_context_len,
++                                         self.cache_block_ntokens)
++        actual_query_len = seq_context_len + query_len - aligned_context_len
++        aligned_query_len = round_down(actual_query_len,
++                                       self.cache_block_ntokens)
++
++        assert prompt_len >= aligned_context_len + aligned_query_len, \
++            f"{prompt_len}<{aligned_context_len}+{aligned_query_len}"
++
++        if aligned_query_len < self.cache_block_ntokens:
++            return None
++
++        prefix = seq_all_tokens[:aligned_context_len]
++        tokens = seq_all_tokens[aligned_context_len:aligned_context_len +
++                                aligned_query_len]
++        status = self.cache.allocate_for(prefix, tokens)
++        if not status.is_ok():
++            log_every_n_seconds(logger, logging.ERROR,
++                                "Failed to allocate : %s", 3, str(status))
++            return None
++        return status.get()
++
++    @tag_wrapper({
++        "connector": "AIBrixOffloadingConnectorV1Type2",
++        "func": "wait_for_save"
++    })
++    def wait_for_save(
++        self,
++        metadata: AIBrixOffloadingConnectorMetadata,
++    ) -> None:
++        # wait for send stream to finish
++        self._send_stream.synchronize()
++
++        for seq_request_id in self._send_lengths:
++            seq_context_len, seq_query_len = self._send_lengths[seq_request_id]
++            if seq_query_len == 0:
++                continue
++            if (seq_request_id not in self._allocated_kvcache_handles or
++                    self._allocated_kvcache_handles[seq_request_id] is None):
++                continue
++            seq_request_meta = metadata[seq_request_id]
++            self._send_kv_impl(seq_request_meta)
++
++        # release all allocated handles
++        self._release_allocated_kvcache_handles()
++        self._send_lengths.clear()
++
++        if self._metrics.time_measurement_enabled:
++            log_every_n_seconds(self._metrics, logging.INFO, "UNUSED", 10)
++
++    def _send_kv_impl(
++        self,
++        seq_request_meta: AIBrixOffloadingConnectorRequestMetadata,
++    ) -> None:
++        logger.debug("_send_kv_impl: %s", seq_request_meta)
++        seq_request_id = seq_request_meta.req_id
++        seq_context_len, query_len = self._send_lengths[seq_request_id]
++        seq_cached_meta = self._meta_cache[seq_request_id]
++        seq_all_tokens = seq_cached_meta.get_context_tokens_view()
++        assert seq_all_tokens is not None, "seq_all_tokens is None"
++        seq_allocated_handle = self._allocated_kvcache_handles.pop(
++            seq_request_id)
++        seq_allocated_tensors = seq_allocated_handle.to_tensors()
++        prompt_len = seq_request_meta.prompt_len
++        query_len = min(
++            query_len,
++            len(seq_allocated_tensors) * self.cache_block_ntokens,
++        )
++
++        # align to block boundary
++        aligned_context_len = round_down(seq_context_len,
++                                         self.cache_block_ntokens)
++        actual_query_len = seq_context_len + query_len - aligned_context_len
++        aligned_query_len = round_down(actual_query_len,
++                                       self.cache_block_ntokens)
++
++        assert prompt_len >= aligned_context_len + aligned_query_len, \
++            f"{prompt_len}<{aligned_context_len}+{aligned_query_len}"
++
++        prefix = seq_all_tokens[:aligned_context_len]
++        tokens = seq_all_tokens[aligned_context_len:aligned_context_len +
++                                aligned_query_len]
++
++        if self._metrics.time_measurement_enabled:
++            start = time.perf_counter()
++
++        total_sent = 0
++        length = aligned_query_len
++
++        # put KV caches to offloading service
++        status = self.cache.put(prefix, tokens, seq_allocated_handle)
++        if not status.is_ok():
++            log_every_n_seconds(logger, logging.ERROR,
++                                "Failed to put to offloading service: %s", 3,
++                                str(status))
++        else:
++            total_sent += length
++
++            log_if(
++                logger,
++                logging.INFO,
++                "Request[id=%s, prompt_len=%d, context_len=%d] sent %d tokens",
++                total_sent > 0,
++                seq_request_id,
++                prompt_len,
++                seq_context_len,
++                total_sent,
++            )
++
++        if self._metrics.time_measurement_enabled:
++            end = time.perf_counter()
++            lat_ms = (end - start) * 1000
++            self._metrics._send_metrics.add(aligned_context_len,
++                                            aligned_query_len, total_sent,
++                                            lat_ms)
++
++
++class AIBrixOffloadingConnector(KVConnectorBase_V1):
++    """AIBrixOffloadingConnector is a KVConnector that offloads KV caches
++    to the kv cache offloading service.
++    """
++
++    def __init__(self, config: "VllmConfig", role: KVConnectorRole):
++        super().__init__(vllm_config=config, role=role)
++
++        self.connector_scheduler: Optional[
++            AIBrixOffloadingConnectorScheduler] = None
++
++        self.connector_worker: Optional[AIBrixOffloadingConnectorWorker] = None
++        if role == KVConnectorRole.SCHEDULER:
++            self.connector_scheduler = AIBrixOffloadingConnectorScheduler(
++                config)
++        elif role == KVConnectorRole.WORKER:
++            self.connector_worker = AIBrixOffloadingConnectorWorker(config)
++
++    # ==============================
++    # Worker-side methods
++    # ==============================
++
++    @delegate_to("connector_worker")
++    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
++        """
++        Initialize with the KV caches. Useful for pre-registering the
++        KV Caches in the KVConnector (e.g. for NIXL).
++
++        Args: kv_caches:
++            dictionary of layer names, kv cache
++        """
++        pass
++
++    def start_load_kv_before_update(self, **kwargs) -> dict[str, int]:
++        """
++        Start loading the KV cache from the connector to vLLM's paged
++        KV buffer before gpu runner updating its states.
++
++        Args:
++            **kwargs: additional arguments for the load operation
++
++        Returns:
++            dict[str, int]: a dictionary of request ids and the number of
++            tokens loaded for each request.
++        """
++        assert self.connector_worker is not None
++        assert isinstance(
++            self._connector_metadata,
++            AIBrixOffloadingConnectorMetadata,
++        )
++        return self.connector_worker.start_load_kv_before_update(
++            self._connector_metadata)
++
++    def start_load_kv(self, forward_context: "ForwardContext",
++                      **kwargs) -> None:
++        """
++        Start loading the KV cache from the connector to vLLM's paged
++        KV buffer. This is called from the forward context before the
++        forward pass to enable async loading during model execution.
++
++        Args:
++            forward_context (ForwardContext): the forward context.
++            **kwargs: additional arguments for the load operation
++
++        Note:
++            The number of elements in kv_caches and layer_names should be 
++            the same.
++            
++        """
++        pass
++
++    def wait_for_layer_load(self, layer_name: str) -> None:
++        """
++        Block until the KV for a specific layer is loaded into vLLM's
++        paged buffer. This is called from within attention layer to ensure
++        async copying from start_load_kv is complete.
++        
++        This interface will be useful for layer-by-layer pipelining.
++
++        Args:
++            layer_name: the name of that layer
++        """
++        assert self.connector_worker is not None
++        assert isinstance(
++            self._connector_metadata,
++            AIBrixOffloadingConnectorMetadata,
++        )
++        return self.connector_worker.wait_for_layer_load(
++            self._connector_metadata, layer_name)
++
++    def save_kv_layer(self, layer_name: str, kv_layer: torch.Tensor,
++                      attn_metadata: "AttentionMetadata", **kwargs) -> None:
++        """
++        Start saving a layer of KV cache from vLLM's paged buffer 
++        to the connector. This is called from within attention layer to
++        enable async copying during execution.
++
++        Args:
++            layer_name (str): the name of the layer.
++            kv_layer (torch.Tensor): the paged KV buffer of the current 
++                layer in vLLM.
++            attn_metadata (AttentionMetadata): the attention metadata.
++            **kwargs: additional arguments for the save operation.
++        """
++        assert self.connector_worker is not None
++        assert isinstance(
++            self._connector_metadata,
++            AIBrixOffloadingConnectorMetadata,
++        )
++        self.connector_worker.save_kv_layer(self._connector_metadata,
++                                            layer_name, kv_layer,
++                                            attn_metadata)
++
++    def wait_for_save(self) -> None:
++        """
++        Block until all the save operations is done. This is called
++        as the forward context exits to ensure that the async saving
++        from save_kv_layer is complete before finishing the forward.
++
++        This prevents overwrites of paged KV buffer before saving done.
++        """
++        assert self.connector_worker is not None
++        assert isinstance(
++            self._connector_metadata,
++            AIBrixOffloadingConnectorMetadata,
++        )
++        self.connector_worker.wait_for_save(self._connector_metadata)
++
++    def get_finished(
++        self, finished_req_ids: set[str]
++    ) -> tuple[Optional[set[str]], Optional[set[str | tuple[str, int]]]]:
++        """
++        Notifies worker-side connector ids of requests that have
++        finished generating tokens.
++
++        Returns:
++            ids of requests that have finished asynchronous transfer
++            (requests that previously returned True from request_finished()),
++            tuple of (sending/saving ids, recving/loading ids or
++            (recving/loading id, num. of recv'ed/loaded tokens) pairs).
++            The finished saves/sends req ids must belong to a set provided in a
++            call to this method (this call or a prior one).
++        """
++        return None, None
++
++    # ==============================
++    # Scheduler-side methods
++    # ==============================
++
++    def get_num_new_matched_tokens(
++        self,
++        request: "Request",
++        num_computed_tokens: int,
++    ) -> tuple[int, bool]:
++        """
++        Get number of new tokens that can be loaded from the
++        external KV cache beyond the num_computed_tokens.
++        
++        Args:
++            request (Request): the request object.
++            num_computed_tokens (int): the number of locally
++                computed tokens for this request
++
++        Returns:
++            A tuple with the following elements:
++                - The number of tokens that can be loaded from the 
++                  external KV cache beyond what is already computed.
++                - `True` if external KV cache tokens will be loaded
++                  asynchronously (between scheduler steps). Must be
++                  'False' if the first element is 0.
++        """
++        return 0, False
++
++    def update_state_after_alloc(self, request: "Request",
++                                 blocks: "KVCacheBlocks",
++                                 num_external_tokens: int):
++        """
++        Update KVConnector state after block allocation.
++
++        If get_num_new_matched_tokens previously returned True for a
++        request, this function may be called twice for that same request -
++        first when blocks are allocated for the connector tokens to be
++        asynchronously loaded into, and second when any additional blocks
++        are allocated, after the load/transfer is complete.
++
++        Args:
++            request (Request): the request object.
++            blocks (KVCacheBlocks): the blocks allocated for the request.
++            num_external_tokens (int): the number of tokens that will be
++                loaded from the external KV cache.
++        """
++        return
++
++    @delegate_to("connector_scheduler")
++    def build_connector_meta(
++            self, scheduler_output: "SchedulerOutput") -> KVConnectorMetadata:
++        """
++        Build the connector metadata for this step.
++
++        This function should NOT modify fields in the scheduler_output.
++        Also, calling this function will reset the state of the connector.
++
++        Args:
++            scheduler_output (SchedulerOutput): the scheduler output object.
++        """
++        pass
++
++    @delegate_to("connector_scheduler")
++    def request_finished(
++        self,
++        request: "Request",
++        block_ids: list[int],
++    ) -> tuple[bool, Optional[dict[str, Any]]]:
++        """
++        Called when a request has finished, before its blocks are freed.
++
++        Returns:
++            True if the request is being saved/sent asynchronously and blocks
++            should not be freed until the request_id is returned from
++            get_finished().
++            Optional KVTransferParams to be included in the request outputs
++            returned by the engine.
++        """
++        pass
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type3.py b/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type3.py
+new file mode 100644
+index 000000000..44ba7a08a
+--- /dev/null
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/aibrix_offloading_connector_type3.py
+@@ -0,0 +1,1623 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import asyncio
++import contextlib
++import logging
++import queue
++import threading
++import time
++from typing import TYPE_CHECKING, Any, Optional
++
++import aibrix_kvcache.envs
++import msgspec
++import torch
++import torch.distributed as dist
++import zmq
++from aibrix_kvcache import KVCacheBlockLayout, KVCacheHandle, TokenListView
++from aibrix_kvcache._custom_ops import (reshape_and_cache_multi_layer,
++                                        reshape_and_offload_multi_layer)
++from aibrix_kvcache.common.absl_logging import (getLogger, log_every_n_seconds,
++                                                log_if)
++from aibrix_kvcache.profiling import tag_wrapper
++from aibrix_kvcache.utils import perf_timer
++
++import vllm.envs
++# from vllm.v1.attention.backends.flashinfer import FlashInferBackend
++# from vllm.v1.attention.backends.flex_attention import FlexAttentionBackend
++# from vllm.v1.attention.backends.triton_attn import TritonAttentionBackend
++from vllm.distributed.kv_transfer.kv_connector.v1.base import (
++    KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole)
++from vllm.utils import (get_ip, make_zmq_path, make_zmq_socket, round_down,
++                        round_up)
++from vllm.v1.attention.backends.flash_attn import FlashAttentionBackend
++
++from .aibrix_offloading_connector_type1 import (
++    AIBrixOffloadingConnectorMetadata,
++    AIBrixOffloadingConnectorRequestMetadata,
++    AIBrixOffloadingConnectorRequestState)
++from .aibrix_offloading_connector_type1 import (
++    AIBrixOffloadingConnectorScheduler as AIBrixOffloadingConnectorSchedulerType1)
++from .aibrix_offloading_connector_type1 import (
++    AIBrixOffloadingConnectorWorker as AIBrixOffloadingConnectorWorkerType1)
++from .aibrix_offloading_connector_type1 import delegate_to
++
++if TYPE_CHECKING:
++    from vllm.attention.backends.abstract import AttentionMetadata
++    from vllm.config import VllmConfig
++    from vllm.forward_context import ForwardContext
++    from vllm.v1.core.kv_cache_manager import KVCacheBlocks
++    from vllm.v1.core.sched.output import SchedulerOutput
++    from vllm.v1.request import Request
++
++logger = getLogger(__name__)
++
++OFFLOADING_CONNECTOR_SKIP_THRESHOLD = 8
++OFFLOADING_CONNECTOR_SUPPORTED_ATTN_BACKENDS = {
++    FlashAttentionBackend.get_name(): KVCacheBlockLayout.LCND,
++}
++OFFLOADING_CONNECTOR_TIMEOUT_S = 0.1
++
++
++class AIBrixOffloadingConnectorWorkerMeta(
++        msgspec.Struct,
++        omit_defaults=True,  # type: ignore[call-arg]
++        # required for @cached_property.
++        dict=True):
++    tp_rank: int
++
++
++class AIBrixOffloadingConnectorTestRequest(
++        msgspec.Struct,
++        omit_defaults=True,  # type: ignore[call-arg]
++        # required for @cached_property.
++        dict=True):
++    req_id: str
++    seq_token_ids: list[int]
++
++
++class AIBrixOffloadingConnectorTestResponse(
++        msgspec.Struct,
++        omit_defaults=True,  # type: ignore[call-arg]
++        # required for @cached_property.
++        dict=True):
++    req_id: str
++    seq_existing_len: int
++
++
++class AIBrixOffloadingConnectorScheduler(
++        AIBrixOffloadingConnectorSchedulerType1):
++
++    def __init__(self, config: "VllmConfig"):
++        super().__init__(config)
++
++        if config.parallel_config.data_parallel_backend == "ray":
++            sched_ip = get_ip()
++        else:
++            sched_ip = config.parallel_config.data_parallel_master_ip
++
++        self.tp_size = config.parallel_config.tensor_parallel_size
++        self.side_channel_host = sched_ip
++        self.side_channel_port = (vllm.envs.VLLM_AIBRIX_SIDE_CHANNEL_PORT +
++                                  config.parallel_config.data_parallel_rank)
++        self.dp_rank = config.parallel_config.data_parallel_rank
++
++        self._alloc_block_ids: dict[str, list[int]] = {}
++        self.cache_block_ntokens = \
++            aibrix_kvcache.envs.AIBRIX_KV_CACHE_OL_BLOCK_SIZE
++        if self.cache_block_ntokens < 0:
++            self.cache_block_ntokens = self.engine_block_ntokens
++
++        self._testing_requests: dict[str, int] = {}
++        self._pending_requests: list[Request] = []
++        self._testing_result_queue = queue.Queue()
++
++        # init side channels
++        self._zmq_ctx = zmq.Context()
++
++        self._sidechannel_path = make_zmq_path(
++            "tcp",
++            self.side_channel_host,
++            self.side_channel_port,
++        )
++        self._sidechannel_sock = make_zmq_socket(
++            ctx=self._zmq_ctx,
++            path=self._sidechannel_path,
++            socket_type=zmq.ROUTER,
++            bind=True,
++        )
++
++        self._worker_identities: dict[int, Any] = {}
++        self._handshake_listener_thread = threading.Thread(
++            target=self._handshake_listener,
++            args=(),
++            daemon=True,
++            name="sched_sidechannel")
++        self._handshake_listener_thread.start()
++        self._sidechannels_ready = False
++
++    def __del__(self):
++        if hasattr(self, "_zmq_ctx") and self._zmq_ctx is not None:
++            self._zmq_ctx.destroy(linger=0)
++
++    def _handshake_listener(self):
++        logger.debug("Starting listening on path: %s", self._sidechannel_path)
++        decoder = msgspec.msgpack.Decoder(AIBrixOffloadingConnectorWorkerMeta)
++        while True:
++            identity, _, msg = self._sidechannel_sock.recv_multipart()
++            metadata = decoder.decode(msg)
++            worker_tp_rank = metadata.tp_rank
++            if 0 <= worker_tp_rank < self.tp_size:
++                if worker_tp_rank in self._worker_identities:
++                    logger.warning("Got duplicated worker tp rank: %s",
++                                   worker_tp_rank)
++                else:
++                    logger.info(
++                        "Worker %d in DP group %d has established side "
++                        "channel",
++                        worker_tp_rank,
++                        self.dp_rank,
++                    )
++                self._worker_identities[worker_tp_rank] = identity
++            else:
++                logger.error("Got invalid worker tp rank: %s", worker_tp_rank)
++
++            if len(self._worker_identities) == self.tp_size:
++                logger.info(
++                    "Side channels for all workers in DP group %d have "
++                    "been established",
++                    self.dp_rank,
++                )
++                break
++            else:
++                logger.info(
++                    "Established %d side channels for DP group %d",
++                    len(self._worker_identities),
++                    self.dp_rank,
++                )
++
++        # start polling
++        self._sidechannel_run()
++
++    def _sidechannel_run(self):
++        logger.debug(
++            "Starting scheduler side channel on path: %s",
++            self._sidechannel_path,
++        )
++        decoder = msgspec.msgpack.Decoder(
++            list[AIBrixOffloadingConnectorTestResponse])
++        poller = zmq.Poller()
++        poller.register(self._sidechannel_sock, zmq.POLLIN)
++        while True:
++            for sock, _ in poller.poll():
++                id, _, msg = sock.recv_multipart()
++                responses = decoder.decode(msg)
++                for response in responses:
++                    seq_existing_len = response.seq_existing_len
++                    logger.debug(
++                        "Test Request[id=%s] %s returns %d",
++                        response.req_id,
++                        id.hex(),
++                        seq_existing_len,
++                    )
++                    self._testing_result_queue.put(
++                        (response.req_id, seq_existing_len))
++
++    def update_state_after_alloc(self, request: "Request",
++                                 blocks: "KVCacheBlocks",
++                                 num_external_tokens: int):
++        req_id = request.request_id
++        prompt_len = len(request.prompt_token_ids)
++
++        threshold = max(
++            OFFLOADING_CONNECTOR_SKIP_THRESHOLD * self.engine_block_ntokens,
++            self.cache_block_ntokens,
++        )
++        if prompt_len < threshold:
++            return
++
++        (block_ids, ) = blocks.get_block_ids()
++        self._alloc_block_ids.setdefault(req_id, []).extend(block_ids)
++
++    def load_and_prefetch(
++        self,
++        request: "Request",
++        num_to_load_tokens: int,
++        num_to_prefetch_tokens: int,
++    ) -> int:
++        req_id = request.request_id
++
++        prompt_len = len(request.prompt_token_ids)
++        threshold = max(
++            OFFLOADING_CONNECTOR_SKIP_THRESHOLD * self.engine_block_ntokens,
++            self.cache_block_ntokens,
++        )
++        if prompt_len < threshold:
++            logger.debug(
++                "Skip Request[id=%s, prompt_len=%d]: prompt len too short",
++                req_id,
++                prompt_len,
++            )
++            return 0
++
++        is_new_request = req_id not in self._scheduler_meta
++
++        loaded_len = request.num_computed_tokens
++        block_ids = self._alloc_block_ids.get(req_id, None)
++
++        if block_ids is not None:
++            aligned_loaded_len = round_up(loaded_len,
++                                          self.engine_block_ntokens)
++            num_loaded_blocks = aligned_loaded_len // self.engine_block_ntokens
++            if len(block_ids) > num_loaded_blocks:
++                seq_slot_mapping = (
++                    aligned_loaded_len,
++                    self._block_ids_to_slot_mapping(block_ids)\
++                        [aligned_loaded_len:],
++                )
++            else:
++                # this is a hybrid request, the block ids in _alloc_block_ids
++                # are for compute not for loading
++                seq_slot_mapping = None
++        else:
++            seq_slot_mapping = None
++
++        context_len = request.num_computed_tokens + num_to_load_tokens
++        query_len = round_down(num_to_prefetch_tokens,
++                               self.cache_block_ntokens)
++
++        if num_to_load_tokens == 0 and query_len == 0:
++            logger.debug(
++                "Skip Request[id=%s, prompt_len=%d, computed_len=%d]: no tokens"
++                " to load or prefetch",
++                req_id,
++                prompt_len,
++                request.num_computed_tokens,
++            )
++            return 0
++
++        seq_len = min(context_len + query_len, prompt_len)
++
++        if not is_new_request:
++            seq_token_ids = (
++                context_len,
++                request.prompt_token_ids[context_len:seq_len],
++            )
++        else:
++            seq_token_ids = (0, request.prompt_token_ids[:seq_len])
++
++        self._scheduler_meta.upsert_request(
++            req_id,
++            prompt_len=prompt_len,
++            context_len=context_len,
++            query_len=query_len,
++            load_len=num_to_load_tokens,
++            seq_token_ids=seq_token_ids,
++            seq_slot_mapping=seq_slot_mapping,
++            state=AIBrixOffloadingConnectorRequestState.WAITING_FOR_RECV,
++        )
++        return query_len
++
++    def add_requests(
++        self,
++        requests: list["Request"],
++    ) -> None:
++        self._pending_requests.extend(requests)
++        self._send_test_requests()
++
++    def test_request(
++        self,
++        request: "Request",
++    ) -> bool:
++        if not self._sidechannels_ready:
++            return False
++        if len(self._pending_requests) > 0:
++            self._send_test_requests()
++
++        req_id = request.request_id
++        if req_id not in self._testing_requests:
++            return False
++
++        while self._testing_requests[req_id] == -1:
++            try:
++                (seq_req_id,
++                 seq_existing_len) = self._testing_result_queue.get(
++                     timeout=OFFLOADING_CONNECTOR_TIMEOUT_S)
++            except Exception:
++                self._testing_requests.pop(req_id, None)
++                return False
++            if seq_req_id in self._testing_requests:
++                self._testing_requests[seq_req_id] = seq_existing_len
++
++        return self._testing_requests[req_id] > 0
++
++    def _send_test_requests(self) -> None:
++        # side channels are not ready, return
++        if not self._sidechannels_ready:
++            return
++
++        num_to_test_tokens = max(
++            OFFLOADING_CONNECTOR_SKIP_THRESHOLD * self.engine_block_ntokens,
++            self.cache_block_ntokens,
++        )
++
++        test_requests: list[AIBrixOffloadingConnectorTestRequest] = []
++        for request in self._pending_requests:
++            req_id = request.request_id
++            if req_id in self._testing_requests:
++                continue
++
++            prompt_len = len(request.prompt_token_ids)
++            if prompt_len < num_to_test_tokens:
++                logger.debug(
++                    "Skip testing Request[id=%s, prompt_len=%d]: too short",
++                    req_id,
++                    prompt_len,
++                )
++                self._testing_requests[req_id] = 0
++                continue
++
++            logger.debug(
++                "Test Request[id=%s, prompt_len=%d]",
++                req_id,
++                prompt_len,
++            )
++
++            seq_token_ids = request.prompt_token_ids[:num_to_test_tokens]
++            test = AIBrixOffloadingConnectorTestRequest(
++                req_id,
++                seq_token_ids=seq_token_ids,
++            )
++            self._testing_requests[req_id] = -1
++            test_requests.append(test)
++
++        encoder = msgspec.msgpack.Encoder()
++        encoded_data = encoder.encode(test_requests)
++        # only test requests on worker-0 to alleviate comm overhead
++        id0 = self._worker_identities[0]
++        self._sidechannel_sock.send_multipart((id0, b"", encoded_data))
++
++        # clear pending requests
++        self._pending_requests.clear()
++
++    def build_connector_meta(
++            self, scheduler_output: "SchedulerOutput") -> KVConnectorMetadata:
++        # 1. new requests
++        for req in scheduler_output.scheduled_new_reqs:
++            req_id = req.req_id
++
++            prompt_len = len(req.prompt_token_ids)
++            context_len = req.num_computed_tokens
++            query_len = scheduler_output.num_scheduled_tokens[req_id]
++
++            if context_len >= prompt_len:
++                continue
++
++            seq_token_ids = (0, req.prompt_token_ids)
++            (block_ids, ) = req.block_ids
++            seq_slot_mapping = (0, self._block_ids_to_slot_mapping(block_ids))
++
++            self._scheduler_meta.upsert_request(
++                req_id,
++                prompt_len=prompt_len,
++                context_len=context_len,
++                load_len=0,
++                query_len=query_len,
++                seq_token_ids=seq_token_ids,
++                seq_slot_mapping=seq_slot_mapping,
++                state=AIBrixOffloadingConnectorRequestState.WAITING_FOR_SEND,
++            )
++
++        # 2. cached requests
++        cached_reqs = scheduler_output.scheduled_cached_reqs
++        req_ids = cached_reqs.req_ids
++        for i in range(len(req_ids)):
++            req_id = req_ids[i]
++
++            if (req_id not in self._scheduler_meta
++                    or req_id not in scheduler_output.num_scheduled_tokens):
++                continue
++
++            req_meta = self._scheduler_meta[req_id]
++
++            prompt_len = req_meta.prompt_len
++            context_len = min(cached_reqs.num_computed_tokens[i], prompt_len)
++            query_len = min(
++                scheduler_output.num_scheduled_tokens[req_id],
++                prompt_len - context_len,
++            )
++
++            if context_len >= prompt_len:
++                continue
++
++            if cached_reqs.resumed_from_preemption[i]:
++                logger.debug(
++                    "Got preempt Request[id=%s, context_len=%d, query_len=%d]",
++                    req_id,
++                    context_len,
++                    query_len,
++                )
++                (block_ids, ) = cached_reqs.new_block_ids[i]
++                seq_slot_mapping = (0,
++                                    self._block_ids_to_slot_mapping(block_ids))
++            elif cached_reqs.new_block_ids[i] is not None:
++                (block_ids, ) = cached_reqs.new_block_ids[i]
++                nblocks = round_down(query_len, self.engine_block_ntokens)
++                if nblocks > 0:
++                    seq_slot_mapping = (
++                        round_up(context_len, self.engine_block_ntokens),
++                        self._block_ids_to_slot_mapping(block_ids[-nblocks:]),
++                    )
++                else:
++                    seq_slot_mapping = None
++            else:
++                seq_slot_mapping = None
++
++            self._scheduler_meta.upsert_request(
++                req_id,
++                prompt_len=prompt_len,
++                context_len=context_len,
++                load_len=0,
++                query_len=query_len,
++                seq_token_ids=None,
++                seq_slot_mapping=seq_slot_mapping,
++                state=AIBrixOffloadingConnectorRequestState.WAITING_FOR_SEND,
++                resumed_from_preemption=cached_reqs.resumed_from_preemption[i],
++            )
++
++        # 3. keep requests that are in the WAITING_FOR_RECV/SEND state
++        meta = self._scheduler_meta.get(lambda req: req.state in [
++            AIBrixOffloadingConnectorRequestState.WAITING_FOR_RECV,
++            AIBrixOffloadingConnectorRequestState.WAITING_FOR_SEND,
++        ])
++
++        # 4. update scheduled requests
++        for req_id in meta:
++            if (self._scheduler_meta[req_id].state ==
++                    AIBrixOffloadingConnectorRequestState.WAITING_FOR_RECV):
++                self._scheduler_meta.upsert_request(
++                    req_id,
++                    state=AIBrixOffloadingConnectorRequestState.RECEIVING,
++                )
++            else:
++                self._scheduler_meta.upsert_request(
++                    req_id,
++                    state=AIBrixOffloadingConnectorRequestState.SENDING,
++                )
++
++        # 5. attach finished requests
++        meta.finished_requests_ids = self._scheduler_meta.finished_requests_ids
++        self._scheduler_meta.finished_requests_ids = set()
++
++        # 6. attach total_num_scheduled_tokens
++        meta.total_num_scheduled_tokens = \
++            scheduler_output.total_num_scheduled_tokens
++
++        # 7. side channel host and port
++        if not self._sidechannels_ready:
++            meta.side_channel_host = self.side_channel_host
++            meta.side_channel_port = self.side_channel_port
++            self._sidechannels_ready = True
++        else:
++            meta.side_channel_host = ""
++
++        logger.debug("SCHEDULER: build_connector_meta, meta=%s", meta)
++        if len(meta.requests) > 0 or len(meta.finished_requests_ids) > 0:
++            logger.debug(
++                "Num. of scheduled requests: %s",
++                len(
++                    self._scheduler_meta.get(lambda req: req.state in [
++                        AIBrixOffloadingConnectorRequestState.RECEIVING,
++                        AIBrixOffloadingConnectorRequestState.SENDING,
++                    ])),
++            )
++        return meta
++
++    def request_finished(
++        self,
++        request: "Request",
++        block_ids: list[int],
++    ) -> tuple[bool, Optional[dict[str, Any]]]:
++        req_id = request.request_id
++        self._alloc_block_ids.pop(req_id, None)
++        self._testing_requests.pop(req_id, None)
++        return super().request_finished(request, block_ids)
++
++    def request_preempted(
++        self,
++        request: "Request",
++    ) -> None:
++        req_id = request.request_id
++        self._alloc_block_ids.pop(req_id, None)
++        logger.debug("SCHEDULER: Request[id=%s] preempted", req_id)
++
++        self._scheduler_meta.finish_request(req_id)
++
++
++class AIBrixOffloadingConnectorWorker(AIBrixOffloadingConnectorWorkerType1):
++    """AIBrixOffloadingConnectorWorker carries out the data-plane operations.
++    """
++
++    def __init__(self, config: "VllmConfig"):
++        self._init_worker(
++            config,
++            max_num_batched_tokens=config.scheduler_config.
++            max_num_batched_tokens,
++            multi_threaded=True,
++        )
++        self.dp_rank = config.parallel_config.data_parallel_rank
++        # create streams on current device that are dedicated for sends and
++        # recvs
++        self._send_stream = torch.cuda.Stream()
++        self._load_stream = torch.cuda.Stream()
++        self._send_slot_mapping = torch.empty(
++            config.scheduler_config.max_num_batched_tokens,
++            dtype=torch.long,
++            device="cuda",
++        )
++        self._recv_slot_mapping = torch.empty(
++            config.scheduler_config.max_num_batched_tokens,
++            dtype=torch.long,
++            device="cuda",
++        )
++
++        self._kv_event_loop, self._kv_thread = self._create_event_loop()
++
++        self._prefetch_reqs: list[
++            AIBrixOffloadingConnectorRequestMetadata] = []
++        self._load_reqs: list[AIBrixOffloadingConnectorRequestMetadata] = []
++        self._send_reqs: list[AIBrixOffloadingConnectorRequestMetadata] = []
++
++        self._allocated_kvcache_handles: dict[str, KVCacheHandle] = {}
++        self._acquired_kvcache_handles: dict[str, list[KVCacheHandle]] = {}
++        self._prefetch_future: asyncio.Future | None = None
++
++        # side channel
++        self._zmq_ctx = zmq.Context()
++        self._sidechannel_path: Optional[str] = None
++        self._sidechannel_sock: Optional[zmq.Socket
++                                         | zmq.asyncio.Socket] = None
++        self._sidechannel_thread: Optional[threading.Thread] = None
++
++    def __del__(self):
++        self._destroy_event_loop(
++            self._kv_event_loop,
++            self._kv_thread,
++        )
++        del self._kv_event_loop
++        del self._kv_thread
++
++        if (hasattr(self, "_sidechannel_thread")
++                and self._sidechannel_thread is not None
++                and self._sidechannel_thread.is_alive()):
++            self._sidechannel_thread.join()
++
++        if hasattr(self, "_zmq_ctx") and self._zmq_ctx is not None:
++            self._zmq_ctx.destroy(linger=0)
++
++    def _create_event_loop(self) \
++        -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
++        event_loop = asyncio.new_event_loop()
++        thread = threading.Thread(target=event_loop.run_forever, daemon=True)
++        thread.start()
++        return event_loop, thread
++
++    def _destroy_event_loop(self, event_loop: asyncio.AbstractEventLoop,
++                            thread: threading.Thread):
++        # terminate event loop and thread
++        if event_loop is not None and event_loop.is_running():
++            with contextlib.suppress(Exception):
++                # ignore the exception
++                event_loop.call_soon_threadsafe(event_loop.stop)
++
++        if thread is not None and thread.is_alive():
++            thread.join()
++
++    def _get_block_layout(self) -> KVCacheBlockLayout:
++
++        if self.attn_backend.get_name() in \
++            OFFLOADING_CONNECTOR_SUPPORTED_ATTN_BACKENDS:
++            return KVCacheBlockLayout(
++                OFFLOADING_CONNECTOR_SUPPORTED_ATTN_BACKENDS[
++                    self.attn_backend.get_name()])
++        raise NotImplementedError(
++            f"Only support attn backends in "
++            f"{list(OFFLOADING_CONNECTOR_SUPPORTED_ATTN_BACKENDS.keys())}. "
++            f"{self.attn_backend.get_name()} is used.")
++
++    def _release_allocated_kvcache_handles(self):
++        for seq_request_id in self._allocated_kvcache_handles:
++            self._allocated_kvcache_handles[seq_request_id].release()
++        self._allocated_kvcache_handles.clear()
++
++    def _release_allocated_kvcache_handle(self, req_id):
++        handle = self._allocated_kvcache_handles.pop(req_id, None)
++        if handle is not None:
++            handle.release()
++
++    def _pop_acquired_kvcache_handle(self, req_id: str):
++        handles = self._acquired_kvcache_handles.get(req_id, None)
++        if handles is None or len(handles) == 0:
++            return
++
++        handles[0].release()
++        self._acquired_kvcache_handles[req_id] = handles[1:]
++
++    def _release_acquired_kvcache_handles(self, req_id: str):
++        handles = self._acquired_kvcache_handles.pop(req_id, None)
++        if handles is None:
++            return
++
++        for handle in handles:
++            handle.release()
++
++    @tag_wrapper({
++        "connector": "AIBrixOffloadingConnectorV1Type3",
++        "func": "start_load_kv"
++    })
++    def start_load_kv(
++        self,
++        metadata: AIBrixOffloadingConnectorMetadata,
++    ) -> None:
++        if (metadata.side_channel_host is not None
++                and len(metadata.side_channel_host) > 0):
++            self._handshake(metadata)
++
++        if len(metadata) == 0 and len(metadata.finished_requests_ids) == 0:
++            return
++
++        logger.debug("start_load_kv %s", metadata)
++        self._update_meta_cache(metadata)
++
++        # release kvcache handles for finished/preempted reqs
++        for req_id in metadata.finished_requests_ids:
++            self._release_acquired_kvcache_handles(req_id)
++            self._release_allocated_kvcache_handle(req_id)
++
++        # split prefetch, load and send reqs
++        for seq_request_id, seq_request_meta in metadata.items():
++            if seq_request_meta.load_len > 0:
++                req_id = seq_request_meta.req_id
++                handles = self._acquired_kvcache_handles.get(req_id, None)
++                if handles is None or len(handles) == 0:
++                    logger.debug("Skip loading %s", req_id)
++                self._load_reqs.append(seq_request_meta)
++
++            if (seq_request_meta.query_len > 0 and seq_request_meta.state
++                    == AIBrixOffloadingConnectorRequestState.RECEIVING):
++                self._prefetch_reqs.append(seq_request_meta)
++
++            if (seq_request_meta.query_len > 0 and seq_request_meta.state
++                    == AIBrixOffloadingConnectorRequestState.SENDING):
++                prompt_len = seq_request_meta.prompt_len
++                context_len = seq_request_meta.context_len
++                query_len = seq_request_meta.query_len
++                # align to block boundary
++                aligned_context_len = round_down(context_len,
++                                                 self.cache_block_ntokens)
++                actual_query_len = context_len + query_len - \
++                    aligned_context_len
++                aligned_query_len = round_down(actual_query_len,
++                                               self.cache_block_ntokens)
++                aligned_prompt_len = round_down(prompt_len,
++                                                self.cache_block_ntokens)
++
++                if aligned_query_len == 0 or not self._need_to_process(
++                        aligned_prompt_len,
++                        aligned_context_len,
++                ):
++                    logger.debug("Skip sending %s", seq_request_meta.req_id)
++                else:
++                    self._send_reqs.append(seq_request_meta)
++
++        if len(self._prefetch_reqs) > 0:
++            self._prefetch_future = asyncio.run_coroutine_threadsafe(
++                self._start_prefetch_kv_async(self._prefetch_reqs),
++                self._kv_event_loop,
++            )
++
++        if len(self._load_reqs) > 0:
++            self._start_load_kv(self._load_reqs)
++
++    def _handshake(self, metadata: AIBrixOffloadingConnectorMetadata):
++        self._sidechannel_path = make_zmq_path("tcp",
++                                               metadata.side_channel_host,
++                                               metadata.side_channel_port)
++        self._sidechannel_sock = make_zmq_socket(
++            ctx=self._zmq_ctx,
++            path=self._sidechannel_path,
++            socket_type=zmq.REQ,
++            bind=False,
++        )
++        metadata = AIBrixOffloadingConnectorWorkerMeta(tp_rank=self.rank, )
++        encoder = msgspec.msgpack.Encoder()
++        encoded_data = encoder.encode(metadata)
++        self._sidechannel_sock.send(encoded_data)
++        logger.info(
++            "Worker %d in DP group %d is establishing side channel",
++            self.rank,
++            self.dp_rank,
++        )
++
++        # init side channel
++        self._sidechannel_thread = threading.Thread(
++            target=self._sidechannel_run,
++            args=(),
++            daemon=True,
++            name="worker_sidechannel_run")
++        self._sidechannel_thread.start()
++
++    def _sidechannel_run(self):
++        logger.debug(
++            "Starting worker side channel on path: %s",
++            self._sidechannel_path,
++        )
++        encoder = msgspec.msgpack.Encoder()
++        decoder = msgspec.msgpack.Decoder(
++            list[AIBrixOffloadingConnectorTestRequest])
++        poller = zmq.Poller()
++        poller.register(self._sidechannel_sock, zmq.POLLIN)
++        while True:
++            for sock, _ in poller.poll():
++                msg = sock.recv()
++                requests = decoder.decode(msg)
++                responses: list[AIBrixOffloadingConnectorTestResponse] = []
++                for request in requests:
++                    seq_existing_len = self._test_kv_impl(request)
++                    response = AIBrixOffloadingConnectorTestResponse(
++                        req_id=request.req_id,
++                        seq_existing_len=seq_existing_len,
++                    )
++                    responses.append(response)
++                encoded_data = encoder.encode(responses)
++                sock.send(encoded_data)
++
++    async def _start_prefetch_kv_async(
++        self, prefetch_reqs: list[AIBrixOffloadingConnectorRequestMetadata]
++    ) -> dict[str, tuple[int, KVCacheHandle]]:
++        logger.debug("Start prefetching %s", prefetch_reqs)
++        stats: dict[str, tuple[int, KVCacheHandle]] = {}
++        if self.kv_group is not None:
++            for seq_request_meta in prefetch_reqs:
++                num_fetched_tokens, handle = \
++                    self._recv_kv_impl(seq_request_meta)
++                if num_fetched_tokens > 0:
++                    seq_request_id = seq_request_meta.req_id
++                    stats[seq_request_id] = num_fetched_tokens, handle
++
++            if len(stats) > 0:
++                for idx, seq_request_meta in enumerate(prefetch_reqs):
++                    seq_request_id = seq_request_meta.req_id
++                    self._coll_tensor[idx], _ = stats.get(seq_request_id, \
++                        (0, None))
++                dist.all_reduce(self._coll_tensor[:idx], dist.ReduceOp.MIN,
++                                self.kv_group)
++
++                for idx, seq_request_meta in enumerate(prefetch_reqs):
++                    seq_request_id = seq_request_meta.req_id
++                    if self._coll_tensor[idx] > 0:
++                        num_fetched_tokens = self._coll_tensor[idx].item()
++                        num_handles = round_up(
++                            num_fetched_tokens,
++                            self.cache_block_ntokens,
++                        )
++                        stats[seq_request_id][0] = num_fetched_tokens
++                        stats[seq_request_id][1].truncate(num_handles)
++                    else:
++                        stats[seq_request_id][1].release()
++                        stats.pop(seq_request_id, None)
++
++        else:
++            for seq_request_meta in prefetch_reqs:
++                seq_request_id = seq_request_meta.req_id
++                num_fetched_tokens, handle = \
++                    self._recv_kv_impl(seq_request_meta)
++                if num_fetched_tokens > 0:
++                    stats[seq_request_id] = num_fetched_tokens, handle
++        return stats
++
++    def _recv_kv_impl(
++        self,
++        seq_request_meta: AIBrixOffloadingConnectorRequestMetadata,
++    ) -> tuple[int, Optional[KVCacheHandle]]:
++        logger.debug("_recv_kv_impl: %s", seq_request_meta)
++        seq_request_id = seq_request_meta.req_id
++        seq_cached_meta = self._meta_cache[seq_request_id]
++        seq_all_tokens = seq_cached_meta.get_context_tokens_view()
++        assert seq_all_tokens is not None, "seq_all_tokens is None"
++        seq_context_len = seq_request_meta.context_len
++
++        prompt_len = seq_request_meta.prompt_len
++        query_len = seq_request_meta.query_len
++
++        threshold = max(
++            OFFLOADING_CONNECTOR_SKIP_THRESHOLD * self.engine_block_ntokens,
++            self.cache_block_ntokens,
++        )
++        if query_len < threshold:
++            logger.debug(
++                "Skip Request[id=%s, context_len=%d, query_len=%d]",
++                seq_request_id,
++                seq_context_len,
++                query_len,
++            )
++            return 0, None
++
++        prefix = seq_all_tokens[:seq_context_len]
++        tokens = seq_all_tokens[seq_context_len:seq_context_len + query_len]
++
++        if self._metrics.time_measurement_enabled:
++            start = time.perf_counter()
++
++        seq_recv_len = 0
++
++        # get KV caches from offloading service
++        status = self.cache.acquire(prefix, tokens)
++
++        if not status.is_ok():
++            if not status.is_not_found():
++                log_every_n_seconds(
++                    logger,
++                    logging.ERROR,
++                    "Failed to get from offloading service: %s",
++                    3,
++                    str(status),
++                )
++            if self._metrics.time_measurement_enabled:
++                end = time.perf_counter()
++                lat_ms = (end - start) * 1000
++                self._metrics._recv_metrics.add(seq_context_len, query_len, 0,
++                                                lat_ms)
++            return 0, None
++
++        num_fetched_tokens, handle = status.value
++
++        # update recv_len
++        seq_recv_len += num_fetched_tokens
++
++        log_if(
++            logger,
++            logging.INFO,
++            "Request[id=%s, prompt_len=%d, context_len=%d] reused %d tokens",
++            seq_recv_len > 0,
++            seq_request_id,
++            prompt_len,
++            seq_context_len,
++            seq_recv_len,
++        )
++
++        if self._metrics.time_measurement_enabled:
++            end = time.perf_counter()
++            lat_ms = (end - start) * 1000
++            self._metrics._recv_metrics.add(seq_context_len, query_len,
++                                            seq_recv_len, lat_ms)
++
++        return seq_recv_len, handle
++
++    def _test_kv_impl(
++        self,
++        request: AIBrixOffloadingConnectorTestRequest,
++    ) -> int:
++        logger.debug("_test_kv_impl: %s", request)
++        seq_request_id = request.req_id
++        if (request.seq_token_ids is None or len(request.seq_token_ids) == 0):
++            return 0
++
++        prefix = None
++        tokens = TokenListView(request.seq_token_ids)
++
++        status = self.cache.exists(prefix, tokens)
++
++        if not status.is_ok():
++            return 0
++
++        seq_existing_len = status.value
++
++        log_if(
++            logger,
++            logging.DEBUG,
++            "Request[id=%s] exists %d tokens",
++            seq_existing_len > 0,
++            seq_request_id,
++            seq_existing_len,
++        )
++
++        return seq_existing_len
++
++    def _start_load_kv(
++        self,
++        load_reqs: list[AIBrixOffloadingConnectorRequestMetadata],
++    ):
++        logger.debug("Start non-layer-wise loading %s", load_reqs)
++        self._start_load_kv_impl(load_reqs)
++
++    def _start_load_kv_impl(
++        self,
++        load_reqs: list[AIBrixOffloadingConnectorRequestMetadata],
++    ):
++        tensors: list[torch.Tensor] = []
++        slot_mapping_offset = 0
++
++        for req in load_reqs:
++            seq_request_id = req.req_id
++            handles = self._acquired_kvcache_handles.get(seq_request_id, None)
++            if handles is None or len(handles) == 0:
++                continue
++
++            seq_cached_meta = self._meta_cache[seq_request_id]
++            seq_context_len = req.context_len - req.load_len
++            seq_load_len = round_up(req.load_len, self.cache_block_ntokens)
++
++            assert seq_context_len >= 0
++            logger.debug(
++                "Request[id=%s, context_len=%d, load_len=%d]",
++                seq_request_id,
++                seq_context_len,
++                seq_load_len,
++            )
++
++            handle = handles[0]
++            kv_blocks = handle.to_tensors()
++            num_fetched_tokens = len(kv_blocks) * self.cache_block_ntokens
++            assert num_fetched_tokens == seq_load_len, \
++                f"{num_fetched_tokens}!={seq_load_len}, handles={len(handles)}"
++
++            offset = seq_context_len
++            length = num_fetched_tokens
++
++            if slot_mapping_offset + length >= len(self._recv_slot_mapping):
++                new_recv_slot_mapping = torch.empty(
++                    len(self._recv_slot_mapping) * 2,
++                    dtype=torch.long,
++                    device="cuda",
++                )
++                new_recv_slot_mapping[:slot_mapping_offset].copy_(
++                    self._recv_slot_mapping[:slot_mapping_offset])
++                self._recv_slot_mapping = new_recv_slot_mapping
++
++            self._recv_slot_mapping[slot_mapping_offset:slot_mapping_offset +
++                                    length].copy_(
++                                        seq_cached_meta.
++                                        context_slot_mapping[offset:offset +
++                                                             length])
++            slot_mapping_offset += length
++            tensors.extend(kv_blocks)
++
++        if slot_mapping_offset == 0:
++            return
++
++        with torch.cuda.stream(self._load_stream):
++            reshape_and_cache_multi_layer(
++                tensors,
++                self.layers_kv_caches,
++                self._recv_slot_mapping[:slot_mapping_offset],
++                self.engine_block_ntokens,
++                self.kv_cache_dtype,
++                self.k_scales,
++                self.v_scales,
++                self.block_layout.name,
++            )
++
++    def save_kv_layer(
++        self,
++        metadata: AIBrixOffloadingConnectorMetadata,
++        layer_name: str,
++        kv_layer: torch.Tensor,
++        attn_metadata: "AttentionMetadata",
++    ) -> None:
++        if len(self._send_reqs) == 0:
++            return
++
++        if not vllm.envs.VLLM_AIBRIX_TYPE3_USE_LAYER_WISE_SAVE:
++            return
++
++        logger.debug("save_kv_layer %s %s", layer_name, self._send_reqs)
++
++        is_first_layer = self.layer_name_idx_mapping[layer_name] == 0
++        lid = self.layer_name_idx_mapping[layer_name]
++        layer_tensors: list[torch.Tensor] = []
++        slot_mapping_offset = 0
++
++        if is_first_layer:
++            for req in self._send_reqs:
++                seq_req_id = req.req_id
++                # align to block boundary
++                aligned_context_len = round_down(req.context_len,
++                                                 self.cache_block_ntokens)
++                actual_query_len = req.context_len + req.query_len - \
++                    aligned_context_len
++                aligned_query_len = round_down(actual_query_len,
++                                               self.cache_block_ntokens)
++                aligned_prompt_len = round_down(req.prompt_len,
++                                                self.cache_block_ntokens)
++
++                if aligned_query_len == 0 or not self._need_to_process(
++                        aligned_prompt_len,
++                        aligned_context_len,
++                ):
++                    continue
++
++                seq_cached_meta = self._meta_cache[seq_req_id]
++                seq_all_tokens = seq_cached_meta.get_context_tokens_view()
++                assert seq_all_tokens is not None, "seq_all_tokens is None"
++
++                prefix = seq_all_tokens[:aligned_context_len]
++                tokens = seq_all_tokens[
++                    aligned_context_len:aligned_context_len +
++                    aligned_query_len + self.cache_block_ntokens]
++                exists_status = self.cache.exists(prefix, tokens)
++                if exists_status.is_ok():
++                    num_existing_tokens = exists_status.value
++                    logger.debug(
++                        "Request[id=%s] send(%d) encounters %d existing tokens",
++                        seq_req_id, aligned_query_len, num_existing_tokens)
++                    if (aligned_query_len <= num_existing_tokens
++                            or not self._need_to_process(
++                                aligned_prompt_len,
++                                aligned_context_len + num_existing_tokens,
++                            )):
++                        continue
++                    else:
++                        # partially exists
++                        aligned_context_len += num_existing_tokens
++                        aligned_query_len -= num_existing_tokens
++
++                # update lengths
++                metadata[seq_req_id].context_len = aligned_context_len
++                metadata[seq_req_id].query_len = aligned_query_len
++
++                # allocate staging buffers that can hold kvcache for all layers
++                handle = self._allocate_for_request(seq_req_id,
++                                                    aligned_context_len,
++                                                    aligned_query_len)
++                if handle is None:
++                    continue
++                else:
++                    self._allocated_kvcache_handles[seq_req_id] = handle
++
++        for seq_req_id, _ in self._allocated_kvcache_handles.items():
++            if seq_req_id not in self._allocated_kvcache_handles or \
++                self._allocated_kvcache_handles[seq_req_id] is None:
++                return
++
++            seq_cached_meta = self._meta_cache[seq_req_id]
++            seq_context_len = metadata[seq_req_id].context_len
++
++            seq_allocated_handle = self._allocated_kvcache_handles[seq_req_id]
++            seq_allocated_tensors = seq_allocated_handle.to_tensors()
++            seq_num_tokens = len(
++                seq_allocated_tensors) * self.cache_block_ntokens
++            self._send_slot_mapping[slot_mapping_offset:slot_mapping_offset +
++                                    seq_num_tokens].copy_(
++                                        seq_cached_meta.context_slot_mapping[
++                                            seq_context_len:seq_context_len +
++                                            seq_num_tokens])
++            slot_mapping_offset += seq_num_tokens
++
++            # We are using LCND layout, so the tensors can be split by layers
++            layer_tensors.extend(
++                [t[lid:lid + 1] for t in seq_allocated_tensors])
++
++        if slot_mapping_offset == 0:
++            return
++
++        # wait for compute on current stream
++        curr_stream = torch.cuda.current_stream()
++        self._send_stream.wait_stream(curr_stream)
++
++        # use send stream to carry out async copy from HBM to DRAM
++        with torch.cuda.stream(self._send_stream):
++            reshape_and_offload_multi_layer(
++                layer_tensors,
++                [kv_layer],
++                self._send_slot_mapping[:slot_mapping_offset],
++                self.engine_block_ntokens,
++                self.kv_cache_dtype,
++                [self.k_scales[lid]],
++                [self.v_scales[lid]],
++                self.block_layout.name,
++            )
++
++    def _allocate_for_request(
++        self,
++        seq_request_id: str,
++        aligned_context_len: int,
++        aligned_query_len: int,
++    ) -> Optional[KVCacheHandle]:
++        logger.debug("_allocate_for_request %s", seq_request_id)
++
++        seq_cached_meta = self._meta_cache[seq_request_id]
++        seq_all_tokens = seq_cached_meta.get_context_tokens_view()
++        assert seq_all_tokens is not None, "seq_all_tokens is None"
++
++        prefix = seq_all_tokens[:aligned_context_len]
++        tokens = seq_all_tokens[aligned_context_len:aligned_context_len +
++                                aligned_query_len]
++        status = self.cache.allocate_for(prefix, tokens)
++        if not status.is_ok():
++            log_every_n_seconds(logger, logging.ERROR,
++                                "Failed to allocate : %s", 3, str(status))
++            return None
++        return status.get()
++
++    @tag_wrapper({
++        "connector": "AIBrixOffloadingConnectorV1Type3",
++        "func": "wait_for_save"
++    })
++    def wait_for_save(
++        self,
++        metadata: AIBrixOffloadingConnectorMetadata,
++    ) -> None:
++        if len(self._send_reqs) == 0:
++            return
++
++        logger.debug("wait_for_save %s", metadata)
++        if vllm.envs.VLLM_AIBRIX_TYPE3_USE_LAYER_WISE_SAVE:
++            # wait for send stream to finish
++            self._send_stream.synchronize()
++
++        for req in self._send_reqs:
++            self._send_kv_impl(req)
++
++        self._send_reqs.clear()
++
++        # release all allocated handles
++        self._release_allocated_kvcache_handles()
++
++    def _send_kv_impl(
++        self,
++        seq_request_meta: AIBrixOffloadingConnectorRequestMetadata,
++    ) -> None:
++        logger.debug("_send_kv_impl: %s", seq_request_meta)
++        seq_request_id = seq_request_meta.req_id
++        seq_context_len = seq_request_meta.context_len
++        query_len = seq_request_meta.query_len
++        prompt_len = seq_request_meta.prompt_len
++
++        # align to block boundary
++        aligned_context_len = round_down(seq_context_len,
++                                         self.cache_block_ntokens)
++        actual_query_len = seq_context_len + query_len - aligned_context_len
++        aligned_query_len = round_down(actual_query_len,
++                                       self.cache_block_ntokens)
++        aligned_prompt_len = round_down(prompt_len, self.cache_block_ntokens)
++
++        if aligned_query_len == 0 or not self._need_to_process(
++                aligned_prompt_len,
++                aligned_context_len,
++        ):
++            return
++
++        assert prompt_len >= aligned_context_len + aligned_query_len, \
++            f"{prompt_len}<{aligned_context_len}+{aligned_query_len}"
++
++        seq_cached_meta = self._meta_cache[seq_request_id]
++        seq_all_tokens = seq_cached_meta.get_context_tokens_view()
++        assert seq_all_tokens is not None, "seq_all_tokens is None"
++
++        if not vllm.envs.VLLM_AIBRIX_TYPE3_USE_LAYER_WISE_SAVE:
++            prefix = seq_all_tokens[:aligned_context_len]
++            tokens = seq_all_tokens[aligned_context_len:aligned_context_len +
++                                    aligned_query_len +
++                                    self.cache_block_ntokens]
++            exists_status = self.cache.exists(prefix, tokens)
++            if exists_status.is_ok():
++                num_existing_tokens = exists_status.value
++                logger.debug(
++                    "Request[id=%s] send(%d) encounters %d existing tokens",
++                    seq_request_id, aligned_query_len, num_existing_tokens)
++                aligned_prompt_len = round_down(prompt_len,
++                                                self.cache_block_ntokens)
++                if (aligned_query_len <= num_existing_tokens
++                        or not self._need_to_process(
++                            aligned_prompt_len,
++                            aligned_context_len + num_existing_tokens,
++                        )):
++                    return
++                else:
++                    # partially exists
++                    aligned_context_len += num_existing_tokens
++                    aligned_query_len -= num_existing_tokens
++            seq_allocated_handle = self._allocate_for_request(
++                seq_request_id, aligned_context_len, aligned_query_len)
++        else:
++            seq_allocated_handle = self._allocated_kvcache_handles.pop(
++                seq_request_id, None)
++
++        if seq_allocated_handle is None:
++            return
++
++        seq_allocated_tensors = seq_allocated_handle.to_tensors()
++        aligned_query_len = min(
++            aligned_query_len,
++            len(seq_allocated_tensors) * self.cache_block_ntokens,
++        )
++
++        prefix = seq_all_tokens[:aligned_context_len]
++        tokens = seq_all_tokens[aligned_context_len:aligned_context_len +
++                                aligned_query_len]
++
++        if self._metrics.time_measurement_enabled:
++            start = time.perf_counter()
++
++        total_sent = 0
++        length = aligned_query_len
++
++        if not vllm.envs.VLLM_AIBRIX_TYPE3_USE_LAYER_WISE_SAVE:
++            offset = len(prefix)
++            slot_mapping = seq_cached_meta.context_slot_mapping[offset:offset +
++                                                                length]
++
++            # wait for compute on current stream
++            curr_stream = torch.cuda.current_stream()
++            self._send_stream.wait_stream(curr_stream)
++
++            with perf_timer() as get_kernel_offload_dur_ms:
++                with torch.cuda.stream(self._send_stream):
++                    reshape_and_offload_multi_layer(
++                        seq_allocated_tensors,
++                        self.layers_kv_caches,
++                        slot_mapping,
++                        self.engine_block_ntokens,
++                        self.kv_cache_dtype,
++                        self.k_scales,
++                        self.v_scales,
++                        self.block_layout.name,
++                    )
++                self._send_stream.synchronize()
++
++            logger.info("Request[id=%s] offloads %d tokens in %.4f ms",
++                        seq_request_id, length, get_kernel_offload_dur_ms())
++
++        # put KV caches to offloading service
++        status = self.cache.put(prefix, tokens, seq_allocated_handle)
++        if not status.is_ok():
++            log_every_n_seconds(logger, logging.ERROR,
++                                "Failed to put to offloading service: %s", 3,
++                                str(status))
++        else:
++            total_sent += length
++
++            log_if(
++                logger,
++                logging.INFO,
++                "Request[id=%s, prompt_len=%d, context_len=%d] sent %d tokens",
++                total_sent > 0,
++                seq_request_id,
++                prompt_len,
++                seq_context_len,
++                total_sent,
++            )
++
++        if self._metrics.time_measurement_enabled:
++            end = time.perf_counter()
++            lat_ms = (end - start) * 1000
++            self._metrics._send_metrics.add(seq_context_len, query_len,
++                                            total_sent, lat_ms)
++
++    def _need_to_process(self, aligned_prompt_len: int,
++                         aligned_context_len: int) -> bool:
++        return aligned_prompt_len - aligned_context_len >= max(
++            OFFLOADING_CONNECTOR_SKIP_THRESHOLD * self.engine_block_ntokens,
++            self.cache_block_ntokens,
++        )
++
++    def get_finished(
++        self, metadata: AIBrixOffloadingConnectorMetadata,
++        finished_req_ids: set[str]
++    ) -> tuple[Optional[set[str]], Optional[set[str | tuple[str, int]]]]:
++        if len(metadata) == 0:
++            return None, None
++
++        # wait until prefetching is done
++        prefetch_output: set[tuple[str, int]] = set()
++        req_ids: set[str] = set()
++        for req in self._prefetch_reqs:
++            req_ids.add(req.req_id)
++        for req in self._load_reqs:
++            req_ids.add(req.req_id)
++
++        if self._prefetch_future is not None:
++            stats = self._prefetch_future.result()
++            for req_id in req_ids:
++                (num_fetched_tokens, handle) = stats.get(req_id, (0, None))
++                if handle is not None:
++                    self._acquired_kvcache_handles.setdefault(req_id, [])\
++                        .append(handle)
++                    prefetch_output.add((req_id, num_fetched_tokens))
++                elif num_fetched_tokens > 0:
++                    prefetch_output.add((req_id, num_fetched_tokens))
++                else:
++                    prefetch_output.add((req_id, 0))
++            self._prefetch_future = None
++        else:
++            for req_id in req_ids:
++                prefetch_output.add((req_id, 0))
++
++        # wait until loading is done
++        if len(self._load_reqs) > 0:
++            self._load_stream.synchronize()
++            # release curr handle once loading is complete
++            for req in self._load_reqs:
++                seq_request_id = req.req_id
++                self._pop_acquired_kvcache_handle(seq_request_id)
++
++        self._prefetch_reqs.clear()
++        self._load_reqs.clear()
++
++        logger.debug("get_finished: %s", prefetch_output)
++
++        if self._metrics.time_measurement_enabled:
++            log_every_n_seconds(self._metrics, logging.INFO, "UNUSED", 10)
++
++        return None, prefetch_output
++
++
++class AIBrixOffloadingConnector(KVConnectorBase_V1):
++    """AIBrixOffloadingConnector is a KVConnector that offloads KV caches
++    to the kv cache offloading service.
++    """
++
++    def __init__(self, config: "VllmConfig", role: KVConnectorRole):
++        super().__init__(vllm_config=config, role=role)
++
++        self.connector_scheduler: Optional[
++            AIBrixOffloadingConnectorScheduler] = None
++
++        self.connector_worker: Optional[AIBrixOffloadingConnectorWorker] = None
++        if role == KVConnectorRole.SCHEDULER:
++            self.connector_scheduler = AIBrixOffloadingConnectorScheduler(
++                config)
++        elif role == KVConnectorRole.WORKER:
++            self.connector_worker = AIBrixOffloadingConnectorWorker(config)
++
++    # ==============================
++    # Worker-side methods
++    # ==============================
++
++    @delegate_to("connector_worker")
++    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
++        """
++        Initialize with the KV caches. Useful for pre-registering the
++        KV Caches in the KVConnector (e.g. for NIXL).
++
++        Args: kv_caches:
++            dictionary of layer names, kv cache
++        """
++        pass
++
++    def start_load_kv(self, forward_context: "ForwardContext",
++                      **kwargs) -> None:
++        """
++        Start loading the KV cache from the connector to vLLM's paged
++        KV buffer. This is called from the forward context before the
++        forward pass to enable async loading during model execution.
++
++        Args:
++            forward_context (ForwardContext): the forward context.
++            **kwargs: additional arguments for the load operation
++
++        Note:
++            The number of elements in kv_caches and layer_names should be
++            the same.
++
++        """
++        assert self.connector_worker is not None
++        assert isinstance(
++            self._connector_metadata,
++            AIBrixOffloadingConnectorMetadata,
++        )
++        return self.connector_worker.start_load_kv(self._connector_metadata)
++
++    def wait_for_layer_load(self, layer_name: str) -> None:
++        """
++        Block until the KV for a specific layer is loaded into vLLM's
++        paged buffer. This is called from within attention layer to ensure
++        async copying from start_load_kv is complete.
++
++        This interface will be useful for layer-by-layer pipelining.
++
++        Args:
++            layer_name: the name of that layer
++        """
++        pass
++
++    def save_kv_layer(self, layer_name: str, kv_layer: torch.Tensor,
++                      attn_metadata: "AttentionMetadata", **kwargs) -> None:
++        """
++        Start saving a layer of KV cache from vLLM's paged buffer
++        to the connector. This is called from within attention layer to
++        enable async copying during execution.
++
++        Args:
++            layer_name (str): the name of the layer.
++            kv_layer (torch.Tensor): the paged KV buffer of the current
++                layer in vLLM.
++            attn_metadata (AttentionMetadata): the attention metadata.
++            **kwargs: additional arguments for the save operation.
++        """
++        assert self.connector_worker is not None
++        assert isinstance(
++            self._connector_metadata,
++            AIBrixOffloadingConnectorMetadata,
++        )
++        self.connector_worker.save_kv_layer(self._connector_metadata,
++                                            layer_name, kv_layer,
++                                            attn_metadata)
++
++    def wait_for_save(self) -> None:
++        """
++        Block until all the save operations is done. This is called
++        as the forward context exits to ensure that the async saving
++        from save_kv_layer is complete before finishing the forward.
++
++        This prevents overwrites of paged KV buffer before saving done.
++        """
++        assert self.connector_worker is not None
++        assert isinstance(
++            self._connector_metadata,
++            AIBrixOffloadingConnectorMetadata,
++        )
++        self.connector_worker.wait_for_save(self._connector_metadata)
++
++    def get_finished(
++        self, finished_req_ids: set[str]
++    ) -> tuple[Optional[set[str]], Optional[set[str | tuple[str, int]]]]:
++        """
++        Notifies worker-side connector ids of requests that have
++        finished generating tokens.
++
++        Returns:
++            ids of requests that have finished asynchronous transfer
++            (requests that previously returned True from request_finished()),
++            tuple of (sending/saving ids, recving/loading ids or
++            (recving/loading id, num. of recv'ed/loaded tokens) pairs).
++            The finished saves/sends req ids must belong to a set provided in a
++            call to this method (this call or a prior one).
++        """
++        assert self.connector_worker is not None
++        assert isinstance(
++            self._connector_metadata,
++            AIBrixOffloadingConnectorMetadata,
++        )
++        return self.connector_worker.get_finished(self._connector_metadata,
++                                                  finished_req_ids)
++
++    # ==============================
++    # Scheduler-side methods
++    # ==============================
++
++    def get_num_new_matched_tokens(
++        self,
++        request: "Request",
++        num_computed_tokens: int,
++    ) -> tuple[int, bool]:
++        """
++        Get number of new tokens that can be loaded from the
++        external KV cache beyond the num_computed_tokens.
++
++        Args:
++            request (Request): the request object.
++            num_computed_tokens (int): the number of locally
++                computed tokens for this request
++
++        Returns:
++            A tuple with the following elements:
++                - The number of tokens that can be loaded from the
++                  external KV cache beyond what is already computed.
++                - `True` if external KV cache tokens will be loaded
++                  asynchronously (between scheduler steps). Must be
++                  'False' if the first element is 0.
++        """
++        return 0, False
++
++    @delegate_to("connector_scheduler")
++    def update_state_after_alloc(self, request: "Request",
++                                 blocks: "KVCacheBlocks",
++                                 num_external_tokens: int):
++        """
++        Update KVConnector state after block allocation.
++
++        If get_num_new_matched_tokens previously returned True for a
++        request, this function may be called twice for that same request -
++        first when blocks are allocated for the connector tokens to be
++        asynchronously loaded into, and second when any additional blocks
++        are allocated, after the load/transfer is complete.
++
++        Args:
++            request (Request): the request object.
++            blocks (KVCacheBlocks): the blocks allocated for the request.
++            num_external_tokens (int): the number of tokens that will be
++                loaded from the external KV cache.
++        """
++        return
++
++    @delegate_to("connector_scheduler")
++    def load_and_prefetch(
++        self,
++        request: "Request",
++        num_to_load_tokens: int,
++        num_to_prefetch_tokens: int,
++    ) -> int:
++        """
++        Get num of tokens that can be scheduled for prefetching.
++
++        Args:
++            request (Request): the request object.
++            num_to_load_tokens (int): the number of tokens that will be
++                scheduled to load to GPU memory.
++            num_to_prefetch_tokens (int): the number of tokens that will be
++                scheduled to prefetch from the external KV cache.
++        Returns:
++            Num of tokens to prefetch.
++        """
++        return 0
++
++    @delegate_to("connector_scheduler")
++    def add_requests(
++        self,
++        requests: list["Request"],
++    ) -> None:
++        """
++        Add requests.
++
++        Args:
++            requests (list[Request]): list of request objects.
++        """
++        return
++
++    @delegate_to("connector_scheduler")
++    def test_request(
++        self,
++        request: "Request",
++    ) -> bool:
++        """
++        Test if request has matched tokens.
++
++        Args:
++            request (Request): the request object.
++        Returns:
++            True if the request has matched tokens.
++        """
++        return False
++
++    @delegate_to("connector_scheduler")
++    def build_connector_meta(
++            self, scheduler_output: "SchedulerOutput") -> KVConnectorMetadata:
++        """
++        Build the connector metadata for this step.
++
++        This function should NOT modify fields in the scheduler_output.
++        Also, calling this function will reset the state of the connector.
++
++        Args:
++            scheduler_output (SchedulerOutput): the scheduler output object.
++        """
++        pass
++
++    @delegate_to("connector_scheduler")
++    def request_finished(
++        self,
++        request: "Request",
++        block_ids: list[int],
++    ) -> tuple[bool, Optional[dict[str, Any]]]:
++        """
++        Called when a request has finished, before its blocks are freed.
++
++        Returns:
++            True if the request is being saved/sent asynchronously and blocks
++            should not be freed until the request_id is returned from
++            get_finished().
++            Optional KVTransferParams to be included in the request outputs
++            returned by the engine.
++        """
++        pass
++
++    @delegate_to("connector_scheduler")
++    def request_preempted(
++        self,
++        request: "Request",
++    ) -> None:
++        """
++        Called when a request has been preempted.
++        """
++        return
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/base.py b/vllm/distributed/kv_transfer/kv_connector/v1/base.py
+index cd4561154..42edd46ef 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/base.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/base.py
+@@ -147,6 +147,20 @@ class KVConnectorBase_V1(ABC):
+         """
+         return
+ 
++    def start_load_kv_before_update(self, **kwargs) -> dict[str, int]:
++        """
++        Start loading the KV cache from the connector to vLLM's paged
++        KV buffer before gpu runner updating its states.
++
++        Args:
++            **kwargs: additional arguments for the load operation
++
++        Returns:
++            dict[str, int]: a dictionary of request ids and the number of
++            tokens loaded for each request.
++        """
++        return {}
++
+     @abstractmethod
+     def start_load_kv(self, forward_context: "ForwardContext",
+                       **kwargs) -> None:
+diff --git a/vllm/distributed/kv_transfer/kv_transfer_metrics.py b/vllm/distributed/kv_transfer/kv_transfer_metrics.py
+new file mode 100644
+index 000000000..3208ac428
+--- /dev/null
++++ b/vllm/distributed/kv_transfer/kv_transfer_metrics.py
+@@ -0,0 +1,48 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++from abc import ABC, abstractmethod
++
++
++class KVTransferMetrics(ABC):
++    """
++    KVTransferMetrics is used to collect metrics for KVTransferAgent.
++    """
++
++    @abstractmethod
++    def reset(self) -> None:
++        raise NotImplementedError
++
++    @abstractmethod
++    def __str__(self) -> str:
++        raise NotImplementedError
++
++
++class KVTransferMetricsExporter(ABC):
++    """
++    KVTransferMetrics is used to collect metrics for KVTransferAgent.
++    """
++
++    def __init__(
++        self,
++        *,
++        prefix,
++        labelnames,
++        gauge_cls,
++        counter_cls,
++        histogram_cls,
++    ):
++        self._prefix = prefix
++        self._labelnames = labelnames
++        self._gauge_cls = gauge_cls
++        self._counter_cls = counter_cls
++        self._histogram_cls = histogram_cls
++
++    @abstractmethod
++    def export(
++        self,
++        *,
++        metrics: KVTransferMetrics,
++        labels: dict[str, str],
++    ) -> None:
++        """Export metrics to external systems."""
++        raise NotImplementedError
+diff --git a/vllm/envs.py b/vllm/envs.py
+index ac770ac4c..8c4fb9ca8 100755
+--- a/vllm/envs.py
++++ b/vllm/envs.py
+@@ -176,6 +176,9 @@ if TYPE_CHECKING:
+     VLLM_GPT_OSS_HARMONY_SYSTEM_INSTRUCTIONS: bool = False
+     VLLM_CUSTOM_SCOPES_FOR_PROFILING: bool = False
+     VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES: bool = True
++    VLLM_AIBRIX_SIDE_CHANNEL_PORT: int = 6667
++    VLLM_AIBRIX_SYNC_GRANULARITY: str = "PER_OP"
++    VLLM_AIBRIX_TYPE3_USE_LAYER_WISE_SAVE: bool = True
+ 
+ 
+ def get_default_cache_root():
+@@ -1247,6 +1250,21 @@ environment_variables: dict[str, Callable[[], Any]] = {
+     # raw bytes. Defaults to True for backward compatibility.
+     "VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES":
+     lambda: bool(int(os.getenv("VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES", "1"))),
++
++    # Port used by AIBrix connector side channel
++    "VLLM_AIBRIX_SIDE_CHANNEL_PORT":
++    lambda: int(os.getenv("VLLM_AIBRIX_SIDE_CHANNEL_PORT", "6667")),
++
++    # Specify the sync granularity used by AIBrix controllers. Please refer to
++    # AIBrixOffloadingConnectorSyncGranularity for more details.
++    "VLLM_AIBRIX_SYNC_GRANULARITY":
++    lambda: os.environ.get("VLLM_AIBRIX_SYNC_GRANULARITY", "PER_OP").upper(),
++
++    "VLLM_AIBRIX_TYPE3_USE_LAYER_WISE_SAVE":
++    lambda: (
++        os.environ.get("VLLM_AIBRIX_TYPE3_USE_LAYER_WISE_SAVE", "true").lower()\
++            in ("1", "true")
++    ),
+ }
+ 
+ # --8<-- [end:env-vars-definition]
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index aa45f6669..9d614039d 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -5,7 +5,7 @@ from __future__ import annotations
+ 
+ import itertools
+ import time
+-from collections import defaultdict
++from collections import defaultdict, deque
+ from collections.abc import Iterable
+ from typing import Any, Optional, Union
+ 
+@@ -90,6 +90,10 @@ class Scheduler(SchedulerInterface):
+             self.connector = KVConnectorFactory.create_connector(
+                 config=self.vllm_config, role=KVConnectorRole.SCHEDULER)
+ 
++        self.use_three_phase_kv_sched = (
++            self.connector and self.vllm_config.kv_transfer_config.kv_connector
++            == "AIBrixOffloadingConnectorV1Type3")
++
+         self.kv_event_publisher = EventPublisherFactory.create(
+             self.kv_events_config,
+             self.parallel_config.data_parallel_rank,
+@@ -122,6 +126,7 @@ class Scheduler(SchedulerInterface):
+         # Priority queues for requests.
+         self.waiting = create_request_queue(self.policy)
+         self.running: list[Request] = []
++        self.prefetching: deque[Request] = deque()
+ 
+         # The request IDs that are finished in between the previous and the
+         # current steps. This is used to notify the workers about the finished
+@@ -132,6 +137,11 @@ class Scheduler(SchedulerInterface):
+         # KV Connector: requests in process of async KV loading or recving
+         self.finished_recving_kv_req_ids: set[str] = set()
+ 
++        self.prefetching_req_stats: dict[str, int] = {}
++        self.nonprefetchable_req_ids: set[str] = set()
++        self.local_cached_req_ids: set[str] = set()
++        self.testing_req_ids: set[str] = set()
++        self.max_testing_reqs = 32
+         # Encoder-related.
+         # Calculate encoder cache size if applicable
+         # NOTE: For now we use the same budget for both compute and space.
+@@ -194,6 +204,7 @@ class Scheduler(SchedulerInterface):
+         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
+         num_scheduled_tokens: dict[str, int] = {}
+         token_budget = self.max_num_scheduled_tokens
++        prefetching_token_budget = token_budget
+         # Encoder-related.
+         scheduled_encoder_inputs: dict[str, list[int]] = {}
+         encoder_compute_budget = self.max_num_encoder_input_tokens
+@@ -257,7 +268,19 @@ class Scheduler(SchedulerInterface):
+                 if new_blocks is None:
+                     # The request cannot be scheduled.
+                     # Preempt the lowest-priority request.
+-                    if self.policy == SchedulingPolicy.PRIORITY:
++                    if self.prefetching:
++                        preempted_req = self.prefetching.pop()
++                        preempted_req.status = RequestStatus.WAITING
++                        assert self.connector is not None
++                        self.connector.request_preempted(preempted_req)
++                        # preempted request becomes prefetchable again
++                        self.nonprefetchable_req_ids.discard(
++                            preempted_req.request_id)
++                        self.local_cached_req_ids.discard(
++                            preempted_req.request_id)
++                        self.prefetching_req_stats.pop(
++                            preempted_req.request_id, None)
++                    elif self.policy == SchedulingPolicy.PRIORITY:
+                         preempted_req = max(
+                             self.running,
+                             key=lambda r: (r.priority, r.arrival_time),
+@@ -265,12 +288,12 @@ class Scheduler(SchedulerInterface):
+                         self.running.remove(preempted_req)
+                         if preempted_req in scheduled_running_reqs:
+                             scheduled_running_reqs.remove(preempted_req)
++                        preempted_req.status = RequestStatus.PREEMPTED
+                     else:
+                         preempted_req = self.running.pop()
+-
++                        preempted_req.status = RequestStatus.PREEMPTED
+                     self.kv_cache_manager.free(preempted_req)
+                     self.encoder_cache_manager.free(preempted_req)
+-                    preempted_req.status = RequestStatus.PREEMPTED
+                     preempted_req.num_computed_tokens = 0
+                     if self.log_stats:
+                         preempted_req.record_event(
+@@ -325,13 +348,142 @@ class Scheduler(SchedulerInterface):
+                 if req.lora_request and req.lora_request.lora_int_id > 0)
+             assert len(scheduled_loras) <= self.lora_config.max_loras
+ 
++        # Second, schedule the PREFETCHING requests.
++
++        # Use a temporary deque to collect requests that need to be skipped
++        # and put back at the head of the prefetching queue later
++        skipped_prefetching_requests: deque[Request] = deque()
++
++        if not preempted_reqs and self.use_three_phase_kv_sched:
++            while self.prefetching and prefetching_token_budget > 0:
++                request = self.prefetching[0]
++                req_id = request.request_id
++
++                num_prompt_tokens = request.num_prompt_tokens
++                num_loaded_tokens = request.num_computed_tokens
++
++                # will allocate slots for these prefetched tokens
++                num_new_prefetched_tokens = \
++                    self.prefetching_req_stats.get(req_id, 0)
++
++                num_prefetched_tokens = \
++                    num_loaded_tokens + num_new_prefetched_tokens
++
++                if num_new_prefetched_tokens == 0:
++                    # prefetched zero tokens in last prefetching, start to
++                    # compute from here
++                    logger.debug(
++                        "Request[id=%s, prompt_len=%d, loaded_len=%d, "
++                        "prefetched_len=%d] stopped prefetching",
++                        req_id,
++                        num_prompt_tokens,
++                        num_loaded_tokens,
++                        num_prefetched_tokens,
++                    )
++
++                    self.prefetching.popleft()
++                    # append it to the head of waiting queue
++                    request.status = RequestStatus.WAITING
++                    self.waiting.prepend_request(request)
++                    self.nonprefetchable_req_ids.add(req_id)
++                    continue
++                elif num_prefetched_tokens == num_prompt_tokens:
++                    # this will be a full hit, let remain the last token as
++                    # uncomputed
++                    num_prefetched_tokens -= 1
++                    num_new_prefetched_tokens -= 1
++                    num_to_prefetch_tokens = 0
++                else:
++                    num_to_prefetch_tokens = max(
++                        0, num_prompt_tokens - num_prefetched_tokens)
++
++                    if (0 < self.scheduler_config.long_prefill_token_threshold
++                            < num_to_prefetch_tokens):
++                        num_to_prefetch_tokens = (
++                            self.scheduler_config.long_prefill_token_threshold)
++
++                    num_to_prefetch_tokens = min(
++                        num_to_prefetch_tokens,
++                        prefetching_token_budget,
++                    )
++
++                if num_new_prefetched_tokens > 0:
++                    logger.debug(
++                        "Request[id=%s, loaded_len=%d] is allocating kvcache "
++                        "for %d tokens",
++                        req_id,
++                        num_loaded_tokens,
++                        num_new_prefetched_tokens,
++                    )
++
++                    new_blocks = self.kv_cache_manager.allocate_slots(
++                        request,
++                        num_new_prefetched_tokens,
++                        num_lookahead_tokens=self.num_lookahead_tokens,
++                        # will cache the allocated blocks after the prefetching
++                        # request finishes prefetching and calls allocate_slots
++                        # again when it is in the waiting queue.
++                        delay_cache_blocks=True,
++                    )
++                    if new_blocks is None:
++                        logger.debug(
++                            "Request[id=%s] failed to allocate slots, skip",
++                            req_id,
++                        )
++                        break
++
++                    assert self.connector is not None
++                    self.connector.update_state_after_alloc(
++                        request,
++                        new_blocks,
++                        0,
++                    )
++
++                assert self.connector is not None
++                num_to_prefetch_tokens = self.connector.load_and_prefetch(
++                    request, num_new_prefetched_tokens, num_to_prefetch_tokens)
++                if num_to_prefetch_tokens > 0:
++                    logger.debug(
++                        "Request[id=%s, prompt_len=%d] loaded tokens: "
++                        "%d, tokens to load: %d, tokens to prefetch: "
++                        "%d. CONT.",
++                        req_id,
++                        request.num_prompt_tokens,
++                        request.num_computed_tokens,
++                        num_new_prefetched_tokens,
++                        num_to_prefetch_tokens,
++                    )
++                    prefetching_token_budget -= num_to_prefetch_tokens
++                    assert prefetching_token_budget >= 0
++
++                else:
++                    logger.debug(
++                        "Request[id=%s, prompt_len=%d] loaded tokens: "
++                        "%d, tokens to load: %d, tokens to prefetch: "
++                        "%d. TERM.",
++                        req_id,
++                        request.num_prompt_tokens,
++                        request.num_computed_tokens,
++                        num_new_prefetched_tokens,
++                        num_to_prefetch_tokens,
++                    )
++
++                self.prefetching.popleft()
++                skipped_prefetching_requests.appendleft(request)
++                continue
++
++        # Put back any skipped requests at the head of the prefetching queue
++        if skipped_prefetching_requests:
++            self.prefetching.extendleft(skipped_prefetching_requests)
+         # Use a temporary RequestQueue to collect requests that need to be
+         # skipped and put back at the head of the waiting queue later
+         skipped_waiting_requests = create_request_queue(self.policy)
+ 
+         # Next, schedule the WAITING requests.
+         if not preempted_reqs:
+-            while self.waiting and token_budget > 0:
++            while self.waiting and (token_budget > 0 or
++                                    (self.use_three_phase_kv_sched
++                                     and prefetching_token_budget > 0)):
+                 if len(self.running) == self.max_num_running_reqs:
+                     break
+ 
+@@ -371,6 +523,83 @@ class Scheduler(SchedulerInterface):
+                     skipped_waiting_requests.prepend_request(request)
+                     continue
+ 
++                num_to_prefetch_tokens = 0
++                if (self.use_three_phase_kv_sched
++                        and prefetching_token_budget > 0
++                        and self._is_prefetchable(request)):
++                    # Get locally-cached tokens.
++                    local_matched_blocks, num_local_matched_tokens = \
++                        self.kv_cache_manager.get_computed_blocks(
++                            request)
++
++                    req_id = request.request_id
++
++                    num_to_prefetch_tokens = (request.num_prompt_tokens -
++                                              num_local_matched_tokens)
++
++                    if (0 < self.scheduler_config.long_prefill_token_threshold
++                            < num_to_prefetch_tokens):
++                        num_to_prefetch_tokens = (
++                            self.scheduler_config.long_prefill_token_threshold)
++
++                    num_to_prefetch_tokens = min(
++                        num_to_prefetch_tokens,
++                        prefetching_token_budget,
++                    )
++
++                if num_to_prefetch_tokens > 0:
++                    assert self.connector is not None
++                    request.num_computed_tokens = num_local_matched_tokens
++                    num_to_prefetch_tokens = (self.connector.load_and_prefetch(
++                        request, 0, num_to_prefetch_tokens))
++                    if num_to_prefetch_tokens > 0:
++                        logger.debug(
++                            "Request[id=%s, prompt_len=%d] computed tokens: "
++                            "%d, tokens to prefetch: %d.",
++                            req_id,
++                            request.num_prompt_tokens,
++                            request.num_computed_tokens,
++                            num_to_prefetch_tokens,
++                        )
++                        prefetching_token_budget -= num_to_prefetch_tokens
++                        assert prefetching_token_budget >= 0
++
++                        if (num_local_matched_tokens > 0
++                                and self.kv_cache_manager.enable_caching):
++                            self.kv_cache_manager.block_pool.touch(
++                                local_matched_blocks.blocks)
++                            self.kv_cache_manager.coordinator\
++                                .save_new_computed_blocks(
++                                request.request_id, local_matched_blocks.blocks
++                            )
++                            self.local_cached_req_ids.add(request.request_id)
++                            self.connector.update_state_after_alloc(
++                                request,
++                                local_matched_blocks,
++                                0,
++                            )
++
++                        request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
++                        self.waiting.pop_request()
++                        self.prefetching.append(request)
++                        self.testing_req_ids.discard(req_id)
++                        continue
++                    else:
++                        request.num_computed_tokens -= num_local_matched_tokens
++                        self.nonprefetchable_req_ids.add(req_id)
++
++                if self.use_three_phase_kv_sched:
++                    # 1. we don't have token budget but still have prefetching
++                    # budget, skip current request and try the next one in the Q
++                    if prefetching_token_budget > 0 and token_budget == 0:
++                        self.waiting.pop_request()
++                        skipped_waiting_requests.prepend_request(request)
++                        continue
++                    # 2. we still have token budget but only continue to
++                    # schedule compute if this is a nonprefetchable request
++                    if request.request_id not in self.nonprefetchable_req_ids:
++                        break
++
+                 num_external_computed_tokens = 0
+                 load_kv_async = False
+ 
+@@ -508,6 +737,10 @@ class Scheduler(SchedulerInterface):
+ 
+                 req_index += 1
+                 self.running.append(request)
++
++                if self.use_three_phase_kv_sched:
++                    self.testing_req_ids.discard(request.request_id)
++
+                 if self.log_stats:
+                     request.record_event(EngineCoreEventType.SCHEDULED,
+                                          scheduled_timestamp)
+@@ -548,11 +781,12 @@ class Scheduler(SchedulerInterface):
+         assert total_num_scheduled_tokens <= self.max_num_scheduled_tokens
+         assert token_budget >= 0
+         assert len(self.running) <= self.max_num_running_reqs
+-        # Since some requests in the RUNNING queue may not be scheduled in
+-        # this step, the total number of scheduled requests can be smaller than
+-        # len(self.running).
+-        assert (len(scheduled_new_reqs) + len(scheduled_resumed_reqs) +
+-                len(scheduled_running_reqs) <= len(self.running))
++        # Since some requests in the RUNNING/PREFETCHING queue may not be
++        # scheduled in this step, the total number of scheduled requests can
++        # be smaller than len(self.running) + len(self.prefetching).
++        assert len(scheduled_new_reqs) + len(scheduled_resumed_reqs) + len(
++            scheduled_running_reqs) <= len(self.running) + len(
++                self.prefetching)
+ 
+         # Get the longest common prefix among all requests in the running queue.
+         # This can be potentially used for cascade attention.
+@@ -562,7 +796,9 @@ class Scheduler(SchedulerInterface):
+             any_request = self.running[0]
+             num_common_prefix_blocks = (
+                 self.kv_cache_manager.get_num_common_prefix_blocks(
+-                    any_request, len(self.running)))
++                    any_request,
++                    len(self.running) + len(self.local_cached_req_ids),
++                ))
+ 
+         # Construct the scheduler output.
+         new_reqs_data = [
+@@ -658,6 +894,33 @@ class Scheduler(SchedulerInterface):
+         # it will also affect the scheduler output.
+         self.finished_req_ids = set()
+ 
++    def _is_prefetchable(self, request: Request) -> bool:
++        req_id = request.request_id
++        if (req_id not in self.testing_req_ids
++                and req_id not in self.nonprefetchable_req_ids) or len(
++                    self.testing_req_ids) <= (self.max_testing_reqs // 2):
++            requests: list[Request] = []
++            for req in self.waiting:
++                if (req.request_id in self.testing_req_ids
++                        or req.request_id in self.nonprefetchable_req_ids):
++                    continue
++                if req.status == RequestStatus.WAITING:
++                    self.testing_req_ids.add(req.request_id)
++                    requests.append(req)
++                if len(requests) == self.max_testing_reqs:
++                    break
++
++            assert self.connector is not None
++            self.connector.add_requests(requests)
++
++        if req_id in self.nonprefetchable_req_ids:
++            return False
++        elif self.connector.test_request(request):
++            return True
++        else:
++            self.nonprefetchable_req_ids.add(req_id)
++            return False
++
+     def _make_cached_request_data(
+         self,
+         running_reqs: list[Request],
+@@ -1127,6 +1390,9 @@ class Scheduler(SchedulerInterface):
+             valid_requests.append(request)
+             if request.status == RequestStatus.RUNNING:
+                 running_requests_to_remove.add(request)
++            elif (self.use_three_phase_kv_sched
++                  and request.status == RequestStatus.WAITING_FOR_REMOTE_KVS):
++                self.prefetching.remove(request)
+             else:
+                 waiting_requests_to_remove.append(request)
+ 
+@@ -1148,6 +1414,10 @@ class Scheduler(SchedulerInterface):
+         self.encoder_cache_manager.free(request)
+         request_id = request.request_id
+         self.finished_req_ids.add(request_id)
++        self.nonprefetchable_req_ids.discard(request_id)
++        self.local_cached_req_ids.discard(request_id)
++        self.testing_req_ids.discard(request_id)
++        self.prefetching_req_stats.pop(request_id, None)
+         if self.finished_req_ids_dict is not None:
+             self.finished_req_ids_dict[request.client_index].add(request_id)
+ 
+@@ -1162,7 +1432,7 @@ class Scheduler(SchedulerInterface):
+         del self.requests[request.request_id]
+ 
+     def get_num_unfinished_requests(self) -> int:
+-        return len(self.waiting) + len(self.running)
++        return len(self.waiting) + len(self.running) + len(self.prefetching)
+ 
+     def has_finished_requests(self) -> bool:
+         return len(self.finished_req_ids) > 0
+@@ -1180,7 +1450,7 @@ class Scheduler(SchedulerInterface):
+         assert prefix_cache_stats is not None
+         return SchedulerStats(
+             num_running_reqs=len(self.running),
+-            num_waiting_reqs=len(self.waiting),
++            num_waiting_reqs=len(self.waiting) + len(self.prefetching),
+             kv_cache_usage=self.kv_cache_manager.usage,
+             prefix_cache_stats=prefix_cache_stats,
+             spec_decoding_stats=spec_decoding_stats,
+@@ -1279,9 +1549,36 @@ class Scheduler(SchedulerInterface):
+             self.connector.update_connector_output(kv_connector_output)
+ 
+         # KV Connector:: update recv and send status from last step.
+-        for req_id in (kv_connector_output.finished_recving or ()):
+-            logger.debug("Finished recving KV transfer for request %s", req_id)
+-            self.finished_recving_kv_req_ids.add(req_id)
++        for item in (kv_connector_output.finished_recving or ()):
++            if isinstance(item, tuple):
++                req_id, num_new_prefetched_tokens = item
++                num_new_loaded_tokens = self.prefetching_req_stats.get(
++                    req_id, 0)
++                if num_new_loaded_tokens > 0:
++                    request = self.requests[req_id]
++                    # cache the blocks that have finished loading
++                    num_computed_tokens = (request.num_computed_tokens +
++                                           num_new_loaded_tokens)
++                    if num_computed_tokens == request.num_prompt_tokens:
++                        num_computed_tokens -= 1
++                    logger.debug(
++                        "Finished loading %d tokens for request %s, computed "
++                        "tokens=%d",
++                        num_new_loaded_tokens,
++                        req_id,
++                        num_computed_tokens,
++                    )
++
++                    # update num_computed_tokens
++                    request.num_computed_tokens = num_computed_tokens
++
++                logger.debug("Finished prefetching for request %s", req_id)
++                self.prefetching_req_stats[req_id] = num_new_prefetched_tokens
++            else:
++                req_id = item
++                logger.debug("Finished recving KV transfer for request %s",
++                             req_id)
++                self.finished_recving_kv_req_ids.add(req_id)
+         for req_id in (kv_connector_output.finished_sending or ()):
+             logger.debug("Finished sending KV transfer for request %s", req_id)
+             self._free_blocks(self.requests[req_id])
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index ebb18e81c..7fb2b50b3 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -488,7 +488,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+     def _sync_device(self) -> None:
+         torch.cuda.synchronize()
+ 
+-    def _update_states(self, scheduler_output: "SchedulerOutput") -> None:
++    def _update_states(self, scheduler_output: "SchedulerOutput",
++                       load_results: dict[str, int]) -> None:
+         """Update the cached states and the persistent batch with the scheduler
+         output.
+ 
+@@ -533,6 +534,20 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+         # Add new requests to the cached states.
+         for new_req_data in scheduler_output.scheduled_new_reqs:
+             req_id = new_req_data.req_id
++
++            num_loaded_tokens = load_results.get(req_id, 0)
++            if num_loaded_tokens > 0:
++                num_scheduled_tokens = \
++                    scheduler_output.num_scheduled_tokens[req_id]
++                if num_loaded_tokens == num_scheduled_tokens:
++                    num_loaded_tokens -= 1
++
++                new_req_data.num_computed_tokens += num_loaded_tokens
++                scheduler_output.num_scheduled_tokens[req_id] -= \
++                    num_loaded_tokens
++                scheduler_output.total_num_scheduled_tokens -= \
++                    num_loaded_tokens
++
+             sampling_params = new_req_data.sampling_params
+             pooling_params = new_req_data.pooling_params
+ 
+@@ -578,13 +593,29 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+         is_last_rank = get_pp_group().is_last_rank
+         req_data = scheduler_output.scheduled_cached_reqs
+         for i, req_id in enumerate(req_data.req_ids):
++            num_loaded_tokens = load_results.get(req_id, 0)
++            if num_loaded_tokens > 0:
++                num_scheduled_tokens = \
++                    scheduler_output.num_scheduled_tokens[req_id]
++                if num_loaded_tokens == num_scheduled_tokens:
++                    num_loaded_tokens -= 1
++
++                req_data.num_computed_tokens[i] += num_loaded_tokens
++                scheduler_output.num_scheduled_tokens[req_id] -= \
++                    num_loaded_tokens
++                scheduler_output.total_num_scheduled_tokens -= \
++                    num_loaded_tokens
++
+             req_state = self.requests[req_id]
+             num_computed_tokens = req_data.num_computed_tokens[i]
+             new_block_ids = req_data.new_block_ids[i]
+             resumed_from_preemption = req_data.resumed_from_preemption[i]
+ 
+             # Update the cached states.
+-            req_state.num_computed_tokens = num_computed_tokens
++            num_computed_tokens = req_data.num_computed_tokens[i] - \
++                num_loaded_tokens
++            new_num_computed_tokens = req_data.num_computed_tokens[i]
++            req_state.num_computed_tokens = new_num_computed_tokens
+ 
+             if not is_last_rank:
+                 # When using PP, the scheduler sends the sampled tokens back,
+@@ -625,7 +656,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+ 
+             # Update the persistent batch.
+             self.input_batch.num_computed_tokens_cpu[req_index] = (
+-                num_computed_tokens)
++                new_num_computed_tokens)
+             if new_block_ids is not None:
+                 self.input_batch.block_table.append_row(
+                     new_block_ids, req_index)
+@@ -2003,7 +2034,12 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
+         intermediate_tensors: Optional[IntermediateTensors] = None,
+     ) -> Union[ModelRunnerOutput, AsyncModelRunnerOutput, IntermediateTensors]:
+         with record_function_or_nullcontext("Preprocess"):
+-            self._update_states(scheduler_output)
++            load_results = {}
++            if has_kv_transfer_group():
++                load_results = \
++                    self.kv_connector_load_before_update(scheduler_output)
++
++            self._update_states(scheduler_output, load_results)
+             if not scheduler_output.total_num_scheduled_tokens:
+                 if not has_kv_transfer_group():
+                     # Return empty ModelRunnerOutput if there's no work to do.
+diff --git a/vllm/v1/worker/kv_connector_model_runner_mixin.py b/vllm/v1/worker/kv_connector_model_runner_mixin.py
+index 3eb9f26e9..8b4b5820f 100644
+--- a/vllm/v1/worker/kv_connector_model_runner_mixin.py
++++ b/vllm/v1/worker/kv_connector_model_runner_mixin.py
+@@ -63,6 +63,15 @@ class KVConnectorModelRunnerMixin:
+                 scheduler_output.finished_req_ids)
+         return None, None
+ 
++    @staticmethod
++    def kv_connector_load_before_update(
++            scheduler_output: "SchedulerOutput") -> dict[str, int]:
++        kv_connector = get_kv_transfer_group()
++        assert scheduler_output.kv_connector_metadata is not None
++        kv_connector.bind_connector_metadata(
++            scheduler_output.kv_connector_metadata)
++        return kv_connector.start_load_kv_before_update()
++
+     @staticmethod
+     def kv_connector_no_forward(scheduler_output: "SchedulerOutput",
+                                 vllm_config: VllmConfig) -> ModelRunnerOutput:
