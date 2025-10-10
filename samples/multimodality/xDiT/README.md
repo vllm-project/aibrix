@@ -15,7 +15,7 @@ git apply xdit-52e74e88d2332281eefe68894af02f805a1d2b4f.patch
 ### Build customized xDiT image
 Assuming you're under the directory of `xDiT`, build your customized xDiT image like the following. 
 
-```
+```bash
 TAG=customized-v1
 REGISTRY="aibrix-container-registry-cn-beijing.cr.volces.com/aibrix"
 IMAGE="xdit-dev"
@@ -31,7 +31,7 @@ Here we assumes the image we build is `aibrix-container-registry-cn-beijing.cr.v
 
 Apply the following deployment file to your cluster.
 
-```
+```bash
 kubectl apply -f image-generation/aibrix_vke_kv_image_sd_parallel.yaml
 ```
 
@@ -39,11 +39,11 @@ kubectl apply -f image-generation/aibrix_vke_kv_image_sd_parallel.yaml
 
 Forward AIBrix port
 
-```
+```bash
 kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-eg-903790dc 8888:80
 ```
 
-```
+```bash
 curl -v "http://localhost:8888/v1/image/generations" \
         -H "Content-Type: application/json" \
         -d '{
@@ -77,6 +77,14 @@ Sample output looks like:
 {"message":"Image generated successfully","elapsed_time":"12.52 sec","output":"/shared/generated_image_20251002-224519.png","save_to_disk":true}
 ```
 
+To see the output image, you could use `kubectl cp`, e.g., 
+
+```bash
+kubectl cp <POD_ID>:/shared/generated_image_20251002-224519.png generated_image_20251002-224519.png 
+```
+
+<!--
+```bash
 From the output we know that the image is saved to `/shared/generated_image_20251002-224519.png` with the request id `104281eb-98de-4ffd-92e4-90e32118e02`. You could use `/view` interface to download the image from AIBrix. For example:
 ```
 curl -v http://localhost:8888/view \
@@ -86,6 +94,7 @@ curl -v http://localhost:8888/view \
     	"path": "/shared/generated_image_20251002-224519.png"
   	}' -o generated_image_20251002-224519.png
 ```
+-->
 
 You could also emit the `save_disk_path` in the request and the response will contains base64 encoded image. For example, you could use the following script to decode binary image to an image file. 
 
@@ -127,13 +136,13 @@ else:
 
 Apply a video model deployment file, for example:
 
-```
+```bash
 kubectl apply -f video-generation/aibrix_vke_staging_video_cogvideo_parallel.yaml
 ```
 
 Send a video generation request. For example:
 
-```
+```bash
 curl -v "http://localhost:8888/v1/video/generations" \
         -H "Content-Type: application/json" \
         -H "routing-strategy: random" \
@@ -147,7 +156,7 @@ curl -v "http://localhost:8888/v1/video/generations" \
 
 Sample output:
 
-```
+```bash
 *   Trying 127.0.0.1:8888...
 * Connected to localhost (127.0.0.1) port 8888 (#0)
 > POST /v1/video/generations HTTP/1.1
@@ -172,8 +181,14 @@ Sample output:
 
 ```
 
+To see the output, do 
 
+```bash
+kubectl cp <POD_ID>:/shared/generated_video_20251002-233911.mp4 generated_video_20251002-233911.mp4 
 ```
+
+<!--
+```bash
 curl -v http://localhost:8888/view \
   -H "Content-Type: application/json" \
   -d '{
@@ -181,6 +196,8 @@ curl -v http://localhost:8888/view \
     	"path": "/shared/generated_video_20251002-233911.mp4"
   	}' -o generated_video_20251002-233911.mp4
 
-```
+``` 
+-->
+
 
 [aibrix_vke_staging_video_cogvideo_parallel.yaml](./video-generation/aibrix_vke_staging_video_cogvideo_parallel.yaml) demonstrate a distributed deployment where multiple GPUs are used to deploy a parallelized video generation model [CogVideoX-2b](https://huggingface.co/zai-org/CogVideoX-2b). [aibrix_vke_staging_video_hunyuanvideo.yaml](video-generation/aibrix_vke_staging_video_hunyuanvideo.yaml) has also been successfully tested on H20-96G GPU for [hunyuanvideo-community/HunyuanVideo](https://huggingface.co/hunyuanvideo-community/HunyuanVideo). There are ongoing issues with deploying parallelized HunyuanVideo model ([link](https://github.com/xdit-project/xDiT/issues/516)) and ongoing PR that attempts to fix it ([link](https://github.com/huggingface/diffusers/pull/12316)). We will be updating the distributed deployment once these issues are resolved. 

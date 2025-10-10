@@ -47,7 +47,7 @@ spec:
               value: cn-beijing 
             - name: LOG_LEVEL
               value: DEBUG  
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.1-mm1
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.1
           name: init-model 
           volumeMounts: 
             - mountPath: /models 
@@ -76,7 +76,7 @@ spec:
               nvidia.com/gpu: "4" 
               cpu: "10" 
         - name: aibrix-runtime
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.1-mm1
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.1
           command:
             - aibrix_runtime
             - --port

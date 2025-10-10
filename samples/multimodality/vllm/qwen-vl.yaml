@@ -49,7 +49,7 @@ spec:
               value: https://tos-s3-cn-beijing.ivolces.com
             - name: TOS_REGION
               value: cn-beijing
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.1-mm1
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.1
           name: init-model
           volumeMounts:
             - mountPath: /models
