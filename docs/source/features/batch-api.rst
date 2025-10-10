@@ -72,7 +72,6 @@ Simply update the ``base_url`` in your OpenAI SDK configuration:
 
 - Only ``/v1/chat/completions`` endpoint is supported, more endpoints will be added in future releases.
 - 24-hour completion window (not configurable)
-- No support for batch cancellation via API (use kubectl to delete jobs)
 
 
 Architecture
@@ -489,19 +488,6 @@ Resource Configuration
        backoffLimit: 3
        restartPolicy: OnFailure
 
-Storage Management
-^^^^^^^^^^^^^^^^^^
-
-1. **File Cleanup**: Regularly clean up old batch files to save storage
-
-   .. code-block:: bash
-
-       # Delete old files (implement retention policy)
-       curl -X DELETE http://${ENDPOINT}/v1/files/${FILE_ID}
-
-2. **Output Retention**: Download and archive important results
-
-3. **Monitoring**: Track storage usage and set alerts for capacity
 
 API Reference
 -------------
