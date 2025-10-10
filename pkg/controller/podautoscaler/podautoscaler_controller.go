@@ -29,6 +29,7 @@ package podautoscaler
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,9 +58,11 @@ import (
 	memcache "k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"k8s.io/metrics/pkg/client/clientset/versioned"
 	custommetrics "k8s.io/metrics/pkg/client/custom_metrics"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -300,7 +303,12 @@ func (r *PodAutoscalerReconciler) validateSpec(pa *autoscalingv1alpha1.PodAutosc
 	if !checkValidAutoscalingStrategy(pa.Spec.ScalingStrategy) {
 		return invalid(ReasonInvalidScalingStrategy, "Unsupported scalingStrategy; must be one of HPA/KPA/APA.")
 	}
-	// current impl supports exactly one MetricsSource
+	// Per-role autoscaling: metrics are in rolePolicies
+	if len(pa.Spec.RolePolicies) > 0 {
+		// Skip MetricsSources validation for per-role mode
+		return validOK()
+	}
+	// Standard autoscaling: current impl supports exactly one MetricsSource
 	if len(pa.Spec.MetricsSources) != 1 {
 		return invalid(ReasonMetricsConfigError, "exactly one metricsSource is required for current implementation.")
 	}
@@ -493,6 +501,11 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 
 // reconcileCustomPA handles KPA and APA strategies using WorkloadScaler (generic /scale or StormService role-level).
 func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
+	// Check if using per-role autoscaling mode
+	if len(pa.Spec.RolePolicies) > 0 {
+		return r.reconcilePerRolePA(ctx, pa)
+	}
+
 	paStatusOriginal := pa.Status.DeepCopy()
 	scaleReference := fmt.Sprintf("%s/%s/%s", pa.Spec.ScaleTargetRef.Kind, pa.Namespace, pa.Spec.ScaleTargetRef.Name)
 	if pa.Spec.SubTargetSelector != nil && pa.Spec.SubTargetSelector.RoleName != "" {
@@ -567,6 +580,279 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+// reconcilePerRolePA handles per-role autoscaling for StormService in pooled mode
+// Each role (e.g., prefill, decode) can be scaled independently based on its own metrics
+func (r *PodAutoscalerReconciler) reconcilePerRolePA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
+	paStatusOriginal := pa.Status.DeepCopy()
+	scaleReference := fmt.Sprintf("%s/%s/%s", pa.Spec.ScaleTargetRef.Kind, pa.Namespace, pa.Spec.ScaleTargetRef.Name)
+
+	// Step 1: Validate target is StormService
+	if pa.Spec.ScaleTargetRef.Kind != "StormService" {
+		err := fmt.Errorf("rolePolicies only supported for StormService, got %q", pa.Spec.ScaleTargetRef.Kind)
+		setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "InvalidTarget", err.Error())
+		if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Step 2: Get StormService
+	ns := pa.Spec.ScaleTargetRef.Namespace
+	if ns == "" {
+		ns = pa.Namespace
+	}
+
+	ss := &orchestrationv1alpha1.StormService{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: pa.Spec.ScaleTargetRef.Name}, ss); err != nil {
+		setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedGetStormService", "unable to get StormService: %v", err)
+		if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, fmt.Errorf("failed to get StormService %s: %w", scaleReference, err)
+	}
+	setCondition(&pa, "AbleToScale", metav1.ConditionTrue, "SucceededGetScale", "successfully retrieved StormService")
+
+	// Step 3: Find active RoleSet
+	activeRoleSet, err := r.findActiveRoleSet(ctx, ss)
+	if err != nil {
+		setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedFindRoleSet", "unable to find active RoleSet: %v", err)
+		if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, fmt.Errorf("failed to find active RoleSet for %s: %w", scaleReference, err)
+	}
+
+	// Step 4: Compute scaling decisions for each role
+	roleDecisions := make(map[string]*RoleScaleDecision)
+	var totalCurrentReplicas int32
+	var totalDesiredReplicas int32
+	var shouldScale bool
+	var scaleErrors []string
+
+	for _, rolePolicy := range pa.Spec.RolePolicies {
+		// Get current replicas for this role
+		currentReplicas := r.getRoleReplicasFromRoleSet(activeRoleSet, rolePolicy.RoleName)
+		totalCurrentReplicas += currentReplicas
+
+		// Create a temporary PodAutoscaler with single role's policy for metric collection
+		tempPA := pa.DeepCopy()
+		// ✅ Set unique name for each role's virtual autoscaler
+		tempPA.Name = fmt.Sprintf("%s-%s", pa.Name, rolePolicy.RoleName)
+		tempPA.Spec.MinReplicas = rolePolicy.MinReplicas
+		tempPA.Spec.MaxReplicas = rolePolicy.MaxReplicas
+		tempPA.Spec.MetricsSources = rolePolicy.MetricsSources
+		tempPA.Spec.SubTargetSelector = &autoscalingv1alpha1.SubTargetSelector{
+			RoleName: rolePolicy.RoleName,
+		}
+
+		// Compute scaling decision for this role
+		// We pass ss as the scale object since we need it for selector calculation
+		ssUnstructured, err := runtime.DefaultUnstructuredConverter.ToUnstructured(ss)
+		if err != nil {
+			scaleErrors = append(scaleErrors, fmt.Sprintf("role %s: failed to convert StormService: %v", rolePolicy.RoleName, err))
+			continue
+		}
+		scaleObj := &unstructured.Unstructured{Object: ssUnstructured}
+
+		decision, err := r.computeScaleDecision(ctx, *tempPA, scaleObj, currentReplicas)
+		if err != nil {
+			scaleErrors = append(scaleErrors, fmt.Sprintf("role %s: %v", rolePolicy.RoleName, err))
+			continue
+		}
+
+		klog.InfoS("Per-role scaling decision computed",
+			"role", rolePolicy.RoleName,
+			"currentReplicas", currentReplicas,
+			"desiredReplicas", decision.DesiredReplicas,
+			"shouldScale", decision.ShouldScale,
+			"reason", decision.Reason)
+
+		roleDecisions[rolePolicy.RoleName] = &RoleScaleDecision{
+			RoleName:        rolePolicy.RoleName,
+			CurrentReplicas: currentReplicas,
+			DesiredReplicas: decision.DesiredReplicas,
+			ShouldScale:     decision.ShouldScale,
+			Reason:          decision.Reason,
+		}
+
+		totalDesiredReplicas += decision.DesiredReplicas
+		if decision.ShouldScale {
+			shouldScale = true
+			klog.InfoS("Role scaling decision", "role", rolePolicy.RoleName,
+				"currentReplicas", currentReplicas, "desiredReplicas", decision.DesiredReplicas,
+				"reason", decision.Reason)
+		}
+	}
+
+	// Check if any role failed to compute
+	if len(scaleErrors) > 0 {
+		errMsg := strings.Join(scaleErrors, "; ")
+		setStatus(&pa, totalCurrentReplicas, totalDesiredReplicas, false, "FailedComputeScale", false, fmt.Errorf("%s", errMsg))
+		if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		r.EventRecorder.Event(&pa, corev1.EventTypeWarning, "FailedComputeScale", errMsg)
+		return ctrl.Result{}, fmt.Errorf("failed to compute scaling decisions: %s", errMsg)
+	}
+
+	// Step 5: Apply scaling if needed
+	var scaleError error
+	if shouldScale {
+		scaleError = r.applyPerRoleScaling(ctx, ss, activeRoleSet, roleDecisions)
+		if scaleError != nil {
+			r.recordScaleError(&pa, "FailedRescale", scaleError)
+			setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedUpdateScale", "unable to apply desired replicas: %v", scaleError)
+			klog.ErrorS(scaleError, "Failed to apply per-role scaling", "PodAutoscaler", klog.KObj(&pa))
+		} else {
+			// Log successful scaling for each role
+			for roleName, decision := range roleDecisions {
+				if decision.ShouldScale {
+					klog.InfoS("Successfully rescaled role",
+						"PodAutoscaler", klog.KObj(&pa),
+						"role", roleName,
+						"currentReplicas", decision.CurrentReplicas,
+						"desiredReplicas", decision.DesiredReplicas,
+						"reason", decision.Reason)
+					r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "SuccessfulRescale",
+						"Role %s: new size: %d; reason: %s", roleName, decision.DesiredReplicas, decision.Reason)
+				}
+			}
+		}
+	}
+
+	// Step 6: Update status
+	// Aggregate status from all roles
+	var reasons []string
+	for roleName, decision := range roleDecisions {
+		if decision.ShouldScale {
+			reasons = append(reasons, fmt.Sprintf("%s: %s", roleName, decision.Reason))
+		}
+	}
+	aggregatedReason := "No scaling needed"
+	if len(reasons) > 0 {
+		aggregatedReason = strings.Join(reasons, "; ")
+	}
+
+	setStatus(&pa, totalCurrentReplicas, totalDesiredReplicas,
+		shouldScale, aggregatedReason, scaleError == nil, scaleError)
+
+	if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+// RoleScaleDecision represents a scaling decision for a single role
+type RoleScaleDecision struct {
+	RoleName        string
+	CurrentReplicas int32
+	DesiredReplicas int32
+	ShouldScale     bool
+	Reason          string
+}
+
+// findActiveRoleSet finds the active RoleSet for a StormService
+// In pooled mode (replicas=1), there should be only one RoleSet
+func (r *PodAutoscalerReconciler) findActiveRoleSet(ctx context.Context, ss *orchestrationv1alpha1.StormService) (*orchestrationv1alpha1.RoleSet, error) {
+	// List RoleSets owned by this StormService
+	roleSetList := &orchestrationv1alpha1.RoleSetList{}
+	labelSelector, err := metav1.LabelSelectorAsSelector(ss.Spec.Selector)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse selector: %w", err)
+	}
+
+	err = r.List(ctx, roleSetList, client.InNamespace(ss.Namespace), client.MatchingLabelsSelector{Selector: labelSelector})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list RoleSets: %w", err)
+	}
+
+	if len(roleSetList.Items) == 0 {
+		return nil, fmt.Errorf("no RoleSets found for StormService %s/%s", ss.Namespace, ss.Name)
+	}
+
+	// Filter out terminating RoleSets
+	var activeRoleSets []orchestrationv1alpha1.RoleSet
+	for _, rs := range roleSetList.Items {
+		if rs.DeletionTimestamp == nil {
+			activeRoleSets = append(activeRoleSets, rs)
+		}
+	}
+
+	if len(activeRoleSets) == 0 {
+		return nil, fmt.Errorf("no active RoleSets found (all are terminating)")
+	}
+
+	// In pooled mode, we should have exactly one active RoleSet
+	// If there are multiple, pick the newest one
+	activeRoleSet := &activeRoleSets[0]
+	for i := range activeRoleSets {
+		if activeRoleSets[i].CreationTimestamp.After(activeRoleSet.CreationTimestamp.Time) {
+			activeRoleSet = &activeRoleSets[i]
+		}
+	}
+
+	return activeRoleSet, nil
+}
+
+// getRoleReplicasFromRoleSet extracts the current replicas for a specific role from RoleSet
+func (r *PodAutoscalerReconciler) getRoleReplicasFromRoleSet(roleSet *orchestrationv1alpha1.RoleSet, roleName string) int32 {
+	// Try to get from status first (reflects actual state)
+	for _, roleStatus := range roleSet.Status.Roles {
+		if roleStatus.Name == roleName {
+			return roleStatus.Replicas
+		}
+	}
+
+	// Fallback to spec
+	for _, role := range roleSet.Spec.Roles {
+		if role.Name == roleName {
+			if role.Replicas != nil {
+				return *role.Replicas
+			}
+			return 0
+		}
+	}
+
+	return 0
+}
+
+// applyPerRoleScaling atomically updates the RoleSet with new replica counts for all roles
+func (r *PodAutoscalerReconciler) applyPerRoleScaling(ctx context.Context, ss *orchestrationv1alpha1.StormService, roleSet *orchestrationv1alpha1.RoleSet, decisions map[string]*RoleScaleDecision) error {
+	// Use RetryOnConflict to handle concurrent updates
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Get the latest version of the StormService
+		current := &orchestrationv1alpha1.StormService{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: ss.Namespace, Name: ss.Name}, current); err != nil {
+			return err
+		}
+
+		// Create a copy for update
+		updated := current.DeepCopy()
+		if updated.Spec.Template.Spec == nil {
+			return fmt.Errorf("StormService template.spec is nil")
+		}
+
+		// Update replicas for each role
+		updated_count := 0
+		for i := range updated.Spec.Template.Spec.Roles {
+			roleName := updated.Spec.Template.Spec.Roles[i].Name
+			if decision, exists := decisions[roleName]; exists && decision.ShouldScale {
+				updated.Spec.Template.Spec.Roles[i].Replicas = ptr.To(decision.DesiredReplicas)
+				updated_count++
+				klog.V(4).InfoS("Updating role replicas", "role", roleName, "replicas", decision.DesiredReplicas)
+			}
+		}
+
+		if updated_count == 0 {
+			// No updates needed
+			return nil
+		}
+
+		// Apply the update to StormService (which will propagate to RoleSet via controller)
+		return r.Client.Patch(ctx, updated, client.MergeFrom(current))
+	})
 }
 
 // scaleForResourceMappings attempts to fetch the scale for the resource with the given name and namespace,
@@ -868,6 +1154,12 @@ func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod list: %w", err)
 	}
+
+	klog.InfoS("Pod list for metrics collection",
+		"pa", pa.Name,
+		"selector", labelsSelector.String(),
+		"podCount", len(podList.Items),
+		"subTargetSelector", pa.Spec.SubTargetSelector)
 
 	// Create request for autoscaler with ScalingContext
 	replicaRequest := ReplicaComputeRequest{

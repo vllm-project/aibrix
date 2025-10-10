@@ -1,0 +1,84 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: llm-pd-pooled
+  namespace: aibrix-system
+  labels:
+    app: llm-service
+    mode: pooled
+spec:
+  # Pooled mode: replicas=1 means a single RoleSet with independently scalable roles
+  replicas: 1
+  
+  selector:
+    matchLabels:
+      app: llm-service
+      mode: pooled
+  
+  # Use InPlace update strategy for pooled mode (recommended)
+  updateStrategy:
+    type: InPlace
+  
+  template:
+    metadata:
+      labels:
+        app: llm-service
+        mode: pooled
+    spec:
+      # Define roles with initial replica counts
+      # These can be independently scaled by PodAutoscaler
+      roles:
+      - name: prefill
+        replicas: 2  # Initial prefill pods
+        template:
+          metadata:
+            labels:
+              role-name: prefill
+          spec:
+            containers:
+            - name: vllm
+              image: vllm/vllm-openai:latest
+              env:
+              - name: VLLM_DISABLE_LOGGING
+                value: "true"
+              # Prefill-optimized configuration
+              - name: MAX_MODEL_LEN
+                value: "8192"
+              - name: MAX_NUM_SEQS
+                value: "256"
+              ports:
+              - containerPort: 8000
+                name: http
+              resources:
+                requests:
+                  nvidia.com/gpu: "1"
+                limits:
+                  nvidia.com/gpu: "1"
+      
+      - name: decode
+        replicas: 1  # Initial decode pods
+        template:
+          metadata:
+            labels:
+              role-name: decode
+          spec:
+            containers:
+            - name: vllm
+              image: vllm/vllm-openai:latest
+              env:
+              - name: VLLM_DISABLE_LOGGING
+                value: "true"
+              # Decode-optimized configuration
+              - name: MAX_MODEL_LEN
+                value: "8192"
+              - name: MAX_NUM_SEQS
+                value: "128"
+              ports:
+              - containerPort: 8000
+                name: http
+              resources:
+                requests:
+                  nvidia.com/gpu: "1"
+                limits:
+                  nvidia.com/gpu: "1"
+

@@ -81,6 +81,13 @@ type PodAutoscalerSpec struct {
 	// ScalingStrategy defines the strategy to use for scaling.
 	// +kubebuilder:validation:Enum={HPA,KPA,APA}
 	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`
+
+	// RolePolicies defines independent scaling policies for multiple roles within a StormService.
+	// When specified, this enables per-role autoscaling in pooled mode, allowing independent
+	// scaling of roles (e.g., prefill and decode) based on their specific metrics and requirements.
+	// This field is mutually exclusive with SubTargetSelector.
+	// +optional
+	RolePolicies []RolePolicy `json:"rolePolicies,omitempty"`
 }
 
 // SubTargetSelector identifies a sub-component within the scale target
@@ -88,6 +95,26 @@ type SubTargetSelector struct {
 	// RoleName selects a role within StormService or RoleSet
 	// +optional
 	RoleName string `json:"roleName,omitempty"`
+}
+
+// RolePolicy defines the autoscaling policy for a specific role within a StormService.
+// Each role can have independent min/max replicas and metric sources.
+type RolePolicy struct {
+	// RoleName specifies the name of the role to apply this policy to (e.g., "prefill", "decode")
+	// +kubebuilder:validation:Required
+	RoleName string `json:"roleName"`
+
+	// MinReplicas is the minimum number of replicas for this role
+	// +optional
+	MinReplicas *int32 `json:"minReplicas,omitempty"`
+
+	// MaxReplicas is the maximum number of replicas for this role
+	// +kubebuilder:validation:Required
+	MaxReplicas int32 `json:"maxReplicas"`
+
+	// MetricsSources defines a list of sources from which metrics are collected for this role
+	// +kubebuilder:validation:MinItems=1
+	MetricsSources []MetricSource `json:"metricsSources"`
 }
 
 // ScalingStrategyType defines the type for scaling strategies.

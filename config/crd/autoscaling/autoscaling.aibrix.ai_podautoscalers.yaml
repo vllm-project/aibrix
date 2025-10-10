@@ -83,6 +83,58 @@ spec:
               minReplicas:
                 format: int32
                 type: integer
+              rolePolicies:
+                items:
+                  properties:
+                    maxReplicas:
+                      format: int32
+                      type: integer
+                    metricsSources:
+                      items:
+                        properties:
+                          endpoint:
+                            type: string
+                          metricSourceType:
+                            enum:
+                            - pod
+                            - resource
+                            - custom
+                            - external
+                            - domain
+                            type: string
+                          path:
+                            type: string
+                          port:
+                            type: string
+                          protocolType:
+                            enum:
+                            - http
+                            - https
+                            type: string
+                          targetMetric:
+                            type: string
+                          targetValue:
+                            type: string
+                        required:
+                        - metricSourceType
+                        - path
+                        - protocolType
+                        - targetMetric
+                        - targetValue
+                        type: object
+                      minItems: 1
+                      type: array
+                    minReplicas:
+                      format: int32
+                      type: integer
+                    roleName:
+                      type: string
+                  required:
+                  - maxReplicas
+                  - metricsSources
+                  - roleName
+                  type: object
+                type: array
               scaleTargetRef:
                 properties:
                   apiVersion:

@@ -1,0 +1,89 @@
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: llm-per-role-autoscaler
+  namespace: aibrix-system
+  labels:
+    app: llm-service
+spec:
+  # Target StormService in pooled mode
+  scaleTargetRef:
+    apiVersion: orchestration.aibrix.ai/v1alpha1
+    kind: StormService
+    name: llm-pd-pooled
+  
+  # Use KPA strategy for LLM-specific autoscaling
+  scalingStrategy: KPA
+  
+  # Define independent scaling policies for each role
+  rolePolicies:
+  
+  # Prefill role: scale based on Time To First Token (TTFT)
+  - roleName: prefill
+    minReplicas: 1
+    maxReplicas: 10
+    metricsSources:
+    - metricSourceType: pod
+      protocolType: http
+      port: "8000"
+      path: "/metrics"
+      # TTFT is critical for user experience - scale aggressively
+      targetMetric: "vllm:time_to_first_token_seconds"
+      targetValue: "2.0"  # Target 2s TTFT
+  
+  # Decode role: scale based on token generation throughput
+  - roleName: decode
+    minReplicas: 1
+    maxReplicas: 8
+    metricsSources:
+    - metricSourceType: pod
+      protocolType: http
+      port: "8000"
+      path: "/metrics"
+      # Throughput determines output speed
+      targetMetric: "vllm:avg_generation_throughput_toks_per_s"
+      targetValue: "100"  # Target 100 tokens/sec per pod
+---
+# Alternative example using APA strategy with queue-based metrics
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: llm-per-role-autoscaler-apa
+  namespace: aibrix-system
+  labels:
+    app: llm-service
+    strategy: apa
+spec:
+  scaleTargetRef:
+    apiVersion: orchestration.aibrix.ai/v1alpha1
+    kind: StormService
+    name: llm-pd-pooled
+  
+  scalingStrategy: APA
+  
+  rolePolicies:
+  
+  # Prefill: scale based on request queue length
+  - roleName: prefill
+    minReplicas: 2
+    maxReplicas: 15
+    metricsSources:
+    - metricSourceType: pod
+      protocolType: http
+      port: "8000"
+      path: "/metrics"
+      targetMetric: "vllm:num_requests_waiting"
+      targetValue: "10"  # Max 10 waiting requests per pod
+  
+  # Decode: scale based on GPU KV cache utilization
+  - roleName: decode
+    minReplicas: 1
+    maxReplicas: 10
+    metricsSources:
+    - metricSourceType: pod
+      protocolType: http
+      port: "8000"
+      path: "/metrics"
+      targetMetric: "vllm:gpu_cache_usage_perc"
+      targetValue: "80"  # Scale when cache reaches 80%
+

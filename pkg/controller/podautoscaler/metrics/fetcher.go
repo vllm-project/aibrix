@@ -126,9 +126,10 @@ func (f *ResourceMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod
 
 // fetchResourceMetric handles Kubernetes resource metrics (cpu, memory)
 func (f *ResourceMetricsFetcher) fetchResourceMetric(ctx context.Context, pod v1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
-	klog.V(4).InfoS("Fetching resource metric from Kubernetes API",
+	klog.InfoS("Fetching resource metric from Kubernetes API",
 		"pod", pod.Name,
-		"metric", source.TargetMetric)
+		"metric", source.TargetMetric,
+		"metricsClientNil", f.metricsClient == nil)
 
 	if f.metricsClient == nil {
 		klog.Warningf("Kubernetes resource metrics client not initialized for metric %s", source.TargetMetric)
@@ -138,14 +139,20 @@ func (f *ResourceMetricsFetcher) fetchResourceMetric(ctx context.Context, pod v1
 	// Use existing ResourceMetricsFetcher logic
 	podMetrics, err := f.metricsClient.MetricsV1beta1().PodMetricses(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
 	if err != nil {
-		klog.Warningf("Failed to fetch resource metrics for pod %s: %v. Returning zero value.", pod.Name, err)
+		klog.Errorf("Failed to fetch resource metrics for pod %s: %v. Returning zero value.", pod.Name, err)
 		return 0.0, nil
 	}
+
+	klog.InfoS("Successfully fetched pod metrics",
+		"pod", pod.Name,
+		"containerCount", len(podMetrics.Containers))
 
 	for _, container := range podMetrics.Containers {
 		switch source.TargetMetric {
 		case "cpu":
-			return float64(container.Usage.Cpu().MilliValue()), nil
+			cpuValue := float64(container.Usage.Cpu().MilliValue())
+			klog.InfoS("Got CPU metric", "pod", pod.Name, "container", container.Name, "cpu", cpuValue)
+			return cpuValue, nil
 		case "memory":
 			return float64(container.Usage.Memory().Value()), nil
 		}

@@ -47,12 +47,15 @@ func NewNamespaceNameMetric(pa *autoscalingv1alpha1.PodAutoscaler) (types.Metric
 		return types.MetricKey{}, autoscalingv1alpha1.MetricSource{}, fmt.Errorf("metrics sources must be 1, but got %d", len(pa.Spec.MetricsSources))
 	}
 	metricSource := pa.Spec.MetricsSources[0]
+
+	// Note: For per-role autoscaling, the PA name should already contain the role suffix
+	// (e.g., "my-autoscaler-prefill") as set in reconcilePerRolePA
 	return types.MetricKey{
 		Namespace:   pa.Namespace,
 		Name:        pa.Spec.ScaleTargetRef.Name,
 		MetricName:  metricSource.TargetMetric,
 		PaNamespace: pa.Namespace,
-		PaName:      pa.Name,
+		PaName:      pa.Name, // Use the PA name directly (contains role suffix for per-role mode)
 	}, metricSource, nil
 }
 

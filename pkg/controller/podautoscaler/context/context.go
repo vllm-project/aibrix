@@ -84,6 +84,16 @@ type BaseScalingContext struct {
 	ScaleToZero bool
 	// Panic threshold for KPA
 	PanicThreshold float64
+	// KPA-specific: stable window metric value
+	stableValue float64
+	// KPA-specific: panic window metric value
+	panicValue float64
+	// KPA-specific: whether in panic mode
+	inPanicMode bool
+	// KPA-specific: maximum pods during panic mode
+	maxPanicPods int32
+	// KPA-specific: activation scale
+	activationScale int32
 }
 
 var _ ScalingContext = (*BaseScalingContext)(nil)
@@ -244,27 +254,30 @@ func (b *BaseScalingContext) GetMaxReplicas() int32 {
 }
 
 func (b *BaseScalingContext) GetStableValue() float64 {
-	return 0
+	return b.stableValue
 }
 
 func (b *BaseScalingContext) SetStableValue(value float64) {
-	// No-op in base implementation
+	b.stableValue = value
 }
 
 func (b *BaseScalingContext) GetPanicValue() float64 {
-	return 0
+	return b.panicValue
 }
 
 func (b *BaseScalingContext) SetPanicValue(value float64) {
-	// No-op in base implementation
+	b.panicValue = value
 }
 
 func (b *BaseScalingContext) GetActivationScale() int32 {
-	return 1
+	if b.activationScale == 0 {
+		return 1 // Default value
+	}
+	return b.activationScale
 }
 
 func (b *BaseScalingContext) SetActivationScale(value int32) {
-	// No-op in base implementation
+	b.activationScale = value
 }
 
 func (b *BaseScalingContext) GetPanicThreshold() float64 {
@@ -272,19 +285,19 @@ func (b *BaseScalingContext) GetPanicThreshold() float64 {
 }
 
 func (b *BaseScalingContext) GetInPanicMode() bool {
-	return false
+	return b.inPanicMode
 }
 
 func (b *BaseScalingContext) SetInPanicMode(inPanic bool) {
-	// No-op in base implementation
+	b.inPanicMode = inPanic
 }
 
 func (b *BaseScalingContext) GetMaxPanicPods() int32 {
-	return 0
+	return b.maxPanicPods
 }
 
 func (b *BaseScalingContext) SetMaxPanicPods(pods int32) {
-	// No-op in base implementation
+	b.maxPanicPods = pods
 }
 
 func (b *BaseScalingContext) GetScaleUpCooldownWindow() time.Duration {

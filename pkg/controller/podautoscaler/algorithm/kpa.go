@@ -41,6 +41,11 @@ const (
 func (a *KPAAlgorithm) ComputeRecommendation(ctx context.Context, request ScalingRequest) (*ScalingRecommendation, error) {
 	metrics := request.AggregatedMetrics
 
+	klog.InfoS("KPA ComputeRecommendation called",
+		"metricsStableValue", metrics.StableValue,
+		"metricsPanicValue", metrics.PanicValue,
+		"metricsMetricKey", metrics.MetricKey.String())
+
 	// KPA logic: Choose between stable and panic metrics
 	var currentValue float64
 	var mode string
@@ -152,12 +157,16 @@ func (a *KPAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 	isOverPanicThreshold := dppc/math.Max(1, readyPodsCount) >= panicThreshold
 
 	// TODO: hard to distinguish the deployment from the logs
-	klog.V(4).InfoS("KPA Details", "readyPodsCount", readyPodsCount,
+	klog.InfoS("KPA Calculation Details", "readyPodsCount", readyPodsCount,
 		"MaxScaleUpRate", context.GetMaxScaleUpRate(), "MaxScaleDownRate", context.GetMaxScaleDownRate(),
 		"TargetValue", targetValue, "PanicThreshold", panicThreshold,
 		"UpTolerance", upTolerance, "DownTolerance", downTolerance,
-		"dppc", dppc, "dspc", dspc, "desiredStablePodCount", desiredStablePodCount,
+		"observedStableValue", observedStableValue, "observedPanicValue", observedPanicValue,
+		"scaleUpThreshold", scaleUpThreshold, "scaleDownThreshold", scaleDownThreshold,
+		"dppc", dppc, "dspc", dspc,
+		"desiredStablePodCount", desiredStablePodCount, "desiredPanicPodCount", desiredPanicPodCount,
 		"isOverPanicThreshold", isOverPanicThreshold,
+		"maxScaleUp", maxScaleUp, "maxScaleDown", maxScaleDown,
 	)
 
 	desiredPodCount := desiredStablePodCount
