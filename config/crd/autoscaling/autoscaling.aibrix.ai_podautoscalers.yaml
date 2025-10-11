@@ -73,8 +73,6 @@ spec:
                       type: string
                   required:
                   - metricSourceType
-                  - path
-                  - protocolType
                   - targetMetric
                   - targetValue
                   type: object

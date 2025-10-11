@@ -132,14 +132,18 @@ type MetricSource struct {
 	// Specifies how to fetch metrics: from individual pods, Kubernetes APIs, or external services
 	// +kubebuilder:validation:Enum={pod,resource,custom,external,domain}
 	MetricSourceType MetricSourceType `json:"metricSourceType"`
-	// Protocol for metric collection
+	// Protocol for metric collection. Required only for 'pod' and 'external' types.
+	// +optional
 	// +kubebuilder:validation:Enum={http,https}
-	ProtocolType ProtocolType `json:"protocolType"`
-	// External service endpoint (e.g., gpu-optimizer.aibrix-system.svc.cluster.local). Only used for EXTERNAL type.
+	ProtocolType ProtocolType `json:"protocolType,omitempty"`
+	// External service endpoint (e.g., gpu-optimizer.aibrix-system.svc.cluster.local)
+	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
 	// Path to metrics endpoint (e.g., /api/metrics/cpu)
-	Path string `json:"path"`
-	// Port for pod-level metrics. Only used for POD type.
+	// +optional
+	Path string `json:"path,omitempty"`
+	// Port for pod-level metrics. Only used for 'pod' type.
+	// +optional
 	Port string `json:"port,omitempty"`
 	// TargetMetric identifies the specific metric to monitor (e.g., kv_cache_utilization).
 	TargetMetric string `json:"targetMetric"`
