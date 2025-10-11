@@ -272,8 +272,12 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// validate spec; if invalid, write conditions and exit without requeue
 	vr := r.validateSpec(&pa)
 	if !vr.Valid {
-		// write status & exit without requeue
-		if err := r.updateStatusIfNeeded(ctx, computeStatus(ctx, pa, vr), &pa); err != nil {
+		// Compute the desired new status
+		newStatus := computeStatus(ctx, pa, vr)
+		// Make a copy of pa so we can safely modify its status
+		paCopy := pa.DeepCopy()
+		paCopy.Status = *newStatus
+		if err := r.updateStatusIfNeeded(ctx, &pa.Status, paCopy); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -287,7 +291,9 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	newStatus := computeStatus(ctx, pa, vr)
-	if err := r.updateStatusIfNeeded(ctx, newStatus, &pa); err != nil {
+	paCopy := pa.DeepCopy()
+	paCopy.Status = *newStatus
+	if err := r.updateStatusIfNeeded(ctx, &pa.Status, paCopy); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -295,19 +301,109 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 func (r *PodAutoscalerReconciler) validateSpec(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
+	if vr := r.validateScaleTargetRef(pa); !vr.Valid {
+		return vr
+	}
+	if vr := r.validateReplicaBounds(pa); !vr.Valid {
+		return vr
+	}
+	if vr := r.validateScalingStrategy(pa); !vr.Valid {
+		return vr
+	}
+	if vr := r.validateMetricsSources(pa); !vr.Valid {
+		return vr
+	}
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateScaleTargetRef(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
 	if pa.Spec.ScaleTargetRef.Name == "" || pa.Spec.ScaleTargetRef.Kind == "" {
 		return invalid(ReasonMissingTargetRef, "scaleTargetRef.kind and scaleTargetRef.name must be set.")
 	}
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateReplicaBounds(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
 	if pa.Spec.MinReplicas != nil && pa.Spec.MaxReplicas < *pa.Spec.MinReplicas {
 		return invalid(ReasonInvalidBounds, "minReplicas cannot be greater than maxReplicas.")
 	}
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateScalingStrategy(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
 	if !checkValidAutoscalingStrategy(pa.Spec.ScalingStrategy) {
 		return invalid(ReasonInvalidScalingStrategy, "Unsupported scalingStrategy; must be one of HPA/KPA/APA.")
 	}
-	// current impl supports exactly one MetricsSource
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateMetricsSources(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
 	if len(pa.Spec.MetricsSources) != 1 {
 		return invalid(ReasonMetricsConfigError, "exactly one metricsSource is required for current implementation.")
 	}
+
+	ms := &pa.Spec.MetricsSources[0]
+	if ms.TargetMetric == "" {
+		return invalid(ReasonMetricsConfigError, "targetMetric must be specified in metricsSource.")
+	}
+	if ms.TargetValue == "" {
+		return invalid(ReasonMetricsConfigError, "targetValue must be specified in metricsSource.")
+	}
+
+	switch ms.MetricSourceType {
+	case autoscalingv1alpha1.POD:
+		return r.validatePodMetricSource(ms)
+	case autoscalingv1alpha1.EXTERNAL, autoscalingv1alpha1.DOMAIN:
+		return r.validateExternalMetricSource(ms)
+	case autoscalingv1alpha1.RESOURCE:
+		return r.validateResourceMetricSource(ms)
+	case autoscalingv1alpha1.CUSTOM:
+		return r.validateCustomMetricSource(ms)
+	default:
+		return invalid(ReasonMetricsConfigError, fmt.Sprintf("unsupported metricSourceType: %s", ms.MetricSourceType))
+	}
+}
+
+func (r *PodAutoscalerReconciler) validatePodMetricSource(ms *autoscalingv1alpha1.MetricSource) ValidationResult {
+	if ms.ProtocolType == "" {
+		return invalid(ReasonMetricsConfigError, "protocolType is required for metricSourceType=pod.")
+	}
+	if ms.Port == "" {
+		return invalid(ReasonMetricsConfigError, "port is required for metricSourceType=pod.")
+	}
+	if ms.Path == "" {
+		return invalid(ReasonMetricsConfigError, "path is required for metricSourceType=pod.")
+	}
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateExternalMetricSource(ms *autoscalingv1alpha1.MetricSource) ValidationResult {
+	if ms.ProtocolType == "" {
+		return invalid(ReasonMetricsConfigError, "protocolType is required for metricSourceType=external.")
+	}
+	if ms.Endpoint == "" {
+		return invalid(ReasonMetricsConfigError, "endpoint is required for metricSourceType=external.")
+	}
+	if ms.Path == "" {
+		return invalid(ReasonMetricsConfigError, "path is required for metricSourceType=external.")
+	}
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateResourceMetricSource(ms *autoscalingv1alpha1.MetricSource) ValidationResult {
+	validMetrics := map[string]bool{"cpu": true, "memory": true}
+	if !validMetrics[ms.TargetMetric] {
+		return invalid(ReasonMetricsConfigError, "for metricSourceType=resource, targetMetric must be 'cpu' or 'memory'.")
+	}
+	if ms.Port != "" || ms.Endpoint != "" || ms.Path != "" || ms.ProtocolType != "" {
+		return invalid(ReasonMetricsConfigError, "port, endpoint, path, and protocolType are not allowed for metricSourceType=resource.")
+	}
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateCustomMetricSource(_ *autoscalingv1alpha1.MetricSource) ValidationResult {
+	// Custom metrics: no additional required fields
+	// You may add format validation later if needed (e.g., must contain '/')
 	return validOK()
 }
 
