@@ -119,6 +119,7 @@ class BenchmarkRunner:
                 "num_configs": subconfig.get("num_dataset_configs", 1),
                 "to_workload": False,
                 "rps": 0,
+                "api_key": self.config['api_key'],
             }
             args = Namespace(**args_dict)
             synthetic_prefix_sharing_dataset.main(args)
@@ -134,6 +135,7 @@ class BenchmarkRunner:
                 "num_turns_std": subconfig["num_turns_std"],
                 "num_sessions_mean": subconfig["num_sessions"],
                 "num_sessions_std": subconfig["num_sessions_std"],
+                "api_key": self.config['api_key'],
             }
             args = Namespace(**args_dict)
             multiturn_prefix_sharing_dataset.main(args)

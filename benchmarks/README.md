@@ -34,6 +34,11 @@ All default shared environment variables can be found in ```config```.
 
 ## Preliminary
 
+Make sure you install the following dependencies:
+```bash
+pip install -r requirements.txt
+```
+
 Make sure you set these environment variables before you start.
 
 ```bash
