@@ -114,16 +114,12 @@ func TestMutexCache_Cleanup(t *testing.T) {
 
 	// Create session1
 	cache.UpdateState("session1", 0, 1*time.Second, 0)
-	// state1, _ := cache.GetState("session1")
-	// t.Logf("Session 1 LastActivity: %v", state1.LastActivityTimestamp)
 
 	// Wait for 2 seconds, making session1 stale relative to a 1.5s timeout
 	time.Sleep(2 * time.Second)
 
 	// Create/update session2, making it fresh
 	cache.UpdateState("session2", 0, 1*time.Second, 0)
-	// state2, _ := cache.GetState("session2")
-	// t.Logf("Session 2 LastActivity: %v", state2.LastActivityTimestamp)
 
 	// Now, cleanup sessions older than 1.5 seconds
 	cache.cleanup(1500 * time.Millisecond)
