@@ -57,12 +57,12 @@ if __name__ == "__main__":
     target_deployment = sys.argv[1]
     namespace = sys.argv[2]
     pod_log_dir = sys.argv[3]
-    include = sys.argv[4]
-    exclude = sys.argv[5]
-    if include == "none":
-        include = None
-    if exclude == "none":
-        exclude = None
+    include = None
+    exclude = None
+    if len(sys.argv) > 4:
+        include = sys.argv[4]
+    if len(sys.argv) > 5:
+        exclude = sys.argv[5]
 
     running_processes = []
     signal.signal(signal.SIGINT, signal_handler)
