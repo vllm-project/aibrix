@@ -78,18 +78,18 @@ func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context sc
 
 	// Tolerance check: only scale if metric exceeds tolerance thresholds
 	if currentUsePerPod/expectedUse > (1 + upTolerance) {
-		maxScaleUp := math.Ceil(context.GetMaxScaleUpRate() * currentPodCount)
+		maxScaleUp := int32(math.Ceil(context.GetMaxScaleUpRate() * currentPodCount))
 		expectedPods := int32(math.Ceil(currentPodCount * (currentUsePerPod / expectedUse)))
-		if float64(expectedPods) > maxScaleUp {
-			expectedPods = int32(maxScaleUp)
+		if expectedPods > maxScaleUp {
+			expectedPods = maxScaleUp
 		}
 		klog.V(4).InfoS("APA scaling up", "currentPods", currentPodCount, "expectedPods", expectedPods)
 		return expectedPods
 	} else if currentUsePerPod/expectedUse < (1 - downTolerance) {
-		maxScaleDown := math.Floor(currentPodCount / context.GetMaxScaleDownRate())
+		maxScaleDown := int32(math.Floor(currentPodCount / context.GetMaxScaleDownRate()))
 		expectedPods := int32(math.Ceil(currentPodCount * (currentUsePerPod / expectedUse)))
-		if float64(expectedPods) < maxScaleDown {
-			expectedPods = int32(maxScaleDown)
+		if expectedPods < maxScaleDown {
+			expectedPods = maxScaleDown
 		}
 		klog.V(4).InfoS("APA scaling down", "currentPods", currentPodCount, "expectedPods", expectedPods)
 		return expectedPods
