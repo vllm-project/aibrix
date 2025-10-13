@@ -35,7 +35,7 @@ Stable Version Using Helm
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Prerequisites
-^^^^^^^^^^^^
+^^^^^^^^^^^^^
 
 **Envoy Gateway**
 
@@ -96,7 +96,7 @@ Uninstall AIBrix with Helm
 
 
 Nightly Version
-~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~
 
 .. code:: bash
 
@@ -143,7 +143,7 @@ Distributed Inference
 
 
 Model Adapter(Lora)
-~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~
 
 .. code:: bash
 
