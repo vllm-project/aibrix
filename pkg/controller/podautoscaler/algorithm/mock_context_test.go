@@ -1,0 +1,139 @@
+package algorithm
+
+import (
+	"time"
+
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
+)
+
+// mockScalingContext implements the ScalingContext interface for testing purposes.
+type mockScalingContext struct {
+	TargetValue              float64
+	UpFluctuationTolerance   float64
+	DownFluctuationTolerance float64
+	MaxScaleUpRate           float64
+	MaxScaleDownRate         float64
+	CurrentUsePerPod         float64
+	MaxReplicas              int32
+	MinReplicas              int32
+
+	// Stable and Panic values
+	StableValue float64
+	PanicValue  float64
+
+	// Activation and Panic settings
+	ActivationScale int32
+	PanicThreshold  float64
+
+	// Panic mode state
+	InPanicMode  bool
+	MaxPanicPods int32
+
+	// Time windows
+	StableWindow   time.Duration
+	PanicWindow    time.Duration
+	ScaleDownDelay time.Duration
+}
+
+// Ensure MockScalingContext implements the ScalingContext interface
+var _ scalingctx.ScalingContext = (*mockScalingContext)(nil)
+
+func (m *mockScalingContext) GetTargetValue() float64 {
+	return m.TargetValue
+}
+
+func (m *mockScalingContext) GetUpFluctuationTolerance() float64 {
+	return m.UpFluctuationTolerance
+}
+
+func (m *mockScalingContext) GetDownFluctuationTolerance() float64 {
+	return m.DownFluctuationTolerance
+}
+
+func (m *mockScalingContext) GetMaxScaleUpRate() float64 {
+	return m.MaxScaleUpRate
+}
+
+func (m *mockScalingContext) GetMaxScaleDownRate() float64 {
+	return m.MaxScaleDownRate
+}
+
+func (m *mockScalingContext) GetCurrentUsePerPod() float64 {
+	return m.CurrentUsePerPod
+}
+
+func (m *mockScalingContext) SetCurrentUsePerPod(value float64) {
+	m.CurrentUsePerPod = value
+}
+
+func (m *mockScalingContext) GetMinReplicas() int32 {
+	return m.MinReplicas
+}
+
+func (m *mockScalingContext) GetMaxReplicas() int32 {
+	return m.MaxReplicas
+}
+
+func (m *mockScalingContext) GetStableValue() float64 {
+	return m.StableValue
+}
+
+func (m *mockScalingContext) SetStableValue(value float64) {
+	m.StableValue = value
+}
+
+func (m *mockScalingContext) GetPanicValue() float64 {
+	return m.PanicValue
+}
+
+func (m *mockScalingContext) SetPanicValue(value float64) {
+	m.PanicValue = value
+}
+
+// Activation scale
+func (m *mockScalingContext) GetActivationScale() int32 {
+	return m.ActivationScale
+}
+
+func (m *mockScalingContext) SetActivationScale(value int32) {
+	m.ActivationScale = value
+}
+
+// Panic threshold and mode
+func (m *mockScalingContext) GetPanicThreshold() float64 {
+	return m.PanicThreshold
+}
+
+func (m *mockScalingContext) GetInPanicMode() bool {
+	return m.InPanicMode
+}
+
+func (m *mockScalingContext) SetInPanicMode(inPanic bool) {
+	m.InPanicMode = inPanic
+}
+
+func (m *mockScalingContext) GetMaxPanicPods() int32 {
+	return m.MaxPanicPods
+}
+
+func (m *mockScalingContext) SetMaxPanicPods(pods int32) {
+	m.MaxPanicPods = pods
+}
+
+func (m *mockScalingContext) GetScaleUpCooldownWindow() time.Duration {
+	return 0
+}
+
+func (m *mockScalingContext) GetScaleDownCooldownWindow() time.Duration {
+	return 300 * time.Second
+}
+
+func (m *mockScalingContext) GetScaleToZero() bool {
+	return false
+}
+
+// UpdateByPaTypes - no-op for mock
+func (m *mockScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error {
+	return nil
+}
