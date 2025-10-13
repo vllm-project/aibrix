@@ -29,15 +29,6 @@ var hasherPool = sync.Pool{
 	},
 }
 
-// SessionState holds all the scheduling-relevant information for a single session
-type SessionState struct {
-	SessionID               string        // The session ID
-	CriticalPathServiceTime time.Duration // The critical path service time
-	TotalWaitTime           time.Duration // The total wait time (anti-starvation)
-	PodAffinity             string        // The pod affinity (later may needed)
-	LastActivityTimestamp   time.Time     // The last activity timestamp
-}
-
 // --- Internal channel communication structs ---
 type cacheOp int // operation code for cacheRequest
 
@@ -84,6 +75,31 @@ type fullStateResponse struct {
 }
 
 // --- Shard and ShardedCache implementation ---
+
+// shardCount is the number of independent shards used to reduce lock contention
+// in high-concurrency scenarios.
+//
+// Purpose:
+//   - Reduces lock contention probability to ~1/shardCount
+//   - Enables parallel processing: multiple sessions can be accessed simultaneously
+//   - Each shard has its own goroutine and processes requests via a channel (Actor Model)
+//   - No locks needed within each shard (single-threaded access to its map)
+//
+// Why 256?
+//   - Power of 2: Enables fast bitwise AND for hash-to-shard mapping (hash & 255)
+//   - Balanced: Not too small (still contention) or too large (goroutine overhead)
+//   - Multi-core friendly: Modern servers have 32-128 cores; 256 shards can fully utilize them
+//
+// Performance Trade-offs:
+//   - Higher values: Better concurrency, more goroutines/memory overhead
+//   - Lower values: Less overhead, more lock contention
+//   - Recommended range: 64-512 (must be power of 2)
+//
+// When to adjust:
+//   - Increase (e.g., 512) for extremely high concurrency (10K+ QPS)
+//   - Decrease (e.g., 64, 128) for lower concurrency or memory-constrained environments
+//
+// Note: This is for single-process concurrency optimization, NOT distributed partitioning.
 const shardCount = 256 // Must be a power of 2 for bitwise AND optimization
 
 // cacheShard is a single shard of the sharded cache.
@@ -149,6 +165,7 @@ func (s *cacheShard) run(wg *sync.WaitGroup) {
 				s.sessions[req.sessionID] = state
 			}
 			state.PodAffinity = req.affinityPayload
+			state.LastActivityTimestamp = time.Now()
 		case opCleanup:
 			payload := req.cleanupPayload
 			now := time.Now()

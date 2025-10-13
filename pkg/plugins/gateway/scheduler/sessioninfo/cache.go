@@ -55,6 +55,9 @@ type SessionCache interface {
 	// This can be used to optimize cache hits by routing subsequent
 	// requests from the same session to the same pod.
 	//
+	// This method also updates the LastActivityTimestamp to prevent
+	// the session from being cleaned up by the cleanup routine.
+	//
 	// Parameters:
 	//   - sessionID: The session identifier
 	//   - podName: The name of the pod to set as affinity hint
@@ -82,4 +85,3 @@ type SessionCache interface {
 	//   - stop: A function that stops the cleanup routine when called
 	StartCleanupRoutine(interval, timeout time.Duration) (stop func())
 }
-

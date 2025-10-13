@@ -21,14 +21,14 @@ import (
 	"time"
 )
 
-// // SessionState holds all the scheduling-relevant information for a single session
-// type SessionState struct {
-// 	SessionID               string        // The session ID
-// 	CriticalPathServiceTime time.Duration // The critical path service time
-// 	TotalWaitTime           time.Duration // The total wait time (anti-starvation)
-// 	PodAffinity             string        // The pod affinity (later may needed)
-// 	LastActivityTimestamp   time.Time     // The last activity timestamp
-// }
+// SessionState holds all the scheduling-relevant information for a single session
+type SessionState struct {
+	SessionID               string        // The session ID
+	CriticalPathServiceTime time.Duration // The critical path service time
+	TotalWaitTime           time.Duration // The total wait time (anti-starvation)
+	PodAffinity             string        // The pod affinity (later may needed)
+	LastActivityTimestamp   time.Time     // The last activity timestamp
+}
 
 // MutexSessionCache is a thread-safe, in-memory store for session states
 // using a sync.RWMutex.
@@ -115,6 +115,7 @@ func (sc *MutexSessionCache) UpdateAffinity(sessionID, podName string) {
 
 	state := sc.getState(sessionID)
 	state.PodAffinity = podName
+	state.LastActivityTimestamp = time.Now()
 }
 
 // StartCleanupRoutine starts a background goroutine that periodically
