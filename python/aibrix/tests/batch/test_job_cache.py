@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import os
-from pathlib import Path
 
 # Set required environment variable before importing
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
@@ -22,25 +21,17 @@ from aibrix.batch.job_entity import JobEntityManager
 from aibrix.metadata.cache.job import JobCache
 
 
-def test_job_cache_implements_job_entity_manager():
+def test_job_cache_implements_job_entity_manager(k8s_config):
     """Test that JobCache properly implements JobEntityManager interface."""
     cache = JobCache()
     assert isinstance(cache, JobEntityManager)
 
 
-def test_job_cache_with_custom_patch():
+def test_job_cache_with_custom_patch(job_cache):
     """
     Test that JobCache can be initialized with a custom template path
     and loads the correct service account.
     """
-    from aibrix.metadata.cache.job import JobCache
-
-    # Get the path to the unittest job template
-    patch_path = Path(__file__).parent / "testdata" / "k8s_job_patch_unittest.yaml"
-
-    # Initialize JobCache with custom template
-    job_cache = JobCache(template_patch_path=patch_path)
-
     # Verify that the template was loaded
     assert job_cache.job_template is not None
     assert job_cache.job_template["kind"] == "Job"
@@ -58,7 +49,7 @@ def test_job_cache_with_custom_patch():
     print("✅ Template path integration works correctly!")
 
 
-def test_job_cache_with_default_template():
+def test_job_cache_with_default_template(k8s_config):
     """
     Test that JobCache still works with the default template when no path is provided.
     """

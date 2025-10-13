@@ -21,16 +21,8 @@ import (
 )
 
 // HPAAlgorithm is a placeholder for HPA strategy (actual HPA is handled by K8s HPA resources)
-type HPAAlgorithm struct {
-	config AlgorithmConfig
-}
-
-// NewHPAAlgorithm creates a new HPA algorithm instance
-func NewHPAAlgorithm(config AlgorithmConfig) *HPAAlgorithm {
-	return &HPAAlgorithm{
-		config: config,
-	}
-}
+// This is a stateless struct that can be safely reused across goroutines
+type HPAAlgorithm struct{}
 
 var _ ScalingAlgorithm = (*HPAAlgorithm)(nil)
 
@@ -51,10 +43,4 @@ func (a *HPAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 // GetAlgorithmType returns the algorithm type
 func (a *HPAAlgorithm) GetAlgorithmType() string {
 	return "hpa"
-}
-
-// UpdateConfiguration updates the algorithm configuration
-func (a *HPAAlgorithm) UpdateConfiguration(config AlgorithmConfig) error {
-	a.config = config
-	return nil
 }

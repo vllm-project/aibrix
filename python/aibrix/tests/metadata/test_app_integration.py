@@ -157,7 +157,7 @@ def test_healthz_endpoint():
 
 
 def test_ready_endpoint():
-    """Test /ready endpoint."""
+    """Test /readyz endpoint."""
     args = argparse.Namespace(
         enable_fastapi_docs=False,
         disable_batch_api=True,
@@ -169,7 +169,7 @@ def test_ready_endpoint():
     app = build_app(args)
     client = TestClient(app)
 
-    response = client.get("/ready")
+    response = client.get("/readyz")
     assert response.status_code == 200
 
     data = response.json()

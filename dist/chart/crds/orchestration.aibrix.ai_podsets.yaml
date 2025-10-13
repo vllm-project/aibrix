@@ -45,6 +45,12 @@ spec:
                 maximum: 100
                 minimum: 2
                 type: integer
+              recoveryPolicy:
+                default: ReplaceUnhealthy
+                enum:
+                - ReplaceUnhealthy
+                - Recreate
+                type: string
               stateful:
                 type: boolean
               template:

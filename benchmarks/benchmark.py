@@ -119,6 +119,7 @@ class BenchmarkRunner:
                 "num_configs": subconfig.get("num_dataset_configs", 1),
                 "to_workload": False,
                 "rps": 0,
+                "api_key": self.config['api_key'],
             }
             args = Namespace(**args_dict)
             synthetic_prefix_sharing_dataset.main(args)
@@ -134,6 +135,7 @@ class BenchmarkRunner:
                 "num_turns_std": subconfig["num_turns_std"],
                 "num_sessions_mean": subconfig["num_sessions"],
                 "num_sessions_std": subconfig["num_sessions_std"],
+                "api_key": self.config['api_key'],
             }
             args = Namespace(**args_dict)
             multiturn_prefix_sharing_dataset.main(args)
@@ -227,10 +229,21 @@ class BenchmarkRunner:
         elif workload_type == "azure":
             if not Path(subconfig["trace_path"]).is_file():
                 logging.info("Downloading Azure dataset...")
-                subprocess.run([
-                    "wget", "https://raw.githubusercontent.com/Azure/AzurePublicDataset/refs/heads/master/data/AzureLLMInferenceTrace_conv.csv",
-                    "-O", subconfig["trace_path"]
-                ], check=True)
+                if subconfig["trace_type"] == "conv":
+                    subprocess.run([
+                        "wget", "https://raw.githubusercontent.com/Azure/AzurePublicDataset/refs/heads/master/data/AzureLLMInferenceTrace_conv.csv",
+                        "-O", subconfig["trace_path"]
+                    ], check=True)
+                elif subconfig["trace_type"] == "code":
+                    subprocess.run([
+                        "wget", "https://raw.githubusercontent.com/Azure/AzurePublicDataset/refs/heads/master/data/AzureLLMInferenceTrace_code.csv",
+                        "-O", subconfig["trace_path"]
+                    ], check=True)
+                else:
+                    trace_type = subconfig["trace_type"]
+                    logging.error(f"Unknown trace type: {trace_type}")
+                    logging.error("Choose among [conv|code]")
+                    sys.exit(1)
             args_dict.update({
                 "traffic_file": subconfig["trace_path"],
                 "group_interval_seconds": 1,
@@ -280,6 +293,13 @@ class BenchmarkRunner:
             # Set to None so it can be handled appropriately later
             self.config["api_key"] = None
         
+        # Get client_duration_limit (in seconds)
+        duration_limit = self.config.get("client_duration_limit", None)
+        
+        # Get client_max_concurrent_sessions from client config (runtime enforcement)
+        # This is separate from workload generator's max_concurrent_sessions
+        max_concurrent_sessions = self.config.get("client_max_concurrent_sessions", None)
+        
         args_dict = {
             "workload_path": workload_file,
             "endpoint": self.config["endpoint"],
@@ -292,6 +312,8 @@ class BenchmarkRunner:
             "time_scale": self.config.get("time_scale", 1.0),
             "timeout_second": self.config.get("timeout_second", 60.0),
             "max_retries": self.config.get("max_retries", 0),
+            "duration_limit": duration_limit,
+            "max_concurrent_sessions": max_concurrent_sessions,
         }
         args = Namespace(**args_dict)
         logging.info(f"Running client with args: {args}")

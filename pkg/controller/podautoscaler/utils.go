@@ -22,39 +22,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	podutils "github.com/vllm-project/aibrix/pkg/utils"
 )
-
-// extractLabelSelector extracts a LabelSelector from the given scale object.
-func extractLabelSelector(scale *unstructured.Unstructured) (labels.Selector, error) {
-	// Retrieve the selector string from the Scale object's 'spec' field.
-	selectorMap, found, err := unstructured.NestedMap(scale.Object, "spec", "selector")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get 'spec.selector' from scale: %v", err)
-	}
-	if !found {
-		return nil, fmt.Errorf("the 'spec.selector' field was not found in the scale object")
-	}
-
-	// Convert selectorMap to a *metav1.LabelSelector object
-	selector := &metav1.LabelSelector{}
-	err = runtime.DefaultUnstructuredConverter.FromUnstructured(selectorMap, selector)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert 'spec.selector' to LabelSelector: %v", err)
-	}
-
-	labelsSelector, err := metav1.LabelSelectorAsSelector(selector)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert LabelSelector to labels.Selector: %v", err)
-	}
-
-	return labelsSelector, nil
-}
 
 // GetReadyPodsCount counts the number of ready pods matching the given selector
 func GetReadyPodsCount(ctx context.Context, client client.Client, namespace string, selector labels.Selector) (int, error) {

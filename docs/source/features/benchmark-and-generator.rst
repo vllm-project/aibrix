@@ -26,6 +26,7 @@ Run AIBrix Benchmark End-to-End
 .. note::
     The benchmark script `benchmark.py <https://github.com/vllm-project/aibrix/blob/main/benchmarks/benchmark.py>`_ performs all steps up to the AIBrix workload format and triggers the benchmark client without setting up the benchmark environment for different scenarios. It assumes that AIBrix is already set up and expects a fully responsive endpoint.
  
+    For detailed usage and how to configure parameters, please refer to this `README <https://github.com/vllm-project/aibrix/blob/main/benchmarks/README.md>`_ for explaination in depth. 
 
 First, make sure you have configured your API key as well as your endpoint like this:
 

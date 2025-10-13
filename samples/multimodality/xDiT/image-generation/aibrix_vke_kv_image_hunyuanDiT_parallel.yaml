@@ -1,0 +1,128 @@
+apiVersion: apps/v1 
+kind: Deployment 
+metadata:
+  name: hunyuan-dit 
+  labels: 
+    model.aibrix.ai/name: hunyuan-dit 
+    model.aibrix.ai/port: "6000" 
+spec: 
+  replicas: 1 
+  strategy: 
+    rollingUpdate: 
+      maxSurge: 1 
+      maxUnavailable: 1 
+    type: RollingUpdate 
+  selector: 
+    matchLabels: 
+      model.aibrix.ai/name: hunyuan-dit 
+  template: 
+    metadata: 
+      labels: 
+        model.aibrix.ai/name: hunyuan-dit 
+        model.aibrix.ai/port: "6000" 
+    spec: 
+      initContainers: 
+        - command:             
+            - aibrix_download 
+            - --model-uri 
+            - tos://aibrix-artifact-testing/models/HunyuanDiT-v1.2-Diffusers/
+            - --local-dir 
+            - /models/ 
+          env: 
+            - name: DOWNLOADER_NUM_THREADS 
+              value: "16" 
+            - name: TOS_ACCESS_KEY 
+              valueFrom: 
+                secretKeyRef: 
+                  key: TOS_ACCESS_KEY 
+                  name: tos-credential 
+            - name: TOS_SECRET_KEY 
+              valueFrom: 
+                secretKeyRef: 
+                  key: TOS_SECRET_KEY 
+                  name: tos-credential 
+            - name: TOS_ENDPOINT 
+              value: https://tos-s3-cn-beijing.ivolces.com 
+            - name: TOS_REGION 
+              value: cn-beijing 
+            - name: LOG_LEVEL
+              value: DEBUG  
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.1
+          name: init-model 
+          volumeMounts: 
+            - mountPath: /models 
+              name: model-hostpath 
+      containers: 
+        - name: xdit-dev 
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/xdit-dev:customized-v1 
+          imagePullPolicy: IfNotPresent 
+          command: ["sh", "-c"]
+          args:
+            - |
+              python3 entrypoints/launch.py --model_path /models/HunyuanDiT-v1.2-Diffusers --world_size 4 --pipefusion_parallel_degree 2 --ulysses_parallel_degree 2
+          env: []
+          resources: 
+            limits: 
+              nvidia.com/gpu: "4" 
+              cpu: "10" 
+            requests: 
+              nvidia.com/gpu: "4" 
+              cpu: "10" 
+          volumeMounts:
+            - mountPath: /models 
+              name: model-hostpath 
+            - name: shared-data
+              mountPath: /shared
+        - name: aibrix-runtime
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.1
+          command:
+            - aibrix_runtime
+            - --port
+            - "8080"
+          env:
+            - name: INFERENCE_ENGINE
+              value: vllm
+            - name: INFERENCE_ENGINE_ENDPOINT
+              value: http://localhost:8000
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - name: shared-data
+              mountPath: /shared
+      nodeSelector:
+        kubernetes.io/hostname: 192.168.0.6
+      volumes: 
+        - name: model-hostpath 
+          hostPath: 
+            path: /data01/models
+            type: Directory
+        - name: shared-data
+          emptyDir: {}  
+--- 
+
+
+apiVersion: v1 
+kind: Service 
+metadata: 
+  labels: 
+    model.aibrix.ai/name: hunyuan-dit 
+    prometheus-discovery: "true" 
+  annotations: 
+    prometheus.io/scrape: "true" 
+    prometheus.io/port: "8080" 
+  name: hunyuan-dit 
+  namespace: default 
+spec: 
+  ports: 
+    - name: serve 
+      port: 6000 
+      protocol: TCP 
+      targetPort: 6000 
+    - name: http 
+      port: 8080 
+      protocol: TCP 
+      targetPort: 8080 
+  selector: 
+    model.aibrix.ai/name: hunyuan-dit 
+  type: ClusterIP

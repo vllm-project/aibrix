@@ -25,10 +25,11 @@ import (
 // PodAutoscalerStatusApplyConfiguration represents a declarative configuration of the PodAutoscalerStatus type for use
 // with apply.
 type PodAutoscalerStatusApplyConfiguration struct {
-	LastScaleTime *v1.Time                             `json:"lastScaleTime,omitempty"`
-	DesiredScale  *int32                               `json:"desiredScale,omitempty"`
-	ActualScale   *int32                               `json:"actualScale,omitempty"`
-	Conditions    []metav1.ConditionApplyConfiguration `json:"conditions,omitempty"`
+	LastScaleTime  *v1.Time                             `json:"lastScaleTime,omitempty"`
+	DesiredScale   *int32                               `json:"desiredScale,omitempty"`
+	ActualScale    *int32                               `json:"actualScale,omitempty"`
+	Conditions     []metav1.ConditionApplyConfiguration `json:"conditions,omitempty"`
+	ScalingHistory []ScalingDecisionApplyConfiguration  `json:"scalingHistory,omitempty"`
 }
 
 // PodAutoscalerStatusApplyConfiguration constructs a declarative configuration of the PodAutoscalerStatus type for use with
@@ -70,6 +71,19 @@ func (b *PodAutoscalerStatusApplyConfiguration) WithConditions(values ...*metav1
 			panic("nil value passed to WithConditions")
 		}
 		b.Conditions = append(b.Conditions, *values[i])
+	}
+	return b
+}
+
+// WithScalingHistory adds the given value to the ScalingHistory field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the ScalingHistory field.
+func (b *PodAutoscalerStatusApplyConfiguration) WithScalingHistory(values ...*ScalingDecisionApplyConfiguration) *PodAutoscalerStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithScalingHistory")
+		}
+		b.ScalingHistory = append(b.ScalingHistory, *values[i])
 	}
 	return b
 }

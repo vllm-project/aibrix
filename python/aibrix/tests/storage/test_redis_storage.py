@@ -14,16 +14,55 @@
 
 import asyncio
 import os
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 import pytest
 
 from aibrix.storage import RedisStorage, StorageType, create_storage
 
-# Skip integration tests if Redis is not configured
-redis_available = os.environ.get("REDIS_HOST") is not None
+
+def _test_redis_connectivity():
+    """Test if Redis is accessible on localhost:6379."""
+    try:
+        import redis
+
+        def test_connection():
+            # Try to connect to Redis with a short timeout
+            client = redis.Redis(
+                host=os.environ.get("REDIS_HOST", "localhost"),
+                port=int(os.environ.get("REDIS_PORT", "6379")),
+                db=int(os.environ.get("REDIS_DB", "0")),
+                password=os.environ.get("REDIS_PASSWORD"),
+                socket_connect_timeout=2,
+                socket_timeout=2,
+                decode_responses=True,
+            )
+            # Test with a simple ping
+            return client.ping()
+
+        # Use ThreadPoolExecutor to enforce timeout
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(test_connection)
+            try:
+                return future.result(timeout=5)  # 5 second timeout
+            except FutureTimeoutError:
+                return False
+            except Exception:
+                return False
+
+    except ImportError:
+        # redis package not available
+        return False
+    except Exception:
+        return False
+
+
+# Test Redis accessibility
+redis_available = _test_redis_connectivity()
 requires_redis = pytest.mark.skipif(
     not redis_available,
-    reason="Redis not available - set STORAGE_REDIS_HOST environment variable to enable Redis tests",
+    reason="Redis not accessible - ensure Redis is running on localhost:6379 or set REDIS_HOST environment variable",
 )
 
 

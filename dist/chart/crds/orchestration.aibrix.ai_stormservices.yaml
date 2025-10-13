@@ -3974,6 +3974,30 @@ spec:
               replicas:
                 format: int32
                 type: integer
+              roleStatuses:
+                items:
+                  properties:
+                    name:
+                      type: string
+                    notReadyReplicas:
+                      format: int32
+                      type: integer
+                    readyReplicas:
+                      format: int32
+                      type: integer
+                    replicas:
+                      format: int32
+                      type: integer
+                    updatedReadyReplicas:
+                      format: int32
+                      type: integer
+                    updatedReplicas:
+                      format: int32
+                      type: integer
+                  required:
+                  - replicas
+                  type: object
+                type: array
               scalingTargetSelector:
                 type: string
               updateRevision:

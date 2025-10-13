@@ -29,14 +29,18 @@ package podautoscaler
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
-	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/config"
-	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
+
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/config"
+	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/monitor"
+	"k8s.io/apimachinery/pkg/labels"
 	ktypes "k8s.io/apimachinery/pkg/types"
 
 	podutils "github.com/vllm-project/aibrix/pkg/utils"
@@ -50,7 +54,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
 	memcache "k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/restmapper"
@@ -75,15 +78,17 @@ const (
 	ConditionScalingActive = "ScalingActive"
 	ConditionAbleToScale   = "AbleToScale"
 
-	ReasonAsExpected             = "AsExpected"
-	ReasonReconcilingScaleDiff   = "ReconcilingScaleDiff"
-	ReasonStable                 = "Stable"
-	ReasonInvalidScalingStrategy = "InvalidScalingStrategy"
-	ReasonInvalidBounds          = "InvalidBounds"
-	ReasonMissingTargetRef       = "MissingScaleTargetRef"
-	ReasonMetricsConfigError     = "MetricsConfigError"
-	ReasonInvalidSpec            = "InvalidSpec"
-	ReasonConfigured             = "Configured"
+	ReasonAsExpected                = "AsExpected"
+	ReasonReconcilingScaleDiff      = "ReconcilingScaleDiff"
+	ReasonStable                    = "Stable"
+	ReasonInvalidScalingStrategy    = "InvalidScalingStrategy"
+	ReasonInvalidBounds             = "InvalidBounds"
+	ReasonMissingTargetRef          = "MissingScaleTargetRef"
+	ReasonMetricsConfigError        = "MetricsConfigError"
+	ReasonInvalidSpec               = "InvalidSpec"
+	ReasonConfigured                = "Configured"
+	maxScalingHistorySize           = 5
+	minScalingHistoryRecordInterval = 5 * time.Second
 )
 
 var (
@@ -125,6 +130,8 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 	apis := custommetrics.NewAvailableAPIsGetter(disc)
 	customClient := custommetrics.NewForConfig(restConfig, mapper, apis)
 
+	workloadScaleClient := NewWorkloadScale(mgr.GetClient(), mgr.GetRESTMapper())
+
 	// Create factory with all metric fetcher types
 	factory := metrics.NewDefaultMetricFetcherFactory(resourceClient, customClient)
 
@@ -134,14 +141,17 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 
 	// Instantiate a new PodAutoscalerReconciler with the given manager's client and scheme
 	reconciler := &PodAutoscalerReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		EventRecorder:  mgr.GetEventRecorderFor("PodAutoscaler"),
-		Mapper:         mgr.GetRESTMapper(),
-		resyncInterval: DefaultResyncInterval,
-		eventCh:        make(chan event.GenericEvent),
-		autoScaler:     autoScaler,
-		RuntimeConfig:  runtimeConfig,
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		EventRecorder:       mgr.GetEventRecorderFor("PodAutoscaler"),
+		Mapper:              mgr.GetRESTMapper(),
+		workloadScaleClient: workloadScaleClient,
+		resyncInterval:      DefaultResyncInterval,
+		eventCh:             make(chan event.GenericEvent),
+		autoScaler:          autoScaler,
+		RuntimeConfig:       runtimeConfig,
+		recommendations:     make(map[string][]timestampedRecommendation),
+		monitor:             monitor.New(),
 	}
 
 	return reconciler, nil
@@ -209,19 +219,32 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 var _ reconcile.Reconciler = &PodAutoscalerReconciler{}
 
+// timestampedRecommendation stores a scaling recommendation with its timestamp
+type timestampedRecommendation struct {
+	recommendation int32
+	timestamp      time.Time
+}
+
 // PodAutoscalerReconciler reconciles a PodAutoscaler object.
 // It uses stateless autoscaler management where AutoScalers are created
 // on-demand for each reconciliation cycle, avoiding memory leaks and
 // stale state issues.
 type PodAutoscalerReconciler struct {
 	client.Client
-	Scheme         *runtime.Scheme
-	EventRecorder  record.EventRecorder
-	Mapper         apimeta.RESTMapper
-	autoScaler     AutoScaler
-	resyncInterval time.Duration
-	eventCh        chan event.GenericEvent
-	RuntimeConfig  config.RuntimeConfig
+	Scheme              *runtime.Scheme
+	EventRecorder       record.EventRecorder
+	Mapper              apimeta.RESTMapper
+	autoScaler          AutoScaler
+	workloadScaleClient WorkloadScale
+	resyncInterval      time.Duration
+	eventCh             chan event.GenericEvent
+	RuntimeConfig       config.RuntimeConfig
+
+	// Recommendation history for cooldown windows (key: namespace/name)
+	recommendationsMu sync.RWMutex
+	recommendations   map[string][]timestampedRecommendation
+
+	monitor monitor.Monitor
 }
 
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers,verbs=get;list;watch;create;update;patch;delete
@@ -229,6 +252,7 @@ type PodAutoscalerReconciler struct {
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers/finalizers,verbs=update
 //+kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch;update
+//+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=stormservices,verbs=get;list;watch;patch
 
 func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, DefaultReconcileTimeoutDuration)
@@ -248,8 +272,12 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// validate spec; if invalid, write conditions and exit without requeue
 	vr := r.validateSpec(&pa)
 	if !vr.Valid {
-		// write status & exit without requeue
-		if err := r.updateStatusIfNeeded(ctx, computeStatus(ctx, pa, vr), &pa); err != nil {
+		// Compute the desired new status
+		newStatus := computeStatus(ctx, pa, vr)
+		// Make a copy of pa so we can safely modify its status
+		paCopy := pa.DeepCopy()
+		paCopy.Status = *newStatus
+		if err := r.updateStatusIfNeeded(ctx, &pa.Status, paCopy); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -263,7 +291,9 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	newStatus := computeStatus(ctx, pa, vr)
-	if err := r.updateStatusIfNeeded(ctx, newStatus, &pa); err != nil {
+	paCopy := pa.DeepCopy()
+	paCopy.Status = *newStatus
+	if err := r.updateStatusIfNeeded(ctx, &pa.Status, paCopy); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -271,19 +301,109 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 func (r *PodAutoscalerReconciler) validateSpec(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
+	if vr := r.validateScaleTargetRef(pa); !vr.Valid {
+		return vr
+	}
+	if vr := r.validateReplicaBounds(pa); !vr.Valid {
+		return vr
+	}
+	if vr := r.validateScalingStrategy(pa); !vr.Valid {
+		return vr
+	}
+	if vr := r.validateMetricsSources(pa); !vr.Valid {
+		return vr
+	}
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateScaleTargetRef(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
 	if pa.Spec.ScaleTargetRef.Name == "" || pa.Spec.ScaleTargetRef.Kind == "" {
 		return invalid(ReasonMissingTargetRef, "scaleTargetRef.kind and scaleTargetRef.name must be set.")
 	}
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateReplicaBounds(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
 	if pa.Spec.MinReplicas != nil && pa.Spec.MaxReplicas < *pa.Spec.MinReplicas {
 		return invalid(ReasonInvalidBounds, "minReplicas cannot be greater than maxReplicas.")
 	}
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateScalingStrategy(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
 	if !checkValidAutoscalingStrategy(pa.Spec.ScalingStrategy) {
 		return invalid(ReasonInvalidScalingStrategy, "Unsupported scalingStrategy; must be one of HPA/KPA/APA.")
 	}
-	// current impl supports exactly one MetricsSource
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateMetricsSources(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
 	if len(pa.Spec.MetricsSources) != 1 {
 		return invalid(ReasonMetricsConfigError, "exactly one metricsSource is required for current implementation.")
 	}
+
+	ms := &pa.Spec.MetricsSources[0]
+	if ms.TargetMetric == "" {
+		return invalid(ReasonMetricsConfigError, "targetMetric must be specified in metricsSource.")
+	}
+	if ms.TargetValue == "" {
+		return invalid(ReasonMetricsConfigError, "targetValue must be specified in metricsSource.")
+	}
+
+	switch ms.MetricSourceType {
+	case autoscalingv1alpha1.POD:
+		return r.validatePodMetricSource(ms)
+	case autoscalingv1alpha1.EXTERNAL, autoscalingv1alpha1.DOMAIN:
+		return r.validateExternalMetricSource(ms)
+	case autoscalingv1alpha1.RESOURCE:
+		return r.validateResourceMetricSource(ms)
+	case autoscalingv1alpha1.CUSTOM:
+		return r.validateCustomMetricSource(ms)
+	default:
+		return invalid(ReasonMetricsConfigError, fmt.Sprintf("unsupported metricSourceType: %s", ms.MetricSourceType))
+	}
+}
+
+func (r *PodAutoscalerReconciler) validatePodMetricSource(ms *autoscalingv1alpha1.MetricSource) ValidationResult {
+	if ms.ProtocolType == "" {
+		return invalid(ReasonMetricsConfigError, "protocolType is required for metricSourceType=pod.")
+	}
+	if ms.Port == "" {
+		return invalid(ReasonMetricsConfigError, "port is required for metricSourceType=pod.")
+	}
+	if ms.Path == "" {
+		return invalid(ReasonMetricsConfigError, "path is required for metricSourceType=pod.")
+	}
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateExternalMetricSource(ms *autoscalingv1alpha1.MetricSource) ValidationResult {
+	if ms.ProtocolType == "" {
+		return invalid(ReasonMetricsConfigError, "protocolType is required for metricSourceType=external.")
+	}
+	if ms.Endpoint == "" {
+		return invalid(ReasonMetricsConfigError, "endpoint is required for metricSourceType=external.")
+	}
+	if ms.Path == "" {
+		return invalid(ReasonMetricsConfigError, "path is required for metricSourceType=external.")
+	}
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateResourceMetricSource(ms *autoscalingv1alpha1.MetricSource) ValidationResult {
+	validMetrics := map[string]bool{"cpu": true, "memory": true}
+	if !validMetrics[ms.TargetMetric] {
+		return invalid(ReasonMetricsConfigError, "for metricSourceType=resource, targetMetric must be 'cpu' or 'memory'.")
+	}
+	if ms.Port != "" || ms.Endpoint != "" || ms.Path != "" || ms.ProtocolType != "" {
+		return invalid(ReasonMetricsConfigError, "port, endpoint, path, and protocolType are not allowed for metricSourceType=resource.")
+	}
+	return validOK()
+}
+
+func (r *PodAutoscalerReconciler) validateCustomMetricSource(_ *autoscalingv1alpha1.MetricSource) ValidationResult {
+	// Custom metrics: no additional required fields
+	// You may add format validation later if needed (e.g., must contain '/')
 	return validOK()
 }
 
@@ -419,8 +539,11 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, vr
 // reconcileHPA handles HPA strategy by creating and managing Kubernetes HorizontalPodAutoscaler resources.
 // This provides KEDA-like functionality where we wrap standard K8s HPA with additional features.
 func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
+	// Create ScalingContext as single source of truth for configuration
+	scalingContext := r.createScalingContext(pa)
+
 	// Generate a corresponding HorizontalPodAutoscaler
-	hpa, err := makeHPA(&pa)
+	hpa, err := makeHPA(&pa, scalingContext)
 	if err != nil {
 		klog.ErrorS(err, "Failed to generate a HPA object", "PA", ktypes.NamespacedName{Name: pa.Name, Namespace: pa.Namespace})
 		return ctrl.Result{}, err
@@ -468,75 +591,82 @@ func (r *PodAutoscalerReconciler) reconcileHPA(ctx context.Context, pa autoscali
 	return ctrl.Result{}, nil
 }
 
-// reconcileCustomPA handles KPA and APA strategies by orchestrating the scaling workflow.
-// Controller focuses on K8s resource management while delegating scaling logic to helper methods.
+// reconcileCustomPA handles KPA and APA strategies using WorkloadScaler (generic /scale or StormService role-level).
 func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler) (ctrl.Result, error) {
 	paStatusOriginal := pa.Status.DeepCopy()
 	scaleReference := fmt.Sprintf("%s/%s/%s", pa.Spec.ScaleTargetRef.Kind, pa.Namespace, pa.Spec.ScaleTargetRef.Name)
+	if pa.Spec.SubTargetSelector != nil && pa.Spec.SubTargetSelector.RoleName != "" {
+		scaleReference = fmt.Sprintf("%s/%s/%s/%s", pa.Spec.ScaleTargetRef.Kind, pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.SubTargetSelector.RoleName)
+	}
 
-	// Step 1: Get scale resource
-	scale, targetGR, err := r.getScaleResource(ctx, &pa)
+	// Step 1: Get scaleObj resource
+	scaleObj, _, err := r.getScaleResource(ctx, &pa)
 	if err != nil {
 		r.recordScaleError(&pa, "FailedGetScale", err)
-		setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedGetScale", "unable to get target scale: %v", err)
+		setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedGetScale", "unable to get target scaleObj: %v", err)
 		if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
-		return ctrl.Result{}, fmt.Errorf("failed to get scale for %s: %w", scaleReference, err)
+		return ctrl.Result{}, fmt.Errorf("failed to get scaleObj for %s: %w", scaleReference, err)
 	}
-
 	setCondition(&pa, "AbleToScale", metav1.ConditionTrue, "SucceededGetScale", "successfully retrieved target scale")
 
-	// Step 2: Get current replicas
-	currentReplicas, err := r.extractCurrentReplicas(scale)
+	// Step 2: Get current replicas from scale object
+	currentReplicas, err := r.workloadScaleClient.GetCurrentReplicasFromScale(ctx, &pa, scaleObj)
 	if err != nil {
 		r.EventRecorder.Eventf(&pa, corev1.EventTypeWarning, "FailedGetReplicas", "Error extracting replicas: %v", err)
-		return ctrl.Result{}, fmt.Errorf("failed to extract current replicas: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed to get current replicas: %w", err)
 	}
 
-	// Step 3: Compute scaling decision
-	scaleDecision, err := r.computeScaleDecision(ctx, pa, scale, currentReplicas)
+	// Step 3: Compute scaling decision with selector
+	// Pass ScaleTargetRef to handle special cases like RayClusterFleet
+	scaleDecision, err := r.computeScaleDecision(ctx, pa, scaleObj, currentReplicas)
 	if err != nil {
-		setCurrentReplicasAndMetricsInStatus(&pa, currentReplicas)
+		setStatus(&pa, currentReplicas, currentReplicas, false, "FailedComputeScale", false, err)
 		if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
 		r.EventRecorder.Event(&pa, corev1.EventTypeWarning, "FailedComputeScale", err.Error())
 		return ctrl.Result{}, fmt.Errorf("failed to compute scaling decision for %s: %w", scaleReference, err)
 	}
+	r.monitor.RecordScaleAction(pa.Namespace, pa.Name, scaleDecision.Algorithm, scaleDecision.Reason, scaleDecision.DesiredReplicas)
+
+	// Only emit event if we should scale
+	if scaleDecision.ShouldScale {
+		r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "AlgorithmRun",
+			"%s algorithm completed. currentReplicas: %d, desiredReplicas: %d, shouldScale: %t",
+			pa.Spec.ScalingStrategy, currentReplicas, scaleDecision.DesiredReplicas, scaleDecision.ShouldScale)
+	} else {
+		klog.V(4).InfoS("Skipping event: no change in replica count", "replicas", currentReplicas)
+	}
 
 	// Step 4: Apply scaling if needed
+	var scaleError error
 	if scaleDecision.ShouldScale {
-		if err := r.applyScaling(ctx, &pa, targetGR, scale, scaleDecision); err != nil {
-			r.recordScaleError(&pa, "FailedRescale", err)
-			setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedUpdateScale", "unable to update target scale: %v", err)
-			setCurrentReplicasAndMetricsInStatus(&pa, currentReplicas)
-			if updateErr := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); updateErr != nil {
-				utilruntime.HandleError(updateErr)
-			}
-			return ctrl.Result{}, fmt.Errorf("failed to apply scaling for %s: %w", scaleReference, err)
+		scaleError := r.workloadScaleClient.SetDesiredReplicas(ctx, &pa, scaleDecision.DesiredReplicas)
+		if scaleError != nil {
+			r.recordScaleError(&pa, "FailedRescale", scaleError)
+			setCondition(&pa, "AbleToScale", metav1.ConditionFalse, "FailedUpdateScale", "unable to apply desired replicas: %v", scaleError)
+			klog.ErrorS(scaleError, "Failed to apply scaling", "PodAutoscaler", klog.KObj(&pa))
+			return ctrl.Result{}, fmt.Errorf("failed to apply scaling for %s: %w", scaleReference, scaleError)
+		} else {
+			klog.InfoS("Successfully rescaled",
+				"PodAutoscaler", klog.KObj(&pa),
+				"currentReplicas", currentReplicas,
+				"desiredReplicas", scaleDecision.DesiredReplicas,
+				"reason", scaleDecision.Reason)
+			r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "SuccessfulRescale",
+				"New size: %d; reason: %s", scaleDecision.DesiredReplicas, scaleDecision.Reason)
 		}
-
-		r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "SuccessfulRescale",
-			"New size: %d; reason: %s", scaleDecision.DesiredReplicas, scaleDecision.Reason)
-
-		klog.InfoS("Successfully rescaled",
-			"PodAutoscaler", klog.KObj(&pa),
-			"currentReplicas", currentReplicas,
-			"desiredReplicas", scaleDecision.DesiredReplicas,
-			"reason", scaleDecision.Reason)
 	}
 
 	// Step 5: Update status
-	setStatus(&pa, currentReplicas, scaleDecision.DesiredReplicas, scaleDecision.ShouldScale)
-	r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "AlgorithmRun",
-		"%s algorithm completed. currentReplicas: %d, desiredReplicas: %d, shouldScale: %t",
-		pa.Spec.ScalingStrategy, currentReplicas, scaleDecision.DesiredReplicas, scaleDecision.ShouldScale)
+	setStatus(&pa, currentReplicas, scaleDecision.DesiredReplicas,
+		scaleDecision.ShouldScale, scaleDecision.Reason, scaleError == nil, scaleError)
 
 	if err := r.updateStatusIfNeeded(ctx, paStatusOriginal, &pa); err != nil {
 		return ctrl.Result{}, err
 	}
-
 	return ctrl.Result{}, nil
 }
 
@@ -604,24 +734,60 @@ func setCondition(pa *autoscalingv1alpha1.PodAutoscaler, conditionType string, s
 	pa.Status.Conditions = podutils.SetConditionInList(pa.Status.Conditions, conditionType, status, reason, message, args...)
 }
 
-// setCurrentReplicasAndMetricsInStatus sets the current replica count and metrics in the status of the PA.
-func setCurrentReplicasAndMetricsInStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas int32) {
-	setStatus(pa, currentReplicas, pa.Status.DesiredScale, false)
-}
-
 // setStatus recreates the status of the given PA, updating the current and
-// desired replicas, as well as the metric statuses
-func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredReplicas int32, rescale bool) {
+// desired replicas, as well as the metric statuses and optionally records a scaling decision
+func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredReplicas int32, rescale bool, reason string, success bool, err error) {
 	pa.Status = autoscalingv1alpha1.PodAutoscalerStatus{
-		ActualScale:   currentReplicas,
-		DesiredScale:  desiredReplicas,
-		LastScaleTime: pa.Status.LastScaleTime,
-		Conditions:    pa.Status.Conditions,
+		ActualScale:    currentReplicas,
+		DesiredScale:   desiredReplicas,
+		LastScaleTime:  pa.Status.LastScaleTime,
+		Conditions:     pa.Status.Conditions,
+		ScalingHistory: pa.Status.ScalingHistory, // preserve existing history
 	}
 
-	if rescale {
+	if rescale || !success {
 		now := metav1.NewTime(time.Now())
-		pa.Status.LastScaleTime = &now
+
+		// Check if this is a genuine scaling event or just a quick follow-up reconciliation
+		var shouldRecordHistory bool
+		if len(pa.Status.ScalingHistory) == 0 {
+			shouldRecordHistory = true
+		} else {
+			lastScale := pa.Status.ScalingHistory[len(pa.Status.ScalingHistory)-1]
+			// Only record if:
+			// 1. More than minScalingHistoryRecordInterval have passed since last scaling decision, or
+			// 2. The desired scale is different from the last recorded scale, or
+			// 3. The success status has changed (success to failure or vice versa), or
+			// 4. There's a different error message
+			timeSinceLastScale := now.Time.Sub(lastScale.Timestamp.Time)
+			if timeSinceLastScale > minScalingHistoryRecordInterval ||
+				lastScale.NewScale != desiredReplicas ||
+				lastScale.Success != success ||
+				(err != nil && lastScale.Error != err.Error()) {
+				shouldRecordHistory = true
+			}
+		}
+		if shouldRecordHistory {
+			pa.Status.LastScaleTime = &now
+			decision := autoscalingv1alpha1.ScalingDecision{
+				Timestamp:     metav1.Now(),
+				PreviousScale: currentReplicas,
+				NewScale:      desiredReplicas,
+				Reason:        reason,
+				Success:       success,
+			}
+			if err != nil {
+				decision.Error = err.Error()
+			}
+			// First trim if at maximum size
+			if len(pa.Status.ScalingHistory) >= maxScalingHistorySize {
+				pa.Status.ScalingHistory = pa.Status.ScalingHistory[1:]
+			}
+
+			// Then append the new decision
+			pa.Status.ScalingHistory = append(pa.Status.ScalingHistory, decision)
+		}
+
 	}
 }
 
@@ -676,20 +842,13 @@ func (r *PodAutoscalerReconciler) getScaleResource(ctx context.Context, pa *auto
 	return scale, targetGR, nil
 }
 
-// extractCurrentReplicas extracts the current replica count from a scale resource
-func (r *PodAutoscalerReconciler) extractCurrentReplicas(scale *unstructured.Unstructured) (int32, error) {
-	currentReplicasInt64, found, err := unstructured.NestedInt64(scale.Object, "spec", "replicas")
-	if !found {
-		return 0, fmt.Errorf("the 'replicas' field was not found in the scale object")
-	}
-	if err != nil {
-		return 0, fmt.Errorf("failed to get 'replicas' from scale: %w", err)
-	}
-	return int32(currentReplicasInt64), nil
-}
-
 // computeScaleDecision determines if scaling is needed and what the target should be
-func (r *PodAutoscalerReconciler) computeScaleDecision(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured, currentReplicas int32) (*ScaleDecision, error) {
+func (r *PodAutoscalerReconciler) computeScaleDecision(
+	ctx context.Context,
+	pa autoscalingv1alpha1.PodAutoscaler,
+	scaleObj *unstructured.Unstructured,
+	currentReplicas int32,
+) (*ScaleDecision, error) {
 	var minReplicas int32 = 1
 	if pa.Spec.MinReplicas != nil {
 		minReplicas = *pa.Spec.MinReplicas
@@ -724,8 +883,11 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(ctx context.Context, pa a
 		}, nil
 	}
 
-	// Use autoscaler for metric-based scaling
-	replicaResult, err := r.computeMetricBasedReplicas(ctx, pa, scale, currentReplicas)
+	// Create scaling context as single source of truth for PA-level configuration
+	scalingContext := r.createScalingContext(pa)
+
+	// Use autoscaler for metric-based scaling with provided selector
+	replicaResult, err := r.computeMetricBasedReplicas(ctx, pa, scalingContext, scaleObj, currentReplicas)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute metric-based replicas: %w", err)
 	}
@@ -733,16 +895,21 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(ctx context.Context, pa a
 	metricDesiredReplicas := replicaResult.DesiredReplicas
 	metricName := replicaResult.Algorithm
 
+	// Apply cooldown window for KPA/APA (not for HPA which is managed by K8s)
 	desiredReplicas := metricDesiredReplicas
+	if pa.Spec.ScalingStrategy != autoscalingv1alpha1.HPA {
+		desiredReplicas = r.stabilizeRecommendation(&pa, scalingContext, metricDesiredReplicas, currentReplicas)
+	}
+
 	reason := ""
 
 	// Apply constraints
 	if desiredReplicas > pa.Spec.MaxReplicas {
-		klog.V(2).InfoS("Scaling adjustment: Algorithm recommended scaling above maximum limit",
+		klog.InfoS("Scaling adjustment: Algorithm recommended scaling above maximum limit",
 			"recommendedReplicas", desiredReplicas, "adjustedTo", pa.Spec.MaxReplicas)
 		desiredReplicas = pa.Spec.MaxReplicas
 	} else if desiredReplicas < minReplicas {
-		klog.V(2).InfoS("Scaling adjustment: Algorithm recommended scaling below minimum limit",
+		klog.InfoS("Scaling adjustment: Algorithm recommended scaling below minimum limit",
 			"recommendedReplicas", desiredReplicas, "adjustedTo", minReplicas)
 		desiredReplicas = minReplicas
 	}
@@ -754,6 +921,8 @@ func (r *PodAutoscalerReconciler) computeScaleDecision(ctx context.Context, pa a
 		} else {
 			reason = "All metrics below target"
 		}
+	} else {
+		reason = "stable"
 	}
 
 	return &ScaleDecision{
@@ -775,19 +944,25 @@ func (r *PodAutoscalerReconciler) recordScaleError(pa *autoscalingv1alpha1.PodAu
 }
 
 // computeMetricBasedReplicas uses the autoscaler to compute desired replicas based on metrics
-func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured, currentReplicas int32) (*ReplicaComputeResult, error) {
-	// Get pod list for metrics computation
-	labelsSelector, err := extractLabelSelector(scale)
+func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(
+	ctx context.Context,
+	pa autoscalingv1alpha1.PodAutoscaler,
+	scalingContext scalingctx.ScalingContext,
+	scaleObject *unstructured.Unstructured,
+	currentReplicas int32,
+) (*ReplicaComputeResult, error) {
+	// Get pod selector - this handles both generic scaling and role-level scaling
+	// Use the scale object we already have to avoid extra API call
+	labelsSelector, err := r.workloadScaleClient.GetPodSelectorFromScale(ctx, &pa, scaleObject)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract label selector: %w", err)
+		return nil, fmt.Errorf("failed to get pod selector: %w", err)
 	}
 
 	// Append ray head worker requirement for label selector if needed
-	if scale.GetAPIVersion() == orchestrationv1alpha1.GroupVersion.String() && scale.GetKind() == RayClusterFleet {
+	if scaleObject.GetAPIVersion() == orchestrationv1alpha1.GroupVersion.String() && scaleObject.GetKind() == RayClusterFleet {
 		newRequirement, err := labels.NewRequirement("ray.io/node-type", selection.Equals, []string{"head"})
 		if err != nil {
-			klog.ErrorS(err, "Failed to add ray.io/node-type requirement to label selector")
-			return nil, fmt.Errorf("failed to add ray requirement: %w", err)
+			return nil, fmt.Errorf("failed to add ray.io/node-type requirement to label selector: %w", err)
 		}
 		labelsSelector = labelsSelector.Add(*newRequirement)
 	}
@@ -797,9 +972,10 @@ func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(ctx context.Context
 		return nil, fmt.Errorf("failed to get pod list: %w", err)
 	}
 
-	// Create request for autoscaler
+	// Create request for autoscaler with ScalingContext
 	replicaRequest := ReplicaComputeRequest{
 		PodAutoscaler:   pa,
+		ScalingContext:  scalingContext,
 		CurrentReplicas: currentReplicas,
 		Pods:            podList.Items,
 		Timestamp:       time.Now(),
@@ -807,4 +983,133 @@ func (r *PodAutoscalerReconciler) computeMetricBasedReplicas(ctx context.Context
 
 	// Use autoscaler to compute desired replicas
 	return r.autoScaler.ComputeDesiredReplicas(ctx, replicaRequest)
+}
+
+// stabilizeRecommendation applies cooldown window logic to smooth out replica recommendations.
+// It keeps a history of recommendations and returns the max (for scale-up) or min (for scale-down)
+// from the cooldown window, similar to K8s HPA behavior.
+func (r *PodAutoscalerReconciler) stabilizeRecommendation(
+	pa *autoscalingv1alpha1.PodAutoscaler,
+	scalingContext scalingctx.ScalingContext,
+	recommendation,
+	current int32,
+) int32 {
+	key := fmt.Sprintf("%s/%s", pa.Namespace, pa.Name)
+	now := time.Now()
+
+	// Get cooldown window durations from ScalingContext
+	scaleUpWindow := scalingContext.GetScaleUpCooldownWindow()
+	scaleDownWindow := scalingContext.GetScaleDownCooldownWindow()
+
+	r.recommendationsMu.Lock()
+	defer r.recommendationsMu.Unlock()
+
+	// Initialize history if not exists
+	if r.recommendations == nil {
+		r.recommendations = make(map[string][]timestampedRecommendation)
+	}
+
+	// Add current recommendation to history
+	r.recommendations[key] = append(r.recommendations[key], timestampedRecommendation{
+		recommendation: recommendation,
+		timestamp:      now,
+	})
+
+	// Determine which window to use based on scaling direction
+	var windowDuration time.Duration
+	var selectMax bool
+
+	if recommendation > current {
+		windowDuration = scaleUpWindow
+		selectMax = true
+	} else if recommendation < current {
+		windowDuration = scaleDownWindow
+		selectMax = false
+	} else {
+		// No change, clean old recommendations and return current
+		r.cleanOldRecommendations(key, now, scaleUpWindow, scaleDownWindow)
+		return current
+	}
+
+	// Clean recommendations outside the window
+	r.cleanOldRecommendations(key, now, scaleUpWindow, scaleDownWindow)
+
+	// Select from recommendations within the window
+	cutoff := now.Add(-windowDuration)
+	var stabilized int32
+	first := true
+
+	for _, rec := range r.recommendations[key] {
+		if rec.timestamp.After(cutoff) {
+			if first {
+				stabilized = rec.recommendation
+				first = false
+			} else {
+				if selectMax && rec.recommendation > stabilized {
+					stabilized = rec.recommendation
+				} else if !selectMax && rec.recommendation < stabilized {
+					stabilized = rec.recommendation
+				}
+			}
+		}
+	}
+
+	if first {
+		// No recommendations within window, use current recommendation
+		stabilized = recommendation
+	}
+
+	klog.V(4).InfoS("Stabilization applied",
+		"pa", key,
+		"recommendation", recommendation,
+		"current", current,
+		"stabilized", stabilized,
+		"windowDuration", windowDuration,
+		"selectMax", selectMax,
+		"historyCount", len(r.recommendations[key]))
+
+	return stabilized
+}
+
+// cleanOldRecommendations removes recommendations older than the largest window
+func (r *PodAutoscalerReconciler) cleanOldRecommendations(key string, now time.Time, scaleUpWindow, scaleDownWindow time.Duration) {
+	maxWindow := scaleUpWindow
+	if scaleDownWindow > maxWindow {
+		maxWindow = scaleDownWindow
+	}
+
+	cutoff := now.Add(-maxWindow)
+	history := r.recommendations[key]
+
+	newHistory := history[:0]
+	for _, rec := range history {
+		if rec.timestamp.After(cutoff) {
+			newHistory = append(newHistory, rec)
+		}
+	}
+	r.recommendations[key] = newHistory
+}
+
+// createScalingContext creates a ScalingContext for the given PodAutoscaler
+// This is the single source of truth for all PA-level configuration
+func (r *PodAutoscalerReconciler) createScalingContext(pa autoscalingv1alpha1.PodAutoscaler) scalingctx.ScalingContext {
+	// Create base context with defaults
+	ctx := scalingctx.NewBaseScalingContext()
+
+	// Update with PA-specific values from annotations
+	if err := ctx.UpdateByPaTypes(&pa); err != nil {
+		// Log error but continue with defaults
+		klog.ErrorS(err, "Failed to update scaling context from PodAutoscaler, using defaults",
+			"namespace", pa.Namespace, "name", pa.Name)
+	}
+
+	// Set min/max replicas
+	minReplicas := int32(1)
+	if pa.Spec.MinReplicas != nil {
+		minReplicas = *pa.Spec.MinReplicas
+	}
+	ctx.SetMinReplicas(minReplicas)
+	ctx.SetMaxReplicas(pa.Spec.MaxReplicas)
+
+	return ctx
 }

@@ -78,7 +78,6 @@ spec:
               template:
                 metadata:
                   labels:
-                    {{- include "chart.selectorLabels" . | nindent 20 }}
                     app.kubernetes.io/name: envoy
                     app.kubernetes.io/component: proxy
                 spec:

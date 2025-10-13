@@ -131,7 +131,7 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 		}
 
 		// Parse the specific metric we need
-		metricValue, err := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef.MetricType)
+		metricValue, err := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
 		if err != nil {
 			klog.V(4).InfoS("Failed to parse metric from engine endpoint",
 				"attempt", attempt+1, "identifier", identifier, "metric", metricName, "error", err)
@@ -223,7 +223,7 @@ func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoi
 		}
 
 		// Parse the metric
-		metricValue, err := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef.MetricType)
+		metricValue, err := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("failed to parse metric %s: %v in endpoint %s", metricName, err, identifier))
 			continue
@@ -278,7 +278,7 @@ func (ef *EngineMetricsFetcher) getAvailableMetricsForEngine(engineType string) 
 }
 
 // parseMetricFromFamily parses a specific metric from Prometheus metric families
-func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto.MetricFamily, rawMetricName string, metricType MetricType) (MetricValue, error) {
+func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto.MetricFamily, rawMetricName string, metric Metric) (MetricValue, error) {
 	metricFamily, exists := allMetrics[rawMetricName]
 	if !exists {
 		return nil, fmt.Errorf("raw metric %s not found", rawMetricName)
@@ -292,8 +292,8 @@ func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto
 	firstMetric := metricFamily.Metric[0]
 
 	// Parse based on metric type
-	if metricType.IsRawMetric() {
-		switch metricType.Raw {
+	if metric.MetricType.IsRawMetric() {
+		switch metric.MetricType.Raw {
 		case Gauge, Counter:
 			value, err := GetCounterGaugeValue(firstMetric, metricFamily.GetType())
 			if err != nil {
@@ -309,11 +309,17 @@ func (ef *EngineMetricsFetcher) parseMetricFromFamily(allMetrics map[string]*dto
 			return histValue, nil
 
 		default:
-			return nil, fmt.Errorf("unsupported raw metric type: %v", metricType.Raw)
+			return nil, fmt.Errorf("unsupported raw metric type: %v", metric.MetricType.Raw)
 		}
+	} else if metric.MetricType.Query == QueryLabel {
+		label, err := GetLabelValueForKey(firstMetric, metric.LabelKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to extract label %s for metric %s: %v", metric.LabelKey, rawMetricName, err)
+		}
+		return &LabelValueMetricValue{Value: label}, nil
 	}
 
-	return nil, fmt.Errorf("unsupported metric type for raw parsing: %v", metricType)
+	return nil, fmt.Errorf("unsupported metric type for raw parsing: %v", metric.MetricType)
 }
 
 // extractModelNamesFromMetrics extracts model names from metric labels

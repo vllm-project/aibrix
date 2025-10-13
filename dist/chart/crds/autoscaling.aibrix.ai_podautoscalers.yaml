@@ -14,7 +14,23 @@ spec:
     singular: podautoscaler
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.minReplicas
+      name: MINPODS
+      type: integer
+    - jsonPath: .spec.maxReplicas
+      name: MAXPODS
+      type: integer
+    - jsonPath: .status.actualScale
+      name: REPLICAS
+      type: integer
+    - jsonPath: .spec.scalingStrategy
+      name: STRATEGY
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         properties:
@@ -37,6 +53,9 @@ spec:
                     metricSourceType:
                       enum:
                       - pod
+                      - resource
+                      - custom
+                      - external
                       - domain
                       type: string
                     path:
@@ -54,8 +73,6 @@ spec:
                       type: string
                   required:
                   - metricSourceType
-                  - path
-                  - protocolType
                   - targetMetric
                   - targetValue
                   type: object
@@ -88,6 +105,11 @@ spec:
                 - KPA
                 - APA
                 type: string
+              subTargetSelector:
+                properties:
+                  roleName:
+                    type: string
+                type: object
             required:
             - maxReplicas
             - scaleTargetRef
@@ -140,6 +162,33 @@ spec:
               lastScaleTime:
                 format: date-time
                 type: string
+              scalingHistory:
+                items:
+                  properties:
+                    error:
+                      type: string
+                    newScale:
+                      format: int32
+                      type: integer
+                    previousScale:
+                      format: int32
+                      type: integer
+                    reason:
+                      type: string
+                    success:
+                      type: boolean
+                    timestamp:
+                      format: date-time
+                      type: string
+                  required:
+                  - newScale
+                  - previousScale
+                  - reason
+                  - success
+                  - timestamp
+                  type: object
+                maxItems: 5
+                type: array
             type: object
         type: object
     served: true

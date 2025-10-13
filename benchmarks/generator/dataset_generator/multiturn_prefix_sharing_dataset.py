@@ -58,7 +58,8 @@ def main(args):
         model_max_length=4096,  # Increased to handle longer prefixes
         padding_side="right",
         truncation_side="right",
-        use_fast=True
+        use_fast=True,
+        token=args.api_key
     )
     sessioned_prompts = []
     shared_prefix = ""

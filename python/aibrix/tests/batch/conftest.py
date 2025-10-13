@@ -15,6 +15,8 @@
 import argparse
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -50,11 +52,54 @@ def run_operator_in_thread(stop_flag: threading.Event):
 
 @pytest.fixture(scope="session")
 def k8s_config():
-    """Initialize Kubernetes client."""
+    """Initialize Kubernetes client and test connectivity."""
     try:
-        config.load_incluster_config()
-    except config.ConfigException:
-        config.load_kube_config()
+        # Try to load in-cluster config first, then fallback to local config
+        try:
+            config.load_incluster_config()
+            logger.info("Loaded in-cluster Kubernetes configuration")
+        except config.ConfigException:
+            try:
+                config.load_kube_config()
+                logger.info("Loaded local Kubernetes configuration")
+            except config.ConfigException as e:
+                pytest.skip(f"Kubernetes configuration not available: {e}")
+
+        # Test API server accessibility with reliable timeout
+        try:
+            v1 = client.CoreV1Api()
+            api_host = v1.api_client.configuration.host
+            if not api_host:
+                pytest.skip(
+                    "Kubernetes configuration is invalid: no API server host found"
+                )
+
+            logger.info(f"Testing Kubernetes API accessibility: {api_host}")
+
+            def test_api_call():
+                """Make a simple API call to test connectivity."""
+                # Use a simple API call that exists on CoreV1Api
+                return v1.list_namespace(limit=1)
+
+            # Use ThreadPoolExecutor with timeout to prevent hanging
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(test_api_call)
+                try:
+                    # Wait maximum 10 seconds for the API call
+                    future.result(timeout=10)
+                    logger.info("Kubernetes API server accessibility verified")
+                except FutureTimeoutError:
+                    pytest.skip(
+                        f"Kubernetes API server timeout after 10 seconds: {api_host}"
+                    )
+                except Exception as e:
+                    pytest.skip(f"Kubernetes API server not accessible: {e}")
+
+        except Exception as e:
+            pytest.skip(f"Failed to create Kubernetes API client: {e}")
+
+    except Exception as e:
+        pytest.skip(f"Failed to initialize Kubernetes client: {e}")
 
 
 @pytest.fixture
@@ -97,6 +142,8 @@ def job_cache(kopf_operator, ensure_job_rbac):
     """
     from pathlib import Path
 
+    # Always create a new JobCache with the custom template for this test
+    # Don't reuse global cache as it may have different configuration
     template_patch_path = (
         Path(__file__).parent / "testdata" / "k8s_job_patch_unittest.yaml"
     )
@@ -141,6 +188,30 @@ def redis_config_available():
     # Check for AWS credentials
     if os.getenv("REDIS_HOST") is None:
         pytest.skip("Redis configuration not available")
+
+    import redis
+
+    def test_connection():
+        # Try to connect to Redis with a short timeout
+        client = redis.Redis(
+            host=os.environ.get("REDIS_HOST", "localhost"),
+            port=int(os.environ.get("REDIS_PORT", "6379")),
+            db=int(os.environ.get("REDIS_DB", "0")),
+            password=os.environ.get("REDIS_PASSWORD"),
+            socket_connect_timeout=2,
+            socket_timeout=2,
+            decode_responses=True,
+        )
+        # Test with a simple ping
+        return client.ping()
+
+    # Use ThreadPoolExecutor to enforce timeout
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(test_connection)
+        try:
+            future.result(timeout=5)  # 5 second timeout
+        except Exception as e:
+            pytest.skip(f"Redis access not available: {e}")
 
 
 @pytest.fixture(scope="session")

@@ -29,15 +29,14 @@ import (
 )
 
 // ScalingAlgorithm computes target replicas based on metrics and context
+// Implementations must be stateless and thread-safe for concurrent use
 type ScalingAlgorithm interface {
 	// ComputeRecommendation calculates desired replica count based on aggregated metrics
+	// All configuration is passed via the request to keep the algorithm stateless
 	ComputeRecommendation(ctx context.Context, request ScalingRequest) (*ScalingRecommendation, error)
 
 	// GetAlgorithmType returns the algorithm type (kpa, apa, hpa)
 	GetAlgorithmType() string
-
-	// UpdateConfiguration updates algorithm parameters
-	UpdateConfiguration(config AlgorithmConfig) error
 }
 
 // ScalingRequest contains all data needed for scaling decision
@@ -46,7 +45,6 @@ type ScalingRequest struct {
 	CurrentReplicas   int32
 	AggregatedMetrics *types.AggregatedMetrics
 	ScalingContext    scalingctx.ScalingContext
-	Constraints       types.ScalingConstraints
 	Timestamp         time.Time
 }
 
@@ -60,36 +58,28 @@ type ScalingRecommendation struct {
 	Metadata        map[string]interface{}
 }
 
-// AlgorithmConfig defines algorithm parameters
-type AlgorithmConfig struct {
-	Strategy       autoscalingv1alpha1.ScalingStrategyType
-	PanicThreshold float64
-	StableWindow   time.Duration
-	PanicWindow    time.Duration
-	ScaleToZero    bool
-}
-
-// NewScalingAlgorithm creates the appropriate algorithm based on strategy
-func NewScalingAlgorithm(strategy autoscalingv1alpha1.ScalingStrategyType, config AlgorithmConfig) ScalingAlgorithm {
+// NewScalingAlgorithm creates a stateless algorithm instance for the given strategy
+// Instances can be safely cached and reused across goroutines
+func NewScalingAlgorithm(strategy autoscalingv1alpha1.ScalingStrategyType) ScalingAlgorithm {
 	switch strategy {
 	case autoscalingv1alpha1.KPA:
-		return NewKPAAlgorithm(config)
+		return &KPAAlgorithm{}
 	case autoscalingv1alpha1.APA:
-		return NewAPAAlgorithm(config)
+		return &APAAlgorithm{}
 	case autoscalingv1alpha1.HPA:
-		return NewHPAAlgorithm(config)
+		return &HPAAlgorithm{}
 	default:
-		return NewKPAAlgorithm(config) // Default to KPA
+		return &KPAAlgorithm{} // Default to KPA
 	}
 }
 
-// applyConstraints applies min/max replica constraints
-func applyConstraints(replicas int32, constraints types.ScalingConstraints) int32 {
-	if replicas < constraints.MinReplicas {
-		return constraints.MinReplicas
+// applyConstraints applies min/max replica constraints from ScalingContext
+func applyConstraints(replicas int32, context scalingctx.ScalingContext) int32 {
+	if replicas < context.GetMinReplicas() {
+		return context.GetMinReplicas()
 	}
-	if replicas > constraints.MaxReplicas {
-		return constraints.MaxReplicas
+	if replicas > context.GetMaxReplicas() {
+		return context.GetMaxReplicas()
 	}
 	return replicas
 }

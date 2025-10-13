@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-metadata-service
+  name: aibrix-metadata-service
+  namespace: {{ .Release.Namespace }}
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aibrix-metadata-service-reader
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-metadata-service
+rules:
+  # Read pods to get base models
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  # Read ModelAdapter CRDs to get adapter models
+  - apiGroups: ["model.aibrix.ai"]
+    resources: ["modeladapters"]
+    verbs: ["get", "list"]
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aibrix-metadata-service-reader
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-metadata-service
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aibrix-metadata-service-reader
+subjects:
+  - kind: ServiceAccount
+    name: aibrix-metadata-service
+    namespace: {{ .Release.Namespace }}

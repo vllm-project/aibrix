@@ -1,33 +1,50 @@
-# Build the manager binary
-FROM golang:1.22 AS builder
-ARG TARGETOS
-ARG TARGETARCH
+ARG PYTHON_VERSION=3.11
+ARG BASE_IMAGE=python:${PYTHON_VERSION}-slim-bookworm
 
-WORKDIR /workspace
-# Copy the Go Modules manifests
-COPY go.mod go.mod
-COPY go.sum go.sum
-# cache deps before building and copying source so that we don't need to re-download as much
-# and so that source changes don't invalidate our downloaded layer
-RUN go mod download
+# Builder stage
+FROM ${BASE_IMAGE} AS builder
 
-# Copy the go source
-COPY cmd/ cmd/
-COPY api/ api/
-COPY pkg/ pkg/
+WORKDIR /app
 
-# Build
-# the GOARCH has not a default value to allow the binary be built according to the host where the command
-# was called. For example, if we call make docker-build in a local env which has the Apple Silicon M1 SO
-# the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64. Therefore,
-# by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o metadata-service cmd/metadata/main.go
+ARG POETRY_VERSION=1.8.3
 
-# Use distroless as minimal base image to package the manager binary
-# Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
-WORKDIR /
-COPY --from=builder /workspace/metadata-service .
-USER 65532:65532
+# Install dependencies
+RUN apt-get update \
+    && apt-get install -y python3-dev build-essential \
+    && apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-ENTRYPOINT ["/metadata-service"]
+# Install Poetry
+RUN python3 -m pip install poetry==${POETRY_VERSION}
+
+# Copy the metadata source
+COPY python/aibrix/poetry.lock python/aibrix/pyproject.toml python/aibrix/ /app/
+
+# Install dependencies and build package
+RUN poetry config virtualenvs.create false \
+    && poetry install --no-interaction --no-dev \
+    && poetry build -f wheel
+
+# Final stage
+FROM ${BASE_IMAGE}
+
+WORKDIR /app
+
+COPY --from=builder /app/dist/*.whl ./
+
+# Install build dependencies and clean up in one step (avoiding creating another new layer)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc python3-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir ./*.whl \
+    && rm -f ./*.whl \
+    && apt-get purge -y gcc python3-dev \
+    && apt-get autoremove -y
+
+# Expose metadata service port
+EXPOSE 8090
+
+# Run metadata server
+CMD ["python", "-m", "aibrix.metadata.app", "--host", "0.0.0.0", "--port", "8090"]
+

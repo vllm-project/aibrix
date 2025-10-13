@@ -251,6 +251,7 @@ class JobScheduler:
         logger.info("Starting scheduling...")
         job_driver = JobDriver(self._job_progress_manager, inference_client)
         while True:
+            one_job: Optional[str] = None
             try:
                 one_job = await self.round_robin_get_job()
             except Exception as e:
@@ -324,7 +325,8 @@ class JobScheduler:
             job_id = self._CC_controller._running_job_pool[i]
             # Do not schedule new job in since we need to adjust capacity
             # based on new pool size representing how much underlying resource.
-            if (await self._job_progress_manager.get_job_status(job_id)).finished:
+            job = await self._job_progress_manager.get_job_status(job_id)
+            if not job or job.finished:
                 self._CC_controller._running_job_pool[i] = None
 
         # Step 2, after the jobs' status are updated,

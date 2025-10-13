@@ -1,0 +1,5 @@
+PyYAML==6.0.3
+openai==2.3.0
+matplotlib==3.10.7
+transformers==4.57.0
+scipy==1.16.2

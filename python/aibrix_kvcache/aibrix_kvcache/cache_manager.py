@@ -651,7 +651,8 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
         if self._chunk_size < 4 * self.block_ntokens:
             logger.warning(
-                "chunk_size is too small, using %d instead",
+                "AIBRIX_KV_CACHE_OL_CHUNK_SIZE=%d is too small, using %d",
+                self._chunk_size,
                 4 * self.block_ntokens,
             )
             self._chunk_size = 4 * self.block_ntokens
@@ -710,18 +711,34 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 // self.block_ntokens
             )
 
+            engine_batch_ntokens = self.config.model_spec.max_num_batched_tokens
+            if engine_batch_ntokens <= 0:
+                engine_batch_ntokens = self._chunk_size
+
+            engine_batch_nblocks = engine_batch_ntokens // self.block_ntokens
+
+            if 0 < self._l2_inflight_quota < 2 * engine_batch_nblocks:
+                temp = self._l2_inflight_quota * self.block_ntokens
+                self._l2_inflight_quota = 2 * engine_batch_nblocks
+                logger.warning(
+                    "AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_MAX_INFLIGHT_TOKENS"
+                    "=%d is too small, using %d instead",
+                    temp,
+                    self._l2_inflight_quota * self.block_ntokens,
+                )
+
             max_mr_nbytes = ManagedMemoryRegion.calculate_size(
                 self.block_nbytes, self.config.model_spec.max_model_len
             )
-            nblocks_per_chunk = self._chunk_size // self.block_ntokens
+            nblocks_per_batch = engine_batch_ntokens // self.block_ntokens
             # more capacity for async/sync load
             if self._l2_inflight_quota > 0:
                 more_capacity_nbytes = self._l2_inflight_quota * max_mr_nbytes
             else:
-                more_capacity_nbytes = nblocks_per_chunk * max_mr_nbytes
+                more_capacity_nbytes = nblocks_per_batch * max_mr_nbytes
 
             # more capacity for get
-            more_capacity_nbytes += 2 * nblocks_per_chunk * max_mr_nbytes
+            more_capacity_nbytes += 2 * nblocks_per_batch * max_mr_nbytes
 
             allocator_capacity_nbytes += more_capacity_nbytes
 
@@ -743,6 +760,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 self._allocator,
                 self.block_spec,
                 metrics=self._metrics.l1,
+                multi_threaded=self.config.multi_threaded,
             )
 
         if enable_l2:

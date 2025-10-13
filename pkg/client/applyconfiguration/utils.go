@@ -43,6 +43,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &autoscalingv1alpha1.PodAutoscalerSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("PodAutoscalerStatus"):
 		return &autoscalingv1alpha1.PodAutoscalerStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ScalingDecision"):
+		return &autoscalingv1alpha1.ScalingDecisionApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("SubTargetSelector"):
+		return &autoscalingv1alpha1.SubTargetSelectorApplyConfiguration{}
 
 		// Group=model, Version=v1alpha1
 	case modelv1alpha1.SchemeGroupVersion.WithKind("ModelAdapter"):

@@ -57,6 +57,12 @@ type PodAutoscalerSpec struct {
 	// ScaleTargetRef points to scale-able resource that this PodAutoscaler should target and scale. e.g. Deployment
 	ScaleTargetRef corev1.ObjectReference `json:"scaleTargetRef"`
 
+	// SubTargetSelector selects a sub-component within the target resource
+	// For StormService/RoleSet: selects a role by roleName
+	// If not specified, scales the entire resource
+	// +optional
+	SubTargetSelector *SubTargetSelector `json:"subTargetSelector,omitempty"`
+
 	//// PodSelector allows for more flexible selection of pods to scale based on labels.
 	//PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 
@@ -75,6 +81,13 @@ type PodAutoscalerSpec struct {
 	// ScalingStrategy defines the strategy to use for scaling.
 	// +kubebuilder:validation:Enum={HPA,KPA,APA}
 	ScalingStrategy ScalingStrategyType `json:"scalingStrategy"`
+}
+
+// SubTargetSelector identifies a sub-component within the scale target
+type SubTargetSelector struct {
+	// RoleName selects a role within StormService or RoleSet
+	// +optional
+	RoleName string `json:"roleName,omitempty"`
 }
 
 // ScalingStrategyType defines the type for scaling strategies.
@@ -119,19 +132,40 @@ type MetricSource struct {
 	// Specifies how to fetch metrics: from individual pods, Kubernetes APIs, or external services
 	// +kubebuilder:validation:Enum={pod,resource,custom,external,domain}
 	MetricSourceType MetricSourceType `json:"metricSourceType"`
-	// Protocol for metric collection
+	// Protocol for metric collection. Required only for 'pod' and 'external' types.
+	// +optional
 	// +kubebuilder:validation:Enum={http,https}
-	ProtocolType ProtocolType `json:"protocolType"`
-	// External service endpoint (e.g., gpu-optimizer.aibrix-system.svc.cluster.local). Only used for EXTERNAL type.
+	ProtocolType ProtocolType `json:"protocolType,omitempty"`
+	// External service endpoint (e.g., gpu-optimizer.aibrix-system.svc.cluster.local)
+	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
 	// Path to metrics endpoint (e.g., /api/metrics/cpu)
-	Path string `json:"path"`
-	// Port for pod-level metrics. Only used for POD type.
+	// +optional
+	Path string `json:"path,omitempty"`
+	// Port for pod-level metrics. Only used for 'pod' type.
+	// +optional
 	Port string `json:"port,omitempty"`
 	// TargetMetric identifies the specific metric to monitor (e.g., kv_cache_utilization).
 	TargetMetric string `json:"targetMetric"`
 	// TargetValue sets the desired threshold for the metric (e.g., 50 for 50% utilization).
 	TargetValue string `json:"targetValue"`
+}
+
+// ScalingDecision represents a single scaling decision made by the autoscaler
+type ScalingDecision struct {
+	// Timestamp when the scaling decision was made
+	Timestamp metav1.Time `json:"timestamp"`
+	// PreviousScale is the number of replicas before scaling
+	PreviousScale int32 `json:"previousScale"`
+	// NewScale is the number of replicas after scaling
+	NewScale int32 `json:"newScale"`
+	// Reason provides the explanation for the scaling decision
+	Reason string `json:"reason"`
+	// Success indicates whether the scaling operation succeeded
+	Success bool `json:"success"`
+	// Error message if the scaling failed
+	// +optional
+	Error string `json:"error,omitempty"`
 }
 
 // PodAutoscalerStatus defines the observed state of PodAutoscaler
@@ -156,6 +190,11 @@ type PodAutoscalerStatus struct {
 	// Conditions is the set of conditions required for this autoscaler to scale its target,
 	// and indicates whether or not those conditions are met.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// ScalingHistory stores the last N scaling decisions
+	// +optional
+	// +kubebuilder:validation:MaxItems=5
+	ScalingHistory []ScalingDecision `json:"scalingHistory,omitempty"`
 }
 
 // +kubebuilder:object:root=true
