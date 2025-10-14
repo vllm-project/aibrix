@@ -35,4 +35,4 @@ spec:
   targetRef:
     group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: aibrix-reserved-router-models-endpoint
+    name: aibrix-reserved-router-metadata-endpoint

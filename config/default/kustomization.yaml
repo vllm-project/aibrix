@@ -25,7 +25,6 @@ resources:
 - ../gateway
 - ../metadata
 - ../gpu-optimizer
-- ../api-extension
 - ../dependency/kuberay-operator
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml

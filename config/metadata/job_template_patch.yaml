@@ -1,0 +1,16 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: batch-job-template
+  namespace: default
+spec:
+  parallelism: 1 # Customizable. The number of parallel workers.
+  completions: 1 # Customizable. Must equal to the parallelism.
+  backoffLimit: 2 # Customizable, but usually no need to change.
+  template:
+    spec:
+      containers:
+      - name: batch-worker
+        image: aibrix/runtime:nightly # Customizable, runtime image
+      - name: llm-engine
+        image: aibrix/vllm-mock:nightly # Customizable, LLM engine image

@@ -45,6 +45,6 @@ RUN apt-get update \
 # Expose metadata service port
 EXPOSE 8090
 
-# Run metadata server
-CMD ["python", "-m", "aibrix.metadata.app", "--host", "0.0.0.0", "--port", "8090"]
+# Set entrypoint for Metadata service
+ENTRYPOINT ["aibrix_metadata", "--enable-k8s-job", "--host", "0.0.0.0"]
 

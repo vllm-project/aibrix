@@ -1,8 +1,0 @@
-resources:
-- deployment.yaml
-- service.yaml
-- rbac.yaml
-
-labels:
-  - pairs:
-      app.kubernetes.io/component: aibrix-api-extension

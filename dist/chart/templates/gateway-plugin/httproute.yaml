@@ -33,7 +33,7 @@ spec:
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: aibrix-reserved-router-models-endpoint
+  name: aibrix-reserved-router-metadata-endpoint
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "chart.labels" . | nindent 4 }}
@@ -46,23 +46,6 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/models
-      backendRefs:
-        - name: aibrix-metadata-service
-          port: 8090
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: aibrix-reserved-router-extensions-endpoint
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "chart.labels" . | nindent 4 }}
-    app.kubernetes.io/component: aibrix-api-extension
-spec:
-  parentRefs:
-    - name: aibrix-eg
-  rules:
-    - matches:
         - path:
             type: PathPrefix
             value: /v1/files
@@ -70,5 +53,5 @@ spec:
             type: PathPrefix
             value: /v1/batches
       backendRefs:
-        - name: aibrix-api-extension
-          port: 8100
+        - name: aibrix-metadata-service
+          port: 8090

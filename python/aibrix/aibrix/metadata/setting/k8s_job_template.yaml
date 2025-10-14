@@ -8,7 +8,11 @@ metadata:
   annotations:
     # Template annotations will be merged with BatchJobSpec annotations
 spec:
-  suspend: true # !!Important: creates the job in a paused state
+  suspend: true # Non-customizable. !!Important: creates the job in a paused state, job controller will validate and start the job
+  parallelism: 1 # Customizable. The number of parallel workers.
+  completions: 1 # Customizable. Must equal to the parallelism.
+  backoffLimit: 2 # Customizable, but usually no need to change.
+  activeDeadlineSeconds: 86400  # Non-customizable. The deadline will be modified for each request according to 
   template:
     metadata:
       labels:
@@ -16,8 +20,8 @@ spec:
     spec:
       serviceAccountName: job-reader-sa
       automountServiceAccountToken: true
-      shareProcessNamespace: true # Allow worker to kill llm-engine
-      restartPolicy: Never
+      shareProcessNamespace: true # Non-customizable. Allow worker to kill llm-engine.
+      restartPolicy: Never # Non-customizable. Must be "Never."
       containers:
       - name: batch-worker
         image: aibrix/runtime:nightly
@@ -85,5 +89,3 @@ spec:
           periodSeconds: 5
           successThreshold: 1
           timeoutSeconds: 1
-  backoffLimit: 2
-  activeDeadlineSeconds: 86400  # 24 hours

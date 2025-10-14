@@ -314,7 +314,7 @@ class JobCache(JobEntityManager):
         session_id: str,
         job_spec: BatchJobSpec,
         job_name: Optional[str] = None,
-        parallelism: int = 1,
+        parallelism: Optional[int] = None,
         prepared_job: Optional[BatchJob] = None,
     ) -> None:
         """Submit job by creating a Kubernetes Job.
@@ -322,6 +322,7 @@ class JobCache(JobEntityManager):
         Args:
             job_spec: BatchJobSpec to submit to Kubernetes.
             job_name: Optional job name, will generate one if not provided.
+            parallelism: Optional parallelism for the job, default to None and follow template settings.
             prepared_job: Optional BatchJob with file IDs to add to pod annotations.
 
         Raises:
@@ -762,7 +763,7 @@ class JobCache(JobEntityManager):
         session_id: str,
         job_spec: BatchJobSpec,
         job_name: Optional[str] = None,
-        parallelism: int = 1,
+        parallelism: Optional[int] = None,
         prepared_job: Optional[BatchJob] = None,
     ) -> Dict[str, Any]:
         """Convert BatchJobSpec to Kubernetes Job manifest using pre-loaded template.
@@ -845,10 +846,11 @@ class JobCache(JobEntityManager):
                 },
                 "activeDeadlineSeconds": job_spec.completion_window,
                 "suspend": suspend,
-                "parallelism": parallelism,
-                "completions": parallelism,
             },
         }
+        if parallelism is not None:
+            job_patch["spec"]["parallelism"] = parallelism
+            job_patch["spec"]["completions"] = parallelism
         # Use pre-loaded template (deep copy to avoid modifying the original)
         job_template = merge_yaml_object(self.job_template, job_patch)
 

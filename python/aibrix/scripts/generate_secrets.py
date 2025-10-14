@@ -19,6 +19,10 @@ from aibrix.metadata.secret_gen import SecretGenerator
 def create_s3_secret_cli(args):
     """Create an S3 secret from CLI arguments."""
     try:
+        if not args.bucket:
+            print("❌ Error: Bucket name is required for S3 secret creation.")
+            sys.exit(1)
+
         generator = SecretGenerator(namespace=args.namespace)
 
         secret_name = generator.create_s3_secret(
@@ -27,8 +31,7 @@ def create_s3_secret_cli(args):
 
         print(f"✅ Successfully created S3 secret: {secret_name}")
         print(f"   Namespace: {args.namespace}")
-        if args.bucket:
-            print(f"   Bucket: {args.bucket}")
+        print(f"   Bucket: {args.bucket}")
 
     except Exception as e:
         print(f"❌ Failed to create S3 secret: {e}")
@@ -38,6 +41,10 @@ def create_s3_secret_cli(args):
 def create_tos_secret_cli(args):
     """Create a TOS secret from CLI arguments."""
     try:
+        if not args.bucket:
+            print("❌ Error: Bucket name is required for TOS secret creation.")
+            sys.exit(1)
+
         generator = SecretGenerator(namespace=args.namespace)
 
         secret_name = generator.create_tos_secret(
@@ -46,8 +53,7 @@ def create_tos_secret_cli(args):
 
         print(f"✅ Successfully created TOS secret: {secret_name}")
         print(f"   Namespace: {args.namespace}")
-        if args.bucket:
-            print(f"   Bucket: {args.bucket}")
+        print(f"   Bucket: {args.bucket}")
 
     except Exception as e:
         print(f"❌ Failed to create TOS secret: {e}")

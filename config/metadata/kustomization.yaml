@@ -2,6 +2,12 @@ resources:
 - metadata.yaml
 - redis.yaml
 
+configMapGenerator:
+- name: metadata-config
+  namespace: aibrix-system
+  files:
+  - job_template_patch.yaml
+
 labels:
   - pairs:
       app.kubernetes.io/component: aibrix-metadata-service

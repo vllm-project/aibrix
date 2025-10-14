@@ -31,8 +31,6 @@ spec:
         - name: metadata-service
           image: {{ .Values.metadata.service.container.image.repository }}:{{ .Values.metadata.service.container.image.tag }}
           imagePullPolicy: {{ .Values.metadata.service.container.image.imagePullPolicy | default "IfNotPresent" }}
-          command: ["python", "-m", "aibrix.metadata.app"]
-          args: ["--host=0.0.0.0", "--port=8090"]
           ports:
             - containerPort: 8090
           resources: {{ toYaml .Values.metadata.service.container.resources | nindent 12 }}

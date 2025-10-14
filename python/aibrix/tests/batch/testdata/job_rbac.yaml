@@ -3,14 +3,14 @@
 # with enable_k8s_job=True
 
 ---
-# Service Account for job reader (as referenced in config/api-extension/rbac.yaml)
+# Test ServiceAccount for job reader
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: unittest-job-reader-sa
   namespace: default
 ---
-# Role for job reader
+# Test Role for job reader
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -21,7 +21,7 @@ rules:
   resources: ["jobs"]
   verbs: ["get"] # Get permissions only
 ---
-# RoleBinding for job reader
+# Test RoleBinding for job reader
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
