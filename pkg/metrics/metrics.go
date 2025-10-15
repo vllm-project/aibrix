@@ -77,7 +77,8 @@ var (
 				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:num_requests_waiting",
+				"vllm":   "vllm:num_requests_waiting",
+				"sglang": "sglang:num_waiting_reqs",
 			},
 			Description: "Number of waiting requests",
 		},
