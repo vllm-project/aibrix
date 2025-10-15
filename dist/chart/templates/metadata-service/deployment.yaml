@@ -32,7 +32,9 @@ spec:
           image: {{ .Values.metadata.service.container.image.repository }}:{{ .Values.metadata.service.container.image.tag }}
           imagePullPolicy: {{ .Values.metadata.service.container.image.imagePullPolicy | default "IfNotPresent" }}
           command:
-            - aibrix_metadata
+            - python
+            - -m
+            - aibrix.metadata.app
             - --host
             - "0.0.0.0"
             - --enable-k8s-job
