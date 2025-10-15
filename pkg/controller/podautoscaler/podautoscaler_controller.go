@@ -32,18 +32,15 @@ import (
 	"sync"
 	"time"
 
-	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	"k8s.io/apimachinery/pkg/selection"
-
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/monitor"
+	podutils "github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/apimachinery/pkg/labels"
 	ktypes "k8s.io/apimachinery/pkg/types"
-
-	podutils "github.com/vllm-project/aibrix/pkg/utils"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
@@ -54,10 +51,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/client-go/discovery"
 	memcache "k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"k8s.io/metrics/pkg/client/clientset/versioned"
 	custommetrics "k8s.io/metrics/pkg/client/custom_metrics"
@@ -282,15 +281,15 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// conflict: Ensure no other PA controls the same target
 	conflictVR := r.checkNoMultiPodAutoscalerConflict(&pa)
 
+	newStatus := computeStatus(ctx, pa, specVR, conflictVR)
+	paCopy := pa.DeepCopy()
+	paCopy.Status = *newStatus
+	if err := r.updateStatusIfNeeded(ctx, &pa.Status, paCopy); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// if invalid, skip reconciliation (no scaling)
 	if !specVR.Valid || !conflictVR.Valid {
-		// Compute the desired new status
-		newStatus := computeStatus(ctx, pa, specVR, conflictVR)
-		// Make a copy of pa so we can safely modify its status
-		paCopy := pa.DeepCopy()
-		paCopy.Status = *newStatus
-		if err := r.updateStatusIfNeeded(ctx, &pa.Status, paCopy); err != nil {
-			return ctrl.Result{}, err
-		}
 		return ctrl.Result{}, nil
 	}
 
@@ -299,16 +298,10 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.reconcileHPA(ctx, pa)
 	case autoscalingv1alpha1.KPA, autoscalingv1alpha1.APA:
 		return r.reconcileCustomPA(ctx, pa)
+	default:
+		// Status already updated above; nothing more to do
+		return ctrl.Result{}, nil
 	}
-
-	newStatus := computeStatus(ctx, pa, specVR, conflictVR)
-	paCopy := pa.DeepCopy()
-	paCopy.Status = *newStatus
-	if err := r.updateStatusIfNeeded(ctx, &pa.Status, paCopy); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, nil
 }
 
 type ScalingTargetKey struct {
@@ -595,6 +588,11 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
 			Message:            conflictValidationResult.Message,
 			LastTransitionTime: now,
 		})
+	} else {
+		// Conflict is resolved: remove ConditionConflict if present
+		if cond := apimeta.FindStatusCondition(st.Conditions, ConditionConflict); cond != nil {
+			apimeta.RemoveStatusCondition(&st.Conditions, ConditionConflict)
+		}
 	}
 
 	// ScalingActive
@@ -886,10 +884,25 @@ func setStatus(pa *autoscalingv1alpha1.PodAutoscaler, currentReplicas, desiredRe
 
 func (r *PodAutoscalerReconciler) updateStatusIfNeeded(ctx context.Context, oldStatus *autoscalingv1alpha1.PodAutoscalerStatus, newPA *autoscalingv1alpha1.PodAutoscaler) error {
 	// skip status update if the status is not exact same
-	if apiequality.Semantic.DeepEqual(oldStatus, newPA.Status) {
+	if apiequality.Semantic.DeepEqual(oldStatus, &newPA.Status) {
 		return nil
 	}
-	return r.updateStatus(ctx, newPA)
+	// Use retry.RetryOnConflict to handle "object has been modified"
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &autoscalingv1alpha1.PodAutoscaler{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(newPA), latest); err != nil {
+			return err
+		}
+		// second semantic equality check on the API server.
+		// It's possible that another reconciler or controller
+		// has already updated the status to the desired state while we were waiting.
+		// If so, skip the update to avoid redundant writes and unnecessary resourceVersion bumps.
+		if apiequality.Semantic.DeepEqual(&latest.Status, &newPA.Status) {
+			return nil
+		}
+		latest.Status = newPA.Status
+		return r.Status().Update(ctx, latest)
+	})
 }
 
 // updateStatus actually does the update request for the status of the given PA
