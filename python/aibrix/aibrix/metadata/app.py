@@ -82,32 +82,6 @@ async def status_check(request: Request):
     return JSONResponse(content=status, status_code=200)
 
 
-@router.get("/status")
-async def status_check(request: Request):
-    """Get detailed status of all components."""
-    status: Dict[str, Any] = {
-        "httpx_client": {
-            "available": hasattr(request.app.state, "httpx_client_wrapper"),
-            "status": "initialized"
-            if hasattr(request.app.state, "httpx_client_wrapper")
-            else "not_initialized",
-        },
-        "kopf_operator": {
-            "available": hasattr(request.app.state, "kopf_operator_wrapper"),
-        },
-        "batch_driver": {
-            "available": hasattr(request.app.state, "batch_driver"),
-        },
-    }
-
-    # Get detailed kopf operator status if available
-    if hasattr(request.app.state, "kopf_operator_wrapper"):
-        kopf_status = request.app.state.kopf_operator_wrapper.get_status()
-        status["kopf_operator"].update(kopf_status)
-
-    return JSONResponse(content=status, status_code=200)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Code executed on startup

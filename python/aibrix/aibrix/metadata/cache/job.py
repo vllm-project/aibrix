@@ -830,7 +830,7 @@ class JobCache(JobEntityManager):
             else:
                 suspend = False
 
-        job_patch = {
+        job_patch: Dict[str, Any] = {
             "metadata": {
                 "name": job_name,
                 # Minimal job-level annotations - most metadata moved to pod
