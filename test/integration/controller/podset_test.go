@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/controller/constants"
 	"github.com/vllm-project/aibrix/test/utils/validation"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
@@ -117,7 +118,7 @@ var _ = ginkgo.Describe("PodSet controller test", func() {
 							// Step 1: Create the PodSet
 							gomega.Expect(k8sClient.Create(ctx, podset)).To(gomega.Succeed())
 							// Step 2: Wait for all Pods to be created
-							validation.WaitForPodSetPodsCreated(ctx, k8sClient, ns.Name, podset.Name, 3)
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, podset.Name, 3)
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, podset *orchestrationapi.PodSet) {
 							// Validate Spec
@@ -131,9 +132,9 @@ var _ = ginkgo.Describe("PodSet controller test", func() {
 						// trigger PodSet all pods to ready
 						updateFunc: func(podset *orchestrationapi.PodSet) {
 							// Step 1: List all Pods
-							validation.WaitForPodSetPodsCreated(ctx, k8sClient, ns.Name, podset.Name, 3)
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, podset.Name, 3)
 							// Step 2: Patch all Pods to Running and Ready (simulate integration test environment)
-							validation.MarkPodSetPodsReady(ctx, k8sClient, ns.Name, podset.Name)
+							validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey, podset.Name)
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, podset *orchestrationapi.PodSet) {
 							// Validate Spec

@@ -22,48 +22,10 @@ import (
 	"time"
 
 	"github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/controller/constants"
 )
-
-func WaitForPodSetPodsCreated(ctx context.Context, k8sClient client.Client, ns, podSetLabel string, expected int) {
-	gomega.Eventually(func(g gomega.Gomega) int {
-		podList := &corev1.PodList{}
-		g.Expect(k8sClient.List(ctx, podList,
-			client.InNamespace(ns),
-			client.MatchingLabels{constants.PodSetNameLabelKey: podSetLabel},
-		)).To(gomega.Succeed())
-		return len(podList.Items)
-	}, time.Second*10, time.Millisecond*250).Should(gomega.Equal(expected))
-}
-
-//nolint:dupl
-func MarkPodSetPodsReady(ctx context.Context, k8sClient client.Client, ns, podSetLabel string) {
-	gomega.Eventually(func(g gomega.Gomega) {
-		podList := &corev1.PodList{}
-		g.Expect(k8sClient.List(ctx, podList,
-			client.InNamespace(ns),
-			client.MatchingLabels{constants.PodSetNameLabelKey: podSetLabel},
-		)).To(gomega.Succeed())
-
-		for i := range podList.Items {
-			pod := &podList.Items[i]
-			if pod.DeletionTimestamp != nil {
-				continue
-			}
-			pod.Status.Phase = corev1.PodRunning
-			pod.Status.Conditions = []corev1.PodCondition{{
-				Type:   corev1.PodReady,
-				Status: corev1.ConditionTrue,
-				Reason: "TestReady",
-			}}
-			g.Expect(k8sClient.Status().Update(ctx, pod)).To(gomega.Succeed())
-		}
-	}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
-}
 
 func ValidatePodSetSpec(podset *orchestrationapi.PodSet, expectedPodGroupSize int32, expectedStateful bool) {
 	gomega.Expect(podset.Spec.PodGroupSize).To(gomega.Equal(expectedPodGroupSize))
