@@ -245,6 +245,7 @@ def completion():
         latency = 0.0
         if simulator is not None:
             latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens, arrived_next=arrived_next))
+            print(f"input_tokens {input_tokens} model metadata {simulator.model_metadata}")
 
         # Simulated response
         response = {
@@ -705,7 +706,9 @@ if __name__ == '__main__':
     if gpu_device != "disabled":
         # Load the tokenizer for your model
         from transformers import AutoTokenizer
-
+        from transformers import AutoConfig
+        
+        num_layers, num_heads, hidden_size = None, None, None
         default_model = 'bert-base-uncased'
         try:
             # can we make this as an application argument.
@@ -716,15 +719,30 @@ if __name__ == '__main__':
                 token=HUGGINGFACE_TOKEN,
                 model_max_length=16384,  # Suppress warning
                 clean_up_tokenization_spaces=True)
+            config = AutoConfig.from_pretrained(token_model)
+            # Extract required details
+            num_layers = config.num_hidden_layers
+            num_heads = config.num_attention_heads
+            hidden_size = config.hidden_size
         except Exception as e:
             logger.error(f"Failed to initialize tokenizer, will use default tokenizer model: {e}")
             tokenizer = AutoTokenizer.from_pretrained(
                 default_model,
                 model_max_length=16384,  # Suppress warning
                 clean_up_tokenization_spaces=True)
+            config = AutoConfig.from_pretrained(default_model)
+            # Extract required details
+            num_layers = config.num_hidden_layers
+            num_heads = config.num_attention_heads
+            hidden_size = config.hidden_size
 
         # TODO: check whether able to use argparse to build SimulationConfig
         simulator = Simulator(SimulationConfig.create_from_cli_args())
+        
+        simulator.model_metadata['num_layers'] = num_layers
+        simulator.model_metadata['num_heads'] = num_heads
+        simulator.model_metadata['hidden_size'] = hidden_size
+        
         overrides = {
             "total": 100.0,
             "running": 0,
