@@ -32,10 +32,10 @@ spec:
           image: {{ .Values.metadata.service.container.image.repository }}:{{ .Values.metadata.service.container.image.tag }}
           imagePullPolicy: {{ .Values.metadata.service.container.image.imagePullPolicy | default "IfNotPresent" }}
           command:
-            - 'aibrix_metadata'
-            - '--host'
-            - '0.0.0.0'
-            - '--enable-k8s-job'
+            - aibrix_metadata
+            - --host
+            - "0.0.0.0"
+            - --enable-k8s-job
           ports:
             - containerPort: 8090
           resources: {{ toYaml .Values.metadata.service.container.resources | nindent 12 }}
