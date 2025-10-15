@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/controller/constants"
 	"github.com/vllm-project/aibrix/test/utils/validation"
 	"github.com/vllm-project/aibrix/test/utils/wrapper"
 )
@@ -144,9 +145,9 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 							// Wait for 5 RoleSets to be created (3 prefill + 2 decode roles)
 							validation.WaitForRoleSetsCreated(ctx, k8sClient, ns.Name, ss.Name, 5)
 							// Wait for 25 Pods (5 roles × 5 replicas each role)
-							validation.WaitForStormServicePodsCreated(ctx, k8sClient, ns.Name, ss.Name, 25)
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.StormServiceNameLabelKey, ss.Name, 25)
 							// Mark all Pods as Ready
-							validation.MarkStormServicePodsReady(ctx, k8sClient, ns.Name, ss.Name)
+							validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.StormServiceNameLabelKey, ss.Name)
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, ss *orchestrationapi.StormService) {
 							// Validate Spec
@@ -162,28 +163,23 @@ var _ = ginkgo.Describe("StormService controller test", func() {
 					},
 					{
 						updateFunc: func(ss *orchestrationapi.StormService) {
-							// Step 4: Update replicas to test scaling (scale down)
-							patched := &orchestrationapi.StormService{}
-							gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), patched)).To(gomega.Succeed())
 
-							newReplicas := int32(3)
-							patched.Spec.Replicas = &newReplicas
-							gomega.Expect(k8sClient.Update(ctx, patched)).To(gomega.Succeed())
+							// Step 4: Update replicas to test scaling (scale down)
+							validation.UpdateStormServiceReplicas(ctx, k8sClient, ss, 3)
+
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, ss *orchestrationapi.StormService) {
+
 							// Validate scaling down
 							validation.ValidateStormServiceReplicas(ctx, k8sClient, ss, 3)
 						},
 					},
 					{
 						updateFunc: func(ss *orchestrationapi.StormService) {
-							// Step 5: Update replicas to test scaling (scale up)
-							patched := &orchestrationapi.StormService{}
-							gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), patched)).To(gomega.Succeed())
 
-							newReplicas := int32(6)
-							patched.Spec.Replicas = &newReplicas
-							gomega.Expect(k8sClient.Update(ctx, patched)).To(gomega.Succeed())
+							// Step 5: Update replicas to test scaling (scale up)
+							validation.UpdateStormServiceReplicas(ctx, k8sClient, ss, 6)
+
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, ss *orchestrationapi.StormService) {
 							// Validate scaling up

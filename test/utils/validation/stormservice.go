@@ -39,43 +39,14 @@ func WaitForRoleSetsCreated(ctx context.Context, k8sClient client.Client, ns, ss
 	}, time.Second*10, time.Millisecond*250).Should(gomega.Equal(expected))
 }
 
-//nolint:dupl
-func WaitForStormServicePodsCreated(ctx context.Context, k8sClient client.Client, ns,
-	stormServiceLabel string, expected int) {
-	gomega.Eventually(func(g gomega.Gomega) int {
-		podList := &corev1.PodList{}
-		g.Expect(k8sClient.List(ctx, podList,
-			client.InNamespace(ns),
-			client.MatchingLabels{constants.StormServiceNameLabelKey: stormServiceLabel},
-		)).To(gomega.Succeed())
-		return len(podList.Items)
-	}, time.Second*10, time.Millisecond*250).Should(gomega.Equal(expected))
-}
+func UpdateStormServiceReplicas(ctx context.Context, k8sClient client.Client, ss *orchestrationapi.StormService,
+	replicas int) {
+	patched := &orchestrationapi.StormService{}
+	gomega.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ss), patched)).To(gomega.Succeed())
 
-//nolint:dupl
-func MarkStormServicePodsReady(ctx context.Context, k8sClient client.Client, ns, ssName string) {
-	gomega.Eventually(func(g gomega.Gomega) {
-		podList := &corev1.PodList{}
-		g.Expect(k8sClient.List(ctx, podList,
-			client.InNamespace(ns),
-			client.MatchingLabels{constants.StormServiceNameLabelKey: ssName})).To(gomega.Succeed())
-
-		for i := range podList.Items {
-			pod := &podList.Items[i]
-			if pod.DeletionTimestamp != nil {
-				continue
-			}
-			pod.Status.Phase = corev1.PodRunning
-			pod.Status.Conditions = []corev1.PodCondition{
-				{
-					Type:   corev1.PodReady,
-					Status: corev1.ConditionTrue,
-					Reason: "TestReady",
-				},
-			}
-			g.Expect(k8sClient.Status().Update(ctx, pod)).To(gomega.Succeed())
-		}
-	}, time.Second*5, time.Millisecond*250).Should(gomega.Succeed())
+	newReplicas := int32(replicas)
+	patched.Spec.Replicas = &newReplicas
+	gomega.Expect(k8sClient.Update(ctx, patched)).To(gomega.Succeed())
 }
 
 func ValidateStormServiceSpec(stormService *orchestrationapi.StormService, expectedReplicas int32,

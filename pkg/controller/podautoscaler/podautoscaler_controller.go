@@ -75,6 +75,7 @@ const RayClusterFleet = "RayClusterFleet"
 const (
 	ConditionReady         = "Ready"
 	ConditionValidSpec     = "ValidSpec"
+	ConditionConflict      = "MutilPodAutoscalerConflict"
 	ConditionScalingActive = "ScalingActive"
 	ConditionAbleToScale   = "AbleToScale"
 
@@ -152,6 +153,8 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		RuntimeConfig:       runtimeConfig,
 		recommendations:     make(map[string][]timestampedRecommendation),
 		monitor:             monitor.New(),
+		scalingTargetToPA:   make(map[string]ktypes.NamespacedName),
+		paToScalingKey:      make(map[ktypes.NamespacedName]string),
 	}
 
 	return reconciler, nil
@@ -245,6 +248,10 @@ type PodAutoscalerReconciler struct {
 	recommendations   map[string][]timestampedRecommendation
 
 	monitor monitor.Monitor
+
+	scalingTargetMu   sync.RWMutex
+	scalingTargetToPA map[string]ktypes.NamespacedName // keyStr → PA
+	paToScalingKey    map[ktypes.NamespacedName]string // PA → keyStr (for cleanup)
 }
 
 //+kubebuilder:rbac:groups=autoscaling.aibrix.ai,resources=podautoscalers,verbs=get;list;watch;create;update;patch;delete
@@ -262,6 +269,7 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.Get(ctx, req.NamespacedName, &pa); err != nil {
 		if errors.IsNotFound(err) {
 			// Object might have been deleted after reconcile request
+			r.cleanupDeletedPA(req.NamespacedName)
 			klog.Infof("PodAutoscaler resource not found. Object %s must have been deleted", req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
@@ -270,10 +278,13 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// validate spec; if invalid, write conditions and exit without requeue
-	vr := r.validateSpec(&pa)
-	if !vr.Valid {
+	specVR := r.validateSpec(&pa)
+	// conflict: Ensure no other PA controls the same target
+	conflictVR := r.checkNoMultiPodAutoscalerConflict(&pa)
+
+	if !specVR.Valid || !conflictVR.Valid {
 		// Compute the desired new status
-		newStatus := computeStatus(ctx, pa, vr)
+		newStatus := computeStatus(ctx, pa, specVR, conflictVR)
 		// Make a copy of pa so we can safely modify its status
 		paCopy := pa.DeepCopy()
 		paCopy.Status = *newStatus
@@ -290,7 +301,7 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.reconcileCustomPA(ctx, pa)
 	}
 
-	newStatus := computeStatus(ctx, pa, vr)
+	newStatus := computeStatus(ctx, pa, specVR, conflictVR)
 	paCopy := pa.DeepCopy()
 	paCopy.Status = *newStatus
 	if err := r.updateStatusIfNeeded(ctx, &pa.Status, paCopy); err != nil {
@@ -298,6 +309,74 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	return ctrl.Result{}, nil
+}
+
+type ScalingTargetKey struct {
+	Namespace     string
+	APIVersion    string
+	Kind          string
+	Name          string
+	SubTargetRole string // from SubTargetSelector.RoleName
+}
+
+func (r *PodAutoscalerReconciler) buildScalingTargetKey(pa *autoscalingv1alpha1.PodAutoscaler) string {
+	ref := pa.Spec.ScaleTargetRef
+	ns := pa.Namespace
+	name := ref.Name
+
+	// Base: <apiVersion>.<Kind>/<namespace>/<name>
+	base := fmt.Sprintf("%s.%s/%s/%s", ref.APIVersion, ref.Kind, ns, name)
+
+	// Only StormService supports sub-targeting by roleName
+	if ref.APIVersion == orchestrationv1alpha1.GroupVersion.String() && ref.Kind == orchestrationv1alpha1.StormServiceKind {
+		if sel := pa.Spec.SubTargetSelector; sel != nil && sel.RoleName != "" {
+			return base + "/" + sel.RoleName
+		}
+	}
+
+	return base
+}
+
+// cleanupDeletedPA removes the PA from conflict maps.
+func (r *PodAutoscalerReconciler) cleanupDeletedPA(paKey ktypes.NamespacedName) {
+	r.scalingTargetMu.Lock()
+	defer r.scalingTargetMu.Unlock()
+
+	if keyStr, exists := r.paToScalingKey[paKey]; exists {
+		delete(r.scalingTargetToPA, keyStr)
+	}
+	delete(r.paToScalingKey, paKey)
+}
+
+// checkNoMultiPodAutoscalerConflict checks whether the PodAutoscaler's target is already controlled by another PA.
+func (r *PodAutoscalerReconciler) checkNoMultiPodAutoscalerConflict(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
+	key := r.buildScalingTargetKey(pa)
+	currentPAKey := ktypes.NamespacedName{Namespace: pa.Namespace, Name: pa.Name}
+
+	r.scalingTargetMu.Lock()
+	defer r.scalingTargetMu.Unlock()
+
+	// Step 1: Check if target is claimed
+	if existingPA, exists := r.scalingTargetToPA[key]; exists {
+		if existingPA == currentPAKey {
+			// Self-owned — OK
+			r.paToScalingKey[currentPAKey] = key
+			return validOK()
+		}
+		// Conflict with another PA
+		errMsg := fmt.Sprintf("Scaling target %s is already controlled by PodAutoscaler %s/%s, "+
+			"it will not take effect", key, existingPA.Namespace, existingPA.Name)
+		return invalid(ConditionConflict, errMsg)
+	}
+
+	// Step 2: Claim the target
+	if oldKey, exists := r.paToScalingKey[currentPAKey]; exists && oldKey != key {
+		delete(r.scalingTargetToPA, oldKey)
+	}
+	r.scalingTargetToPA[key] = currentPAKey
+	r.paToScalingKey[currentPAKey] = key
+
+	return validOK()
 }
 
 func (r *PodAutoscalerReconciler) validateSpec(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
@@ -488,7 +567,8 @@ func (r *PodAutoscalerReconciler) enqueuePodAutoscalers(ctx context.Context) err
 	return nil
 }
 
-func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, vr ValidationResult) *autoscalingv1alpha1.PodAutoscalerStatus {
+func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler,
+	specValidationResult, conflictValidationResult ValidationResult) *autoscalingv1alpha1.PodAutoscalerStatus {
 	now := metav1.Now()
 	st := &autoscalingv1alpha1.PodAutoscalerStatus{
 		LastScaleTime: pa.Status.LastScaleTime,
@@ -500,11 +580,22 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, vr
 	// ValidSpec
 	apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{
 		Type:               ConditionValidSpec,
-		Status:             boolToCond(vr.Valid),
-		Reason:             map[bool]string{true: ReasonAsExpected, false: vr.Reason}[vr.Valid],
-		Message:            vr.Message,
+		Status:             boolToCond(specValidationResult.Valid),
+		Reason:             map[bool]string{true: ReasonAsExpected, false: specValidationResult.Reason}[specValidationResult.Valid],
+		Message:            specValidationResult.Message,
 		LastTransitionTime: now,
 	})
+
+	if !conflictValidationResult.Valid {
+		// if conflictValidationResult is invalid, then we set condition
+		apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{
+			Type:               ConditionConflict,
+			Status:             boolToCond(conflictValidationResult.Valid),
+			Reason:             map[bool]string{false: conflictValidationResult.Reason}[conflictValidationResult.Valid],
+			Message:            conflictValidationResult.Message,
+			LastTransitionTime: now,
+		})
+	}
 
 	// ScalingActive
 	scalingActive := st.DesiredScale != st.ActualScale
@@ -517,7 +608,9 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, vr
 	})
 
 	// AbleToScale (minimal; extend later with cooldown/limits applied)
-	able := vr.Valid && pa.Spec.MaxReplicas > 0
+	specOK := specValidationResult.Valid
+	noConflict := conflictValidationResult.Valid
+	able := specOK && noConflict && pa.Spec.MaxReplicas > 0
 	apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{
 		Type:               ConditionAbleToScale,
 		Status:             boolToCond(able),
@@ -526,7 +619,7 @@ func computeStatus(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, vr
 	})
 
 	// Ready = ValidSpec && !ScalingActive
-	ready := vr.Valid && !scalingActive
+	ready := able && !scalingActive
 	apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{
 		Type:               ConditionReady,
 		Status:             boolToCond(ready),
