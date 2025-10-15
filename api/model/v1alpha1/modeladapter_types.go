@@ -47,9 +47,13 @@ type ModelAdapterSpec struct {
 	// +optional
 	CredentialsSecretRef *corev1.LocalObjectReference `json:"credentialsSecretRef,omitempty"`
 
-	// Replicas is the desired number of replicas of model adapter
+	// Replicas controls adapter distribution across pods:
+	// - nil (omitted): Load adapter on ALL matching pods (recommended)
+	// - 1: Load adapter on a single pod selected by the scheduler
+	// Only nil or 1 are supported. Other values will be rejected.
 	// +optional
-	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1
 	Replicas *int32 `json:"replicas,omitempty"`
 
 	// Additional fields can be added here to customize the scheduling and deployment
@@ -86,11 +90,27 @@ type ModelAdapterStatus struct {
 	// Phase maps to latest status.conditions.type
 	// +optional
 	Phase ModelAdapterPhase `json:"phase,omitempty"`
+
+	// TargetInstances is the total number of pods matching the selector
+	// +optional
+	TargetInstances int32 `json:"targetInstances,omitempty"`
+
+	// ReadyInstances is the number of pods where adapter is successfully loaded and ready
+	// +optional
+	ReadyInstances int32 `json:"readyInstances,omitempty"`
+
+	// DesiredInstances is the desired number of instances based on spec.replicas
+	// - If replicas is nil: equals targetInstances (load on all)
+	// - If replicas is 1: equals 1 (single pod)
+	// +optional
+	DesiredInstances int32 `json:"desiredInstances,omitempty"`
+
 	// Conditions represents the observation of a model adapter's current state.
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
 	// Instances lists all pod instances of ModelAdapter
 	// +optional
 	Instances []string `json:"instances,omitempty"`
@@ -109,6 +129,12 @@ const (
 // +genclient
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Desired",type=integer,JSONPath=`.status.desiredInstances`
+// +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyInstances`
+// +kubebuilder:printcolumn:name="Target",type=integer,JSONPath=`.status.targetInstances`
+// +kubebuilder:printcolumn:name="Model Path",type=string,JSONPath=`.spec.artifactURL`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ModelAdapter is the Schema for the modeladapters API
