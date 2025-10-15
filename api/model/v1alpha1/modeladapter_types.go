@@ -91,19 +91,19 @@ type ModelAdapterStatus struct {
 	// +optional
 	Phase ModelAdapterPhase `json:"phase,omitempty"`
 
-	// TargetInstances is the total number of pods matching the selector
+	// Candidates is the total number of pods matching the selector (candidate pods for adapter loading)
 	// +optional
-	TargetInstances int32 `json:"targetInstances,omitempty"`
+	Candidates int32 `json:"candidates,omitempty"`
 
-	// ReadyInstances is the number of pods where adapter is successfully loaded and ready
+	// ReadyReplicas is the number of adapter replicas successfully loaded and ready
 	// +optional
-	ReadyInstances int32 `json:"readyInstances,omitempty"`
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
 
-	// DesiredInstances is the desired number of instances based on spec.replicas
-	// - If replicas is nil: equals targetInstances (load on all)
+	// DesiredReplicas is the desired number of adapter replicas based on spec.replicas
+	// - If replicas is nil: equals candidates (load on all)
 	// - If replicas is 1: equals 1 (single pod)
 	// +optional
-	DesiredInstances int32 `json:"desiredInstances,omitempty"`
+	DesiredReplicas int32 `json:"desiredReplicas,omitempty"`
 
 	// Conditions represents the observation of a model adapter's current state.
 	// +patchMergeKey=type
@@ -130,9 +130,9 @@ const (
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Desired",type=integer,JSONPath=`.status.desiredInstances`
-// +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyInstances`
-// +kubebuilder:printcolumn:name="Target",type=integer,JSONPath=`.status.targetInstances`
+// +kubebuilder:printcolumn:name="Desired",type=integer,JSONPath=`.status.desiredReplicas`
+// +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
+// +kubebuilder:printcolumn:name="Candidates",type=integer,JSONPath=`.status.candidates`
 // +kubebuilder:printcolumn:name="Model Path",type=string,JSONPath=`.spec.artifactURL`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

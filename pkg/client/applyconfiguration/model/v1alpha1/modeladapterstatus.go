@@ -25,9 +25,12 @@ import (
 // ModelAdapterStatusApplyConfiguration represents a declarative configuration of the ModelAdapterStatus type for use
 // with apply.
 type ModelAdapterStatusApplyConfiguration struct {
-	Phase      *v1alpha1.ModelAdapterPhase      `json:"phase,omitempty"`
-	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
-	Instances  []string                         `json:"instances,omitempty"`
+	Phase           *v1alpha1.ModelAdapterPhase      `json:"phase,omitempty"`
+	Candidates      *int32                           `json:"candidates,omitempty"`
+	ReadyReplicas   *int32                           `json:"readyReplicas,omitempty"`
+	DesiredReplicas *int32                           `json:"desiredReplicas,omitempty"`
+	Conditions      []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
+	Instances       []string                         `json:"instances,omitempty"`
 }
 
 // ModelAdapterStatusApplyConfiguration constructs a declarative configuration of the ModelAdapterStatus type for use with
@@ -41,6 +44,30 @@ func ModelAdapterStatus() *ModelAdapterStatusApplyConfiguration {
 // If called multiple times, the Phase field is set to the value of the last call.
 func (b *ModelAdapterStatusApplyConfiguration) WithPhase(value v1alpha1.ModelAdapterPhase) *ModelAdapterStatusApplyConfiguration {
 	b.Phase = &value
+	return b
+}
+
+// WithCandidates sets the Candidates field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Candidates field is set to the value of the last call.
+func (b *ModelAdapterStatusApplyConfiguration) WithCandidates(value int32) *ModelAdapterStatusApplyConfiguration {
+	b.Candidates = &value
+	return b
+}
+
+// WithReadyReplicas sets the ReadyReplicas field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ReadyReplicas field is set to the value of the last call.
+func (b *ModelAdapterStatusApplyConfiguration) WithReadyReplicas(value int32) *ModelAdapterStatusApplyConfiguration {
+	b.ReadyReplicas = &value
+	return b
+}
+
+// WithDesiredReplicas sets the DesiredReplicas field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the DesiredReplicas field is set to the value of the last call.
+func (b *ModelAdapterStatusApplyConfiguration) WithDesiredReplicas(value int32) *ModelAdapterStatusApplyConfiguration {
+	b.DesiredReplicas = &value
 	return b
 }
 
