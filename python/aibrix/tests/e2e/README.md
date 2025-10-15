@@ -16,7 +16,8 @@ This directory contains end-to-end tests for Aibrix services that run against re
 
 2. **Generate Credentials**: Ensure object store is acceesible. Using S3 as an example:
    ```bash
-   python ../../scripts/generate_secrets.py s3 --bucket <your-bucket-name>
+   cd /path/to/aibrix/python/aibrix
+   python -m scripts.generate_secrets s3 --bucket <your-bucket-name>
    ```
    The script will read s3 credentials setup using ```aws configure```
 
@@ -68,7 +69,7 @@ pytest tests/e2e/test_batch_api.py -v -s
 ## API Endpoints
 
 ### Health Endpoints
-- `/healthz` - General service health check
+- `/v1/batches` - General service availability check by list all batches.
 
 ## Configuration
 

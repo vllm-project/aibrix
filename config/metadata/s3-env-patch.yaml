@@ -1,0 +1,32 @@
+# This patch contains the S3 object store configuration for the metadata service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metadata-service
+  namespace: aibrix-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: metadata-service
+        env:
+          - name: STORAGE_AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: aibrix-s3-credentials
+                key: access-key-id
+          - name: STORAGE_AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: aibrix-s3-credentials
+                key: secret-access-key
+          - name: STORAGE_AWS_REGION
+            valueFrom:
+              secretKeyRef:
+                name: aibrix-s3-credentials
+                key: region
+          - name: STORAGE_AWS_BUCKET
+            valueFrom:
+              secretKeyRef:
+                name: aibrix-s3-credentials
+                key: bucket-name

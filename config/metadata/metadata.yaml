@@ -37,13 +37,13 @@ rules:
   # For batch job ServiceAccount management
   - apiGroups: [""]
     resources: ["serviceaccounts"]
-    verbs: ["get", "create", "update", "patch", "delete"]
+    verbs: ["get", "create", "update", "patch"]
   - apiGroups: ["rbac.authorization.k8s.io"] # for Role management
     resources: ["roles"]
-    verbs: ["get", "create", "update", "patch", "delete"]
+    verbs: ["get", "create", "update", "patch"]
   - apiGroups: ["rbac.authorization.k8s.io"] # for RoleBinding management
     resources: ["rolebindings"]
-    verbs: ["get", "create", "update", "patch", "delete"]
+    verbs: ["get", "create", "update", "patch"]
   # For kopf high availability
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
@@ -129,54 +129,6 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            # Object store configuration
-            # Comment the following lines to disable S3 as the object store
-            - name: STORAGE_AWS_ACCESS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: aibrix-s3-credentials
-                  key: access-key-id
-            - name: STORAGE_AWS_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: aibrix-s3-credentials
-                  key: secret-access-key
-            - name: STORAGE_AWS_REGION
-              valueFrom:
-                secretKeyRef:
-                  name: aibrix-s3-credentials
-                  key: region
-            - name: STORAGE_AWS_BUCKET
-              valueFrom:
-                secretKeyRef:
-                  name: aibrix-s3-credentials
-                  key: bucket-name
-            # Uncomment the following lines to enable TOS as the object store
-            # - name: STORAGE_TOS_ACCESS_KEY
-            #   valueFrom:
-            #   secretKeyRef:
-            #     name: aibrix-tos-credentials
-            #     key: access-key
-            # - name: STORAGE_TOS_SECRET_KEY
-            #   valueFrom:
-            #     secretKeyRef:
-            #       name: aibrix-tos-credentials
-            #       key: secret-key
-            # - name: STORAGE_TOS_ENDPOINT
-            #   valueFrom:
-            #     secretKeyRef:
-            #       name: aibrix-tos-credentials
-            #       key: endpoint
-            # - name: STORAGE_TOS_REGION
-            #   valueFrom:
-            #     secretKeyRef:
-            #       name: aibrix-tos-credentials
-            #       key: region
-            # - name: STORAGE_TOS_BUCKET
-            #   valueFrom:
-            #     secretKeyRef:
-            #       name: aibrix-tos-credentials
-            #       key: bucket-name
           livenessProbe:
             httpGet:
               path: /healthz

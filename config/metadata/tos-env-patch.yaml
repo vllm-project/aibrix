@@ -1,0 +1,37 @@
+# This patch contains the TOS object store configuration for the metadata service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metadata-service
+  namespace: aibrix-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: metadata-service
+        env:
+          - name: STORAGE_TOS_ACCESS_KEY
+            valueFrom:
+            secretKeyRef:
+              name: aibrix-tos-credentials
+              key: access-key
+          - name: STORAGE_TOS_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: aibrix-tos-credentials
+                key: secret-key
+          - name: STORAGE_TOS_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: aibrix-tos-credentials
+                key: endpoint
+          - name: STORAGE_TOS_REGION
+            valueFrom:
+              secretKeyRef:
+                name: aibrix-tos-credentials
+                key: region
+          - name: STORAGE_TOS_BUCKET
+            valueFrom:
+              secretKeyRef:
+                name: aibrix-tos-credentials
+                key: bucket-name

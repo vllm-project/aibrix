@@ -111,23 +111,23 @@ def main():
         epilog="""
 Examples:
   # Create S3 secret with default name
-  python generate_secrets.py s3 --bucket my-bucket
+  python -m scripts.generate_secrets s3 --bucket my-bucket
 
   # Create S3 secret with custom name
-  python generate_secrets.py s3 --bucket my-bucket --name my-s3-creds
+  python -m scripts.generate_secrets s3 --bucket my-bucket --name my-s3-creds
 
   # Create TOS secret (requires TOS_* environment variables)
-  python generate_secrets.py tos --bucket my-tos-bucket
+  python -m scripts.generate_secrets tos --bucket my-tos-bucket
 
   # Delete a secret
-  python generate_secrets.py delete my-secret-name
+  python -m scripts.generate_secrets delete my-secret-name
 
   # List all secrets in namespace
-  python generate_secrets.py list
+  python -m scripts.generate_secrets list
 
   # Use custom namespace (either position works)
-  python generate_secrets.py --namespace my-namespace s3 --bucket my-bucket
-  python generate_secrets.py s3 --bucket my-bucket --namespace my-namespace
+  python -m scripts.generate_secrets --namespace my-namespace s3 --bucket my-bucket
+  python -m scripts.generate_secrets s3 --bucket my-bucket --namespace my-namespace
         """,
     )
 
