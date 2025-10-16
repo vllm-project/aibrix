@@ -133,7 +133,9 @@ async def check_service_health(base_url: str) -> bool:
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Check general health endpoint
             health_response = await client.get(f"{base_url}/v1/batches")
-            assert health_response.status_code == 200, f"Health check response: {health_response}"
+            assert (
+                health_response.status_code == 200
+            ), f"Health check response: {health_response}"
             return True
     except Exception as e:
         print(f"Health check failed: {e}")
