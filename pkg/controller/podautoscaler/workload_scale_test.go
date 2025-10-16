@@ -186,3 +186,149 @@ func TestGetCurrentReplicasFromScale(t *testing.T) {
 		})
 	}
 }
+
+func TestGetPodSelectorFromScale(t *testing.T) {
+	t.Run("llm_model", func(t *testing.T) {
+		scheme := runtime.NewScheme()
+		_ = autoscalingv1alpha1.AddToScheme(scheme)
+		_ = orchestrationv1alpha1.AddToScheme(scheme)
+
+		pa := &autoscalingv1alpha1.PodAutoscaler{
+			ObjectMeta: v1.ObjectMeta{
+				Namespace: "default",
+			},
+			Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+				ScaleTargetRef: corev1.ObjectReference{
+					Kind: "Deployment",
+					Name: "test-llm",
+				},
+			},
+		}
+		scale := &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"spec": map[string]interface{}{
+					"selector": map[string]interface{}{
+						"matchLabels": map[string]interface{}{
+							"model.aibrix.ai/name": "deepseek-llm-7b-chat",
+						},
+					},
+				},
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(pa).
+			Build()
+
+		workloadScale := NewWorkloadScale(fakeClient, nil)
+
+		labelsSelector, err := workloadScale.GetPodSelectorFromScale(context.TODO(), pa, scale)
+
+		assert.NoError(t, err)
+		assert.NotNil(t, labelsSelector)
+		requirements, _ := labelsSelector.Requirements()
+		assert.Len(t, requirements, 1)
+		assert.Equal(t, "model.aibrix.ai/name", requirements[0].Key())
+		assert.Len(t, requirements[0].ValuesUnsorted(), 1)
+		assert.Equal(t, "deepseek-llm-7b-chat", requirements[0].ValuesUnsorted()[0])
+	})
+
+	t.Run("storm_service", func(t *testing.T) {
+		scheme := runtime.NewScheme()
+		_ = autoscalingv1alpha1.AddToScheme(scheme)
+		_ = orchestrationv1alpha1.AddToScheme(scheme)
+
+		pa := &autoscalingv1alpha1.PodAutoscaler{
+			ObjectMeta: v1.ObjectMeta{
+				Namespace: "default",
+			},
+			Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+				ScaleTargetRef: corev1.ObjectReference{
+					Kind: "StormService",
+					Name: "test-storm",
+				},
+			},
+		}
+		ss := &orchestrationv1alpha1.StormService{
+			ObjectMeta: v1.ObjectMeta{
+				Name:      "test-storm",
+				Namespace: "default",
+			},
+			Spec: orchestrationv1alpha1.StormServiceSpec{},
+		}
+
+		scale := &unstructured.Unstructured{}
+		scale.SetAPIVersion("orchestration.aibrix.ai/v1alpha1")
+		scale.SetKind("StormService")
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(pa, ss).
+			Build()
+
+		workloadScale := NewWorkloadScale(fakeClient, nil)
+
+		labelsSelector, err := workloadScale.GetPodSelectorFromScale(context.TODO(), pa, scale)
+
+		assert.NoError(t, err)
+		assert.NotNil(t, labelsSelector)
+		requirements, _ := labelsSelector.Requirements()
+		assert.Len(t, requirements, 1)
+		assert.Equal(t, "storm-service-name", requirements[0].Key())
+		assert.Len(t, requirements[0].ValuesUnsorted(), 1)
+		assert.Equal(t, "test-storm", requirements[0].ValuesUnsorted()[0])
+	})
+
+	t.Run("storm_service_with_role", func(t *testing.T) {
+		scheme := runtime.NewScheme()
+		_ = autoscalingv1alpha1.AddToScheme(scheme)
+		_ = orchestrationv1alpha1.AddToScheme(scheme)
+
+		pa := &autoscalingv1alpha1.PodAutoscaler{
+			ObjectMeta: v1.ObjectMeta{
+				Namespace: "default",
+			},
+			Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+				SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{
+					RoleName: "prefill",
+				},
+				ScaleTargetRef: corev1.ObjectReference{
+					Kind: "StormService",
+					Name: "test-storm",
+				},
+			},
+		}
+		ss := &orchestrationv1alpha1.StormService{
+			ObjectMeta: v1.ObjectMeta{
+				Name:      "test-storm",
+				Namespace: "default",
+			},
+			Spec: orchestrationv1alpha1.StormServiceSpec{},
+		}
+
+		scale := &unstructured.Unstructured{}
+		scale.SetAPIVersion("orchestration.aibrix.ai/v1alpha1")
+		scale.SetKind("StormService")
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(pa, ss).
+			Build()
+
+		workloadScale := NewWorkloadScale(fakeClient, nil)
+
+		labelsSelector, err := workloadScale.GetPodSelectorFromScale(context.TODO(), pa, scale)
+
+		assert.NoError(t, err)
+		assert.NotNil(t, labelsSelector)
+		requirements, _ := labelsSelector.Requirements()
+		assert.Len(t, requirements, 2)
+		assert.Equal(t, "role-name", requirements[0].Key())
+		assert.Len(t, requirements[0].ValuesUnsorted(), 1)
+		assert.Equal(t, "prefill", requirements[0].ValuesUnsorted()[0])
+		assert.Equal(t, "storm-service-name", requirements[1].Key())
+		assert.Len(t, requirements[1].ValuesUnsorted(), 1)
+		assert.Equal(t, "test-storm", requirements[1].ValuesUnsorted()[0])
+	})
+}
