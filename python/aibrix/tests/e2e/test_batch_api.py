@@ -133,7 +133,8 @@ async def check_service_health(base_url: str) -> bool:
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Check general health endpoint
             health_response = await client.get(f"{base_url}/v1/batches")
-            return health_response.status_code == 200
+            assert health_response.status_code == 200, f"Health check response: {health_response}"
+            return True
     except Exception as e:
         print(f"Health check failed: {e}")
         return False
@@ -147,13 +148,7 @@ def service_health():
     print(f"🔍 Checking service health at {base_url}...")
 
     # Run the async health check in a sync context
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        is_healthy = loop.run_until_complete(check_service_health(base_url))
-    finally:
-        loop.close()
-
+    is_healthy = asyncio.run(check_service_health(base_url))
     if not is_healthy:
         pytest.skip(f"Service at {base_url} is not available or healthy")
 

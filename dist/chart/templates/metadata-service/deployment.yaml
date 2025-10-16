@@ -37,7 +37,6 @@ spec:
             - aibrix.metadata.app
             - --host
             - "0.0.0.0"
-            - --enable-k8s-job
           ports:
             - containerPort: 8090
           resources: {{ toYaml .Values.metadata.service.container.resources | nindent 12 }}

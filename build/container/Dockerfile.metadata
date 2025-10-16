@@ -46,5 +46,5 @@ RUN apt-get update \
 EXPOSE 8090
 
 # Set entrypoint for Metadata service
-ENTRYPOINT ["aibrix_metadata", "--enable-k8s-job", "--host", "0.0.0.0"]
+ENTRYPOINT ["aibrix_metadata", "--host", "0.0.0.0"]
 

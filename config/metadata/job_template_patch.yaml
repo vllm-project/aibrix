@@ -13,4 +13,4 @@ spec:
       - name: batch-worker
         image: aibrix/runtime:nightly # Customizable, runtime image
       - name: llm-engine
-        image: aibrix/vllm-mock:nightly # Customizable, LLM engine image
+        image: aibrix/vllm-mock:nightly # Customizable, customize your LLM engine and readinessProbe
