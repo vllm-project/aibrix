@@ -54,8 +54,8 @@ type ScalingContext interface {
 	GetScaleToZero() bool
 }
 
-// BaseScalingContext provides a base implementation of the ScalingContext interface.
-type BaseScalingContext struct {
+// baseScalingContext provides a base implementation of the ScalingContext interface.
+type baseScalingContext struct {
 	// Maximum rate at which to scale up
 	MaxScaleUpRate float64
 	// Maximum rate at which to scale down, a value of 2.5 means the count can reduce to at most 2.5 times less than the current value in one step.
@@ -93,11 +93,11 @@ type BaseScalingContext struct {
 	InPanicMode bool
 }
 
-var _ ScalingContext = (*BaseScalingContext)(nil)
+var _ ScalingContext = (*baseScalingContext)(nil)
 
 // NewBaseScalingContext creates a new instance of BaseScalingContext with default values.
-func NewBaseScalingContext() *BaseScalingContext {
-	return &BaseScalingContext{
+func NewBaseScalingContext() *baseScalingContext {
+	return &baseScalingContext{
 		MaxScaleUpRate:           2,                 // Scale up rate of 200%, allowing rapid scaling
 		MaxScaleDownRate:         2,                 // Scale down rate of 50%, for more gradual reduction
 		ScalingMetric:            "CPU",             // Metric used for scaling, here set to CPU utilization
@@ -113,60 +113,60 @@ func NewBaseScalingContext() *BaseScalingContext {
 }
 
 // annotationParser is a function type for parsing annotation values
-type annotationParser func(b *BaseScalingContext, value string) error
+type annotationParser func(b *baseScalingContext, value string) error
 
 // annotationParsers maps annotation keys to their parsing functions
 var annotationParsers = map[string]annotationParser{
-	types.MaxScaleUpRateLabel: func(b *BaseScalingContext, value string) error {
+	types.MaxScaleUpRateLabel: func(b *baseScalingContext, value string) error {
 		v, err := strconv.ParseFloat(value, 64)
 		if err == nil {
 			b.MaxScaleUpRate = v
 		}
 		return err
 	},
-	types.MaxScaleDownRateLabel: func(b *BaseScalingContext, value string) error {
+	types.MaxScaleDownRateLabel: func(b *baseScalingContext, value string) error {
 		v, err := strconv.ParseFloat(value, 64)
 		if err == nil {
 			b.MaxScaleDownRate = v
 		}
 		return err
 	},
-	types.ScaleUpToleranceLabel: func(b *BaseScalingContext, value string) error {
+	types.ScaleUpToleranceLabel: func(b *baseScalingContext, value string) error {
 		v, err := strconv.ParseFloat(value, 64)
 		if err == nil {
 			b.UpFluctuationTolerance = v
 		}
 		return err
 	},
-	types.ScaleDownToleranceLabel: func(b *BaseScalingContext, value string) error {
+	types.ScaleDownToleranceLabel: func(b *baseScalingContext, value string) error {
 		v, err := strconv.ParseFloat(value, 64)
 		if err == nil {
 			b.DownFluctuationTolerance = v
 		}
 		return err
 	},
-	types.PanicThresholdLabel: func(b *BaseScalingContext, value string) error {
+	types.PanicThresholdLabel: func(b *baseScalingContext, value string) error {
 		v, err := strconv.ParseFloat(value, 64)
 		if err == nil {
 			b.PanicThreshold = v
 		}
 		return err
 	},
-	types.ScaleUpCooldownWindowLabel: func(b *BaseScalingContext, value string) error {
+	types.ScaleUpCooldownWindowLabel: func(b *baseScalingContext, value string) error {
 		v, err := time.ParseDuration(value)
 		if err == nil {
 			b.ScaleUpCooldownWindow = v
 		}
 		return err
 	},
-	types.ScaleDownCooldownWindowLabel: func(b *BaseScalingContext, value string) error {
+	types.ScaleDownCooldownWindowLabel: func(b *baseScalingContext, value string) error {
 		v, err := time.ParseDuration(value)
 		if err == nil {
 			b.ScaleDownCooldownWindow = v
 		}
 		return err
 	},
-	types.ScaleToZeroLabel: func(b *BaseScalingContext, value string) error {
+	types.ScaleToZeroLabel: func(b *baseScalingContext, value string) error {
 		v, err := strconv.ParseBool(value)
 		if err == nil {
 			b.ScaleToZero = v
@@ -176,7 +176,7 @@ var annotationParsers = map[string]annotationParser{
 }
 
 // UpdateByPaTypes should be invoked in any scaling context that embeds BaseScalingContext.
-func (b *BaseScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error {
+func (b *baseScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error {
 	source, err := autoscalingv1alpha1.GetPaMetricSources(*pa)
 	if err != nil {
 		return err
@@ -202,106 +202,106 @@ func (b *BaseScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscal
 	return nil
 }
 
-func (b *BaseScalingContext) SetCurrentUsePerPod(value float64) {
+func (b *baseScalingContext) SetCurrentUsePerPod(value float64) {
 	b.currentUsePerPod = value
 }
 
-func (b *BaseScalingContext) SetMinReplicas(minReplicas int32) {
+func (b *baseScalingContext) SetMinReplicas(minReplicas int32) {
 	b.MinReplicas = minReplicas
 }
 
-func (b *BaseScalingContext) SetMaxReplicas(maxReplicas int32) {
+func (b *baseScalingContext) SetMaxReplicas(maxReplicas int32) {
 	b.MaxReplicas = maxReplicas
 }
 
-func (b *BaseScalingContext) GetUpFluctuationTolerance() float64 {
+func (b *baseScalingContext) GetUpFluctuationTolerance() float64 {
 	return b.UpFluctuationTolerance
 }
 
-func (b *BaseScalingContext) GetDownFluctuationTolerance() float64 {
+func (b *baseScalingContext) GetDownFluctuationTolerance() float64 {
 	return b.DownFluctuationTolerance
 }
 
-func (b *BaseScalingContext) GetMaxScaleUpRate() float64 {
+func (b *baseScalingContext) GetMaxScaleUpRate() float64 {
 	return b.MaxScaleUpRate
 }
 
-func (b *BaseScalingContext) GetMaxScaleDownRate() float64 {
+func (b *baseScalingContext) GetMaxScaleDownRate() float64 {
 	return b.MaxScaleDownRate
 }
 
-func (b *BaseScalingContext) GetCurrentUsePerPod() float64 {
+func (b *baseScalingContext) GetCurrentUsePerPod() float64 {
 	return b.currentUsePerPod
 }
 
-func (b *BaseScalingContext) GetTargetValue() float64 {
+func (b *baseScalingContext) GetTargetValue() float64 {
 	return b.TargetValue
 }
 
-func (b *BaseScalingContext) GetScalingTolerance() (up float64, down float64) {
+func (b *baseScalingContext) GetScalingTolerance() (up float64, down float64) {
 	return b.MaxScaleUpRate, b.MaxScaleDownRate
 }
 
-func (b *BaseScalingContext) GetMinReplicas() int32 {
+func (b *baseScalingContext) GetMinReplicas() int32 {
 	return b.MinReplicas
 }
 
-func (b *BaseScalingContext) GetMaxReplicas() int32 {
+func (b *baseScalingContext) GetMaxReplicas() int32 {
 	return b.MaxReplicas
 }
 
-func (b *BaseScalingContext) GetStableValue() float64 {
+func (b *baseScalingContext) GetStableValue() float64 {
 	return b.StableValue
 }
 
-func (b *BaseScalingContext) SetStableValue(value float64) {
+func (b *baseScalingContext) SetStableValue(value float64) {
 	b.StableValue = value
 }
 
-func (b *BaseScalingContext) GetPanicValue() float64 {
+func (b *baseScalingContext) GetPanicValue() float64 {
 	return b.PanicValue
 }
 
-func (b *BaseScalingContext) SetPanicValue(value float64) {
+func (b *baseScalingContext) SetPanicValue(value float64) {
 	b.PanicValue = value
 }
 
-func (b *BaseScalingContext) GetActivationScale() int32 {
+func (b *baseScalingContext) GetActivationScale() int32 {
 	return 1
 }
 
-func (b *BaseScalingContext) SetActivationScale(value int32) {
+func (b *baseScalingContext) SetActivationScale(value int32) {
 	// No-op in base implementation
 }
 
-func (b *BaseScalingContext) GetPanicThreshold() float64 {
+func (b *baseScalingContext) GetPanicThreshold() float64 {
 	return b.PanicThreshold
 }
 
-func (b *BaseScalingContext) GetInPanicMode() bool {
+func (b *baseScalingContext) GetInPanicMode() bool {
 	return b.InPanicMode
 }
 
-func (b *BaseScalingContext) SetInPanicMode(inPanic bool) {
+func (b *baseScalingContext) SetInPanicMode(inPanic bool) {
 	b.InPanicMode = inPanic
 }
 
-func (b *BaseScalingContext) GetMaxPanicPods() int32 {
+func (b *baseScalingContext) GetMaxPanicPods() int32 {
 	return 0
 }
 
-func (b *BaseScalingContext) SetMaxPanicPods(pods int32) {
+func (b *baseScalingContext) SetMaxPanicPods(pods int32) {
 	// No-op in base implementation
 }
 
-func (b *BaseScalingContext) GetScaleUpCooldownWindow() time.Duration {
+func (b *baseScalingContext) GetScaleUpCooldownWindow() time.Duration {
 	return b.ScaleUpCooldownWindow
 }
 
-func (b *BaseScalingContext) GetScaleDownCooldownWindow() time.Duration {
+func (b *baseScalingContext) GetScaleDownCooldownWindow() time.Duration {
 	return b.ScaleDownCooldownWindow
 }
 
-func (b *BaseScalingContext) GetScaleToZero() bool {
+func (b *baseScalingContext) GetScaleToZero() bool {
 	return b.ScaleToZero
 }
