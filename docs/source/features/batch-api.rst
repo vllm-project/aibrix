@@ -159,50 +159,51 @@ To enable S3 as the storage backend for batch operations:
 
 1. **Generate S3 Credentials Secret:**
 
-   Use the AIBrix secret generation tool to create the necessary Kubernetes secrets:
+Use the AIBrix secret generation tool to create the necessary Kubernetes secrets:
 
-   .. code-block:: bash
+.. code-block:: bash
 
-      # Install the AIBrix package in development mode
-      cd python/aibrix && pip install -e .
+  # Install the AIBrix package in development mode
+  cd python/aibrix && pip install -e .
 
-      # Generate S3 credentials secret
-      aibrix_gen_secrets s3 --bucket your-s3-bucket-name --namespace aibrix-system
+  # Generate S3 credentials secret
+  aibrix_gen_secrets s3 --bucket your-s3-bucket-name --namespace aibrix-system
 
-      # Generate S3 credentials secret for Job Executor
-      aibrix_gen_secrets s3 --bucket your-s3-bucket-name --namespace default
+  # Generate S3 credentials secret for Job Executor
+  aibrix_gen_secrets s3 --bucket your-s3-bucket-name --namespace default
 
-   This command will:
-   
-   - Create a Kubernetes secret named ``aibrix-s3-credentials`` in the ``aibrix-system`` namespace
-   - Configure the secret with your S3 bucket name and credentials
-   - Set up the necessary environment variables for the metadata service
+This command will:
+  
+- Create a Kubernetes secret named ``aibrix-s3-credentials`` in the ``aibrix-system`` namespace
+- Configure the secret with your S3 bucket name and credentials
+- Set up the necessary environment variables for the metadata service
 
 2. **Enable S3 Environment Variables:**
 
-   Uncomment the S3 patch in the metadata service configuration:
+Uncomment the S3 patch in the metadata service configuration:
 
-   .. code-block:: bash
+.. code-block:: bash
 
-       # Edit the kustomization file
-       vim config/metadata/kustomization.yaml
+  # Edit the kustomization file
+  vim config/metadata/kustomization.yaml
 
-   Find and uncomment the following line:
+Find and uncomment the following line:
 
-   .. code-block:: yaml
+.. code-block:: yaml
 
-       patches:
-       - path: s3-env-patch.yaml  # Uncomment this line
+  patches:
+  - path: s3-env-patch.yaml  # Uncomment this line
 
-   The patch will inject the S3 environment variables into the metadata service deployment.
+The patch will inject the S3 environment variables into the metadata service deployment.
 
 3. **Apply the Configuration:**
 
-   Deploy the updated configuration:
+Deploy the job rbac andupdated configuration:
 
-   .. code-block:: bash
+.. code-block:: bash
 
-       kubectl apply -k config/default
+  kubectl apply -k config/job
+  kubectl apply -k config/default
 
 **Enabling TOS Storage**
 
@@ -210,42 +211,43 @@ For TOS (Tencent Object Storage), follow similar steps:
 
 1. **Generate TOS Credentials Secret:**
 
-   .. code-block:: bash
+.. code-block:: bash
 
-      # Install the AIBrix package in development mode
-      cd python/aibrix && pip install -e .
+  # Install the AIBrix package in development mode
+  cd python/aibrix && pip install -e .
 
-      # Generate TOS credentials secret
-      aibrix_gen_secrets tos --bucket your-tos-bucket-name --namespace aibrix-system
+  # Generate TOS credentials secret
+  aibrix_gen_secrets tos --bucket your-tos-bucket-name --namespace aibrix-system
 
-      # Generate TOS credentials secret for Job Executor
-      aibrix_gen_secrets tos --bucket your-tos-bucket-name --namespace default
+  # Generate TOS credentials secret for Job Executor
+  aibrix_gen_secrets tos --bucket your-tos-bucket-name --namespace default
 
 2. **Enable TOS Environment Variables:**
 
-   Uncomment the TOS patch in the metadata service configuration:
+Uncomment the TOS patch in the metadata service configuration:
 
-   .. code-block:: bash
+.. code-block:: bash
 
-       # Edit the kustomization file
-       vim config/metadata/kustomization.yaml
+  # Edit the kustomization file
+  vim config/metadata/kustomization.yaml
 
-   Find and uncomment the following line:
+Find and uncomment the following line:
 
-   .. code-block:: yaml
+.. code-block:: yaml
 
-       patches:
-       - path: tos-env-patch.yaml  # Uncomment this line
+  patches:
+  - path: tos-env-patch.yaml  # Uncomment this line
 
-   The patch will inject the TOS environment variables into the metadata service deployment.
+The patch will inject the TOS environment variables into the metadata service deployment.
 
 3. **Apply the Configuration:**
 
-   Deploy the updated configuration:
+Deploy the job rbac and updated configuration:
 
-   .. code-block:: bash
+.. code-block:: bash
 
-       kubectl apply -k config/default
+  kubectl apply -k config/job
+  kubectl apply -k config/default
 
 Examples
 --------

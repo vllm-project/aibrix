@@ -28,16 +28,6 @@ rules:
   - apiGroups: ["batch"] 
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # For batch job ServiceAccount management
-  - apiGroups: [""]
-    resources: ["serviceaccounts"]
-    verbs: ["get", "create", "update", "patch", "delete"]
-  - apiGroups: ["rbac.authorization.k8s.io"] # for Role management
-    resources: ["roles"]
-    verbs: ["get", "create", "update", "patch", "delete"]
-  - apiGroups: ["rbac.authorization.k8s.io"] # for RoleBinding management
-    resources: ["rolebindings"]
-    verbs: ["get", "create", "update", "patch", "delete"]
   # For kopf high availability
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]

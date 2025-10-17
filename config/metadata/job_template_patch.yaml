@@ -11,6 +11,14 @@ spec:
     spec:
       containers:
       - name: batch-worker
-        image: aibrix/runtime:nightly # Customizable, runtime image
+        image: aibrix/runtime:nightly # Customizable, batch job worker image
       - name: llm-engine
-        image: aibrix/vllm-mock:nightly # Customizable, customize your LLM engine and readinessProbe
+        image: aibrix/vllm-mock:nightly # Customizable, customize your LLM engine image
+        # command: ["/bin/sh", "-c"] # Customization is not recommended. Know what you are doing.
+        args: # Customizable in the format of "WORKER_VICTIM=1 [your command] || true"
+          - |
+            # Run llm engine. 
+            # 'WORKER_VICTIM=1' helps the batch-worker to identify llm-engine process.
+            # '|| true' at the end ensures the container llm-engine never fails.
+            WORKER_VICTIM=1 python app.py || true
+        readinessProbe: # Customizable, customize your readinessProbe
