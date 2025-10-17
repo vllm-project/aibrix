@@ -47,7 +47,8 @@ aibrix_download = 'aibrix.downloader.__main__:main'
 aibrix_benchmark = "aibrix.gpu_optimizer.optimizer.profiling.benchmark:main"
 aibrix_gen_profile = 'aibrix.gpu_optimizer.optimizer.profiling.gen_profile:main'
 aibrix_batch_worker = 'aibrix.batch.worker:main'
-aibrix_api_extension = 'aibrix.metadata.app:main'
+aibrix_metadata = 'aibrix.metadata.app:main'
+aibrix_gen_secrets = 'scripts.generate_secrets:main'
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"

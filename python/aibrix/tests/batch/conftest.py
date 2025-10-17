@@ -415,7 +415,7 @@ def create_test_app(
     app = build_app(
         argparse.Namespace(
             host=None,
-            port=8100,
+            port=8090,
             enable_fastapi_docs=False,
             disable_batch_api=False,
             enable_k8s_job=enable_k8s_job,

@@ -134,7 +134,7 @@ spec:
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: reserved-router-models-endpoint
+  name: reserved-router-metadata-endpoint
   namespace: system
 spec:
   parentRefs:
@@ -144,6 +144,12 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/models
+        - path:
+            type: PathPrefix
+            value: /v1/files
+        - path:
+            type: PathPrefix
+            value: /v1/batches
       backendRefs:
         - name: aibrix-metadata-service
           port: 8090
@@ -157,7 +163,7 @@ spec:
   targetRef:
     group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: aibrix-reserved-router-models-endpoint
+    name: aibrix-reserved-router-metadata-endpoint
 ---
 # this is a dummy route for incoming request and,
 # then request is routed to httproute using model name OR

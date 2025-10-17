@@ -1,0 +1,40 @@
+# This patch contains the S3 object store configuration for the metadata service
+# !!Important: Please make sure aibrix-s3-credentials secret exists in both aibrix-system and default namespaces.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metadata-service
+  namespace: aibrix-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: metadata-service
+        command: 
+          - aibrix_metadata
+          - --host
+          - "0.0.0.0"
+          - --enable-k8s-job
+          - --k8s-job-patch
+          - /app/config/job_template_patch.yaml
+        env:
+          - name: STORAGE_AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: aibrix-s3-credentials
+                key: access-key-id
+          - name: STORAGE_AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: aibrix-s3-credentials
+                key: secret-access-key
+          - name: STORAGE_AWS_REGION
+            valueFrom:
+              secretKeyRef:
+                name: aibrix-s3-credentials
+                key: region
+          - name: STORAGE_AWS_BUCKET
+            valueFrom:
+              secretKeyRef:
+                name: aibrix-s3-credentials
+                key: bucket-name

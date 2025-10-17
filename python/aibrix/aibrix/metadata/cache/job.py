@@ -168,117 +168,6 @@ class JobCache(JobEntityManager):
 
         self.batch_v1_api = client.BatchV1Api()
         self.core_v1_api = client.CoreV1Api()
-        self.rbac_v1_api = client.RbacAuthorizationV1Api()
-
-        # Apply RBAC resources for job execution
-        self._apply_job_rbac(template_dir)
-
-    def _apply_job_rbac(self, template_dir: Path) -> None:
-        """Apply RBAC resources for job execution from k8s_job_rbac.yaml."""
-        try:
-            rbac_path = template_dir / "k8s_job_rbac.yaml"
-            with open(rbac_path, "r") as f:
-                rbac_docs = list(yaml.safe_load_all(f))
-
-            for doc in rbac_docs:
-                if not doc:  # Skip empty documents
-                    continue
-
-                kind = doc.get("kind")
-                metadata = doc.get("metadata", {})
-                name = metadata.get("name")
-                namespace = metadata.get("namespace", "default")
-
-                try:
-                    if kind == "ServiceAccount":
-                        # Try to create, if exists then update
-                        try:
-                            self.core_v1_api.create_namespaced_service_account(
-                                namespace=namespace, body=doc
-                            )
-                            logger.info(
-                                f"Created ServiceAccount: {doc['metadata']['name']}"
-                            )
-                        except ApiException as e:
-                            if e.status == 409:  # Already exists
-                                self.core_v1_api.patch_namespaced_service_account(
-                                    name=doc["metadata"]["name"],
-                                    namespace=namespace,
-                                    body=doc,
-                                )
-                                logger.info(
-                                    f"Updated ServiceAccount: {doc['metadata']['name']}"
-                                )
-                            else:
-                                raise
-
-                    elif kind == "Role":
-                        try:
-                            self.rbac_v1_api.create_namespaced_role(
-                                namespace=namespace, body=doc
-                            )
-                            logger.info(f"Created Role: {doc['metadata']['name']}")
-                        except ApiException as e:
-                            if e.status == 409:  # Already exists
-                                self.rbac_v1_api.patch_namespaced_role(
-                                    name=doc["metadata"]["name"],
-                                    namespace=namespace,
-                                    body=doc,
-                                )
-                                logger.info(f"Updated Role: {doc['metadata']['name']}")
-                            else:
-                                raise
-
-                    elif kind == "RoleBinding":
-                        try:
-                            self.rbac_v1_api.create_namespaced_role_binding(
-                                namespace=namespace, body=doc
-                            )
-                            logger.info(
-                                f"Created RoleBinding: {doc['metadata']['name']}"
-                            )
-                        except ApiException as e:
-                            if e.status == 409:  # Already exists
-                                self.rbac_v1_api.patch_namespaced_role_binding(
-                                    name=doc["metadata"]["name"],
-                                    namespace=namespace,
-                                    body=doc,
-                                )
-                                logger.info(
-                                    f"Updated RoleBinding: {doc['metadata']['name']}"
-                                )
-                            else:
-                                raise
-                    else:
-                        logger.warning(f"Unsupported RBAC resource kind: {kind}")
-
-                except ApiException as e:
-                    logger.error(
-                        f"Failed to apply {kind} {name}: {e.status} {e.reason}",
-                        error=str(e),
-                        kind=kind,
-                        name=name,
-                        namespace=namespace,
-                    )  # type: ignore[call-arg]
-                    # Don't raise here to allow other resources to be applied
-
-        except FileNotFoundError:
-            logger.warning(
-                "RBAC template not found, skipping RBAC setup",
-                template_path=str(rbac_path),
-            )  # type: ignore[call-arg]
-        except yaml.YAMLError as e:
-            logger.error(
-                "Failed to parse RBAC template",
-                error=str(e),
-                template_path=str(rbac_path),
-            )  # type: ignore[call-arg]
-        except Exception as e:
-            logger.error(
-                "Unexpected error applying RBAC resources",
-                error=str(e),
-                template_path=str(rbac_path),
-            )  # type: ignore[call-arg]
 
     def is_scheduler_enabled(self) -> bool:
         """Check if JobEntityManager has own scheduler enabled."""
@@ -314,7 +203,7 @@ class JobCache(JobEntityManager):
         session_id: str,
         job_spec: BatchJobSpec,
         job_name: Optional[str] = None,
-        parallelism: int = 1,
+        parallelism: Optional[int] = None,
         prepared_job: Optional[BatchJob] = None,
     ) -> None:
         """Submit job by creating a Kubernetes Job.
@@ -322,6 +211,7 @@ class JobCache(JobEntityManager):
         Args:
             job_spec: BatchJobSpec to submit to Kubernetes.
             job_name: Optional job name, will generate one if not provided.
+            parallelism: Optional parallelism for the job, default to None and follow template settings.
             prepared_job: Optional BatchJob with file IDs to add to pod annotations.
 
         Raises:
@@ -762,7 +652,7 @@ class JobCache(JobEntityManager):
         session_id: str,
         job_spec: BatchJobSpec,
         job_name: Optional[str] = None,
-        parallelism: int = 1,
+        parallelism: Optional[int] = None,
         prepared_job: Optional[BatchJob] = None,
     ) -> Dict[str, Any]:
         """Convert BatchJobSpec to Kubernetes Job manifest using pre-loaded template.
@@ -829,7 +719,7 @@ class JobCache(JobEntityManager):
             else:
                 suspend = False
 
-        job_patch = {
+        job_patch: Dict[str, Any] = {
             "metadata": {
                 "name": job_name,
                 # Minimal job-level annotations - most metadata moved to pod
@@ -845,10 +735,11 @@ class JobCache(JobEntityManager):
                 },
                 "activeDeadlineSeconds": job_spec.completion_window,
                 "suspend": suspend,
-                "parallelism": parallelism,
-                "completions": parallelism,
             },
         }
+        if parallelism is not None:
+            job_patch["spec"]["parallelism"] = parallelism
+            job_patch["spec"]["completions"] = parallelism
         # Use pre-loaded template (deep copy to avoid modifying the original)
         job_template = merge_yaml_object(self.job_template, job_patch)
 

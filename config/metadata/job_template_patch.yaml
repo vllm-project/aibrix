@@ -1,0 +1,24 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: batch-job-template
+  namespace: default
+spec:
+  parallelism: 1 # Customizable. The number of parallel workers.
+  completions: 1 # Customizable. Must equal to the parallelism.
+  backoffLimit: 2 # Customizable, but usually no need to change.
+  template:
+    spec:
+      containers:
+      - name: batch-worker
+        image: aibrix/runtime:nightly # Customizable, batch job worker image
+      - name: llm-engine
+        image: aibrix/vllm-mock:nightly # Customizable, customize your LLM engine image
+        # command: ["/bin/sh", "-c"] # Customization is not recommended. Know what you are doing.
+        args: # Customizable in the format of "WORKER_VICTIM=1 [your command] || true"
+          - |
+            # Run llm engine. 
+            # 'WORKER_VICTIM=1' helps the batch-worker to identify llm-engine process.
+            # '|| true' at the end ensures the container llm-engine never fails.
+            WORKER_VICTIM=1 python app.py || true
+        readinessProbe: # Customizable, customize your readinessProbe

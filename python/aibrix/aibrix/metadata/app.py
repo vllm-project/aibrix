@@ -192,7 +192,7 @@ def nullable_str(val: str):
 def main():
     parser = argparse.ArgumentParser(description=f"Run {settings.PROJECT_NAME}")
     parser.add_argument("--host", type=nullable_str, default=None, help="host name")
-    parser.add_argument("--port", type=int, default=8100, help="port number")
+    parser.add_argument("--port", type=int, default=8090, help="port number")
     parser.add_argument(
         "--enable-fastapi-docs",
         action="store_true",

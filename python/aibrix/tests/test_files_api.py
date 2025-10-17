@@ -26,7 +26,7 @@ def create_test_app():
     return build_app(
         argparse.Namespace(
             host=None,
-            port=8100,
+            port=8090,
             enable_fastapi_docs=False,
             disable_batch_api=True,  # Disable batch API to avoid async issues in tests
             disable_file_api=False,  # Enable file API for testing
