@@ -65,7 +65,7 @@ func TestRenderRoleSet(t *testing.T) {
 
 	reconciler := &StormServiceReconciler{}
 
-	roleSet, err := reconciler.renderRoleSet(stormService, nil, revisionName)
+	roleSet, err := reconciler.renderRoleSet(stormService, nil, revisionName, nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, roleSet)
 	assert.Equal(t, "default", roleSet.Namespace)
@@ -109,7 +109,7 @@ func TestRenderRoleSetWithIndex(t *testing.T) {
 
 	reconciler := &StormServiceReconciler{}
 
-	roleSet, err := reconciler.renderRoleSet(stormService, &index, revisionName)
+	roleSet, err := reconciler.renderRoleSet(stormService, &index, revisionName, nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, roleSet)
 	assert.Equal(t, "5", roleSet.Annotations[constants.RoleSetIndexAnnotationKey])
@@ -146,7 +146,7 @@ func TestRenderRoleSetSelectorMismatch(t *testing.T) {
 
 	reconciler := &StormServiceReconciler{}
 
-	_, err := reconciler.renderRoleSet(stormService, nil, revisionName)
+	_, err := reconciler.renderRoleSet(stormService, nil, revisionName, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "does not match stormService selector")
 }
@@ -178,7 +178,7 @@ func TestCreateRoleSetNilTemplate(t *testing.T) {
 
 	reconciler := &StormServiceReconciler{}
 
-	_, err := reconciler.createRoleSet(stormService, 1, "test-revision")
+	_, err := reconciler.createRoleSet(stormService, 1, "test-revision", nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "bad stormService template: nil")
 }
@@ -382,7 +382,7 @@ func TestUpdateRoleSet(t *testing.T) {
 	err := client.Create(context.TODO(), roleSet)
 	assert.NoError(t, err)
 
-	updated, err := reconciler.updateRoleSet(stormService, []*orchestrationv1alpha1.RoleSet{roleSet}, "new-revision")
+	updated, err := reconciler.updateRoleSet(stormService, []*orchestrationv1alpha1.RoleSet{roleSet}, "new-revision", nil)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, updated)
 
@@ -433,7 +433,7 @@ func TestCreateRoleSet(t *testing.T) {
 		},
 	}
 
-	created, err := reconciler.createRoleSet(stormService, 2, "test-revision")
+	created, err := reconciler.createRoleSet(stormService, 2, "test-revision", nil)
 	assert.NoError(t, err)
 	assert.Equal(t, 2, created)
 

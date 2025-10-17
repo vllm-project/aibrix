@@ -23,6 +23,7 @@ import (
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
 	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
+	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
@@ -1101,6 +1102,418 @@ func TestFilterReadyRoleSets(t *testing.T) {
 			for _, rs := range notReady {
 				assert.False(t, utils.IsRoleSetReady(rs))
 			}
+		})
+	}
+}
+
+// TestComputeRoleRevisions tests the core per-role revision tracking logic
+func TestComputeRoleRevisions(t *testing.T) {
+	// Helper to create ControllerRevision
+	makeControllerRevision := func(name string, revision int64) *apps.ControllerRevision {
+		return &apps.ControllerRevision{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name,
+			},
+			Revision: revision,
+		}
+	}
+
+	// Helper to create StormService with roles
+	makeStormServiceWithRoles := func(name string, roles []orchestrationv1alpha1.RoleSpec) *orchestrationv1alpha1.StormService {
+		return &orchestrationv1alpha1.StormService{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+			},
+			Spec: orchestrationv1alpha1.StormServiceSpec{
+				Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+					Spec: &orchestrationv1alpha1.RoleSetSpec{
+						Roles: roles,
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name      string
+		current   *orchestrationv1alpha1.StormService
+		update    *orchestrationv1alpha1.StormService
+		currentCR *apps.ControllerRevision
+		updateCR  *apps.ControllerRevision
+		validate  func(t *testing.T, result map[string]*apps.ControllerRevision)
+	}{
+		{
+			name: "role template changed - should use updateCR",
+			current: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "prefill",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "old-image:v1"},
+							},
+						},
+					},
+				},
+			}),
+			update: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "prefill",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "new-image:v2"}, // Changed!
+							},
+						},
+					},
+				},
+			}),
+			currentCR: makeControllerRevision("test-ss-rev1", 1),
+			updateCR:  makeControllerRevision("test-ss-rev2", 2),
+			validate: func(t *testing.T, result map[string]*apps.ControllerRevision) {
+				assert.Len(t, result, 1)
+				assert.Contains(t, result, "prefill")
+				assert.Equal(t, int64(2), result["prefill"].Revision, "Changed role should use updateCR")
+				assert.Equal(t, "test-ss-rev2", result["prefill"].Name)
+			},
+		},
+		{
+			name: "role template unchanged - should use currentCR",
+			current: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "decode",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "same-image:v1"},
+							},
+						},
+					},
+				},
+			}),
+			update: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "decode",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "same-image:v1"}, // Unchanged
+							},
+						},
+					},
+				},
+			}),
+			currentCR: makeControllerRevision("test-ss-rev1", 1),
+			updateCR:  makeControllerRevision("test-ss-rev2", 2),
+			validate: func(t *testing.T, result map[string]*apps.ControllerRevision) {
+				assert.Len(t, result, 1)
+				assert.Contains(t, result, "decode")
+				assert.Equal(t, int64(1), result["decode"].Revision, "Unchanged role should keep currentCR")
+				assert.Equal(t, "test-ss-rev1", result["decode"].Name)
+			},
+		},
+		{
+			name:    "new role added - should use updateCR",
+			current: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{}),
+			update: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "new-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "new-image:v1"},
+							},
+						},
+					},
+				},
+			}),
+			currentCR: makeControllerRevision("test-ss-rev1", 1),
+			updateCR:  makeControllerRevision("test-ss-rev2", 2),
+			validate: func(t *testing.T, result map[string]*apps.ControllerRevision) {
+				assert.Len(t, result, 1)
+				assert.Contains(t, result, "new-role")
+				assert.Equal(t, int64(2), result["new-role"].Revision, "New role should use updateCR")
+			},
+		},
+		{
+			name: "multiple roles with mixed changes",
+			current: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "prefill",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "prefill:v1"},
+							},
+						},
+					},
+				},
+				{
+					Name: "decode",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "decode:v1"},
+							},
+						},
+					},
+				},
+			}),
+			update: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "prefill",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "prefill:v2"}, // Changed!
+							},
+						},
+					},
+				},
+				{
+					Name: "decode",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "decode:v1"}, // Unchanged
+							},
+						},
+					},
+				},
+			}),
+			currentCR: makeControllerRevision("test-ss-rev1", 1),
+			updateCR:  makeControllerRevision("test-ss-rev2", 2),
+			validate: func(t *testing.T, result map[string]*apps.ControllerRevision) {
+				assert.Len(t, result, 2)
+				// prefill changed → revision 2
+				assert.Equal(t, int64(2), result["prefill"].Revision, "Changed prefill should use updateCR")
+				// decode unchanged → revision 1
+				assert.Equal(t, int64(1), result["decode"].Revision, "Unchanged decode should keep currentCR")
+			},
+		},
+		{
+			name:    "nil current StormService - all roles use updateCR",
+			current: nil,
+			update: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "role1",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "image:v1"},
+							},
+						},
+					},
+				},
+			}),
+			currentCR: makeControllerRevision("test-ss-rev1", 1),
+			updateCR:  makeControllerRevision("test-ss-rev2", 2),
+			validate: func(t *testing.T, result map[string]*apps.ControllerRevision) {
+				assert.Len(t, result, 1)
+				assert.Equal(t, int64(2), result["role1"].Revision, "Should use updateCR when current is nil")
+			},
+		},
+		{
+			name:      "empty roles in update - should return empty map",
+			current:   makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{{Name: "role1"}}),
+			update:    makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{}),
+			currentCR: makeControllerRevision("test-ss-rev1", 1),
+			updateCR:  makeControllerRevision("test-ss-rev2", 2),
+			validate: func(t *testing.T, result map[string]*apps.ControllerRevision) {
+				assert.Len(t, result, 0, "Empty update roles should return empty map")
+			},
+		},
+		{
+			name:    "nil Spec.Template.Spec in current - should not panic",
+			current: &orchestrationv1alpha1.StormService{Spec: orchestrationv1alpha1.StormServiceSpec{Template: orchestrationv1alpha1.RoleSetTemplateSpec{}}},
+			update: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "role1",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "image:v1"},
+							},
+						},
+					},
+				},
+			}),
+			currentCR: makeControllerRevision("test-ss-rev1", 1),
+			updateCR:  makeControllerRevision("test-ss-rev2", 2),
+			validate: func(t *testing.T, result map[string]*apps.ControllerRevision) {
+				assert.Len(t, result, 1)
+				assert.Equal(t, int64(2), result["role1"].Revision, "Should treat nil Spec as new role")
+			},
+		},
+		{
+			name: "three roles - one new, one changed, one unchanged",
+			current: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "prefill",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "prefill:v1"},
+							},
+						},
+					},
+				},
+				{
+					Name: "decode",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "decode:v1"},
+							},
+						},
+					},
+				},
+			}),
+			update: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "prefill",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "prefill:v2"}, // Changed
+							},
+						},
+					},
+				},
+				{
+					Name: "decode",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "decode:v1"}, // Unchanged
+							},
+						},
+					},
+				},
+				{
+					Name: "cache",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "main", Image: "cache:v1"}, // New
+							},
+						},
+					},
+				},
+			}),
+			currentCR: makeControllerRevision("test-ss-rev5", 5),
+			updateCR:  makeControllerRevision("test-ss-rev6", 6),
+			validate: func(t *testing.T, result map[string]*apps.ControllerRevision) {
+				assert.Len(t, result, 3)
+				assert.Equal(t, int64(6), result["prefill"].Revision, "Changed prefill → rev 6")
+				assert.Equal(t, int64(5), result["decode"].Revision, "Unchanged decode → rev 5")
+				assert.Equal(t, int64(6), result["cache"].Revision, "New cache → rev 6")
+			},
+		},
+		{
+			name: "complex pod template changes - env vars modified",
+			current: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "worker",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "main",
+									Image: "worker:v1",
+									Env: []corev1.EnvVar{
+										{Name: "KEY1", Value: "value1"},
+									},
+								},
+							},
+						},
+					},
+				},
+			}),
+			update: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "worker",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "main",
+									Image: "worker:v1",
+									Env: []corev1.EnvVar{
+										{Name: "KEY1", Value: "value1"},
+										{Name: "KEY2", Value: "value2"}, // Added env var
+									},
+								},
+							},
+						},
+					},
+				},
+			}),
+			currentCR: makeControllerRevision("test-ss-rev3", 3),
+			updateCR:  makeControllerRevision("test-ss-rev4", 4),
+			validate: func(t *testing.T, result map[string]*apps.ControllerRevision) {
+				assert.Len(t, result, 1)
+				assert.Equal(t, int64(4), result["worker"].Revision, "Template with env change should use updateCR")
+			},
+		},
+		{
+			name: "role with identical deep copy template - should use currentCR",
+			current: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "api",
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "api", "version": "v1"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "api-server",
+									Image: "api:v1.0.0",
+									Ports: []corev1.ContainerPort{
+										{Name: "http", ContainerPort: 8080},
+									},
+								},
+							},
+						},
+					},
+				},
+			}),
+			update: makeStormServiceWithRoles("test-ss", []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "api",
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "api", "version": "v1"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "api-server",
+									Image: "api:v1.0.0",
+									Ports: []corev1.ContainerPort{
+										{Name: "http", ContainerPort: 8080},
+									},
+								},
+							},
+						},
+					},
+				},
+			}),
+			currentCR: makeControllerRevision("test-ss-rev10", 10),
+			updateCR:  makeControllerRevision("test-ss-rev11", 11),
+			validate: func(t *testing.T, result map[string]*apps.ControllerRevision) {
+				assert.Len(t, result, 1)
+				assert.Equal(t, int64(10), result["api"].Revision, "Identical template should keep currentCR")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := computeRoleRevisions(tt.current, tt.update, tt.currentCR, tt.updateCR)
+			tt.validate(t, result)
 		})
 	}
 }

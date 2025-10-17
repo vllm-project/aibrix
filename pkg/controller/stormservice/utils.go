@@ -19,9 +19,12 @@ package stormservice
 import (
 	"sort"
 
+	ctrlutil "github.com/vllm-project/aibrix/pkg/controller/util"
+	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/klog/v2"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
@@ -239,4 +242,57 @@ func isServiceEqual(a, b *corev1.Service) bool {
 		apiequality.Semantic.DeepEqual(a.Spec.Selector, b.Spec.Selector) &&
 		a.Spec.ClusterIP == b.Spec.ClusterIP &&
 		a.Spec.PublishNotReadyAddresses == b.Spec.PublishNotReadyAddresses
+}
+
+// computeRoleRevisions compares roles between current and update StormService versions
+// and returns a map of role names to their effective ControllerRevision info.
+// This is the key function that links role-template-hash (detection) with ControllerRevision (ordering).
+func computeRoleRevisions(current, update *orchestrationv1alpha1.StormService, currentCR, updateCR *apps.ControllerRevision) map[string]*apps.ControllerRevision {
+	roleRevisions := make(map[string]*apps.ControllerRevision)
+
+	// Get roles from both versions
+	currentRoles := make(map[string]*orchestrationv1alpha1.RoleSpec)
+	if current != nil && current.Spec.Template.Spec != nil {
+		for i := range current.Spec.Template.Spec.Roles {
+			role := &current.Spec.Template.Spec.Roles[i]
+			currentRoles[role.Name] = role
+		}
+	}
+
+	updateRoles := make(map[string]*orchestrationv1alpha1.RoleSpec)
+	if update != nil && update.Spec.Template.Spec != nil {
+		for i := range update.Spec.Template.Spec.Roles {
+			role := &update.Spec.Template.Spec.Roles[i]
+			updateRoles[role.Name] = role
+		}
+	}
+
+	// For each role in the update version, determine which CR to use
+	for roleName, updateRole := range updateRoles {
+		currentRole, exists := currentRoles[roleName]
+		if !exists {
+			// New role, use updateCR
+			roleRevisions[roleName] = updateCR
+			klog.Infof("Role %s is new, using update revision %d (%s)", roleName, updateCR.Revision, updateCR.Name)
+			continue
+		}
+
+		// Compare template hashes (same hash algorithm as role-template-hash label)
+		currentHash := ctrlutil.ComputeHash(&currentRole.Template, nil)
+		updateHash := ctrlutil.ComputeHash(&updateRole.Template, nil)
+
+		if currentHash != updateHash {
+			// Role template changed, use updateCR
+			roleRevisions[roleName] = updateCR
+			klog.Infof("Role %s template changed (hash %s -> %s), using update revision %d (%s)",
+				roleName, currentHash, updateHash, updateCR.Revision, updateCR.Name)
+		} else {
+			// Role template unchanged, use currentCR
+			roleRevisions[roleName] = currentCR
+			klog.Infof("Role %s template unchanged (hash %s), keeping current revision %d (%s)",
+				roleName, currentHash, currentCR.Revision, currentCR.Name)
+		}
+	}
+
+	return roleRevisions
 }
