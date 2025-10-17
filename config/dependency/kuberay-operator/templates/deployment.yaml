@@ -44,7 +44,7 @@ spec:
             - /manager
           args:
             - --feature-gates=RayClusterStatusConditions=true
-            - --leader-elect
+            - --enable-leader-election=true
           ports:
             - name: http
               containerPort: 8080
