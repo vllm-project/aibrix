@@ -205,7 +205,11 @@ build-controller-manager: manifests generate fmt vet ## Build controller-manager
 
 .PHONY: build-gateway-plugins
 build-gateway-plugins: manifests generate fmt vet ## Build gateway-plugins binary with ZMQ.
-	CGO_ENABLED=1 go build -tags="zmq" -o bin/gateway-plugins cmd/plugins/main.go
+	CGO_ENABLED=1 \
+	CGO_LDFLAGS='-lzmq -lsodium -lpthread -lm -lstdc++' \
+	go build -tags="zmq" \
+		-ldflags='-extldflags "$(CGO_LDFLAGS)"' \
+		-o bin/gateway-plugins cmd/plugins/main.go
 
 .PHONY: build-metadata-service
 build-metadata-service: ## Metadata service is now Python-based, use docker-build-metadata-service instead.
