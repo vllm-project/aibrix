@@ -87,9 +87,9 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
               replicas:
+                enum:
+                - 1
                 format: int32
-                maximum: 1
-                minimum: 1
                 type: integer
               schedulerName:
                 default: default

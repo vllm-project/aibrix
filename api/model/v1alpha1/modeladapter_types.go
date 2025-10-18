@@ -52,8 +52,7 @@ type ModelAdapterSpec struct {
 	// - 1: Load adapter on a single pod selected by the scheduler
 	// Only nil or 1 are supported. Other values will be rejected.
 	// +optional
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=1
+	// +kubebuilder:validation:Enum=1
 	Replicas *int32 `json:"replicas,omitempty"`
 
 	// Additional fields can be added here to customize the scheduling and deployment
