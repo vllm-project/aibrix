@@ -70,8 +70,7 @@ var testUsers = []utils.User{
 func TestMain(m *testing.M) {
 	redisClient = utils.GetRedisClient()
 	if redisClient == nil {
-		fmt.Println("Failed to connect to Redis")
-		os.Exit(1)
+		fmt.Println("Warning: Failed to connect to Redis. VTC routing tests will be skipped.")
 	}
 
 	code := m.Run()
@@ -116,7 +115,7 @@ func (d DistributionQuality) String() string {
 
 func setupVTCUsers(t *testing.T) {
 	if redisClient == nil {
-		t.Fatal("Redis client is not initialized")
+		t.Skip("Skipping VTC test: Redis client is not available")
 	}
 
 	getAvailablePods(t)

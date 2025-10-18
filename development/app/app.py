@@ -2,9 +2,11 @@ from flask import Flask, request, Response, jsonify
 from flask_httpauth import HTTPTokenAuth
 from functools import wraps
 from werkzeug import serving
+import base64
 import random
 import re
 import logging
+import struct
 import sys
 import time
 from datetime import datetime
@@ -25,15 +27,15 @@ from vidur.entities import Request
 # Global storage for overridden values
 overrides = {}
 
-MODEL_NAME = os.getenv('MODEL_NAME', 'llama2-7b')
-DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-7b')
-NAMESPACE = os.getenv('POD_NAMESPACE', 'default')
-DEFAULT_REPLICAS = int(os.getenv('DEFAULT_REPLICAS', '1'))
-SIMULATION = os.getenv('SIMULATION', 'disabled')
+MODEL_NAME = os.getenv("MODEL_NAME", "llama2-7b")
+DEPLOYMENT_NAME = os.getenv("DEPLOYMENT_NAME", "llama2-7b")
+NAMESPACE = os.getenv("POD_NAMESPACE", "default")
+DEFAULT_REPLICAS = int(os.getenv("DEFAULT_REPLICAS", "1"))
+SIMULATION = os.getenv("SIMULATION", "disabled")
 
 modelMaps = {
     "llama2-7b": "meta-llama/Llama-2-7b-hf",
-    "llama2-70b": "meta-llama/Llama-2-70b-hf"
+    "llama2-70b": "meta-llama/Llama-2-70b-hf",
 }
 
 # Polifill the necessary arguments.
@@ -56,7 +58,7 @@ try:
 except ValueError:
     pass
 
-auth = HTTPTokenAuth(scheme='Bearer')
+auth = HTTPTokenAuth(scheme="Bearer")
 
 
 @auth.verify_token
@@ -68,7 +70,19 @@ def verify_token(token):
 
 @auth.error_handler
 def auth_error(status):
-    return jsonify({"error": "Unauthorized"}), 401
+    return (
+        jsonify(
+            {
+                "error": {
+                    "message": "Incorrect API key provided. You can find your API key at https://platform.openai.com/account/api-keys.",
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": "invalid_api_key",
+                }
+            }
+        ),
+        401,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -99,7 +113,7 @@ def get_token_count(text):
         encoded_input = tokenizer(text)
 
         # Get the number of tokens
-        return len(encoded_input['input_ids'])
+        return len(encoded_input["input_ids"])
     except Exception as e:
         logger.error(f"Failed to get number of tokens: {e}")
 
@@ -127,9 +141,9 @@ models = [
                 "allow_fine_tuning": False,
                 "organization": "*",
                 "group": None,
-                "is_blocking": False
+                "is_blocking": False,
             }
-        ]
+        ],
     },
     {
         "id": "startup-default-lora",
@@ -151,10 +165,10 @@ models = [
                 "allow_fine_tuning": False,
                 "organization": "*",
                 "group": None,
-                "is_blocking": False
+                "is_blocking": False,
             }
-        ]
-    }
+        ],
+    },
 ]
 
 
@@ -162,7 +176,7 @@ models = [
 # the metrics and results in lots of meaningless requests that we do not want to log.
 def disable_endpoint_logs():
     """Disable logs for requests to specific endpoints."""
-    disabled_endpoints = ('/', '/health', '/ready', '/metrics')
+    disabled_endpoints = ("/", "/health", "/ready", "/metrics")
     parent_log_request = serving.WSGIRequestHandler.log_request
 
     def log_request(self, *args, **kwargs):
@@ -175,67 +189,80 @@ def disable_endpoint_logs():
 app = Flask(__name__)
 disable_endpoint_logs()
 
-@app.route('/health', methods=['GET'])
+
+@app.route("/health", methods=["GET"])
 def health():
     return {"status": "ok"}, 200
 
-@app.route('/ready', methods=['GET'])
+
+@app.route("/ready", methods=["GET"])
 def ready():
     return {"status": "ready"}, 200
 
-@app.route('/v1/models', methods=['GET'])
+
+@app.route("/v1/models", methods=["GET"])
 @auth.login_required
 def get_models():
-    return jsonify({
-        "object": "list",
-        "data": models
-    })
+    return jsonify({"object": "list", "data": models})
 
 
-@app.route('/v1/load_lora_adapter', methods=['POST'])
+@app.route("/v1/load_lora_adapter", methods=["POST"])
 @auth.login_required
 def load_model():
-    lora_name = request.json.get('lora_name')
+    lora_name = request.json.get("lora_name")
     # Check if the model already exists
-    if any(model['id'] == lora_name for model in models):
+    if any(model["id"] == lora_name for model in models):
         return jsonify({"status": "success", "message": "Model already loaded"}), 200
 
     new_model = {
-        'id': lora_name,
-        'created': int(time.time()),
-        'object': "model",
-        'owned_by': "vllm",
-        'parent': None,
-        'root': request.json.get('lora_path')
+        "id": lora_name,
+        "created": int(time.time()),
+        "object": "model",
+        "owned_by": "vllm",
+        "parent": None,
+        "root": request.json.get("lora_path"),
     }
 
     models.append(new_model)
     return jsonify({"status": "success", "message": "Model loaded successfully"}), 200
 
 
-@app.route('/v1/unload_lora_adapter', methods=['POST'])
+@app.route("/v1/unload_lora_adapter", methods=["POST"])
 @auth.login_required
 def unload_model():
-    model_id = request.json.get('lora_name')
+    model_id = request.json.get("lora_name")
     global models
-    models = [model for model in models if model['id'] != model_id]
+    models = [model for model in models if model["id"] != model_id]
     return jsonify({"status": "success", "message": "Model unloaded successfully"}), 200
 
 
-@app.route('/v1/completions', methods=['POST'])
+@app.route("/v1/completions", methods=["POST"])
 @auth.login_required
 def completion():
     try:
-        prompt = request.json.get('prompt')
-        model = request.json.get('model')
-        max_tokens = request.json.get('max_tokens')
+        prompt = request.json.get("prompt")
+        model = request.json.get("model")
+        max_tokens = request.json.get("max_tokens")
+        stream = request.json.get("stream", False)
         if not prompt or not model:
-            return jsonify({"status": "error", "message": "Prompt and model are required"}), 400
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "message": "'prompt' and 'model' are required parameters",
+                            "type": "invalid_request_error",
+                            "param": "prompt" if not prompt else "model",
+                            "code": None,
+                        }
+                    }
+                ),
+                400,
+            )
 
         arrived_at = datetime.now().timestamp()
         input_tokens = get_token_count(prompt)
         output_tokens = max_tokens if max_tokens else randint(10, 500)
-        arrived_next = request.json.get('next_in')
+        arrived_next = request.json.get("next_in")
         if not arrived_next:
             arrived_next = 0.0
         else:
@@ -244,61 +271,140 @@ def completion():
         start = datetime.now().timestamp()
         latency = 0.0
         if simulator is not None:
-            latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens, arrived_next=arrived_next))
+            latency = simulator.execute(
+                Request(
+                    arrived_at, input_tokens, output_tokens, arrived_next=arrived_next
+                )
+            )
 
-        # Simulated response
-        response = {
-            "id": "cmpl-uqkvlQyYK7bGYrRHQ0eXlWi7",
-            "object": "text_completion",
-            "created": int(arrived_at),
-            "model": model,
-            "system_fingerprint": "fp_44709d6fcb",
-            "choices": [
-                {
-                    "text": f"This is simulated message from {model}!",
-                    "index": 0,
-                    "logprobs": None,
-                    "finish_reason": "length"
-                }
-            ],
-            "usage": {
-                "prompt_tokens": input_tokens,
-                "completion_tokens": output_tokens,
-                "total_tokens": input_tokens + output_tokens,
-                "time": latency
-            }
-        }
         overhead = datetime.now().timestamp() - start
         if latency > overhead:
             time.sleep(latency - overhead)
         elif latency > 0.0:
             logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
 
-        return jsonify(response), 200
+        if stream:
+
+            def generate():
+                completion_id = "cmpl-" + "".join(
+                    random.choices(
+                        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                        k=20,
+                    )
+                )
+                full_text = f"This is simulated message from {model}!"
+                words = full_text.split()
+                for i, word in enumerate(words):
+                    chunk = {
+                        "id": completion_id,
+                        "object": "text_completion",
+                        "created": int(arrived_at),
+                        "model": model,
+                        "system_fingerprint": "fp_44709d6fcb",
+                        "choices": [
+                            {
+                                "text": word + (" " if i < len(words) - 1 else ""),
+                                "index": 0,
+                                "logprobs": None,
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                    time.sleep(0.05)
+
+                final_chunk = {
+                    "id": completion_id,
+                    "object": "text_completion",
+                    "created": int(arrived_at),
+                    "model": model,
+                    "system_fingerprint": "fp_44709d6fcb",
+                    "choices": [
+                        {
+                            "text": "",
+                            "index": 0,
+                            "logprobs": None,
+                            "finish_reason": "length",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": input_tokens,
+                        "completion_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                    },
+                }
+                yield f"data: {json.dumps(final_chunk)}\n\n"
+                time.sleep(0.01)  # Small delay to ensure data is flushed
+                yield "data: [DONE]\n\n"
+
+            response = Response(generate(), mimetype="text/event-stream")
+            response.headers['Cache-Control'] = 'no-cache'
+            response.headers['X-Accel-Buffering'] = 'no'
+            return response
+        else:
+            response = {
+                "id": "cmpl-uqkvlQyYK7bGYrRHQ0eXlWi7",
+                "object": "text_completion",
+                "created": int(arrived_at),
+                "model": model,
+                "system_fingerprint": "fp_44709d6fcb",
+                "choices": [
+                    {
+                        "text": f"This is simulated message from {model}!",
+                        "index": 0,
+                        "logprobs": None,
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": input_tokens,
+                    "completion_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                    "time": latency,
+                },
+            }
+            return jsonify(response), 200
     except Exception as e:
         err = {
             "error": {
-                "message": f"The server had an error while processing your request: {e}",
-                "type": "server_error"
+                "message": f"The server had an error while processing your request. Sorry about that!",
+                "type": "server_error",
+                "param": None,
+                "code": None,
             }
         }
         return jsonify(err), 500
 
 
-@app.route('/v1/chat/completions', methods=['POST'])
+@app.route("/v1/chat/completions", methods=["POST"])
 @auth.login_required
 def chat_completions():
     try:
-        messages = request.json.get('messages')
-        model = request.json.get('model')
-        max_tokens = request.json.get('max_tokens')
+        messages = request.json.get("messages")
+        model = request.json.get("model")
+        max_tokens = request.json.get("max_tokens")
+        stream = request.json.get("stream", False)
+        stream_options = request.json.get("stream_options", {})
+        include_usage = stream_options.get("include_usage", False) if stream else False
         if not messages or not model:
-            return jsonify({"status": "error", "message": "Messages and model are required"}), 400
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "message": "'messages' and 'model' are required parameters",
+                            "type": "invalid_request_error",
+                            "param": "messages" if not messages else "model",
+                            "code": None,
+                        }
+                    }
+                ),
+                400,
+            )
 
         arrived_at = datetime.now().timestamp()
         input_tokens = sum(get_token_count(message["content"]) for message in messages)
         output_tokens = max_tokens if max_tokens else randint(10, 500)
-        arrived_next = request.json.get('next_in')
+        arrived_next = request.json.get("next_in")
         if not arrived_next:
             arrived_next = 0.0
         else:
@@ -307,50 +413,299 @@ def chat_completions():
         start = datetime.now().timestamp()
         latency = 0.0
         if simulator is not None:
-            latency = simulator.execute(Request(arrived_at, input_tokens, output_tokens, arrived_next=arrived_next))
+            latency = simulator.execute(
+                Request(
+                    arrived_at, input_tokens, output_tokens, arrived_next=arrived_next
+                )
+            )
 
-        # Simulated response
-        response = {
-            "id": "chatcmpl-abc123",
-            "object": "chat.completion",
-            "created": int(arrived_at),
-            "model": model,
-            "usage": {
-                "prompt_tokens": input_tokens,
-                "completion_tokens": output_tokens,
-                "total_tokens": input_tokens + output_tokens,
-                "time": latency
-            },
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": f"\n\nThis is simulated message from {model}!"
-                    },
-                    "logprobs": None,
-                    "finish_reason": "stop",
-                    "index": 0
-                }
-            ]
-        }
         overhead = datetime.now().timestamp() - start
         if latency > overhead:
             time.sleep(latency - overhead)
         else:
             logger.warning(f"Latency is less than overhead: L{latency} - O{overhead}")
 
-        return jsonify(response), 200
+        if stream:
+
+            def generate():
+                completion_id = "chatcmpl-" + "".join(
+                    random.choices(
+                        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                        k=20,
+                    )
+                )
+
+                # First chunk with role
+                role_chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(arrived_at),
+                    "model": model,
+                    "system_fingerprint": "fp_44709d6fcb",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant"},
+                            "logprobs": None,
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                yield f"data: {json.dumps(role_chunk)}\n\n"
+
+                # Content chunks
+                full_text = f"\n\nThis is simulated message from {model}!"
+                words = full_text.split()
+                for i, word in enumerate(words):
+                    chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(arrived_at),
+                        "model": model,
+                        "system_fingerprint": "fp_44709d6fcb",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {
+                                    "content": word
+                                    + (" " if i < len(words) - 1 else "")
+                                },
+                                "logprobs": None,
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                    time.sleep(0.05)
+
+                # Final chunk with finish_reason
+                final_chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(arrived_at),
+                    "model": model,
+                    "system_fingerprint": "fp_44709d6fcb",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "logprobs": None,
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+                yield f"data: {json.dumps(final_chunk)}\n\n"
+
+                # Usage chunk (optional, included when stream_options.include_usage is true)
+                if include_usage:
+                    usage_chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(arrived_at),
+                        "model": model,
+                        "system_fingerprint": "fp_44709d6fcb",
+                        "choices": [],
+                        "usage": {
+                            "prompt_tokens": input_tokens,
+                            "completion_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens,
+                        },
+                    }
+                    yield f"data: {json.dumps(usage_chunk)}\n\n"
+
+                # Stream termination
+                time.sleep(0.01)  # Small delay to ensure data is flushed
+                yield "data: [DONE]\n\n"
+
+            response = Response(generate(), mimetype="text/event-stream")
+            response.headers['Cache-Control'] = 'no-cache'
+            response.headers['X-Accel-Buffering'] = 'no'
+            return response
+        else:
+            response = {
+                "id": "chatcmpl-abc123",
+                "object": "chat.completion",
+                "created": int(arrived_at),
+                "model": model,
+                "usage": {
+                    "prompt_tokens": input_tokens,
+                    "completion_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                    "time": latency,
+                },
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": f"\n\nThis is simulated message from {model}!",
+                        },
+                        "logprobs": None,
+                        "finish_reason": "stop",
+                        "index": 0,
+                    }
+                ],
+            }
+            return jsonify(response), 200
     except Exception as e:
         err = {
             "error": {
-                "message": f"The server had an error while processing your request: {e}",
-                "type": "server_error"
+                "message": f"The server had an error while processing your request. Sorry about that!",
+                "type": "server_error",
+                "param": None,
+                "code": None,
             }
         }
         return jsonify(err), 500
 
 
-@app.route('/set_metrics', methods=['POST'])
+@app.route("/v1/embeddings", methods=["POST"])
+@auth.login_required
+def embeddings():
+    try:
+        input_data = request.json.get("input")
+        model = request.json.get("model")
+        encoding_format = request.json.get("encoding_format", "float")
+        dimensions = request.json.get("dimensions")
+        user = request.json.get("user")
+
+        if not input_data or not model:
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "message": "'input' and 'model' are required parameters",
+                            "type": "invalid_request_error",
+                            "param": "input" if not input_data else "model",
+                            "code": None,
+                        }
+                    }
+                ),
+                400,
+            )
+
+        # Convert single string input to list for uniform processing
+        inputs = [input_data] if isinstance(input_data, str) else input_data
+
+        # Validate input limits
+        if len(inputs) > 2048:
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "message": "The maximum number of inputs is 2048",
+                            "type": "invalid_request_error",
+                            "param": "input",
+                            "code": None,
+                        }
+                    }
+                ),
+                400,
+            )
+
+        # Default dimensions based on model
+        default_dimensions = {
+            "text-embedding-3-small": 1536,
+            "text-embedding-3-large": 3072,
+            "text-embedding-ada-002": 1536,
+        }
+        embedding_dim = (
+            dimensions if dimensions else default_dimensions.get(model, 1536)
+        )
+
+        # Generate embeddings
+        embeddings_data = []
+        total_tokens = 0
+
+        for idx, text in enumerate(inputs):
+            # Calculate token count
+            if isinstance(text, str):
+                tokens = get_token_count(text)
+            elif isinstance(text, list):
+                # Array of tokens (integers)
+                tokens = len(text)
+            elif isinstance(text, int):
+                # Single token (from a token array)
+                tokens = 1
+            else:
+                tokens = 1  # Fallback for unexpected types
+            total_tokens += tokens
+
+            # Validate token limit per input
+            if tokens > 8192:
+                return (
+                    jsonify(
+                        {
+                            "error": {
+                                "message": f"Input {idx} exceeds maximum token limit of 8192",
+                                "type": "invalid_request_error",
+                                "param": "input",
+                                "code": None,
+                            }
+                        }
+                    ),
+                    400,
+                )
+
+            # Generate random embedding vector
+            if encoding_format == "float":
+                # Generate normalized random vector
+                embedding = [random.uniform(-1, 1) for _ in range(embedding_dim)]
+                # Normalize the vector
+                magnitude = sum(x**2 for x in embedding) ** 0.5
+                if magnitude > 0:
+                    embedding = [x / magnitude for x in embedding]
+                else:
+                    # Extremely unlikely but handle zero vector case
+                    embedding = [1.0 / (embedding_dim ** 0.5)] * embedding_dim
+            elif encoding_format == "base64":
+                # Generate random vector and encode as base64
+                embedding_floats = [random.uniform(-1, 1) for _ in range(embedding_dim)]
+                # Pack floats as bytes
+                embedding_bytes = struct.pack(f"{embedding_dim}f", *embedding_floats)
+                # Encode to base64
+                embedding = base64.b64encode(embedding_bytes).decode("utf-8")
+            else:
+                return (
+                    jsonify(
+                        {
+                            "error": {
+                                "message": f"Invalid encoding_format: {encoding_format}. Must be 'float' or 'base64'",
+                                "type": "invalid_request_error",
+                                "param": "encoding_format",
+                                "code": None,
+                            }
+                        }
+                    ),
+                    400,
+                )
+
+            embeddings_data.append(
+                {"object": "embedding", "embedding": embedding, "index": idx}
+            )
+
+        response = {
+            "object": "list",
+            "data": embeddings_data,
+            "model": model,
+            "usage": {"prompt_tokens": total_tokens, "total_tokens": total_tokens},
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in embeddings endpoint: {e}")
+        err = {
+            "error": {
+                "message": "The server had an error while processing your request. Sorry about that!",
+                "type": "server_error",
+                "param": None,
+                "code": None,
+            }
+        }
+        return jsonify(err), 500
+
+
+@app.route("/set_metrics", methods=["POST"])
 def set_metrics():
     global overrides
     # Get JSON data from the request
@@ -367,7 +722,9 @@ def set_metrics():
 metrics_state = {}
 
 
-def generate_histogram_metric(metric_name, description, model_name, buckets, new_requests, help_header=True):
+def generate_histogram_metric(
+    metric_name, description, model_name, buckets, new_requests, help_header=True
+):
     """
     Generate Prometheus histogram metrics with dynamically updated bucket values.
 
@@ -389,7 +746,7 @@ def generate_histogram_metric(metric_name, description, model_name, buckets, new
         metrics_state[metric_name] = {
             "buckets": {bucket: 0 for bucket in buckets},  # Bucket values
             "total_sum": 0,  # Total sum of all values
-            "total_count": 0  # Total count of all events
+            "total_count": 0,  # Total count of all events
         }
 
     # Retrieve current metric state
@@ -405,33 +762,43 @@ def generate_histogram_metric(metric_name, description, model_name, buckets, new
         if bucket != buckets[0]:  # Skip the first bucket
             current_state["buckets"][bucket] = max(
                 current_state["buckets"][bucket],
-                current_state["buckets"][buckets[buckets.index(bucket) - 1]]
+                current_state["buckets"][buckets[buckets.index(bucket) - 1]],
             )
 
     # Update total_count and total_sum
-    current_state["total_count"] = current_state["buckets"][buckets[-1]]  # `+Inf` bucket is the total count
+    current_state["total_count"] = current_state["buckets"][
+        buckets[-1]
+    ]  # `+Inf` bucket is the total count
     current_state["total_sum"] += sum(
-        float(bucket) * value for bucket, value in new_requests.items() if bucket != "+Inf"
+        float(bucket) * value
+        for bucket, value in new_requests.items()
+        if bucket != "+Inf"
     )
 
     # Generate Prometheus bucket strings
     bucket_strings = "\n".join(
-        [f'vllm:{metric_name}_bucket{{le="{bucket}",model_name="{model_name}"}} {current_state["buckets"][bucket]}'
-         for bucket in buckets]
+        [
+            f'vllm:{metric_name}_bucket{{le="{bucket}",model_name="{model_name}"}} {current_state["buckets"][bucket]}'
+            for bucket in buckets
+        ]
     )
 
     # Return formatted histogram metric
-    histogram_template = """
+    histogram_template = (
+        """
 # HELP vllm:{metric_name} {description}
 # TYPE vllm:{metric_name} histogram
 vllm:{metric_name}_sum{{model_name="{model_name}"}} {value}
 {buckets}
 vllm:{metric_name}_count{{model_name="{model_name}"}} {count}
-""" if help_header else """
+"""
+        if help_header
+        else """
 vllm:{metric_name}_sum{{model_name="{model_name}"}} {value}
 {buckets}
 vllm:{metric_name}_count{{model_name="{model_name}"}} {count}
 """
+    )
 
     return histogram_template.format(
         metric_name=metric_name,
@@ -439,11 +806,13 @@ vllm:{metric_name}_count{{model_name="{model_name}"}} {count}
         model_name=model_name,
         value=current_state["total_sum"],
         buckets=bucket_strings,
-        count=current_state["total_count"]
+        count=current_state["total_count"],
     )
 
 
-def generate_counter_gauge_metric(metric_name, metric_type, description, model_name, value, help_header=True):
+def generate_counter_gauge_metric(
+    metric_name, metric_type, description, model_name, value, help_header=True
+):
     """
     Generates a Prometheus metric string for counter or gauge.
 
@@ -458,24 +827,28 @@ def generate_counter_gauge_metric(metric_name, metric_type, description, model_n
     Returns:
         str: A formatted Prometheus metric string.
     """
-    counter_gauge_template = """
+    counter_gauge_template = (
+        """
 # HELP vllm:{metric_name} {description}
 # TYPE vllm:{metric_name} {metric_type}
 vllm:{metric_name}{{model_name="{model_name}"}} {value}
-""" if help_header else """
+"""
+        if help_header
+        else """
 vllm:{metric_name}{{model_name="{model_name}"}} {value}
 """
+    )
 
     return counter_gauge_template.format(
         metric_name=metric_name,
         metric_type=metric_type,
         description=description,
         model_name=model_name,
-        value=value
+        value=value,
     )
 
 
-@app.route('/metrics')
+@app.route("/metrics")
 def metrics():
     # get deployment information
     try:
@@ -483,8 +856,12 @@ def metrics():
         resp = apps_v1.read_namespaced_deployment(DEPLOYMENT_NAME, NAMESPACE)
         replicas = resp.spec.replicas if resp.spec.replicas is not None else 1
     except Exception as e:
-        print(f"Failed to get deployment information: {DEPLOYMENT_NAME=} {NAMESPACE=} error={str(e)}")
-        print(f"Due to the failure, replicas {DEFAULT_REPLICAS} will be used to calculate metrics")
+        print(
+            f"Failed to get deployment information: {DEPLOYMENT_NAME=} {NAMESPACE=} error={str(e)}"
+        )
+        print(
+            f"Due to the failure, replicas {DEFAULT_REPLICAS} will be used to calculate metrics"
+        )
         replicas = DEFAULT_REPLICAS
 
     # a reasonable mock total value
@@ -492,17 +869,29 @@ def metrics():
     model_name = overrides.get("model_name", MODEL_NAME)
     # calculate metrics with potential overrides
     success_total = overrides.get("success_total", total / replicas)
-    avg_prompt_throughput = overrides.get("avg_prompt_throughput", total / replicas if replicas > 0 else 0)
-    avg_generation_throughput = overrides.get("avg_generation_throughput", total / replicas if replicas > 0 else 0)
-    prompt_tokens_total = overrides.get("prompt_tokens_total", randint(100, 1024) * success_total)
-    generation_tokens_total = overrides.get("generation_tokens_total", randint(100, 1024) * success_total)
+    avg_prompt_throughput = overrides.get(
+        "avg_prompt_throughput", total / replicas if replicas > 0 else 0
+    )
+    avg_generation_throughput = overrides.get(
+        "avg_generation_throughput", total / replicas if replicas > 0 else 0
+    )
+    prompt_tokens_total = overrides.get(
+        "prompt_tokens_total", randint(100, 1024) * success_total
+    )
+    generation_tokens_total = overrides.get(
+        "generation_tokens_total", randint(100, 1024) * success_total
+    )
     running = overrides.get("running", randint(1, 100))
     cpu_running = overrides.get("cpu_running", randint(1, 100))
     waiting = overrides.get("waiting", randint(1, 100))
     swapped = overrides.get("swapped", randint(1, 100))
     max_running_capacity = 100
-    gpu_cache_usage_perc = overrides.get("gpu_cache_usage_perc", min(100.0, (running / max_running_capacity) * 100))
-    cpu_cache_usage_perc = overrides.get("cpu_cache_usage_perc", min(100.0, (cpu_running / max_running_capacity) * 100))
+    gpu_cache_usage_perc = overrides.get(
+        "gpu_cache_usage_perc", min(100.0, (running / max_running_capacity) * 100)
+    )
+    cpu_cache_usage_perc = overrides.get(
+        "cpu_cache_usage_perc", min(100.0, (cpu_running / max_running_capacity) * 100)
+    )
 
     # Define metrics and their attributes
     simple_metrics = [
@@ -510,77 +899,85 @@ def metrics():
             "name": "prompt_tokens_total",
             "type": "counter",
             "description": "Count of prefill tokens processed.",
-            "value": overrides.get("prompt_tokens_total", prompt_tokens_total)
+            "value": overrides.get("prompt_tokens_total", prompt_tokens_total),
         },
         {
             "name": "generation_tokens_total",
             "type": "counter",
             "description": "Count of generation tokens processed.",
-            "value": overrides.get("generation_tokens_total", generation_tokens_total)
+            "value": overrides.get("generation_tokens_total", generation_tokens_total),
         },
         {
             "name": "request_success_total",
             "type": "counter",
             "description": "Count of successfully processed requests.",
-            "value": overrides.get("success_total", success_total)
+            "value": overrides.get("success_total", success_total),
         },
         {
             "name": "num_requests_running",
             "type": "gauge",
             "description": "Number of requests currently running on GPU.",
-            "value": overrides.get("running", running)
+            "value": overrides.get("running", running),
         },
         {
             "name": "num_requests_swapped",
             "type": "gauge",
             "description": "Number of requests swapped to CPU.",
-            "value": overrides.get("swapped", swapped)
+            "value": overrides.get("swapped", swapped),
         },
         {
             "name": "num_requests_waiting",
             "type": "gauge",
             "description": "Number of requests waiting to be processed.",
-            "value": overrides.get("waiting", waiting)
+            "value": overrides.get("waiting", waiting),
         },
         {
             "name": "avg_prompt_throughput_toks_per_s",
             "type": "gauge",
             "description": "Average prefill throughput in tokens/s.",
-            "value": overrides.get("avg_prompt_throughput", avg_prompt_throughput)
+            "value": overrides.get("avg_prompt_throughput", avg_prompt_throughput),
         },
         {
             "name": "avg_generation_throughput_toks_per_s",
             "type": "gauge",
             "description": "Average generation throughput in tokens/s.",
-            "value": overrides.get("avg_generation_throughput", avg_generation_throughput)
+            "value": overrides.get(
+                "avg_generation_throughput", avg_generation_throughput
+            ),
         },
         {
             "name": "gpu_cache_usage_perc",
             "type": "gauge",
             "description": "GPU KV-cache usage. 1 means 100 percent usage.",
-            "value": overrides.get(
-                "gpu_cache_usage_perc", gpu_cache_usage_perc
-            )
+            "value": overrides.get("gpu_cache_usage_perc", gpu_cache_usage_perc),
         },
         {
             "name": "cpu_cache_usage_perc",
             "type": "gauge",
             "description": "CPU KV-cache usage. 1 means 100 percent usage.",
-            "value": overrides.get(
-                "cpu_cache_usage_perc", cpu_cache_usage_perc
-            )
+            "value": overrides.get("cpu_cache_usage_perc", cpu_cache_usage_perc),
         },
     ]
 
     # Generate all metrics
     metrics_output = ""
     for metric in simple_metrics:
-        metrics_output += generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"],
-                                                        model_name, metric["value"])
-        metrics_output += generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"],
-                                                        "text2sql-lora-2", metric["value"], help_header=False)
-        
-    
+        metrics_output += generate_counter_gauge_metric(
+            metric["name"],
+            metric["type"],
+            metric["description"],
+            model_name,
+            metric["value"],
+        )
+        metrics_output += generate_counter_gauge_metric(
+            metric["name"],
+            metric["type"],
+            metric["description"],
+            "text2sql-lora-2",
+            metric["value"],
+            help_header=False,
+        )
+
     metrics_output += """
 # HELP vllm:lora_requests_info Running stats on lora requests.
 # TYPE vllm:lora_requests_info gauge
@@ -592,68 +989,128 @@ vllm:lora_requests_info{max_lora="1",running_lora_adapters="text2sql-lora-2",wai
             "name": "iteration_tokens_total",
             "type": "histogram",
             "description": "Histogram of number of tokens per engine_step.",
-            "buckets": ["1.0", "8.0", "16.0", "32.0", "64.0", "128.0", "256.0",
-                        "512.0", "1024.0", "2048.0", "4096.0", "8192.0", "+Inf"]
+            "buckets": [
+                "1.0",
+                "8.0",
+                "16.0",
+                "32.0",
+                "64.0",
+                "128.0",
+                "256.0",
+                "512.0",
+                "1024.0",
+                "2048.0",
+                "4096.0",
+                "8192.0",
+                "+Inf",
+            ],
         },
         {
             "name": "time_to_first_token_seconds",
             "type": "histogram",
             "description": "Histogram of time to first token in seconds.",
-            "buckets": ["0.001", "0.005", "0.01", "0.02", "0.04", "0.06",
-                        "0.08", "0.1", "0.25", "0.5", "+Inf"]
+            "buckets": [
+                "0.001",
+                "0.005",
+                "0.01",
+                "0.02",
+                "0.04",
+                "0.06",
+                "0.08",
+                "0.1",
+                "0.25",
+                "0.5",
+                "+Inf",
+            ],
         },
         {
             "name": "time_per_output_token_seconds",
             "type": "histogram",
             "description": "Histogram of time per output token in seconds.",
-            "buckets": ["0.01", "0.025", "0.05", "0.075", "0.1", "0.15",
-                        "0.2", "0.3", "0.4", "+Inf"]
+            "buckets": [
+                "0.01",
+                "0.025",
+                "0.05",
+                "0.075",
+                "0.1",
+                "0.15",
+                "0.2",
+                "0.3",
+                "0.4",
+                "+Inf",
+            ],
         },
         {
             "name": "request_prompt_tokens",
             "type": "histogram",
             "description": "Histogram of number of prefill tokens processed..",
-            "buckets": ["1.0", "2.0", "5.0", "10.0", "20.0", "50.0",
-                        "100.0", "200.0", "500.0", "1000.0", "2000.0",
-                        "5000.0", "10000.0", "+Inf"]
+            "buckets": [
+                "1.0",
+                "2.0",
+                "5.0",
+                "10.0",
+                "20.0",
+                "50.0",
+                "100.0",
+                "200.0",
+                "500.0",
+                "1000.0",
+                "2000.0",
+                "5000.0",
+                "10000.0",
+                "+Inf",
+            ],
         },
         {
             "name": "request_generation_tokens",
             "type": "histogram",
             "description": "Histogram of number of generation tokens processed..",
-            "buckets": ["1.0", "2.0", "5.0", "10.0", "20.0", "50.0",
-                        "100.0", "200.0", "500.0", "1000.0", "2000.0",
-                        "5000.0", "10000.0", "+Inf"]
+            "buckets": [
+                "1.0",
+                "2.0",
+                "5.0",
+                "10.0",
+                "20.0",
+                "50.0",
+                "100.0",
+                "200.0",
+                "500.0",
+                "1000.0",
+                "2000.0",
+                "5000.0",
+                "10000.0",
+                "+Inf",
+            ],
         },
         {
             "name": "e2e_request_latency_seconds",
             "type": "histogram",
             "description": "Histogram of end to end request latency in seconds.",
-            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"]
+            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"],
         },
         {
             "name": "request_queue_time_seconds",
             "type": "histogram",
             "description": "Histogram of time spent in WAITING phase for request.",
-            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"]
+            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"],
         },
         {
             "name": "request_inference_time_seconds",
             "type": "histogram",
             "description": "Histogram of time spent in RUNNING phase for request.",
-            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"]
+            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"],
         },
         {
             "name": "request_decode_time_seconds",
             "type": "histogram",
             "description": "Histogram of time spent in DECODE phase for request.",
-            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"]
+            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"],
         },
         {
             "name": "request_prefill_time_seconds",
             "type": "histogram",
             "description": "Histogram of time spent in PREFILL phase for request.",
-            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"]
+            "buckets": ["0.3", "0.5", "0.8", "1.0", "1.5", "2.0", "5.0", "+Inf"],
         },
     ]
 
@@ -667,7 +1124,7 @@ vllm:lora_requests_info{max_lora="1",running_lora_adapters="text2sql-lora-2",wai
             description=metric["description"],
             model_name=model_name,
             buckets=metric["buckets"],
-            new_requests=new_requests
+            new_requests=new_requests,
         )
         new_requests = {bucket: random.randint(0, 5) for bucket in metric["buckets"]}
         histogram_metrics_output += generate_histogram_metric(
@@ -676,17 +1133,21 @@ vllm:lora_requests_info{max_lora="1",running_lora_adapters="text2sql-lora-2",wai
             model_name="text2sql-lora-2",
             buckets=metric["buckets"],
             new_requests=new_requests,
-            help_header=False
+            help_header=False,
         )
 
-    return Response(metrics_output + histogram_metrics_output, mimetype='text/plain')
+    return Response(metrics_output + histogram_metrics_output, mimetype="text/plain")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
-    logging.getLogger("kubernetes.client.rest").setLevel(logging.ERROR)  # Suppress kubenetes logs
+    logging.getLogger("kubernetes.client.rest").setLevel(
+        logging.ERROR
+    )  # Suppress kubenetes logs
 
-    print(f"Starting app. DEPLOYMENT_NAME: {DEPLOYMENT_NAME}, NAMESPACE: {NAMESPACE}, MODEL: {MODEL_NAME}")
+    print(
+        f"Starting app. DEPLOYMENT_NAME: {DEPLOYMENT_NAME}, NAMESPACE: {NAMESPACE}, MODEL: {MODEL_NAME}"
+    )
 
     # Extract gpu_device without call argparse
     gpu_device = "disabled"
@@ -698,7 +1159,7 @@ if __name__ == '__main__':
         pass
 
     # Restore -h functionality
-    if '-h' in sys.argv:
+    if "-h" in sys.argv:
         SimulationConfig.create_from_cli_args()
 
     # Launch simulator
@@ -706,7 +1167,7 @@ if __name__ == '__main__':
         # Load the tokenizer for your model
         from transformers import AutoTokenizer
 
-        default_model = 'bert-base-uncased'
+        default_model = "bert-base-uncased"
         try:
             # can we make this as an application argument.
             # no need to use such map, we can use huggingface id directly.
@@ -715,22 +1176,21 @@ if __name__ == '__main__':
                 token_model,
                 token=HUGGINGFACE_TOKEN,
                 model_max_length=16384,  # Suppress warning
-                clean_up_tokenization_spaces=True)
+                clean_up_tokenization_spaces=True,
+            )
         except Exception as e:
-            logger.error(f"Failed to initialize tokenizer, will use default tokenizer model: {e}")
+            logger.error(
+                f"Failed to initialize tokenizer, will use default tokenizer model: {e}"
+            )
             tokenizer = AutoTokenizer.from_pretrained(
                 default_model,
                 model_max_length=16384,  # Suppress warning
-                clean_up_tokenization_spaces=True)
+                clean_up_tokenization_spaces=True,
+            )
 
         # TODO: check whether able to use argparse to build SimulationConfig
         simulator = Simulator(SimulationConfig.create_from_cli_args())
-        overrides = {
-            "total": 100.0,
-            "running": 0,
-            "waiting": 0,
-            "swapped": 0
-        }
+        overrides = {"total": 100.0, "running": 0, "waiting": 0, "swapped": 0}
 
     thread = None
     if simulator is not None:
@@ -738,14 +1198,14 @@ if __name__ == '__main__':
         thread = simulator.start()
 
     # Perform profiling and skip actual run
-    if '--time_limit' not in sys.argv:
+    if "--time_limit" not in sys.argv:
         try:
             # config.load_kube_config()
             config.load_incluster_config()
         except Exception as e:
             print(f"Failed to load k8s config: {e}")
 
-        app.run(host='0.0.0.0', port=8000)
+        app.run(host="0.0.0.0", port=8000)
 
     if simulator is not None:
         simulator.stop()
