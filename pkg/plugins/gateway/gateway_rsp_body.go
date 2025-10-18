@@ -90,7 +90,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: HeaderErrorStreaming, RawValue: []byte("true"),
 				}}},
-				err.Error()), complete
+				err.Error(), "", ""), complete
 		}
 	} else {
 		if isLanguageRequest(routerCtx.ReqPath) {
@@ -114,7 +114,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 						Key: HeaderErrorIncrTPM, RawValue: []byte("true"),
 					}}},
-					err.Error()), complete
+					err.Error(), "", ""), complete
 			}
 
 			headers = append(headers,
@@ -215,7 +215,7 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 	if err := json.Unmarshal(finalBody, &res); err != nil {
 		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
 		complete = true
-		processingRes = buildErrorResponse(envoyTypePb.StatusCode_InternalServerError, err.Error(), HeaderErrorResponseUnmarshal, "true")
+		processingRes = buildErrorResponse(envoyTypePb.StatusCode_InternalServerError, err.Error(), "", "", HeaderErrorResponseUnmarshal, "true")
 		return
 	}
 
@@ -233,7 +233,7 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 		}
 
 		complete = true
-		processingRes = buildErrorResponse(code, msg, HeaderErrorResponseUnknown, "true")
+		processingRes = buildErrorResponse(code, msg, "", "", HeaderErrorResponseUnknown, "true")
 		return
 	}
 

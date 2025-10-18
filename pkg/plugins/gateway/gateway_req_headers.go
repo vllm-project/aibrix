@@ -60,7 +60,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorInvalidRouting, RawValue: []byte(routingStrategy),
-			}}}, "incorrect routing strategy"), utils.User{}, rpm, routingCtx
+			}}}, "incorrect routing strategy", "", "routing-strategy"), utils.User{}, rpm, routingCtx
 	}
 
 	if username != "" {
@@ -72,7 +72,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: HeaderErrorUser, RawValue: []byte("true"),
 				}}},
-				err.Error()), utils.User{}, rpm, routingCtx
+				err.Error(), "", ""), utils.User{}, rpm, routingCtx
 		}
 
 		rpm, errRes, err = s.checkLimits(ctx, user)

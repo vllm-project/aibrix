@@ -131,7 +131,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 
 			if isRespError && respErrorCode == 401 {
 				// Early return due to unauthorized or canceled context we noticed.
-				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID, `{"error":"unauthorized"}`)
+				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID, "Incorrect API key provided")
 			}
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
@@ -243,8 +243,17 @@ func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.Pr
 		errMsg = httprouteErr.Error()
 	}
 	klog.ErrorS(nil, "request end", "requestID", requestID, "errorCode", respErrorCode, "errorMessage", errMsg)
+
+	// Determine appropriate error code based on HTTP status
+	errorCode := ""
+	if respErrorCode == 401 {
+		errorCode = ErrorCodeInvalidAPIKey
+	} else if respErrorCode == 503 {
+		errorCode = ErrorCodeServiceUnavailable
+	}
+
 	return generateErrorResponse(
 		envoyTypePb.StatusCode(respErrorCode),
 		resp.GetResponseHeaders().GetResponse().GetHeaderMutation().GetSetHeaders(),
-		errMsg)
+		errMsg, errorCode, "")
 }

@@ -36,12 +36,16 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 
 	code, err := s.checkRPM(ctx, user.Name, user.Rpm)
 	if err != nil {
+		errorCode := ""
+		if code == envoyTypePb.StatusCode_TooManyRequests {
+			errorCode = ErrorCodeRateLimitExceeded
+		}
 		return 0, generateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorRPMExceeded, RawValue: []byte("true"),
 			}}},
-			err.Error()), err
+			err.Error(), errorCode, ""), err
 	}
 
 	rpm, code, err := s.incrRPM(ctx, user.Name)
@@ -51,17 +55,21 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorIncrRPM, RawValue: []byte("true"),
 			}}},
-			err.Error()), err
+			err.Error(), "", ""), err
 	}
 
 	code, err = s.checkTPM(ctx, user.Name, user.Tpm)
 	if err != nil {
+		errorCode := ""
+		if code == envoyTypePb.StatusCode_TooManyRequests {
+			errorCode = ErrorCodeRateLimitExceeded
+		}
 		return 0, generateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorTPMExceeded, RawValue: []byte("true"),
 			}}},
-			err.Error()), err
+			err.Error(), errorCode, ""), err
 	}
 
 	return rpm, nil, nil
