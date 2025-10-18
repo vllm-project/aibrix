@@ -7,6 +7,7 @@ metadata:
     model.aibrix.ai/name: "text2sql-lora-2"
     model.aibrix.ai/port: "8000"
 spec:
+  replicas: 1
   baseModel: llama2-7b
   podSelector:
     matchLabels:
