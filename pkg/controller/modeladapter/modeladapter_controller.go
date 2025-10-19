@@ -360,13 +360,18 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 
 	oldInstance := instance.DeepCopy()
 
+	// Save old instances list before reconcileReplicas potentially modifies it
+	// This is needed to detect pod removal in reconcileLoading
+	oldInstances := make([]string, len(instance.Status.Instances))
+	copy(oldInstances, instance.Status.Instances)
+
 	// Step 1: Reconcile Pod instances for ModelAdapter based on desired replicas
 	if ctrlResult, err := r.reconcileReplicas(ctx, instance); err != nil || ctrlResult.Requeue || ctrlResult.RequeueAfter > 0 {
 		return ctrlResult, err
 	}
 
-	// Step 2: Reconcile Loading
-	if err := r.reconcileLoading(ctx, instance); err != nil {
+	// Step 2: Reconcile Loading (pass oldInstances to detect pod removal)
+	if err := r.reconcileLoading(ctx, instance, oldInstances); err != nil {
 		// retry any of the failure.
 		instance.Status.Phase = modelv1alpha1.ModelAdapterBound
 		condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeBound), metav1.ConditionFalse,
@@ -508,6 +513,9 @@ func (r *ModelAdapterReconciler) reconcileReplicas(ctx context.Context, instance
 		return ctrl.Result{}, err
 	}
 
+	// Update candidates count
+	instance.Status.Candidates = int32(len(activePods))
+
 	// Create a map of active pods for quick lookup
 	activeMap := make(map[string]corev1.Pod, len(activePods))
 	for _, p := range activePods {
@@ -523,13 +531,32 @@ func (r *ModelAdapterReconciler) reconcileReplicas(ctx context.Context, instance
 	}
 	instance.Status.Instances = validInstances
 
-	// Get desired replicas (default to 1 if not specified)
-	desiredReplicas := int32(1)
-	if instance.Spec.Replicas != nil {
-		desiredReplicas = *instance.Spec.Replicas
-	}
+	// Determine mode: nil = load on all, 1 = single pod
+	loadOnAll := instance.Spec.Replicas == nil
 
+	if loadOnAll {
+		// Mode: Load on ALL matching pods
+		instance.Status.DesiredReplicas = instance.Status.Candidates
+		return r.reconcileLoadOnAllPods(ctx, instance, activePods, activeMap)
+	} else {
+		// Mode: Load on single pod (existing logic with scheduler)
+		instance.Status.DesiredReplicas = 1
+		return r.reconcileLoadOnSinglePod(ctx, instance, activePods, activeMap)
+	}
+}
+
+// reconcileLoadOnAllPods ensures the adapter is loaded on all matching pods
+func (r *ModelAdapterReconciler) reconcileLoadOnAllPods(ctx context.Context, instance *modelv1alpha1.ModelAdapter, activePods []corev1.Pod, activeMap map[string]corev1.Pod) (ctrl.Result, error) {
+	// No scheduling needed - just ensure all active pods are candidates for loading
+	// The actual loading happens in reconcileLoading
+	klog.V(4).InfoS("Load-on-all mode: adapter will be loaded on all matching pods", "ModelAdapter", klog.KObj(instance), "targetPods", len(activePods))
+	return ctrl.Result{}, nil
+}
+
+// reconcileLoadOnSinglePod ensures the adapter is loaded on a single selected pod
+func (r *ModelAdapterReconciler) reconcileLoadOnSinglePod(ctx context.Context, instance *modelv1alpha1.ModelAdapter, activePods []corev1.Pod, activeMap map[string]corev1.Pod) (ctrl.Result, error) {
 	currentReplicas := int32(len(instance.Status.Instances))
+	desiredReplicas := int32(1)
 
 	// Scale up if needed
 	if currentReplicas < desiredReplicas {
@@ -573,7 +600,7 @@ func (r *ModelAdapterReconciler) reconcileReplicas(ctx context.Context, instance
 			return ctrl.Result{RequeueAfter: time.Duration(RetryBackoffSeconds) * time.Second}, nil
 		}
 	} else if currentReplicas > desiredReplicas {
-		// Scale down - remove excess instances
+		// Scale down - remove excess instances (shouldn't happen with replicas=1, but handle it)
 		excessCount := int(currentReplicas - desiredReplicas)
 		removedInstances := instance.Status.Instances[len(instance.Status.Instances)-excessCount:]
 		instance.Status.Instances = instance.Status.Instances[:len(instance.Status.Instances)-excessCount]
@@ -626,7 +653,7 @@ func (r *ModelAdapterReconciler) schedulePods(ctx context.Context, instance *mod
 	return selectedPods, nil
 }
 
-func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance *modelv1alpha1.ModelAdapter) error {
+func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance *modelv1alpha1.ModelAdapter, oldInstances []string) error {
 	// Get all active pods matching the selector to determine loading targets
 	activePods, err := r.getActivePodsForModelAdapter(ctx, instance)
 	if err != nil {
@@ -644,30 +671,35 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 		activeMap[p.Name] = p
 	}
 
-	// Get desired replicas (default to 1 if not specified)
-	desiredReplicas := int32(1)
-	if instance.Spec.Replicas != nil {
-		desiredReplicas = *instance.Spec.Replicas
-	}
+	// Use desired replicas from status (set by reconcileReplicas)
+	desiredReplicas := instance.Status.DesiredReplicas
 
-	// Track successful loadings
+	// Track successful loadings and if we need to update conditions
 	successfulLoadings := 0
 	var loadingErrors []string
 
-	// Try to load on pods that are already in instances list (already loaded previously)
-	for _, podName := range instance.Status.Instances {
-		if pod, exists := activeMap[podName]; exists {
-			if r.isPodHealthy(&pod) {
-				successfulLoadings++
-			} else {
-				// Pod is no longer healthy, remove from instances
-				instance.Status.Instances = RemoveInstanceFromList(instance.Status.Instances, podName)
-				klog.InfoS("Removed unhealthy pod from instances list", "pod", podName, "ModelAdapter", klog.KObj(instance))
-			}
-		} else {
-			// Pod no longer exists, remove from instances
-			instance.Status.Instances = RemoveInstanceFromList(instance.Status.Instances, podName)
-			klog.InfoS("Removed non-existent pod from instances list", "pod", podName, "ModelAdapter", klog.KObj(instance))
+	// Detect pod removal by comparing oldInstances with current instances
+	// reconcileReplicas may have already cleaned up the instances list, so we need
+	// to compare with the saved oldInstances to detect removals
+	podRemoved := len(oldInstances) > len(instance.Status.Instances)
+
+	// Count successful loadings from current instances.
+	// The instance.Status.Instances list has already been filtered by reconcileReplicas
+	// to only contain healthy, active pods, so we can directly use its length.
+	successfulLoadings = len(instance.Status.Instances)
+
+	// If pod was removed and instances is now empty, update conditions to reflect transition state
+	if podRemoved && len(instance.Status.Instances) == 0 {
+		// Mark Ready as False since no adapter instances are currently running
+		readyCondition := NewCondition(string(modelv1alpha1.ModelAdapterConditionReady), metav1.ConditionFalse,
+			"AdapterMigrating", "Adapter pod removed, migrating to new pod")
+
+		// Mark Scheduled as False since we need to reschedule
+		scheduledCondition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeScheduled), metav1.ConditionFalse,
+			"Rescheduling", "Need to reschedule adapter on available pods")
+
+		if err := r.updateStatus(ctx, instance, readyCondition, scheduledCondition); err != nil {
+			return err
 		}
 	}
 
@@ -675,11 +707,11 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 	if successfulLoadings < int(desiredReplicas) {
 		neededReplicas := int(desiredReplicas) - successfulLoadings
 
-		// First, try to load on scheduled pods from annotations (respecting scheduler decision)
+		// First, try to load on scheduled pods from annotations (respecting scheduler decision for single-pod mode)
 		scheduledPods := r.getScheduledPods(instance)
 		candidatePods := []corev1.Pod{}
 
-		// Prioritize scheduled pods
+		// Prioritize scheduled pods (relevant for single-pod mode)
 		for _, pod := range activePods {
 			if !StringInSlice(instance.Status.Instances, pod.Name) && r.isPodHealthy(&pod) {
 				if StringInSlice(scheduledPods, pod.Name) {
@@ -709,6 +741,16 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 				// Clear scheduled pods annotation once we have successful loadings
 				if loadedCount == 1 {
 					r.clearScheduledPods(instance)
+
+					// If this is a recovery from pod removal, update Scheduled condition back to True
+					if podRemoved {
+						scheduledCondition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeScheduled), metav1.ConditionTrue,
+							"Rescheduled", fmt.Sprintf("Adapter successfully loaded on new pod %s", pod.Name))
+
+						if err := r.updateStatus(ctx, instance, scheduledCondition); err != nil {
+							klog.ErrorS(err, "Failed to update Scheduled condition after successful loading", "ModelAdapter", klog.KObj(instance))
+						}
+					}
 				}
 			} else if shouldRetry {
 				// Log the error but continue trying other pods
@@ -722,6 +764,9 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 		}
 	}
 
+	// Update ready replicas count
+	instance.Status.ReadyReplicas = int32(len(instance.Status.Instances))
+
 	// Check if we have any successful instances
 	if len(instance.Status.Instances) == 0 {
 		// No successful loadings, return error to trigger retry
@@ -731,7 +776,7 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 		return fmt.Errorf("no suitable pods available for adapter loading")
 	}
 
-	klog.V(4).InfoS("ModelAdapter loading completed", "ModelAdapter", klog.KObj(instance), "instances", instance.Status.Instances)
+	klog.V(4).InfoS("ModelAdapter loading completed", "ModelAdapter", klog.KObj(instance), "instances", instance.Status.Instances, "ready", instance.Status.ReadyReplicas, "desired", instance.Status.DesiredReplicas)
 	return nil
 }
 
@@ -1030,6 +1075,13 @@ func (r *ModelAdapterReconciler) reconcileEndpointSlice(ctx context.Context, ins
 func (r *ModelAdapterReconciler) inconsistentModelAdapterStatus(oldStatus, newStatus modelv1alpha1.ModelAdapterStatus) bool {
 	// Implement your logic to check if the status is inconsistent
 	if oldStatus.Phase != newStatus.Phase || !equalStringSlices(oldStatus.Instances, newStatus.Instances) {
+		return true
+	}
+
+	// Check new counter fields
+	if oldStatus.Candidates != newStatus.Candidates ||
+		oldStatus.DesiredReplicas != newStatus.DesiredReplicas ||
+		oldStatus.ReadyReplicas != newStatus.ReadyReplicas {
 		return true
 	}
 

@@ -14,7 +14,26 @@ spec:
     singular: modeladapter
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.desiredReplicas
+      name: Desired
+      type: integer
+    - jsonPath: .status.readyReplicas
+      name: Ready
+      type: integer
+    - jsonPath: .status.candidates
+      name: Candidates
+      type: integer
+    - jsonPath: .spec.artifactURL
+      name: Model Path
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         properties:
@@ -68,7 +87,8 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
               replicas:
-                default: 1
+                enum:
+                - 1
                 format: int32
                 type: integer
               schedulerName:
@@ -80,6 +100,9 @@ spec:
             type: object
           status:
             properties:
+              candidates:
+                format: int32
+                type: integer
               conditions:
                 items:
                   properties:
@@ -116,12 +139,18 @@ spec:
                   - type
                   type: object
                 type: array
+              desiredReplicas:
+                format: int32
+                type: integer
               instances:
                 items:
                   type: string
                 type: array
               phase:
                 type: string
+              readyReplicas:
+                format: int32
+                type: integer
             type: object
         type: object
     served: true
