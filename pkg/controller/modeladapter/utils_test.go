@@ -21,6 +21,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/vllm-project/aibrix/pkg/config"
 )
@@ -108,11 +110,89 @@ func TestExtractHuggingFacePath(t *testing.T) {
 	}
 }
 
+func TestDetectRuntimeSidecar(t *testing.T) {
+	tests := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected bool
+	}{
+		{
+			name:     "Nil pod",
+			pod:      nil,
+			expected: false,
+		},
+		{
+			name: "Pod with runtime sidecar",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pod",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "main-container"},
+						{Name: "aibrix-runtime"},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "Pod without runtime sidecar",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pod",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "main-container"},
+						{Name: "other-sidecar"},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "Pod with only main container",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pod",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "main-container"},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "Pod with empty containers",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-pod",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := DetectRuntimeSidecar(tt.pod)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 func TestBuildURLs(t *testing.T) {
 	tests := []struct {
 		name         string
 		podIP        string
 		config       config.RuntimeConfig
+		useSidecar   bool
 		expectedURLs URLConfig
 		expectError  bool
 	}{
@@ -123,6 +203,7 @@ func TestBuildURLs(t *testing.T) {
 				DebugMode:            true,
 				EnableRuntimeSidecar: false,
 			},
+			useSidecar: false,
 			expectedURLs: URLConfig{
 				BaseURL:          fmt.Sprintf("http://%s:%s", "localhost", DefaultDebugInferenceEnginePort),
 				ListModelsURL:    fmt.Sprintf("http://%s:%s%s", "localhost", DefaultDebugInferenceEnginePort, ModelListPath),
@@ -132,12 +213,13 @@ func TestBuildURLs(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:  "Runtime sidecar enabled",
+			name:  "Runtime sidecar enabled with useSidecar true",
 			podIP: "192.168.1.2",
 			config: config.RuntimeConfig{
 				DebugMode:            false,
 				EnableRuntimeSidecar: true,
 			},
+			useSidecar: true,
 			expectedURLs: URLConfig{
 				BaseURL:          fmt.Sprintf("http://%s:%s", "192.168.1.2", DefaultRuntimeAPIPort),
 				ListModelsURL:    fmt.Sprintf("http://%s:%s%s", "192.168.1.2", DefaultRuntimeAPIPort, ModelListRuntimeAPIPath),
@@ -147,12 +229,13 @@ func TestBuildURLs(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:  "Default mode",
+			name:  "Default mode with useSidecar false",
 			podIP: "192.168.1.3",
 			config: config.RuntimeConfig{
 				DebugMode:            false,
 				EnableRuntimeSidecar: false,
 			},
+			useSidecar: false,
 			expectedURLs: URLConfig{
 				BaseURL:          fmt.Sprintf("http://%s:%s", "192.168.1.3", DefaultInferenceEnginePort),
 				ListModelsURL:    fmt.Sprintf("http://%s:%s%s", "192.168.1.3", DefaultInferenceEnginePort, ModelListPath),
@@ -165,7 +248,7 @@ func TestBuildURLs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			urls := BuildURLs(tt.podIP, tt.config)
+			urls := BuildURLs(tt.podIP, tt.config, tt.useSidecar)
 
 			if tt.expectError {
 				t.Fatalf("Expected error but got none")

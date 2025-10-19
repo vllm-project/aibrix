@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from abc import ABC
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from typing import Optional, Union
 
@@ -27,6 +27,15 @@ from aibrix.openapi.protocol import (
 
 
 @dataclass
+class EngineEndpointConfig:
+    """Configuration for engine API endpoints."""
+
+    load_lora_path: str = "/v1/load_lora_adapter"
+    unload_lora_path: str = "/v1/unload_lora_adapter"
+    list_models_path: str = "/v1/models"
+
+
+@dataclass
 class InferenceEngine(ABC):
     """Base class for Inference Engine."""
 
@@ -34,6 +43,7 @@ class InferenceEngine(ABC):
     version: str
     endpoint: str
     headers: Optional[dict] = None
+    endpoint_config: EngineEndpointConfig = field(default_factory=EngineEndpointConfig)
 
     def _create_error_response(
         self,
@@ -72,14 +82,36 @@ class InferenceEngine(ABC):
         )
 
 
-def get_inference_engine(engine: str, version: str, endpoint: str) -> InferenceEngine:
-    if engine.lower() == "vllm":
-        # Not support lora dynamic loading & unloading
+def get_inference_engine(
+    engine: str, version: str, endpoint: str, api_key: Optional[str] = None
+) -> InferenceEngine:
+    """
+    Factory function to get the appropriate inference engine implementation.
+
+    Args:
+        engine: Engine name (vllm, sglang, etc.)
+        version: Engine version
+        endpoint: Engine endpoint URL
+        api_key: Optional API key for authentication
+
+    Returns:
+        InferenceEngine instance for the specified engine type
+    """
+    engine_lower = engine.lower()
+
+    if engine_lower == "vllm":
+        # vLLM supports lora dynamic loading & unloading from v0.6.1
         if Version(version) < Version("0.6.1"):
             return InferenceEngine(engine, version, endpoint)
         else:
             from aibrix.openapi.engine.vllm import VLLMInferenceEngine
 
-            return VLLMInferenceEngine(engine, version, endpoint)
+            return VLLMInferenceEngine(engine, version, endpoint, api_key=api_key)
+
+    # TODO: support SGLang later
+
     else:
-        raise ValueError(f"Engine {engine} with version {version} is not supported.")
+        raise ValueError(
+            f"Engine {engine} with version {version} is not supported. "
+            f"Supported engines: vllm"
+        )

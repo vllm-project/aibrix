@@ -66,3 +66,45 @@ class ListModelRequest(NoExtraBaseModel):
 class ListModelResponse(NoExtraBaseModel):
     object: str = "list"
     data: List[ModelStatusCard] = Field(default_factory=list)
+
+
+# Runtime API Protocol for Artifact Delegation
+
+
+class LoadLoraAdapterRuntimeRequest(NoExtraBaseModel):
+    """Request to load LoRA adapter with artifact delegation via runtime."""
+
+    lora_name: str
+    artifact_url: str  # Original URL (s3://, gs://, huggingface://, etc.)
+    credentials_secret: Optional[str] = Field(
+        default=None, description="Kubernetes secret name containing credentials"
+    )
+    additional_config: Optional[Dict[str, str]] = Field(
+        default=None, description="Additional configuration for artifact download"
+    )
+    local_dir: Optional[str] = Field(
+        default="/tmp/aibrix/adapters",
+        description="Local directory for downloaded artifacts",
+    )
+
+
+class LoadLoraAdapterRuntimeResponse(NoExtraBaseModel):
+    """Response from runtime after loading adapter."""
+
+    status: str  # "success" or "error"
+    message: str
+    local_path: Optional[str] = Field(
+        default=None, description="Local path where artifact was downloaded"
+    )
+    engine_response: Optional[Dict] = Field(
+        default=None, description="Response from inference engine"
+    )
+
+
+class UnloadLoraAdapterRuntimeRequest(NoExtraBaseModel):
+    """Request to unload LoRA adapter with optional cleanup via runtime."""
+
+    lora_name: str
+    cleanup_local: bool = Field(
+        default=True, description="Whether to delete local artifact files"
+    )

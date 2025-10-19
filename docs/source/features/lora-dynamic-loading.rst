@@ -527,6 +527,321 @@ and remove the ``
         - --metrics-bind-address=0
         - --enable-runtime-sidecar # this line should be removed
 
+Private Artifact Storage Support
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+AIBrix supports loading LoRA adapters from private cloud storage backends including AWS S3, Google Cloud Storage (GCS), and Volcano Engine TOS. This feature requires the AIBrix runtime sidecar to handle artifact delegation - downloading artifacts from private storage and forwarding them to the inference engine.
+
+**Supported Storage Backends:**
+
+- **AWS S3**: ``s3://bucket/path/to/adapter``
+- **Google Cloud Storage**: ``gs://bucket/path/to/adapter``
+- **Volcano Engine TOS**: ``tos://bucket/path/to/adapter``
+- **Private HuggingFace**: ``huggingface://org/private-model`` (with token)
+- **HTTP(S) with Authentication**: Any URL with custom headers
+
+**How It Works:**
+
+.. code-block:: text
+
+    Without Runtime (Direct Mode):
+    Controller → Inference Engine (port 8000)
+    ✓ Public HTTP(S), public HuggingFace
+    ✗ Private S3, GCS (not supported)
+
+    With Runtime (Artifact Delegation):
+    Controller → Runtime (port 8080) → Downloads Artifact → Engine
+    ✓ S3, GCS, private HuggingFace, all storage types
+
+The runtime sidecar:
+
+1. Receives the artifact URL and credentials from the controller
+2. Downloads the artifact from private storage to local filesystem
+3. Forwards the local path to the inference engine
+4. Manages artifact lifecycle (cleanup on unload)
+
+**Prerequisites:**
+
+1. AIBrix runtime sidecar deployed alongside your inference engine
+2. Controller flag ``--enable-runtime-sidecar=true`` enabled
+3. Kubernetes secrets configured with storage credentials
+4. Shared volume between runtime and engine containers
+
+Setup: AWS S3 Storage
+""""""""""""""""""""""
+
+**Step 1: Create S3 Credentials Secret**
+
+.. code-block:: yaml
+
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: s3-credentials
+      namespace: default
+    type: Opaque
+    stringData:
+      aws_access_key_id: "AKIAIOSFODNN7EXAMPLE"
+      aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+      aws_region: "us-west-2"
+
+**Step 2: Deploy Pod with Runtime Sidecar**
+
+.. code-block:: yaml
+
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: vllm-llama3
+      labels:
+        model.aibrix.ai/name: llama-3
+        adapter.model.aibrix.ai/enabled: "true"
+    spec:
+      containers:
+      # Inference engine
+      - name: vllm
+        image: vllm/vllm-openai:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
+          value: "True"
+        volumeMounts:
+        - name: adapter-storage
+          mountPath: /tmp/aibrix/adapters
+
+      # AIBrix runtime sidecar
+      - name: aibrix-runtime
+        image: aibrix/runtime:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: INFERENCE_ENGINE
+          value: "vllm"
+        - name: INFERENCE_ENGINE_ENDPOINT
+          value: "http://localhost:8000"
+        volumeMounts:
+        - name: adapter-storage
+          mountPath: /tmp/aibrix/adapters
+        - name: credentials
+          mountPath: /var/run/secrets/aibrix
+          readOnly: true
+
+      volumes:
+      - name: adapter-storage
+        emptyDir: {}
+      - name: credentials
+        secret:
+          secretName: s3-credentials
+
+**Step 3: Create ModelAdapter with S3 URL**
+
+.. code-block:: yaml
+
+    apiVersion: model.aibrix.ai/v1alpha1
+    kind: ModelAdapter
+    metadata:
+      name: sql-lora-s3
+    spec:
+      baseModel: llama-3
+      podSelector:
+        matchLabels:
+          model.aibrix.ai/name: llama-3
+      # S3 artifact URL
+      artifactURL: s3://my-company-bucket/lora-adapters/sql-adapter/
+      # Reference to S3 credentials
+      credentialsSecretRef:
+        name: s3-credentials
+      replicas: 2
+
+**Step 4: Verify Artifact Delegation**
+
+.. code-block:: bash
+
+    # Check ModelAdapter status
+    kubectl describe modeladapter sql-lora-s3
+
+    # Should show: Phase: Running
+    # Controller logs will show:
+    # "Using runtime path for artifact delegation"
+
+    # Runtime logs will show download progress:
+    kubectl logs <pod-name> -c aibrix-runtime
+    # "Downloading artifact from s3://... to /tmp/aibrix/adapters/sql-lora-s3"
+    # "Successfully downloaded artifact for sql-lora-s3"
+    # "Forwarding load request to engine with local path"
+
+Setup: Google Cloud Storage (GCS)
+""""""""""""""""""""""""""""""""""
+
+**Step 1: Create GCS Credentials Secret**
+
+.. code-block:: yaml
+
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: gcs-credentials
+    type: Opaque
+    stringData:
+      gcp_service_account_json: |
+        {
+          "type": "service_account",
+          "project_id": "my-project",
+          "private_key_id": "key-id",
+          "private_key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+          "client_email": "service-account@my-project.iam.gserviceaccount.com",
+          "client_id": "123456789",
+          "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+          "token_uri": "https://oauth2.googleapis.com/token",
+          "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs"
+        }
+
+**Step 2: Create ModelAdapter with GCS URL**
+
+.. code-block:: yaml
+
+    apiVersion: model.aibrix.ai/v1alpha1
+    kind: ModelAdapter
+    metadata:
+      name: code-lora-gcs
+    spec:
+      baseModel: llama-3
+      podSelector:
+        matchLabels:
+          model.aibrix.ai/name: llama-3
+      # GCS artifact URL
+      artifactURL: gs://my-gcs-bucket/lora-adapters/code-adapter/
+      credentialsSecretRef:
+        name: gcs-credentials
+      replicas: 1
+
+Setup: Private HuggingFace Models
+""""""""""""""""""""""""""""""""""
+
+**Step 1: Create HuggingFace Token Secret**
+
+.. code-block:: yaml
+
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: huggingface-credentials
+    type: Opaque
+    stringData:
+      huggingface_token: "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+**Step 2: Create ModelAdapter with Private HuggingFace URL**
+
+.. code-block:: yaml
+
+    apiVersion: model.aibrix.ai/v1alpha1
+    kind: ModelAdapter
+    metadata:
+      name: private-hf-lora
+    spec:
+      baseModel: llama-3
+      podSelector:
+        matchLabels:
+          model.aibrix.ai/name: llama-3
+      # Private HuggingFace model
+      artifactURL: huggingface://my-org/private-lora-adapter
+      credentialsSecretRef:
+        name: huggingface-credentials
+      replicas: 1
+
+Troubleshooting Artifact Delegation
+""""""""""""""""""""""""""""""""""""
+
+**Runtime Not Receiving Requests:**
+
+.. code-block:: bash
+
+    # Check controller is configured for runtime
+    kubectl get deployment aibrix-controller-manager -n aibrix-system -o yaml | grep enable-runtime-sidecar
+    # Should show: - --enable-runtime-sidecar=true
+
+    # Check runtime pod is running
+    kubectl get pods -l app=vllm
+    kubectl logs <pod-name> -c aibrix-runtime
+
+**Download Failures:**
+
+.. code-block:: bash
+
+    # Check runtime logs for specific errors
+    kubectl logs <pod-name> -c aibrix-runtime
+
+    # Common issues:
+    # - "Access denied": Check credentials in secret
+    # - "Not found": Verify artifact URL is correct
+    # - "Invalid credentials": Verify secret format matches expected keys
+
+**Credential Issues:**
+
+.. code-block:: bash
+
+    # Verify secret exists and has correct keys
+    kubectl get secret s3-credentials -o yaml
+
+    # For S3, required keys:
+    # - aws_access_key_id
+    # - aws_secret_access_key
+    # - aws_region (optional)
+
+    # For GCS, required keys:
+    # - gcp_service_account_json
+
+**Engine Connection Errors:**
+
+.. code-block:: bash
+
+    # Verify runtime can reach engine
+    kubectl exec <pod-name> -c aibrix-runtime -- curl http://localhost:8000/health
+
+    # Check shared volume is mounted correctly
+    kubectl describe pod <pod-name>
+    # Both containers should have /tmp/aibrix/adapters mounted
+
+**Supported URL Schemes Summary:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 40 20 20
+
+   * - URL Scheme
+     - Example
+     - Requires Runtime
+     - Requires Credentials
+   * - ``s3://``
+     - ``s3://bucket/path/``
+     - Yes
+     - Yes
+   * - ``gs://``
+     - ``gs://bucket/path/``
+     - Yes
+     - Yes
+   * - ``huggingface://`` (private)
+     - ``huggingface://org/model``
+     - Yes
+     - Yes (token)
+   * - ``huggingface://`` (public)
+     - ``huggingface://meta-llama/model``
+     - No
+     - No
+   * - ``http://`` / ``https://``
+     - ``https://example.com/adapter``
+     - No
+     - Optional
+
+**Best Practices:**
+
+1. **Use Separate Secrets per Storage Type**: Create dedicated secrets for S3, GCS credentials rather than mixing them
+2. **Test Credentials First**: Verify credentials work by manually downloading from storage before creating ModelAdapter
+3. **Monitor Runtime Logs**: Watch runtime logs during first deployment to catch credential or connectivity issues early
+4. **Shared Storage Volume**: Ensure the ``adapter-storage`` volume is properly shared between runtime and engine containers
+5. **Artifact Size**: Large artifacts may take time to download; adjust timeout values if needed
+
 Runtime Metrics Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
