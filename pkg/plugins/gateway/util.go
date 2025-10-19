@@ -36,6 +36,19 @@ const (
 	MaxInputTokensPerModel = 8192
 	MaxTotalTokens         = 300000
 	MaxArrayDimensions     = 2048
+
+	// OpenAI Error Types
+	ErrorTypeInvalidRequest = "invalid_request_error"
+	ErrorTypeAuthentication = "authentication_error"
+	ErrorTypeRateLimit      = "rate_limit_error"
+	ErrorTypeApi            = "api_error"
+	ErrorTypeOverloaded     = "overloaded_error"
+
+	// OpenAI Error Codes
+	ErrorCodeInvalidAPIKey      = "invalid_api_key"
+	ErrorCodeModelNotFound      = "model_not_found"
+	ErrorCodeRateLimitExceeded  = "rate_limit_exceeded"
+	ErrorCodeServiceUnavailable = "service_unavailable"
 )
 
 // validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
@@ -45,7 +58,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 	var jsonMap map[string]json.RawMessage
 	if err := json.Unmarshal(requestBody, &jsonMap); err != nil {
 		klog.ErrorS(err, "error to unmarshal request body", "requestID", requestID, "requestBody", string(requestBody))
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
@@ -54,7 +67,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		chatCompletionObj := openai.ChatCompletionNewParams{}
 		if err := json.Unmarshal(requestBody, &chatCompletionObj); err != nil {
 			klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		model, streamOptions = chatCompletionObj.Model, chatCompletionObj.StreamOptions
@@ -75,7 +88,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		err := json.Unmarshal(requestBody, &completionObj)
 		if err != nil {
 			klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		model = completionObj.Model
@@ -84,19 +97,19 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		embeddingObj := openai.EmbeddingNewParams{}
 		if err := json.Unmarshal(requestBody, &embeddingObj); err != nil {
 			klog.ErrorS(err, "error to unmarshal embeddings object", "requestID", requestID, "requestBody", string(requestBody))
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		model = embeddingObj.Model
 		if err := validateEmbeddingInput(embeddingObj); err != nil {
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, err.Error(), HeaderErrorRequestBodyProcessing, "true")
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, err.Error(), "", "input", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		streamVal, ok := jsonMap["stream"]
 		if ok {
 			var streamBool bool
 			if err := json.Unmarshal(streamVal, &streamBool); err != nil || streamBool {
-				errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", HeaderErrorRequestBodyProcessing, "true")
+				errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", "", "stream", HeaderErrorRequestBodyProcessing, "true")
 				return
 			}
 		}
@@ -104,12 +117,12 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		imageGenerationObj := openai.ImageGenerateParams{}
 		if err := json.Unmarshal(requestBody, &imageGenerationObj); err != nil {
 			klog.ErrorS(err, "error to unmarshal image generations object", "requestID", requestID, "requestBody", string(requestBody))
-			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", HeaderErrorRequestBodyProcessing, "true")
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 			return
 		}
 		model = imageGenerationObj.Model
 	default:
-		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", HeaderErrorRequestBodyProcessing, "true")
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
@@ -126,14 +139,14 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 
 	if err := json.Unmarshal(streamData, stream); err != nil {
 		klog.ErrorS(nil, "no stream option available", "requestID", requestID)
-		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream incorrectly set", HeaderErrorStream, "stream incorrectly set")
+		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream incorrectly set", "", "stream", HeaderErrorStream, "stream incorrectly set")
 	}
 
 	if *stream && user.Tpm > 0 {
 		if !streamOptions.IncludeUsage.Value {
 			klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID, "streamOption", streamOptions)
 			return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "include usage for stream options not set",
-				HeaderErrorStreamOptionsIncludeUsage, "include usage for stream options not set")
+				"", "stream_options", HeaderErrorStreamOptionsIncludeUsage, "include usage for stream options not set")
 		}
 	}
 	return nil
@@ -159,7 +172,7 @@ func getRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
 func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCompletionNewParams) (string, *extProcPb.ProcessingResponse) {
 	if len(chatCompletionObj.Messages) == 0 {
 		klog.ErrorS(nil, "no messages in the request body", "requestID", requestID)
-		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", HeaderErrorRequestBodyProcessing, "true")
+		return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "no messages in the request body", "", "messages", HeaderErrorRequestBodyProcessing, "true")
 	}
 	var builder strings.Builder
 	for i, m := range chatCompletionObj.Messages {
@@ -174,7 +187,7 @@ func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCo
 				builder.Write(jsonBytes)
 			} else {
 				klog.ErrorS(err, "error marshalling message content", "requestID", requestID, "message", m)
-				return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error marshalling message content", HeaderErrorRequestBodyProcessing, "true")
+				return "", buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error marshalling message content", "", "messages", HeaderErrorRequestBodyProcessing, "true")
 			}
 		}
 	}
@@ -182,8 +195,8 @@ func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCo
 }
 
 // generateErrorResponse construct envoy proxy error response
-// deprecated: use buildErrorResponse
-func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, body string) *extProcPb.ProcessingResponse {
+// errorCode and param are optional (pass "" for null)
+func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, message, errorCode, param string) *extProcPb.ProcessingResponse {
 	// Set the Content-Type header to application/json
 	headers = append(headers, &configPb.HeaderValueOption{
 		Header: &configPb.HeaderValue{
@@ -201,25 +214,63 @@ func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configP
 				Headers: &extProcPb.HeaderMutation{
 					SetHeaders: headers,
 				},
-				Body: generateErrorMessage(body, int(statusCode)),
+				Body: generateErrorMessageWithHTTPCode(message, int(statusCode), errorCode, param),
 			},
 		},
 	}
 }
 
-// generateErrorMessage constructs a JSON error message
-func generateErrorMessage(message string, code int) string {
+// generateErrorMessage constructs a JSON error message in OpenAI format
+func generateErrorMessage(message, errorType, errorCode, param string) string {
 	errorStruct := map[string]interface{}{
 		"error": map[string]interface{}{
 			"message": message,
-			"code":    code,
+			"type":    errorType,
+			"code":    nil,
+			"param":   nil,
 		},
 	}
-	jsonData, _ := json.Marshal(errorStruct)
+
+	// Set code if provided (null if empty string)
+	if errorCode != "" {
+		errorStruct["error"].(map[string]interface{})["code"] = errorCode
+	}
+
+	// Set param if provided (null if empty string)
+	if param != "" {
+		errorStruct["error"].(map[string]interface{})["param"] = param
+	}
+
+	jsonData, err := json.Marshal(errorStruct)
+	if err != nil {
+		klog.ErrorS(err, "failed to marshal OpenAI error response")
+		return `{"error":{"message":"internal server error while formatting error response","type":"api_error","code":null,"param":null}}`
+	}
 	return string(jsonData)
 }
 
-func buildErrorResponse(statusCode envoyTypePb.StatusCode, errBody string, headers ...string) *extProcPb.ProcessingResponse {
+// generateErrorMessageWithHTTPCode constructs a JSON error message with appropriate type based on HTTP status code
+func generateErrorMessageWithHTTPCode(message string, httpStatusCode int, errorCode, param string) string {
+	var errorType string
+	switch httpStatusCode {
+	case 400, 404:
+		errorType = ErrorTypeInvalidRequest
+	case 401:
+		errorType = ErrorTypeAuthentication
+	case 429:
+		errorType = ErrorTypeRateLimit
+	case 503:
+		errorType = ErrorTypeOverloaded
+	default:
+		errorType = ErrorTypeApi
+	}
+
+	return generateErrorMessage(message, errorType, errorCode, param)
+}
+
+// buildErrorResponse constructs an error response with OpenAI-compatible error format
+// errorCode and param are optional (pass "" for null)
+func buildErrorResponse(statusCode envoyTypePb.StatusCode, errBody, errorCode, param string, headers ...string) *extProcPb.ProcessingResponse {
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
 			ImmediateResponse: &extProcPb.ImmediateResponse{
@@ -229,7 +280,7 @@ func buildErrorResponse(statusCode envoyTypePb.StatusCode, errBody string, heade
 				Headers: &extProcPb.HeaderMutation{
 					SetHeaders: buildEnvoyProxyHeaders([]*configPb.HeaderValueOption{}, headers...),
 				},
-				Body: generateErrorMessage(errBody, int(statusCode)),
+				Body: generateErrorMessageWithHTTPCode(errBody, int(statusCode), errorCode, param),
 			},
 		},
 	}

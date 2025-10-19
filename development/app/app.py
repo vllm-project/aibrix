@@ -75,7 +75,7 @@ def auth_error(status):
             {
                 "error": {
                     "message": "Incorrect API key provided. You can find your API key at https://platform.openai.com/account/api-keys.",
-                    "type": "invalid_request_error",
+                    "type": "authentication_error",
                     "param": None,
                     "code": "invalid_api_key",
                 }
@@ -368,7 +368,7 @@ def completion():
         err = {
             "error": {
                 "message": f"The server had an error while processing your request. Sorry about that!",
-                "type": "server_error",
+                "type": "api_error",
                 "param": None,
                 "code": None,
             }
@@ -550,7 +550,7 @@ def chat_completions():
         err = {
             "error": {
                 "message": f"The server had an error while processing your request. Sorry about that!",
-                "type": "server_error",
+                "type": "api_error",
                 "param": None,
                 "code": None,
             }
@@ -697,7 +697,7 @@ def embeddings():
         err = {
             "error": {
                 "message": "The server had an error while processing your request. Sorry about that!",
-                "type": "server_error",
+                "type": "api_error",
                 "param": None,
                 "code": None,
             }
