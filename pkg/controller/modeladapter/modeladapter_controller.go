@@ -973,7 +973,9 @@ func (r *ModelAdapterReconciler) unloadModelAdapter(ctx context.Context, instanc
 			return err
 		}
 
-		// Detect if runtime sidecar is available for this pod
+		// Determine whether to use runtime sidecar:
+		// - If global flag is disabled, always use direct engine API
+		// - If global flag is enabled, detect if pod has sidecar container
 		useSidecar := r.RuntimeConfig.EnableRuntimeSidecar && DetectRuntimeSidecar(targetPod)
 		if useSidecar {
 			klog.V(4).InfoS("Using runtime sidecar API for adapter unload", "pod", podName, "adapter", instance.Name)
@@ -1030,7 +1032,9 @@ func (r *ModelAdapterReconciler) unloadModelAdapterFromPod(ctx context.Context, 
 		return err
 	}
 
-	// Detect if runtime sidecar is available for this pod
+	// Determine whether to use runtime sidecar:
+	// - If global flag is disabled, always use direct engine API
+	// - If global flag is enabled, detect if pod has sidecar container
 	useSidecar := r.RuntimeConfig.EnableRuntimeSidecar && DetectRuntimeSidecar(targetPod)
 	if useSidecar {
 		klog.V(4).InfoS("Using runtime sidecar API for adapter unload", "pod", podName, "adapter", instance.Name)
@@ -1215,8 +1219,9 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 	// Update retry info
 	r.updateRetryInfo(instance, pod.Name, retryCount+1)
 
-	// Detect if runtime sidecar is available
-	// Only use sidecar if global flag is enabled AND sidecar container exists
+	// Determine whether to use runtime sidecar:
+	// - If global flag is disabled, always use direct engine API
+	// - If global flag is enabled, detect if pod has sidecar container
 	useSidecar := r.RuntimeConfig.EnableRuntimeSidecar && DetectRuntimeSidecar(pod)
 	if useSidecar {
 		klog.V(4).InfoS("Using runtime sidecar API for adapter loading", "pod", pod.Name, "adapter", instance.Name)

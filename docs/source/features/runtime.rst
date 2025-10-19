@@ -7,17 +7,115 @@ AI Engine Runtime
 Installation
 ------------
 
-By default, user does not need to install runtime separately. The guidance for the base model deployment has the runtime enabled. You can enable the
-runtime by adding the following to your deployment yaml. In future, we will provide a more convenient way to enable the runtime like mutating webhook.
+AIBrix Runtime can be injected into your workloads automatically using webhook-based sidecar injection (recommended) or manually added to your deployment manifests.
+
+Automatic Sidecar Injection (Recommended)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The easiest way to enable the runtime is through automatic sidecar injection. Simply add an annotation to your Deployment or StormService:
 
 .. code-block:: yaml
 
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: vllm-server
+      annotations:
+        model.aibrix.ai/sidecar-injection: "true"  # Enable automatic runtime injection
+    spec:
+      template:
+        spec:
+          containers:
+          - name: vllm
+            image: vllm/vllm-openai:latest
+            # Your container configuration...
+
+The webhook will automatically inject the ``aibrix-runtime`` sidecar container into your pods.
+
+**For StormService**
+
+Sidecar injection also works with StormService custom resources:
+
+.. code-block:: yaml
+
+    apiVersion: orchestration.aibrix.ai/v1alpha1
+    kind: StormService
+    metadata:
+      name: my-service
+      annotations:
+        model.aibrix.ai/sidecar-injection: "true"
+    spec:
+      template:
+        spec:
+          roles:
+          - name: worker
+            template:
+              spec:
+                containers:
+                - name: vllm
+                  image: vllm/vllm-openai:latest
+                  # ...
+
+The runtime sidecar will be injected into each role's pod template.
+
+**Customize Runtime Image**
+
+You can specify a custom runtime image using an annotation:
+
+.. code-block:: yaml
+
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: vllm-server
+      annotations:
+        model.aibrix.ai/sidecar-injection: "true"
+        model.aibrix.ai/sidecar-runtime-image: "aibrix/runtime:v0.4.0"  # Custom image
+    spec:
+      # ...
+
+**Enable Global Runtime Flag**
+
+To enable the controller to use the runtime sidecar API, set the global flag when starting the controller manager:
+
+.. code-block:: bash
+
+    # Enable runtime sidecar globally
+    ./bin/controller-manager --enable-runtime-sidecar=true
+
+The runtime detection logic works as follows:
+
+- **EnableRuntimeSidecar = false**: Controller always uses direct engine API (port 8000), even if sidecar is injected
+- **EnableRuntimeSidecar = true**: Controller detects if pod has ``aibrix-runtime`` container:
+
+  - Sidecar present → Uses runtime API (port 8080)
+  - Sidecar absent → Fallback to direct engine API (port 8000)
+
+This design ensures functionality works with or without the runtime sidecar, providing maximum flexibility.
+
+Manual Sidecar Installation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+If you prefer manual control, you can add the runtime sidecar directly to your deployment YAML:
+
+.. code-block:: yaml
+
+      containers:
+      - name: vllm
+        image: vllm/vllm-openai:latest
+        # Your main container configuration...
+
       - name: aibrix-runtime
-        image: aibrix/runtime:v0.3.0
+        image: aibrix/runtime:v0.4.0
         command:
         - aibrix_runtime
         - --port
         - "8080"
+        env:
+        - name: INFERENCE_ENGINE
+          value: "vllm"  # or sglang, tgi, triton, llamacpp
+        - name: INFERENCE_ENGINE_ENDPOINT
+          value: "http://localhost:8000"
         ports:
         - containerPort: 8080
           protocol: TCP
@@ -30,8 +128,10 @@ runtime by adding the following to your deployment yaml. In future, we will prov
           path: /root/models
           type: DirectoryOrCreate
 
+Standalone Installation
+^^^^^^^^^^^^^^^^^^^^^^^
 
-If you like to use the runtime for other cases, you can install it by the following command.
+If you like to use the runtime for other cases outside of Kubernetes, you can install it by the following command.
 
 .. attention:: 
 
@@ -151,7 +251,7 @@ Then use AI Engine Runtime to download the model from HuggingFace:
 
 
 Download From S3
-^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^
 First Define the necessary environment variables for the S3 model.
 
 .. code-block:: bash
