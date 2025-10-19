@@ -3,7 +3,7 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 from urllib.parse import urljoin
 
 import uvicorn
@@ -32,8 +32,11 @@ from aibrix.openapi.protocol import (
     ErrorResponse,
     ListModelRequest,
     LoadLoraAdapterRequest,
+    LoadLoraAdapterRuntimeRequest,
     UnloadLoraAdapterRequest,
+    UnloadLoraAdapterRuntimeRequest,
 )
+from aibrix.runtime.artifact_service import ArtifactDelegationService
 
 logger = init_logger(__name__)
 router = APIRouter()
@@ -128,21 +131,86 @@ def inference_engine_ready() -> bool:
 
 
 @router.post("/v1/lora_adapter/load")
-async def load_lora_adapter(request: LoadLoraAdapterRequest, raw_request: Request):
-    response = await inference_engine(raw_request).load_lora_adapter(request)
-    if isinstance(response, ErrorResponse):
-        return JSONResponse(content=response.model_dump(), status_code=response.code)
+async def load_lora_adapter(
+    request: Union[LoadLoraAdapterRuntimeRequest, LoadLoraAdapterRequest],
+    raw_request: Request,
+):
+    """
+    Load LoRA adapter with support for both direct and delegated artifact loading.
 
-    return Response(status_code=200, content=response)
+    Direct mode: { "lora_name": "...", "lora_path": "..." }
+    Delegation mode: { "lora_name": "...", "artifact_url": "s3://...", "credentials_secret": "..." }
+    """
+    # Check if this is a delegation request (has artifact_url)
+    if isinstance(request, LoadLoraAdapterRuntimeRequest):
+        # Use artifact delegation
+        artifact_service = ArtifactDelegationService()
+
+        logger.info(
+            f"Loading adapter with artifact delegation: {request.lora_name} from {request.artifact_url}"
+        )
+        delegation_response = await artifact_service.load_adapter_with_delegation(
+            request, inference_engine(raw_request)
+        )
+
+        if delegation_response.status == "error":
+            return JSONResponse(
+                content={"error": delegation_response.message}, status_code=500
+            )
+
+        return JSONResponse(content=delegation_response.model_dump(), status_code=200)
+    else:
+        # Direct proxy to engine (existing behavior)
+        logger.info(
+            f"Loading adapter directly: {request.lora_name} from {request.lora_path}"
+        )
+        response = await inference_engine(raw_request).load_lora_adapter(request)
+
+        if isinstance(response, ErrorResponse):
+            return JSONResponse(
+                content=response.model_dump(), status_code=response.code
+            )
+
+        return Response(status_code=200, content=response)
 
 
 @router.post("/v1/lora_adapter/unload")
-async def unload_lora_adapter(request: UnloadLoraAdapterRequest, raw_request: Request):
-    response = await inference_engine(raw_request).unload_lora_adapter(request)
-    if isinstance(response, ErrorResponse):
-        return JSONResponse(content=response.model_dump(), status_code=response.code)
+async def unload_lora_adapter(
+    request: Union[UnloadLoraAdapterRuntimeRequest, UnloadLoraAdapterRequest],
+    raw_request: Request,
+):
+    """
+    Unload LoRA adapter with support for both direct and delegated cleanup.
 
-    return Response(status_code=200, content=response)
+    Direct mode: { "lora_name": "..." }
+    Delegation mode: { "lora_name": "...", "cleanup_local": true }
+    """
+    # Check if this is a delegation request (has cleanup_local)
+    if isinstance(request, UnloadLoraAdapterRuntimeRequest):
+        # Use artifact delegation for cleanup
+        artifact_service = ArtifactDelegationService()
+
+        logger.info(
+            f"Unloading adapter with cleanup: {request.lora_name}, cleanup={request.cleanup_local}"
+        )
+        result = await artifact_service.unload_adapter(
+            request, inference_engine(raw_request)
+        )
+
+        return JSONResponse(
+            content={"status": "success", "message": result}, status_code=200
+        )
+    else:
+        # Direct proxy to engine (existing behavior)
+        logger.info(f"Unloading adapter directly: {request.lora_name}")
+        response = await inference_engine(raw_request).unload_lora_adapter(request)
+
+        if isinstance(response, ErrorResponse):
+            return JSONResponse(
+                content=response.model_dump(), status_code=response.code
+            )
+
+        return Response(status_code=200, content=response)
 
 
 # /v1/models is a query to inference engine, this is different from following

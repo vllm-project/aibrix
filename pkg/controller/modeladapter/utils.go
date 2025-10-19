@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/vllm-project/aibrix/pkg/config"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -98,11 +99,29 @@ func NewCondition(condType string, status metav1.ConditionStatus, reason, msg st
 	}
 }
 
-func BuildURLs(podIP string, config config.RuntimeConfig) URLConfig {
+// DetectRuntimeSidecar checks if a pod has the aibrix-runtime sidecar container
+func DetectRuntimeSidecar(pod *corev1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+
+	// Check all containers for the runtime sidecar
+	for _, container := range pod.Spec.Containers {
+		if container.Name == "aibrix-runtime" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// BuildURLs constructs the API URLs for model adapter operations
+// useSidecar parameter determines whether to use runtime sidecar API or direct engine API
+func BuildURLs(podIP string, config config.RuntimeConfig, useSidecar bool) URLConfig {
 	var host string
 	if config.DebugMode {
 		host = fmt.Sprintf("http://%s:%s", "localhost", DefaultDebugInferenceEnginePort)
-	} else if config.EnableRuntimeSidecar {
+	} else if useSidecar {
 		host = fmt.Sprintf("http://%s:%s", podIP, DefaultRuntimeAPIPort)
 	} else {
 		host = fmt.Sprintf("http://%s:%s", podIP, DefaultInferenceEnginePort)
@@ -111,7 +130,7 @@ func BuildURLs(podIP string, config config.RuntimeConfig) URLConfig {
 	apiPath := ModelListPath
 	loadPath := LoadLoraAdapterPath
 	unloadPath := UnloadLoraAdapterPath
-	if config.EnableRuntimeSidecar {
+	if useSidecar {
 		apiPath = ModelListRuntimeAPIPath
 		loadPath = LoadLoraRuntimeAPIPath
 		unloadPath = UnloadLoraRuntimeAPIPath

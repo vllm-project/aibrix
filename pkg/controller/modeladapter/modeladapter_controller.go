@@ -833,33 +833,74 @@ func (r *ModelAdapterReconciler) modelAdapterExists(url string, instance *modelv
 }
 
 // Separate method to load the LoRA adapter
-func (r *ModelAdapterReconciler) loadModelAdapter(url string, instance *modelv1alpha1.ModelAdapter) error {
-	artifactURL := instance.Spec.ArtifactURL
-	if strings.HasPrefix(instance.Spec.ArtifactURL, "huggingface://") {
-		var err error
-		artifactURL, err = extractHuggingFacePath(instance.Spec.ArtifactURL)
+func (r *ModelAdapterReconciler) loadModelAdapter(url string, instance *modelv1alpha1.ModelAdapter, useSidecar bool) error {
+	var payloadBytes []byte
+	var err error
+
+	// Build payload based on runtime mode
+	if useSidecar {
+		// Runtime path - send original URL for artifact delegation
+		payload := map[string]interface{}{
+			"lora_name":    instance.Name,
+			"artifact_url": instance.Spec.ArtifactURL, // Send original URL unchanged
+		}
+
+		// Add credentials secret reference if provided
+		if instance.Spec.CredentialsSecretRef != nil {
+			payload["credentials_secret"] = instance.Spec.CredentialsSecretRef.Name
+		}
+
+		// Add additional config if provided
+		if instance.Spec.AdditionalConfig != nil {
+			payload["additional_config"] = instance.Spec.AdditionalConfig
+		}
+
+		payloadBytes, err = json.Marshal(payload)
 		if err != nil {
-			// Handle error, e.g., log it and return
-			klog.ErrorS(err, "Invalid artifact URL", "artifactURL", artifactURL)
 			return err
 		}
-	}
-	// TODO: extend to other artifacts
 
-	payload := map[string]string{
-		"lora_name": instance.Name,
-		"lora_path": artifactURL,
-	}
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return err
+		klog.V(4).InfoS("Using runtime path for artifact delegation",
+			"ModelAdapter", klog.KObj(instance),
+			"artifactURL", instance.Spec.ArtifactURL)
+
+	} else {
+		// Direct path - transform URL for engine (existing logic)
+		artifactURL := instance.Spec.ArtifactURL
+
+		// Transform huggingface:// URLs to paths
+		if strings.HasPrefix(instance.Spec.ArtifactURL, "huggingface://") {
+			var err error
+			artifactURL, err = extractHuggingFacePath(instance.Spec.ArtifactURL)
+			if err != nil {
+				klog.ErrorS(err, "Invalid artifact URL", "artifactURL", artifactURL)
+				return err
+			}
+		}
+		// TODO: Add support for other URL transformations if needed
+
+		payload := map[string]string{
+			"lora_name": instance.Name,
+			"lora_path": artifactURL,
+		}
+
+		payloadBytes, err = json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+
+		klog.V(4).InfoS("Using direct path to engine",
+			"ModelAdapter", klog.KObj(instance),
+			"transformedURL", artifactURL)
 	}
 
+	// Send HTTP request
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+
 	// Check if "api-key" exists in the map and set the Authorization header accordingly
 	if token, ok := instance.Spec.AdditionalConfig["api-key"]; ok {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
@@ -883,23 +924,42 @@ func (r *ModelAdapterReconciler) loadModelAdapter(url string, instance *modelv1a
 		return fmt.Errorf("failed to load LoRA adapter: %s", body)
 	}
 
+	klog.InfoS("Successfully loaded LoRA adapter",
+		"ModelAdapter", klog.KObj(instance),
+		"url", url)
+
 	return nil
 }
 
 // unloadModelAdapter unloads the loras from inference engines
 // base model pod could be deleted, in this case, we just do optimistic unloading. It only returns some necessary errors and http errors should not be returned.
+// buildUnloadPayload creates the unload request payload based on runtime mode
+func (r *ModelAdapterReconciler) buildUnloadPayload(instance *modelv1alpha1.ModelAdapter, useSidecar bool) ([]byte, error) {
+	var payloadBytes []byte
+	var err error
+
+	if useSidecar {
+		// Runtime path - include cleanup flag
+		payload := map[string]interface{}{
+			"lora_name":     instance.Name,
+			"cleanup_local": true, // Clean up local artifacts on unload
+		}
+		payloadBytes, err = json.Marshal(payload)
+	} else {
+		// Direct path - simple unload
+		payload := map[string]string{
+			"lora_name": instance.Name,
+		}
+		payloadBytes, err = json.Marshal(payload)
+	}
+
+	return payloadBytes, err
+}
+
 func (r *ModelAdapterReconciler) unloadModelAdapter(ctx context.Context, instance *modelv1alpha1.ModelAdapter) error {
 	if len(instance.Status.Instances) == 0 {
 		klog.Warningf("model adapter %s/%s has not been deployed to any pods yet, skip unloading", instance.GetNamespace(), instance.GetName())
 		return nil
-	}
-
-	payload := map[string]string{
-		"lora_name": instance.Name,
-	}
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return err
 	}
 
 	for _, podName := range instance.Status.Instances {
@@ -913,7 +973,21 @@ func (r *ModelAdapterReconciler) unloadModelAdapter(ctx context.Context, instanc
 			return err
 		}
 
-		urls := BuildURLs(targetPod.Status.PodIP, r.RuntimeConfig)
+		// Detect if runtime sidecar is available for this pod
+		useSidecar := r.RuntimeConfig.EnableRuntimeSidecar && DetectRuntimeSidecar(targetPod)
+		if useSidecar {
+			klog.V(4).InfoS("Using runtime sidecar API for adapter unload", "pod", podName, "adapter", instance.Name)
+		} else {
+			klog.V(4).InfoS("Using direct engine API for adapter unload", "pod", podName, "adapter", instance.Name)
+		}
+
+		// Build payload using helper function
+		payloadBytes, err := r.buildUnloadPayload(instance, useSidecar)
+		if err != nil {
+			return err
+		}
+
+		urls := BuildURLs(targetPod.Status.PodIP, r.RuntimeConfig, useSidecar)
 		req, err := http.NewRequest("POST", urls.UnloadAdapterURL, bytes.NewBuffer(payloadBytes))
 		if err != nil {
 			return err
@@ -956,15 +1030,21 @@ func (r *ModelAdapterReconciler) unloadModelAdapterFromPod(ctx context.Context, 
 		return err
 	}
 
-	payload := map[string]string{
-		"lora_name": instance.Name,
+	// Detect if runtime sidecar is available for this pod
+	useSidecar := r.RuntimeConfig.EnableRuntimeSidecar && DetectRuntimeSidecar(targetPod)
+	if useSidecar {
+		klog.V(4).InfoS("Using runtime sidecar API for adapter unload", "pod", podName, "adapter", instance.Name)
+	} else {
+		klog.V(4).InfoS("Using direct engine API for adapter unload", "pod", podName, "adapter", instance.Name)
 	}
-	payloadBytes, err := json.Marshal(payload)
+
+	// Build payload using helper function
+	payloadBytes, err := r.buildUnloadPayload(instance, useSidecar)
 	if err != nil {
 		return err
 	}
 
-	urls := BuildURLs(targetPod.Status.PodIP, r.RuntimeConfig)
+	urls := BuildURLs(targetPod.Status.PodIP, r.RuntimeConfig, useSidecar)
 	req, err := http.NewRequest("POST", urls.UnloadAdapterURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return err
@@ -1135,7 +1215,16 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 	// Update retry info
 	r.updateRetryInfo(instance, pod.Name, retryCount+1)
 
-	urls := BuildURLs(pod.Status.PodIP, r.RuntimeConfig)
+	// Detect if runtime sidecar is available
+	// Only use sidecar if global flag is enabled AND sidecar container exists
+	useSidecar := r.RuntimeConfig.EnableRuntimeSidecar && DetectRuntimeSidecar(pod)
+	if useSidecar {
+		klog.V(4).InfoS("Using runtime sidecar API for adapter loading", "pod", pod.Name, "adapter", instance.Name)
+	} else {
+		klog.V(4).InfoS("Using direct engine API for adapter loading", "pod", pod.Name, "adapter", instance.Name)
+	}
+
+	urls := BuildURLs(pod.Status.PodIP, r.RuntimeConfig, useSidecar)
 
 	// Check if adapter already exists
 	exists, err := r.modelAdapterExists(urls.ListModelsURL, instance)
@@ -1158,7 +1247,7 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 	}
 
 	// Try to load the adapter
-	if err := r.loadModelAdapter(urls.LoadAdapterURL, instance); err != nil {
+	if err := r.loadModelAdapter(urls.LoadAdapterURL, instance, useSidecar); err != nil {
 		if r.isRetriableError(err) {
 			klog.V(4).InfoS("Retriable error loading adapter", "pod", pod.Name, "error", err)
 			return false, true, err
