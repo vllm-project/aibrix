@@ -38,7 +38,7 @@ import (
 const (
 	ConditionReady         = "Ready"
 	ConditionValidSpec     = "ValidSpec"
-	ConditionConflict      = "MutilPodAutoscalerConflict"
+	ConditionConflict      = "MultiPodAutoscalerConflict"
 	ConditionScalingActive = "ScalingActive"
 	ConditionAbleToScale   = "AbleToScale"
 
@@ -197,14 +197,16 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 					},
 					{
 						updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
-							// Update PodAutoscaler spec
-							time.Sleep(time.Second * 3) // Wait for initial reconcile
-							fetched := validation.GetPodAutoscaler(ctx, k8sClient, pa)
-							minReplicas := int32(2)
-							fetched.Spec.MinReplicas = &minReplicas
-							fetched.Spec.MaxReplicas = 10
-							gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
-							time.Sleep(time.Second * 3) // Wait for update to propagate
+							// Update PodAutoscaler spec with retry for race conditions
+							gomega.Eventually(func() error {
+								fetched := validation.GetPodAutoscaler(ctx, k8sClient, pa)
+								minReplicas := int32(2)
+								fetched.Spec.MinReplicas = &minReplicas
+								fetched.Spec.MaxReplicas = 10
+								return k8sClient.Update(ctx, fetched)
+							}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
+							// Give controller time to reconcile the updated PA and sync HPA
+							time.Sleep(time.Second * 2)
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, pa *autoscalingv1alpha1.PodAutoscaler) {
 							// Validate HPA is updated with more relaxed timing
@@ -472,21 +474,33 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
 							// Delete first PA
 							gomega.Expect(k8sClient.Delete(ctx, pa)).To(gomega.Succeed())
+
+							// Wait for deletion to complete
+							gomega.Eventually(func() error {
+								temp := &autoscalingv1alpha1.PodAutoscaler{}
+								return k8sClient.Get(ctx, client.ObjectKeyFromObject(pa), temp)
+							}, time.Second*10, time.Millisecond*250).ShouldNot(gomega.Succeed())
+
+							// Give controller time to process the deletion event and update caches
 							time.Sleep(time.Second * 2)
 
-							// Manually trigger PA2 reconcile by updating it (no-op update)
-							// This forces the controller to re-check the conflict status
-							pa2 := &autoscalingv1alpha1.PodAutoscaler{}
-							err := k8sClient.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "pa-resolve-2"}, pa2)
-							gomega.Expect(err).ToNot(gomega.HaveOccurred())
+							// Manually trigger PA2 reconcile by updating it with retry for race conditions
+							gomega.Eventually(func() error {
+								pa2 := &autoscalingv1alpha1.PodAutoscaler{}
+								err := k8sClient.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "pa-resolve-2"}, pa2)
+								if err != nil {
+									return err
+								}
+								// Add an annotation to trigger reconcile
+								if pa2.Annotations == nil {
+									pa2.Annotations = make(map[string]string)
+								}
+								pa2.Annotations["test.aibrix.ai/force-reconcile"] = time.Now().Format(time.RFC3339)
+								return k8sClient.Update(ctx, pa2)
+							}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
 
-							// Add an annotation to trigger reconcile
-							if pa2.Annotations == nil {
-								pa2.Annotations = make(map[string]string)
-							}
-							pa2.Annotations["test.aibrix.ai/force-reconcile"] = time.Now().Format(time.RFC3339)
-							gomega.Expect(k8sClient.Update(ctx, pa2)).To(gomega.Succeed())
-							time.Sleep(time.Second * 3)
+							// Give controller time to reconcile PA2 after annotation update
+							time.Sleep(time.Second * 1)
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, pa *autoscalingv1alpha1.PodAutoscaler) {
 							// PA2 conflict should be resolved - condition should be removed
@@ -1213,11 +1227,12 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 					},
 					{
 						updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
-							// Update spec: change maxReplicas
-							fetched := validation.GetPodAutoscaler(ctx, k8sClient, pa)
-							fetched.Spec.MaxReplicas = 10
-							gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
-							time.Sleep(time.Second * 2)
+							// Update spec: change maxReplicas with retry for race conditions
+							gomega.Eventually(func() error {
+								fetched := validation.GetPodAutoscaler(ctx, k8sClient, pa)
+								fetched.Spec.MaxReplicas = 10
+								return k8sClient.Update(ctx, fetched)
+							}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, pa *autoscalingv1alpha1.PodAutoscaler) {
 							// Verify update is applied and reconciled
@@ -1259,12 +1274,13 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
 							// Rapid updates: change maxReplicas multiple times
 							for i := 0; i < 3; i++ {
-								fetched := validation.GetPodAutoscaler(ctx, k8sClient, pa)
-								fetched.Spec.MaxReplicas = int32(5 + i*2)
-								gomega.Expect(k8sClient.Update(ctx, fetched)).To(gomega.Succeed())
-								time.Sleep(time.Millisecond * 500)
+								maxReplicas := int32(5 + i*2)
+								gomega.Eventually(func() error {
+									fetched := validation.GetPodAutoscaler(ctx, k8sClient, pa)
+									fetched.Spec.MaxReplicas = maxReplicas
+									return k8sClient.Update(ctx, fetched)
+								}, time.Second*5, time.Millisecond*100).Should(gomega.Succeed())
 							}
-							time.Sleep(time.Second * 2)
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, pa *autoscalingv1alpha1.PodAutoscaler) {
 							// Eventually consistent: final maxReplicas should be 9 (5 + 2*2)

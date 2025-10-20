@@ -112,24 +112,6 @@ func ValidatePodAutoscalerScaling(ctx context.Context,
 	}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
 }
 
-// ValidatePodAutoscalerScalingEventually validates scaling status and waits for eventual consistency.
-func ValidatePodAutoscalerScalingEventually(ctx context.Context,
-	k8sClient client.Client,
-	pa *autoscalingv1alpha1.PodAutoscaler,
-	expectedDesired, expectedActual int32) {
-
-	gomega.Eventually(func(g gomega.Gomega) {
-		fetched := &autoscalingv1alpha1.PodAutoscaler{}
-		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pa), fetched)
-		g.Expect(err).ToNot(gomega.HaveOccurred())
-
-		g.Expect(fetched.Status.DesiredScale).To(gomega.Equal(expectedDesired),
-			"DesiredScale should be %d", expectedDesired)
-		g.Expect(fetched.Status.ActualScale).To(gomega.Equal(expectedActual),
-			"ActualScale should be %d", expectedActual)
-	}, time.Second*10, time.Millisecond*250).Should(gomega.Succeed())
-}
-
 // ValidateScalingHistory validates the scalingHistory in status.
 func ValidateScalingHistory(pa *autoscalingv1alpha1.PodAutoscaler,
 	expectedCount int,
