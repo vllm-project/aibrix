@@ -372,6 +372,8 @@ func (r *PodAutoscalerReconciler) checkNoMultiPodAutoscalerConflict(pa *autoscal
 	return validOK()
 }
 
+// validateSpec performs in-controller validation of the PodAutoscaler spec.
+// This acts as a fallback safety net in case the validating admission webhook is bypassed.
 func (r *PodAutoscalerReconciler) validateSpec(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
 	if vr := r.validateScaleTargetRef(pa); !vr.Valid {
 		return vr
