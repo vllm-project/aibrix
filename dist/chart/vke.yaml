@@ -8,7 +8,7 @@ controllerManager:
   container:
     image:
       repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
-      tag: v0.4.1
+      tag: bd74351874ce85fe499a5327a155ebf1ef6b7e4d
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -43,7 +43,7 @@ gatewayPlugin:
   container:
     image:
       repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins
-      tag: v0.4.1
+      tag: bd74351874ce85fe499a5327a155ebf1ef6b7e4d
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -72,7 +72,7 @@ gpuOptimizer:
   container:
     image:
       repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
-      tag: v0.4.1
+      tag: bd74351874ce85fe499a5327a155ebf1ef6b7e4d
     resources:
       limits:
         cpu: 500m
@@ -127,7 +127,7 @@ metadata:
     container:
       image:
         repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/metadata-service
-        tag: v0.4.1
+        tag: bd74351874ce85fe499a5327a155ebf1ef6b7e4d
         imagePullPolicy: IfNotPresent
       resources:
         limits:
