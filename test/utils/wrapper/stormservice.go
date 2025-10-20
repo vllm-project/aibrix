@@ -241,8 +241,9 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 		LivenessProbe: &v1.Probe{
 			ProbeHandler: v1.ProbeHandler{
 				HTTPGet: &v1.HTTPGetAction{
-					Path: "/healthz",
-					Port: intstr.FromInt(webhook.SidecarPort),
+					Path:   "/healthz",
+					Port:   intstr.FromInt(webhook.SidecarPort),
+					Scheme: corev1.URISchemeHTTP,
 				},
 			},
 			InitialDelaySeconds: 3,
@@ -251,8 +252,9 @@ func (w *StormServiceWrapper) WithSidecarInjection(runtimeImage string) *StormSe
 		ReadinessProbe: &v1.Probe{
 			ProbeHandler: v1.ProbeHandler{
 				HTTPGet: &v1.HTTPGetAction{
-					Path: "/ready",
-					Port: intstr.FromInt(webhook.SidecarPort),
+					Path:   "/ready",
+					Port:   intstr.FromInt(webhook.SidecarPort),
+					Scheme: corev1.URISchemeHTTP,
 				},
 			},
 			InitialDelaySeconds: 5,

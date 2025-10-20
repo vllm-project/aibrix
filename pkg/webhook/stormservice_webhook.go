@@ -19,12 +19,9 @@ package webhook
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -106,65 +103,11 @@ func (r *StormServiceCustomDefaulter) injectAIBrixRuntime(stormService *orchestr
 		currentEngineType := engineType
 		if currentEngineType == "" {
 			// fallback：get inference engine from primary containers
-			currentEngineType = r.inferEngineType(role.Template.Spec.Containers)
+			currentEngineType = inferEngineType(role.Template.Spec.Containers)
 		}
 
-		// Build the sidecar container
-		runtimeContainer := corev1.Container{
-			Name:  SidecarName,
-			Image: sidecarImage,
-			Command: []string{
-				SidecarCommand,
-				"--port", fmt.Sprintf("%d", SidecarPort),
-			},
-			Env: []corev1.EnvVar{
-				{
-					Name:  "INFERENCE_ENGINE",
-					Value: currentEngineType,
-				},
-				{
-					Name:  "INFERENCE_ENGINE_ENDPOINT",
-					Value: DefaultEngineEndpoint,
-				},
-			},
-			Ports: []corev1.ContainerPort{
-				{
-					Name:          "metrics",
-					ContainerPort: SidecarPort,
-					Protocol:      corev1.ProtocolTCP,
-				},
-			},
-			LivenessProbe: &corev1.Probe{
-				ProbeHandler: corev1.ProbeHandler{
-					HTTPGet: &corev1.HTTPGetAction{
-						Path: SidecarHealthPath,
-						Port: intstr.FromInt(SidecarPort),
-					},
-				},
-				InitialDelaySeconds: 3,
-				PeriodSeconds:       2,
-			},
-			ReadinessProbe: &corev1.Probe{
-				ProbeHandler: corev1.ProbeHandler{
-					HTTPGet: &corev1.HTTPGetAction{
-						Path: SidecarReadyPath,
-						Port: intstr.FromInt(SidecarPort),
-					},
-				},
-				InitialDelaySeconds: 5,
-				PeriodSeconds:       10,
-			},
-			Resources: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("100m"),
-					corev1.ResourceMemory: resource.MustParse("256Mi"),
-				},
-				Limits: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("500m"),
-					corev1.ResourceMemory: resource.MustParse("512Mi"),
-				},
-			},
-		}
+		// Build the sidecar container using shared logic
+		runtimeContainer := buildRuntimeSidecarContainer(sidecarImage, currentEngineType)
 
 		// Inject sidecar at the beginning
 		role.Template.Spec.Containers = append(
@@ -173,54 +116,6 @@ func (r *StormServiceCustomDefaulter) injectAIBrixRuntime(stormService *orchestr
 		)
 	}
 }
-
-// inferEngineType infers the inference engine based on container image names
-func (r *StormServiceCustomDefaulter) inferEngineType(containers []corev1.Container) string {
-	for _, c := range containers {
-		img := strings.ToLower(c.Image)
-		if strings.Contains(img, "vllm") {
-			return "vllm"
-		}
-		if strings.Contains(img, "sglang") {
-			return "sglang"
-		}
-		if strings.Contains(img, "text-generation-inference") || strings.Contains(img, "tgi") {
-			return "tgi"
-		}
-		if strings.Contains(img, "triton") {
-			return "triton"
-		}
-		if strings.Contains(img, "llama") && strings.Contains(img, "cpp") {
-			return "llamacpp"
-		}
-	}
-	return "unknown"
-}
-
-// containsContainer checks if a container with the given name exists
-func containsContainer(containers []corev1.Container, name string) bool {
-	for _, c := range containers {
-		if c.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-// Sidecar injection constants
-const (
-	// SidecarInjectionAnnotation Annotation used to enable or disable sidecar injection
-	SidecarInjectionAnnotation = "model.aibrix.ai/sidecar-injection"
-	// SidecarInjectionRuntimeImageAnnotation Annotation used to specify a custom image for the sidecar container
-	SidecarInjectionRuntimeImageAnnotation = "model.aibrix.ai/sidecar-runtime-image"
-	SidecarName                            = "aibrix-runtime"
-	SidecarImage                           = "aibrix/runtime:v0.4.0"
-	SidecarCommand                         = "aibrix_runtime"
-	SidecarPort                            = 8080
-	SidecarHealthPath                      = "/healthz"
-	SidecarReadyPath                       = "/ready"
-	DefaultEngineEndpoint                  = "http://localhost:8000"
-)
 
 // TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
 //+kubebuilder:webhook:path=/validate-orchestration-aibrix-ai-v1alpha1-stormservice,mutating=false,failurePolicy=ignore,sideEffects=None,groups=orchestration.aibrix.ai,resources=stormservices,verbs=create;update,versions=v1alpha1,name=vstormservice.kb.io,admissionReviewVersions=v1

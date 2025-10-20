@@ -19,13 +19,10 @@ package webhook
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -95,101 +92,20 @@ func (r *DeploymentCustomDefaulter) injectAIBrixRuntime(deployment *appsv1.Deplo
 	}
 
 	// Skip if sidecar already exists
-	for _, container := range podSpec.Containers {
-		if container.Name == SidecarName {
-			return
-		}
+	if containsContainer(podSpec.Containers, SidecarName) {
+		return
 	}
 
 	// Infer engine type from primary containers if not set
 	if engineType == "" {
-		engineType = r.inferEngineType(podSpec.Containers)
+		engineType = inferEngineType(podSpec.Containers)
 	}
 
-	// Build the sidecar container
-	runtimeContainer := corev1.Container{
-		Name:  SidecarName,
-		Image: sidecarImage,
-		Command: []string{
-			SidecarCommand,
-			"--port", fmt.Sprintf("%d", SidecarPort),
-		},
-		Env: []corev1.EnvVar{
-			{
-				Name:  "INFERENCE_ENGINE",
-				Value: engineType,
-			},
-			{
-				Name:  "INFERENCE_ENGINE_ENDPOINT",
-				Value: DefaultEngineEndpoint,
-			},
-		},
-		Ports: []corev1.ContainerPort{
-			{
-				Name:          "metrics",
-				ContainerPort: SidecarPort,
-				Protocol:      corev1.ProtocolTCP,
-			},
-		},
-		LivenessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path:   SidecarHealthPath,
-					Port:   intstr.FromInt(SidecarPort),
-					Scheme: "HTTP",
-				},
-			},
-			InitialDelaySeconds: 3,
-			PeriodSeconds:       2,
-		},
-		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path:   SidecarReadyPath,
-					Port:   intstr.FromInt(SidecarPort),
-					Scheme: "HTTP",
-				},
-			},
-			InitialDelaySeconds: 5,
-			PeriodSeconds:       10,
-		},
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("100m"),
-				corev1.ResourceMemory: resource.MustParse("256Mi"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("500m"),
-				corev1.ResourceMemory: resource.MustParse("512Mi"),
-			},
-		},
-	}
+	// Build the sidecar container using shared logic
+	runtimeContainer := buildRuntimeSidecarContainer(sidecarImage, engineType)
 
 	// Inject sidecar at the beginning
 	podSpec.Containers = append([]corev1.Container{runtimeContainer}, podSpec.Containers...)
-}
-
-// inferEngineType infers the inference engine based on container image names
-func (r *DeploymentCustomDefaulter) inferEngineType(containers []corev1.Container) string {
-	for _, c := range containers {
-		img := strings.ToLower(c.Image)
-		if strings.Contains(img, "vllm") {
-			return "vllm"
-		}
-		if strings.Contains(img, "sglang") {
-			return "sglang"
-		}
-		if strings.Contains(img, "text-generation-inference") || strings.Contains(img, "tgi") {
-			return "tgi"
-		}
-		if strings.Contains(img, "triton") {
-			return "triton"
-		}
-		if strings.Contains(img, "llama") && strings.Contains(img, "cpp") {
-			return "llamacpp"
-		}
-	}
-	return "unknown"
 }
 
 // TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
