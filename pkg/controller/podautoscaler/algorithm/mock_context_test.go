@@ -25,7 +25,6 @@ import (
 
 // mockScalingContext implements the ScalingContext interface for testing purposes.
 type mockScalingContext struct {
-	TargetValue              float64
 	UpFluctuationTolerance   float64
 	DownFluctuationTolerance float64
 	MaxScaleUpRate           float64
@@ -50,13 +49,18 @@ type mockScalingContext struct {
 	StableWindow   time.Duration
 	PanicWindow    time.Duration
 	ScaleDownDelay time.Duration
+
+	MetricTargets map[string]scalingctx.MetricTarget // key: metric name (e.g., "cpu", "gpu_cache_usage_perc")
 }
 
 // Ensure MockScalingContext implements the ScalingContext interface
 var _ scalingctx.ScalingContext = (*mockScalingContext)(nil)
 
-func (m *mockScalingContext) GetTargetValue() float64 {
-	return m.TargetValue
+func (m *mockScalingContext) GetTargetValueForMetric(metricName string) (float64, bool) {
+	if target, ok := m.MetricTargets[metricName]; ok {
+		return target.TargetValue, true
+	}
+	return 0, false
 }
 
 func (m *mockScalingContext) GetUpFluctuationTolerance() float64 {

@@ -17,6 +17,7 @@ limitations under the License.
 package context
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
@@ -28,7 +29,7 @@ import (
 // ScalingContext defines the generalized context that holds all necessary data for scaling calculations.
 // This is the single source of truth for all scaling configuration, extracted per-PodAutoscaler.
 type ScalingContext interface {
-	GetTargetValue() float64
+	GetTargetValueForMetric(metricName string) (float64, bool)
 	GetUpFluctuationTolerance() float64
 	GetDownFluctuationTolerance() float64
 	GetMaxScaleUpRate() float64
@@ -60,12 +61,6 @@ type baseScalingContext struct {
 	MaxScaleUpRate float64
 	// Maximum rate at which to scale down, a value of 2.5 means the count can reduce to at most 2.5 times less than the current value in one step.
 	MaxScaleDownRate float64
-	// The metric used for scaling, i.e. CPU, Memory, QPS.
-	ScalingMetric string
-	// The value of scaling metric per pod that we target to maintain.
-	TargetValue float64
-	// The total value of scaling metric that a pod can maintain.
-	TotalValue float64
 	// The current use per pod.
 	currentUsePerPod float64
 	// The minimum number of replicas to which the target can be scaled down.
@@ -91,6 +86,18 @@ type baseScalingContext struct {
 
 	// Panic mode state
 	InPanicMode bool
+	// MetricTargets used to store multiple metrics
+	MetricTargets map[string]MetricTarget // key: metric name (e.g., "cpu", "gpu_cache_usage_perc")
+}
+
+type MetricTarget struct {
+	// The value of scaling metric per pod that we target to maintain.
+	TargetValue float64
+	// The total value of scaling metric that a pod can maintain.
+	TotalValue float64
+	// The metric used for scaling, i.e. CPU, Memory, QPS.
+	ScalingMetric string
+	MetricType    autoscalingv1alpha1.MetricSourceType
 }
 
 var _ ScalingContext = (*baseScalingContext)(nil)
@@ -100,15 +107,13 @@ func NewBaseScalingContext() *baseScalingContext {
 	return &baseScalingContext{
 		MaxScaleUpRate:           2,                 // Scale up rate of 200%, allowing rapid scaling
 		MaxScaleDownRate:         2,                 // Scale down rate of 50%, for more gradual reduction
-		ScalingMetric:            "CPU",             // Metric used for scaling, here set to CPU utilization
-		TargetValue:              30.0,              // Target CPU utilization set at 10%
-		TotalValue:               100.0,             // Total CPU utilization capacity for pods is 100%
 		UpFluctuationTolerance:   0.1,               // Default 10% tolerance for scale-up
 		DownFluctuationTolerance: 0.1,               // Default 10% tolerance for scale-down
 		ScaleUpCooldownWindow:    0 * time.Second,   // Default: no cooldown for scale-up
 		ScaleDownCooldownWindow:  300 * time.Second, // Default: 5 minutes cooldown for scale-down
 		ScaleToZero:              false,             // Default: do not scale to zero
 		PanicThreshold:           2.0,               // Default panic threshold for KPA
+		MetricTargets:            make(map[string]MetricTarget),
 	}
 }
 
@@ -177,19 +182,20 @@ var annotationParsers = map[string]annotationParser{
 
 // UpdateByPaTypes should be invoked in any scaling context that embeds BaseScalingContext.
 func (b *baseScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error {
-	source, err := autoscalingv1alpha1.GetPaMetricSources(*pa)
-	if err != nil {
-		return err
-	}
+	for _, ms := range pa.Spec.MetricsSources {
+		targetValue, err := strconv.ParseFloat(ms.TargetValue, 64)
+		if err != nil {
+			klog.ErrorS(err, "Failed to parse target value", "metric", ms.TargetMetric, "value", ms.TargetValue)
+			return fmt.Errorf("invalid targetValue for metric %q: %w", ms.TargetMetric, err)
+		}
 
-	b.ScalingMetric = source.TargetMetric
-	// parse target value
-	targetValue, err := strconv.ParseFloat(source.TargetValue, 64)
-	if err != nil {
-		klog.ErrorS(err, "Failed to parse target value", "targetValue", source.TargetValue)
-		return err
+		b.MetricTargets[ms.TargetMetric] = MetricTarget{
+			TargetValue:   targetValue,
+			TotalValue:    100.0,
+			ScalingMetric: ms.TargetMetric,
+			MetricType:    ms.MetricSourceType,
+		}
 	}
-	b.TargetValue = targetValue
 
 	// Parse annotations using registered parsers
 	for key, value := range pa.Annotations {
@@ -234,8 +240,11 @@ func (b *baseScalingContext) GetCurrentUsePerPod() float64 {
 	return b.currentUsePerPod
 }
 
-func (b *baseScalingContext) GetTargetValue() float64 {
-	return b.TargetValue
+func (b *baseScalingContext) GetTargetValueForMetric(metricName string) (float64, bool) {
+	if target, ok := b.MetricTargets[metricName]; ok {
+		return target.TargetValue, true
+	}
+	return 0, false
 }
 
 func (b *baseScalingContext) GetScalingTolerance() (up float64, down float64) {

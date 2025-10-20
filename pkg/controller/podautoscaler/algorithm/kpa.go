@@ -18,6 +18,7 @@ package algorithm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 
@@ -61,7 +62,7 @@ func (a *KPAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 	request.ScalingContext.SetPanicValue(metrics.PanicValue)
 
 	// Compute target replicas using KPA algorithm
-	desiredReplicas := a.computeTargetReplicas(float64(request.CurrentReplicas), request.ScalingContext)
+	desiredReplicas := a.computeTargetReplicas(float64(request.CurrentReplicas), request.ScalingContext, request.AggregatedMetrics.MetricKey.MetricName)
 
 	// Apply constraints from ScalingContext
 	desiredReplicas = applyConstraints(desiredReplicas, request.ScalingContext)
@@ -96,11 +97,15 @@ func (a *KPAAlgorithm) shouldEnterPanicMode(metrics *types.AggregatedMetrics, pa
 
 // computeTargetReplicas is the core KPA scaling logic
 // Tolerance is applied to prevent scaling for minor metric fluctuations.
-func (a *KPAAlgorithm) computeTargetReplicas(currentPodCount float64, context scalingctx.ScalingContext) int32 {
+func (a *KPAAlgorithm) computeTargetReplicas(currentPodCount float64, context scalingctx.ScalingContext, metricsName string) int32 {
 	// Get all the necessary values from context
 	observedStableValue := context.GetStableValue()
 	observedPanicValue := context.GetPanicValue()
-	targetValue := context.GetTargetValue()
+	targetValue, ok := context.GetTargetValueForMetric(metricsName)
+	if !ok {
+		klog.ErrorS(errors.New("get no TargetValueForMetric"), "KPA Details", "metricsName", metricsName)
+		return int32(currentPodCount)
+	}
 	panicThreshold := context.GetPanicThreshold()
 	inPanicMode := context.GetInPanicMode()
 	maxPanicPods := context.GetMaxPanicPods()
