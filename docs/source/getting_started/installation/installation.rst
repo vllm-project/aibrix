@@ -24,11 +24,6 @@ Stable Version
     kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.4.1/aibrix-dependency-v0.4.1.yaml --server-side
     # Install aibrix components
     kubectl apply -f https://github.com/vllm-project/aibrix/releases/download/v0.4.1/aibrix-core-v0.4.1.yaml
-    # For custom configurations
-    git clone https://github.com/vllm-project/aibrix.git
-    cd aibrix
-    kubectl apply -k config/overlays/release
-
 
 
 Stable Version Using Helm
@@ -119,7 +114,7 @@ Install AIBrix in testing Environments
    mac-for-desktop.rst
    aws.rst
    gcp.rst
-   advanced-k8s-examples.rst
+   vke.rst
 
 
 Install Individual AIBrix Components

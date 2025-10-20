@@ -29,6 +29,7 @@ Documentation
    :caption: Getting Started
 
    getting_started/quickstart.rst
+   getting_started/advanced-k8s-examples.rst
    getting_started/installation/installation.rst
    getting_started/faq.rst
 

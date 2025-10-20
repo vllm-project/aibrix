@@ -32,11 +32,12 @@ spec:
                         --policy random \
                         --service-discovery \
                         --service-discovery-port 30000 \
-                        --prefill-selector storm-service-name=$STORM_SERVICE_NAME role-name=prefill stormservice.orchestration.aibrix.ai/role-replica-index=0 \
-                        --decode-selector storm-service-name=$STORM_SERVICE_NAME role-name=decode stormservice.orchestration.aibrix.ai/role-replica-index=0 \
+                        --prefill-selector storm-service-name=$STORM_SERVICE_NAME role-name=prefill stormservice.orchestration.aibrix.ai/pod-group-index=0 \
+                        --decode-selector storm-service-name=$STORM_SERVICE_NAME role-name=decode stormservice.orchestration.aibrix.ai/pod-group-index=0 \
                         --service-discovery-namespace default
         - name: prefill
-          replicas: 2
+          replicas: 1
+          podGroupSize: 2
           stateful: true
           template:
             metadata:
@@ -50,10 +51,12 @@ spec:
                     }
                   ]
               labels:
-                model.aibrix.ai/name: qwen2.5-7B
+                model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/engine: sglang
             spec:
+#              nodeSelector:
+#                kubernetes.io/hostname: 192.168.0.6
               containers:
                 - name: prefill
                   image: aibrix/sglang:v0.4.9.post3-cu126-nixl-v0.4.1
@@ -61,16 +64,16 @@ spec:
                   args:
                     - |
                       python3 -m sglang.launch_server \
-                        --model-path /models/Qwen2.5-7B-Instruct \
-                        --served-model-name qwen2.5-7B \
+                        --model-path /models/Qwen3-8B \
+                        --served-model-name qwen3-8B \
                         --host 0.0.0.0 \
                         --port 30000 \
                         --disaggregation-mode prefill \
                         --disaggregation-transfer-backend=nixl \
                         --trust-remote-code \
-                        --dist-init-addr "${ROLESET_NAME}-${ROLE_NAME}-${ROLE_TEMPLATE_HASH}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5000" \
+                        --dist-init-addr "${PODSET_NAME}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5000" \
                         --nnodes 2 \
-                        --node-rank $ROLE_REPLICA_INDEX \
+                        --node-rank $POD_GROUP_INDEX \
                         --tp-size 2 \
                         --mem-fraction-static 0.8 \
                         --log-level debug
@@ -85,6 +88,8 @@ spec:
                       value: "7"
                     - name: NCCL_DEBUG
                       value: "INFO"
+                    - name: UCX_TLS
+                      value: ^gga
                   volumeMounts:
                     - name: model-vol
                       mountPath: /models
@@ -107,7 +112,8 @@ spec:
                     medium: Memory
                   name: shared-mem
         - name: decode
-          replicas: 2
+          replicas: 1
+          podGroupSize: 2
           stateful: true
           template:
             metadata:
@@ -121,10 +127,12 @@ spec:
                     }
                   ]
               labels:
-                model.aibrix.ai/name: qwen2.5-7B
+                model.aibrix.ai/name: qwen3-8B
                 model.aibrix.ai/port: "30000"
                 model.aibrix.ai/engine: sglang
             spec:
+#              nodeSelector:
+#                kubernetes.io/hostname: 192.168.0.6
               containers:
                 - name: decode
                   image: aibrix/sglang:v0.4.9.post3-cu126-nixl-v0.4.1
@@ -132,16 +140,16 @@ spec:
                   args:
                     - |
                       python3 -m sglang.launch_server \
-                        --model-path /models/Qwen2.5-7B-Instruct \
-                        --served-model-name qwen2.5-7B \
+                        --model-path /models/Qwen3-8B \
+                        --served-model-name qwen3-8B \
                         --host 0.0.0.0 \
                         --port 30000 \
                         --disaggregation-mode decode \
                         --disaggregation-transfer-backend=nixl \
                         --trust-remote-code \
-                        --dist-init-addr "${ROLESET_NAME}-${ROLE_NAME}-${ROLE_TEMPLATE_HASH}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5000" \
+                        --dist-init-addr "${PODSET_NAME}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5000" \
                         --nnodes 2 \
-                        --node-rank $ROLE_REPLICA_INDEX \
+                        --node-rank $POD_GROUP_INDEX \
                         --tp-size 2 \
                         --mem-fraction-static 0.8 \
                         --log-level debug
@@ -156,6 +164,8 @@ spec:
                       value: "7"
                     - name: NCCL_DEBUG
                       value: "INFO"
+                    - name: UCX_TLS
+                      value: ^gga
                   volumeMounts:
                     - name: model-vol
                       mountPath: /models
