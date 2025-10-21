@@ -35,7 +35,8 @@ func ValidatePodAutoscalerSpec(pa *autoscalingv1alpha1.PodAutoscaler,
 	gomega.Expect(pa.Spec.MinReplicas).ToNot(gomega.BeNil(), "MinReplicas should not be nil")
 	gomega.Expect(*pa.Spec.MinReplicas).To(gomega.Equal(expectedMin), "MinReplicas should match expected value")
 	gomega.Expect(pa.Spec.MaxReplicas).To(gomega.Equal(expectedMax), "MaxReplicas should match expected value")
-	gomega.Expect(pa.Spec.ScalingStrategy).To(gomega.Equal(expectedStrategy), "ScalingStrategy should match expected value")
+	gomega.Expect(pa.Spec.ScalingStrategy).To(
+		gomega.Equal(expectedStrategy), "ScalingStrategy should match expected value")
 }
 
 // ValidatePodAutoscalerCondition validates a specific condition in a PodAutoscaler.

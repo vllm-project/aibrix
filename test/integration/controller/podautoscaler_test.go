@@ -116,6 +116,120 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 		return deployment
 	}
 
+	// Helper: creates a StormService with two roles (prefill and decode)
+	createStormService := func(name, namespace string, labelKey, labelValue string,
+		prefillReplicas, decodeReplicas int32) *orchestrationapi.StormService {
+		matchLabel := map[string]string{labelKey: labelValue}
+		podTemplate := corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: matchLabel,
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "vllm-container",
+						Image: "vllm/vllm-openai:latest",
+					},
+				},
+			},
+		}
+		roleSetSpec := &orchestrationapi.RoleSetSpec{
+			Roles: []orchestrationapi.RoleSpec{
+				{
+					Name:     "prefill",
+					Replicas: ptr.To(prefillReplicas),
+					Template: podTemplate,
+					Stateful: false,
+				},
+				{
+					Name:     "decode",
+					Replicas: ptr.To(decodeReplicas),
+					Template: podTemplate,
+					Stateful: false,
+				},
+			},
+		}
+		ss := wrapper.MakeStormService(name).
+			Namespace(namespace).
+			Replicas(ptr.To(int32(2))).
+			Selector(metav1.SetAsLabelSelector(matchLabel)).
+			UpdateStrategyType(orchestrationapi.RollingUpdateStormServiceStrategyType).
+			RoleSetTemplateMeta(metav1.ObjectMeta{Labels: matchLabel}, roleSetSpec).
+			Obj()
+		gomega.Expect(k8sClient.Create(ctx, ss)).To(gomega.Succeed())
+		return ss
+	}
+
+	// Helper: creates a test case for boundary enforcement with similar structure
+	makeBoundaryTestCase := func(name, deploymentName string, min, max int32,
+		deploymentReplicas int32) *testValidatingCase {
+		return &testValidatingCase{
+			makePodAutoscaler: func() *autoscalingv1alpha1.PodAutoscaler {
+				return wrapper.MakePodAutoscaler(name).
+					Namespace(ns.Name).
+					ScalingStrategy(autoscalingv1alpha1.HPA).
+					MinReplicas(min).
+					MaxReplicas(max).
+					ScaleTargetRefWithKind("Deployment", "apps/v1", deploymentName).
+					MetricSource(wrapper.MakeMetricSourcePod(
+						autoscalingv1alpha1.HTTP, "8080", "/metrics",
+						"requests_per_second", "100")).
+					Obj()
+			},
+			updates: []*update{
+				{
+					updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
+						createDeployment(deploymentName, ns.Name, deploymentReplicas)
+						gomega.Expect(k8sClient.Create(ctx, pa)).To(gomega.Succeed())
+						time.Sleep(time.Second * 2)
+					},
+					checkFunc: func(ctx context.Context, k8sClient client.Client,
+						pa *autoscalingv1alpha1.PodAutoscaler) {
+						hpa := validation.WaitForHPACreated(ctx, k8sClient, ns.Name, pa.Name+"-hpa")
+						validation.ValidateHPASpec(hpa, min, max)
+					},
+				},
+			},
+		}
+	}
+
+	// Helper: creates a test case for spec validation with similar structure
+	makeSpecValidationTestCase := func(name, deploymentName string, min, max int32,
+		expectedCondition string, expectedStatus metav1.ConditionStatus,
+		expectedReason string) *testValidatingCase {
+		return &testValidatingCase{
+			makePodAutoscaler: func() *autoscalingv1alpha1.PodAutoscaler {
+				return wrapper.MakePodAutoscaler(name).
+					Namespace(ns.Name).
+					ScalingStrategy(autoscalingv1alpha1.HPA).
+					MinReplicas(min).
+					MaxReplicas(max).
+					ScaleTargetRefWithKind("Deployment", "apps/v1", deploymentName).
+					MetricSource(wrapper.MakeMetricSourcePod(
+						autoscalingv1alpha1.HTTP, "8080", "/metrics",
+						"requests_per_second", "100")).
+					Obj()
+			},
+			updates: []*update{
+				{
+					updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
+						createDeployment(deploymentName, ns.Name, 2)
+						gomega.Expect(k8sClient.Create(ctx, pa)).To(gomega.Succeed())
+						time.Sleep(time.Second * 2)
+					},
+					checkFunc: func(ctx context.Context, k8sClient client.Client,
+						pa *autoscalingv1alpha1.PodAutoscaler) {
+						validation.WaitForPodAutoscalerConditionWithReason(
+							ctx, k8sClient, pa,
+							expectedCondition, expectedStatus,
+							expectedReason,
+						)
+					},
+				},
+			},
+		}
+	}
+
 	ginkgo.DescribeTable("test PodAutoscaler creation and reconciliation",
 		func(tc *testValidatingCase) {
 			pa := tc.makePodAutoscaler()
@@ -144,7 +258,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(5).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "test-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
@@ -181,7 +296,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(5).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "test-deployment-2").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
@@ -229,7 +345,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(5).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "test-deployment-3").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
@@ -276,7 +393,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(5).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", ""). // Empty name
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
@@ -300,36 +418,11 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 		),
 
 		ginkgo.Entry("Spec Validation - Invalid Replica Bounds (min > max)",
-			&testValidatingCase{
-				makePodAutoscaler: func() *autoscalingv1alpha1.PodAutoscaler {
-					return wrapper.MakePodAutoscaler("pa-invalid-bounds").
-						Namespace(ns.Name).
-						ScalingStrategy(autoscalingv1alpha1.HPA).
-						MinReplicas(5). // min > max
-						MaxReplicas(3).
-						ScaleTargetRefWithKind("Deployment", "apps/v1", "test-deployment-4").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
-						Obj()
-				},
-				updates: []*update{
-					{
-						updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
-							createDeployment("test-deployment-4", ns.Name, 2)
-							gomega.Expect(k8sClient.Create(ctx, pa)).To(gomega.Succeed())
-							// Wait for controller to reconcile
-							time.Sleep(time.Second * 2)
-						},
-						checkFunc: func(ctx context.Context, k8sClient client.Client, pa *autoscalingv1alpha1.PodAutoscaler) {
-							// Validate ValidSpec condition is False
-							validation.WaitForPodAutoscalerConditionWithReason(
-								ctx, k8sClient, pa,
-								ConditionValidSpec, metav1.ConditionFalse,
-								ReasonInvalidBounds,
-							)
-						},
-					},
-				},
-			},
+			makeSpecValidationTestCase(
+				"pa-invalid-bounds", "test-deployment-4",
+				5, 3, // min > max
+				ConditionValidSpec, metav1.ConditionFalse, ReasonInvalidBounds,
+			),
 		),
 
 		// Note: Invalid ScalingStrategy test is skipped because CRD-level validation
@@ -339,36 +432,11 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 		// prevents empty metricsSources from being created (minItems=1).
 
 		ginkgo.Entry("Spec Validation - Valid Spec",
-			&testValidatingCase{
-				makePodAutoscaler: func() *autoscalingv1alpha1.PodAutoscaler {
-					return wrapper.MakePodAutoscaler("pa-valid-spec").
-						Namespace(ns.Name).
-						ScalingStrategy(autoscalingv1alpha1.HPA).
-						MinReplicas(1).
-						MaxReplicas(5).
-						ScaleTargetRefWithKind("Deployment", "apps/v1", "test-deployment-7").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
-						Obj()
-				},
-				updates: []*update{
-					{
-						updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
-							createDeployment("test-deployment-7", ns.Name, 2)
-							gomega.Expect(k8sClient.Create(ctx, pa)).To(gomega.Succeed())
-							// Wait for controller to reconcile
-							time.Sleep(time.Second * 2)
-						},
-						checkFunc: func(ctx context.Context, k8sClient client.Client, pa *autoscalingv1alpha1.PodAutoscaler) {
-							// Validate ValidSpec condition is True
-							validation.WaitForPodAutoscalerConditionWithReason(
-								ctx, k8sClient, pa,
-								ConditionValidSpec, metav1.ConditionTrue,
-								ReasonAsExpected,
-							)
-						},
-					},
-				},
-			},
+			makeSpecValidationTestCase(
+				"pa-valid-spec", "test-deployment-7",
+				1, 5,
+				ConditionValidSpec, metav1.ConditionTrue, ReasonAsExpected,
+			),
 		),
 
 		// =========================================================================
@@ -384,7 +452,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(5).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "shared-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
@@ -411,7 +480,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 								MinReplicas(1).
 								MaxReplicas(10).
 								ScaleTargetRefWithKind("Deployment", "apps/v1", "shared-deployment").
-								MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+								MetricSource(wrapper.MakeMetricSourcePod(
+									autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 								Obj()
 							gomega.Expect(k8sClient.Create(ctx, pa2)).To(gomega.Succeed())
 							time.Sleep(time.Second * 2)
@@ -441,7 +511,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(5).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "resolve-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
@@ -457,7 +528,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 								MinReplicas(1).
 								MaxReplicas(10).
 								ScaleTargetRefWithKind("Deployment", "apps/v1", "resolve-deployment").
-								MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+								MetricSource(wrapper.MakeMetricSourcePod(
+									autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 								Obj()
 							gomega.Expect(k8sClient.Create(ctx, pa2)).To(gomega.Succeed())
 							time.Sleep(time.Second * 2)
@@ -530,7 +602,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(5).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "status-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
@@ -565,7 +638,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(5).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "condition-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
@@ -596,7 +670,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(5).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "ready-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
@@ -634,7 +709,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(10).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "scale-test-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
@@ -669,7 +745,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(5).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "nonexistent-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
@@ -699,64 +776,11 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 		// =========================================================================
 
 		ginkgo.Entry("Boundary Enforcement - maxReplicas enforced in HPA",
-			&testValidatingCase{
-				makePodAutoscaler: func() *autoscalingv1alpha1.PodAutoscaler {
-					return wrapper.MakePodAutoscaler("pa-boundary-max").
-						Namespace(ns.Name).
-						ScalingStrategy(autoscalingv1alpha1.HPA).
-						MinReplicas(1).
-						MaxReplicas(5).
-						ScaleTargetRefWithKind("Deployment", "apps/v1", "boundary-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
-						Obj()
-				},
-				updates: []*update{
-					{
-						updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
-							// Create deployment with many replicas
-							createDeployment("boundary-deployment", ns.Name, 8)
-							gomega.Expect(k8sClient.Create(ctx, pa)).To(gomega.Succeed())
-							time.Sleep(time.Second * 2)
-						},
-						checkFunc: func(ctx context.Context, k8sClient client.Client, pa *autoscalingv1alpha1.PodAutoscaler) {
-							// HPA should be created with maxReplicas=5
-							hpa := validation.WaitForHPACreated(ctx, k8sClient, ns.Name, pa.Name+"-hpa")
-							validation.ValidateHPASpec(hpa, 1, 5)
-							// HPA will enforce the max boundary
-						},
-					},
-				},
-			},
+			makeBoundaryTestCase("pa-boundary-max", "boundary-deployment", 1, 5, 8),
 		),
 
 		ginkgo.Entry("Boundary Enforcement - minReplicas enforced in HPA",
-			&testValidatingCase{
-				makePodAutoscaler: func() *autoscalingv1alpha1.PodAutoscaler {
-					return wrapper.MakePodAutoscaler("pa-boundary-min").
-						Namespace(ns.Name).
-						ScalingStrategy(autoscalingv1alpha1.HPA).
-						MinReplicas(3).
-						MaxReplicas(10).
-						ScaleTargetRefWithKind("Deployment", "apps/v1", "boundary-min-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
-						Obj()
-				},
-				updates: []*update{
-					{
-						updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
-							// Create deployment with few replicas
-							createDeployment("boundary-min-deployment", ns.Name, 1)
-							gomega.Expect(k8sClient.Create(ctx, pa)).To(gomega.Succeed())
-							time.Sleep(time.Second * 2)
-						},
-						checkFunc: func(ctx context.Context, k8sClient client.Client, pa *autoscalingv1alpha1.PodAutoscaler) {
-							// HPA should be created with minReplicas=3
-							hpa := validation.WaitForHPACreated(ctx, k8sClient, ns.Name, pa.Name+"-hpa")
-							validation.ValidateHPASpec(hpa, 3, 10)
-						},
-					},
-				},
-			},
+			makeBoundaryTestCase("pa-boundary-min", "boundary-min-deployment", 3, 10, 1),
 		),
 
 		ginkgo.Entry("Boundary Enforcement - minReplicas=0 in PA spec",
@@ -768,7 +792,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(0). // Set minReplicas=0 in PA
 						MaxReplicas(5).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "boundary-zero-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
@@ -809,7 +834,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(10).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "history-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
@@ -849,52 +875,15 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(10).
 						ScaleTargetRefWithKind("StormService", "orchestration.aibrix.ai/v1alpha1", "test-stormservice").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
 					{
 						updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
 							// Create StormService with 2 roles
-							matchLabel := map[string]string{"app": "test-vllm"}
-							podTemplate := corev1.PodTemplateSpec{
-								ObjectMeta: metav1.ObjectMeta{
-									Labels: matchLabel,
-								},
-								Spec: corev1.PodSpec{
-									Containers: []corev1.Container{
-										{
-											Name:  "vllm-container",
-											Image: "vllm/vllm-openai:latest",
-										},
-									},
-								},
-							}
-							roleSetSpec := &orchestrationapi.RoleSetSpec{
-								Roles: []orchestrationapi.RoleSpec{
-									{
-										Name:     "prefill",
-										Replicas: ptr.To(int32(2)),
-										Template: podTemplate,
-										Stateful: false,
-									},
-									{
-										Name:     "decode",
-										Replicas: ptr.To(int32(1)),
-										Template: podTemplate,
-										Stateful: false,
-									},
-								},
-							}
-							ss := wrapper.MakeStormService("test-stormservice").
-								Namespace(ns.Name).
-								Replicas(ptr.To(int32(2))).
-								Selector(metav1.SetAsLabelSelector(matchLabel)).
-								UpdateStrategyType(orchestrationapi.RollingUpdateStormServiceStrategyType).
-								RoleSetTemplateMeta(metav1.ObjectMeta{Labels: matchLabel}, roleSetSpec).
-								Obj()
-							gomega.Expect(k8sClient.Create(ctx, ss)).To(gomega.Succeed())
-
+							createStormService("test-stormservice", ns.Name, "app", "test-vllm", 2, 1)
 							// Create PA
 							gomega.Expect(k8sClient.Create(ctx, pa)).To(gomega.Succeed())
 							time.Sleep(time.Second * 3)
@@ -924,52 +913,15 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MaxReplicas(10).
 						ScaleTargetRefWithKind("StormService", "orchestration.aibrix.ai/v1alpha1", "test-stormservice-role").
 						SubTargetSelector("prefill"). // Only scale "prefill" role
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.7")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.7")).
 						Obj()
 				},
 				updates: []*update{
 					{
 						updateFunc: func(pa *autoscalingv1alpha1.PodAutoscaler) {
 							// Create StormService with prefill and decode roles
-							matchLabel := map[string]string{"app": "test-vllm-role"}
-							podTemplate := corev1.PodTemplateSpec{
-								ObjectMeta: metav1.ObjectMeta{
-									Labels: matchLabel,
-								},
-								Spec: corev1.PodSpec{
-									Containers: []corev1.Container{
-										{
-											Name:  "vllm-container",
-											Image: "vllm/vllm-openai:latest",
-										},
-									},
-								},
-							}
-							roleSetSpec := &orchestrationapi.RoleSetSpec{
-								Roles: []orchestrationapi.RoleSpec{
-									{
-										Name:     "prefill",
-										Replicas: ptr.To(int32(3)),
-										Template: podTemplate,
-										Stateful: false,
-									},
-									{
-										Name:     "decode",
-										Replicas: ptr.To(int32(2)),
-										Template: podTemplate,
-										Stateful: false,
-									},
-								},
-							}
-							ss := wrapper.MakeStormService("test-stormservice-role").
-								Namespace(ns.Name).
-								Replicas(ptr.To(int32(2))).
-								Selector(metav1.SetAsLabelSelector(matchLabel)).
-								UpdateStrategyType(orchestrationapi.RollingUpdateStormServiceStrategyType).
-								RoleSetTemplateMeta(metav1.ObjectMeta{Labels: matchLabel}, roleSetSpec).
-								Obj()
-							gomega.Expect(k8sClient.Create(ctx, ss)).To(gomega.Succeed())
-
+							createStormService("test-stormservice-role", ns.Name, "app", "test-vllm-role", 3, 2)
 							// Create PA targeting only "prefill" role
 							gomega.Expect(k8sClient.Create(ctx, pa)).To(gomega.Succeed())
 							time.Sleep(time.Second * 3)
@@ -1003,7 +955,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MaxReplicas(10).
 						ScaleTargetRefWithKind("StormService", "orchestration.aibrix.ai/v1alpha1", "test-stormservice-conflict").
 						SubTargetSelector("prefill"). // Same role as PA1
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.7")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.7")).
 						Obj()
 				},
 				updates: []*update{
@@ -1057,7 +1010,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 								MaxReplicas(10).
 								ScaleTargetRefWithKind("StormService", "orchestration.aibrix.ai/v1alpha1", "test-stormservice-conflict").
 								SubTargetSelector("prefill"). // Same role
-								MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.7")).
+								MetricSource(wrapper.MakeMetricSourcePod(
+									autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.7")).
 								Obj()
 							gomega.Expect(k8sClient.Create(ctx, pa1)).To(gomega.Succeed())
 							time.Sleep(time.Second * 2)
@@ -1098,7 +1052,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MaxReplicas(10).
 						Annotations(annotations).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "cooldown-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.5")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.5")).
 						Obj()
 				},
 				updates: []*update{
@@ -1133,7 +1088,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MaxReplicas(10).
 						Annotations(annotations).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "delay-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.5")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.5")).
 						Obj()
 				},
 				updates: []*update{
@@ -1172,7 +1128,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MaxReplicas(10).
 						Annotations(annotations).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "annotations-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.5")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "gpu_cache_usage_perc", "0.5")).
 						Obj()
 				},
 				updates: []*update{
@@ -1209,7 +1166,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(5).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "update-spec-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "cpu_usage", "0.7")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "cpu_usage", "0.7")).
 						Obj()
 				},
 				updates: []*update{
@@ -1256,7 +1214,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 						MinReplicas(1).
 						MaxReplicas(5).
 						ScaleTargetRefWithKind("Deployment", "apps/v1", "rapid-deployment").
-						MetricSource(wrapper.MakeMetricSourcePod(autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
+						MetricSource(wrapper.MakeMetricSourcePod(
+							autoscalingv1alpha1.HTTP, "8080", "/metrics", "requests_per_second", "100")).
 						Obj()
 				},
 				updates: []*update{
@@ -1267,7 +1226,8 @@ var _ = ginkgo.Describe("PodAutoscaler controller test", func() {
 							time.Sleep(time.Second * 2)
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, pa *autoscalingv1alpha1.PodAutoscaler) {
-							validation.ValidatePodAutoscalerConditionExists(validation.GetPodAutoscaler(ctx, k8sClient, pa), ConditionValidSpec)
+							fetched := validation.GetPodAutoscaler(ctx, k8sClient, pa)
+							validation.ValidatePodAutoscalerConditionExists(fetched, ConditionValidSpec)
 						},
 					},
 					{

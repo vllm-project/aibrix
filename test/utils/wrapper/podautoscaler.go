@@ -127,7 +127,10 @@ func (w *PodAutoscalerWrapper) Labels(labels map[string]string) *PodAutoscalerWr
 }
 
 // MakeMetricSourcePod creates a POD-type metric source.
-func MakeMetricSourcePod(protocolType autoscalingv1alpha1.ProtocolType, port, path, targetMetric, targetValue string) autoscalingv1alpha1.MetricSource {
+func MakeMetricSourcePod(
+	protocolType autoscalingv1alpha1.ProtocolType,
+	port, path, targetMetric, targetValue string,
+) autoscalingv1alpha1.MetricSource {
 	return autoscalingv1alpha1.MetricSource{
 		MetricSourceType: autoscalingv1alpha1.POD,
 		ProtocolType:     protocolType,
@@ -148,7 +151,10 @@ func MakeMetricSourceResource(targetMetric, targetValue string) autoscalingv1alp
 }
 
 // MakeMetricSourceExternal creates an EXTERNAL-type metric source.
-func MakeMetricSourceExternal(protocolType autoscalingv1alpha1.ProtocolType, endpoint, path, targetMetric, targetValue string) autoscalingv1alpha1.MetricSource {
+func MakeMetricSourceExternal(
+	protocolType autoscalingv1alpha1.ProtocolType,
+	endpoint, path, targetMetric, targetValue string,
+) autoscalingv1alpha1.MetricSource {
 	return autoscalingv1alpha1.MetricSource{
 		MetricSourceType: autoscalingv1alpha1.EXTERNAL,
 		ProtocolType:     protocolType,
@@ -167,4 +173,3 @@ func MakeMetricSourceCustom(targetMetric, targetValue string) autoscalingv1alpha
 		TargetValue:      targetValue,
 	}
 }
-
