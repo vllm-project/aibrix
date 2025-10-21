@@ -74,7 +74,7 @@ const RayClusterFleet = "RayClusterFleet"
 const (
 	ConditionReady         = "Ready"
 	ConditionValidSpec     = "ValidSpec"
-	ConditionConflict      = "MutilPodAutoscalerConflict"
+	ConditionConflict      = "MultiPodAutoscalerConflict"
 	ConditionScalingActive = "ScalingActive"
 	ConditionAbleToScale   = "AbleToScale"
 
