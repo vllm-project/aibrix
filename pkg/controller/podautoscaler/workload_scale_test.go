@@ -25,10 +25,12 @@ import (
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -331,4 +333,145 @@ func TestGetPodSelectorFromScale(t *testing.T) {
 		assert.Len(t, requirements[1].ValuesUnsorted(), 1)
 		assert.Equal(t, "test-storm", requirements[1].ValuesUnsorted()[0])
 	})
+}
+
+func TestSetDesiredReplicas(t *testing.T) {
+	currentReplicas := int32(1)
+	expectedReplicas := int32(2)
+
+	table := []struct {
+		name           string
+		pa             *autoscalingv1alpha1.PodAutoscaler
+		deployment     *appsv1.Deployment
+		ss             *orchestrationv1alpha1.StormService
+		assertReplicas func(t *testing.T, fakeClient client.Client)
+	}{
+		{
+			name: "llm_model_with_spec_replicas",
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				ObjectMeta: v1.ObjectMeta{
+					Namespace: "default",
+				},
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					ScaleTargetRef: corev1.ObjectReference{
+						Kind:       "Deployment",
+						Name:       "test-llm",
+						APIVersion: "apps/v1",
+					},
+				},
+			},
+			deployment: &appsv1.Deployment{
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-llm",
+					Namespace: "default",
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: &currentReplicas,
+				},
+			},
+			ss: &orchestrationv1alpha1.StormService{},
+			assertReplicas: func(t *testing.T, fakeClient client.Client) {
+				deployment := &appsv1.Deployment{}
+				fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "default", Name: "test-llm"}, deployment)
+				assert.Equal(t, expectedReplicas, *deployment.Spec.Replicas)
+			},
+		},
+		{
+			name: "storm_service_with_spec_replicas",
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				ObjectMeta: v1.ObjectMeta{
+					Namespace: "default",
+					Annotations: map[string]string{
+						AutoscalingStormServiceModeAnnotationKey: "replica",
+					},
+				},
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{
+						RoleName: "",
+					},
+					ScaleTargetRef: corev1.ObjectReference{
+						Kind: "StormService",
+						Name: "test-storm",
+					},
+				},
+			},
+			deployment: &appsv1.Deployment{},
+			ss: &orchestrationv1alpha1.StormService{
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-storm",
+					Namespace: "default",
+				},
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Replicas: &currentReplicas,
+				},
+			},
+			assertReplicas: func(t *testing.T, fakeClient client.Client) {
+				ss := &orchestrationv1alpha1.StormService{}
+				fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "default", Name: "test-storm"}, ss)
+				assert.Equal(t, expectedReplicas, *ss.Spec.Replicas)
+			},
+		},
+		{
+			name: "storm_service_with_template_spec_replicas",
+			pa: &autoscalingv1alpha1.PodAutoscaler{
+				ObjectMeta: v1.ObjectMeta{
+					Namespace: "default",
+				},
+				Spec: autoscalingv1alpha1.PodAutoscalerSpec{
+					SubTargetSelector: &autoscalingv1alpha1.SubTargetSelector{
+						RoleName: "prefill",
+					},
+					ScaleTargetRef: corev1.ObjectReference{
+						Kind: "StormService",
+						Name: "test-storm",
+					},
+				},
+			},
+			deployment: &appsv1.Deployment{},
+			ss: &orchestrationv1alpha1.StormService{
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "test-storm",
+					Namespace: "default",
+				},
+				Spec: orchestrationv1alpha1.StormServiceSpec{
+					Template: orchestrationv1alpha1.RoleSetTemplateSpec{
+						Spec: &orchestrationv1alpha1.RoleSetSpec{
+							Roles: []orchestrationv1alpha1.RoleSpec{
+								{
+									Name:     "prefill",
+									Replicas: &currentReplicas,
+								},
+							},
+						},
+					},
+				},
+			},
+			assertReplicas: func(t *testing.T, fakeClient client.Client) {
+				ss := &orchestrationv1alpha1.StormService{}
+				fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "default", Name: "test-storm"}, ss)
+				assert.Equal(t, expectedReplicas, *ss.Spec.Template.Spec.Roles[0].Replicas)
+			},
+		},
+	}
+
+	for _, tt := range table {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			_ = autoscalingv1alpha1.AddToScheme(scheme)
+			_ = orchestrationv1alpha1.AddToScheme(scheme)
+			_ = appsv1.AddToScheme(scheme)
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.pa, tt.deployment, tt.ss).
+				Build()
+
+			workloadScale := NewWorkloadScale(fakeClient, nil)
+
+			err := workloadScale.SetDesiredReplicas(context.TODO(), tt.pa, expectedReplicas)
+
+			assert.NoError(t, err)
+			tt.assertReplicas(t, fakeClient)
+		})
+	}
 }
