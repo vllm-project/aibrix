@@ -372,7 +372,8 @@ func TestSetDesiredReplicas(t *testing.T) {
 			ss: &orchestrationv1alpha1.StormService{},
 			assertReplicas: func(t *testing.T, fakeClient client.Client) {
 				deployment := &appsv1.Deployment{}
-				fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "default", Name: "test-llm"}, deployment)
+				err := fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "default", Name: "test-llm"}, deployment)
+				assert.NoError(t, err)
 				assert.Equal(t, expectedReplicas, *deployment.Spec.Replicas)
 			},
 		},
@@ -407,7 +408,8 @@ func TestSetDesiredReplicas(t *testing.T) {
 			},
 			assertReplicas: func(t *testing.T, fakeClient client.Client) {
 				ss := &orchestrationv1alpha1.StormService{}
-				fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "default", Name: "test-storm"}, ss)
+				err := fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "default", Name: "test-storm"}, ss)
+				assert.NoError(t, err)
 				assert.Equal(t, expectedReplicas, *ss.Spec.Replicas)
 			},
 		},
@@ -448,7 +450,8 @@ func TestSetDesiredReplicas(t *testing.T) {
 			},
 			assertReplicas: func(t *testing.T, fakeClient client.Client) {
 				ss := &orchestrationv1alpha1.StormService{}
-				fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "default", Name: "test-storm"}, ss)
+				err := fakeClient.Get(context.TODO(), client.ObjectKey{Namespace: "default", Name: "test-storm"}, ss)
+				assert.NoError(t, err)
 				assert.Equal(t, expectedReplicas, *ss.Spec.Template.Spec.Roles[0].Replicas)
 			},
 		},
