@@ -20,6 +20,10 @@ resources:
   kind: PodAutoscaler
   path: github.com/vllm-project/aibrix/api/autoscaling/v1alpha1
   version: v1alpha1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
 - api:
     crdVersion: v1
     namespaced: true

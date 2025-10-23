@@ -70,6 +70,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate-autoscaling-aibrix-ai-v1alpha1-podautoscaler
+  failurePolicy: Ignore
+  name: mpodautoscaler-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - autoscaling.aibrix.ai
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - podautoscalers
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-orchestration-aibrix-ai-v1alpha1-stormservice
   failurePolicy: Ignore
   name: mstormservice.kb.io
@@ -149,6 +169,26 @@ webhooks:
     - UPDATE
     resources:
     - modeladapters
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-autoscaling-aibrix-ai-v1alpha1-podautoscaler
+  failurePolicy: Ignore
+  name: vpodautoscaler-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - autoscaling.aibrix.ai
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - podautoscalers
   sideEffects: None
 - admissionReviewVersions:
   - v1

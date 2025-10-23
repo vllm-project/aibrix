@@ -342,6 +342,10 @@ func setupControllers(mgr ctrl.Manager, runtimeConfig cfg.RuntimeConfig, certsRe
 			setupLog.Error(err, "unable to setup webhook", "webhook", "Deployment")
 			os.Exit(1)
 		}
+		if err := apiwebhook.SetupPodAutoscalerWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to setup webhook", "webhook", "PodAutoscaler")
+			os.Exit(1)
+		}
 	}
 
 	// Kind controller registration is encapsulated inside the pkg/controller/controller.go
