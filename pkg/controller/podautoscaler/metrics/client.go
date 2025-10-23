@@ -20,7 +20,6 @@ import (
 	"sync"
 	"time"
 
-	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/types"
 	"k8s.io/klog/v2"
 )
@@ -37,23 +36,6 @@ type AggregatorMetricsClient interface {
 	GetMetricValue(metricKey types.MetricKey, now time.Time) (float64, float64, error)
 	GetTrendAnalysis(metricKey types.MetricKey, now time.Time) (direction float64, velocity float64, confidence float64)
 	CalculatePodAwareConfidence(metricKey types.MetricKey, podCount int, now time.Time) float64
-}
-
-// NewNamespaceNameMetric creates a MetricKey based on the PodAutoscaler's metrics source.
-// For consistency, it will return the corresponding MetricSource.
-// Currently, it supports only a single metric source. In the future, this could be extended to handle multiple metric sources.
-func NewNamespaceNameMetric(pa *autoscalingv1alpha1.PodAutoscaler) (types.MetricKey, autoscalingv1alpha1.MetricSource, error) {
-	if len(pa.Spec.MetricsSources) != 1 {
-		return types.MetricKey{}, autoscalingv1alpha1.MetricSource{}, fmt.Errorf("metrics sources must be 1, but got %d", len(pa.Spec.MetricsSources))
-	}
-	metricSource := pa.Spec.MetricsSources[0]
-	return types.MetricKey{
-		Namespace:   pa.Namespace,
-		Name:        pa.Spec.ScaleTargetRef.Name,
-		MetricName:  metricSource.TargetMetric,
-		PaNamespace: pa.Namespace,
-		PaName:      pa.Name,
-	}, metricSource, nil
 }
 
 // PodMetric contains pod metric value (the metric values are expected to be the metric as a milli-value)

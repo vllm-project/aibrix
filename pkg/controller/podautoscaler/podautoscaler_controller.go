@@ -410,30 +410,44 @@ func (r *PodAutoscalerReconciler) validateScalingStrategy(pa *autoscalingv1alpha
 }
 
 func (r *PodAutoscalerReconciler) validateMetricsSources(pa *autoscalingv1alpha1.PodAutoscaler) ValidationResult {
-	if len(pa.Spec.MetricsSources) != 1 {
-		return invalid(ReasonMetricsConfigError, "exactly one metricsSource is required for current implementation.")
+	metricsSources := pa.Spec.MetricsSources
+
+	if len(metricsSources) == 0 {
+		return invalid(ReasonMetricsConfigError, "at least one metricsSource is required.")
 	}
 
-	ms := &pa.Spec.MetricsSources[0]
-	if ms.TargetMetric == "" {
-		return invalid(ReasonMetricsConfigError, "targetMetric must be specified in metricsSource.")
-	}
-	if ms.TargetValue == "" {
-		return invalid(ReasonMetricsConfigError, "targetValue must be specified in metricsSource.")
+	// Validate each metricsSource individually
+	for i, ms := range metricsSources {
+		if ms.TargetMetric == "" {
+			return invalid(ReasonMetricsConfigError,
+				fmt.Sprintf("metricsSource[%d]: targetMetric must be specified", i))
+		}
+		if ms.TargetValue == "" {
+			return invalid(ReasonMetricsConfigError,
+				fmt.Sprintf("metricsSource[%d]: targetValue must be specified", i))
+		}
+
+		var result ValidationResult
+		switch ms.MetricSourceType {
+		case autoscalingv1alpha1.POD:
+			result = r.validatePodMetricSource(&ms)
+		case autoscalingv1alpha1.EXTERNAL, autoscalingv1alpha1.DOMAIN:
+			result = r.validateExternalMetricSource(&ms)
+		case autoscalingv1alpha1.RESOURCE:
+			result = r.validateResourceMetricSource(&ms)
+		case autoscalingv1alpha1.CUSTOM:
+			result = r.validateCustomMetricSource(&ms)
+		default:
+			result = invalid(ReasonMetricsConfigError,
+				fmt.Sprintf("metricsSource[%d]: unsupported metricSourceType: %s", i, ms.MetricSourceType))
+		}
+
+		if !result.Valid {
+			return result
+		}
 	}
 
-	switch ms.MetricSourceType {
-	case autoscalingv1alpha1.POD:
-		return r.validatePodMetricSource(ms)
-	case autoscalingv1alpha1.EXTERNAL, autoscalingv1alpha1.DOMAIN:
-		return r.validateExternalMetricSource(ms)
-	case autoscalingv1alpha1.RESOURCE:
-		return r.validateResourceMetricSource(ms)
-	case autoscalingv1alpha1.CUSTOM:
-		return r.validateCustomMetricSource(ms)
-	default:
-		return invalid(ReasonMetricsConfigError, fmt.Sprintf("unsupported metricSourceType: %s", ms.MetricSourceType))
-	}
+	return validOK()
 }
 
 func (r *PodAutoscalerReconciler) validatePodMetricSource(ms *autoscalingv1alpha1.MetricSource) ValidationResult {

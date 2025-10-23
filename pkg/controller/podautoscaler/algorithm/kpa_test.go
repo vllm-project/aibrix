@@ -18,10 +18,13 @@ package algorithm
 
 import (
 	"testing"
+
+	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 )
 
 func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 	algorithm := &KPAAlgorithm{}
+	metricsName := "test-metrics"
 
 	tests := []struct {
 		name            string
@@ -34,7 +37,11 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "stable_mode_basic_scaling",
 			currentPodCount: 2.0,
 			context: &mockScalingContext{
-				TargetValue:      10.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 10.0,
+					},
+				},
 				MaxScaleUpRate:   2.0,
 				MaxScaleDownRate: 2.0,
 				StableValue:      20.0, // 20/10 = 2 pods needed
@@ -53,7 +60,11 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "panic_mode_scaling_up",
 			currentPodCount: 2.0,
 			context: &mockScalingContext{
-				TargetValue:      10.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 10.0,
+					},
+				},
 				MaxScaleUpRate:   2.0,
 				MaxScaleDownRate: 2.0,
 				StableValue:      30.0, // 30/10 = 3 pods needed
@@ -72,7 +83,11 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "panic_mode_no_scale_down",
 			currentPodCount: 5.0,
 			context: &mockScalingContext{
-				TargetValue:      10.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 10.0,
+					},
+				},
 				MaxScaleUpRate:   2.0,
 				MaxScaleDownRate: 2.0,
 				StableValue:      20.0, // 20/10 = 2 pods needed
@@ -91,7 +106,11 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "scale_to_zero",
 			currentPodCount: 1.0,
 			context: &mockScalingContext{
-				TargetValue:      10.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 10.0,
+					},
+				},
 				MaxScaleUpRate:   2.0,
 				MaxScaleDownRate: 2.0,
 				StableValue:      0.0, // No load, should scale to 0
@@ -110,7 +129,11 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "activation_scale_from_zero",
 			currentPodCount: 0.0,
 			context: &mockScalingContext{
-				TargetValue:      10.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 10.0,
+					},
+				},
 				MaxScaleUpRate:   2.0,
 				MaxScaleDownRate: 2.0,
 				StableValue:      15.0, // 15/10 = 2 pods needed, but activation scale should apply
@@ -129,7 +152,11 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "max_scale_up_rate_limit",
 			currentPodCount: 2.0,
 			context: &mockScalingContext{
-				TargetValue:      10.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 10.0,
+					},
+				},
 				MaxScaleUpRate:   1.5, // Can only scale up by 50%
 				MaxScaleDownRate: 2.0,
 				StableValue:      100.0, // Would need 10 pods, but limited by scale up rate
@@ -148,7 +175,11 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "max_scale_down_rate_limit",
 			currentPodCount: 4.0,
 			context: &mockScalingContext{
-				TargetValue:      10.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 10.0,
+					},
+				},
 				MaxScaleUpRate:   2.0,
 				MaxScaleDownRate: 2.0, // Can scale down by 50% (4/2 = 2 minimum)
 				StableValue:      5.0, // Would need 1 pod, but limited by scale down rate
@@ -167,7 +198,7 @@ func TestKPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := algorithm.computeTargetReplicas(tt.currentPodCount, tt.context)
+			result := algorithm.computeTargetReplicas(tt.currentPodCount, tt.context, metricsName)
 			if result != tt.expected {
 				t.Errorf("computeTargetReplicas() = %d, expected %d. %s", result, tt.expected, tt.description)
 			}

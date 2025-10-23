@@ -123,27 +123,114 @@ func (a *DefaultAutoScaler) getOrCreateAlgorithm(strategy autoscalingv1alpha1.Sc
 	return algo
 }
 
+// ComputeDesiredReplicas computes desired replicas based on all metrics in MetricsSources.
+// It returns the maximum recommended replicas across all valid metrics.
 func (a *DefaultAutoScaler) ComputeDesiredReplicas(ctx context.Context, request ReplicaComputeRequest) (*ReplicaComputeResult, error) {
-	// Extract per-request configuration
-	metricKey, metricSource, err := metrics.NewNamespaceNameMetric(&request.PodAutoscaler)
-	if err != nil {
-		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("failed to create metric key: %w", err)
+	pa := request.PodAutoscaler
+	metricsSources := pa.Spec.MetricsSources
+
+	if len(metricsSources) == 0 {
+		return &ReplicaComputeResult{Valid: false}, fmt.Errorf(
+			"no metricsSources defined in PodAutoscaler %s/%s", pa.Namespace, pa.Name)
+	}
+	var validResults []*ReplicaComputeResult // to record the recommended result calculated in the current round
+	var anyValid bool
+
+	for _, metricSource := range metricsSources {
+		// Extract per-request configuration
+		metricKey := types.MetricKey{
+			Namespace:   pa.Namespace,
+			Name:        pa.Spec.ScaleTargetRef.Name,
+			MetricName:  metricSource.TargetMetric,
+			PaNamespace: pa.Namespace,
+			PaName:      pa.Name,
+		}
+
+		result, err := a.computeReplicasForSingleMetric(ctx, request, metricKey, metricSource)
+		if err != nil {
+			klog.ErrorS(err, "Failed to compute replicas for metric",
+				"PodAutoscaler", klog.KObj(&pa),
+				"metric", metricSource.TargetMetric,
+				"metricSourceType", metricSource.MetricSourceType)
+			// Continue processing other metrics — one failure shouldn't block all
+			continue
+		}
+
+		if result.Valid {
+			anyValid = true
+			validResults = append(validResults, result)
+			klog.V(4).InfoS("Computed replicas for metric",
+				"PodAutoscaler", klog.KObj(&pa),
+				"metricName", metricSource.TargetMetric,
+				"desiredReplicas", result.DesiredReplicas,
+				"algorithm", result.Algorithm,
+				"reason", result.Reason,
+				"currentReplicas", request.CurrentReplicas,
+			)
+		}
 	}
 
-	// Get or create stateless algorithm instance (cached for reuse)
+	if !anyValid {
+		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("all %d metric sources failed for "+
+			"PodAutoscaler %s/%s", len(metricsSources), pa.Namespace, pa.Name)
+	}
+
+	// compare the recommended values of the current round and use the maximum value
+	bestResult := validResults[0]
+	for _, r := range validResults[1:] {
+		if r.DesiredReplicas > bestResult.DesiredReplicas {
+			bestResult = r
+		}
+	}
+
+	allValidReplicas := make([]int32, len(validResults))
+	for i, res := range validResults {
+		allValidReplicas[i] = res.DesiredReplicas
+	}
+
+	klog.V(2).InfoS("Multi metric autoscaling computed result",
+		"podAutoscaler", klog.KObj(&pa),
+		"metricCount", len(allValidReplicas),
+		"desiredReplicas", bestResult.DesiredReplicas,
+		"validDesiredReplicas", allValidReplicas,
+		"currentReplicas", request.CurrentReplicas,
+	)
+
+	return &ReplicaComputeResult{
+		DesiredReplicas: bestResult.DesiredReplicas,
+		Algorithm:       bestResult.Algorithm,
+		Reason:          bestResult.Reason,
+		Valid:           true,
+	}, nil
+}
+
+// computeReplicasForSingleMetric computes desired replicas for a single MetricSource.
+// It wraps executeScalingPipeline and formats the result.
+func (a *DefaultAutoScaler) computeReplicasForSingleMetric(
+	ctx context.Context,
+	request ReplicaComputeRequest,
+	metricKey types.MetricKey,
+	metricSource autoscalingv1alpha1.MetricSource,
+) (*ReplicaComputeResult, error) {
+
+	// Get algorithm based on the PA-level scaling strategy (shared across all metrics)
 	algo := a.getOrCreateAlgorithm(request.PodAutoscaler.Spec.ScalingStrategy)
 
-	// Execute the scaling pipeline with per-request state
+	// Execute the full pipeline for this single metric
 	recommendation, err := a.executeScalingPipeline(ctx, request, metricKey, metricSource, algo)
 	if err != nil {
-		return &ReplicaComputeResult{Valid: false}, err
+		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("failed to compute recommendation for metric %q: %w", metricSource.TargetMetric, err)
+	}
+
+	if !recommendation.ScaleValid {
+		return &ReplicaComputeResult{Valid: false}, fmt.Errorf("scaling recommendation invalid for metric %q", metricSource.TargetMetric)
 	}
 
 	return &ReplicaComputeResult{
 		DesiredReplicas: recommendation.DesiredReplicas,
 		Algorithm:       recommendation.Algorithm,
 		Reason:          recommendation.Reason,
-		Valid:           recommendation.ScaleValid,
+		Valid:           true,
 	}, nil
 }
 
