@@ -1707,23 +1707,25 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
                 op=dist.ReduceOp.MIN,
                 group=self.process_group,
             )
+            coll_result = self._coll_tensor[0].item()
             # if any participant encountered an error
-            if self._coll_tensor[0] <= 0:
+            if coll_result <= 0:
                 self._release(value)
                 if start > 0:
                     # we have already got some tokens, return success
                     return Status.ok((start, results))
-                elif self._coll_tensor[0] == self._COLL_STATUS_NOT_FOUND:
+                elif coll_result == self._COLL_STATUS_NOT_FOUND:
                     return Status(StatusCodes.NOT_FOUND)
                 else:
                     # return error
                     return Status(StatusCodes.ERROR)
-            elif self._coll_tensor[0] * self.block_ntokens < len(chunk_tokens):
+            elif coll_result * self.block_ntokens < len(chunk_tokens):
                 # some participants have got less tokens than others
-                num = self._coll_tensor[0]
-                results.extend(value[:num])  # type: ignore
-                self._release(value[num:])
-                return Status.ok((start + num * self.block_ntokens, results))
+                results.extend(value[:coll_result])  # type: ignore
+                self._release(value[coll_result:])
+                return Status.ok(
+                    (start + coll_result * self.block_ntokens, results)
+                )
 
             assert len(value) * self.block_ntokens == len(chunk_tokens)
             start += len(chunk_tokens)
@@ -1772,19 +1774,20 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
                 op=dist.ReduceOp.MIN,
                 group=self.process_group,
             )
+            coll_result = self._coll_tensor[0].item()
             # if any participant encountered an error
-            if self._coll_tensor[0] <= 0:
+            if coll_result <= 0:
                 if start > 0:
                     # we have already got some tokens, return success
                     return Status.ok(start)
-                elif self._coll_tensor[0] == self._COLL_STATUS_NOT_FOUND:
+                elif coll_result == self._COLL_STATUS_NOT_FOUND:
                     return Status(StatusCodes.NOT_FOUND)
                 else:
                     # return error
                     return Status(StatusCodes.ERROR)
-            elif self._coll_tensor[0] < len(chunk_tokens):
+            elif coll_result < len(chunk_tokens):
                 # some participants have got less tokens than others
-                return Status.ok(start + self._coll_tensor[0])
+                return Status.ok(start + coll_result)
 
             start += len(chunk_tokens)
 
