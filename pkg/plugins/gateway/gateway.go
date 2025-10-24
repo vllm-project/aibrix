@@ -126,7 +126,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, requestID, model, req)
 			if isRespError && respErrorCode == 500 {
 				// for error code 500, ProcessingRequest_ResponseBody is not invoked
-				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID, "")
+				resp = s.responseErrorProcessing(ctx, resp, respErrorCode, model, requestID, "Internal server error")
 			}
 
 			if isRespError && respErrorCode == 401 {
@@ -236,7 +236,12 @@ func (s *Server) Shutdown() {
 
 func (s *Server) responseErrorProcessing(ctx context.Context, resp *extProcPb.ProcessingResponse, respErrorCode int,
 	model, requestID, errMsg string) *extProcPb.ProcessingResponse {
-	httprouteErr := s.validateHTTPRouteStatus(ctx, model)
+	var httprouteErr error
+	routingCtx, ok := ctx.(*types.RoutingContext)
+	// if use pd route Algorithm, we don't check httproute status
+	if !ok || routingCtx.Algorithm != routing.RouterPD {
+		httprouteErr = s.validateHTTPRouteStatus(ctx, model)
+	}
 	if errMsg != "" && httprouteErr != nil {
 		errMsg = fmt.Sprintf("%s. %s", errMsg, httprouteErr.Error())
 	} else if errMsg == "" && httprouteErr != nil {
