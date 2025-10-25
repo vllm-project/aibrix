@@ -193,6 +193,18 @@ licensecheck:
 .PHONY: lint-all
 lint-all: licensecheck lint
 
+##@ Python
+
+.PHONY: python-ci
+python-ci:
+	@echo "Running Python CI checks..."
+	@(cd python/aibrix && \
+	  python -m ruff check . && \
+	  python -m ruff format --check . && \
+	  python -m mypy . && \
+	  python -m pytest -q tests)
+	@echo "✓ All Python CI checks passed!"
+
 ##@ Build
 
 .PHONY: build

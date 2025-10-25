@@ -151,12 +151,16 @@ def test_infer_from_local_path():
         hf_files_with_status = [
             ("hf_file1", FileDownloadStatus.DOWNLOADED),
         ]
-        with prepare_model_dir(
-            local_path, s3_model_name, s3_source, s3_files_with_status
-        ), prepare_model_dir(
-            local_path, tos_model_name, tos_source, tos_files_with_status
-        ), prepare_model_dir(
-            local_path, hf_model_name, hf_source, hf_files_with_status
+        with (
+            prepare_model_dir(
+                local_path, s3_model_name, s3_source, s3_files_with_status
+            ),
+            prepare_model_dir(
+                local_path, tos_model_name, tos_source, tos_files_with_status
+            ),
+            prepare_model_dir(
+                local_path, hf_model_name, hf_source, hf_files_with_status
+            ),
         ):
             download_models = DownloadModel.infer_from_local_path(local_path)
             assert len(download_models) == 3
