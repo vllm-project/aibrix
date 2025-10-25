@@ -44,10 +44,11 @@ patterns = [
 [tool.poetry.scripts]
 aibrix_runtime = 'aibrix.app:main'
 aibrix_download = 'aibrix.downloader.__main__:main'
-aibrix_benchmark = "aibrix.gpu_optimizer.optimizer.profiling.benchmark:main"
-aibrix_gen_profile = 'aibrix.gpu_optimizer.optimizer.profiling.gen_profile:main'
 aibrix_batch_worker = 'aibrix.batch.worker:main'
 aibrix_metadata = 'aibrix.metadata.app:main'
+# tools
+aibrix_benchmark = "aibrix.gpu_optimizer.optimizer.profiling.benchmark:main"
+aibrix_gen_profile = 'aibrix.gpu_optimizer.optimizer.profiling.gen_profile:main'
 aibrix_gen_secrets = 'scripts.generate_secrets:main'
 
 [tool.poetry.dependencies]
@@ -66,16 +67,8 @@ hf-transfer = "^0.1.8"
 types-redis = "^4.6.0.20241004"
 redis = "^5.2.0"
 kubernetes = "^31.0.0"
-numpy = "1.26.4"
-pandas = "^2.2.3"
-pulp = "2.8.0"
-incdbscan = "^0.1.0"
 aiohttp = "^3.11.7"
-dash = "^2.18.2"
-matplotlib = "^3.9.2"
 filelock = "^3.16.1"
-tiktoken = "^0.7.0"
-transformers = ">=4.38.0"
 structlog = "^24.4.0"
 pydantic-settings = "^2.6.1"
 kopf = {extras = ["uvloop"], version = "^1.37.2"}
@@ -83,6 +76,18 @@ PyYAML = "^6.0.1"
 types-PyYAML = "^6.0.12.20240917"
 python-multipart = "^0.0.20"
 tenacity = "^9.0.0"
+
+[tool.poetry.group.profiling.dependencies]
+# Dependencies only needed for profiling/benchmark tools (aibrix_benchmark, aibrix_gen_profile)
+# NOT needed by runtime (aibrix_runtime, aibrix_batch_worker, aibrix_metadata)
+numpy = "1.26.4"
+pandas = "^2.2.3"
+pulp = "2.8.0"
+incdbscan = "^0.1.0"
+dash = "^2.18.2"
+matplotlib = "^3.9.2"
+tiktoken = "^0.7.0"
+transformers = ">=4.38.0"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "1.11.1"
