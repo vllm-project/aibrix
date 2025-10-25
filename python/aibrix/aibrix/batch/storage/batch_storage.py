@@ -53,8 +53,14 @@ def get_storage_type() -> StorageType:
 
     Returns:
         Type of storage.
+
+    Raises:
+        RuntimeError: If storage has not been initialized
     """
-    assert p_storage is not None
+    if p_storage is None:
+        raise RuntimeError(
+            "Batch storage not initialized. Call initialize_storage() first."
+        )
     return p_storage.storage.get_type()
 
 
@@ -63,8 +69,14 @@ async def upload_input_data(inputDataFileName: str) -> str:
 
     Args:
         inputDataFileName (str): an input file string.
+
+    Raises:
+        RuntimeError: If storage has not been initialized
     """
-    assert p_storage is not None
+    if p_storage is None:
+        raise RuntimeError(
+            "Batch storage not initialized. Call initialize_storage() first."
+        )
     job_id = str(uuid.uuid1())
     await p_storage.write_job_input_data(job_id, inputDataFileName)
 
@@ -79,8 +91,14 @@ async def read_job_input_info(job: BatchJob) -> Tuple[int, bool]:
 
     Returns:
         Tuple of total line number and input existence
+
+    Raises:
+        RuntimeError: If storage has not been initialized
     """
-    assert p_storage is not None
+    if p_storage is None:
+        raise RuntimeError(
+            "Batch storage not initialized. Call initialize_storage() first."
+        )
     return await p_storage.read_job_input_info(job)
 
 
@@ -94,8 +112,14 @@ async def read_job_next_request(
 
     Returns:
         Next request dictionary
+
+    Raises:
+        RuntimeError: If storage has not been initialized
     """
-    assert p_storage is not None
+    if p_storage is None:
+        raise RuntimeError(
+            "Batch storage not initialized. Call initialize_storage() first."
+        )
     async for data in p_storage.read_job_next_input_data(job, start_index):
         yield data
 
@@ -109,14 +133,27 @@ async def is_request_done(job: BatchJob, request_index: int) -> bool:
 
     Returns:
         True if the request is done, False otherwise
+
+    Raises:
+        RuntimeError: If storage has not been initialized
     """
-    assert p_storage is not None
+    if p_storage is None:
+        raise RuntimeError(
+            "Batch storage not initialized. Call initialize_storage() first."
+        )
     return await p_storage.is_request_done(job, request_index)
 
 
 async def prepare_job_ouput_files(job: BatchJob) -> BatchJob:
-    """Prepare job output files, including output and error file ids"""
-    assert p_storage is not None
+    """Prepare job output files, including output and error file ids
+
+    Raises:
+        RuntimeError: If storage has not been initialized
+    """
+    if p_storage is None:
+        raise RuntimeError(
+            "Batch storage not initialized. Call initialize_storage() first."
+        )
     return await p_storage.prepare_job_ouput_files(job)
 
 
@@ -129,14 +166,27 @@ async def write_job_output_data(
         job: BatchJob object
         request_index: Index of the request being processed
         output_data: Single result dictionary
+
+    Raises:
+        RuntimeError: If storage has not been initialized
     """
-    assert p_storage is not None
+    if p_storage is None:
+        raise RuntimeError(
+            "Batch storage not initialized. Call initialize_storage() first."
+        )
     await p_storage.write_job_output_data(job, request_index, output_data)
 
 
 async def finalize_job_output_data(job: BatchJob) -> None:
-    """Finalize job output files, aggregate output and error files"""
-    assert p_storage is not None
+    """Finalize job output files, aggregate output and error files
+
+    Raises:
+        RuntimeError: If storage has not been initialized
+    """
+    if p_storage is None:
+        raise RuntimeError(
+            "Batch storage not initialized. Call initialize_storage() first."
+        )
     await p_storage.finalize_job_output_data(job)
 
 
@@ -148,12 +198,25 @@ async def download_output_data(file_id: str) -> List[Dict[str, Any]]:
 
     Returns:
         List of result dictionaries
+
+    Raises:
+        RuntimeError: If storage has not been initialized
     """
-    assert p_storage is not None
+    if p_storage is None:
+        raise RuntimeError(
+            "Batch storage not initialized. Call initialize_storage() first."
+        )
     return await p_storage.read_job_output_data(file_id)
 
 
 async def remove_job_data(file_id: str) -> None:
-    """Remove file data."""
-    assert p_storage is not None
+    """Remove file data.
+
+    Raises:
+        RuntimeError: If storage has not been initialized
+    """
+    if p_storage is None:
+        raise RuntimeError(
+            "Batch storage not initialized. Call initialize_storage() first."
+        )
     await p_storage.delete_job_data(file_id)
