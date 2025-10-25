@@ -133,7 +133,9 @@ class JobDriver:
             failed_condition = job.status.get_condition(ConditionType.FAILED)
             if failed_condition is None:
                 raise RuntimeError("Job failed but no failure condition was set")
-            raise RuntimeError(failed_condition.message)
+            raise RuntimeError(
+                failed_condition.message or "Job failed with an unspecified error"
+            )
 
     async def prepare_job(self, job: BatchJob) -> BatchJob:
         """
