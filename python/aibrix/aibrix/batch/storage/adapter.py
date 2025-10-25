@@ -145,13 +145,30 @@ class BatchStorageAdapter:
         return await is_request_done(lock_key)
 
     async def prepare_job_ouput_files(self, job: BatchJob) -> BatchJob:
-        """Get job output file id.
+        """Prepare job output and error files for batch processing.
+
+        This method creates two separate multipart uploads:
+        1. **Output file**: Stores successful request responses
+        2. **Error file**: Stores failed request responses
+
+        Both files are ALWAYS created upfront, regardless of whether errors occur.
+        Workers write to the appropriate file based on request success/failure.
+
+        File ID generation:
+        - output_file_id: UUID v3 derived from job_id + "output"
+        - error_file_id: UUID v3 derived from job_id + "error"
+        - temp_output_file_id: Multipart upload ID for output file
+        - temp_error_file_id: Multipart upload ID for error file
 
         Args:
-            job_id: Job identifier
+            job: BatchJob object to prepare files for
 
         Returns:
-            Job output file id
+            Updated BatchJob with file IDs populated
+
+        Note:
+            Error files will exist even if no requests fail. The file will simply
+            be empty or contain no parts if all requests succeed.
         """
         if job.status.temp_output_file_id or job.status.temp_error_file_id:
             return job
@@ -173,6 +190,14 @@ class BatchStorageAdapter:
             job.status.temp_output_file_id,
             job.status.temp_error_file_id,
         ) = await asyncio.gather(*tasks)
+
+        logger.info(
+            "Prepared batch job output files",
+            job_id=job.job_id,
+            output_file_id=job.status.output_file_id,
+            error_file_id=job.status.error_file_id,
+        )  # type: ignore[call-arg]
+
         return job
 
     async def write_job_output_data(
