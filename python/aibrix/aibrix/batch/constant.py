@@ -14,11 +14,21 @@
 
 
 # The following are all constants.
+import os
+
 # This is the time interval for the sliding window to check.
 EXPIRE_INTERVAL: float = 1
+
 # This is the job pool size in job scheduler.
 # It should be proportional to resource size in the backend.
-DEFAULT_JOB_POOL_SIZE = 1
+# Can be configured via AIBRIX_BATCH_JOB_POOL_SIZE environment variable.
+DEFAULT_JOB_POOL_SIZE = int(os.environ.get("AIBRIX_BATCH_JOB_POOL_SIZE", "1"))
+
+# Validate job pool size
+if not (1 <= DEFAULT_JOB_POOL_SIZE <= 100):
+    raise ValueError(
+        f"AIBRIX_BATCH_JOB_POOL_SIZE must be between 1 and 100, got {DEFAULT_JOB_POOL_SIZE}"
+    )
 
 # Job opts are for testing purpose.
 BATCH_OPTS_FAIL_AFTER_N_REQUESTS = "fail_after_n_requests"

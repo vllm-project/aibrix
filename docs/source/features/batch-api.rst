@@ -68,10 +68,18 @@ Simply update the ``base_url`` in your OpenAI SDK configuration:
 - **Endpoints**: Currently supports ``/v1/chat/completions`` (more coming soon)
 - **Rate Limits**: Determined by your cluster capacity, not API limits
 
+**Supported Endpoints:**
+
+- ``/v1/chat/completions`` - Chat completion requests
+- ``/v1/completions`` - Text completion requests
+- ``/v1/embeddings`` - Embedding generation requests
+
+All endpoints are fully supported if the underlying LLM engine supports them.
+
 **Current Limitations:**
 
-- Only ``/v1/chat/completions`` endpoint is supported, more endpoints will be added in future releases.
 - 24-hour completion window (not configurable)
+- Moderation endpoint (``/v1/moderations``) not supported
 
 
 Architecture
@@ -144,6 +152,7 @@ Components
 3. **Worker Jobs**: Kubernetes Jobs that process batch requests in parallel
 4. **Storage Backend**: S3, Redis, or local filesystem for file storage and job state
 5. **Files API**: OpenAI-compatible file upload/download endpoints
+
 
 Deployment
 ----------
@@ -555,6 +564,32 @@ After modifying ``job_template_patch.yaml``, apply the changes using:
 
     kubectl apply -k config/default
 
+Configuring Job Pool Size
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The batch job scheduler uses a job pool to control concurrent batch processing. The pool size can be configured via environment variable:
+
+.. code-block:: bash
+
+    # Set job pool size (default: 1, min: 1, max: 100)
+    export AIBRIX_BATCH_JOB_POOL_SIZE=10
+
+**Configuration Options:**
+
+- **Default**: 1 (conservative, prevents resource contention)
+- **Recommended**: 5-20 (depending on cluster resources)
+- **Maximum**: 100 (validated at runtime)
+
+**Setting in Deployment:**
+
+Add to metadata service deployment environment variables:
+
+.. code-block:: yaml
+
+    env:
+    - name: AIBRIX_BATCH_JOB_POOL_SIZE
+      value: "10"
+
 Verification and Testing
 ------------------------
 
@@ -695,7 +730,7 @@ The Files API manages input and output files for batch processing. ENDPOINT is t
       "status": "uploaded"
     }
 
-**List File**
+**Get File Metadata**
 
 .. code-block:: bash
 
@@ -714,6 +749,46 @@ The Files API manages input and output files for batch processing. ENDPOINT is t
       "last_modified": 1760131968
     }
 
+**List Files**
+
+List all files with optional filtering and pagination:
+
+.. code-block:: bash
+
+    # List all files
+    curl -X GET http://${ENDPOINT}/v1/files
+
+    # List only batch files
+    curl -X GET "http://${ENDPOINT}/v1/files?purpose=batch"
+
+    # List with pagination (limit and cursor)
+    curl -X GET "http://${ENDPOINT}/v1/files?limit=10&after=file-abc123"
+
+Response:
+
+.. code-block:: json
+
+    {
+      "object": "list",
+      "data": [
+        {
+          "id": "102983c4-92ef-4de9-a03b-8e05066b16fd",
+          "object": "file",
+          "bytes": 3104,
+          "created_at": 1760131968,
+          "filename": "batch_input.jsonl",
+          "purpose": "batch",
+          "status": "uploaded"
+        }
+      ],
+      "has_more": false
+    }
+
+**Query Parameters:**
+
+- ``purpose`` (optional): Filter by file purpose (e.g., "batch")
+- ``limit`` (optional): Number of files to return (1-100, default 20)
+- ``after`` (optional): File ID to use as pagination cursor
 
 **Download File**
 
