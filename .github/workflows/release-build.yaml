@@ -21,9 +21,9 @@ jobs:
           - name: gateway-plugins
             file: build/container/Dockerfile.gateway
           - name: metadata-service
-            file: build/container/Dockerfile.metadata
+            file: build/container/Dockerfile.python
           - name: runtime
-            file: build/container/Dockerfile.runtime
+            file: build/container/Dockerfile.python
           - name: kvcache-watcher
             file: build/container/Dockerfile.kvcache
     steps:
@@ -62,9 +62,9 @@ jobs:
           - name: gateway-plugins
             file: build/container/Dockerfile.gateway
           - name: metadata-service
-            file: build/container/Dockerfile.metadata
+            file: build/container/Dockerfile.python
           - name: runtime
-            file: build/container/Dockerfile.runtime
+            file: build/container/Dockerfile.python
           - name: kvcache-watcher
             file: build/container/Dockerfile.kvcache
     steps:
