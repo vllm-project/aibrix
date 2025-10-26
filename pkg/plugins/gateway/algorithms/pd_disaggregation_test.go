@@ -74,10 +74,10 @@ func TestPDRouter_Route(t *testing.T) {
 	}
 
 	r := pdRouter{
-		cache:              cache.NewForTest(),
-		tokenizer:          tokenizer.NewCharacterTokenizer(),
-		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
-		httpClient:         &http.Client{},
+		cache:                 cache.NewForTest(),
+		tokenizer:             tokenizer.NewCharacterTokenizer(),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: NewPrefillRequestTracker(),
 	}
 
 	for _, tt := range tests {
@@ -104,30 +104,36 @@ func TestFilterPrefillDecodePods(t *testing.T) {
 	tests := []struct {
 		name          string
 		pods          []*v1.Pod
-		expectPrefill int
-		expectDecode  int
+		expectPrefill string
+		expectDecode  string
 	}{
 		{
 			name: "filter correct roles",
 			pods: []*v1.Pod{
 				{ObjectMeta: metav1.ObjectMeta{}},
-				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "prefill"}}},
-				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "decode"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-test", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-test", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
 				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "other"}}},
 				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "prefill", PodGroupIndex: "1"}}},
 			},
-			expectPrefill: 1,
-			expectDecode:  1,
+			expectPrefill: "prefill-test",
+			expectDecode:  "decode-test",
 		},
 	}
 
-	r := pdRouter{}
+	r := pdRouter{
+		cache:                 cache.NewForTest(),
+		tokenizer:             tokenizer.NewCharacterTokenizer(),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: NewPrefillRequestTracker(),
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			prefill, decode, err := r.filterPrefillDecodePods(tt.pods)
+			ctx := types.NewRoutingContext(context.Background(), "test", "model", "message", "test-request", "user")
+			prefill, decode, err := r.filterPrefillDecodePods(ctx, tt.pods)
 			assert.NoError(t, err)
-			assert.Equal(t, tt.expectPrefill, len(prefill))
-			assert.Equal(t, tt.expectDecode, len(decode))
+			assert.Equal(t, tt.expectPrefill, prefill.Name)
+			assert.Equal(t, tt.expectDecode, decode.Name)
 		})
 	}
 }
@@ -175,10 +181,10 @@ func TestDoPrefillRequest(t *testing.T) {
 		}
 		c := cache.NewWithPodsMetricsForTest(pods, "m1", metricsMap)
 		return &pdRouter{
-			prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
-			cache:              c,
-			tokenizer:          tokenizerObj,
-			httpClient:         &http.Client{},
+			prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+			cache:                 c,
+			tokenizer:             tokenizerObj,
+			prefillRequestTracker: NewPrefillRequestTracker(),
 		}
 	}
 
@@ -281,15 +287,12 @@ func TestDoPrefillRequest(t *testing.T) {
 			routingCtx := createRoutingCtx()
 			router := createRouter(prefillPods, tt.podMetrics)
 
-			selectedPod, err := router.doPrefillRequest(routingCtx, prefillPods, tt.llmEngine)
+			err := router.doPrefillRequest(routingCtx, prefillPods[0], tt.llmEngine)
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)
 			} else {
 				assert.NoError(t, err)
-				if tt.expectedPodNames != nil {
-					assert.Contains(t, tt.expectedPodNames, selectedPod.Name)
-				}
 				if tt.llmEngine == "sglang" {
 					time.Sleep(100 * time.Millisecond) // Wait for async goroutine
 				}
@@ -471,13 +474,13 @@ func TestVLLMIntegrationWithTestServer(t *testing.T) {
 	}
 
 	router := &pdRouter{
-		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
-		cache:              cache.NewWithPodsForTest(prefillPods, "test-model"),
-		tokenizer:          tokenizer.NewCharacterTokenizer(),
-		httpClient:         &http.Client{},
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		cache:                 cache.NewWithPodsForTest(prefillPods, "test-model"),
+		tokenizer:             tokenizer.NewCharacterTokenizer(),
+		prefillRequestTracker: NewPrefillRequestTracker(),
 	}
 
-	_, err := router.doPrefillRequest(routingCtx, prefillPods, VLLMEngine)
+	err := router.doPrefillRequest(routingCtx, prefillPods[0], VLLMEngine)
 	assert.NoError(t, err)
 
 	// Verify that routing context was updated with KV transfer params from test server

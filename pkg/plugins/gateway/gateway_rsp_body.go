@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/ssestream"
@@ -153,7 +154,8 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			requestEnd = fmt.Sprintf(requestEnd+"targetPod: %s", targetPodIP)
 		}
 
-		klog.Infof("request end, requestID: %s - %s", requestID, requestEnd)
+		klog.Infof("request end, requestID: %s - %s, elapsed: %v", requestID, requestEnd,
+			routerCtx.Elapsed(time.Now()))
 	} else if b.ResponseBody.EndOfStream {
 		complete = true
 	}
