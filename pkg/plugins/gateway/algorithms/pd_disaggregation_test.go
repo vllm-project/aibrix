@@ -78,6 +78,7 @@ func TestPDRouter_Route(t *testing.T) {
 		tokenizer:             tokenizer.NewCharacterTokenizer(),
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
+		httpClient:            &http.Client{},
 	}
 
 	for _, tt := range tests {
@@ -185,6 +186,7 @@ func TestDoPrefillRequest(t *testing.T) {
 			cache:                 c,
 			tokenizer:             tokenizerObj,
 			prefillRequestTracker: NewPrefillRequestTracker(),
+			httpClient:            &http.Client{},
 		}
 	}
 
@@ -478,6 +480,7 @@ func TestVLLMIntegrationWithTestServer(t *testing.T) {
 		cache:                 cache.NewWithPodsForTest(prefillPods, "test-model"),
 		tokenizer:             tokenizer.NewCharacterTokenizer(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
+		httpClient:            &http.Client{},
 	}
 
 	err := router.doPrefillRequest(routingCtx, prefillPods[0], VLLMEngine)
