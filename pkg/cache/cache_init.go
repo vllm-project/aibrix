@@ -173,7 +173,8 @@ func NewWithPodsForTest(pods []*v1.Pod, model string) *Store {
 }
 
 func NewWithPodsMetricsForTest(pods []*v1.Pod, model string, podMetrics map[string]map[string]metrics.MetricValue) *Store {
-	return InitWithPodsMetrics(InitWithPods(NewForTest(), pods, model), podMetrics)
+	cache := InitWithPodsMetrics(InitWithPods(NewForTest(), pods, model), podMetrics)
+	return InitWithPodsModelMetrics(cache, podMetrics)
 }
 
 func NewWithPodsModelMetricsForTest(pods []*v1.Pod, model string, podMetrics map[string]map[string]metrics.MetricValue) *Store {

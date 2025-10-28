@@ -245,6 +245,119 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 	return targetPrefillPod, targetDecodePod, nil
 }
 
+// loadImbalanceSelectPrefillPod evaluates if the load is imbalanced based on the abs difference between
+// pods with min and max outstanding request counts
+func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequestCount map[string]int32) (*v1.Pod, bool) {
+	var imbalance bool
+	var targetPod *v1.Pod
+	targetPods := []string{}
+	minValue := int32(math.MaxInt32)
+	maxValue := int32(math.MinInt32)
+
+	if len(podRequestCount) == 0 {
+		return targetPod, imbalance
+	}
+
+	for _, value := range podRequestCount {
+		if value < minValue {
+			minValue = value
+		}
+		if value > maxValue {
+			maxValue = value
+		}
+	}
+	for podname, value := range podRequestCount {
+		if minValue == value {
+			targetPods = append(targetPods, podname)
+		}
+	}
+
+	if maxValue-minValue > 32 && len(targetPods) > 0 {
+		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
+		imbalance = true
+	}
+
+	return targetPod, imbalance
+}
+
+// loadImbalanceSelectDecodePod identifies imbalance decode pod using abs diff of max/min request counts and max/min throughputs.
+// It returns the selected pod, min/max request counts, min/max throughputs, and min/max free GPU usage
+func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filteredDecodePods []*v1.Pod) (*v1.Pod, float64, float64, float64, map[string]float64, map[string]float64, map[string]float64) {
+	podRequestCounts := make(map[string]float64)
+	podThroughputs := make(map[string]float64)
+	podFreeGpuUsage := make(map[string]float64)
+
+	minRequestPod := filteredDecodePods[0]
+	minRequestCount := math.MaxFloat64
+	maxRequestCount := float64(1)
+
+	minThroughputPod := filteredDecodePods[0]
+	minThroughput := float64(math.MaxFloat64)
+	maxThroughput := float64(1)
+
+	minFreeGPUUsage := float64(math.MaxFloat64)
+	maxFreeGPUUsage := float64(1)
+
+	for _, pod := range filteredDecodePods {
+		runningReqs, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
+		if err != nil {
+			runningReqs = &metrics.SimpleMetricValue{Value: 0}
+		}
+		requestCount := runningReqs.GetSimpleValue()
+		podRequestCounts[pod.Name] = requestCount
+		if requestCount < minRequestCount {
+			minRequestCount = requestCount
+			minRequestPod = pod
+		}
+		maxRequestCount = math.Max(maxRequestCount, requestCount)
+
+		tokenThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
+		if err != nil {
+			tokenThroughput = &metrics.SimpleMetricValue{Value: 0}
+		}
+		throughput := tokenThroughput.GetSimpleValue()
+		podThroughputs[pod.Name] = throughput
+		if throughput < minThroughput {
+			minThroughput = throughput
+			minThroughputPod = pod
+		}
+		maxThroughput = math.Max(maxThroughput, throughput)
+
+		gpuUsage, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.GPUCacheUsagePerc)
+		if err != nil {
+			gpuUsage = &metrics.SimpleMetricValue{Value: 0}
+		}
+		podFreeGpuUsage[pod.Name] = math.Round(100 - gpuUsage.GetSimpleValue()*100)
+		if podFreeGpuUsage[pod.Name] <= 0 {
+			podFreeGpuUsage[pod.Name] = 0.1
+		}
+		minFreeGPUUsage = math.Min(minFreeGPUUsage, podFreeGpuUsage[pod.Name])
+		maxFreeGPUUsage = math.Max(maxFreeGPUUsage, podFreeGpuUsage[pod.Name])
+	}
+
+	if minRequestCount == 0 || maxRequestCount-minRequestCount >= aibrixDecodeMaxRequest {
+		klog.V(4).InfoS("REQUEST_SELECTED_DECODE_POD", "request_id", ctx.RequestID,
+			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
+			"min_throughput", minThroughput, "max_throughput", maxThroughput,
+			"free_gpu_percent", podFreeGpuUsage[minRequestPod.Name],
+			"decode_pod", minRequestPod.Name)
+		return minRequestPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
+	}
+
+	if maxThroughput-minThroughput > aibrixDecodeMaxThroughputDiff {
+		klog.V(4).InfoS("THROUGHPUT_SELECTED_DECODE_POD", "request_id", ctx.RequestID,
+			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
+			"min_throughput", minThroughput, "max_throughput", maxThroughput,
+			"free_gpu_percent", podFreeGpuUsage[minThroughputPod.Name],
+			"decode_pod", minThroughputPod.Name)
+		return minThroughputPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
+	}
+
+	return nil, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
+}
+
+// scorePrefillPods scores prefill pods using formula (100 - match_percent) * 0.1 + (req_cnt / max_request_count)
+// selects pod with lowest score indicating highest percent match and least request count.
 func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPods []*v1.Pod) (map[string]*Scores, float64, []uint64) {
 	prefillScores := map[string]*Scores{}
 	tokens, err := r.tokenizer.TokenizeInputText(routingCtx.Message)
@@ -303,6 +416,8 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 	return prefillScores, maxPrefillScore, prefixHashes
 }
 
+// scoreDecodePods scores decode pods using formula (running_reqs / max_request_count) + (1 - throughput / max_throughput) / (1 - free_gpu_usage / max_free_gpu_usage)
+// selects pod with lowest score indicating least running requests, highest throughput and highest free GPU usage.
 func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDecodePods []*v1.Pod,
 	maxRequestCount float64, maxThroughput float64, maxFreeGPUUsage float64,
 	podRequestCounts map[string]float64, podThroughputs map[string]float64, podFreeGpuUsage map[string]float64) (map[string]*Scores, float64) {
@@ -356,7 +471,8 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		"prefill_url", apiURL)
 
 	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name)
-	if llmEngine == SGLangEngine {
+	switch llmEngine {
+	case SGLangEngine:
 		// For SGLang, use async prefill - the bootstrap mechanism (bootstrap_host/port/room)
 		// coordinates between prefill and decode pods, so we don't need to wait
 		go func() {
@@ -366,7 +482,8 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 					"request_id", routingCtx.RequestID,
 					"llm_engine", llmEngine,
 					"prefill_pod", prefillPod.Name,
-					"prefill_pod_ip", prefillPod.Status.PodIP)
+					"prefill_pod_ip", prefillPod.Status.PodIP,
+					"elapsed", routingCtx.Elapsed(time.Now()))
 				return
 			}
 			klog.InfoS("prefill_request_complete",
@@ -374,7 +491,7 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 				"llm_engine", llmEngine,
 				"prefill_pod", prefillPod.Name)
 		}()
-	} else if llmEngine == VLLMEngine {
+	case VLLMEngine:
 		// For vLLM, wait synchronously to get KV transfer params from response
 		responseData, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
 		if err != nil {
@@ -390,8 +507,9 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 			"request_id", routingCtx.RequestID,
 			"llm_engine", llmEngine,
 			"prefill_pod", prefillPod.Name,
-			"prefill_pod_ip", prefillPod.Status.PodIP)
-	} else {
+			"prefill_pod_ip", prefillPod.Status.PodIP,
+			"elapsed", routingCtx.Elapsed(time.Now()))
+	default:
 		// For unknown engines, use synchronous approach as a safe default
 		if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
 			return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
@@ -400,7 +518,8 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 			"request_id", routingCtx.RequestID,
 			"llm_engine", llmEngine,
 			"prefill_pod", prefillPod.Name,
-			"prefill_pod_ip", prefillPod.Status.PodIP)
+			"prefill_pod_ip", prefillPod.Status.PodIP,
+			"elapsed", routingCtx.Elapsed(time.Now()))
 	}
 
 	return nil
@@ -556,115 +675,38 @@ func getSGLangBootstrapPort(pod *v1.Pod) int64 {
 	return SGLangBootstrapPort // Default port
 }
 
-// getTargetPodOnLoadImbalance evaluates if the load is imbalanced based on the abs difference between
-// pods with min and max outstanding request counts
-func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequestCount map[string]int32) (*v1.Pod, bool) {
-	var imbalance bool
-	var targetPod *v1.Pod
-	targetPods := []string{}
-	minValue := int32(math.MaxInt32)
-	maxValue := int32(math.MinInt32)
-
-	// Handle empty podRequestCount case
-	if len(podRequestCount) == 0 {
-		return targetPod, imbalance
+// validateAndGetLLMEngine validates that all prefill pods use the same engine and returns it.
+func validateAndGetLLMEngine(prefillPods []*v1.Pod) (string, error) {
+	if len(prefillPods) == 0 {
+		return "", fmt.Errorf("no prefill pods provided")
 	}
 
-	// Find min/max values
-	for _, value := range podRequestCount {
-		if value < minValue {
-			minValue = value
-		}
-		if value > maxValue {
-			maxValue = value
-		}
-	}
-	for podname, value := range podRequestCount {
-		if minValue == value {
-			targetPods = append(targetPods, podname)
+	firstEngine := getLLMEngine(prefillPods[0], LLMEngineIdentifier, VLLMEngine)
+
+	// Validate all pods use the same engine
+	for i := 1; i < len(prefillPods); i++ {
+		engine := getLLMEngine(prefillPods[i], LLMEngineIdentifier, VLLMEngine)
+		if engine != firstEngine {
+			return "", fmt.Errorf("inconsistent LLM engines detected: pod %s has %s, pod %s has %s",
+				prefillPods[0].Name, firstEngine, prefillPods[i].Name, engine)
 		}
 	}
 
-	if maxValue-minValue > 32 && len(targetPods) > 0 {
-		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
-		imbalance = true
-	}
-
-	return targetPod, imbalance
+	return firstEngine, nil
 }
 
-func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filteredDecodePods []*v1.Pod) (*v1.Pod, float64, float64, float64, map[string]float64, map[string]float64, map[string]float64) {
-	podRequestCounts := make(map[string]float64)
-	podThroughputs := make(map[string]float64)
-	podFreeGpuUsage := make(map[string]float64)
-
-	minRequestPod := filteredDecodePods[0]
-	minRequestCount := math.MaxFloat64
-	maxRequestCount := float64(1)
-
-	minThroughputPod := filteredDecodePods[0]
-	minThroughput := float64(math.MaxFloat64)
-	maxThroughput := float64(1)
-
-	minFreeGPUUsage := float64(math.MaxFloat64)
-	maxFreeGPUUsage := float64(100)
-
-	for _, pod := range filteredDecodePods {
-		runningReqs, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
-		if err != nil {
-			runningReqs = &metrics.SimpleMetricValue{Value: 0}
-		}
-		requestCount := runningReqs.GetSimpleValue()
-		podRequestCounts[pod.Name] = requestCount
-		if requestCount < minRequestCount {
-			minRequestCount = requestCount
-			minRequestPod = pod
-		}
-		maxRequestCount = math.Max(maxRequestCount, requestCount)
-
-		tokenThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
-		if err != nil {
-			tokenThroughput = &metrics.SimpleMetricValue{Value: 0}
-		}
-		throughput := tokenThroughput.GetSimpleValue()
-		podThroughputs[pod.Name] = throughput
-		if throughput < minThroughput {
-			minThroughput = throughput
-			minThroughputPod = pod
-		}
-		maxThroughput = math.Max(maxThroughput, throughput)
-
-		gpuUsage, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.GPUCacheUsagePerc)
-		if err != nil {
-			gpuUsage = &metrics.SimpleMetricValue{Value: 0}
-		}
-		podFreeGpuUsage[pod.Name] = 100 - gpuUsage.GetSimpleValue()*100
-		if podFreeGpuUsage[pod.Name] <= 0 {
-			podFreeGpuUsage[pod.Name] = 0.1
-		}
-		minFreeGPUUsage = math.Min(minFreeGPUUsage, podFreeGpuUsage[pod.Name])
-		maxFreeGPUUsage = math.Max(maxFreeGPUUsage, podFreeGpuUsage[pod.Name])
+// isPodWithHTTPServer checks if a pod should be selected for routing.
+// In multi-node tensor parallelism setups (e.g., TP=16 with node_rank=0 and node_rank=1),
+// only pods with stormservice.orchestration.aibrix.ai/pod-group-index="0" (corresponding to node_rank=0) run the HTTP server.
+// Pods without the label are also selected for backward compatibility.
+func isPodWithHTTPServer(pod *v1.Pod) bool {
+	podGroupIndex, exists := pod.Labels[PodGroupIndex]
+	if !exists {
+		// No PodGroupIndex label means single-node or old setup - include it
+		return true
 	}
-
-	if minRequestCount == 0 || maxRequestCount-minRequestCount >= aibrixDecodeMaxRequest {
-		klog.V(4).InfoS("REQUEST_SELECTED_DECODE_POD", "request_id", ctx.RequestID,
-			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
-			"min_throughput", minThroughput, "max_throughput", maxThroughput,
-			"free_gpu_percent", podFreeGpuUsage[minRequestPod.Name],
-			"decode_pod", minRequestPod.Name)
-		return minRequestPod, maxRequestCount, maxFreeGPUUsage, maxThroughput, podRequestCounts, podThroughputs, podFreeGpuUsage
-	}
-
-	if maxThroughput-minThroughput > aibrixDecodeMaxThroughputDiff {
-		klog.V(4).InfoS("THROUGHPUT_SELECTED_DECODE_POD", "request_id", ctx.RequestID,
-			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
-			"min_throughput", minThroughput, "max_throughput", maxThroughput,
-			"free_gpu_percent", podFreeGpuUsage[minThroughputPod.Name],
-			"decode_pod", minThroughputPod.Name)
-		return minThroughputPod, maxRequestCount, maxFreeGPUUsage, maxThroughput, podRequestCounts, podThroughputs, podFreeGpuUsage
-	}
-
-	return nil, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
+	// Only include pods from node_rank=0 which have the HTTP server
+	return podGroupIndex == "0"
 }
 
 func (t *PrefillRequestTracker) AddPrefillRequest(requestID, podName string) {
@@ -723,38 +765,4 @@ func (t *PrefillRequestTracker) GetPrefillRequestCountsForPods(pods []*v1.Pod) m
 		}
 	}
 	return counts
-}
-
-// validateAndGetLLMEngine validates that all prefill pods use the same engine and returns it.
-func validateAndGetLLMEngine(prefillPods []*v1.Pod) (string, error) {
-	if len(prefillPods) == 0 {
-		return "", fmt.Errorf("no prefill pods provided")
-	}
-
-	firstEngine := getLLMEngine(prefillPods[0], LLMEngineIdentifier, VLLMEngine)
-
-	// Validate all pods use the same engine
-	for i := 1; i < len(prefillPods); i++ {
-		engine := getLLMEngine(prefillPods[i], LLMEngineIdentifier, VLLMEngine)
-		if engine != firstEngine {
-			return "", fmt.Errorf("inconsistent LLM engines detected: pod %s has %s, pod %s has %s",
-				prefillPods[0].Name, firstEngine, prefillPods[i].Name, engine)
-		}
-	}
-
-	return firstEngine, nil
-}
-
-// isPodWithHTTPServer checks if a pod should be selected for routing.
-// In multi-node tensor parallelism setups (e.g., TP=16 with node_rank=0 and node_rank=1),
-// only pods with stormservice.orchestration.aibrix.ai/pod-group-index="0" (corresponding to node_rank=0) run the HTTP server.
-// Pods without the label are also selected for backward compatibility.
-func isPodWithHTTPServer(pod *v1.Pod) bool {
-	podGroupIndex, exists := pod.Labels[PodGroupIndex]
-	if !exists {
-		// No PodGroupIndex label means single-node or old setup - include it
-		return true
-	}
-	// Only include pods from node_rank=0 which have the HTTP server
-	return podGroupIndex == "0"
 }
