@@ -10,7 +10,7 @@ ARG TORCH_VERSION=2.8.0
 ENV PATH="/opt/python/cp312-cp312/bin:${PATH}"
 
 # checkout codebase
-RUN git clone --branch ${AIBRIX_BRANCH} --depth 1 ${AIBRIX_REPO} /tmp/aibrix
+RUN git clone ${AIBRIX_REPO} /tmp/aibrix && cd /tmp/aibrix && git checkout ${AIBRIX_BRANCH}
     
 # install dependencies
 # use the same torch version as vllm
