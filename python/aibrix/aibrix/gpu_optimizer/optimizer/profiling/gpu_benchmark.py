@@ -299,7 +299,9 @@ async def send_request(
                         else:
                             # Fallback to raw output if no valid JSON found
                             # Remove trailing whitespace characters including EOF, and "[DONE]"
-                            santicized = b"".join(chunks).decode("utf-8").rstrip("\n\t ")
+                            santicized = (
+                                b"".join(chunks).decode("utf-8").rstrip("\n\t ")
+                            )
                     else:
                         time_to_first = time.perf_counter() - previous_token_time
                         output = await response.text()
