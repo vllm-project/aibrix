@@ -48,6 +48,26 @@ webhooks:
     resources:
     - modeladapters
   sideEffects: None
+- admissionReviewVersions:
+    - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /mutate-autoscaling-aibrix-ai-v1alpha1-podautoscaler
+  failurePolicy: Ignore
+  name: mpodautoscaler-v1alpha1.kb.io
+  rules:
+    - apiGroups:
+        - autoscaling.aibrix.ai
+      apiVersions:
+        - v1alpha1
+      operations:
+        - CREATE
+        - UPDATE
+      resources:
+        - podautoscalers
+  sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
@@ -97,6 +117,26 @@ webhooks:
     - UPDATE
     resources:
     - kvcaches
+  sideEffects: None
+- admissionReviewVersions:
+    - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /validate-autoscaling-aibrix-ai-v1alpha1-podautoscaler
+  failurePolicy: Ignore
+  name: vpodautoscaler-v1alpha1.kb.io
+  rules:
+    - apiGroups:
+        - autoscaling.aibrix.ai
+      apiVersions:
+        - v1alpha1
+      operations:
+        - CREATE
+        - UPDATE
+      resources:
+        - podautoscalers
   sideEffects: None
 {{- end }}
 

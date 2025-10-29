@@ -41,7 +41,7 @@ const (
 
 type RequestFeatures []float64
 
-// RoutingAlgorithms defines the routing algorithms
+// RoutingAlgorithm defines the routing algorithms
 type RoutingAlgorithm string
 
 // RoutingContext encapsulates the context information required for routing.

@@ -1,4 +1,16 @@
-ARG PYTHON_VERSION=3.11
+# AIBrix Python Services
+#
+# Unified image for all AIBrix Python services from python/aibrix/
+# Built as aibrix/runtime and tagged as aibrix/metadata-service
+#
+# Entry points(see pyproject.yaml for details):
+#   - aibrix_runtime
+#   - aibrix_metadata
+#   - aibrix_batch_worker
+#   - aibrix_download
+
+# There is a python upstream issue and we switch 3.11 to 3.11.11, check aibrix/issues/959 for more details.
+ARG PYTHON_VERSION=3.11.11
 ARG BASE_IMAGE=python:${PYTHON_VERSION}-slim-bookworm
 
 # Builder stage
@@ -13,16 +25,17 @@ RUN apt-get update \
     && apt-get install -y python3-dev build-essential \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-
+    
 # Install Poetry
 RUN python3 -m pip install poetry==${POETRY_VERSION}
 
-# Copy the metadata source
+# Copy the runtime source
 COPY python/aibrix/poetry.lock python/aibrix/pyproject.toml python/aibrix/ /app/
 
 # Install dependencies and build package
+# Exclude profiling group to avoid installing transformers, pandas, matplotlib, etc.
 RUN poetry config virtualenvs.create false \
-    && poetry install --no-interaction --no-dev \
+    && poetry install --no-interaction --without profiling --without dev \
     && poetry build -f wheel
 
 # Final stage
@@ -33,18 +46,16 @@ WORKDIR /app
 COPY --from=builder /app/dist/*.whl ./
 
 # Install build dependencies and clean up in one step (avoiding creating another new layer)
+# procps grep mawk are for batch worker to kill llm engine
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc python3-dev \
+    && apt-get install -y --no-install-recommends gcc python3-dev mawk procps grep  \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir ./*.whl \
     && rm -f ./*.whl \
     && apt-get purge -y gcc python3-dev \
-    && apt-get autoremove -y
+    && apt-get autoremove -y \
+    && pip cache purge || true
 
-# Expose metadata service port
-EXPOSE 8090
-
-# Set entrypoint for Metadata service
-ENTRYPOINT ["aibrix_metadata", "--host", "0.0.0.0"]
-
+# Set entrypoint for Runtime
+ENTRYPOINT ["aibrix_runtime"]

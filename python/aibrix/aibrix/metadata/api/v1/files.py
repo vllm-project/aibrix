@@ -92,6 +92,14 @@ class FileError(NoExtraBaseModel):
     error: Dict[str, Any] = Field(description="Error details")
 
 
+class FileListResponse(NoExtraBaseModel):
+    """Response model for file listing."""
+
+    object: str = Field(default="list", description="The object type, always 'list'")
+    data: list[FileObject] = Field(description="List of file objects")
+    has_more: bool = Field(description="Whether there are more results available")
+
+
 def _validate_file_extension(filename: str) -> bool:
     """Validate if file extension is supported."""
     if "." not in filename:
@@ -183,6 +191,126 @@ async def create_file(
         logger.error("Unexpected error uploading file", error=str(e))  # type: ignore[call-arg]
         error_response = _create_error_response("Internal server error")
         raise  # HTTPException(status_code=500, detail=error_response)
+
+
+@router.get("", include_in_schema=True)
+@router.get("/", include_in_schema=False)
+async def list_files(
+    request: Request,
+    purpose: Optional[str] = None,
+    limit: int = 20,
+    after: Optional[str] = None,
+) -> FileListResponse:
+    """List files with optional filtering and pagination.
+
+    This endpoint returns a list of file objects that have been uploaded.
+    Compatible with OpenAI Files API.
+
+    Args:
+        purpose: Filter files by purpose (e.g., "batch")
+        limit: Number of files to return (1-100, default 20)
+        after: File ID to use as cursor for pagination
+
+    Returns:
+        FileListResponse with list of files and pagination info
+    """
+    try:
+        # Validate limit
+        if not (1 <= limit <= 100):
+            raise HTTPException(
+                status_code=400, detail="Limit must be between 1 and 100"
+            )
+
+        storage: BaseStorage = request.app.state.storage
+
+        # List objects from storage with pagination
+        # We fetch limit+1 to check if there are more results
+        file_keys, _ = await storage.list_objects(
+            prefix="", limit=limit + 1, continuation_token=after
+        )
+
+        # Check if there are more results
+        has_more = len(file_keys) > limit
+        if has_more:
+            file_keys = file_keys[:limit]
+
+        # Build file objects list
+        file_objects = []
+        for file_id in file_keys:
+            try:
+                # Get metadata for each file
+                head_object = await storage.head_object(file_id)
+                metadata = head_object.metadata or {}
+
+                # Filter by purpose if specified
+                if purpose:
+                    file_purpose = metadata.get("purpose")
+                    if file_purpose != purpose:
+                        continue
+
+                # Extract file information
+                created_at = None
+                if "created_at" in metadata:
+                    try:
+                        created_at = int(metadata["created_at"])
+                    except (ValueError, TypeError):
+                        pass
+
+                if created_at is None and head_object.last_modified:
+                    created_at = int(head_object.last_modified.timestamp())
+
+                if created_at is None:
+                    created_at = int(time.time())
+
+                filename = metadata.get(
+                    "filename",
+                    generate_filename(file_id, head_object.content_type, metadata),
+                )
+
+                file_purpose_enum = None
+                if "purpose" in metadata:
+                    try:
+                        file_purpose_enum = FilePurpose(metadata["purpose"])
+                    except ValueError:
+                        pass
+
+                file_status = FileStatus.UPLOADED
+                if "status" in metadata:
+                    try:
+                        file_status = FileStatus(metadata["status"])
+                    except ValueError:
+                        pass
+
+                file_obj = FileObject(
+                    id=file_id,
+                    bytes=head_object.content_length or 0,
+                    created_at=created_at,
+                    filename=filename,
+                    purpose=file_purpose_enum or FilePurpose.BATCH,
+                    status=file_status,
+                )
+                file_objects.append(file_obj)
+
+            except FileNotFoundError:
+                # File was deleted between list and head operations, skip it
+                logger.warning("File not found during listing", file_id=file_id)  # type: ignore[call-arg]
+                continue
+            except Exception as e:
+                # Log error but continue processing other files
+                logger.error(
+                    "Error retrieving file metadata during listing",
+                    file_id=file_id,
+                    error=str(e),
+                )  # type: ignore[call-arg]
+                continue
+
+        return FileListResponse(data=file_objects, has_more=has_more)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to list files", error=str(e))  # type: ignore[call-arg]
+        raise HTTPException(status_code=500, detail="Failed to list files")
 
 
 @router.get("/{file_id}/content")

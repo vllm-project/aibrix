@@ -20,10 +20,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
 )
 
 func TestAPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 	algorithm := &APAAlgorithm{}
+	metricsName := "test-metrics"
 
 	tests := []struct {
 		name            string
@@ -36,7 +39,11 @@ func TestAPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "basic_scale_up",
 			currentPodCount: 2.0,
 			context: &mockScalingContext{
-				TargetValue:              30.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 30.0,
+					},
+				},
 				CurrentUsePerPod:         45.0,
 				UpFluctuationTolerance:   0.1,
 				MaxScaleUpRate:           2,
@@ -49,7 +56,11 @@ func TestAPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "scale_up_upto_ceiling",
 			currentPodCount: 2.0,
 			context: &mockScalingContext{
-				TargetValue:              30.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 30.0,
+					},
+				},
 				CurrentUsePerPod:         35.0,
 				UpFluctuationTolerance:   0.1,
 				MaxScaleUpRate:           2,
@@ -62,7 +73,11 @@ func TestAPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "scale_up_upto_max_scale_up",
 			currentPodCount: 2.0,
 			context: &mockScalingContext{
-				TargetValue:              30.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 30.0,
+					},
+				},
 				CurrentUsePerPod:         90.0,
 				UpFluctuationTolerance:   0.1,
 				MaxScaleUpRate:           2,
@@ -75,7 +90,11 @@ func TestAPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "scale_up_upto_max_scale_up_ceiling",
 			currentPodCount: 2.0,
 			context: &mockScalingContext{
-				TargetValue:              30.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 30.0,
+					},
+				},
 				CurrentUsePerPod:         90.0,
 				UpFluctuationTolerance:   0.1,
 				MaxScaleUpRate:           2.5,
@@ -89,7 +108,11 @@ func TestAPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "basic_scale_down",
 			currentPodCount: 6.0,
 			context: &mockScalingContext{
-				TargetValue:              30.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 30.0,
+					},
+				},
 				CurrentUsePerPod:         20.0,
 				UpFluctuationTolerance:   0.1,
 				MaxScaleUpRate:           2,
@@ -102,7 +125,11 @@ func TestAPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "scale_down_upto_ceiling",
 			currentPodCount: 6.0,
 			context: &mockScalingContext{
-				TargetValue:              30.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 30.0,
+					},
+				},
 				CurrentUsePerPod:         18.0,
 				UpFluctuationTolerance:   0.1,
 				MaxScaleUpRate:           2,
@@ -115,7 +142,11 @@ func TestAPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "scale_down_upto_max_scale_down",
 			currentPodCount: 6.0,
 			context: &mockScalingContext{
-				TargetValue:              30.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 30.0,
+					},
+				},
 				CurrentUsePerPod:         10.0,
 				UpFluctuationTolerance:   0.1,
 				MaxScaleUpRate:           2,
@@ -128,7 +159,11 @@ func TestAPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "scale_down_upto_max_scale_down_floor",
 			currentPodCount: 6.0,
 			context: &mockScalingContext{
-				TargetValue:              30.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 30.0,
+					},
+				},
 				CurrentUsePerPod:         5.0,
 				UpFluctuationTolerance:   0.1,
 				MaxScaleUpRate:           2,
@@ -142,7 +177,11 @@ func TestAPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "no_scaling_as_within_up_tolerance",
 			currentPodCount: 2.0,
 			context: &mockScalingContext{
-				TargetValue:              30.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 30.0,
+					},
+				},
 				CurrentUsePerPod:         33.0,
 				UpFluctuationTolerance:   0.1,
 				MaxScaleUpRate:           2,
@@ -155,7 +194,11 @@ func TestAPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 			name:            "no_scaling_as_within_down_tolerance",
 			currentPodCount: 2.0,
 			context: &mockScalingContext{
-				TargetValue:              30.0,
+				MetricTargets: map[string]scalingctx.MetricTarget{
+					metricsName: {
+						TargetValue: 30.0,
+					},
+				},
 				CurrentUsePerPod:         27.0,
 				UpFluctuationTolerance:   0.1,
 				MaxScaleUpRate:           2,
@@ -168,7 +211,7 @@ func TestAPAAlgorithm_ComputeTargetReplicas(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := algorithm.computeTargetReplicas(tt.currentPodCount, tt.context)
+			result := algorithm.computeTargetReplicas(tt.currentPodCount, tt.context, metricsName)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

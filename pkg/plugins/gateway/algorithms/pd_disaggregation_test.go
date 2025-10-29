@@ -77,6 +77,7 @@ func TestPDRouter_Route(t *testing.T) {
 		cache:              cache.NewForTest(),
 		tokenizer:          tokenizer.NewCharacterTokenizer(),
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+		httpClient:         &http.Client{},
 	}
 
 	for _, tt := range tests {
@@ -163,6 +164,7 @@ func TestDoPrefillRequest(t *testing.T) {
 			ReqHeaders: map[string]string{
 				"Authorization": "Bearer test-1234",
 			},
+			Context: context.Background(),
 		}
 	}
 
@@ -176,6 +178,7 @@ func TestDoPrefillRequest(t *testing.T) {
 			prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 			cache:              c,
 			tokenizer:          tokenizerObj,
+			httpClient:         &http.Client{},
 		}
 	}
 
@@ -330,6 +333,7 @@ func TestPreparePrefillPayload(t *testing.T) {
 			}
 			routingCtx := &types.RoutingContext{
 				ReqBody: []byte(tt.reqBody),
+				Context: context.Background(),
 			}
 
 			payload, err := router.preparePrefillPayload(routingCtx, pod, tt.llmEngine)
@@ -405,6 +409,7 @@ func TestUpdateRoutingContextWithKVTransferParams(t *testing.T) {
 			routingCtx := &types.RoutingContext{
 				RequestID: "test-request",
 				ReqBody:   []byte(tt.originalBody),
+				Context:   context.Background(),
 			}
 
 			err := router.updateRoutingContextWithKVTransferParams(routingCtx, tt.responseData, pod)
@@ -462,12 +467,14 @@ func TestVLLMIntegrationWithTestServer(t *testing.T) {
 		ReqPath:    "/v1/chat/completions",
 		ReqBody:    []byte(`{"messages":[{"role":"user","content":"test"}]}`),
 		ReqHeaders: map[string]string{"Authorization": "Bearer test"},
+		Context:    context.Background(),
 	}
 
 	router := &pdRouter{
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 		cache:              cache.NewWithPodsForTest(prefillPods, "test-model"),
 		tokenizer:          tokenizer.NewCharacterTokenizer(),
+		httpClient:         &http.Client{},
 	}
 
 	_, err := router.doPrefillRequest(routingCtx, prefillPods, VLLMEngine)
@@ -527,6 +534,7 @@ func TestVLLMKVTransferProcessing(t *testing.T) {
 			routingCtx := &types.RoutingContext{
 				RequestID: "test-req",
 				ReqBody:   []byte(`{"messages":[{"role":"user","content":"hello"}]}`),
+				Context:   context.Background(),
 			}
 
 			// Call the update function (this is only called for vLLM in real flow)

@@ -200,9 +200,11 @@ class TOSDownloaderV1(BaseDownloader):
         # download file
         total_length = meta_data.content_length
 
-        with tqdm(
-            desc=relative_path, total=total_length, unit="b", unit_scale=True
-        ) if self.enable_progress_bar else nullcontext() as pbar:
+        with (
+            tqdm(desc=relative_path, total=total_length, unit="b", unit_scale=True)
+            if self.enable_progress_bar
+            else nullcontext() as pbar
+        ):
 
             def download_progress(
                 consumed_bytes, total_bytes, rw_once_bytes, type: DataTransferType

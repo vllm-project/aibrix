@@ -35,7 +35,7 @@ class Settings(AIBrixSettings):
     # --- File API settings ---
     STORAGE_TYPE: StorageType = StorageType.AUTO
     METASTORE_TYPE: StorageType = StorageType.AUTO
-    MAX_FILE_SIZE: int = 1024 * 1024 * 1024  # 1G in bytes
+    MAX_FILE_SIZE: int = 100 * 1024 * 1024  # 100 MB in bytes
 
 
 # Create an instance of the Settings class

@@ -23,7 +23,7 @@ logger = init_logger(__name__)
 
 p_metastore: Optional[BaseStorage] = None
 NUM_REQUESTS_PER_READ = 1024
-STATUS_RUQUEST_LOCKING = "processing"
+STATUS_REQUEST_LOCKING = "processing"
 
 
 def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
@@ -56,8 +56,14 @@ def get_metastore_type() -> StorageType:
 
     Returns:
         Type of type of storage that backs metastore
+
+    Raises:
+        RuntimeError: If metastore has not been initialized
     """
-    assert p_metastore is not None
+    if p_metastore is None:
+        raise RuntimeError(
+            "Batch metastore not initialized. Call initialize_batch_metastore() first."
+        )
     return p_metastore.get_type()
 
 
@@ -79,9 +85,13 @@ async def set_metadata(
         True if metadata was set, False if conditional operation failed
 
     Raises:
+        RuntimeError: If metastore has not been initialized
         ValueError: If unsupported options are used with non-Redis storage
     """
-    assert p_metastore is not None
+    if p_metastore is None:
+        raise RuntimeError(
+            "Batch metastore not initialized. Call initialize_batch_metastore() first."
+        )
 
     # Build options if needed
     options = None
@@ -104,8 +114,14 @@ async def get_metadata(key: str) -> Tuple[str, bool]:
 
     Returns:
         Metadata value
+
+    Raises:
+        RuntimeError: If metastore has not been initialized
     """
-    assert p_metastore is not None
+    if p_metastore is None:
+        raise RuntimeError(
+            "Batch metastore not initialized. Call initialize_batch_metastore() first."
+        )
 
     try:
         data = await p_metastore.get_object(key)
@@ -119,8 +135,14 @@ async def delete_metadata(key: str) -> None:
 
     Args:
         key: Metadata key
+
+    Raises:
+        RuntimeError: If metastore has not been initialized
     """
-    assert p_metastore is not None
+    if p_metastore is None:
+        raise RuntimeError(
+            "Batch metastore not initialized. Call initialize_batch_metastore() first."
+        )
     await p_metastore.delete_object(key)
 
 
@@ -139,7 +161,7 @@ async def lock_request(key: str, expiration_seconds: int = 3600) -> bool:
     """
     return await set_metadata(
         key,
-        STATUS_RUQUEST_LOCKING,
+        STATUS_REQUEST_LOCKING,
         expiration_seconds=expiration_seconds,
         if_not_exists=True,
     )
@@ -155,7 +177,7 @@ async def is_request_done(key: str) -> bool:
         True if the request is done, False otherwise
     """
     status, got = await get_metadata(key)
-    return got and status != STATUS_RUQUEST_LOCKING
+    return got and status != STATUS_REQUEST_LOCKING
 
 
 async def unlock_request(key: str, status: str) -> bool:
@@ -179,8 +201,14 @@ async def list_metastore_keys(prefix: str) -> list[str]:
 
     Returns:
         List of keys matching the prefix
+
+    Raises:
+        RuntimeError: If metastore has not been initialized
     """
-    assert p_metastore is not None
+    if p_metastore is None:
+        raise RuntimeError(
+            "Batch metastore not initialized. Call initialize_batch_metastore() first."
+        )
 
     keys = []
     continuation_token = None

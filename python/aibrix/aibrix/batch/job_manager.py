@@ -329,38 +329,57 @@ class JobManager(JobProgressManager):
             job_future = asyncio.Future[str]()
             self._creating_jobs[session_id] = job_future
 
-            job_id: Optional[str] = None
             try:
-                # Will trigger job committed handler
-                # Note: When using job_entity_manager, the job_id will be available after the committed handler
-                # For now, we return None since we don't have immediate access to the generated job_id
-                submitted = asyncio.create_task(
+                # Submit job creation task
+                submit_task = asyncio.create_task(
                     self._job_entity_manager.submit_job(session_id, job_spec)
                 )
-                timeouted = asyncio.create_task(
-                    asyncio.wait_for(job_future, timeout=timeout)
-                )
 
-                _, job_id = await asyncio.gather(submitted, timeouted)
+                # Wait for job ID with timeout
+                try:
+                    job_id = await asyncio.wait_for(job_future, timeout=timeout)
+                except asyncio.TimeoutError:
+                    logger.error(
+                        "Job creation timeout", session_id=session_id, timeout=timeout
+                    )  # type: ignore[call-arg]
+                    # Cancel submission task if still running
+                    submit_task.cancel()
+                    try:
+                        await submit_task
+                    except asyncio.CancelledError:
+                        pass
+                    # Re-raise the TimeoutError for caller to handle
+                    raise
+
+                # Ensure submission completed successfully
+                await submit_task
+
                 logger.info(
                     "Job created successfully", session_id=session_id, job_id=job_id
                 )  # type: ignore[call-arg]
-            except Exception:
-                print(f"timeout {datetime.now()}")
+                return job_id
+
+            except Exception as e:
+                # Don't log TimeoutError as it's expected behavior
+                if not isinstance(e, asyncio.TimeoutError):
+                    logger.error(
+                        "Job creation failed",
+                        session_id=session_id,
+                        error=str(e),
+                        exc_info=True,
+                    )  # type: ignore[call-arg]
                 raise
             finally:
                 # Clean up tracking
-                del self._creating_jobs[session_id]
-
-            if job_id is None:
-                raise RuntimeError("Job ID was not set during creation")
-            return job_id
+                self._creating_jobs.pop(session_id, None)
 
         # Local job handling.
         job = BatchJob.new_local(job_spec)
         job.status.state = initial_state
         await self.job_committed_handler(job)
-        assert job.job_id is not None
+
+        if job.job_id is None:
+            raise RuntimeError("Job ID was not set after job committed handler")
 
         return job.job_id
 

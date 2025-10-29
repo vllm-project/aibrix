@@ -18,6 +18,7 @@ package routingalgorithms
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -62,6 +63,7 @@ type pdRouter struct {
 	cache              cache.Cache
 	tokenizer          tokenizer.Tokenizer
 	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
+	httpClient         *http.Client
 }
 
 func NewPDRouter() (types.Router, error) {
@@ -78,43 +80,69 @@ func NewPDRouter() (types.Router, error) {
 		return nil, err
 	}
 
+	// Create a shared HTTP client with connection pooling
+	httpClient := &http.Client{
+		Timeout: time.Duration(prefillRequestTimeout) * time.Second,
+		Transport: &http.Transport{
+			// TODO: tune settings later
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
+
 	return pdRouter{
 		cache:              c,
 		tokenizer:          tokenizerObj,
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
+		httpClient:         httpClient,
 	}, nil
 }
 
 func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	prefillPods, decodePods, err := r.filterPrefillDecodePods(readyPodList.All())
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to filter prefill/decode pods for request %s: %w", ctx.RequestID, err)
 	}
 
-	prefillPod, err := r.doPrefillRequest(ctx, prefillPods, getLLMEngine(prefillPods[0], LLMEngineIdentifier, VLLMEngine))
+	// Validate engine consistency across all prefill pods
+	llmEngine, err := validateAndGetLLMEngine(prefillPods)
+	if err != nil {
+		return "", fmt.Errorf("engine validation failed for request %s: %w", ctx.RequestID, err)
+	}
+
+	prefillPod, err := r.doPrefillRequest(ctx, prefillPods, llmEngine)
 	if err != nil {
 		klog.ErrorS(err, "prefill request failed", "request_id", ctx.RequestID)
-		return "", err
+		return "", fmt.Errorf("prefill request failed for request %s: %w", ctx.RequestID, err)
 	}
 
 	decodePod := r.selectDecodePod(prefillPod, decodePods)
 	if decodePod == nil {
-		return "", fmt.Errorf("decode pod not found")
+		return "", fmt.Errorf("decode pod not found for prefill pod %s, request %s", prefillPod.Name, ctx.RequestID)
 	}
 
-	klog.InfoS("P/D", "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)
+	klog.InfoS("P/D routing complete", "request_id", ctx.RequestID, "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)
 
 	ctx.SetTargetPod(decodePod)
 	return ctx.TargetAddress(), nil
 }
 
+// filterPrefillDecodePods filters pods into prefill and decode categories.
+// For multi-node tensor parallelism (e.g., TP=16 with node_rank=0 and node_rank=1),
+// only pods with PodGroupIndex="0" (node_rank=0) are selected as they run the HTTP server.
+// Pods without PodGroupIndex label are also included for backward compatibility.
 func (r *pdRouter) filterPrefillDecodePods(readyPods []*v1.Pod) ([]*v1.Pod, []*v1.Pod, error) {
 	prefillPods, decodePods := []*v1.Pod{}, []*v1.Pod{}
 	for _, pod := range readyPods {
+		// Skip pods without role identifier
 		if _, ok := pod.Labels[PDRoleIdentifier]; !ok {
 			continue
 		}
-		if podGroupIndex, ok := pod.Labels[PodGroupIndex]; ok && podGroupIndex != "0" {
+
+		// For multi-node scenarios, only select pods from node_rank=0 (PodGroupIndex=0)
+		// which have the HTTP server running
+		if !isPodWithHTTPServer(pod) {
 			continue
 		}
 
@@ -127,7 +155,7 @@ func (r *pdRouter) filterPrefillDecodePods(readyPods []*v1.Pod) ([]*v1.Pod, []*v
 	}
 
 	if len(prefillPods) == 0 || len(decodePods) == 0 {
-		return nil, nil, fmt.Errorf("prefill or decodes pods are not ready")
+		return nil, nil, fmt.Errorf("prefill or decode pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
 	}
 	return prefillPods, decodePods, nil
 }
@@ -135,7 +163,7 @@ func (r *pdRouter) filterPrefillDecodePods(readyPods []*v1.Pod) ([]*v1.Pod, []*v
 func (r *pdRouter) evaluatePrefixCache(ctx *types.RoutingContext, prefillPods []*v1.Pod) (*v1.Pod, []uint64, error) {
 	tokens, err := r.tokenizer.TokenizeInputText(ctx.Message)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to tokenize input for request %s: %w", ctx.RequestID, err)
 	}
 
 	readyPodsMap := map[string]struct{}{}
@@ -145,7 +173,7 @@ func (r *pdRouter) evaluatePrefixCache(ctx *types.RoutingContext, prefillPods []
 	matchedPods, prefixHashes := r.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
 
 	var prefillPod *v1.Pod
-	// check for load imbalance first
+	// Check for load imbalance first
 	targetPod, isImbalanced := getTargetPodOnLoadImbalance(r.cache, prefillPods)
 	if isImbalanced {
 		klog.InfoS("load imbalance detected, selecting least-loaded prefill pod",
@@ -154,16 +182,18 @@ func (r *pdRouter) evaluatePrefixCache(ctx *types.RoutingContext, prefillPods []
 	} else if len(matchedPods) > 0 {
 		prefillPod = getTargetPodFromMatchedPods(r.cache, prefillPods, matchedPods)
 	}
+
 	if prefillPod == nil {
 		prefillPod, err = utils.SelectRandomPod(prefillPods, rand.Intn)
-		if err == nil {
-			klog.V(4).InfoS("fallback to random prefill pod selection",
-				"request_id", ctx.RequestID,
-				"selected_pod", prefillPod.Name)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to select prefill pod for request %s: %w", ctx.RequestID, err)
 		}
+		klog.InfoS("fallback to random prefill pod selection",
+			"request_id", ctx.RequestID,
+			"selected_pod", prefillPod.Name)
 	}
 
-	return prefillPod, prefixHashes, err
+	return prefillPod, prefixHashes, nil
 }
 
 func (r *pdRouter) selectDecodePod(prefillPod *v1.Pod, decodePods []*v1.Pod) *v1.Pod {
@@ -196,6 +226,9 @@ func (r *pdRouter) selectDecodePod(prefillPod *v1.Pod, decodePods []*v1.Pod) *v1
 	return decodePod
 }
 
+// doPrefillRequest executes the prefill phase of the request.
+// For vLLM: waits for prefill completion and extracts KV transfer params for decode phase
+// For SGLang: launches async prefill request (bootstrap mechanism handles KV transfer internally)
 func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, llmEngine string) (*v1.Pod, error) {
 	prefillPod, prefixHashes, err := r.evaluatePrefixCache(routingCtx, prefillPods)
 	if err != nil {
@@ -210,7 +243,7 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 	// Prepare prefill request payload
 	payload, err := r.preparePrefillPayload(routingCtx, prefillPod, llmEngine)
 	if err != nil {
-		return nil, fmt.Errorf("failed to prepare prefill payload: %w", err)
+		return nil, fmt.Errorf("failed to prepare prefill payload for request %s: %w", routingCtx.RequestID, err)
 	}
 
 	// Execute HTTP request
@@ -222,33 +255,53 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 	klog.InfoS("start_prefill_request",
 		"request_id", routingCtx.RequestID,
 		"llm_engine", llmEngine,
+		"prefill_pod", prefillPod.Name,
 		"prefill_url", apiURL)
 
 	if llmEngine == SGLangEngine {
+		// For SGLang, use async prefill - the bootstrap mechanism (bootstrap_host/port/room)
+		// coordinates between prefill and decode pods, so we don't need to wait
 		go func() {
 			if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
-				klog.ErrorS(err, "prefill request for sglang failed", "request_id", routingCtx.RequestID)
+				klog.ErrorS(err, "async prefill request failed",
+					"request_id", routingCtx.RequestID,
+					"llm_engine", llmEngine,
+					"prefill_pod", prefillPod.Name,
+					"prefill_pod_ip", prefillPod.Status.PodIP)
 				return
 			}
-			klog.InfoS("prefill_request_complete", "request_id", routingCtx.RequestID)
+			klog.InfoS("prefill_request_complete",
+				"request_id", routingCtx.RequestID,
+				"llm_engine", llmEngine,
+				"prefill_pod", prefillPod.Name)
 		}()
 	} else if llmEngine == VLLMEngine {
+		// For vLLM, wait synchronously to get KV transfer params from response
 		responseData, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
 		if err != nil {
-			return nil, fmt.Errorf("failed to execute prefill request: %w", err)
+			return nil, fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
 		}
 
-		// Update routing context with KV transfer params from prefill response for vLLM
+		// Update routing context with KV transfer params from prefill response
 		if err := r.updateRoutingContextWithKVTransferParams(routingCtx, responseData, prefillPod); err != nil {
-			return nil, fmt.Errorf("failed to update routing context with KV transfer params: %w", err)
+			return nil, fmt.Errorf("failed to update routing context with KV transfer params for request %s: %w", routingCtx.RequestID, err)
 		}
 
-		klog.InfoS("prefill_request_complete", "request_id", routingCtx.RequestID, "prefill_pod_ip", prefillPod.Status.PodIP)
+		klog.InfoS("prefill_request_complete",
+			"request_id", routingCtx.RequestID,
+			"llm_engine", llmEngine,
+			"prefill_pod", prefillPod.Name,
+			"prefill_pod_ip", prefillPod.Status.PodIP)
 	} else {
+		// For unknown engines, use synchronous approach as a safe default
 		if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
-			return nil, fmt.Errorf("failed to execute prefill request: %w", err)
+			return nil, fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
 		}
-		klog.InfoS("prefill_request_complete", "request_id", routingCtx.RequestID, "prefill_pod_ip", prefillPod.Status.PodIP)
+		klog.InfoS("prefill_request_complete",
+			"request_id", routingCtx.RequestID,
+			"llm_engine", llmEngine,
+			"prefill_pod", prefillPod.Name,
+			"prefill_pod_ip", prefillPod.Status.PodIP)
 	}
 
 	return prefillPod, nil
@@ -298,8 +351,11 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 }
 
 func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingContext, payload []byte) (map[string]any, error) {
-	// Create request with context
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payload))
+	// Create request with context for cancellation support
+	ctx, cancel := context.WithTimeout(routingCtx.Context, time.Duration(prefillRequestTimeout)*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create http prefill request: %w", err)
 	}
@@ -311,10 +367,8 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("X-Request-Id", routingCtx.RequestID)
 
-	client := &http.Client{
-		Timeout: time.Duration(prefillRequestTimeout) * time.Second,
-	}
-	resp, err := client.Do(req)
+	// Use shared HTTP client with connection pooling
+	resp, err := r.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute http prefill request: %w", err)
 	}
@@ -359,10 +413,12 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 	// Update request body with KV transfer params from prefill response
 	originalRequest["kv_transfer_params"] = kvTransferParams
 
-	// Add prefill host information following the Python pattern
-	if kvTransferParamsMap, ok := kvTransferParams.(map[string]any); ok {
-		kvTransferParamsMap["remote_host"] = prefillPod.Status.PodIP
+	// Add prefill host information
+	kvTransferParamsMap, ok := kvTransferParams.(map[string]any)
+	if !ok {
+		return fmt.Errorf("kv_transfer_params has unexpected type %T, expected map[string]any", kvTransferParams)
 	}
+	kvTransferParamsMap["remote_host"] = prefillPod.Status.PodIP
 
 	// Marshal the updated request body
 	updatedReqBody, err := json.Marshal(originalRequest)
@@ -373,7 +429,10 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 	// Update routing context with new request body
 	routingCtx.ReqBody = updatedReqBody
 
-	klog.InfoS("updated routing context with kv_transfer_params", "request_id", routingCtx.RequestID, "prefill_host", prefillPod.Status.PodIP)
+	klog.InfoS("updated routing context with kv_transfer_params",
+		"request_id", routingCtx.RequestID,
+		"prefill_pod", prefillPod.Name,
+		"prefill_host", prefillPod.Status.PodIP)
 	return nil
 }
 
@@ -396,4 +455,38 @@ func getSGLangBootstrapPort(pod *v1.Pod) int64 {
 		}
 	}
 	return SGLangBootstrapPort // Default port
+}
+
+// validateAndGetLLMEngine validates that all prefill pods use the same engine and returns it.
+func validateAndGetLLMEngine(prefillPods []*v1.Pod) (string, error) {
+	if len(prefillPods) == 0 {
+		return "", fmt.Errorf("no prefill pods provided")
+	}
+
+	firstEngine := getLLMEngine(prefillPods[0], LLMEngineIdentifier, VLLMEngine)
+
+	// Validate all pods use the same engine
+	for i := 1; i < len(prefillPods); i++ {
+		engine := getLLMEngine(prefillPods[i], LLMEngineIdentifier, VLLMEngine)
+		if engine != firstEngine {
+			return "", fmt.Errorf("inconsistent LLM engines detected: pod %s has %s, pod %s has %s",
+				prefillPods[0].Name, firstEngine, prefillPods[i].Name, engine)
+		}
+	}
+
+	return firstEngine, nil
+}
+
+// isPodWithHTTPServer checks if a pod should be selected for routing.
+// In multi-node tensor parallelism setups (e.g., TP=16 with node_rank=0 and node_rank=1),
+// only pods with stormservice.orchestration.aibrix.ai/pod-group-index="0" (corresponding to node_rank=0) run the HTTP server.
+// Pods without the label are also selected for backward compatibility.
+func isPodWithHTTPServer(pod *v1.Pod) bool {
+	podGroupIndex, exists := pod.Labels[PodGroupIndex]
+	if !exists {
+		// No PodGroupIndex label means single-node or old setup - include it
+		return true
+	}
+	// Only include pods from node_rank=0 which have the HTTP server
+	return podGroupIndex == "0"
 }

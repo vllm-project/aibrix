@@ -130,7 +130,12 @@ class JobDriver:
             job = await self._sync_job_status(job_id)
 
         if job.status.failed:
-            raise RuntimeError(job.status.get_condition(ConditionType.FAILED).message)
+            failed_condition = job.status.get_condition(ConditionType.FAILED)
+            if failed_condition is None:
+                raise RuntimeError("Job failed but no failure condition was set")
+            raise RuntimeError(
+                failed_condition.message or "Job failed with an unspecified error"
+            )
 
     async def prepare_job(self, job: BatchJob) -> BatchJob:
         """
@@ -235,6 +240,14 @@ class JobDriver:
                     request_id=line_no,
                     custom_id=custom_id,
                 )  # type: ignore[call-arg]
+
+                # Validate request has required fields
+                if "body" not in request_input:
+                    raise BatchJobError(
+                        code=BatchJobErrorCode.INVALID_INPUT_FILE,
+                        message="Request missing 'body' field",
+                        line=line_no,
+                    )
 
                 # Retry inference request up to 3 times with exponential backoff
                 request_output, last_error = await self._retry_inference_request(

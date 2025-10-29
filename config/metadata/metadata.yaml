@@ -85,6 +85,12 @@ spec:
       containers:
         - name: metadata-service
           image: metadata-service:latest
+          command:
+            - aibrix_metadata
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8090"
           imagePullPolicy: IfNotPresent
           # Enable S3 or TOS to enable-k8s-job, default disabled.
           ports:

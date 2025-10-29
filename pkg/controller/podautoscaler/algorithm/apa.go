@@ -18,6 +18,7 @@ package algorithm
 
 import (
 	"context"
+	"errors"
 	"math"
 
 	scalingctx "github.com/vllm-project/aibrix/pkg/controller/podautoscaler/context"
@@ -38,7 +39,8 @@ func (a *APAAlgorithm) ComputeRecommendation(ctx context.Context, request Scalin
 	request.ScalingContext.SetCurrentUsePerPod(metrics.StableValue)
 
 	// Compute target replicas using APA algorithm
-	desiredReplicas := a.computeTargetReplicas(float64(request.CurrentReplicas), request.ScalingContext)
+	desiredReplicas := a.computeTargetReplicas(float64(request.CurrentReplicas), request.ScalingContext,
+		request.AggregatedMetrics.MetricKey.MetricName)
 
 	// Apply constraints from ScalingContext
 	desiredReplicas = applyConstraints(desiredReplicas, request.ScalingContext)
@@ -65,8 +67,13 @@ func (a *APAAlgorithm) GetAlgorithmType() string {
 // Huo, Qizheng, et al. "High Concurrency Response Strategy based on Kubernetes Horizontal Pod Autoscaler."
 // Journal of Physics: Conference Series. Vol. 2451. No. 1. IOP Publishing, 2023.
 // Tolerance is applied here to prevent scaling for minor metric fluctuations.
-func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context scalingctx.ScalingContext) int32 {
-	expectedUse := context.GetTargetValue()
+func (a *APAAlgorithm) computeTargetReplicas(currentPodCount float64, context scalingctx.ScalingContext,
+	metricsName string) int32 {
+	expectedUse, ok := context.GetTargetValueForMetric(metricsName)
+	if !ok {
+		klog.ErrorS(errors.New("get no TargetValueForMetric"), "APA Details", "metricsName", metricsName)
+		return int32(currentPodCount)
+	}
 	upTolerance := context.GetUpFluctuationTolerance()
 	downTolerance := context.GetDownFluctuationTolerance()
 	currentUsePerPod := context.GetCurrentUsePerPod()

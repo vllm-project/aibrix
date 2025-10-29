@@ -193,6 +193,18 @@ licensecheck:
 .PHONY: lint-all
 lint-all: licensecheck lint
 
+##@ Python
+
+.PHONY: python-ci
+python-ci:
+	@echo "Running Python CI checks..."
+	@(cd python/aibrix && \
+	  python -m ruff check . && \
+	  python -m ruff format --check . && \
+	  python -m mypy . && \
+	  python -m pytest -q tests)
+	@echo "✓ All Python CI checks passed!"
+
 ##@ Build
 
 .PHONY: build
@@ -250,11 +262,11 @@ docker-build-gateway-plugins: ## Build docker image with the gateway plugins.
 
 .PHONY: docker-build-runtime
 docker-build-runtime: ## Build docker image with the AI Runtime.
-	$(call build_and_tag,runtime,Dockerfile.runtime)
+	$(call build_and_tag,runtime,Dockerfile.python)
 
 .PHONY: docker-build-metadata-service
-docker-build-metadata-service: ## Build docker image with the metadata-service (Python).
-	$(call build_and_tag,metadata-service,Dockerfile.metadata)
+docker-build-metadata-service: ## Build docker image with the metadata-service (same as runtime but different tag).
+	$(call build_and_tag,metadata-service,Dockerfile.python)
 
 .PHONY: docker-build-kvcache-watcher
 docker-build-kvcache-watcher: ## Build docker image with the kvcache-watcher.
