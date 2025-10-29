@@ -87,6 +87,25 @@ Use the ``subTargetSelector`` field to target a specific role within a StormServ
 - **Different workload patterns**: Prefill and decode have different resource needs and traffic patterns
 - **Independent metrics**: Each role has its own metrics (e.g., queue length, batch utilization)
 
+Multi-Metric Based Autoscaling
+------------------------------------
+
+AIBrix supports multi-metric autoscaling, allowing users to define multiple scaling metrics within a single PodAutoscaler resource.
+This is especially useful for LLM-serving workloads where a single metric (e.g., GPU cache usage) may not fully capture system pressure—combining it with queue-based metrics (e.g., number of waiting requests) enables more robust and responsive scaling decisions.
+
+How It Works
+^^^^^^^^^^^^
+
+- When multiple metrics are specified under ``spec.metricsSources``, the autoscaler evaluates all metrics independently.
+- The final desired replica count is determined by the metric that demands the highest number of replicas (i.e., the "max" strategy).
+
+Configuration Example
+^^^^^^^^^^^^^^^^^^^^^
+
+The following PodAutoscaler uses two metrics simultaneously with APA strategy:
+
+.. literalinclude:: ../../../../samples/autoscaling/multimetrics-apa.yaml
+   :language: yaml
 
 Check autoscaling logs
 ----------------------
