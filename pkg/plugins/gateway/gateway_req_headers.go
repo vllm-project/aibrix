@@ -25,9 +25,17 @@ import (
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+)
+
+// the key in request headers
+const (
+	userKey          = "user"
+	pathKey          = ":path"
+	authorizationKey = "authorization"
 )
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext) {
@@ -41,13 +49,12 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	h := req.Request.(*extProcPb.ProcessingRequest_RequestHeaders)
 	reqHeaders := map[string]string{}
 	for _, n := range h.RequestHeaders.Headers.Headers {
-		if strings.ToLower(n.Key) == "user" {
+		switch strings.ToLower(n.Key) {
+		case userKey:
 			username = string(n.RawValue)
-		}
-		if strings.ToLower(n.Key) == ":path" {
+		case pathKey:
 			requestPath = string(n.RawValue)
-		}
-		if strings.ToLower(n.Key) == "authorization" {
+		case authorizationKey:
 			reqHeaders[n.Key] = string(n.RawValue)
 		}
 	}
