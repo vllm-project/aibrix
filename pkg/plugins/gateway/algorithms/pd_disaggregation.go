@@ -138,7 +138,7 @@ func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (
 		return "", fmt.Errorf("failed to filter prefill/decode pods for request %s: %w", ctx.RequestID, err)
 	}
 
-	klog.InfoS("P/D", "request_id", ctx.RequestID, "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)
+	klog.InfoS("selected prefill/decode pods", "request_id", ctx.RequestID, "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)
 	err = r.doPrefillRequest(ctx, prefillPod, llmEngine)
 	if err != nil {
 		klog.ErrorS(err, "prefill request failed", "request_id", ctx.RequestID)
@@ -202,7 +202,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		}
 	}
 
-	klog.InfoS("selected pods", "prefill_pods", len(prefillPods), "decode_pods", len(decodePods))
+	klog.InfoS("filtered prefill/decode pods", "request_id", routingCtx.RequestID, "prefill_pods", len(prefillPods), "decode_pods", len(decodePods))
 
 	prefillScores, maxPrefillScore, prefixHashes := r.scorePrefillPods(routingCtx, prefillPods)
 	decodeScores, maxDecodeScore := r.scoreDecodePods(routingCtx, decodePods, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage)
@@ -336,7 +336,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	}
 
 	if minRequestCount == 0 || maxRequestCount-minRequestCount >= aibrixDecodeMaxRequest {
-		klog.V(4).InfoS("REQUEST_SELECTED_DECODE_POD", "request_id", ctx.RequestID,
+		klog.InfoS("REQUEST_SELECTED_DECODE_POD", "request_id", ctx.RequestID,
 			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
 			"min_throughput", minThroughput, "max_throughput", maxThroughput,
 			"free_gpu_percent", podFreeGpuUsage[minRequestPod.Name],
@@ -345,7 +345,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	}
 
 	if maxThroughput-minThroughput > aibrixDecodeMaxThroughputDiff {
-		klog.V(4).InfoS("THROUGHPUT_SELECTED_DECODE_POD", "request_id", ctx.RequestID,
+		klog.InfoS("THROUGHPUT_SELECTED_DECODE_POD", "request_id", ctx.RequestID,
 			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
 			"min_throughput", minThroughput, "max_throughput", maxThroughput,
 			"free_gpu_percent", podFreeGpuUsage[minThroughputPod.Name],
@@ -407,8 +407,9 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 			maxPrefillScore = prefillScore
 		}
 
-		klog.InfoS("prefill score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
+		klog.InfoS("prefill_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
 			"prefill_score", prefillScore,
+			"score", fmt.Sprintf("(100 - %f) * 0.1 + %f / %f", float64(matchedPods[pod.Name]), reqCnt, maxRequestCount),
 			"prefix_match_percent", float64(matchedPods[pod.Name]),
 			"running_reqs", reqCnt, "max_running_reqs", maxRequestCount)
 	}
@@ -431,7 +432,7 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 		normalizedThroughput := 1 - podThroughputs[pod.Name]/maxThroughput
 		normalizedFreeGPUPercent := podFreeGpuUsage[pod.Name] / maxFreeGPUUsage
 
-		decodeScore := ((normalizedRunningReqs) + normalizedThroughput) / normalizedFreeGPUPercent
+		decodeScore := (normalizedRunningReqs + normalizedThroughput) / normalizedFreeGPUPercent
 		if existingScore, exists := decodeScores[rolesetName]; !exists || decodeScore < existingScore.Score {
 			decodeScores[rolesetName] = &Scores{
 				Pod:   pod,
@@ -442,10 +443,11 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 			maxDecodeScore = decodeScore
 		}
 
-		klog.InfoS("decode score", "request_id", routingCtx.RequestID, "pod_name", pod.Name, "decode_score", decodeScore,
-			"running_reqs", podRequestCounts[pod.Name], "normalized_running_reqs", normalizedRunningReqs,
-			"throughput", podThroughputs[pod.Name], "normalized_throughput", normalizedThroughput,
-			"free_gpu", podFreeGpuUsage[pod.Name], "normalized_free_gpu", normalizedFreeGPUPercent)
+		klog.InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name, "decode_score", decodeScore,
+			"score", fmt.Sprintf("(%f + %f) / %f", normalizedRunningReqs, normalizedThroughput, normalizedFreeGPUPercent),
+			"running_reqs", podRequestCounts[pod.Name], "max_running_reqs", maxRequestCount,
+			"throughput", podThroughputs[pod.Name], "max_throughput", maxThroughput,
+			"free_gpu", podFreeGpuUsage[pod.Name], "max_free_gpu_usage", maxFreeGPUUsage)
 	}
 
 	return decodeScores, maxDecodeScore
@@ -647,7 +649,7 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 	// Update routing context with new request body
 	routingCtx.ReqBody = updatedReqBody
 
-	klog.InfoS("updated routing context with kv_transfer_params",
+	klog.V(4).InfoS("updated routing context with kv_transfer_params",
 		"request_id", routingCtx.RequestID,
 		"prefill_pod", prefillPod.Name,
 		"prefill_host", prefillPod.Status.PodIP)

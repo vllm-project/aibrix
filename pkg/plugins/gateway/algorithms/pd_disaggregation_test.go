@@ -108,18 +108,188 @@ func TestFilterPrefillDecodePods(t *testing.T) {
 		pods          []*v1.Pod
 		expectPrefill string
 		expectDecode  string
+		expectError   bool
+		errorContains string
 	}{
 		{
-			name: "filter correct roles",
+			name: "basic successful filtering",
 			pods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-test", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
 				{ObjectMeta: metav1.ObjectMeta{Name: "decode-test", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
-				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "other"}}},
-				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "prefill", PodGroupIndex: "1"}}},
 			},
 			expectPrefill: "prefill-test",
 			expectDecode:  "decode-test",
+			expectError:   false,
+		},
+		{
+			name: "pods without roleset-name label are ignored",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "no-roleset", Labels: map[string]string{"role-name": "prefill"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-test", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-test", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
+			},
+			expectPrefill: "prefill-test",
+			expectDecode:  "decode-test",
+			expectError:   false,
+		},
+		{
+			name: "pods without role-name label are ignored",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "no-role", Labels: map[string]string{"roleset-name": "test"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-test", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-test", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
+			},
+			expectPrefill: "prefill-test",
+			expectDecode:  "decode-test",
+			expectError:   false,
+		},
+		{
+			name: "pods with empty labels are ignored",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "no-labels"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-test", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-test", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
+			},
+			expectPrefill: "prefill-test",
+			expectDecode:  "decode-test",
+			expectError:   false,
+		},
+		{
+			name: "pods with unknown roles are ignored",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "unknown-role", Labels: map[string]string{"roleset-name": "test", "role-name": "unknown"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-test", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-test", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
+			},
+			expectPrefill: "prefill-test",
+			expectDecode:  "decode-test",
+			expectError:   false,
+		},
+		{
+			name: "multi-node setup - only pods with PodGroupIndex=0 are selected",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-node0", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill", "stormservice.orchestration.aibrix.ai/pod-group-index": "0"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-node1", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill", "stormservice.orchestration.aibrix.ai/pod-group-index": "1"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-node0", Labels: map[string]string{"roleset-name": "test", "role-name": "decode", "stormservice.orchestration.aibrix.ai/pod-group-index": "0"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-node1", Labels: map[string]string{"roleset-name": "test", "role-name": "decode", "stormservice.orchestration.aibrix.ai/pod-group-index": "1"}}},
+			},
+			expectPrefill: "prefill-node0",
+			expectDecode:  "decode-node0",
+			expectError:   false,
+		},
+		{
+			name: "backward compatibility - pods without PodGroupIndex are included",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-legacy", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-legacy", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
+			},
+			expectPrefill: "prefill-legacy",
+			expectDecode:  "decode-legacy",
+			expectError:   false,
+		},
+		{
+			name: "mixed setup - legacy pods and multi-node pods",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-legacy", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-node0", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill", "stormservice.orchestration.aibrix.ai/pod-group-index": "0"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-legacy", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-node0", Labels: map[string]string{"roleset-name": "test", "role-name": "decode", "stormservice.orchestration.aibrix.ai/pod-group-index": "0"}}},
+			},
+			expectPrefill: "prefill-legacy", // First valid pod found
+			expectDecode:  "decode-legacy",  // First valid pod found
+			expectError:   false,
+		},
+		{
+			name: "error - no prefill pods",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-test", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
+			},
+			expectError:   true,
+			errorContains: "prefill or decode pods are not ready: prefill=0, decode=1",
+		},
+		{
+			name: "error - no decode pods",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-test", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
+			},
+			expectError:   true,
+			errorContains: "prefill or decode pods are not ready: prefill=1, decode=0",
+		},
+		{
+			name: "error - no valid pods at all",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "invalid1", Labels: map[string]string{"role-name": "other"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "invalid2", Labels: map[string]string{"roleset-name": "test"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "invalid3"}},
+			},
+			expectError:   true,
+			errorContains: "prefill or decode pods are not ready: prefill=0, decode=0",
+		},
+		{
+			name: "error - only multi-node pods with PodGroupIndex=1 (no HTTP server)",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-node1", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill", "stormservice.orchestration.aibrix.ai/pod-group-index": "1"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-node1", Labels: map[string]string{"roleset-name": "test", "role-name": "decode", "stormservice.orchestration.aibrix.ai/pod-group-index": "1"}}},
+			},
+			expectError:   true,
+			errorContains: "prefill or decode pods are not ready: prefill=0, decode=0",
+		},
+		{
+			name: "multiple pods of same role - first valid one is selected",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-1", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-2", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-1", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-2", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
+			},
+			expectPrefill: "prefill-1",
+			expectDecode:  "decode-1",
+			expectError:   false,
+		},
+		{
+			name: "edge case - PodGroupIndex with invalid values",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-invalid", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill", "stormservice.orchestration.aibrix.ai/pod-group-index": "invalid"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-valid", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill", "stormservice.orchestration.aibrix.ai/pod-group-index": "0"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-valid", Labels: map[string]string{"roleset-name": "test", "role-name": "decode", "stormservice.orchestration.aibrix.ai/pod-group-index": "0"}}},
+			},
+			expectPrefill: "prefill-valid",
+			expectDecode:  "decode-valid",
+			expectError:   false,
+		},
+		{
+			name: "edge case - empty PodGroupIndex value",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-empty", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill", "stormservice.orchestration.aibrix.ai/pod-group-index": ""}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-valid", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill", "stormservice.orchestration.aibrix.ai/pod-group-index": "0"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-valid", Labels: map[string]string{"roleset-name": "test", "role-name": "decode", "stormservice.orchestration.aibrix.ai/pod-group-index": "0"}}},
+			},
+			expectPrefill: "prefill-valid",
+			expectDecode:  "decode-valid",
+			expectError:   false,
+		},
+		{
+			name: "edge case - negative PodGroupIndex",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-negative", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill", "stormservice.orchestration.aibrix.ai/pod-group-index": "-1"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-valid", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill", "stormservice.orchestration.aibrix.ai/pod-group-index": "0"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-valid", Labels: map[string]string{"roleset-name": "test", "role-name": "decode", "stormservice.orchestration.aibrix.ai/pod-group-index": "0"}}},
+			},
+			expectPrefill: "prefill-valid",
+			expectDecode:  "decode-valid",
+			expectError:   false,
+		},
+		{
+			name:          "empty pod list",
+			pods:          []*v1.Pod{},
+			expectError:   true,
+			errorContains: "prefill or decode pods are not ready: prefill=0, decode=0",
+		},
+		{
+			name:          "nil pod list",
+			pods:          nil,
+			expectError:   true,
+			errorContains: "prefill or decode pods are not ready: prefill=0, decode=0",
 		},
 	}
 
@@ -129,13 +299,133 @@ func TestFilterPrefillDecodePods(t *testing.T) {
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := types.NewRoutingContext(context.Background(), "test", "model", "message", "test-request", "user")
 			prefill, decode, err := r.filterPrefillDecodePods(ctx, tt.pods)
-			assert.NoError(t, err)
-			assert.Equal(t, tt.expectPrefill, prefill.Name)
-			assert.Equal(t, tt.expectDecode, decode.Name)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+				assert.Nil(t, prefill)
+				assert.Nil(t, decode)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, prefill)
+				assert.NotNil(t, decode)
+				assert.Equal(t, tt.expectPrefill, prefill.Name)
+				assert.Equal(t, tt.expectDecode, decode.Name)
+			}
+		})
+	}
+}
+
+func TestScorePrefillPods(t *testing.T) {
+	tests := []struct {
+		name         string
+		pods         []*v1.Pod
+		message      string
+		expectScores int // number of scores expected
+	}{
+		{
+			name: "basic scoring with pods",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Labels: map[string]string{PDRoleSetIdentifier: "roleset1"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Labels: map[string]string{PDRoleSetIdentifier: "roleset2"}}},
+			},
+			message:      "test message",
+			expectScores: 2,
+		},
+		{
+			name: "multiple pods same roleset",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Labels: map[string]string{PDRoleSetIdentifier: "roleset1"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Labels: map[string]string{PDRoleSetIdentifier: "roleset1"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod3", Labels: map[string]string{PDRoleSetIdentifier: "roleset2"}}},
+			},
+			message:      "test message",
+			expectScores: 2, // Should have 2 rolesets
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create router with real dependencies
+			r := &pdRouter{
+				tokenizer:             tokenizer.NewCharacterTokenizer(),
+				prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+				prefillRequestTracker: NewPrefillRequestTracker(),
+			}
+
+			// Create routing context
+			ctx := &types.RoutingContext{
+				Message: tt.message,
+			}
+
+			// Call the function
+			scores, maxScore, prefixHashes := r.scorePrefillPods(ctx, tt.pods)
+
+			// Verify basic functionality
+			assert.Equal(t, tt.expectScores, len(scores), "number of scores should match")
+			assert.GreaterOrEqual(t, maxScore, 0.0, "max score should be non-negative")
+			assert.NotNil(t, prefixHashes, "prefix hashes should not be nil")
+		})
+	}
+}
+
+func TestScoreDecodePods(t *testing.T) {
+	tests := []struct {
+		name         string
+		pods         []*v1.Pod
+		expectScores int // number of scores expected
+	}{
+		{
+			name: "basic decode scoring",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Labels: map[string]string{PDRoleSetIdentifier: "roleset1"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Labels: map[string]string{PDRoleSetIdentifier: "roleset2"}}},
+			},
+			expectScores: 2,
+		},
+		{
+			name: "multiple pods same roleset",
+			pods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod1", Labels: map[string]string{PDRoleSetIdentifier: "roleset1"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod2", Labels: map[string]string{PDRoleSetIdentifier: "roleset1"}}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "pod3", Labels: map[string]string{PDRoleSetIdentifier: "roleset2"}}},
+			},
+			expectScores: 2, // Should have 2 rolesets
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create router with real dependencies
+			r := &pdRouter{}
+
+			// Create routing context
+			ctx := &types.RoutingContext{
+				RequestID: "test-request",
+			}
+
+			// Call the function with minimal parameters
+			scores, maxScore := r.scoreDecodePods(
+				ctx,
+				tt.pods,
+				10.0,                 // maxRequestCount
+				100.0,                // maxThroughput
+				80.0,                 // maxFreeGPUUsage
+				map[string]float64{}, // podRequestCounts
+				map[string]float64{}, // podThroughputs
+				map[string]float64{}, // podFreeGpuUsage
+			)
+
+			// Verify basic functionality
+			assert.Equal(t, tt.expectScores, len(scores), "number of scores should match")
+			assert.GreaterOrEqual(t, maxScore, 0.0, "max score should be non-negative")
 		})
 	}
 }
