@@ -30,6 +30,13 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
+// the key in request headers
+const (
+	userKey          = "user"
+	pathKey          = ":path"
+	authorizationKey = "authorization"
+)
+
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext) {
 	var username, requestPath string
 	var user utils.User
@@ -41,13 +48,13 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	h := req.Request.(*extProcPb.ProcessingRequest_RequestHeaders)
 	reqHeaders := map[string]string{}
 	for _, n := range h.RequestHeaders.Headers.Headers {
-		if strings.ToLower(n.Key) == "user" {
+		if strings.ToLower(n.Key) == userKey {
 			username = string(n.RawValue)
 		}
-		if strings.ToLower(n.Key) == ":path" {
+		if strings.ToLower(n.Key) == pathKey {
 			requestPath = string(n.RawValue)
 		}
-		if strings.ToLower(n.Key) == "authorization" {
+		if strings.ToLower(n.Key) == authorizationKey {
 			reqHeaders[n.Key] = string(n.RawValue)
 		}
 	}
