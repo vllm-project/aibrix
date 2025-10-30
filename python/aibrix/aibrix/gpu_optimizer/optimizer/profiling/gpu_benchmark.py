@@ -267,9 +267,6 @@ async def send_request(
                 try:
                     if streaming:
                         async for chunk, _ in response.content.iter_chunks():
-                            # Stream on: Each chunk in the response is the full response so far
-                            chunks = [chunk]
-
                             now_time = time.perf_counter()
                             if first:
                                 time_to_first = now_time - previous_token_time
@@ -278,13 +275,33 @@ async def send_request(
                                 token_latencies.append(now_time - previous_token_time)
                             previous_token_time = now_time
 
-                            # Stream off: Chunks are full response.
-                            # chunks.append(chunk)
+                            chunks.append(chunk)
 
-                        output = b"".join(chunks).decode("utf-8")
-                        santicized = output.rstrip(
-                            "\n\t "
-                        )  # Remove trailing whitespace characters including EOF, and "[DONE]"
+                        # Collect all JSON responses for santicization
+                        json_responses = []
+                        for chunk in chunks:
+                            line = chunk.decode("utf-8").strip()
+                            if line == "data: [DONE]":
+                                # End of stream received
+                                break
+
+                            json_data = line.removeprefix("data: ")
+                            try:
+                                json_responses.append(load_response(json_data))
+                            except json.JSONDecodeError as e:
+                                print_err(
+                                    f"Failed to parse JSON data in stream for request {idx}: {json_data}: {e}"
+                                )
+
+                        if json_responses:
+                            # Use the last JSON response as the final output for santicization
+                            santicized = json.dumps(json_responses[-1])
+                        else:
+                            # Fallback to raw output if no valid JSON found
+                            # Remove trailing whitespace characters including EOF, and "[DONE]"
+                            santicized = (
+                                b"".join(chunks).decode("utf-8").rstrip("\n\t ")
+                            )
                     else:
                         time_to_first = time.perf_counter() - previous_token_time
                         output = await response.text()
