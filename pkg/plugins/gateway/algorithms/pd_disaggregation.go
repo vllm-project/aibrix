@@ -336,7 +336,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	}
 
 	if minRequestCount == 0 || maxRequestCount-minRequestCount >= aibrixDecodeMaxRequest {
-		klog.InfoS("REQUEST_SELECTED_DECODE_POD", "request_id", ctx.RequestID,
+		klog.InfoS("request imbalance at decode pods", "request_id", ctx.RequestID,
 			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
 			"min_throughput", minThroughput, "max_throughput", maxThroughput,
 			"free_gpu_percent", podFreeGpuUsage[minRequestPod.Name],
@@ -345,7 +345,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 	}
 
 	if maxThroughput-minThroughput > aibrixDecodeMaxThroughputDiff {
-		klog.InfoS("THROUGHPUT_SELECTED_DECODE_POD", "request_id", ctx.RequestID,
+		klog.InfoS("throughput imbalance at decode pods", "request_id", ctx.RequestID,
 			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
 			"min_throughput", minThroughput, "max_throughput", maxThroughput,
 			"free_gpu_percent", podFreeGpuUsage[minThroughputPod.Name],
@@ -494,6 +494,8 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 				"prefill_pod", prefillPod.Name)
 		}()
 	case VLLMEngine:
+		defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+
 		// For vLLM, wait synchronously to get KV transfer params from response
 		responseData, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
 		if err != nil {
@@ -512,6 +514,8 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 			"prefill_pod_ip", prefillPod.Status.PodIP,
 			"elapsed", routingCtx.Elapsed(time.Now()))
 	default:
+		defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+
 		// For unknown engines, use synchronous approach as a safe default
 		if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
 			return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
@@ -649,7 +653,7 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 	// Update routing context with new request body
 	routingCtx.ReqBody = updatedReqBody
 
-	klog.V(4).InfoS("updated routing context with kv_transfer_params",
+	klog.InfoS("updated routing context with kv_transfer_params",
 		"request_id", routingCtx.RequestID,
 		"prefill_pod", prefillPod.Name,
 		"prefill_host", prefillPod.Status.PodIP)
