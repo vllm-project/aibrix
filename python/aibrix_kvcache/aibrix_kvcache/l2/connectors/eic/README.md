@@ -19,4 +19,4 @@ python3 -m vllm.entrypoints.openai.api_server \
   ... \
   --kv-transfer-config '{"kv_connector":"AIBrixOffloadingConnectorV1Type3", "kv_role":"kv_both"}'
 ```
-For more details, you can see https://www.volcengine.com/docs/85848/1749188 .
+For more details, you can see https://www.volcengine.com/docs/85848/1749188.

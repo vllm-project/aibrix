@@ -139,7 +139,9 @@ class EICConnector(Connector[bytes, torch.Tensor], AsyncBase):
             _make_dir(eic_log_dir)
             if ret != 0:
                 logger.error(f"fail to init eic client, ret: {ret}")
-                exit(1)
+                return Status.error(
+                    StatusCodes.ERROR, f"fail to init eic client, ret: {ret}"
+                )
             else:
                 logger.info(f"init eic client success, ret: {ret}")
             self.trans_type = eic.TransportType(eic_trans_type)
@@ -169,17 +171,19 @@ class EICConnector(Connector[bytes, torch.Tensor], AsyncBase):
             total_size += length
             vals.append(addr, length, True)
 
-        succss = self.conn.register_memory(vals, meminfo)
-        if succss:
+        success = self.conn.register_memory(vals, meminfo)
+        if success:
             registration_time = datetime.now()
             logger.info(
                 f"registering slabs - total size: {total_size}, registration time: {registration_time}"
             )
             logger.info("register mixed memory pin buffer success")
+            return Status.ok()
         else:
             logger.error("fail to register mixed memory pin buffer")
-            exit(1)
-        return Status.ok()
+            return Status.error(
+                StatusCodes.ERROR, "fail to register mixed memory pin buffer"
+            )
 
     @Status.capture_exception
     def _exists(self, key: bytes) -> Status:
@@ -330,4 +334,4 @@ def _make_dir(path: str):
             os.makedirs(path)
         logger.info(f"create dir '{path}' success")
     except OSError as e:
-        logger.info(f"create dir '{path}' error {e}")
+        logger.error(f"create dir '{path}' error {e}")
