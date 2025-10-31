@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
@@ -47,6 +48,8 @@ var (
 		metrics.NumRequestsRunning,
 		metrics.NumRequestsWaiting,
 		metrics.NumRequestsSwapped,
+		metrics.PromptTokenTotal,
+		metrics.GenerationTokenTotal,
 		metrics.AvgPromptThroughputToksPerS,
 		metrics.AvgGenerationThroughputToksPerS,
 		metrics.GPUCacheUsagePerc,
@@ -86,6 +89,29 @@ var (
 		metrics.RunningLoraAdapters,
 	}
 	podMetricRefreshInterval = time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
+)
+
+// MetricSnapshot represents a metric value at a specific timestamp
+type MetricSnapshot struct {
+	Value     float64
+	Timestamp time.Time
+}
+
+// RateCalculator manages historical metric values for rate calculation
+type RateCalculator struct {
+	mu       sync.RWMutex
+	history  map[string][]MetricSnapshot // key: "podName/modelName/metricName"
+	maxAge   time.Duration               // Maximum age to keep snapshots
+	maxCount int                         // Maximum number of snapshots to keep
+}
+
+var (
+	// Global rate calculator instance
+	rateCalculator = &RateCalculator{
+		history:  make(map[string][]MetricSnapshot),
+		maxAge:   5 * time.Minute, // Keep 5 minutes of history
+		maxCount: 20,              // Keep max 20 snapshots per metric
+	}
 )
 
 func initPrometheusAPI() prometheusv1.API {
@@ -412,6 +438,22 @@ func (c *Store) updatePodMetricsFromTypedResult(pod *Pod, result *metrics.Engine
 	for modelMetricKey, metricValue := range result.ModelMetrics {
 		// modelMetricKey format: "model/metric"
 		modelName, metricName := parseModelMetricKey(modelMetricKey)
+
+		// Calculate per-second rate for token metrics, only for decode pods generation tokens
+		if strings.Contains(pod.Name, "decode") && metricName == metrics.GenerationTokenTotal {
+			if simpleValue, ok := metricValue.(*metrics.SimpleMetricValue); ok {
+				perSecRate := c.calculatePerSecondRate(pod, modelName, metricName, simpleValue.Value)
+				if perSecRate >= 0 { // Only store valid rates (negative means insufficient data)
+					rateMetricName := metrics.AvgGenerationThroughputToksPerS
+					rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
+					_ = c.updatePodRecord(pod, modelName, rateMetricName, metrics.PodModelMetricScope, rateValue)
+					klog.V(4).InfoS("Updating model metric", "pod", pod.Name, "model", modelName,
+						"generation_token_total", metricValue,
+						"avg_generation_throughput_toks_per_s", rateValue)
+				}
+			}
+		}
+
 		if metricDef, exists := metrics.Metrics[metricName]; exists {
 			err := c.updatePodRecord(pod, modelName, metricName, metricDef.MetricScope, metricValue)
 			if err != nil {
@@ -434,4 +476,73 @@ func parseModelMetricKey(key string) (modelName, metricName string) {
 		return "", key // Fallback if parsing fails
 	}
 	return modelName, metricName
+}
+
+// calculatePerSecondRate calculates the per-second rate for a given metric
+// Returns the rate in units per second, or -1 if insufficient data
+func (c *Store) calculatePerSecondRate(pod *Pod, modelName, metricName string, currentValue float64) float64 {
+	key := fmt.Sprintf("%s/%s/%s", pod.Name, modelName, metricName)
+	now := time.Now()
+
+	rateCalculator.mu.Lock()
+	defer rateCalculator.mu.Unlock()
+
+	// Get or create history for this metric
+	history := rateCalculator.history[key]
+
+	// Add current snapshot
+	snapshot := MetricSnapshot{
+		Value:     currentValue,
+		Timestamp: now,
+	}
+	history = append(history, snapshot)
+
+	// Clean up old snapshots
+	history = cleanupOldSnapshots(history, now, rateCalculator.maxAge, rateCalculator.maxCount)
+	rateCalculator.history[key] = history
+
+	// Calculate rate if we have enough data
+	if len(history) < 2 {
+		return -1 // Not enough data points
+	}
+
+	// Use the previous snapshot for per-second calculation
+	baseSnapshot := &history[len(history)-2]
+
+	// Calculate rate
+	timeDiff := now.Sub(baseSnapshot.Timestamp).Seconds()
+	if timeDiff <= 0 {
+		return -1
+	}
+
+	valueDiff := currentValue - baseSnapshot.Value
+	if valueDiff < 0 {
+		// Handle counter reset - assume it started from 0
+		valueDiff = currentValue
+	}
+
+	// Return per-second rate
+	ratePerSecond := valueDiff / timeDiff
+
+	return ratePerSecond
+}
+
+// cleanupOldSnapshots removes snapshots that are too old or exceed the maximum count
+func cleanupOldSnapshots(history []MetricSnapshot, now time.Time, maxAge time.Duration, maxCount int) []MetricSnapshot {
+	cutoffTime := now.Add(-maxAge)
+
+	// Remove snapshots older than maxAge
+	var filtered []MetricSnapshot
+	for _, snapshot := range history {
+		if snapshot.Timestamp.After(cutoffTime) {
+			filtered = append(filtered, snapshot)
+		}
+	}
+
+	// Keep only the most recent maxCount snapshots
+	if len(filtered) > maxCount {
+		filtered = filtered[len(filtered)-maxCount:]
+	}
+
+	return filtered
 }

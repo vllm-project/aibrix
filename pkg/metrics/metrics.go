@@ -20,6 +20,8 @@ const (
 	NumRequestsRunning                   = "num_requests_running"
 	NumRequestsWaiting                   = "num_requests_waiting"
 	NumRequestsSwapped                   = "num_requests_swapped"
+	PromptTokenTotal                     = "prompt_token_total"
+	GenerationTokenTotal                 = "generation_token_total"
 	AvgPromptThroughputToksPerS          = "avg_prompt_throughput_toks_per_s"
 	AvgGenerationThroughputToksPerS      = "avg_generation_throughput_toks_per_s"
 	IterationTokensTotal                 = "iteration_tokens_total"
@@ -94,6 +96,28 @@ var (
 			Description: "Number of swapped requests",
 		},
 		// Gauge metrics
+		PromptTokenTotal: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:prompt_tokens_total",
+			},
+			Description: "Total prompt tokens",
+		},
+		GenerationTokenTotal: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:generation_tokens_total",
+			},
+			Description: "Total generation tokens",
+		},
 		AvgPromptThroughputToksPerS: {
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,

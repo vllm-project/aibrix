@@ -88,7 +88,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			HeaderTargetPod, targetPodIP,
 			"content-length", strconv.Itoa(len(routingCtx.ReqBody)),
 			"X-Request-Id", routingCtx.RequestID)
-		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream, "routingAlgorithm", routingAlgorithm, "targetPodIP", targetPodIP, "routingDuration", routingCtx.GetRoutingDelay())
+		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream, "routingAlgorithm", routingAlgorithm,
+			"targetPodIP", targetPodIP, "routingDuration", routingCtx.GetRoutingDelay())
 	}
 
 	term = s.cache.AddRequestCount(routingCtx, requestID, model)

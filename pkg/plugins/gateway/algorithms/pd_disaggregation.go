@@ -22,13 +22,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"github.com/vllm-project/aibrix/pkg/utils/prefixcacheindexer"
@@ -49,10 +53,15 @@ const (
 	RoleReplicaIndex              string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	PodGroupIndex                 string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
 	defaultPrefillRequestTimeout  int                    = 30
+
+	defaultMaxRequest             float64 = 32
+	defaultMaxTokenThroughputDiff float64 = 2048
 )
 
 var (
-	prefillRequestTimeout int = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
+	prefillRequestTimeout         int     = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
+	aibrixDecodeMaxRequest        float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_REQUEST", defaultMaxRequest)
+	aibrixDecodeMaxThroughputDiff float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_THROUGHPUT", defaultMaxTokenThroughputDiff)
 )
 
 func init() {
@@ -60,10 +69,19 @@ func init() {
 }
 
 type pdRouter struct {
-	cache              cache.Cache
-	tokenizer          tokenizer.Tokenizer
-	prefixCacheIndexer *prefixcacheindexer.PrefixHashTable
-	httpClient         *http.Client
+	cache                 cache.Cache
+	tokenizer             tokenizer.Tokenizer
+	prefixCacheIndexer    *prefixcacheindexer.PrefixHashTable
+	prefillRequestTracker *PrefillRequestTracker
+	httpClient            *http.Client
+}
+
+// PrefillRequestTracker manages prefill-specific request counts
+type PrefillRequestTracker struct {
+	// Map of pod name -> active prefill request count
+	podRequestCounts sync.Map // map[string]*int32
+	// Map of request ID -> pod name for cleanup
+	requestToPod sync.Map // map[string]string
 }
 
 func NewPDRouter() (types.Router, error) {
@@ -92,50 +110,60 @@ func NewPDRouter() (types.Router, error) {
 	}
 
 	return pdRouter{
-		cache:              c,
-		tokenizer:          tokenizerObj,
-		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
-		httpClient:         httpClient,
+		cache:                 c,
+		tokenizer:             tokenizerObj,
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: NewPrefillRequestTracker(),
+		httpClient:            httpClient,
 	}, nil
 }
 
-func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
-	prefillPods, decodePods, err := r.filterPrefillDecodePods(readyPodList.All())
-	if err != nil {
-		return "", fmt.Errorf("failed to filter prefill/decode pods for request %s: %w", ctx.RequestID, err)
+// NewPrefillRequestTracker creates a new prefill request tracker
+func NewPrefillRequestTracker() *PrefillRequestTracker {
+	return &PrefillRequestTracker{
+		podRequestCounts: sync.Map{},
+		requestToPod:     sync.Map{},
 	}
+}
 
+func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	// Validate engine consistency across all prefill pods
-	llmEngine, err := validateAndGetLLMEngine(prefillPods)
+	llmEngine, err := validateAndGetLLMEngine(readyPodList.All())
 	if err != nil {
 		return "", fmt.Errorf("engine validation failed for request %s: %w", ctx.RequestID, err)
 	}
 
-	prefillPod, err := r.doPrefillRequest(ctx, prefillPods, llmEngine)
+	prefillPod, decodePod, err := r.filterPrefillDecodePods(ctx, readyPodList.All())
+	if err != nil {
+		return "", fmt.Errorf("failed to filter prefill/decode pods for request %s: %w", ctx.RequestID, err)
+	}
+
+	klog.InfoS("selected prefill/decode pods", "request_id", ctx.RequestID, "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)
+	err = r.doPrefillRequest(ctx, prefillPod, llmEngine)
 	if err != nil {
 		klog.ErrorS(err, "prefill request failed", "request_id", ctx.RequestID)
 		return "", fmt.Errorf("prefill request failed for request %s: %w", ctx.RequestID, err)
 	}
 
-	decodePod := r.selectDecodePod(prefillPod, decodePods)
-	if decodePod == nil {
-		return "", fmt.Errorf("decode pod not found for prefill pod %s, request %s", prefillPod.Name, ctx.RequestID)
-	}
-
-	klog.InfoS("P/D routing complete", "request_id", ctx.RequestID, "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)
-
 	ctx.SetTargetPod(decodePod)
 	return ctx.TargetAddress(), nil
+}
+
+type Scores struct {
+	Pod   *v1.Pod
+	Score float64
 }
 
 // filterPrefillDecodePods filters pods into prefill and decode categories.
 // For multi-node tensor parallelism (e.g., TP=16 with node_rank=0 and node_rank=1),
 // only pods with PodGroupIndex="0" (node_rank=0) are selected as they run the HTTP server.
 // Pods without PodGroupIndex label are also included for backward compatibility.
-func (r *pdRouter) filterPrefillDecodePods(readyPods []*v1.Pod) ([]*v1.Pod, []*v1.Pod, error) {
+func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
 	prefillPods, decodePods := []*v1.Pod{}, []*v1.Pod{}
 	for _, pod := range readyPods {
-		// Skip pods without role identifier
+		if _, ok := pod.Labels[PDRoleSetIdentifier]; !ok {
+			continue
+		}
 		if _, ok := pod.Labels[PDRoleIdentifier]; !ok {
 			continue
 		}
@@ -153,97 +181,283 @@ func (r *pdRouter) filterPrefillDecodePods(readyPods []*v1.Pod) ([]*v1.Pod, []*v
 			decodePods = append(decodePods, pod)
 		}
 	}
-
 	if len(prefillPods) == 0 || len(decodePods) == 0 {
 		return nil, nil, fmt.Errorf("prefill or decode pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
 	}
-	return prefillPods, decodePods, nil
-}
 
-func (r *pdRouter) evaluatePrefixCache(ctx *types.RoutingContext, prefillPods []*v1.Pod) (*v1.Pod, []uint64, error) {
-	tokens, err := r.tokenizer.TokenizeInputText(ctx.Message)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to tokenize input for request %s: %w", ctx.RequestID, err)
-	}
-
-	readyPodsMap := map[string]struct{}{}
-	for _, pod := range prefillPods {
-		readyPodsMap[pod.Name] = struct{}{}
-	}
-	matchedPods, prefixHashes := r.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPodsMap)
-
-	var prefillPod *v1.Pod
-	// Check for load imbalance first
-	targetPod, isImbalanced := getTargetPodOnLoadImbalance(r.cache, prefillPods)
+	// check for prefill and decode imbalance
+	targetPod, isImbalanced := r.loadImbalanceSelectPrefillPod(prefillPods, r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods))
 	if isImbalanced {
-		klog.InfoS("load imbalance detected, selecting least-loaded prefill pod",
-			"request_id", ctx.RequestID, "selected_pod", targetPod.Name)
-		prefillPod = targetPod
-	} else if len(matchedPods) > 0 {
-		prefillPod = getTargetPodFromMatchedPods(r.cache, prefillPods, matchedPods)
+		klog.InfoS("load imbalance detected, selecting least-loaded prefill pod", "request_id", routingCtx.RequestID, "selected_prefill_pod", targetPod.Name)
+		prefillPods = []*v1.Pod{targetPod}
+		decodePods = utils.FilterPodsByLabel(decodePods, PDRoleSetIdentifier, targetPod.Labels[PDRoleSetIdentifier])
 	}
 
-	if prefillPod == nil {
-		prefillPod, err = utils.SelectRandomPod(prefillPods, rand.Intn)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to select prefill pod for request %s: %w", ctx.RequestID, err)
-		}
-		klog.InfoS("fallback to random prefill pod selection",
-			"request_id", ctx.RequestID,
-			"selected_pod", prefillPod.Name)
-	}
-
-	return prefillPod, prefixHashes, nil
-}
-
-func (r *pdRouter) selectDecodePod(prefillPod *v1.Pod, decodePods []*v1.Pod) *v1.Pod {
-	prefillRoleSet, ok := prefillPod.Labels[PDRoleSetIdentifier]
-	if !ok {
-		return nil
-	}
-
-	filteredDecodePods := []*v1.Pod{}
-	for _, pod := range decodePods {
-		if podRoleSet, exists := pod.Labels[PDRoleSetIdentifier]; exists && podRoleSet == prefillRoleSet {
-			filteredDecodePods = append(filteredDecodePods, pod)
+	targetPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage := r.loadImbalanceSelectDecodePod(routingCtx, decodePods)
+	if targetPod != nil {
+		klog.InfoS("load imbalance detected in decode pods", "request_id", routingCtx.RequestID, "selected_decode_pod", targetPod.Name)
+		decodePods = []*v1.Pod{targetPod}
+		if len(prefillPods) > 1 {
+			prefillPods = utils.FilterPodsByLabel(prefillPods, PDRoleSetIdentifier, targetPod.Labels[PDRoleSetIdentifier])
 		}
 	}
-	if len(filteredDecodePods) == 0 {
-		return nil
+
+	klog.InfoS("filtered prefill/decode pods", "request_id", routingCtx.RequestID, "prefill_pods", len(prefillPods), "decode_pods", len(decodePods))
+
+	prefillScores, maxPrefillScore, prefixHashes := r.scorePrefillPods(routingCtx, prefillPods)
+	decodeScores, maxDecodeScore := r.scoreDecodePods(routingCtx, decodePods, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage)
+
+	var targetPrefillPod, targetDecodePod *v1.Pod
+	minScore := math.MaxFloat64
+	for roleset, prefillScore := range prefillScores {
+		decodeScore, ok := decodeScores[roleset]
+		if !ok {
+			continue
+		}
+
+		normalizedPrefillScore := prefillScore.Score / maxPrefillScore
+		normalizedDecodeScore := decodeScore.Score / maxDecodeScore
+
+		if normalizedPrefillScore+normalizedDecodeScore < minScore {
+			minScore = normalizedPrefillScore + normalizedDecodeScore
+			targetPrefillPod = prefillScore.Pod
+			targetDecodePod = decodeScore.Pod
+		}
+		klog.InfoS("final_score", "request_id", routingCtx.RequestID, "roleset", roleset,
+			"final_score", minScore,
+			"prefill_score", prefillScore.Score, "normalized_prefill_score", normalizedPrefillScore,
+			"decode_score", decodeScore.Score, "normalized_decode_score", normalizedDecodeScore)
 	}
 
-	// prefer decode pod with least running requests
-	decodePod := selectPodWithLeastRequestCount(r.cache, filteredDecodePods)
-	if decodePod != nil {
-		klog.V(5).InfoS("selected decode pod by least request count",
-			"prefill_pod", prefillPod.Name,
-			"decode_pod", decodePod.Name)
-		return decodePod
-	}
-
-	// fallback: random selection pods
-	decodePod, _ = utils.SelectRandomPod(filteredDecodePods, rand.Intn)
-	return decodePod
-}
-
-// doPrefillRequest executes the prefill phase of the request.
-// For vLLM: waits for prefill completion and extracts KV transfer params for decode phase
-// For SGLang: launches async prefill request (bootstrap mechanism handles KV transfer internally)
-func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPods []*v1.Pod, llmEngine string) (*v1.Pod, error) {
-	prefillPod, prefixHashes, err := r.evaluatePrefixCache(routingCtx, prefillPods)
-	if err != nil {
-		return nil, err
-	}
 	defer func() {
 		if len(prefixHashes) > 0 {
-			r.prefixCacheIndexer.AddPrefix(prefixHashes, routingCtx.Model, prefillPod.Name)
+			r.prefixCacheIndexer.AddPrefix(prefixHashes, routingCtx.Model, targetPrefillPod.Name)
 		}
 	}()
 
+	if targetPrefillPod == nil {
+		return nil, nil, fmt.Errorf("target prefill  pod is nil")
+	}
+	if targetDecodePod == nil {
+		return nil, nil, fmt.Errorf("target decode pod is nil")
+	}
+
+	return targetPrefillPod, targetDecodePod, nil
+}
+
+// loadImbalanceSelectPrefillPod evaluates if the load is imbalanced based on the abs difference between
+// pods with min and max outstanding request counts
+func (r *pdRouter) loadImbalanceSelectPrefillPod(readyPods []*v1.Pod, podRequestCount map[string]int32) (*v1.Pod, bool) {
+	var imbalance bool
+	var targetPod *v1.Pod
+	targetPods := []string{}
+	minValue := int32(math.MaxInt32)
+	maxValue := int32(math.MinInt32)
+
+	if len(podRequestCount) == 0 {
+		return targetPod, imbalance
+	}
+
+	for _, value := range podRequestCount {
+		if value < minValue {
+			minValue = value
+		}
+		if value > maxValue {
+			maxValue = value
+		}
+	}
+	for podname, value := range podRequestCount {
+		if minValue == value {
+			targetPods = append(targetPods, podname)
+		}
+	}
+
+	if maxValue-minValue > 32 && len(targetPods) > 0 {
+		targetPod, _ = utils.FilterPodByName(targetPods[rand.Intn(len(targetPods))], readyPods)
+		imbalance = true
+	}
+
+	return targetPod, imbalance
+}
+
+// loadImbalanceSelectDecodePod identifies imbalance decode pod using abs diff of max/min request counts and max/min throughputs.
+// It returns the selected pod, min/max request counts, min/max throughputs, and min/max free GPU usage
+func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filteredDecodePods []*v1.Pod) (*v1.Pod, float64, float64, float64, map[string]float64, map[string]float64, map[string]float64) {
+	podRequestCounts := make(map[string]float64)
+	podThroughputs := make(map[string]float64)
+	podFreeGpuUsage := make(map[string]float64)
+
+	minRequestPod := filteredDecodePods[0]
+	minRequestCount := math.MaxFloat64
+	maxRequestCount := float64(1)
+
+	minThroughputPod := filteredDecodePods[0]
+	minThroughput := float64(math.MaxFloat64)
+	maxThroughput := float64(1)
+
+	minFreeGPUUsage := float64(math.MaxFloat64)
+	maxFreeGPUUsage := float64(1)
+
+	for _, pod := range filteredDecodePods {
+		runningReqs, err := r.cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
+		if err != nil {
+			runningReqs = &metrics.SimpleMetricValue{Value: 0}
+		}
+		requestCount := runningReqs.GetSimpleValue()
+		podRequestCounts[pod.Name] = requestCount
+		if requestCount < minRequestCount {
+			minRequestCount = requestCount
+			minRequestPod = pod
+		}
+		maxRequestCount = math.Max(maxRequestCount, requestCount)
+
+		tokenThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
+		if err != nil {
+			tokenThroughput = &metrics.SimpleMetricValue{Value: 0}
+		}
+		throughput := tokenThroughput.GetSimpleValue()
+		podThroughputs[pod.Name] = throughput
+		if throughput < minThroughput {
+			minThroughput = throughput
+			minThroughputPod = pod
+		}
+		maxThroughput = math.Max(maxThroughput, throughput)
+
+		gpuUsage, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.GPUCacheUsagePerc)
+		if err != nil {
+			gpuUsage = &metrics.SimpleMetricValue{Value: 0}
+		}
+		podFreeGpuUsage[pod.Name] = math.Round(100 - gpuUsage.GetSimpleValue()*100)
+		if podFreeGpuUsage[pod.Name] <= 0 {
+			podFreeGpuUsage[pod.Name] = 0.1
+		}
+		minFreeGPUUsage = math.Min(minFreeGPUUsage, podFreeGpuUsage[pod.Name])
+		maxFreeGPUUsage = math.Max(maxFreeGPUUsage, podFreeGpuUsage[pod.Name])
+	}
+
+	if minRequestCount == 0 || maxRequestCount-minRequestCount >= aibrixDecodeMaxRequest {
+		klog.InfoS("request imbalance at decode pods", "request_id", ctx.RequestID,
+			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
+			"min_throughput", minThroughput, "max_throughput", maxThroughput,
+			"free_gpu_percent", podFreeGpuUsage[minRequestPod.Name],
+			"decode_pod", minRequestPod.Name)
+		return minRequestPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
+	}
+
+	if maxThroughput-minThroughput > aibrixDecodeMaxThroughputDiff {
+		klog.InfoS("throughput imbalance at decode pods", "request_id", ctx.RequestID,
+			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
+			"min_throughput", minThroughput, "max_throughput", maxThroughput,
+			"free_gpu_percent", podFreeGpuUsage[minThroughputPod.Name],
+			"decode_pod", minThroughputPod.Name)
+		return minThroughputPod, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
+	}
+
+	return nil, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage
+}
+
+// scorePrefillPods scores prefill pods using formula (100 - match_percent) * 0.1 + (req_cnt / max_request_count)
+// selects pod with lowest score indicating highest percent match and least request count.
+func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPods []*v1.Pod) (map[string]*Scores, float64, []uint64) {
+	prefillScores := map[string]*Scores{}
+	tokens, err := r.tokenizer.TokenizeInputText(routingCtx.Message)
+	if err != nil {
+		return nil, 0, nil
+	}
+
+	var maxRequestCount float64 = 1
+	requestCount := []float64{}
+	readyPodsMap := map[string]struct{}{}
+	podRequestCount := r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods)
+
+	// klog.InfoS("prefill_pod_request_count", "request_id", routingCtx.RequestID, "pod_request_count", podRequestCount)
+	for _, cnt := range podRequestCount {
+		countFloat := float64(cnt)
+		requestCount = append(requestCount, countFloat)
+		if countFloat > maxRequestCount {
+			maxRequestCount = countFloat
+		}
+	}
+	meanRequestCount := mean(requestCount)
+	stdDevRequestCount := standardDeviation(requestCount)
+	for _, pod := range prefillPods {
+		readyPodsMap[pod.Name] = struct{}{}
+	}
+
+	matchedPods, prefixHashes := r.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPodsMap)
+
+	maxPrefillScore := float64(1)
+	for _, pod := range prefillPods {
+		rolesetName := pod.Labels[PDRoleSetIdentifier]
+		reqCnt := float64(podRequestCount[pod.Name])
+		if reqCnt > meanRequestCount+float64(standardDeviationFactor)*stdDevRequestCount {
+			klog.InfoS("prefill pod request count is higher than mean request count, skipping", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
+				"req_cnt", reqCnt, "mean_req_cnt", meanRequestCount, "std_dev_req_cnt", stdDevRequestCount)
+			continue
+		}
+
+		prefillScore := (100-float64(matchedPods[pod.Name]))*.1 + (reqCnt / maxRequestCount)
+		if existingScore, exists := prefillScores[rolesetName]; !exists || prefillScore < existingScore.Score {
+			prefillScores[rolesetName] = &Scores{
+				Pod:   pod,
+				Score: prefillScore,
+			}
+		}
+		if prefillScore > maxPrefillScore {
+			maxPrefillScore = prefillScore
+		}
+
+		klog.InfoS("prefill_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name,
+			"prefill_score", prefillScore,
+			"score", fmt.Sprintf("(100 - %f) * 0.1 + %f / %f", float64(matchedPods[pod.Name]), reqCnt, maxRequestCount),
+			"prefix_match_percent", float64(matchedPods[pod.Name]),
+			"running_reqs", reqCnt, "max_running_reqs", maxRequestCount)
+	}
+
+	return prefillScores, maxPrefillScore, prefixHashes
+}
+
+// scoreDecodePods scores decode pods using formula (running_reqs / max_request_count) + (1 - throughput / max_throughput) / (1 - free_gpu_usage / max_free_gpu_usage)
+// selects pod with lowest score indicating least running requests, highest throughput and highest free GPU usage.
+func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDecodePods []*v1.Pod,
+	maxRequestCount float64, maxThroughput float64, maxFreeGPUUsage float64,
+	podRequestCounts map[string]float64, podThroughputs map[string]float64, podFreeGpuUsage map[string]float64) (map[string]*Scores, float64) {
+	decodeScores := map[string]*Scores{}
+	maxDecodeScore := float64(0.01)
+
+	for _, pod := range filteredDecodePods {
+		rolesetName := pod.Labels[PDRoleSetIdentifier]
+
+		normalizedRunningReqs := podRequestCounts[pod.Name] / maxRequestCount
+		normalizedThroughput := 1 - podThroughputs[pod.Name]/maxThroughput
+		normalizedFreeGPUPercent := podFreeGpuUsage[pod.Name] / maxFreeGPUUsage
+
+		decodeScore := (normalizedRunningReqs + normalizedThroughput) / normalizedFreeGPUPercent
+		if existingScore, exists := decodeScores[rolesetName]; !exists || decodeScore < existingScore.Score {
+			decodeScores[rolesetName] = &Scores{
+				Pod:   pod,
+				Score: decodeScore,
+			}
+		}
+		if decodeScore > maxDecodeScore {
+			maxDecodeScore = decodeScore
+		}
+
+		klog.InfoS("decode_score", "request_id", routingCtx.RequestID, "pod_name", pod.Name, "decode_score", decodeScore,
+			"score", fmt.Sprintf("(%f + %f) / %f", normalizedRunningReqs, normalizedThroughput, normalizedFreeGPUPercent),
+			"running_reqs", podRequestCounts[pod.Name], "max_running_reqs", maxRequestCount,
+			"throughput", podThroughputs[pod.Name], "max_throughput", maxThroughput,
+			"free_gpu", podFreeGpuUsage[pod.Name], "max_free_gpu_usage", maxFreeGPUUsage)
+	}
+
+	return decodeScores, maxDecodeScore
+}
+
+func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod *v1.Pod, llmEngine string) error {
 	// Prepare prefill request payload
 	payload, err := r.preparePrefillPayload(routingCtx, prefillPod, llmEngine)
 	if err != nil {
-		return nil, fmt.Errorf("failed to prepare prefill payload for request %s: %w", routingCtx.RequestID, err)
+		return fmt.Errorf("failed to prepare prefill payload for request %s: %w", routingCtx.RequestID, err)
 	}
 
 	// Execute HTTP request
@@ -258,16 +472,20 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 		"prefill_pod", prefillPod.Name,
 		"prefill_url", apiURL)
 
-	if llmEngine == SGLangEngine {
+	r.prefillRequestTracker.AddPrefillRequest(routingCtx.RequestID, prefillPod.Name)
+	switch llmEngine {
+	case SGLangEngine:
 		// For SGLang, use async prefill - the bootstrap mechanism (bootstrap_host/port/room)
 		// coordinates between prefill and decode pods, so we don't need to wait
 		go func() {
+			defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
 			if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
 				klog.ErrorS(err, "async prefill request failed",
 					"request_id", routingCtx.RequestID,
 					"llm_engine", llmEngine,
 					"prefill_pod", prefillPod.Name,
-					"prefill_pod_ip", prefillPod.Status.PodIP)
+					"prefill_pod_ip", prefillPod.Status.PodIP,
+					"elapsed", routingCtx.Elapsed(time.Now()))
 				return
 			}
 			klog.InfoS("prefill_request_complete",
@@ -275,36 +493,42 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 				"llm_engine", llmEngine,
 				"prefill_pod", prefillPod.Name)
 		}()
-	} else if llmEngine == VLLMEngine {
+	case VLLMEngine:
+		defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+
 		// For vLLM, wait synchronously to get KV transfer params from response
 		responseData, err := r.executeHTTPRequest(apiURL, routingCtx, payload)
 		if err != nil {
-			return nil, fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
+			return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
 		}
 
 		// Update routing context with KV transfer params from prefill response
 		if err := r.updateRoutingContextWithKVTransferParams(routingCtx, responseData, prefillPod); err != nil {
-			return nil, fmt.Errorf("failed to update routing context with KV transfer params for request %s: %w", routingCtx.RequestID, err)
+			return fmt.Errorf("failed to update routing context with KV transfer params for request %s: %w", routingCtx.RequestID, err)
 		}
 
 		klog.InfoS("prefill_request_complete",
 			"request_id", routingCtx.RequestID,
 			"llm_engine", llmEngine,
 			"prefill_pod", prefillPod.Name,
-			"prefill_pod_ip", prefillPod.Status.PodIP)
-	} else {
+			"prefill_pod_ip", prefillPod.Status.PodIP,
+			"elapsed", routingCtx.Elapsed(time.Now()))
+	default:
+		defer r.prefillRequestTracker.RemovePrefillRequest(routingCtx.RequestID)
+
 		// For unknown engines, use synchronous approach as a safe default
 		if _, err := r.executeHTTPRequest(apiURL, routingCtx, payload); err != nil {
-			return nil, fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
+			return fmt.Errorf("prefill request failed for request %s, pod %s: %w", routingCtx.RequestID, prefillPod.Name, err)
 		}
 		klog.InfoS("prefill_request_complete",
 			"request_id", routingCtx.RequestID,
 			"llm_engine", llmEngine,
 			"prefill_pod", prefillPod.Name,
-			"prefill_pod_ip", prefillPod.Status.PodIP)
+			"prefill_pod_ip", prefillPod.Status.PodIP,
+			"elapsed", routingCtx.Elapsed(time.Now()))
 	}
 
-	return prefillPod, nil
+	return nil
 }
 
 func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *v1.Pod, llmEngine string) ([]byte, error) {
@@ -489,4 +713,62 @@ func isPodWithHTTPServer(pod *v1.Pod) bool {
 	}
 	// Only include pods from node_rank=0 which have the HTTP server
 	return podGroupIndex == "0"
+}
+
+func (t *PrefillRequestTracker) AddPrefillRequest(requestID, podName string) {
+	countInterface, _ := t.podRequestCounts.LoadOrStore(podName, &atomic.Int32{})
+	count := countInterface.(*atomic.Int32)
+
+	// Increment counter
+	newCount := count.Add(1)
+
+	// Track request to pod mapping for cleanup
+	t.requestToPod.Store(requestID, podName)
+
+	klog.V(4).InfoS("prefill_request_added",
+		"request_id", requestID,
+		"pod_name", podName,
+		"new_count", newCount)
+}
+
+func (t *PrefillRequestTracker) RemovePrefillRequest(requestID string) {
+	podNameInterface, exists := t.requestToPod.LoadAndDelete(requestID)
+	if !exists {
+		klog.V(4).InfoS("prefill_request_not_found_for_removal", "request_id", requestID)
+		return
+	}
+
+	podName := podNameInterface.(string)
+	countInterface, exists := t.podRequestCounts.Load(podName)
+	if !exists {
+		klog.V(4).InfoS("pod_counter_not_found", "pod_name", podName, "request_id", requestID)
+		return
+	}
+
+	count := countInterface.(*atomic.Int32)
+	newCount := count.Add(-1)
+
+	// Ensure count doesn't go below zero
+	if newCount < 0 {
+		count.Store(0)
+		newCount = 0
+	}
+
+	klog.V(4).InfoS("prefill_request_removed",
+		"request_id", requestID,
+		"pod_name", podName,
+		"new_count", newCount)
+}
+
+func (t *PrefillRequestTracker) GetPrefillRequestCountsForPods(pods []*v1.Pod) map[string]int32 {
+	counts := make(map[string]int32)
+	for _, pod := range pods {
+		countInterface, exists := t.podRequestCounts.Load(pod.Name)
+		if !exists {
+			counts[pod.Name] = 0
+		} else {
+			counts[pod.Name] = countInterface.(*atomic.Int32).Load()
+		}
+	}
+	return counts
 }

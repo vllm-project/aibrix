@@ -29,6 +29,9 @@ import (
 
 // mean calculates the mean of a slice of float64 numbers.
 func mean(numbers []float64) float64 {
+	if len(numbers) == 0 {
+		return 0
+	}
 	sum := 0.0
 	for _, number := range numbers {
 		sum += number
@@ -38,6 +41,9 @@ func mean(numbers []float64) float64 {
 
 // standardDeviation calculates the standard deviation of a slice of float64 numbers.
 func standardDeviation(numbers []float64) float64 {
+	if len(numbers) <= 1 {
+		return 0
+	}
 	avg := mean(numbers)
 	sumOfSquares := 0.0
 	for _, number := range numbers {
