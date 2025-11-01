@@ -7,8 +7,8 @@ controllerManager:
   imagePullSecrets: []
   container:
     image:
-      repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/controller-manager
-      tag: v0.4.1
+      repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/controller-manager
+      tag: v0.5.0-rc.2
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -38,12 +38,12 @@ gatewayPlugin:
   imagePullSecrets: []
   initContainer:
     image:
-      repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/busybox
+      repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/busybox
       tag: stable
   container:
     image:
-      repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/gateway-plugins
-      tag: v0.4.1
+      repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway-plugins
+      tag: v0.5.0-rc.2
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -71,8 +71,8 @@ gpuOptimizer:
   imagePullSecrets: []
   container:
     image:
-      repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
-      tag: v0.4.1
+      repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/runtime
+      tag: v0.5.0-rc.2
     resources:
       limits:
         cpu: 500m
@@ -93,7 +93,7 @@ gateway:
     tolerations: []
     container:
       envoy:
-        image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/envoy:v1.33.2
+        image: aibrix-public-release-cn-beijing.cr.volces.com/envoyproxy/envoy:v1.33.2
         resources:
           requests:
             cpu: "1"
@@ -102,7 +102,7 @@ gateway:
             cpu: "1"
             memory: 1Gi
       shutdownManager:
-        image: aibrix-container-registry-cn-beijing.cr.volces.com/envoyproxy/gateway:v1.2.8
+        image: aibrix-public-release-cn-beijing.cr.volces.com/envoyproxy/gateway:v1.2.8
         resources:
           requests:
             cpu: 10m
@@ -122,12 +122,12 @@ metadata:
     imagePullSecrets: []
     initContainer:
       image:
-        repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/busybox
+        repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/busybox
         tag: stable
     container:
       image:
-        repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/metadata-service
-        tag: v0.4.1
+        repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/metadata-service
+        tag: v0.5.0-rc.2
         imagePullPolicy: IfNotPresent
       resources:
         limits:
@@ -146,7 +146,7 @@ metadata:
     imagePullSecrets: []
     container:
       image:
-        repository: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/redis
+        repository: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/redis
         tag: "7.4"
       resources:
         requests:
