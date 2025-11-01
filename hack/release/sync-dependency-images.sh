@@ -12,7 +12,7 @@ TARGET_REGISTRY=$1
 
 # List of images to sync in the format "source_image:tag new_repo_path"
 IMAGES=(
-    "redis:latest ${TARGET_REGISTRY}/aibrix/redis:latest"
+    "redis:7.4 ${TARGET_REGISTRY}/aibrix/redis:7.4"
     "envoyproxy/envoy:v1.33.2 ${TARGET_REGISTRY}/aibrix/envoy:v1.33.2"
     "envoyproxy/gateway:v1.2.8 ${TARGET_REGISTRY}/aibrix/gateway:v1.2.8"
     "aibrix/kuberay-operator:v1.2.1-patch-20250726 ${TARGET_REGISTRY}/aibrix/kuberay-operator:v1.2.1-patch-20250726"
