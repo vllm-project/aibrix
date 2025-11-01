@@ -5,5 +5,5 @@ resources:
 
 images:
 - name: aibrix/runtime
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/metadata-service
   newTag: nightly
