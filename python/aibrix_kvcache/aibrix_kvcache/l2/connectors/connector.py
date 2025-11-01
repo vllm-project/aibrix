@@ -108,6 +108,10 @@ class Connector(Generic[K, V]):
             from .mock import MockConnector
 
             return MockConnector.from_envs(conn_id, executor, **kwargs)
+        elif backend_name == "EIC":
+            from .eic import EICConnector
+
+            return EICConnector.from_envs(conn_id, executor, **kwargs)
         else:
             raise ValueError(f"Unknown connector type: {backend_name}")
 
