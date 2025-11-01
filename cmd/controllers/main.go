@@ -94,6 +94,8 @@ func RegisterSchemas(scheme *runtime.Scheme) error {
 	}
 
 	if distributedInferenceEnabled {
+		// Register KubeRay schema if available. If the KubeRay CRD is not installed,
+		// this will succeed but the controller will be skipped during initialization.
 		utilruntime.Must(rayclusterv1.AddToScheme(scheme))
 	}
 

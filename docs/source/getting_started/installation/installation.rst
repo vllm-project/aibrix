@@ -12,7 +12,11 @@ Install AIBrix on Cloud Kubernetes Clusters
 -------------------------------------------
 
 .. attention::
-    AIBrix will install `Envoy Gateway <https://gateway.envoyproxy.io/>`_ and `KubeRay <https://github.com/ray-project/kuberay>`_ in your environment. If you already have these components installed, you can use corresponding manifest to skip them.
+    AIBrix requires `Envoy Gateway <https://gateway.envoyproxy.io/>`_ for request routing.
+
+    `KubeRay <https://github.com/ray-project/kuberay>`_ is **optional** and only required if you plan to use Ray as your distributed inference runtime (RayClusterFleet, RayClusterReplicaSet).
+
+    AIBrix can run without KubeRay - use StormService for both single-node and multi-node inference workloads. The distributed inference controller will be automatically skipped if KubeRay CRDs are not detected.
 
 
 Stable Version
@@ -42,11 +46,14 @@ Prerequisites
 .. note::
     If you are experiencing network issues with `docker.io`, you can install the helm chart from the code repo https://github.com/envoyproxy/gateway/tree/main/charts/gateway-helm instead.
 
-**KubeRay operator**
+**KubeRay operator (Optional)**
+
+.. note::
+    Skip this step if you don't need Ray-based distributed inference. AIBrix will work without KubeRay for StormService-based workloads.
 
 .. code:: bash
 
-    # Install KubeRay operator
+    # Install KubeRay operator (only if you need RayClusterFleet/RayClusterReplicaSet)
     helm repo add kuberay https://ray-project.github.io/kuberay-helm/
     helm repo update
     helm install kuberay-operator kuberay/kuberay-operator --namespace aibrix-system \
@@ -129,8 +136,11 @@ Autoscaler
     kubectl apply -k config/standalone/autoscaler-controller/
 
 
-Distributed Inference
-~~~~~~~~~~~~~~~~~~~~~
+Distributed Inference (Ray-based)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. attention::
+    This requires KubeRay operator to be installed first.
 
 .. code:: bash
 
@@ -150,3 +160,27 @@ KV Cache
 .. code:: bash
 
     kubectl apply -k config/standalone/kv-cache-controller
+
+
+Disabling Controllers
+---------------------
+
+If you install AIBrix with all controllers enabled by default but don't have KubeRay installed, the distributed inference controller will be automatically skipped with a log message.
+
+To explicitly disable specific controllers, use the ``--controllers`` flag:
+
+.. code:: bash
+
+    # Example: Enable all controllers except distributed-inference-controller
+    --controllers=*,-distributed-inference-controller
+
+    # Example: Only enable specific controllers
+    --controllers=stormservice-controller,model-adapter-controller,pod-autoscaler-controller
+
+Available controllers:
+
+- ``pod-autoscaler-controller``: HPA/KPA-style autoscaling
+- ``distributed-inference-controller``: Ray-based distributed inference (requires KubeRay)
+- ``model-adapter-controller``: LoRA adapter management
+- ``kv-cache-controller``: Distributed KV cache server orchestration with consistent hashing
+- ``stormservice-controller``: Multi-node orchestration with P/D and AFD support

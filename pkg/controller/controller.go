@@ -61,16 +61,24 @@ func Initialize(mgr manager.Manager) error {
 	}
 
 	if features.IsControllerEnabled(features.DistributedInferenceController) {
-		// Check if the CRD (e.g., "rayclusters.ray.io") exists. If not, fail directly.
+		// Check if the KubeRay CRD exists. Only skip if CRD is not found.
+		// For other errors (RBAC, API server issues), fail fast.
 		crdName := "rayclusters.ray.io"
-		if err := checkCRDExists(mgr.GetAPIReader(), crdName); err != nil {
-			return fmt.Errorf("failed to validate CRD '%s': %v. "+
-				"Please ensure that the CRD is installed and available in the cluster. "+
-				"You can verify this by running 'kubectl get crd %s'",
-				crdName, err, crdName)
+		exists, err := checkCRDExists(mgr.GetAPIReader(), crdName)
+		if err != nil {
+			// For errors other than NotFound (e.g., RBAC permissions, API server issues), fail fast
+			return fmt.Errorf("failed to check for KubeRay CRD %s: %w", crdName, err)
 		}
-		controllerAddFuncs = append(controllerAddFuncs, rayclusterreplicaset.Add)
-		controllerAddFuncs = append(controllerAddFuncs, rayclusterfleet.Add)
+		if !exists {
+			klog.InfoS("KubeRay CRD not found, skipping distributed inference controller. "+
+				"This is optional - install KubeRay operator if you need RayClusterFleet/RayClusterReplicaSet support.",
+				"CRD", crdName)
+			// Don't add the controller functions, effectively disabling this controller
+		} else {
+			// CRD found, enable the controllers
+			controllerAddFuncs = append(controllerAddFuncs, rayclusterreplicaset.Add)
+			controllerAddFuncs = append(controllerAddFuncs, rayclusterfleet.Add)
+		}
 	}
 
 	if features.IsControllerEnabled(features.KVCacheController) {
@@ -101,7 +109,8 @@ func SetupWithManager(m manager.Manager, runtimeConfig config.RuntimeConfig) err
 }
 
 // checkCRDExists checks if the specified CRD exists in the cluster.
-func checkCRDExists(c client.Reader, crdName string) error {
+// Returns (exists bool, error). If error is not nil, exists value should be ignored.
+func checkCRDExists(c client.Reader, crdName string) (bool, error) {
 	crd := &metav1.PartialObjectMetadata{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "apiextensions.k8s.io/v1",
@@ -112,9 +121,9 @@ func checkCRDExists(c client.Reader, crdName string) error {
 	err := c.Get(context.TODO(), client.ObjectKey{Name: crdName}, crd)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return fmt.Errorf("CRD %q not found. Please ensure %q is installed", crdName, crdName)
+			return false, nil
 		}
-		return fmt.Errorf("error checking CRD %q: %v", crdName, err)
+		return false, fmt.Errorf("error checking CRD %q: %w", crdName, err)
 	}
-	return nil
+	return true, nil
 }
