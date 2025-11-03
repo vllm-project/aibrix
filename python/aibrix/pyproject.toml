@@ -76,16 +76,17 @@ PyYAML = "^6.0.1"
 types-PyYAML = "^6.0.12.20240917"
 python-multipart = "^0.0.20"
 tenacity = "^9.0.0"
-
-[tool.poetry.group.profiling.dependencies]
-# Dependencies only needed for profiling/benchmark tools (aibrix_benchmark, aibrix_gen_profile)
-# NOT needed by runtime (aibrix_runtime, aibrix_batch_worker, aibrix_metadata)
+# GPU Optimizer runtime dependencies (needed by aibrix.gpu_optimizer.app runtime service)
 numpy = "1.26.4"
 pandas = "^2.2.3"
 pulp = "2.8.0"
 incdbscan = "^0.1.0"
 dash = "^2.18.2"
 matplotlib = "^3.9.2"
+
+[tool.poetry.group.profiling.dependencies]
+# Dependencies only needed for profiling/benchmark tools (aibrix_benchmark, aibrix_gen_profile)
+# NOT needed by runtime services (aibrix_runtime, aibrix_batch_worker, aibrix_metadata, gpu_optimizer app)
 tiktoken = "^0.7.0"
 transformers = ">=4.38.0"
 

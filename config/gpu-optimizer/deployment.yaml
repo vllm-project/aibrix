@@ -17,7 +17,7 @@ spec:
       automountServiceAccountToken: true
       containers:
       - name: gpu-optimizer
-        image: aibrix/runtime:nightly
+        image: aibrix/metadata-service:nightly
         command: ["python", "-m", "aibrix.gpu_optimizer.app"]
         ports:
         - containerPort: 8080

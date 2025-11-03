@@ -4,6 +4,6 @@ resources:
 - ../../dev/gpu-optimizer
 
 images:
-- name: aibrix/runtime
-  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime
+- name: aibrix/metadata-service
+  newName: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/metadata-service
   newTag: nightly
