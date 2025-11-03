@@ -29,22 +29,23 @@ func TestMetricHistory(t *testing.T) {
 	t.Run("add metric points", func(t *testing.T) {
 		mh := NewMetricHistory(time.Second * 30)
 
-		mh.Add(20.0, time.Now())
+		start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		mh.Add(20.0, start)
 		assert.Len(t, mh.history, 1)
 		assert.Equal(t, 20.0, mh.history[0].Value)
 
-		mh.Add(30.0, time.Now().Add(time.Second*10))
+		mh.Add(30.0, start.Add(time.Second*10))
 		assert.Len(t, mh.history, 2)
 		assert.Equal(t, 20.0, mh.history[0].Value)
 		assert.Equal(t, 30.0, mh.history[1].Value)
 
-		mh.Add(40.0, time.Now().Add(time.Second*20))
+		mh.Add(40.0, start.Add(time.Second*20))
 		assert.Len(t, mh.history, 3)
 		assert.Equal(t, 20.0, mh.history[0].Value)
 		assert.Equal(t, 30.0, mh.history[1].Value)
 		assert.Equal(t, 40.0, mh.history[2].Value)
 
-		mh.Add(50.0, time.Now().Add(time.Second*30))
+		mh.Add(50.0, start.Add(time.Second*30))
 		assert.Len(t, mh.history, 3)
 		assert.Equal(t, 30.0, mh.history[0].Value)
 		assert.Equal(t, 40.0, mh.history[1].Value)
@@ -54,7 +55,7 @@ func TestMetricHistory(t *testing.T) {
 	t.Run("get stats", func(t *testing.T) {
 		mh := NewMetricHistory(time.Second * 30)
 
-		start := time.Now()
+		start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 		mh.Add(20.0, start)
 		require.Len(t, mh.history, 1)
 		mh.Add(30.0, start.Add(time.Second*10))

@@ -39,7 +39,8 @@ func TestUpdateMetrics(t *testing.T) {
 	expectedValue := 40.0
 	metricValues := []float64{30.0, 50.0}
 
-	err := client.UpdateMetrics(time.Now(), metricKey, metricValues...)
+	fixedTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	err := client.UpdateMetrics(fixedTime, metricKey, metricValues...)
 
 	assert.NoError(t, err)
 
@@ -74,10 +75,11 @@ func TestGetMetricValue(t *testing.T) {
 	}
 
 	metricValue := 70.0
-	err := client.UpdateMetrics(time.Now(), metricKey, metricValue)
+	fixedTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	err := client.UpdateMetrics(fixedTime, metricKey, metricValue)
 	require.NoError(t, err)
 
-	stableValue, panicValue, err := client.GetMetricValue(metricKey, time.Now())
+	stableValue, panicValue, err := client.GetMetricValue(metricKey, fixedTime)
 
 	assert.NoError(t, err)
 	assert.Equal(t, metricValue, stableValue)
