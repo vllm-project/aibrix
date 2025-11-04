@@ -91,7 +91,7 @@ class EICConnector(Connector[bytes, torch.Tensor], AsyncBase):
         end_time = time.perf_counter_ns()
         elapsed_time_us = (end_time - start_time) / 1000
         logger.info(
-            f"init eic client, prebuilt connection finish - total time: {elapsed_time_us:.2f} us"
+            f"init eic client, namespace: {self.eic_kv_ns}, prebuilt connection finish - total time: {elapsed_time_us:.2f} us"
         )
 
     @classmethod
@@ -160,8 +160,18 @@ class EICConnector(Connector[bytes, torch.Tensor], AsyncBase):
         assert self.conn is not None
         vals = eic.IOBuffers()
         meminfo = eic.MemoryInfo()
-        meminfo.type = eic.MemoryType.MEMORY_CUDA
-        meminfo.cuda_id = 0
+
+        if len(slabs) > 0:
+            tensor = slabs[0]
+            if tensor.is_cuda:
+                meminfo.type = eic.MemoryType.MEMORY_CUDA
+                meminfo.cuda_id = tensor.device.index
+            else:
+                meminfo.type = eic.MemoryType.MEMORY_DEFAULT
+        else:
+            return Status.error(
+                StatusCodes.ERROR, "fail to register mixed memory pin buffer"
+            )
 
         # Calculate total size and log registration info
         total_size = 0
