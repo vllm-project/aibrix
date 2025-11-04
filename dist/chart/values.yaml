@@ -86,7 +86,7 @@ gpuOptimizer:
   imagePullSecrets: []
   container:
     image:
-      repository: aibrix/runtime
+      repository: aibrix/metadata-service
       tag: nightly
     resources:
       limits:
