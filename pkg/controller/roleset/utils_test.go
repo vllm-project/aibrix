@@ -22,7 +22,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	schedv1alpha1 "github.com/kubewharf/godel-scheduler-api/pkg/apis/scheduling/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
@@ -168,7 +167,7 @@ func TestRenderStormServicePod_WithoutRoleIndex(t *testing.T) {
 	assert.NotContains(t, pod.Annotations, constants.RoleReplicaIndexAnnotationKey)
 }
 
-func TestRenderStormServicePod_WithPodGroup(t *testing.T) {
+func TestRenderStormServicePod_WithRoleSetCoschedulingPodGroup(t *testing.T) {
 	roleSet := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-role-set",
@@ -177,8 +176,47 @@ func TestRenderStormServicePod_WithPodGroup(t *testing.T) {
 			},
 		},
 		Spec: orchestrationv1alpha1.RoleSetSpec{
-			SchedulingStrategy: orchestrationv1alpha1.SchedulingStrategy{
-				PodGroup: &schedv1alpha1.PodGroupSpec{
+			SchedulingStrategy: &orchestrationv1alpha1.SchedulingStrategy{
+				CoschedulingSchedulingStrategy: &orchestrationv1alpha1.CoschedulingSchedulingStrategySpec{
+					MinMember: 4,
+				},
+			},
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "test-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "test-container"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	roleIndex := 0
+	pod := &corev1.Pod{
+		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
+	}
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, &roleIndex)
+
+	// Verify pod group labels and annotations
+	assert.Equal(t, "test-role-set", pod.Labels[constants.CoschedulingPodGroupNameLabelKey])
+}
+
+func TestRenderStormServicePod_WithRoleSetGodelPodGroup(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-role-set",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			SchedulingStrategy: &orchestrationv1alpha1.SchedulingStrategy{
+				GodelSchedulingStrategy: &orchestrationv1alpha1.GodelSchedulingStrategySpec{
 					MinMember: 3,
 				},
 			},
@@ -206,6 +244,46 @@ func TestRenderStormServicePod_WithPodGroup(t *testing.T) {
 	// Verify pod group labels and annotations
 	assert.Equal(t, "test-role-set", pod.Labels[constants.GodelPodGroupNameAnnotationKey])
 	assert.Equal(t, "test-role-set", pod.Annotations[constants.GodelPodGroupNameAnnotationKey])
+}
+
+func TestRenderStormServicePod_WithRoleSetVolcanoPodGroup(t *testing.T) {
+	roleSet := &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-role-set",
+			Labels: map[string]string{
+				constants.StormServiceNameLabelKey: "test-service",
+			},
+		},
+		Spec: orchestrationv1alpha1.RoleSetSpec{
+			SchedulingStrategy: &orchestrationv1alpha1.SchedulingStrategy{
+				VolcanoSchedulingStrategy: &orchestrationv1alpha1.VolcanoSchedulingStrategySpec{
+					MinMember: 3,
+				},
+			},
+			Roles: []orchestrationv1alpha1.RoleSpec{
+				{
+					Name: "test-role",
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "test-container"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	roleIndex := 0
+	pod := &corev1.Pod{
+		Spec: *roleSet.Spec.Roles[0].Template.Spec.DeepCopy(),
+	}
+	renderStormServicePod(roleSet, &roleSet.Spec.Roles[0], pod, &roleIndex)
+
+	// Verify pod group labels and annotations
+	assert.Equal(t, "test-role-set", pod.Labels[constants.VolcanoPodGroupNameAnnotationKey])
+	assert.Equal(t, "test-role-set", pod.Annotations[constants.VolcanoPodGroupNameAnnotationKey])
 }
 
 func TestRenderStormServicePod_EmptyLabelsAndAnnotations(t *testing.T) {

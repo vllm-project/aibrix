@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
@@ -30,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -38,16 +40,24 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	schedv1alpha1 "github.com/kubewharf/godel-scheduler-api/pkg/apis/scheduling/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
 	ctrlutil "github.com/vllm-project/aibrix/pkg/controller/util"
+	utils "github.com/vllm-project/aibrix/pkg/controller/util/orchestration"
 	podutil "github.com/vllm-project/aibrix/pkg/utils"
+	schedulerpluginsv1aplha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
+	volcanoschedv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
 
 const (
 	ControllerName  = "podset-controller"
 	PodSetFinalizer = "orchestration.aibrix.ai/podset-finalizer"
+
+	PodGroupSyncedEventType = "PodGroupSynced"
+
+	DefaultRequeueAfter = 15 * time.Second
 )
 
 // controllerKind contains the schema.GroupVersionKind for this controller type.
@@ -83,6 +93,7 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		EventRecorder: mgr.GetEventRecorderFor(ControllerName),
+		DynamicClient: dynamic.NewForConfigOrDie(mgr.GetConfig()),
 	}
 	return reconciler, nil
 }
@@ -92,6 +103,7 @@ type PodSetReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	EventRecorder record.EventRecorder
+	DynamicClient dynamic.Interface
 }
 
 //+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=podsets,verbs=get;list;watch;create;update;patch;delete
@@ -122,6 +134,12 @@ func (r *PodSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, r.Update(ctx, podSet)
 	}
 
+	// Reconcile podgroup
+	if err := r.reconcilePodGroup(ctx, podSet); err != nil {
+		r.EventRecorder.Eventf(podSet, v1.EventTypeWarning, "ReconcileError", "Failed to reconcile podgroup: %v", err)
+		return ctrl.Result{}, err
+	}
+
 	// Reconcile pods
 	if err := r.reconcilePods(ctx, podSet); err != nil {
 		r.EventRecorder.Eventf(podSet, v1.EventTypeWarning, "ReconcileError", "Failed to reconcile pods: %v", err)
@@ -134,6 +152,67 @@ func (r *PodSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *PodSetReconciler) reconcilePodGroup(ctx context.Context, podSet *orchestrationv1alpha1.PodSet) error {
+	if podSet == nil || podSet.Spec.SchedulingStrategy == nil {
+		return nil
+	}
+
+	podGroupMeta := metav1.ObjectMeta{
+		Name:      podSet.Name,
+		Namespace: podSet.Namespace,
+		Labels: map[string]string{
+			constants.PodSetNameLabelKey: podSet.Name,
+		},
+		OwnerReferences: []metav1.OwnerReference{
+			*metav1.NewControllerRef(podSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.PodSetKind)),
+		},
+	}
+
+	if podSet.Spec.SchedulingStrategy.GodelSchedulingStrategy != nil {
+		expectedGroup := &schedv1alpha1.PodGroup{
+			ObjectMeta: podGroupMeta,
+			Spec:       schedv1alpha1.PodGroupSpec(*podSet.Spec.SchedulingStrategy.GodelSchedulingStrategy),
+		}
+		expectedGroup.SetGroupVersionKind(schedv1alpha1.SchemeGroupVersion.WithKind("PodGroup"))
+		if created, err := utils.EnsurePodGroupExist(ctx, r.DynamicClient, expectedGroup, podSet.Name, podSet.Namespace); err != nil {
+			return err
+		} else if created {
+			r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, PodGroupSyncedEventType, "pod group %s synced", podSet.Name)
+		}
+	}
+	if podSet.Spec.SchedulingStrategy.CoschedulingSchedulingStrategy != nil {
+		expectedGroup := &schedulerpluginsv1aplha1.PodGroup{
+			ObjectMeta: podGroupMeta,
+			Spec:       schedulerpluginsv1aplha1.PodGroupSpec(*podSet.Spec.SchedulingStrategy.CoschedulingSchedulingStrategy),
+		}
+		expectedGroup.SetGroupVersionKind(schedulerpluginsv1aplha1.SchemeGroupVersion.WithKind("PodGroup"))
+		if created, err := utils.EnsurePodGroupExist(ctx, r.DynamicClient, expectedGroup, podSet.Name, podSet.Namespace); err != nil {
+			return err
+		} else if created {
+			r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, PodGroupSyncedEventType, "pod group %s synced", podSet.Name)
+		}
+	}
+	if podSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy != nil {
+		expectedGroup := &volcanoschedv1beta1.PodGroup{
+			ObjectMeta: podGroupMeta,
+			Spec: volcanoschedv1beta1.PodGroupSpec{
+				MinMember:         podSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinMember,
+				MinTaskMember:     podSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinTaskMember,
+				Queue:             podSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.Queue,
+				PriorityClassName: podSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.PriorityClassName,
+				MinResources:      &podSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinResources,
+			},
+		}
+		expectedGroup.SetGroupVersionKind(volcanoschedv1beta1.SchemeGroupVersion.WithKind("PodGroup"))
+		if created, err := utils.EnsurePodGroupExist(ctx, r.DynamicClient, expectedGroup, podSet.Name, podSet.Namespace); err != nil {
+			return err
+		} else if created {
+			r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, PodGroupSyncedEventType, "pod group %s synced", podSet.Name)
+		}
+	}
+	return nil
 }
 
 func (r *PodSetReconciler) reconcilePods(ctx context.Context, podSet *orchestrationv1alpha1.PodSet) error {
@@ -384,6 +463,17 @@ func (r *PodSetReconciler) finalizePodSet(ctx context.Context, podSet *orchestra
 		}
 		// Wait for pods to be deleted
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// Delete podgroup
+	if err := utils.FinalizePodGroup(ctx, r.DynamicClient, r.Client, &schedv1alpha1.PodGroup{}, podSet.Name, podSet.Namespace); err != nil {
+		return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
+	}
+	if err := utils.FinalizePodGroup(ctx, r.DynamicClient, r.Client, &schedulerpluginsv1aplha1.PodGroup{}, podSet.Name, podSet.Namespace); err != nil {
+		return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
+	}
+	if err := utils.FinalizePodGroup(ctx, r.DynamicClient, r.Client, &volcanoschedv1beta1.PodGroup{}, podSet.Name, podSet.Namespace); err != nil {
+		return ctrl.Result{RequeueAfter: DefaultRequeueAfter}, err
 	}
 
 	// Remove finalizer

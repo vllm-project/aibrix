@@ -32,6 +32,7 @@ type RoleSpecApplyConfiguration struct {
 	Stateful            *bool                                  `json:"stateful,omitempty"`
 	Template            *v1.PodTemplateSpec                    `json:"template,omitempty"`
 	DisruptionTolerance *DisruptionToleranceApplyConfiguration `json:"disruptionTolerance,omitempty"`
+	SchedulingStrategy  *SchedulingStrategyApplyConfiguration  `json:"schedulingStrategy,omitempty"`
 }
 
 // RoleSpecApplyConfiguration constructs a declarative configuration of the RoleSpec type for use with
@@ -101,5 +102,13 @@ func (b *RoleSpecApplyConfiguration) WithTemplate(value v1.PodTemplateSpec) *Rol
 // If called multiple times, the DisruptionTolerance field is set to the value of the last call.
 func (b *RoleSpecApplyConfiguration) WithDisruptionTolerance(value *DisruptionToleranceApplyConfiguration) *RoleSpecApplyConfiguration {
 	b.DisruptionTolerance = value
+	return b
+}
+
+// WithSchedulingStrategy sets the SchedulingStrategy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the SchedulingStrategy field is set to the value of the last call.
+func (b *RoleSpecApplyConfiguration) WithSchedulingStrategy(value *SchedulingStrategyApplyConfiguration) *RoleSpecApplyConfiguration {
+	b.SchedulingStrategy = value
 	return b
 }

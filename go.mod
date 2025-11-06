@@ -28,18 +28,20 @@ require (
 	github.com/stretchr/testify v1.10.0
 	go.uber.org/atomic v1.11.0
 	google.golang.org/grpc v1.65.0
-	k8s.io/api v0.31.2
-	k8s.io/apiextensions-apiserver v0.31.2
-	k8s.io/apimachinery v0.31.2
-	k8s.io/client-go v0.31.2
-	k8s.io/code-generator v0.31.2
+	k8s.io/api v0.31.8
+	k8s.io/apiextensions-apiserver v0.31.8
+	k8s.io/apimachinery v0.31.8
+	k8s.io/client-go v0.31.8
+	k8s.io/code-generator v0.31.8
 	k8s.io/klog/v2 v2.130.1
 	k8s.io/kube-openapi v0.0.0-20240620174524-b456828f718b
-	k8s.io/metrics v0.31.2
+	k8s.io/metrics v0.31.8
 	k8s.io/utils v0.0.0-20240711033017-18e509b52bc8
-	sigs.k8s.io/controller-runtime v0.19.1
+	sigs.k8s.io/controller-runtime v0.19.2
 	sigs.k8s.io/gateway-api v1.0.0
+	sigs.k8s.io/scheduler-plugins v0.31.8
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1
+	volcano.sh/apis v1.11.2
 )
 
 require (

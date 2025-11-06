@@ -51,6 +51,164 @@ spec:
                 - ReplaceUnhealthy
                 - Recreate
                 type: string
+              schedulingStrategy:
+                maxProperties: 1
+                properties:
+                  coschedulingSchedulingStrategy:
+                    properties:
+                      minMember:
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      minResources:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        type: object
+                      scheduleTimeoutSeconds:
+                        format: int32
+                        type: integer
+                    type: object
+                  godelSchedulingStrategy:
+                    properties:
+                      affinity:
+                        properties:
+                          podGroupAffinity:
+                            properties:
+                              nodeSelector:
+                                properties:
+                                  nodeSelectorTerms:
+                                    items:
+                                      properties:
+                                        matchExpressions:
+                                          items:
+                                            properties:
+                                              key:
+                                                type: string
+                                              operator:
+                                                type: string
+                                              values:
+                                                items:
+                                                  type: string
+                                                type: array
+                                                x-kubernetes-list-type: atomic
+                                            required:
+                                            - key
+                                            - operator
+                                            type: object
+                                          type: array
+                                          x-kubernetes-list-type: atomic
+                                        matchFields:
+                                          items:
+                                            properties:
+                                              key:
+                                                type: string
+                                              operator:
+                                                type: string
+                                              values:
+                                                items:
+                                                  type: string
+                                                type: array
+                                                x-kubernetes-list-type: atomic
+                                            required:
+                                            - key
+                                            - operator
+                                            type: object
+                                          type: array
+                                          x-kubernetes-list-type: atomic
+                                      type: object
+                                      x-kubernetes-map-type: atomic
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - nodeSelectorTerms
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              preferred:
+                                items:
+                                  properties:
+                                    topologyKey:
+                                      type: string
+                                  type: object
+                                type: array
+                              required:
+                                items:
+                                  properties:
+                                    topologyKey:
+                                      type: string
+                                  type: object
+                                type: array
+                              sortRules:
+                                items:
+                                  properties:
+                                    dimension:
+                                      type: string
+                                    order:
+                                      type: string
+                                    resource:
+                                      type: string
+                                  required:
+                                  - order
+                                  - resource
+                                  type: object
+                                type: array
+                            type: object
+                          podGroupAntiAffinity:
+                            properties:
+                              preferred:
+                                items:
+                                  properties:
+                                    topologyKey:
+                                      type: string
+                                  type: object
+                                type: array
+                              required:
+                                items:
+                                  properties:
+                                    topologyKey:
+                                      type: string
+                                  type: object
+                                type: array
+                            type: object
+                        type: object
+                      application:
+                        type: string
+                      minMember:
+                        format: int32
+                        type: integer
+                      priorityClassName:
+                        type: string
+                      scheduleTimeoutSeconds:
+                        format: int32
+                        type: integer
+                    type: object
+                  volcanoSchedulingStrategy:
+                    properties:
+                      minMember:
+                        format: int32
+                        type: integer
+                      minResources:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        type: object
+                      minTaskMember:
+                        additionalProperties:
+                          format: int32
+                          type: integer
+                        type: object
+                      priorityClassName:
+                        type: string
+                      queue:
+                        type: string
+                    type: object
+                type: object
               stateful:
                 type: boolean
               template:
