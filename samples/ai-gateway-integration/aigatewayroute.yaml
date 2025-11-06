@@ -1,0 +1,38 @@
+apiVersion: aigateway.envoyproxy.io/v1alpha1
+kind: AIGatewayRoute
+metadata:
+  name: multi-model-route
+  namespace: default
+spec:
+  parentRefs:
+    # References the Gateway defined
+    - name: aibrix-ai-gateway
+      kind: Gateway
+      group: gateway.networking.k8s.io
+  rules:
+    - matches:
+        - headers:
+            - type: Exact
+              name: x-ai-eg-model               # Custom header used to specify the target model
+              value: llama2-7b
+            - type: Exact
+              name: Authorization               # Validates API key
+              value: Bearer test-key-1234567890
+      backendRefs:
+        # Must match the InferencePool name
+        - group: inference.networking.k8s.io
+          kind: InferencePool
+          name: llama2-7b
+    - matches:
+        - headers:
+            - type: Exact
+              name: x-ai-eg-model
+              value: mistral-7b
+            - type: Exact
+              name: Authorization
+              value: Bearer test-key-0987654321   # different key
+      backendRefs:
+        - group: inference.networking.k8s.io
+          kind: InferencePool
+          name: mistral-7b
+

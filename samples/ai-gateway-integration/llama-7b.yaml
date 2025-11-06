@@ -1,0 +1,107 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mocked-app-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mocked-app-pod-reader-role
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mocked-app-pod-reader-role-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: mocked-app-sa
+    namespace: default
+roleRef:
+  kind: Role
+  name: mocked-app-pod-reader-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: default
+  name: mocked-app-deployment-reader-role
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mocked-app-deployment-reader-role-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: mocked-app-sa
+    namespace: default
+roleRef:
+  kind: Role
+  name: mocked-app-deployment-reader-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-llama2-7b
+  labels:
+    model.aibrix.ai/name: "llama2-7b"
+    model.aibrix.ai/port: "8000"
+    adapter.model.aibrix.ai/enabled: "true"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      adapter.model.aibrix.ai/enabled: "true"
+      model.aibrix.ai/name: "llama2-7b"
+      app: "mock-llama2-7b"
+  template:
+    metadata:
+      labels:
+        adapter.model.aibrix.ai/enabled: "true"
+        model.aibrix.ai/name: "llama2-7b"
+        app: "mock-llama2-7b"
+    spec:
+      serviceAccountName: mocked-app-sa
+      containers:
+        - name: llm-engine
+          image: aibrix/vllm-mock:nightly
+          command:
+            - python3
+            - app.py
+            - --api_key
+            - test-key-1234567890
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llama2-7b
+  namespace: default
+  labels:
+    prometheus-discovery: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "8000"
+spec:
+  selector:
+    model.aibrix.ai/name: "llama2-7b"
+  ports:
+    - protocol: TCP
+      name: metrics
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
