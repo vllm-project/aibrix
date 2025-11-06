@@ -95,7 +95,6 @@ class EICConnector(Connector[bytes, torch.Tensor], AsyncBase):
         )
 
     @classmethod
-    @classmethod
     def from_envs(
         cls, conn_id: str, executor: Executor, **kwargs
     ) -> "EICConnector":
@@ -177,7 +176,7 @@ class EICConnector(Connector[bytes, torch.Tensor], AsyncBase):
         total_size = 0
         for slab in slabs:
             addr = slab.data_ptr()
-            length = slab.numel()
+            length = slab.numel() * slab.itemsize
             total_size += length
             vals.append(addr, length, True)
 
