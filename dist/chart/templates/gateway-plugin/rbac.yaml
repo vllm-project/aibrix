@@ -1,3 +1,4 @@
+{{- if .Values.gateway.enable }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -65,3 +66,4 @@ subjects:
   - kind: ServiceAccount
     name: aibrix-gateway-plugins
     namespace: {{ .Release.Namespace }}
+{{- end }}

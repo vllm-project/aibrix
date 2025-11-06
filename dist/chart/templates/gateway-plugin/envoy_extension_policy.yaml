@@ -1,4 +1,5 @@
 # templates/envoy-extension-policy.yaml
+{{- if .Values.gateway.enable }}
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
 metadata:
@@ -36,3 +37,4 @@ spec:
     group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: aibrix-reserved-router-metadata-endpoint
+{{- end }}

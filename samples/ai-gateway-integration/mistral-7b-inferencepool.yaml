@@ -1,0 +1,123 @@
+# InferencePool for mistral-7b
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: mistral-7b
+  namespace: default
+spec:
+  targetPorts:
+    - number: 8000
+  selector:
+    matchLabels:
+      model.aibrix.ai/name: "mistral-7b"
+      app: "mock-mistral-7b"
+  endpointPickerRef:
+    name: mistral-7b-epp
+    port:
+      number: 9002
+---
+# InferenceObjective for mistral-7b
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: mistral-7b
+  namespace: default
+spec:
+  priority: 10
+  poolRef:
+    name: mistral-7b
+
+---
+# EPP ServiceAccount, Service, Deployment, RBAC for mistral-7b
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mistral-7b-epp
+  namespace: default
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mistral-7b-epp
+  namespace: default
+spec:
+  selector:
+    app: mistral-7b-epp
+  ports:
+    - protocol: TCP
+      port: 9002
+      targetPort: 9002
+      appProtocol: http2
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mistral-7b-epp
+  namespace: default
+  labels:
+    app: mistral-7b-epp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mistral-7b-epp
+  template:
+    metadata:
+      labels:
+        app: mistral-7b-epp
+    spec:
+      serviceAccountName: mistral-7b-epp
+      terminationGracePeriodSeconds: 130
+      containers:
+        - name: epp
+          image: registry.k8s.io/gateway-api-inference-extension/epp:v1.0.1
+          args:
+            - --pool-name
+            - "mistral-7b"
+            - --pool-namespace
+            - "default"
+            - --v=4
+            - --grpc-port=9002
+            - --grpc-health-port=9003
+            - --config-file=/config/default-plugins.yaml
+          ports:
+            - containerPort: 9002
+            - containerPort: 9003
+          volumeMounts:
+            - name: plugins-config-volume
+              mountPath: /config
+      volumes:
+        - name: plugins-config-volume
+          configMap:
+            name: plugins-config
+---
+# RBAC for mistral-7b-epp
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mistral-7b-epp-pod-read
+  namespace: default
+rules:
+  - apiGroups: ["inference.networking.x-k8s.io"]
+    resources: ["inferenceobjectives", "inferencepools"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: ["inference.networking.k8s.io"]
+    resources: ["inferencepools"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mistral-7b-epp-pod-read-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: mistral-7b-epp
+roleRef:
+  kind: Role
+  name: mistral-7b-epp-pod-read
+  apiGroup: rbac.authorization.k8s.io
