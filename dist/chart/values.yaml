@@ -102,6 +102,7 @@ gpuOptimizer:
   tolerations: []
 
 gateway:
+  enable: true
   envoyProxy:
     replicas: 1
     imagePullSecrets: []

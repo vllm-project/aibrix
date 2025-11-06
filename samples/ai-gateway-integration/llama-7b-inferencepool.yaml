@@ -1,0 +1,166 @@
+# 1. InferencePool for llama2-7b
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: llama2-7b
+  namespace: default
+spec:
+  targetPorts:
+    - number: 8000  # Port on which the actual model server container listens
+  selector:
+    # Labels used to select model pods
+    matchLabels:
+      model.aibrix.ai/name: "llama2-7b"
+      app: "mock-llama2-7b"
+  endpointPickerRef:
+    # Points to the Endpoint Picker (EPP) service
+    name: llama2-7b-epp
+    port:
+      number: 9002      # gRPC port of the EPP
+---
+# 2. InferenceObjective (binds to Pool)
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: llama2-7b
+  namespace: default
+spec:
+  priority: 10
+  poolRef:
+    # References the InferencePool
+    name: llama2-7b
+---
+# 3. Endpoint Picker (EPP) Deployment
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: llama2-7b-epp
+  namespace: default
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llama2-7b-epp
+  namespace: default
+spec:
+  selector:
+    app: llama2-7b-epp
+  ports:
+    - protocol: TCP
+      port: 9002
+      targetPort: 9002
+      appProtocol: http2
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llama2-7b-epp
+  namespace: default
+  labels:
+    app: llama2-7b-epp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llama2-7b-epp
+  template:
+    metadata:
+      labels:
+        app: llama2-7b-epp
+    spec:
+      serviceAccountName: llama2-7b-epp
+      terminationGracePeriodSeconds: 130
+      containers:
+        - name: epp
+          image: registry.k8s.io/gateway-api-inference-extension/epp:v1.0.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - --pool-name
+            - "llama2-7b"
+            - --pool-namespace
+            - "default"
+            - --v
+            - "4"
+            - --zap-encoder
+            - "json"
+            - --grpc-port
+            - "9002"
+            - --grpc-health-port
+            - "9003"
+            - --config-file
+            - "/config/default-plugins.yaml"
+          ports:
+            - containerPort: 9002
+            - containerPort: 9003
+            - name: metrics
+              containerPort: 9090
+          livenessProbe:
+            grpc:
+              port: 9003
+              service: inference-extension
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            grpc:
+              port: 9003
+              service: inference-extension
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: plugins-config-volume
+              mountPath: "/config"
+      volumes:
+        - name: plugins-config-volume
+          configMap:
+            name: plugins-config
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: llama2-7b-epp-pod-read
+  namespace: default
+rules:
+  - apiGroups: ["inference.networking.x-k8s.io"]
+    resources: ["inferenceobjectives", "inferencepools"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: ["inference.networking.k8s.io"]
+    resources: ["inferencepools"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "watch", "list"]
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: llama2-7b-epp-pod-read-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: llama2-7b-epp
+    namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: llama2-7b-epp-pod-read
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: plugins-config
+  namespace: default
+data:
+  default-plugins.yaml: |
+    apiVersion: inference.networking.x-k8s.io/v1alpha1
+    kind: EndpointPickerConfig
+    plugins:
+    - type: queue-scorer
+    - type: kv-cache-utilization-scorer
+    - type: prefix-cache-scorer
+    schedulingProfiles:
+    - name: default
+      plugins:
+      - pluginRef: queue-scorer
+      - pluginRef: kv-cache-utilization-scorer
+      - pluginRef: prefix-cache-scorer
