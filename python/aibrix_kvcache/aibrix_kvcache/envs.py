@@ -143,6 +143,9 @@ if TYPE_CHECKING:
     AIBRIX_KV_CACHE_OL_PROFILING_ENABLED: bool = False
     AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS: str = "http://0.0.0.0:4040"
 
+    # EIC Config
+    AIBRIX_KV_CACHE_OL_EIC_CONFIG_FILE: str = ""
+
 # The begin-* and end* here are used by the documentation generator
 # to extract the used env vars.
 
@@ -405,6 +408,10 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
         os.getenv(
             "AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS", "http://0.0.0.0:4040"
         ).strip()
+    ),
+    # ================== EIC Env Vars ==================
+    "AIBRIX_KV_CACHE_OL_EIC_CONFIG_FILE": lambda: (
+        os.getenv("AIBRIX_KV_CACHE_OL_EIC_CONFIG_FILE", "").strip()
     ),
 }
 
