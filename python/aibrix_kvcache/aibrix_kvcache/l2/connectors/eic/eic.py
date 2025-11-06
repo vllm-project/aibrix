@@ -1,3 +1,17 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import hashlib
 import os
 import random
@@ -8,9 +22,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, List, Sequence, Tuple
 
-import eic
+import eic  # type: ignore
 import torch
-import yaml
+import yaml  # type: ignore
 
 from .... import envs
 from ....common import AsyncBase
@@ -91,7 +105,8 @@ class EICConnector(Connector[bytes, torch.Tensor], AsyncBase):
         end_time = time.perf_counter_ns()
         elapsed_time_us = (end_time - start_time) / 1000
         logger.info(
-            f"init eic client, namespace: {self.eic_kv_ns}, prebuilt connection finish - total time: {elapsed_time_us:.2f} us"
+            f"init eic client, namespace: {self.eic_kv_ns}, "
+            f"prebuilt connection finish - total time: {elapsed_time_us:.2f} us"
         )
 
     @classmethod
@@ -129,6 +144,7 @@ class EICConnector(Connector[bytes, torch.Tensor], AsyncBase):
             eic_instance_id = self.config_obj.get("eic_instance_id")
             endpoint = self.config_obj.get("remote_url").replace("eic://", "")
             self.conn = eic.Client()
+            assert self.conn is not None
             init_option = eic.InitOption()
             init_option.log_dir = eic_log_dir
             init_option.log_level = eic.LogLevel(eic_log_level)
@@ -184,7 +200,8 @@ class EICConnector(Connector[bytes, torch.Tensor], AsyncBase):
         if success:
             registration_time = datetime.now()
             logger.info(
-                f"registering slabs - total size: {total_size}, registration time: {registration_time}"
+                f"registering slabs - total size: {total_size}, "
+                f"registration time: {registration_time}"
             )
             logger.info("register mixed memory pin buffer success")
             return Status.ok()
@@ -203,6 +220,7 @@ class EICConnector(Connector[bytes, torch.Tensor], AsyncBase):
         return Status[Any](StatusCodes.NOT_FOUND)
 
     def exists_sync(self, key_str: str) -> bool:
+        assert self.conn is not None
         keys = eic.StringVector()
         keys.append(key_str)
         exist_option = eic.ExistOption()
@@ -217,17 +235,22 @@ class EICConnector(Connector[bytes, torch.Tensor], AsyncBase):
             logger.debug(f"eic exists {key_str} success")
         else:
             logger.debug(
-                f"eic exists {key_str} failed, status_code {status_code} err_code {err_code}"
+                f"eic exists {key_str} failed, "
+                f"status_code {status_code} err_code {err_code}"
             )
         return success
 
     def get_batches(
         self,
         keys: Sequence[Any],
-        mrs: Sequence[MemoryRegion],
+        mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
         batch_size: int,
-    ) -> Sequence[Sequence[Tuple[bytes, MemoryRegion]]]:
-        lists: List[List[Tuple[bytes, MemoryRegion]]] = []
+    ) -> Sequence[
+        Sequence[Tuple[bytes, MemoryRegion | Sequence[MemoryRegion]]]
+    ]:
+        lists: List[
+            List[Tuple[bytes, MemoryRegion | Sequence[MemoryRegion]]]
+        ] = []
         for key, mr in zip(keys, mrs):
             if len(lists) == 0 or len(lists[-1]) >= batch_size:
                 lists.append([(key, mr)])
@@ -266,6 +289,7 @@ class EICConnector(Connector[bytes, torch.Tensor], AsyncBase):
         return Status.ok()
 
     def _get_values(self, keys: Sequence[bytes], mrs: Sequence[MemoryRegion]):
+        assert self.conn is not None
         data_keys = eic.StringVector()
         data_vals = eic.IOBuffers()
 
@@ -283,18 +307,20 @@ class EICConnector(Connector[bytes, torch.Tensor], AsyncBase):
             logger.info(f"eic mget data failed, status_code {status_code}")
             return [Status(StatusCodes.NOT_FOUND)] * len(mrs)
 
-        result = []
+        result: List[Status] = []
         for i, status in enumerate(get_outcome.status_codes):
             if status == eic.StatusCode.SUCCESS:
                 result.append(Status.ok())
             else:
                 logger.info(
-                    f"eic mget {self._key(keys[i])} failed, status_code {status}"
+                    f"eic mget {self._key(keys[i])} failed, "
+                    f"status_code {status}"
                 )
                 result.append(
                     Status.error(
                         StatusCodes.ERROR,
-                        f"eic mget {self._key(keys[i])} failed, status_code {status}",
+                        f"eic mget {self._key(keys[i])} failed, "
+                        f"status_code {status}",
                     )
                 )
         return result
@@ -321,18 +347,20 @@ class EICConnector(Connector[bytes, torch.Tensor], AsyncBase):
                     f"eic mset failed, status_code {status_code}",
                 )
             ] * len(mrs)
-        result = []
+        result: List[Status] = []
         for i, status in enumerate(set_outcome.status_codes):
             if status == eic.StatusCode.SUCCESS:
                 result.append(Status.ok())
             else:
                 logger.info(
-                    f"eic mset {self._key(keys[i])} failed, status_code {status}"
+                    f"eic mset {self._key(keys[i])} failed, "
+                    f"status_code {status}"
                 )
                 result.append(
                     Status.error(
                         StatusCodes.ERROR,
-                        f"eic mset {self._key(keys[i])} failed, status_code {status}",
+                        f"eic mset {self._key(keys[i])} failed, "
+                        f"status_code {status}",
                     )
                 )
         return result
