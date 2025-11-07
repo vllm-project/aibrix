@@ -17,7 +17,9 @@ limitations under the License.
 package constants
 
 const (
-	GodelPodGroupNameAnnotationKey = "godel.bytedance.com/pod-group-name"
+	GodelPodGroupNameAnnotationKey   = "godel.bytedance.com/pod-group-name"
+	CoschedulingPodGroupNameLabelKey = "scheduling.x-k8s.io/pod-group"
+	VolcanoPodGroupNameAnnotationKey = "scheduling.volcano.sh/group-name"
 
 	RoleSetNameLabelKey          = "roleset-name"
 	StormServiceNameLabelKey     = "storm-service-name"

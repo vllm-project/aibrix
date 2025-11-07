@@ -30,6 +30,8 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	schedulerpluginsv1aplha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
+	volcanoschedv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
@@ -39,31 +41,62 @@ import (
 )
 
 func (r *RoleSetReconciler) syncPodGroup(ctx context.Context, roleSet *orchestrationv1alpha1.RoleSet, spec *orchestrationv1alpha1.RoleSetSpec) error {
-	if spec.SchedulingStrategy.PodGroup == nil {
+	if spec.SchedulingStrategy == nil {
 		return nil
 	}
-	expectedGroup := &schedv1alpha1.PodGroup{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      roleSet.Name,
-			Namespace: roleSet.Namespace,
-			Labels: map[string]string{
-				constants.RoleSetNameLabelKey: roleSet.Name,
-			},
-			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)),
-			},
+
+	podGroupMeta := metav1.ObjectMeta{
+		Name:      roleSet.Name,
+		Namespace: roleSet.Namespace,
+		Labels: map[string]string{
+			constants.RoleSetNameLabelKey: roleSet.Name,
 		},
-		Spec: *spec.SchedulingStrategy.PodGroup,
+		OwnerReferences: []metav1.OwnerReference{
+			*metav1.NewControllerRef(roleSet, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.RoleSetKind)),
+		},
 	}
-	podGroup := &schedv1alpha1.PodGroup{}
-	if err := r.Client.Get(ctx, client.ObjectKey{Name: roleSet.Name, Namespace: roleSet.Namespace}, podGroup); client.IgnoreNotFound(err) != nil {
-		return err
-	} else if err != nil {
-		// not found pg, need to create
-		if err = r.Client.Create(ctx, expectedGroup); err == nil {
+
+	if spec.SchedulingStrategy.GodelSchedulingStrategy != nil {
+		expectedGroup := &schedv1alpha1.PodGroup{
+			ObjectMeta: podGroupMeta,
+			Spec:       schedv1alpha1.PodGroupSpec(*spec.SchedulingStrategy.GodelSchedulingStrategy),
+		}
+		expectedGroup.SetGroupVersionKind(schedv1alpha1.SchemeGroupVersion.WithKind("PodGroup"))
+		if created, err := utils.EnsurePodGroupExist(ctx, r.DynamicClient, expectedGroup, roleSet.Name, roleSet.Namespace); err != nil {
+			return err
+		} else if created {
 			r.EventRecorder.Eventf(roleSet, v1.EventTypeNormal, PodGroupSyncedEventType, "pod group %s synced", roleSet.Name)
 		}
-		return err
+	}
+	if spec.SchedulingStrategy.CoschedulingSchedulingStrategy != nil {
+		expectedGroup := &schedulerpluginsv1aplha1.PodGroup{
+			ObjectMeta: podGroupMeta,
+			Spec:       schedulerpluginsv1aplha1.PodGroupSpec(*spec.SchedulingStrategy.CoschedulingSchedulingStrategy),
+		}
+		expectedGroup.SetGroupVersionKind(schedulerpluginsv1aplha1.SchemeGroupVersion.WithKind("PodGroup"))
+		if created, err := utils.EnsurePodGroupExist(ctx, r.DynamicClient, expectedGroup, roleSet.Name, roleSet.Namespace); err != nil {
+			return err
+		} else if created {
+			r.EventRecorder.Eventf(roleSet, v1.EventTypeNormal, PodGroupSyncedEventType, "pod group %s synced", roleSet.Name)
+		}
+	}
+	if spec.SchedulingStrategy.VolcanoSchedulingStrategy != nil {
+		expectedGroup := &volcanoschedv1beta1.PodGroup{
+			ObjectMeta: podGroupMeta,
+			Spec: volcanoschedv1beta1.PodGroupSpec{
+				MinMember:         spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinMember,
+				MinTaskMember:     spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinTaskMember,
+				Queue:             spec.SchedulingStrategy.VolcanoSchedulingStrategy.Queue,
+				PriorityClassName: spec.SchedulingStrategy.VolcanoSchedulingStrategy.PriorityClassName,
+				MinResources:      &spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinResources,
+			},
+		}
+		expectedGroup.SetGroupVersionKind(volcanoschedv1beta1.SchemeGroupVersion.WithKind("PodGroup"))
+		if created, err := utils.EnsurePodGroupExist(ctx, r.DynamicClient, expectedGroup, roleSet.Name, roleSet.Namespace); err != nil {
+			return err
+		} else if created {
+			r.EventRecorder.Eventf(roleSet, v1.EventTypeNormal, PodGroupSyncedEventType, "pod group %s synced", roleSet.Name)
+		}
 	}
 	return nil
 }
@@ -262,18 +295,16 @@ func (r *RoleSetReconciler) finalize(ctx context.Context, roleSet *orchestration
 		return false, nil
 	}
 
-	// TODO: temporarily disable pod group
-	// 2. check if pg is deleted
-	//podGroup := &schedv1alpha1.PodGroup{}
-	//if err := r.Client.Get(ctx, client.ObjectKey{Name: roleSet.Name, Namespace: roleSet.Namespace}, podGroup); client.IgnoreNotFound(err) != nil {
-	//	return false, err
-	//} else if err == nil {
-	//	// delete pg
-	//	if err = r.Client.Delete(ctx, podGroup); err != nil {
-	//		return false, err
-	//	}
-	//	return false, nil
-	//}
+	// 3. check if pg is deleted
+	if err := utils.FinalizePodGroup(ctx, r.DynamicClient, r.Client, &schedv1alpha1.PodGroup{}, roleSet.Name, roleSet.Namespace); err != nil {
+		return false, err
+	}
+	if err := utils.FinalizePodGroup(ctx, r.DynamicClient, r.Client, &schedulerpluginsv1aplha1.PodGroup{}, roleSet.Name, roleSet.Namespace); err != nil {
+		return false, err
+	}
+	if err := utils.FinalizePodGroup(ctx, r.DynamicClient, r.Client, &volcanoschedv1beta1.PodGroup{}, roleSet.Name, roleSet.Namespace); err != nil {
+		return false, err
+	}
 
 	// 3. remove finalizer
 	if controllerutil.ContainsFinalizer(roleSet, RoleSetFinalizer) {

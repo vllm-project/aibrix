@@ -118,8 +118,16 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 			pod.Labels[k] = v
 		}
 	}
-	if roleSet.Spec.SchedulingStrategy.PodGroup != nil {
-		pod.Labels[constants.GodelPodGroupNameAnnotationKey] = roleSet.Name
+	if roleSet.Spec.SchedulingStrategy != nil {
+		if roleSet.Spec.SchedulingStrategy.CoschedulingSchedulingStrategy != nil {
+			pod.Labels[constants.CoschedulingPodGroupNameLabelKey] = roleSet.Name
+		}
+		if roleSet.Spec.SchedulingStrategy.GodelSchedulingStrategy != nil {
+			pod.Labels[constants.GodelPodGroupNameAnnotationKey] = roleSet.Name
+		}
+		if roleSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy != nil {
+			pod.Labels[constants.VolcanoPodGroupNameAnnotationKey] = roleSet.Name
+		}
 	}
 
 	// inject pod annotations
@@ -129,8 +137,13 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 		// inject to label as well for routing service discovery (some engines use label selector to find pods only)
 		pod.Labels[constants.RoleReplicaIndexLabelKey] = fmt.Sprintf("%d", *roleIndex)
 	}
-	if roleSet.Spec.SchedulingStrategy.PodGroup != nil {
-		pod.Annotations[constants.GodelPodGroupNameAnnotationKey] = roleSet.Name
+	if roleSet.Spec.SchedulingStrategy != nil {
+		if roleSet.Spec.SchedulingStrategy.VolcanoSchedulingStrategy != nil {
+			pod.Annotations[constants.VolcanoPodGroupNameAnnotationKey] = roleSet.Name
+		}
+		if roleSet.Spec.SchedulingStrategy.GodelSchedulingStrategy != nil {
+			pod.Annotations[constants.GodelPodGroupNameAnnotationKey] = roleSet.Name
+		}
 	}
 
 	// manually set the hostname and subdomain for FQDN

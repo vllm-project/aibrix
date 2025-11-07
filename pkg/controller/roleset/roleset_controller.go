@@ -24,6 +24,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -85,6 +86,7 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		EventRecorder: mgr.GetEventRecorderFor(ControllerName),
+		DynamicClient: dynamic.NewForConfigOrDie(mgr.GetConfig()),
 	}
 	return reconciler, nil
 }
@@ -95,6 +97,7 @@ type RoleSetReconciler struct {
 	Scheme *runtime.Scheme
 
 	EventRecorder record.EventRecorder
+	DynamicClient dynamic.Interface
 }
 
 // +kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rolesets,verbs=get;list;watch;create;update;patch;delete
@@ -131,11 +134,10 @@ func (r *RoleSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	var managedErrors []error
 
-	// TODO: disable pod group at this moment, consider to switch to open source pod group api later.
 	// 1. sync pod group
-	//if err := r.syncPodGroup(ctx, roleSet, &roleSet.Spec); err != nil {
-	//	managedErrors = append(managedErrors, fmt.Errorf("sync pod group error %v", err))
-	//}
+	if err := r.syncPodGroup(ctx, roleSet, &roleSet.Spec); err != nil {
+		managedErrors = append(managedErrors, fmt.Errorf("sync pod group error %v", err))
+	}
 
 	// 2. sync pods
 	err := r.syncPods(ctx, roleSet)

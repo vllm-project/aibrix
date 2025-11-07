@@ -35,12 +35,96 @@ type RoleSetSpec struct {
 	UpdateStrategy RoleSetUpdateStrategyType `json:"updateStrategy,omitempty"`
 
 	// +optional
-	SchedulingStrategy SchedulingStrategy `json:"schedulingStrategy,omitempty"`
+	SchedulingStrategy *SchedulingStrategy `json:"schedulingStrategy,omitempty"`
 }
 
-// +enum
+// +kubebuilder:validation:MaxProperties=1
 type SchedulingStrategy struct {
-	PodGroup *schedv1alpha1.PodGroupSpec `json:"podGroup,omitempty"`
+	GodelSchedulingStrategy *GodelSchedulingStrategySpec `json:"godelSchedulingStrategy,omitempty"`
+
+	CoschedulingSchedulingStrategy *CoschedulingSchedulingStrategySpec `json:"coschedulingSchedulingStrategy,omitempty"`
+
+	VolcanoSchedulingStrategy *VolcanoSchedulingStrategySpec `json:"volcanoSchedulingStrategy,omitempty"`
+}
+
+// GodelSchedulingStrategySpec uses godel scheduler's podgroup definition
+type GodelSchedulingStrategySpec struct {
+	// MinMember defines the minimal number of members/tasks to run the pod group;
+	// if there's not enough resources to start all tasks, the scheduler
+	// will not start anyone.
+	MinMember int32 `json:"minMember,omitempty"`
+
+	// If specified, indicates the PodGroup's priority. "system-node-critical" and
+	// "system-cluster-critical" are two special reserved keywords which indicate the highest priorities.
+	// Any other name must be defined by creating a PriorityClass object with that name.
+	// If not specified, the PodGroup priority will be default.
+	// If default priority class doesn't exist, the PodGroup priority will be zero.
+	// +optional
+	PriorityClassName string `json:"priorityClassName,omitempty"`
+
+	// ScheduleTimeoutSeconds defines the maximal time of tasks to wait before run the pod group;
+	// +optional
+	ScheduleTimeoutSeconds *int32 `json:"scheduleTimeoutSeconds,omitempty"`
+
+	// Application indicates the podGroup belongs to a logical Application
+	// This will be used for coordinate with features like drf and faire share.
+	// +optional
+	Application string `json:"application,omitempty"`
+
+	// Affinity shows the affinity/anti-affinity rules that scheduler needs to follow
+	// when scheduling instances of this pod group.
+	// +optional
+	Affinity *schedv1alpha1.Affinity `json:"affinity,omitempty"`
+}
+
+// CoschedulingSchedulingStrategySpec uses coscheduling scheduler-plugin's podgroup definition
+type CoschedulingSchedulingStrategySpec struct {
+	// MinMember defines the minimal number of members/tasks to run the pod group;
+	// if there's not enough resources to start all tasks, the scheduler
+	// will not start any.
+	// The minimum is 1
+	// +kubebuilder:validation:Minimum=1
+	MinMember int32 `json:"minMember,omitempty"`
+
+	// MinResources defines the minimal resource of members/tasks to run the pod group;
+	// if there's not enough resources to start all tasks, the scheduler
+	// will not start any.
+	MinResources v1.ResourceList `json:"minResources,omitempty"`
+
+	// ScheduleTimeoutSeconds defines the maximal time of members/tasks to wait before run the pod group;
+	ScheduleTimeoutSeconds *int32 `json:"scheduleTimeoutSeconds,omitempty"`
+}
+
+// VolcanoSchedulingStrategySpec uses volcano's podgroup definition
+type VolcanoSchedulingStrategySpec struct {
+	// MinMember defines the minimal number of members/tasks to run the pod group;
+	// if there's not enough resources to start all tasks, the scheduler
+	// will not start anyone.
+	MinMember int32 `json:"minMember,omitempty" protobuf:"bytes,1,opt,name=minMember"`
+
+	// MinTaskMember defines the minimal number of pods to run each task in the pod group;
+	// if there's not enough resources to start each task, the scheduler
+	// will not start anyone.
+	MinTaskMember map[string]int32 `json:"minTaskMember,omitempty" protobuf:"bytes,1,opt,name=minTaskMember"`
+
+	// Queue defines the queue to allocate resource for PodGroup; if queue does not exist,
+	// the PodGroup will not be scheduled. Defaults to `default` Queue with the lowest weight.
+	// +optional
+	Queue string `json:"queue,omitempty" protobuf:"bytes,2,opt,name=queue"`
+
+	// If specified, indicates the PodGroup's priority. "system-node-critical" and
+	// "system-cluster-critical" are two special keywords which indicate the
+	// highest priorities with the former being the highest priority. Any other
+	// name must be defined by creating a PriorityClass object with that name.
+	// If not specified, the PodGroup priority will be default or zero if there is no
+	// default.
+	// +optional
+	PriorityClassName string `json:"priorityClassName,omitempty" protobuf:"bytes,3,opt,name=priorityClassName"`
+
+	// MinResources defines the minimal resource of members/tasks to run the pod group;
+	// if there's not enough resources to start all tasks, the scheduler
+	// will not start anyone.
+	MinResources v1.ResourceList `json:"minResources,omitempty" protobuf:"bytes,4,opt,name=minResources"`
 }
 
 // +enum
@@ -93,6 +177,9 @@ type RoleSpec struct {
 	// DisruptionTolerance indicates how many pods can be unavailable during the preemption/eviction.
 	// +optional
 	DisruptionTolerance DisruptionTolerance `json:"disruptionTolerance,omitempty"`
+
+	// +optional
+	SchedulingStrategy *SchedulingStrategy `json:"schedulingStrategy,omitempty"`
 }
 
 // +enum

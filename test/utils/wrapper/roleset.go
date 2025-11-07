@@ -20,6 +20,7 @@ import (
 	schedv1alpha1 "github.com/kubewharf/godel-scheduler-api/pkg/apis/scheduling/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
@@ -66,11 +67,14 @@ func (w *RoleSetWrapper) UpdateStrategy(strategy orchestrationapi.RoleSetUpdateS
 // SchedulingStrategyPodGroup sets the PodGroup scheduling strategy.
 // This allows integration with kube-batchd or volcano for gang scheduling.
 func (w *RoleSetWrapper) SchedulingStrategyPodGroup(pgSpec *schedv1alpha1.PodGroupSpec) *RoleSetWrapper {
-	if w.roleset.Spec.SchedulingStrategy.PodGroup == nil {
-		w.roleset.Spec.SchedulingStrategy.PodGroup = &schedv1alpha1.PodGroupSpec{}
+	if w.roleset.Spec.SchedulingStrategy == nil {
+		w.roleset.Spec.SchedulingStrategy = &orchestrationapi.SchedulingStrategy{
+			GodelSchedulingStrategy: &orchestrationapi.GodelSchedulingStrategySpec{},
+		}
 	}
 	if pgSpec != nil {
-		*w.roleset.Spec.SchedulingStrategy.PodGroup = *pgSpec
+		w.roleset.Spec.SchedulingStrategy.GodelSchedulingStrategy = ptr.To(
+			orchestrationapi.GodelSchedulingStrategySpec(*pgSpec))
 	}
 	return w
 }

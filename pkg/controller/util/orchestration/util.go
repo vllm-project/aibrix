@@ -22,14 +22,19 @@ import (
 	"fmt"
 	"hash/fnv"
 	"reflect"
+	"strings"
 	"sync"
 
 	hashutil "github.com/vllm-project/aibrix/pkg/utils/hash"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/integer"
@@ -262,4 +267,55 @@ func MinInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func EnsurePodGroupExist(ctx context.Context, dc dynamic.Interface, podGroup client.Object, name, namespace string) (created bool, err error) {
+	crd := schema.GroupVersionResource{
+		Group:    "apiextensions.k8s.io",
+		Version:  "v1",
+		Resource: "customresourcedefinitions",
+	}
+	crdName := fmt.Sprintf("%ss.%s", strings.ToLower(podGroup.GetObjectKind().GroupVersionKind().Kind), podGroup.GetObjectKind().GroupVersionKind().Group)
+	if _, err := dc.Resource(crd).Get(ctx, crdName, metav1.GetOptions{}); err != nil {
+		if apierrors.IsNotFound(err) { // crd is not installed
+			return false, nil
+		}
+		return false, err
+	}
+
+	if _, err := dc.Resource(podGroup.GetObjectKind().GroupVersionKind().GroupVersion().WithResource("podgroups")).Namespace(namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
+		if apierrors.IsNotFound(err) { // podgroup not found, create it
+			podGroupUnstructed, err := runtime.DefaultUnstructuredConverter.ToUnstructured(podGroup)
+			if err != nil {
+				return false, err
+			}
+			_, err = dc.Resource(podGroup.GetObjectKind().GroupVersionKind().GroupVersion().WithResource("podgroups")).Namespace(namespace).Create(ctx, &unstructured.Unstructured{Object: podGroupUnstructed}, metav1.CreateOptions{})
+			return err == nil, err
+		}
+		return false, err // other get error
+	}
+	// podgroup already presented
+	return false, nil
+}
+
+func FinalizePodGroup(ctx context.Context, dc dynamic.Interface, c client.Client, podGroup client.Object, name, namespace string) error {
+	crd := schema.GroupVersionResource{
+		Group:    "apiextensions.k8s.io",
+		Version:  "v1",
+		Resource: "customresourcedefinitions",
+	}
+	if _, err := dc.Resource(crd).Get(ctx, fmt.Sprintf("%ss.%s", strings.ToLower(podGroup.GetObjectKind().GroupVersionKind().Kind), podGroup.GetObjectKind().GroupVersionKind().Group), metav1.GetOptions{}); err != nil {
+		if apierrors.IsNotFound(err) { // crd is not installed
+			return nil
+		}
+		return err
+	}
+
+	if _, err := dc.Resource(podGroup.GetObjectKind().GroupVersionKind().GroupVersion().WithResource("podgroups")).Namespace(namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
+		if apierrors.IsNotFound(err) { // podgroup not found, done
+			return nil
+		}
+		return err
+	}
+	return dc.Resource(podGroup.GetObjectKind().GroupVersionKind().GroupVersion().WithResource("podgroups")).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 }

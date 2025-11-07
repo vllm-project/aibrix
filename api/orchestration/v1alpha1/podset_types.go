@@ -41,6 +41,9 @@ type PodSetSpec struct {
 	// +kubebuilder:validation:Enum={ReplaceUnhealthy,Recreate}
 	// +optional
 	RecoveryPolicy PodRecoveryPolicy `json:"recoveryPolicy,omitempty"`
+
+	// +optional
+	SchedulingStrategy *SchedulingStrategy `json:"schedulingStrategy,omitempty"`
 }
 
 // PodSetStatus defines the observed state of PodSet

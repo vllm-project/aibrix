@@ -59,8 +59,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		// Group=orchestration, Version=v1alpha1
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("Condition"):
 		return &applyconfigurationorchestrationv1alpha1.ConditionApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("CoschedulingSchedulingStrategySpec"):
+		return &applyconfigurationorchestrationv1alpha1.CoschedulingSchedulingStrategySpecApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("DisruptionTolerance"):
 		return &applyconfigurationorchestrationv1alpha1.DisruptionToleranceApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("GodelSchedulingStrategySpec"):
+		return &applyconfigurationorchestrationv1alpha1.GodelSchedulingStrategySpecApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleet"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterFleetApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleetCondition"):
@@ -97,6 +101,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationorchestrationv1alpha1.StormServiceStatusApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("StormServiceUpdateStrategy"):
 		return &applyconfigurationorchestrationv1alpha1.StormServiceUpdateStrategyApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("VolcanoSchedulingStrategySpec"):
+		return &applyconfigurationorchestrationv1alpha1.VolcanoSchedulingStrategySpecApplyConfiguration{}
 
 	}
 	return nil
