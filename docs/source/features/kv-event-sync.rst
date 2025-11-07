@@ -194,11 +194,12 @@ Published when new KV cache blocks are stored:
 .. code-block:: go
 
    type BlockStoredEvent struct {
-       BlockHashes  []int64    // Hash values of stored blocks
-       TokenIDs     [][]int32  // Token IDs for each block
-       ModelName    string     // Model identifier
-       LoraID       int64      // LoRA adapter ID (-1 if none)
-       PodName      string     // Source pod name
+       BlockHashes     []int64    // Hash values of stored blocks
+       TokenIDs        [][]byte   // Token IDs for each block (each token is a big-endian uint32)
+       ModelName       string     // Model identifier
+       LoraID          int64      // LoRA adapter ID (-1 if none)
+       SourcePod       string     // Source pod name
+       ParentBlockHash *int64     // Hash value of the parent block or nil
    }
 
 BlockRemovedEvent
@@ -212,7 +213,7 @@ Published when blocks are removed from cache:
        BlockHashes  []int64    // Hash values of removed blocks
        ModelName    string     // Model identifier
        LoraID       int64      // LoRA adapter ID
-       PodName      string     // Source pod name
+       SourcePod    string     // Source pod name
    }
 
 Troubleshooting
