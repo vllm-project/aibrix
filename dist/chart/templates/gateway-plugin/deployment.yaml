@@ -1,3 +1,4 @@
+{{- if .Values.gateway.enable }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -98,3 +99,4 @@ spec:
           readinessProbe:
             {{- toYaml .Values.gatewayPlugin.container.probes.readiness | nindent 12 }}
       serviceAccountName: aibrix-gateway-plugins
+{{- end }}
