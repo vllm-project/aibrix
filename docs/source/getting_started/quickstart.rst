@@ -18,8 +18,8 @@ Get your kubernetes cluster ready, run following commands to install aibrix comp
 
 .. code-block:: bash
 
-    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.4.1/aibrix-dependency-v0.4.1.yaml
-    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.4.1/aibrix-core-v0.4.1.yaml
+    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.5.0/aibrix-dependency-v0.5.0.yaml
+    kubectl create -f https://github.com/vllm-project/aibrix/releases/download/v0.5.0/aibrix-core-v0.5.0.yaml
 
 Wait for few minutes and run `kubectl get pods -n aibrix-system` to check pod status util they are ready.
 
@@ -86,6 +86,7 @@ Depending on where you deployed the AIBrix, you can use either of the following 
     # completion api
     curl -v http://${ENDPOINT}/v1/completions \
         -H "Content-Type: application/json" \
+        -H "routing-strategy: random" \
         -d '{
             "model": "deepseek-r1-distill-llama-8b",
             "prompt": "San Francisco is a",
@@ -96,6 +97,7 @@ Depending on where you deployed the AIBrix, you can use either of the following 
     # chat completion api
     curl http://${ENDPOINT}/v1/chat/completions \
     -H "Content-Type: application/json" \
+    -H "routing-strategy: random" \
     -d '{
         "model": "deepseek-r1-distill-llama-8b",
         "messages": [
