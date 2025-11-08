@@ -43,6 +43,25 @@ Prerequisites
     # Install envoy-gateway, this is not aibrix component. you can also use helm package to install it.
     helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.2.8 -n envoy-gateway-system --create-namespace
 
+    # patch the configuration to enable EnvoyPatchPolicy, this is super important!
+    kubectl apply -f - <<EOF
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: envoy-gateway-config
+      namespace: envoy-gateway-system
+    data:
+      envoy-gateway.yaml: |
+        apiVersion: gateway.envoyproxy.io/v1alpha1
+        kind: EnvoyGateway
+        provider:
+          type: Kubernetes
+        gateway:
+          controllerName: gateway.envoyproxy.io/gatewayclass-controller
+        extensionApis:
+          enableEnvoyPatchPolicy: true
+    EOF
+
 .. note::
     If you are experiencing network issues with `docker.io`, you can install the helm chart from the code repo https://github.com/envoyproxy/gateway/tree/main/charts/gateway-helm instead.
 
