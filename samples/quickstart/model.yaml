@@ -11,10 +11,12 @@ spec:
   selector:
     matchLabels:
       model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+      model.aibrix.ai/port: "8000"
   template:
     metadata:
       labels:
         model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+        model.aibrix.ai/port: "8000"
     spec:
       containers:
         - command:

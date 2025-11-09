@@ -52,7 +52,7 @@ spec:
               value: https://tos-s3-cn-beijing.ivolces.com
             - name: TOS_REGION
               value: cn-beijing
-          image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/runtime:v0.5.0-rc.2
+          image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/runtime:v0.5.0
           name: init-model
           volumeMounts:
             - mountPath: /models

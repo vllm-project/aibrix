@@ -8,7 +8,7 @@ controllerManager:
   container:
     image:
       repository: aibrix/controller-manager
-      tag: v0.5.0-rc.3
+      tag: v0.5.0
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -43,7 +43,7 @@ gatewayPlugin:
   container:
     image:
       repository: aibrix/gateway-plugins
-      tag: v0.5.0-rc.3
+      tag: v0.5.0
       imagePullPolicy: IfNotPresent
     resources:
       limits:
@@ -88,7 +88,7 @@ gpuOptimizer:
   container:
     image:
       repository: aibrix/runtime
-      tag: v0.5.0-rc.3
+      tag: v0.5.0
     resources:
       limits:
         cpu: 500m
@@ -143,7 +143,7 @@ metadata:
     container:
       image:
         repository: aibrix/metadata-service
-        tag: v0.5.0-rc.3
+        tag: v0.5.0
         imagePullPolicy: IfNotPresent
       resources:
         limits:
