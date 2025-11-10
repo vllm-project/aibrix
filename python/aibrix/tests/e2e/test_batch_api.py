@@ -161,7 +161,7 @@ def service_health():
 @pytest.mark.asyncio
 async def test_batch_api_e2e_real_service(service_health):
     """
-    End-to-end test for OpenAI Batch API against real service:
+    End-to-end test for AIBrix Batch API against real service:
     1. Upload sample input file via Files API
     2. Create batch job via Batch API
     3. Poll job status until completion
@@ -310,6 +310,142 @@ async def test_batch_api_e2e_real_service(service_health):
 
         assert our_batch is not None, f"Batch {batch_id} not found in list"
         assert our_batch["status"] == "completed"
+
+        print("✅ Batch list API verified successfully!")
+
+        print(
+            "\n🎉 E2E test completed successfully! All OpenAI Batch API endpoints working correctly."
+        )
+
+
+@pytest.mark.asyncio
+async def test_openai_batch_api(service_health):
+    """
+    End-to-end test for OpenAI Batch API against AIBrix deployment:
+    1. Upload sample input file via Files API
+    2. Create batch job via Batch API
+    3. Poll job status until completion
+    4. Download and verify output via Files API
+    5. Verify batch list API works
+    """
+    from openai import OpenAI
+
+    base_url = service_health
+
+    with OpenAI(base_url=f"{base_url}/v1", api_key="aibrix") as client:
+        # Step 1: Upload sample input file via Files API
+        print("Step 1: Uploading batch input file...")
+
+        input_data = generate_batch_input_data(3)
+        with open("batch_input.jsonl", "w") as f:
+            f.write(input_data)
+        with open("batch_input.jsonl", "rb") as f:
+            upload_result = client.files.create(file=f, purpose="batch")
+
+        assert upload_result.object == "file"
+        assert upload_result.purpose == "batch"
+        assert upload_result.status == "uploaded"
+
+        input_file_id = upload_result.id
+        print(f"✅ File uploaded successfully with ID: {input_file_id}")
+
+        # Step 2: Create batch job via Batch API
+        print("Step 2: Creating batch job...")
+
+        batch_result = client.batches.create(
+            input_file_id=input_file_id,
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+        )
+
+        assert batch_result.object == "batch"
+        assert batch_result.input_file_id == input_file_id
+        assert batch_result.endpoint == "/v1/chat/completions"
+
+        batch_id = batch_result.id
+        print(f"✅ Batch created successfully with ID: {batch_id}")
+
+        # Step 3: Poll job status until completion
+        print("Step 3: Polling job status until completion...")
+
+        max_polls = (
+            60  # Maximum number of polling attempts (increased for real service)
+        )
+        poll_interval = 5  # seconds (increased for real service)
+
+        for attempt in range(max_polls):
+            status_result = client.batches.retrieve(batch_id=batch_id)
+            current_status = status_result.status
+
+            print(f"  Attempt {attempt + 1}: Status = {current_status}")
+
+            if current_status == "completed":
+                print("✅ Batch job completed successfully!")
+                output_file_id = status_result.output_file_id
+                assert (
+                    output_file_id is not None
+                ), "Expected output_file_id for completed batch"
+
+                request_counts = status_result.request_counts
+                if request_counts:
+                    print(f"  Request counts: {request_counts}")
+                    assert request_counts.total == 3
+                    assert request_counts.completed == 3
+                    assert request_counts.failed == 0
+
+                break
+            elif current_status == "failed":
+                error_info = status_result.errors
+                pytest.fail(f"Batch job failed: {error_info}")
+            elif current_status in ["cancelled", "expired"]:
+                pytest.fail(f"Batch job was {current_status}")
+            elif current_status in ["validating", "in_progress", "finalizing"]:
+                # These are expected intermediate states
+                pass
+            else:
+                print(f"  Unknown status: {current_status}")
+
+            # Wait before next poll
+            await asyncio.sleep(poll_interval)
+        else:
+            pytest.fail(
+                f"Batch job did not complete within {max_polls * poll_interval} seconds"
+            )
+
+        # Step 4: Download and verify output via Files API
+        print("Step 4: Downloading and verifying output...")
+
+        output = client.files.content(output_file_id)
+        assert output, "Output file is empty"
+
+        output_content = output.content.decode("utf-8", errors="replace")
+
+        # Verify output content structure
+        is_valid = verify_batch_output_content(output_content, 3)
+        assert (
+            is_valid
+        ), f"Output content verification failed. Content:\n{output_content}"
+
+        print("✅ Output downloaded and verified successfully!")
+        print(f"Output content preview:\n{output_content[:500]}...")
+
+        # Step 5: Verify batch list API works
+        print("Step 5: Testing batch list API...")
+
+        list_result = client.batches.list()
+
+        assert list_result.object == "list"
+        assert len(list_result.data) >= 1, "Expected at least one batch in the list"
+
+        # Find our batch in the list
+        our_batch = None
+        for batch in list_result.data:
+            if batch.id == batch_id:
+                our_batch = batch
+                break
+
+        assert our_batch is not None, f"Batch {batch_id} not found in list"
+        assert our_batch.status == "completed"
 
         print("✅ Batch list API verified successfully!")
 
