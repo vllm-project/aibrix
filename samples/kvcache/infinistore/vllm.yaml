@@ -67,7 +67,7 @@ spec:
               name: model-hostpath
       containers:
         - name: vllm-openai
-          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai-aibrix-kvcache:v0.9.1-20250724
+          image: aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/vllm-openai-aibrix-kvcache:v0.10.2-20251022
           imagePullPolicy: Always
           command:
             - python3
@@ -93,7 +93,7 @@ spec:
             - "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"
             - --no-enable-chunked-prefill
             - --kv-transfer-config
-            - '{"kv_connector":"AIBrixOffloadingConnectorV1Type1", "kv_role":"kv_both"}'
+            - '{"kv_connector":"AIBrixOffloadingConnectorV1Type3", "kv_role":"kv_both"}'
           env:
             - name: VLLM_USE_V1
               value: "1"
