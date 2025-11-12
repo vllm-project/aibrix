@@ -53,11 +53,28 @@ New KVCache backends can be easily added by implementing the ``Connector`` inter
           mput_mget: Whether the kv cache connector supports mput/mget
           prefetch: Whether the kv cache connector supports prefetch.
           rdma: Whether the kv cache connector supports RDMA.
+          gdr_put: Whether the kv cache connector supports GDR put.
+          gdr_get: Whether the kv cache connector supports GDR get.
       """
-  
+ 
       mput_mget: bool = False
       prefetch: bool = False
       rdma: bool = False
+      gdr_put: bool = False
+      gdr_get: bool = False
+
+
+  @dataclass
+  class ConnectorConfig:
+      """The config of the kv cache connector."""
+ 
+      backend_name: str
+      namespace: str
+      partition_id: str
+      executor: Executor
+      block_spec_signature: str = ""
+      key_builder_signature: str = ""
+      layout_signature: str = ""
   
   
   @dataclass
@@ -75,12 +92,12 @@ New KVCache backends can be easily added by implementing the ``Connector`` inter
       def from_envs(cls, conn_id: str, executor: Executor, **kwargs):
           """Create a connector from environment variables."""
           raise NotImplementedError
-  
+
       @property
       @abstractmethod
       def name(self) -> str:
           raise NotImplementedError
-  
+
       @property
       @abstractmethod
       def feature(self) -> ConnectorFeature:
@@ -89,51 +106,57 @@ New KVCache backends can be easily added by implementing the ``Connector`` inter
               The feature of the kv cache service.
           """
           raise NotImplementedError
-  
+
       @abstractmethod
       def open(self) -> Status:
           """Open a connection."""
           raise NotImplementedError
-  
+
       @abstractmethod
       def close(self) -> Status:
           """Close a connection."""
           raise NotImplementedError
-  
+
       async def prefetch(self, keys: Sequence[K]) -> None:
           """Prefetch a list of keys.
           Args:
               keys: The keys of the kv tensors.
           """
           pass
-  
+
       @abstractmethod
       async def exists(self, key: K) -> Status:
           """Check if key is in the store."""
           raise NotImplementedError
-  
+
       @abstractmethod
-      async def get(self, key: K, mr: MemoryRegion) -> Status:
+      async def get(
+          self, key: K, mr: MemoryRegion | Sequence[MemoryRegion]
+      ) -> Status:
           """Get a value.
           Args:
               key: The key of the kv tensor.
-              mr: The memory region to place the fetched kv tensor.
+              mr: The memory region or MR list to place the fetched kv
+                  tensor. It is an MR list only if using GDR.
           Returns:
               The status of the get operation.
           """
           raise NotImplementedError
-  
+
       @abstractmethod
-      async def put(self, key: K, mr: MemoryRegion) -> Status:
+      async def put(
+          self, key: K, mr: MemoryRegion | Sequence[MemoryRegion]
+      ) -> Status:
           """Put a key value pair.
           Args:
               key: The key of the kv cache.
-              mr: The memory region holding the kv tensors.
+              mr: The memory region or MR list holding the kv tensors. It is an
+                  MR list only if using GDR.
           Returns:
               The status of the put operation.
           """
           raise NotImplementedError
-  
+
       def register_slabs(self, slabs: List[torch.Tensor]) -> Status:
           """Register slabs with backend-specific register function.
           Args:
@@ -142,51 +165,57 @@ New KVCache backends can be easily added by implementing the ``Connector`` inter
               Status of the register operation.
           """
           raise NotImplementedError
-  
+
       def get_batches(
           self,
-          keys: Sequence[K],
-          mrs: Sequence[MemoryRegion],
+          keys: Sequence[Any],
+          mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
           batch_size: int,
-      ) -> Sequence[Sequence[Tuple[K, MemoryRegion]]]:
+      ) -> Sequence[Sequence[Tuple[K, MemoryRegion | Sequence[MemoryRegion]]]]:
           """Get a list of key MR batches that is used for mput and mget
           operations.
-  
+
           Args:
               keys: The keys of the kv tensors.
-              mrs: Memory regions holding the kv tensors.
+              mrs: Memory regions or lists of MRs holding the kv tensors.
               batch_size: The maximum number of key MR pairs in a batch.
           Returns:
-              List of key MR batches.
+              List of key MR/MR List batches.
           """
           raise NotImplementedError
-  
+
       async def mget(
-          self, keys: Sequence[K], mrs: Sequence[MemoryRegion]
+          self,
+          keys: Sequence[K],
+          mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
       ) -> Sequence[Status]:
           """MGet a list of values. This function is optional and only connectors
           have mput_mget feature enabled can implement this function.
           Args:
               keys: The keys of the kv tensors.
-              mrs: Memory regions to hold the fetched kv tensors.
+              mrs: Memory regions or lists of MRs to hold the fetched kv
+                   tensors. It is an MR list only if using GDR.
           Returns:
               List of statuses.
           """
           raise NotImplementedError
-  
+
       async def mput(
-          self, keys: Sequence[K], mrs: Sequence[MemoryRegion]
+          self,
+          keys: Sequence[K],
+          mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
       ) -> Sequence[Status]:
           """MPut a list of key value pairs. This function is optional and only
           connectors have mput_mget feature enabled can implement this function.
           Args:
               keys: The keys of the kv tensors.
-              mrs: Memory regions holding the kv tensors.
+              mrs: Memory regions or lists of MRs holding the kv tensors. It is
+                   an MR list only if using GDR.
           Returns:
               List of statuses.
           """
           raise NotImplementedError
-  
+
       @abstractmethod
       async def delete(self, key: K) -> Status:
           """Delete a key.
@@ -196,7 +225,7 @@ New KVCache backends can be easily added by implementing the ``Connector`` inter
               The status of the delete operation.
           """
           raise NotImplementedError
-  
+
 Please refer to the `existing connectors <https://github.com/vllm-project/aibrix/tree/main/python/aibrix_kvcache/aibrix_kvcache/l2/connectors>`_ for more details.
 
 Environment Variables Reference
@@ -217,6 +246,12 @@ Core Configuration
    * - AIBRIX_KV_CACHE_OL_CHUNK_SIZE
      - "512"
      - Chunk size for operations.
+   * - AIBRIX_KV_CACHE_OL_BLOCK_SIZE
+     - "-1"
+     - Number of tokens in a kvcache block (the finest IO granularity). Defaults to -1, which means to use engine's block size.
+   * - AIBRIX_KV_CACHE_OL_MAX_SEQ_LEN
+     - "-1"
+     - Maximum sequence length. Defaults to -1, which means no limit. If set, tokens beyond this length will be ignored.
    * - AIBRIX_KV_CACHE_OL_TIME_MEASUREMENT_ENABLED
      - "1"
      - Enable time measurement.
@@ -407,6 +442,20 @@ Pris Connector Configuration
      - ""
      - Password.
 
+EIC Connector Configuration
+""""""""""""""""""""""""""""
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 60
+
+   * - Variable
+     - Default
+     - Description
+   * - AIBRIX_KV_CACHE_OL_EIC_CONFIG_FILE
+     - ""
+     - EIC config file.
+
 Mock Connector Configuration
 """"""""""""""""""""""""""""
 
@@ -425,6 +474,9 @@ Mock connector is used for testing and profiling purposes.
    * - AIBRIX_KV_CACHE_OL_MOCK_USE_MPUT_MGET
      - "0"
      - Use MPUT/MGET in mock connector.
+   * - AIBRIX_KV_CACHE_OL_MOCK_USE_NOOP
+     - "0"
+     - Use NOOP for all operations. Useful for profiling the framework overhead.
 
 RocksDB Connector Configuration
 """""""""""""""""""""""""""""""

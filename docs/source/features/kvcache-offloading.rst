@@ -13,6 +13,9 @@ KVCache Offloading
 .. note::
     Since v0.4.0, both vLLM V0 and V1 connectors are supported.
 
+.. note::
+    Since v0.5.0, both vLLM and `SGLang <https://github.com/sgl-project/sglang/tree/main/python/sglang/srt/mem_cache/storage/aibrix_kvcache>`_ are supported.
+
 .. warning::
     Currently, only FlashAttention and XFormers are supported.
 
@@ -63,7 +66,8 @@ Now let's use the following yaml to create an engine deployment:
 
 
 .. note::
-    * If you prefer to use vLLM V0, please set ``VLLM_USE_V1`` to ``0`` and change the value of ``--kv-transfer-config`` from ``'{"kv_connector":"AIBrixOffloadingConnectorV1Type1", "kv_role":"kv_both"}'`` to ``'{"kv_connector":"AIBrixOffloadingConnector", "kv_role":"kv_both"}'``
+    * Right now, the recommended connector for vLLM v0.10.2 is ``AIBrixOffloadingConnectorV1Type3``. You can switch to other AIBrix connectors if needed by specifying the ``kv_connector`` parameter of ``--kv-transfer-config``.
+    * If you prefer to use vLLM V0, please set ``VLLM_USE_V1`` to ``0`` and change the value of ``--kv-transfer-config`` from ``'{"kv_connector":"AIBrixOffloadingConnectorV1Type3", "kv_role":"kv_both"}'`` to ``'{"kv_connector":"AIBrixOffloadingConnector", "kv_role":"kv_both"}'``
     * ``AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB`` needs to choose a proper value based on the pod memory resource requirement. For instance, if the pod memory resource requirement is ``P`` GB and the estimated memory consumption of the inference engine is ``E`` GB, we can set ``AIBRIX_KV_CACHE_OL_L1_CACHE_CAPACITY_GB`` to ``P / tensor-parallel-size - E``.
 
 Now let's use ``kubectl get pods`` command to ensure the inference service is running:
@@ -197,7 +201,8 @@ Now let's use the following yaml to create an engine deployment:
 
 
 .. note::
-    * If you prefer to use vLLM V0, please set ``VLLM_USE_V1`` to ``0`` and change the value of ``--kv-transfer-config`` from ``'{"kv_connector":"AIBrixOffloadingConnectorV1Type1", "kv_role":"kv_both"}'`` to ``'{"kv_connector":"AIBrixOffloadingConnector", "kv_role":"kv_both"}'``
+    * Right now, the recommended connector for vLLM v0.10.2 is ``AIBrixOffloadingConnectorV1Type3``. You can switch to other AIBrix connectors if needed by specifying the ``kv_connector`` parameter of ``--kv-transfer-config``.
+    * If you prefer to use vLLM V0, please set ``VLLM_USE_V1`` to ``0`` and change the value of ``--kv-transfer-config`` from ``'{"kv_connector":"AIBrixOffloadingConnectorV1Type3", "kv_role":"kv_both"}'`` to ``'{"kv_connector":"AIBrixOffloadingConnector", "kv_role":"kv_both"}'``
     * In this example, we set ``AIBRIX_KV_CACHE_OL_L1_CACHE_ENABLED=0`` to explicitly disable ``L1Cache`` and use ``L2Cache`` only.
     * Current version only supports using ``InfiniStore`` with RDMA transport. Please ensure ``AIBRIX_KV_CACHE_OL_INFINISTORE_CONNECTION_TYPE=RDMA`` is configured.
     * For InfiniBand, please set ``AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE=IB``. For RoCE, please keep the default value ``Ethernet``.
