@@ -6,8 +6,8 @@ body:
     attributes:
       value: >
         #### Before submitting a bug, please make sure the issue hasn't been already addressed by searching through [the
-        existing and past issues](https://github.com/yourusername/aibrix/issues).
-        It's likely that your issue might be resolved by checking our [documentation](https://aibrix.docs.yourdomain.com) or troubleshooting guide.
+        existing and past issues](https://github.com/vllm-project/aibrix/issues).
+        It's likely that your issue might be resolved by checking our [documentation](https://aibrix.readthedocs.io/latest/) or troubleshooting guide.
   - type: textarea
     attributes:
       label: 🐛 Describe the bug
