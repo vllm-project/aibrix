@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
 from concurrent.futures import Executor
 from contextlib import contextmanager
 from queue import Queue
@@ -44,6 +45,8 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
         super().__init__(executor)
         self.config = config
         self.key_suffix = key_suffix
+        # Lock to serialize RDMA control-plane (TCP) operations
+        self._rdma_ctrl_lock = threading.Lock()
 
         # rdma connection
         self.rdma_conn: infinistore.InfinityConnection | None = None
@@ -280,8 +283,10 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
 
     def _rdma_exists(self, key: bytes) -> Status:
         assert self.rdma_conn is not None
-        if self.rdma_conn.check_exist(self._key(key)):
-            return Status.ok()
+        # Serialize control-plane TCP call to avoid interleaved send/recv
+        with self._rdma_ctrl_lock:
+            if self.rdma_conn.check_exist(self._key(key)):
+                return Status.ok()
         return Status(StatusCodes.NOT_FOUND)
 
     def _tcp_exists(self, key: bytes) -> Status:
@@ -414,7 +419,9 @@ class InfiniStoreConnector(Connector[bytes, torch.Tensor], AsyncBase):
 
     def _rdma_delete(self, key: bytes) -> Status:
         assert self.rdma_conn is not None
-        self.rdma_conn.delete_keys([self._key(key)])
+        # Serialize control-plane TCP call to avoid interleaved send/recv
+        with self._rdma_ctrl_lock:
+            self.rdma_conn.delete_keys([self._key(key)])
         return Status.ok()
 
     def _tcp_delete(self, key: bytes) -> Status:
