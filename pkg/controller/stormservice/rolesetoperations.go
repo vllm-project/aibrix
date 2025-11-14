@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	apps "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -54,7 +55,8 @@ func (r *StormServiceReconciler) getRoleSetList(ctx context.Context, selector *m
 	return result, nil
 }
 
-func (r *StormServiceReconciler) renderRoleSet(stormService *orchestrationv1alpha1.StormService, index *int, revisionName string) (*orchestrationv1alpha1.RoleSet, error) {
+// renderRoleSet creates a RoleSet with per-role revision annotations
+func (r *StormServiceReconciler) renderRoleSet(stormService *orchestrationv1alpha1.StormService, index *int, revisionName string, roleRevisions map[string]*apps.ControllerRevision) (*orchestrationv1alpha1.RoleSet, error) {
 	roleSet := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: stormService.Name + "-roleset-",
@@ -84,19 +86,34 @@ func (r *StormServiceReconciler) renderRoleSet(stormService *orchestrationv1alph
 	roleSet.Labels[constants.StormServiceNameLabelKey] = stormService.Name
 	roleSet.Labels[constants.StormServiceRevisionLabelKey] = revisionName
 	roleSet.Annotations[constants.RoleSetRevisionAnnotationKey] = revisionName
+
+	// Add per-role revision annotations to RoleSet (will be read by RoleSet controller and injected into pods)
+	for roleName, cr := range roleRevisions {
+		if cr != nil {
+			// Store revision number for this role in annotation
+			roleRevKey := fmt.Sprintf("%s.%s", constants.RoleRevisionAnnotationPrefix, roleName)
+			roleSet.Annotations[roleRevKey] = fmt.Sprintf("%d", cr.Revision)
+
+			// Store revision name for this role (for debugging)
+			roleRevNameKey := fmt.Sprintf("%s.%s", constants.RoleRevisionNameAnnotationPrefix, roleName)
+			roleSet.Annotations[roleRevNameKey] = cr.Name
+		}
+	}
+
 	if index != nil {
 		roleSet.Annotations[constants.RoleSetIndexAnnotationKey] = fmt.Sprintf("%d", *index)
 	}
 	return roleSet, nil
 }
 
-func (r *StormServiceReconciler) createRoleSet(stormService *orchestrationv1alpha1.StormService, count int, revisionName string) (int, error) {
+// createRoleSet creates RoleSets with per-role revision annotations
+func (r *StormServiceReconciler) createRoleSet(stormService *orchestrationv1alpha1.StormService, count int, revisionName string, roleRevisions map[string]*apps.ControllerRevision) (int, error) {
 	if stormService.Spec.Template.Spec == nil {
 		return 0, fmt.Errorf("bad stormService template: nil")
 	}
 	var toCreate []*orchestrationv1alpha1.RoleSet
 	for i := 0; i < count; i++ {
-		roleSet, err := r.renderRoleSet(stormService, nil, revisionName)
+		roleSet, err := r.renderRoleSet(stormService, nil, revisionName, roleRevisions)
 		if err != nil {
 			return 0, err
 		}
@@ -120,8 +137,9 @@ func (r *StormServiceReconciler) deleteRoleSet(toDelete []*orchestrationv1alpha1
 	})
 }
 
-func (r *StormServiceReconciler) updateRoleSet(stormService *orchestrationv1alpha1.StormService, toUpdate []*orchestrationv1alpha1.RoleSet, revisionName string) (int, error) {
-	target, err := r.renderRoleSet(stormService, nil, revisionName)
+// updateRoleSet updates RoleSets with per-role revision annotations
+func (r *StormServiceReconciler) updateRoleSet(stormService *orchestrationv1alpha1.StormService, toUpdate []*orchestrationv1alpha1.RoleSet, revisionName string, roleRevisions map[string]*apps.ControllerRevision) (int, error) {
+	target, err := r.renderRoleSet(stormService, nil, revisionName, roleRevisions)
 	if err != nil {
 		return 0, err
 	}

@@ -50,12 +50,12 @@ func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchest
 
 	var reconcileErr error
 	// 1. reconcile the number of roleSets to meet the spec.Replicas, both currentRevision and updateRevision
-	if scaling, err := r.scaling(ctx, stormService, current, currentRevision.Name, updateRevision.Name); err != nil {
+	if scaling, err := r.scaling(ctx, stormService, current, currentRevision, updateRevision); err != nil {
 		r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, ScalingEventType, "scaling error %s", err.Error())
 		reconcileErr = err
 	} else if !stormService.Spec.Paused && !scaling { // skip rollout when paused and in scaling
 		// 2. check the rollout progress
-		reconcileErr = r.rollout(ctx, stormService, currentRevision.Name, updateRevision.Name)
+		reconcileErr = r.rollout(ctx, stormService, current, currentRevision, updateRevision)
 		if reconcileErr != nil {
 			r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, RolloutEventType, "rollout error %s", reconcileErr.Error())
 		}
@@ -135,7 +135,9 @@ func calculateReplicas(desiredReplica, current, updated int32) (desiredCurrent i
 // 3. RoleSets may be unexpectedly created or deleted.
 // Note: Due to the presence of maxUnavailable, this function does not guarantee that the number of RoleSets
 // will exactly match spec.Replicas upon return — multiple scaling adjustments may be required.
-func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, current *orchestrationv1alpha1.StormService, currentRevision, updatedRevision string) (bool, error) {
+func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, current *orchestrationv1alpha1.StormService, currentCR, updateCR *apps.ControllerRevision) (bool, error) {
+	currentRevision := currentCR.Name
+	updatedRevision := updateCR.Name
 	var scaling bool
 	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
 	if err != nil {
@@ -160,7 +162,9 @@ func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, curr
 			// Do not exceed maxSurge when scaling out.
 			createBudget := utils.MinInt(diff, int(expectReplica+maxSurge-int32(len(allRoleSets))))
 			klog.Infof("scaling out stormservice %s/%s, diff: %d, minAvailable: %d, maxSurge: %d, using revision %s, createBudget %d", stormService.Namespace, stormService.Name, diff, minAvailable, maxSurge, updatedRevision, createBudget)
-			count, err := r.createRoleSet(stormService, createBudget, updatedRevision)
+			// Compute per-role revisions for creating new RoleSets
+			roleRevisions := computeRoleRevisions(current, stormService, currentCR, updateCR)
+			count, err := r.createRoleSet(stormService, createBudget, updatedRevision, roleRevisions)
 			if err != nil {
 				return false, err
 			}
@@ -173,11 +177,15 @@ func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, curr
 			updatedRevisionSets, currentRevisionSets := filterRoleSetByRevision(activeRoleSets, updatedRevision)
 			expectCurrentReplica, expectUpdatedReplica := calculateReplicas(expectReplica, stormService.Status.CurrentReplicas, stormService.Status.UpdatedReplicas)
 			klog.Infof("scaling out stormservice %s/%s, current revision %s, updated revision %s, currentReplica %d, updatedReplica %d, expectCurrentReplica: %d, expectUpdatedReplica: %d", stormService.Namespace, stormService.Name, currentRevision, updatedRevision, len(currentRevisionSets), len(updatedRevisionSets), expectCurrentReplica, expectUpdatedReplica)
-			currentCreated, err := r.createRoleSet(current, int(expectCurrentReplica)-len(currentRevisionSets), currentRevision)
+			// For current revision, all roles use currentCR
+			currentRoleRevisions := computeRoleRevisions(current, current, currentCR, currentCR)
+			currentCreated, err := r.createRoleSet(current, int(expectCurrentReplica)-len(currentRevisionSets), currentRevision, currentRoleRevisions)
 			if err != nil {
 				return false, err
 			}
-			updatedCreated, err := r.createRoleSet(stormService, int(expectUpdatedReplica)-len(updatedRevisionSets), updatedRevision)
+			// For updated revision, compute per-role revisions
+			updatedRoleRevisions := computeRoleRevisions(current, stormService, currentCR, updateCR)
+			updatedCreated, err := r.createRoleSet(stormService, int(expectUpdatedReplica)-len(updatedRevisionSets), updatedRevision, updatedRoleRevisions)
 			if err != nil {
 				return false, err
 			}
@@ -250,8 +258,8 @@ func (r *StormServiceReconciler) scaling(ctx context.Context, stormService, curr
 	return scaling, nil
 }
 
-// Rollout: execute the deployment update logic
-func (r *StormServiceReconciler) rollout(ctx context.Context, stormService *orchestrationv1alpha1.StormService, currentRevision, updatedRevision string) error {
+// Rollout: execute the deployment update logic with per-role revision tracking
+func (r *StormServiceReconciler) rollout(ctx context.Context, stormService, current *orchestrationv1alpha1.StormService, currentCR, updateCR *apps.ControllerRevision) error {
 	allRoleSets, err := r.getRoleSetList(ctx, stormService.Spec.Selector)
 	if err != nil {
 		return err
@@ -260,7 +268,7 @@ func (r *StormServiceReconciler) rollout(ctx context.Context, stormService *orch
 	if stormService.Spec.Replicas != nil {
 		expectReplica = *stormService.Spec.Replicas
 	}
-	updated, _ := filterRoleSetByRevision(allRoleSets, updatedRevision)
+	updated, _ := filterRoleSetByRevision(allRoleSets, updateCR.Name)
 	if len(updated) == int(expectReplica) {
 		return nil
 	}
@@ -269,9 +277,9 @@ func (r *StormServiceReconciler) rollout(ctx context.Context, stormService *orch
 		// By default use RollingUpdate strategy
 		fallthrough
 	case orchestrationv1alpha1.RollingUpdateStormServiceStrategyType:
-		return r.rollingUpdate(allRoleSets, stormService, currentRevision, updatedRevision)
+		return r.rollingUpdate(allRoleSets, stormService, current, currentCR, updateCR)
 	case orchestrationv1alpha1.InPlaceUpdateStormServiceStrategyType:
-		return r.inPlaceUpdate(allRoleSets, stormService, currentRevision, updatedRevision)
+		return r.inPlaceUpdate(allRoleSets, stormService, current, currentCR, updateCR)
 	default:
 		return fmt.Errorf("unexpected stormService strategy type: %s", stormService.Spec.UpdateStrategy.Type)
 	}
@@ -283,7 +291,8 @@ func (r *StormServiceReconciler) rollout(ctx context.Context, stormService *orch
 // 1. Creating new RoleSets with the updated revision
 // 2. Deleting old RoleSets with the previous revision
 // The entire process adheres to MaxSurge and MaxUnavailable constraints
-func (r *StormServiceReconciler) rollingUpdate(allRoleSets []*orchestrationv1alpha1.RoleSet, stormService *orchestrationv1alpha1.StormService, currentRevision, updatedRevision string) error {
+func (r *StormServiceReconciler) rollingUpdate(allRoleSets []*orchestrationv1alpha1.RoleSet, stormService, current *orchestrationv1alpha1.StormService, currentCR, updateCR *apps.ControllerRevision) error {
+	updatedRevision := updateCR.Name
 	minAvailable := MinAvailable(stormService)
 	activeRoleSets, _ := filterTerminatingRoleSets(allRoleSets)
 	ready, _ := filterReadyRoleSets(activeRoleSets)
@@ -318,18 +327,24 @@ func (r *StormServiceReconciler) rollingUpdate(allRoleSets []*orchestrationv1alp
 	if surge < 0 {
 		surge = 0
 	}
-	_, err = r.createRoleSet(stormService, surge, updatedRevision)
+	// Compute per-role revisions for rolling update (for consistency with InPlaceUpdate)
+	roleRevisions := computeRoleRevisions(current, stormService, currentCR, updateCR)
+	_, err = r.createRoleSet(stormService, surge, updatedRevision, roleRevisions)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-// inPlaceUpdate: logic for in-place updates in pooled mode
+// inPlaceUpdate: logic for in-place updates in pooled mode with per-role revision tracking
 // Propagate changes from the StormService to all associated RoleSets
-func (r *StormServiceReconciler) inPlaceUpdate(allRoleSets []*orchestrationv1alpha1.RoleSet, stormService *orchestrationv1alpha1.StormService, currentRevision, updatedRevision string) error {
-	_, outdated := filterRoleSetByRevision(allRoleSets, updatedRevision)
-	if _, err := r.updateRoleSet(stormService, outdated, updatedRevision); err != nil {
+func (r *StormServiceReconciler) inPlaceUpdate(allRoleSets []*orchestrationv1alpha1.RoleSet, stormService, current *orchestrationv1alpha1.StormService, currentCR, updateCR *apps.ControllerRevision) error {
+	// Compute per-role revisions
+	roleRevisions := computeRoleRevisions(current, stormService, currentCR, updateCR)
+
+	// Update all RoleSets with per-role revision info
+	_, outdated := filterRoleSetByRevision(allRoleSets, updateCR.Name)
+	if _, err := r.updateRoleSet(stormService, outdated, updateCR.Name, roleRevisions); err != nil {
 		return err
 	}
 	return nil

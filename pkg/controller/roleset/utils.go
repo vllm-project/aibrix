@@ -146,6 +146,17 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 		}
 	}
 
+	// inject per-role revision labels from RoleSet annotations
+	// These are computed by StormService controller based on role template hash comparison
+	roleRevKey := fmt.Sprintf("%s.%s", constants.RoleRevisionAnnotationPrefix, role.Name)
+	if roleRev, ok := roleSet.Annotations[roleRevKey]; ok {
+		pod.Labels[constants.RoleRevisionLabelKey] = roleRev
+	}
+	roleRevNameKey := fmt.Sprintf("%s.%s", constants.RoleRevisionNameAnnotationPrefix, role.Name)
+	if roleRevName, ok := roleSet.Annotations[roleRevNameKey]; ok {
+		pod.Labels[constants.RoleRevisionNameLabelKey] = roleRevName
+	}
+
 	// manually set the hostname and subdomain for FQDN
 	pod.Spec.Hostname = pod.Name
 	pod.Spec.Subdomain = roleSet.Labels[constants.StormServiceNameLabelKey]

@@ -29,11 +29,19 @@ const (
 	RoleReplicaIndexLabelKey     = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	PodSetNameLabelKey           = "stormservice.orchestration.aibrix.ai/podset-name"
 	PodGroupIndexLabelKey        = "stormservice.orchestration.aibrix.ai/pod-group-index"
+	// RoleRevisionLabelKey tracks the ControllerRevision number for a specific role (on pods)
+	RoleRevisionLabelKey = "stormservice.orchestration.aibrix.ai/role-revision"
+	// RoleRevisionNameLabelKey tracks the ControllerRevision name for a specific role (on pods)
+	RoleRevisionNameLabelKey = "stormservice.orchestration.aibrix.ai/role-revision-name"
 
 	RoleSetIndexAnnotationKey    = "stormservice.orchestration.aibrix.ai/roleset-index"
 	RoleSetRevisionAnnotationKey = "stormservice.orchestration.aibrix.ai/revision"
 	// RoleReplicaIndexAnnotationKey is originally used, to support label filter rank 0 pod, we add label support but keep this annotation for backward compatibility.
 	RoleReplicaIndexAnnotationKey = "stormservice.orchestration.aibrix.ai/role-replica-index"
+	// RoleRevisionAnnotationPrefix is used to store per-role revision info in RoleSet annotations
+	// Example: "stormservice.orchestration.aibrix.ai/role-revision.decode" = "3"
+	RoleRevisionAnnotationPrefix     = "stormservice.orchestration.aibrix.ai/role-revision"
+	RoleRevisionNameAnnotationPrefix = "stormservice.orchestration.aibrix.ai/role-revision-name"
 
 	StormServiceNameEnvKey = "STORM_SERVICE_NAME"
 	RoleSetNameEnvKey      = "ROLESET_NAME"
