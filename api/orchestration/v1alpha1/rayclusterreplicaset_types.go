@@ -56,7 +56,7 @@ type RayClusterReplicaSetSpec struct {
 
 // RayClusterReplicaSetStatus defines the observed state of RayClusterReplicaSet
 type RayClusterReplicaSetStatus struct {
-	// Total number of non-terminated pods targeted by this RayClusterReplicaSet (their labels match the selector).
+	// Total number of active RayClusters targeted by this RayClusterReplicaSet (their labels match the selector).
 	// More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller/#what-is-a-replicationcontroller
 	Replicas int32 `json:"replicas" protobuf:"varint,1,opt,name=replicas"`
 
