@@ -53,6 +53,7 @@ AIBrix ships with a set of built-in algorithms, each optimized for different wor
 * ``least-latency``: routes request to the pod with the lowest average processing latency.
 * ``prefix-cache-preble``: routes request considering both prefix cache hits and pod load, implementation is based of Preble: Efficient Distributed Prompt Scheduling for LLM Serving: https://arxiv.org/abs/2407.00023.
 * ``vtc-basic``: routes request using a hybrid score balancing fairness (user token count) and pod utilization. It is a simple variant of Virtual Token Counter (VTC) algorithm.  See more details at https://github.com/Ying1123/VTC-artifact
+* ``pd``: routes request for prefill-decode disaggregation, splitting processing between prefill and decode pods for optimized performance.
 
 
 Core Principle
@@ -77,9 +78,14 @@ The routing framework is designed to be highly pluggable, typically following th
 
 **Parameter and Return Value Details:**
 
-- `ctx *RoutingContext`: Contains request-level info such as headers, model name ....
-- `readyPodList PodList`: A list of candidate pods that are ready and eligible for routing. This list is pre-filtered and guaranteed to be non-empty.
-- **Returns**: The ip address of the selected pod, or an error if selection fails.
+**Parameters**:
+
+- ``ctx *RoutingContext``: Contains request-level info such as headers, model name ....
+- ``readyPodList PodList``: A list of candidate pods that are ready and eligible for routing. This list is pre-filtered and guaranteed to be non-empty.
+
+**Returns**:
+
+- The ip address of the selected pod, or an error if selection fails.
 
 To add a new algorithm:
 
