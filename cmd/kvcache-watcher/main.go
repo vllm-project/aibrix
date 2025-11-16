@@ -34,6 +34,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
 
 	corev1 "k8s.io/api/core/v1"
@@ -78,29 +79,34 @@ var (
 
 var (
 	metadataVersionGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "kvcache_cluster_version",
-		Help: "Current version of the KVCache cluster metadata.",
+		Subsystem: constants.AibrixSubsystemName,
+		Name:      "kvcache_cluster_version",
+		Help:      "Current version of the KVCache cluster metadata.",
 	}, []string{"name"})
 
 	metadataUpgradeCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "kvcache_metadata_version_upgrade_counter",
-		Help: "Number of times the metadata version has been upgraded.",
+		Subsystem: constants.AibrixSubsystemName,
+		Name:      "kvcache_metadata_version_upgrade_counter",
+		Help:      "Number of times the metadata version has been upgraded.",
 	}, []string{"name"})
 
 	metadataUpdateSkippedCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "kvcache_metadata_update_skipped",
-		Help: "Number of times there's no valid pods and skip the metadata updates.",
+		Subsystem: constants.AibrixSubsystemName,
+		Name:      "kvcache_metadata_update_skipped",
+		Help:      "Number of times there's no valid pods and skip the metadata updates.",
 	}, []string{"name"})
 
 	metadataUpdateFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "kvcache_metadata_update_failures_total",
-		Help: "Total number of failures when updating cluster metadata to Redis.",
+		Subsystem: constants.AibrixSubsystemName,
+		Name:      "kvcache_metadata_update_failures_total",
+		Help:      "Total number of failures when updating cluster metadata to Redis.",
 	}, []string{"name"})
 
 	podStatusPhaseGauge = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "kvcache_pod_status_phase_total",
-			Help: "Number of KVCache pods per status phase.",
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "kvcache_pod_status_phase_total",
+			Help:      "Number of KVCache pods per status phase.",
 		},
 		[]string{"name", "phase"},
 	)

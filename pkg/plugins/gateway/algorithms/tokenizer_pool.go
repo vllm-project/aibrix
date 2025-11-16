@@ -81,29 +81,35 @@ type TokenizerPoolMetrics struct {
 func createTokenizerPoolMetrics() *TokenizerPoolMetrics {
 	return &TokenizerPoolMetrics{
 		activeTokenizers: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "aibrix_tokenizer_pool_active_tokenizers",
-			Help: "Number of active tokenizers in the pool",
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "tokenizer_pool_active_tokenizers",
+			Help:      "Number of active tokenizers in the pool",
 		}),
 		tokenizerCreationSuccesses: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "aibrix_tokenizer_pool_creation_successes_total",
-			Help: "Total number of successful tokenizer creations",
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "tokenizer_pool_creation_successes_total",
+			Help:      "Total number of successful tokenizer creations",
 		}),
 		tokenizerCreationFailures: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "aibrix_tokenizer_pool_creation_failures_total",
-			Help: "Total number of failed tokenizer creations",
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "tokenizer_pool_creation_failures_total",
+			Help:      "Total number of failed tokenizer creations",
 		}),
 		unhealthyTokenizers: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "aibrix_tokenizer_pool_unhealthy_tokenizers_total",
-			Help: "Total number of times tokenizers were marked unhealthy",
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "tokenizer_pool_unhealthy_tokenizers_total",
+			Help:      "Total number of times tokenizers were marked unhealthy",
 		}),
 		tokenizerRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "aibrix_tokenizer_pool_requests_total",
-			Help: "Total number of tokenizer requests by model",
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "tokenizer_pool_requests_total",
+			Help:      "Total number of tokenizer requests by model",
 		}, []string{"model"}),
 		tokenizerLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name:    "aibrix_tokenizer_pool_latency_seconds",
-			Help:    "Tokenizer request latency in seconds",
-			Buckets: prometheus.DefBuckets,
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "tokenizer_pool_latency_seconds",
+			Help:      "Tokenizer request latency in seconds",
+			Buckets:   prometheus.DefBuckets,
 		}, []string{"model"}),
 	}
 }
