@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mistral-7b
+  namespace: default
+  labels:
+    prometheus-discovery: "true"
+spec:
+  selector:
+    model.aibrix.ai/name: "mistral-7b"
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-mistral-7b
+  labels:
+    model.aibrix.ai/name: "mistral-7b"
+    model.aibrix.ai/port: "8000"
+    adapter.model.aibrix.ai/enabled: "true"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      adapter.model.aibrix.ai/enabled: "true"
+      model.aibrix.ai/name: "mistral-7b"
+      app: "mock-mistral-7b"
+  template:
+    metadata:
+      labels:
+        adapter.model.aibrix.ai/enabled: "true"
+        model.aibrix.ai/name: "mistral-7b"
+        app: "mock-mistral-7b"
+    spec:
+      serviceAccountName: mocked-app-sa
+      containers:
+        - name: llm-engine
+          image: aibrix/vllm-mock:nightly
+          command:
+            - python3
+            - app.py
+            - --api_key
+            - test-key-0987654321  # different key
