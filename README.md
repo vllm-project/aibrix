@@ -9,15 +9,21 @@ Welcome to AIBrix, an open-source initiative designed to provide essential build
 
 ## Latest News
 
-- **[2025-11-10]** AIBrix v0.5.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.5.0) and [Blog Post](https://aibrix.github.io/posts/2025-11-10-v0.5.0-release/) for more details
-- **[2025-08-05]** AIBrix v0.4.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.4.0) and [Blog Post](https://aibrix.github.io/posts/2025-08-04-v0.4.0-release/) for more details
-- **[2025-06-10]** The AIBrix team delivered a talk at KubeCon China 2025 titled [AIBrix: Cost-Effective and Scalable Kubernetes Control Plane for vLLM](https://kccncchn2025.sched.com/event/1x5im/introducing-aibrix-cost-effective-and-scalable-kubernetes-control-plane-for-vllm-jiaxin-shan-liguang-xie-bytedance), discussing how the framework optimizes vLLM deployment via Kubernetes for cost efficiency and scalability.
-- **[2025-05-21]** AIBrix v0.3.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.3.0) and [Blog Post](https://aibrix.github.io/posts/2025-05-21-v0.3.0-release/) for more details
-- **[2025-04-04]** AIBrix co-delivered a KubeCon EU 2025 keynote with Google on [LLM-Aware Load Balancing in Kubernetes: A New Era of Efficiency](https://kccnceu2025.sched.com/event/1txC7/keynote-llm-aware-load-balancing-in-kubernetes-a-new-era-of-efficiency-clayton-coleman-distinguished-engineer-google-jiaxin-shan-software-engineer-bytedance), focusing on LLM specific routing solutions.
-- **[2025-03-30]** AIBrix was featured at the [ASPLOS'25](http://asplos-conference.org/asplos2025/) workshop with the presentation [AIBrix: An Open-Source, Large-Scale LLM Inference Infrastructure for System Research](https://docs.google.com/presentation/d/1YDVsPFTIgGXnROGaJ1VKuDDAB4T5fzpE/edit), showcasing its architecture for efficient LLM inference in system research scenarios.
+### Releases
+
+- **[2025-11-10]** AIBrix v0.5.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.5.0) and [Blog Post](https://aibrix.github.io/posts/2025-11-10-v0.5.0-release/) for more details.
+- **[2025-08-05]** AIBrix v0.4.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.4.0) and [Blog Post](https://aibrix.github.io/posts/2025-08-04-v0.4.0-release/) for more details.
+- **[2025-05-21]** AIBrix v0.3.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.3.0) and [Blog Post](https://aibrix.github.io/posts/2025-05-21-v0.3.0-release/) for more details.
 - **[2025-03-09]** AIBrix v0.2.1 is released. DeepSeek-R1 full weights deployment is supported and gateway stability has been improved! Check [Blog Post](https://aibrix.github.io/posts/2025-03-10-deepseek-r1/) for more details.
 - **[2025-02-19]** AIBrix v0.2.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.2.0) and [Blog Post](https://aibrix.github.io/posts/2025-02-05-v0.2.0-release/) for more details.
 - **[2024-11-13]** AIBrix v0.1.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.1.0) and [Blog Post](https://aibrix.github.io/posts/2024-11-12-v0.1.0-release/) for more details.
+
+### Talks and Presentations
+
+- **[2025-11-12]** AIBrix team co-delivered a keynote at KubeCon North America 2025 [AIBrix: Kubernetes-native GenAI Inference Infrastructure](https://www.youtube.com/watch?v=7KHenRXNGAw&t=875s), providing AIBrix overview.
+- **[2025-06-10]** AIBrix team delivered a talk at KubeCon China 2025 titled [AIBrix: Cost-Effective and Scalable Kubernetes Control Plane for vLLM](https://kccncchn2025.sched.com/event/1x5im/introducing-aibrix-cost-effective-and-scalable-kubernetes-control-plane-for-vllm-jiaxin-shan-liguang-xie-bytedance), discussing how the framework optimizes vLLM deployment via Kubernetes for cost efficiency and scalability.
+- **[2025-04-04]** AIBrix team co-delivered a keynote at KubeCon EU 2025 with Google on [LLM-Aware Load Balancing in Kubernetes: A New Era of Efficiency](https://kccnceu2025.sched.com/event/1txC7/keynote-llm-aware-load-balancing-in-kubernetes-a-new-era-of-efficiency-clayton-coleman-distinguished-engineer-google-jiaxin-shan-software-engineer-bytedance), focusing on LLM specific routing solutions.
+- **[2025-03-30]** AIBrix was featured at the [ASPLOS'25](http://asplos-conference.org/asplos2025/) workshop with the presentation [AIBrix: An Open-Source, Large-Scale LLM Inference Infrastructure for System Research](https://docs.google.com/presentation/d/1YDVsPFTIgGXnROGaJ1VKuDDAB4T5fzpE/edit), showcasing its architecture for efficient LLM inference in system research scenarios.
 
 ## Key Features
 
