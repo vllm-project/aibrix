@@ -9,6 +9,7 @@ Welcome to AIBrix, an open-source initiative designed to provide essential build
 
 ## Latest News
 
+- **[2025-11-10]** AIBrix v0.5.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.5.0) and [Blog Post](https://aibrix.github.io/posts/2025-11-10-v0.5.0-release/) for more details
 - **[2025-08-05]** AIBrix v0.4.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.4.0) and [Blog Post](https://aibrix.github.io/posts/2025-08-04-v0.4.0-release/) for more details
 - **[2025-06-10]** The AIBrix team delivered a talk at KubeCon China 2025 titled [AIBrix: Cost-Effective and Scalable Kubernetes Control Plane for vLLM](https://kccncchn2025.sched.com/event/1x5im/introducing-aibrix-cost-effective-and-scalable-kubernetes-control-plane-for-vllm-jiaxin-shan-liguang-xie-bytedance), discussing how the framework optimizes vLLM deployment via Kubernetes for cost efficiency and scalability.
 - **[2025-05-21]** AIBrix v0.3.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.3.0) and [Blog Post](https://aibrix.github.io/posts/2025-05-21-v0.3.0-release/) for more details
