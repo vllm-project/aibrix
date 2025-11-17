@@ -18,7 +18,7 @@ Welcome to AIBrix, an open-source initiative designed to provide essential build
 - **[2025-02-19]** AIBrix v0.2.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.2.0) and [Blog Post](https://aibrix.github.io/posts/2025-02-05-v0.2.0-release/) for more details.
 - **[2024-11-13]** AIBrix v0.1.0 is released. Check out the [release notes](https://github.com/vllm-project/aibrix/releases/tag/v0.1.0) and [Blog Post](https://aibrix.github.io/posts/2024-11-12-v0.1.0-release/) for more details.
 
-### Talks and more
+### Talks and Presentations
 
 - **[2025-11-12]** AIBrix team co-delivered a keynote at KubeCon North America 2025 [AIBrix: Kubernetes-native GenAI Inference Infrastructure](https://www.youtube.com/watch?v=7KHenRXNGAw&t=875s), providing AIBrix overview.
 - **[2025-06-10]** AIBrix team delivered a talk at KubeCon China 2025 titled [AIBrix: Cost-Effective and Scalable Kubernetes Control Plane for vLLM](https://kccncchn2025.sched.com/event/1x5im/introducing-aibrix-cost-effective-and-scalable-kubernetes-control-plane-for-vllm-jiaxin-shan-liguang-xie-bytedance), discussing how the framework optimizes vLLM deployment via Kubernetes for cost efficiency and scalability.
