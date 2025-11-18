@@ -51,7 +51,7 @@ spec:
           tolerations:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.envoyProxy.affinity }}
+          {{- with .Values.gateway.envoyProxy.affinity }}
           affinity:
             {{- toYaml . | nindent 12 }}
           {{- end }}
