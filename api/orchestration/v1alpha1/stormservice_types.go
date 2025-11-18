@@ -119,10 +119,15 @@ type StormServiceStatus struct {
 
 	// The label selector information of the pods belonging to the StormService object.
 	ScalingTargetSelector string `json:"scalingTargetSelector,omitempty"`
-	// RoleStatuses mirrors the role-level status from the underlying RoleSet.
-	// This field is only populated in pool mode, where a single RoleSet contains multiple logical roles
-	// (e.g., "prefill" and "decode"). In traditional replica mode, this field will be empty.
-	// It provides detailed of each role, such as replicas, readyReplicas, and revision info.
+
+	// RoleStatuses provides aggregated pod-level status for each role across all RoleSets.
+	// This field is populated in both pool and replica modes:
+	// - Pool mode: Aggregates roles across RoleSets (e.g., total prefill pods, total decode pods)
+	// - Replica mode: Aggregates the same role across multiple RoleSets
+	//
+	// Unlike top-level fields (Replicas, ReadyReplicas) which count RoleSets, this field
+	// provides pod-level counts grouped by role name, including replicas, readyReplicas,
+	// notReadyReplicas, updatedReplicas, and updatedReadyReplicas.
 	//
 	// +optional
 	RoleStatuses []RoleStatus `json:"roleStatuses,omitempty"`

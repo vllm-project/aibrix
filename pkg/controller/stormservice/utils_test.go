@@ -1517,3 +1517,281 @@ func TestComputeRoleRevisions(t *testing.T) {
 		})
 	}
 }
+
+func TestAggregateRoleStatuses(t *testing.T) {
+	tests := []struct {
+		name     string
+		roleSets []*orchestrationv1alpha1.RoleSet
+		expected []orchestrationv1alpha1.RoleStatus
+	}{
+		{
+			name:     "empty RoleSet list",
+			roleSets: []*orchestrationv1alpha1.RoleSet{},
+			expected: []orchestrationv1alpha1.RoleStatus{},
+		},
+		{
+			name: "single RoleSet with one role - replica mode",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Roles: []orchestrationv1alpha1.RoleStatus{
+							{
+								Name:                 "prefill",
+								Replicas:             5,
+								ReadyReplicas:        3,
+								NotReadyReplicas:     2,
+								UpdatedReplicas:      4,
+								UpdatedReadyReplicas: 3,
+							},
+						},
+					},
+				},
+			},
+			expected: []orchestrationv1alpha1.RoleStatus{
+				{
+					Name:                 "prefill",
+					Replicas:             5,
+					ReadyReplicas:        3,
+					NotReadyReplicas:     2,
+					UpdatedReplicas:      4,
+					UpdatedReadyReplicas: 3,
+				},
+			},
+		},
+		{
+			name: "single RoleSet with multiple roles - pool mode",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Roles: []orchestrationv1alpha1.RoleStatus{
+							{
+								Name:                 "prefill",
+								Replicas:             5,
+								ReadyReplicas:        4,
+								NotReadyReplicas:     1,
+								UpdatedReplicas:      5,
+								UpdatedReadyReplicas: 4,
+							},
+							{
+								Name:                 "decode",
+								Replicas:             10,
+								ReadyReplicas:        10,
+								NotReadyReplicas:     0,
+								UpdatedReplicas:      10,
+								UpdatedReadyReplicas: 10,
+							},
+						},
+					},
+				},
+			},
+			expected: []orchestrationv1alpha1.RoleStatus{
+				{
+					Name:                 "decode",
+					Replicas:             10,
+					ReadyReplicas:        10,
+					NotReadyReplicas:     0,
+					UpdatedReplicas:      10,
+					UpdatedReadyReplicas: 10,
+				},
+				{
+					Name:                 "prefill",
+					Replicas:             5,
+					ReadyReplicas:        4,
+					NotReadyReplicas:     1,
+					UpdatedReplicas:      5,
+					UpdatedReadyReplicas: 4,
+				},
+			},
+		},
+		{
+			name: "multiple RoleSets with same role - replica mode aggregation",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Roles: []orchestrationv1alpha1.RoleStatus{
+							{
+								Name:                 "worker",
+								Replicas:             10,
+								ReadyReplicas:        8,
+								NotReadyReplicas:     2,
+								UpdatedReplicas:      10,
+								UpdatedReadyReplicas: 8,
+							},
+						},
+					},
+				},
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Roles: []orchestrationv1alpha1.RoleStatus{
+							{
+								Name:                 "worker",
+								Replicas:             10,
+								ReadyReplicas:        10,
+								NotReadyReplicas:     0,
+								UpdatedReplicas:      10,
+								UpdatedReadyReplicas: 10,
+							},
+						},
+					},
+				},
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Roles: []orchestrationv1alpha1.RoleStatus{
+							{
+								Name:                 "worker",
+								Replicas:             10,
+								ReadyReplicas:        5,
+								NotReadyReplicas:     5,
+								UpdatedReplicas:      8,
+								UpdatedReadyReplicas: 5,
+							},
+						},
+					},
+				},
+			},
+			expected: []orchestrationv1alpha1.RoleStatus{
+				{
+					Name:                 "worker",
+					Replicas:             30,
+					ReadyReplicas:        23,
+					NotReadyReplicas:     7,
+					UpdatedReplicas:      28,
+					UpdatedReadyReplicas: 23,
+				},
+			},
+		},
+		{
+			name: "multiple RoleSets with multiple roles - pool mode aggregation",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Roles: []orchestrationv1alpha1.RoleStatus{
+							{
+								Name:                 "prefill",
+								Replicas:             5,
+								ReadyReplicas:        4,
+								NotReadyReplicas:     1,
+								UpdatedReplicas:      5,
+								UpdatedReadyReplicas: 4,
+							},
+							{
+								Name:                 "decode",
+								Replicas:             10,
+								ReadyReplicas:        10,
+								NotReadyReplicas:     0,
+								UpdatedReplicas:      10,
+								UpdatedReadyReplicas: 10,
+							},
+						},
+					},
+				},
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Roles: []orchestrationv1alpha1.RoleStatus{
+							{
+								Name:                 "prefill",
+								Replicas:             5,
+								ReadyReplicas:        5,
+								NotReadyReplicas:     0,
+								UpdatedReplicas:      5,
+								UpdatedReadyReplicas: 5,
+							},
+							{
+								Name:                 "decode",
+								Replicas:             10,
+								ReadyReplicas:        8,
+								NotReadyReplicas:     2,
+								UpdatedReplicas:      10,
+								UpdatedReadyReplicas: 8,
+							},
+						},
+					},
+				},
+			},
+			expected: []orchestrationv1alpha1.RoleStatus{
+				{
+					Name:                 "decode",
+					Replicas:             20,
+					ReadyReplicas:        18,
+					NotReadyReplicas:     2,
+					UpdatedReplicas:      20,
+					UpdatedReadyReplicas: 18,
+				},
+				{
+					Name:                 "prefill",
+					Replicas:             10,
+					ReadyReplicas:        9,
+					NotReadyReplicas:     1,
+					UpdatedReplicas:      10,
+					UpdatedReadyReplicas: 9,
+				},
+			},
+		},
+		{
+			name: "RoleSet with no roles in status",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Roles: []orchestrationv1alpha1.RoleStatus{},
+					},
+				},
+			},
+			expected: []orchestrationv1alpha1.RoleStatus{},
+		},
+		{
+			name: "mixed RoleSets - some with status, some without",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Roles: []orchestrationv1alpha1.RoleStatus{
+							{
+								Name:                 "worker",
+								Replicas:             10,
+								ReadyReplicas:        10,
+								NotReadyReplicas:     0,
+								UpdatedReplicas:      10,
+								UpdatedReadyReplicas: 10,
+							},
+						},
+					},
+				},
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Roles: []orchestrationv1alpha1.RoleStatus{},
+					},
+				},
+				{
+					Status: orchestrationv1alpha1.RoleSetStatus{
+						Roles: []orchestrationv1alpha1.RoleStatus{
+							{
+								Name:                 "worker",
+								Replicas:             5,
+								ReadyReplicas:        3,
+								NotReadyReplicas:     2,
+								UpdatedReplicas:      5,
+								UpdatedReadyReplicas: 3,
+							},
+						},
+					},
+				},
+			},
+			expected: []orchestrationv1alpha1.RoleStatus{
+				{
+					Name:                 "worker",
+					Replicas:             15,
+					ReadyReplicas:        13,
+					NotReadyReplicas:     2,
+					UpdatedReplicas:      15,
+					UpdatedReadyReplicas: 13,
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := aggregateRoleStatuses(tt.roleSets)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
