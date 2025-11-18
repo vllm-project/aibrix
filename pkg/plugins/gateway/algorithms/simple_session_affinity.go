@@ -101,17 +101,21 @@ func (r *sessionAffinityRouter) setSessionHeader(ctx *types.RoutingContext, addr
 // It also sets the session ID in the response so the client can stick to this pod next time.
 func (r *sessionAffinityRouter) fallbackRoute(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	pods := readyPodList.All()
+	rand.Shuffle(len(pods), func(i, j int) { pods[i], pods[j] = pods[j], pods[i] })
 
-	selected := pods[rand.Intn(len(pods))]
-	port := utils.GetModelPortForPod(ctx.RequestID, selected)
-	if port == 0 || selected.Status.PodIP == "" {
-		return "", fmt.Errorf("selected pod has no valid network address")
+	for _, selected := range pods {
+		port := utils.GetModelPortForPod(ctx.RequestID, selected)
+		// A routable pod must have a valid IP and port.
+		if port == 0 || selected.Status.PodIP == "" {
+			klog.V(4).Infof("Fallback skipping pod %s with invalid "+
+				"network address (IP: %s, Port: %d)", selected.Name, selected.Status.PodIP, port)
+			continue
+		}
+		addr := net.JoinHostPort(selected.Status.PodIP, strconv.Itoa(int(port)))
+		ctx.SetTargetPod(selected)
+		r.setSessionHeader(ctx, addr)
+		klog.V(5).Infof("Fallback to random pod: %s (%s)", selected.Name, addr)
+		return ctx.TargetAddress(), nil
 	}
-	addr := net.JoinHostPort(selected.Status.PodIP, strconv.Itoa(int(port)))
-
-	ctx.SetTargetPod(selected)
-	r.setSessionHeader(ctx, addr)
-	klog.V(5).Infof("Fallback to random pod: %s (%s)", selected.Name, addr)
-
-	return ctx.TargetAddress(), nil
+	return "", fmt.Errorf("no fallback pod found with a valid network address")
 }
