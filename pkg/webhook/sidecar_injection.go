@@ -32,7 +32,7 @@ const (
 	// SidecarInjectionRuntimeImageAnnotation Annotation used to specify a custom image for the sidecar container
 	SidecarInjectionRuntimeImageAnnotation = "model.aibrix.ai/sidecar-runtime-image"
 	SidecarName                            = "aibrix-runtime"
-	SidecarImage                           = "aibrix/runtime:v0.4.0"
+	SidecarImage                           = "aibrix/runtime:v0.5.0"
 	SidecarCommand                         = "aibrix_runtime"
 	SidecarPort                            = 8080
 	SidecarHealthPath                      = "/healthz"

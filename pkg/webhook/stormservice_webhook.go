@@ -89,7 +89,7 @@ func (r *StormServiceCustomDefaulter) injectAIBrixRuntime(stormService *orchestr
 	}
 
 	if sidecarImage == "" {
-		sidecarImage = SidecarImage // default v0.4.0
+		sidecarImage = SidecarImage // default
 	}
 
 	for i := range spec.Roles {

@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	testRuntimeImage = "aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.4.0"
+	testRuntimeImage = "aibrix-container-registry-cn-beijing.cr.volces.com/aibrix/runtime:v0.5.0"
 )
 
 var _ = ginkgo.Describe("stormservice default webhook", func() {
