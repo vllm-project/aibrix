@@ -296,3 +296,38 @@ func computeRoleRevisions(current, update *orchestrationv1alpha1.StormService, c
 
 	return roleRevisions
 }
+
+// aggregateRoleStatuses aggregates role statuses from all RoleSets by role name.
+// This provides pod-level aggregation across all RoleSets, which is useful in both:
+// - Pool mode: Multiple roles per RoleSet (e.g., prefill, decode)
+// - Replica mode: Single role per RoleSet, aggregated across multiple RoleSets
+// Returns aggregated role statuses sorted by role name for consistent output.
+func aggregateRoleStatuses(roleSets []*orchestrationv1alpha1.RoleSet) []orchestrationv1alpha1.RoleStatus {
+	roleMap := make(map[string]orchestrationv1alpha1.RoleStatus)
+
+	// Aggregate statuses from all RoleSets, even if they are not ready
+	for _, rs := range roleSets {
+		for _, roleStatus := range rs.Status.Roles {
+			aggStatus := roleMap[roleStatus.Name]
+			aggStatus.Name = roleStatus.Name
+			aggStatus.Replicas += roleStatus.Replicas
+			aggStatus.ReadyReplicas += roleStatus.ReadyReplicas
+			aggStatus.NotReadyReplicas += roleStatus.NotReadyReplicas
+			aggStatus.UpdatedReplicas += roleStatus.UpdatedReplicas
+			aggStatus.UpdatedReadyReplicas += roleStatus.UpdatedReadyReplicas
+			roleMap[roleStatus.Name] = aggStatus
+		}
+	}
+
+	// Convert map to slice and sort by role name for consistent output
+	roleStatuses := make([]orchestrationv1alpha1.RoleStatus, 0, len(roleMap))
+	for _, status := range roleMap {
+		roleStatuses = append(roleStatuses, status)
+	}
+
+	sort.Slice(roleStatuses, func(i, j int) bool {
+		return roleStatuses[i].Name < roleStatuses[j].Name
+	})
+
+	return roleStatuses
+}

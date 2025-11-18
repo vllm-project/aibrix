@@ -413,6 +413,9 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 	// TODO: add pod template hash to avoid errors during upgrade.
 	stormService.Status.ScalingTargetSelector = fmt.Sprintf("%s=%s", constants.StormServiceNameLabelKey, stormService.Name)
 
+	// Aggregate role statuses from all RoleSets for both pool and replica modes
+	stormService.Status.RoleStatuses = aggregateRoleStatuses(allRoleSets)
+
 	if !apiequality.Semantic.DeepEqual(checkpoint, &stormService.Status) {
 		err = utils.UpdateStatus(ctx, r.Scheme, r.Client, stormService)
 		if err != nil {
