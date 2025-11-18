@@ -62,7 +62,7 @@ func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchest
 
 		if canaryEnabled {
 			// Handle canary deployment
-			if result, err := r.processCanaryUpdate(ctx, stormService, currentRevision.Name, updateRevision.Name); err != nil {
+			if result, err := r.processCanaryUpdate(ctx, stormService, current, currentRevision, updateRevision); err != nil {
 				r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, "CanaryError", "canary deployment error: %s", err.Error())
 				reconcileErr = err
 			} else if result.Requeue || result.RequeueAfter > 0 {
@@ -98,8 +98,7 @@ func (r *StormServiceReconciler) sync(ctx context.Context, stormService *orchest
 		// Reapply current weight with new replica count
 		currentWeight := r.getCurrentWeight(stormService)
 		if currentWeight > 0 {
-			err := r.applyCanaryWeight(ctx, stormService, currentWeight,
-				stormService.Status.CurrentRevision, stormService.Status.UpdateRevision)
+			err := r.applyCanaryWeight(ctx, stormService, current, currentWeight, currentRevision, updateRevision)
 			if err != nil {
 				klog.Errorf("Failed to recalculate canary weight after scaling: %v", err)
 				r.EventRecorder.Eventf(stormService, corev1.EventTypeWarning, "CanaryScalingError",
@@ -554,11 +553,71 @@ func (r *StormServiceReconciler) canaryRollingUpdate(allRoleSets []*orchestratio
 	return nil
 }
 
-// canaryInPlaceUpdate: in-place update logic for canary deployment
+// canaryInPlaceUpdate: in-place update logic for canary deployment with affected-role filtering
+// In pool mode (1 RoleSet), this updates all pods of affected roles while leaving unchanged roles alone.
+// In replica mode (multiple RoleSets), this updates RoleSets up to the canary limit.
 func (r *StormServiceReconciler) canaryInPlaceUpdate(allRoleSets []*orchestrationv1alpha1.RoleSet, stormService, current *orchestrationv1alpha1.StormService, currentCR, updateCR *apps.ControllerRevision, canaryLimit int32) error {
-	// For now, fall back to regular in-place update logic
-	// TODO: Implement canary-specific in-place update logic
-	return r.inPlaceUpdate(allRoleSets, stormService, current, currentCR, updateCR)
+	// Compute per-role revisions to detect which roles changed
+	roleRevisions := computeRoleRevisions(current, stormService, currentCR, updateCR)
+
+	// Identify affected roles (roles assigned to updateCR)
+	affectedRoles := []string{}
+	for roleName, revision := range roleRevisions {
+		if revision.Name == updateCR.Name {
+			affectedRoles = append(affectedRoles, roleName)
+		}
+	}
+
+	if len(affectedRoles) == 0 {
+		klog.Infof("Canary in-place update for StormService %s/%s: no roles changed, skipping update",
+			stormService.Namespace, stormService.Name)
+		return nil
+	}
+
+	klog.Infof("Canary in-place update for StormService %s/%s: affected roles=%v, updating only these roles",
+		stormService.Namespace, stormService.Name, affectedRoles)
+	r.EventRecorder.Eventf(stormService, "Normal", "CanaryInPlaceUpdate",
+		"Canary updating affected roles: %v (unchanged roles will not be updated)", affectedRoles)
+
+	if r.isReplicaMode(stormService) {
+		// Replica mode: Update RoleSets up to canary limit, but only update affected roles in each RoleSet
+		active, _ := filterTerminatingRoleSets(allRoleSets)
+		updated, outdated := filterRoleSetByRevision(active, updateCR.Name)
+
+		// If we already have enough updated RoleSets, we're done
+		if int32(len(updated)) >= canaryLimit {
+			klog.Infof("Canary limit reached: %d/%d RoleSets updated", len(updated), canaryLimit)
+			return nil
+		}
+
+		// Update outdated RoleSets up to the canary limit
+		toUpdate := outdated
+		if int32(len(toUpdate)) > canaryLimit-int32(len(updated)) {
+			toUpdate = toUpdate[:canaryLimit-int32(len(updated))]
+		}
+
+		if len(toUpdate) > 0 {
+			klog.Infof("Updating %d RoleSets to revision %s with affected roles: %v",
+				len(toUpdate), updateCR.Name, affectedRoles)
+			if _, err := r.updateRoleSet(stormService, toUpdate, updateCR.Name, roleRevisions); err != nil {
+				return err
+			}
+		}
+	} else {
+		// Pool mode: Update all RoleSets (typically 1), but only affected roles will change
+		// Unaffected roles will keep their current revision
+		_, outdated := filterRoleSetByRevision(allRoleSets, updateCR.Name)
+
+		if len(outdated) > 0 {
+			klog.Infof("Pool mode: updating %d RoleSet(s) with affected roles %v, unaffected roles unchanged",
+				len(outdated), affectedRoles)
+			if _, err := r.updateRoleSet(stormService, outdated, updateCR.Name, roleRevisions); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // inPlaceUpdate: logic for in-place updates in pooled mode with per-role revision tracking

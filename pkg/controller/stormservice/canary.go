@@ -22,6 +22,7 @@ import (
 	"math"
 	"time"
 
+	apps "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/klog/v2"
@@ -118,7 +119,10 @@ func (r *StormServiceReconciler) isReplicaMode(stormService *orchestrationv1alph
 }
 
 // processCanaryUpdate handles canary deployment progression
-func (r *StormServiceReconciler) processCanaryUpdate(ctx context.Context, stormService *orchestrationv1alpha1.StormService, currentRevision, updateRevision string) (ctrl.Result, error) {
+func (r *StormServiceReconciler) processCanaryUpdate(ctx context.Context, stormService, current *orchestrationv1alpha1.StormService, currentCR, updateCR *apps.ControllerRevision) (ctrl.Result, error) {
+	currentRevision := currentCR.Name
+	updateRevision := updateCR.Name
+
 	// Initialize canary status if not exists
 	if stormService.Status.CanaryStatus == nil {
 		return r.initializeCanaryStatus(ctx, stormService, currentRevision, updateRevision)
@@ -194,7 +198,7 @@ func (r *StormServiceReconciler) processCanaryUpdate(ctx context.Context, stormS
 
 	// Handle weight setting step
 	if currentStep.SetWeight != nil {
-		return r.processCanaryWeightStep(ctx, stormService, *currentStep.SetWeight, currentRevision, updateRevision)
+		return r.processCanaryWeightStep(ctx, stormService, current, *currentStep.SetWeight, currentCR, updateCR)
 	}
 
 	// If step has neither pause nor setWeight, advance to next step
@@ -277,7 +281,7 @@ func (r *StormServiceReconciler) processCanaryPauseStep(ctx context.Context, sto
 }
 
 // processCanaryWeightStep applies the weight setting and advances to next step
-func (r *StormServiceReconciler) processCanaryWeightStep(ctx context.Context, stormService *orchestrationv1alpha1.StormService, weight int32, currentRevision, updateRevision string) (ctrl.Result, error) {
+func (r *StormServiceReconciler) processCanaryWeightStep(ctx context.Context, stormService, current *orchestrationv1alpha1.StormService, weight int32, currentCR, updateCR *apps.ControllerRevision) (ctrl.Result, error) {
 	// Only emit event if phase is changing or this is first time applying this weight
 	lastWeight := r.getCurrentWeight(stormService)
 	needsEvent := lastWeight != weight
@@ -296,12 +300,12 @@ func (r *StormServiceReconciler) processCanaryWeightStep(ctx context.Context, st
 	}
 
 	// Apply the weight-based replica distribution
-	if err := r.applyCanaryWeight(ctx, stormService, weight, currentRevision, updateRevision); err != nil {
+	if err := r.applyCanaryWeight(ctx, stormService, current, weight, currentCR, updateCR); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to apply canary weight %d: %w", weight, err)
 	}
 
 	// Check if the canary target has been achieved before advancing
-	if achieved, requeue := r.isCanaryTargetAchieved(ctx, stormService, updateRevision); achieved {
+	if achieved, requeue := r.isCanaryTargetAchieved(ctx, stormService, updateCR.Name); achieved {
 		// Target achieved, advance to next step
 		klog.Infof("Canary target achieved for weight %d%% at step %d, advancing to next step",
 			weight, stormService.Status.CanaryStatus.CurrentStep)
@@ -316,7 +320,7 @@ func (r *StormServiceReconciler) processCanaryWeightStep(ctx context.Context, st
 
 // applyCanaryWeight distributes replicas based on canary weight
 // This function recalculates replica distribution whenever scaling changes totalReplicas
-func (r *StormServiceReconciler) applyCanaryWeight(ctx context.Context, stormService *orchestrationv1alpha1.StormService, weight int32, currentRevision, updateRevision string) error {
+func (r *StormServiceReconciler) applyCanaryWeight(ctx context.Context, stormService, current *orchestrationv1alpha1.StormService, weight int32, currentCR, updateCR *apps.ControllerRevision) error {
 	totalReplicas := int32(1)
 	if stormService.Spec.Replicas != nil {
 		totalReplicas = *stormService.Spec.Replicas
@@ -339,9 +343,9 @@ func (r *StormServiceReconciler) applyCanaryWeight(ctx context.Context, stormSer
 		weight, stormService.Namespace, stormService.Name, totalReplicas, canaryReplicas, stableReplicas)
 
 	if r.isReplicaMode(stormService) {
-		return r.applyReplicaModeCanaryWeight(ctx, stormService, weight, totalReplicas, currentRevision, updateRevision)
+		return r.applyReplicaModeCanaryWeight(ctx, stormService, weight, totalReplicas, currentCR.Name, updateCR.Name)
 	} else {
-		return r.applyPooledModeCanaryWeight(ctx, stormService, weight, totalReplicas, currentRevision, updateRevision)
+		return r.applyPooledModeCanaryWeight(ctx, stormService, weight, totalReplicas, current, currentCR, updateCR)
 	}
 }
 
@@ -379,35 +383,85 @@ func (r *StormServiceReconciler) applyReplicaModeCanaryWeight(ctx context.Contex
 	return nil
 }
 
-// applyPooledModeCanaryWeight distributes new version across pods within roles based on weight
-func (r *StormServiceReconciler) applyPooledModeCanaryWeight(ctx context.Context, stormService *orchestrationv1alpha1.StormService, weight, totalReplicas int32, currentRevision, updateRevision string) error {
-	klog.Infof("Pooled mode canary: applying %d%% weight to roles", weight)
+// applyPooledModeCanaryWeight distributes new version across affected roles based on weight
+// Now with affected-role detection: only roles that changed will be updated
+func (r *StormServiceReconciler) applyPooledModeCanaryWeight(ctx context.Context, stormService *orchestrationv1alpha1.StormService, weight, totalReplicas int32, current *orchestrationv1alpha1.StormService, currentCR, updateCR *apps.ControllerRevision) error {
+	// Compute per-role revisions to detect which roles changed
+	roleRevisions := computeRoleRevisions(current, stormService, currentCR, updateCR)
 
-	// In pooled mode, calculate canary pod count for each role for logging
-	totalCanaryPods := int32(0)
+	// Identify affected (changed) and unaffected roles
+	affectedRoles := []string{}
+	unaffectedRoles := []string{}
+	affectedRolePods := int32(0)
+	totalPods := int32(0)
+
 	for _, role := range stormService.Spec.Template.Spec.Roles {
 		roleReplicas := role.Replicas
 		if roleReplicas == nil {
-			roleReplicas = ptr.To(int32(1)) // Default to 1 if not specified
+			roleReplicas = ptr.To(int32(1))
 		}
+		totalPods += *roleReplicas
 
-		// Calculate how many pods in this role should be on canary
-		canaryPods := int32(math.Ceil(float64(*roleReplicas) * float64(weight) / 100.0))
-		totalCanaryPods += canaryPods
-
-		klog.Infof("Role %s: %d/%d pods on canary version (%d%%)",
-			role.Name, canaryPods, *roleReplicas, weight)
+		revision, exists := roleRevisions[role.Name]
+		if exists && revision.Name == updateCR.Name {
+			// This role changed
+			affectedRoles = append(affectedRoles, role.Name)
+			affectedRolePods += *roleReplicas
+		} else {
+			// This role didn't change
+			unaffectedRoles = append(unaffectedRoles, role.Name)
+		}
 	}
 
-	// NOTE: Per-role canary counts are tracked in status.RoleStatuses[i].UpdatedReplicas
-	// This is updated by the main sync logic in updateStatus()
+	if len(affectedRoles) == 0 {
+		klog.Infof("Pooled mode canary: no roles changed, skipping canary weight application")
+		r.EventRecorder.Event(stormService, "Normal", "CanaryPooledMode", "No roles changed in this update")
+		return nil
+	}
+
+	// Calculate canary pods for affected roles only
+	// Note: In pool mode with InPlaceUpdate, all pods of affected roles will be updated together
+	// The weight indicates progression through canary steps, but updates are all-or-nothing per role
+	totalCanaryPods := int32(0)
+	for _, role := range stormService.Spec.Template.Spec.Roles {
+		if !contains(affectedRoles, role.Name) {
+			continue // Skip unaffected roles
+		}
+
+		roleReplicas := role.Replicas
+		if roleReplicas == nil {
+			roleReplicas = ptr.To(int32(1))
+		}
+
+		// In pool mode with InPlaceUpdate, all pods of this affected role will be updated
+		totalCanaryPods += *roleReplicas
+
+		klog.Infof("Affected role %s: %d pods will be updated (100%% of this role)",
+			role.Name, *roleReplicas)
+	}
+
+	klog.Infof("Pooled mode canary at %d%% weight: %d affected roles %v (%d pods), %d unaffected roles %v (%d pods) - updating all pods of affected roles",
+		weight, len(affectedRoles), affectedRoles, affectedRolePods,
+		len(unaffectedRoles), unaffectedRoles, totalPods-affectedRolePods)
 
 	r.EventRecorder.Eventf(stormService, "Normal", "CanaryPooledMode",
-		"Applying pooled mode canary: %d%% of pods per role on new version (targeting ~%d total canary pods)",
-		weight, totalCanaryPods)
+		"Canary step %d%%: updating %d affected roles %v (%d pods total), leaving %d unchanged roles %v",
+		weight, len(affectedRoles), affectedRoles, totalCanaryPods, len(unaffectedRoles), unaffectedRoles)
 
-	// The sync.go rollout logic will use the weight to control pod updates
+	// NOTE: Per-role canary counts are tracked in status.RoleStatuses[i].UpdatedReplicas
+	// The actual update logic is in canaryInPlaceUpdate() which uses roleRevisions to update only affected roles
+
 	return nil
+}
+
+// contains checks if a slice contains a string
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 // advanceCanaryStep moves to the next step in canary deployment

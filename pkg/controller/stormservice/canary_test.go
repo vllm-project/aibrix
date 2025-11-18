@@ -23,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -316,6 +317,25 @@ func TestProcessCanaryWeightStep_WaitsForTarget(t *testing.T) {
 		},
 	}
 
+	// Create mock ControllerRevision objects
+	currentCR := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rev-1",
+			Namespace: "default",
+		},
+		Revision: 1,
+	}
+	updateCR := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rev-2",
+			Namespace: "default",
+		},
+		Revision: 2,
+	}
+
+	// Create a copy of stormService for "current"
+	current := stormService.DeepCopy()
+
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(stormService, updatedRoleSet).WithStatusSubresource(stormService).Build()
 	eventRecorder := record.NewFakeRecorder(10)
 
@@ -326,7 +346,7 @@ func TestProcessCanaryWeightStep_WaitsForTarget(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	result, err := r.processCanaryWeightStep(ctx, stormService, 25, "rev-1", "rev-2")
+	result, err := r.processCanaryWeightStep(ctx, stormService, current, 25, currentCR, updateCR)
 
 	require.NoError(t, err)
 	// Should NOT advance - target not achieved (1 < 3)
