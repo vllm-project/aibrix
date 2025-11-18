@@ -70,7 +70,7 @@ You can specify a custom runtime image using an annotation:
       name: vllm-server
       annotations:
         model.aibrix.ai/sidecar-injection: "true"
-        model.aibrix.ai/sidecar-runtime-image: "aibrix/runtime:v0.4.0"  # Custom image
+        model.aibrix.ai/sidecar-runtime-image: "aibrix/runtime:v0.5.0"  # Custom image
     spec:
       # ...
 
@@ -106,7 +106,7 @@ If you prefer manual control, you can add the runtime sidecar directly to your d
         # Your main container configuration...
 
       - name: aibrix-runtime
-        image: aibrix/runtime:v0.4.0
+        image: aibrix/runtime:v0.5.0
         command:
         - aibrix_runtime
         - --port

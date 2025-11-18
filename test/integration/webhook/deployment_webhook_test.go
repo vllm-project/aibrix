@@ -104,7 +104,7 @@ var _ = ginkgo.Describe("deployment default webhook", func() {
 						map[string]string{
 							webhook.SidecarInjectionAnnotation: "true",
 						}).
-						AddRuntimeContainer("aibrix-runtime", "aibrix/runtime:v0.4.0", []string{
+						AddRuntimeContainer("aibrix-runtime", "aibrix/runtime:v0.5.0", []string{
 							"aibrix_runtime", "--port", "8080",
 						}).
 						AddModelContainer("vllm-worker", "vllm/vllm-openai:latest", []string{
