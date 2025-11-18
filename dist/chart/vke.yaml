@@ -32,6 +32,7 @@ controllerManager:
         periodSeconds: 10
   gatewayTimeoutSeconds: 120
   tolerations: []
+  affinity: {}
 
 gatewayPlugin:
   replicaCount: 1
@@ -85,12 +86,14 @@ gpuOptimizer:
       host: aibrix-redis-master
       port: 6379
   tolerations: []
+  affinity: {}
 
 gateway:
   envoyProxy:
     replicas: 1
     imagePullSecrets: []
     tolerations: []
+    affinity: {}
     container:
       envoy:
         image: aibrix-public-release-cn-beijing.cr.volces.com/envoyproxy/envoy:v1.33.2
@@ -137,6 +140,7 @@ metadata:
           cpu: 10m
           memory: 64Mi
     tolerations: []
+    affinity: {}
     redis:
       host: aibrix-redis-master
       port: 6379
