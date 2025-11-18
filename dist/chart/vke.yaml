@@ -93,7 +93,27 @@ gateway:
     replicas: 1
     imagePullSecrets: []
     tolerations: []
-    affinity: {}
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                      - envoy
+              topologyKey: "kubernetes.io/hostname"
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: nvidia.com/gpu.present
+                  operator: NotIn
+                  values:
+                    - "true"
     container:
       envoy:
         image: aibrix-public-release-cn-beijing.cr.volces.com/envoyproxy/envoy:v1.33.2
