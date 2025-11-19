@@ -301,20 +301,33 @@ func computeRoleRevisions(current, update *orchestrationv1alpha1.StormService, c
 // This provides pod-level aggregation across all RoleSets, which is useful in both:
 // - Pool mode: Multiple roles per RoleSet (e.g., prefill, decode)
 // - Replica mode: Single role per RoleSet, aggregated across multiple RoleSets
+//
+// The aggregation behavior:
+// - Replicas, ReadyReplicas, NotReadyReplicas: Aggregated from ALL RoleSets regardless of revision
+// - UpdatedReplicas, UpdatedReadyReplicas: Only aggregated from RoleSets matching updateRevision
+//
+// This ensures that during a rollout, Updated* fields reflect pods at the target revision,
+// while other fields show total capacity across all revisions.
+//
 // Returns aggregated role statuses sorted by role name for consistent output.
-func aggregateRoleStatuses(roleSets []*orchestrationv1alpha1.RoleSet) []orchestrationv1alpha1.RoleStatus {
+func aggregateRoleStatuses(roleSets []*orchestrationv1alpha1.RoleSet, updateRevision string) []orchestrationv1alpha1.RoleStatus {
 	roleMap := make(map[string]orchestrationv1alpha1.RoleStatus)
 
-	// Aggregate statuses from all RoleSets, even if they are not ready
+	// Aggregate statuses from all RoleSets
 	for _, rs := range roleSets {
+		isUpdateRevision := isRoleSetMatchRevision(rs, updateRevision)
 		for _, roleStatus := range rs.Status.Roles {
 			aggStatus := roleMap[roleStatus.Name]
 			aggStatus.Name = roleStatus.Name
+			// Always aggregate total capacity metrics from all RoleSets
 			aggStatus.Replicas += roleStatus.Replicas
 			aggStatus.ReadyReplicas += roleStatus.ReadyReplicas
 			aggStatus.NotReadyReplicas += roleStatus.NotReadyReplicas
-			aggStatus.UpdatedReplicas += roleStatus.UpdatedReplicas
-			aggStatus.UpdatedReadyReplicas += roleStatus.UpdatedReadyReplicas
+			// Only aggregate Updated* metrics from RoleSets matching the target revision
+			if isUpdateRevision {
+				aggStatus.UpdatedReplicas += roleStatus.Replicas
+				aggStatus.UpdatedReadyReplicas += roleStatus.ReadyReplicas
+			}
 			roleMap[roleStatus.Name] = aggStatus
 		}
 	}
