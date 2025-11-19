@@ -788,6 +788,20 @@ func int32Ptr(i int32) *int32 {
 	return &i
 }
 
+// makeRoleSetWithRoles creates a RoleSet with the given revision and roles
+func makeRoleSetWithRoles(revision string, roles ...orchestrationv1alpha1.RoleStatus) *orchestrationv1alpha1.RoleSet {
+	return &orchestrationv1alpha1.RoleSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				constants.StormServiceRevisionLabelKey: revision,
+			},
+		},
+		Status: orchestrationv1alpha1.RoleSetStatus{
+			Roles: roles,
+		},
+	}
+}
+
 func TestFilterRoleSetByRevision(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1520,19 +1534,26 @@ func TestComputeRoleRevisions(t *testing.T) {
 
 func TestAggregateRoleStatuses(t *testing.T) {
 	tests := []struct {
-		name     string
-		roleSets []*orchestrationv1alpha1.RoleSet
-		expected []orchestrationv1alpha1.RoleStatus
+		name           string
+		roleSets       []*orchestrationv1alpha1.RoleSet
+		updateRevision string
+		expected       []orchestrationv1alpha1.RoleStatus
 	}{
 		{
-			name:     "empty RoleSet list",
-			roleSets: []*orchestrationv1alpha1.RoleSet{},
-			expected: []orchestrationv1alpha1.RoleStatus{},
+			name:           "empty RoleSet list",
+			roleSets:       []*orchestrationv1alpha1.RoleSet{},
+			updateRevision: "rev1",
+			expected:       []orchestrationv1alpha1.RoleStatus{},
 		},
 		{
 			name: "single RoleSet with one role - replica mode",
 			roleSets: []*orchestrationv1alpha1.RoleSet{
 				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.StormServiceRevisionLabelKey: "rev1",
+						},
+					},
 					Status: orchestrationv1alpha1.RoleSetStatus{
 						Roles: []orchestrationv1alpha1.RoleStatus{
 							{
@@ -1547,13 +1568,14 @@ func TestAggregateRoleStatuses(t *testing.T) {
 					},
 				},
 			},
+			updateRevision: "rev1",
 			expected: []orchestrationv1alpha1.RoleStatus{
 				{
 					Name:                 "prefill",
 					Replicas:             5,
 					ReadyReplicas:        3,
 					NotReadyReplicas:     2,
-					UpdatedReplicas:      4,
+					UpdatedReplicas:      5,
 					UpdatedReadyReplicas: 3,
 				},
 			},
@@ -1562,6 +1584,11 @@ func TestAggregateRoleStatuses(t *testing.T) {
 			name: "single RoleSet with multiple roles - pool mode",
 			roleSets: []*orchestrationv1alpha1.RoleSet{
 				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.StormServiceRevisionLabelKey: "rev1",
+						},
+					},
 					Status: orchestrationv1alpha1.RoleSetStatus{
 						Roles: []orchestrationv1alpha1.RoleStatus{
 							{
@@ -1584,6 +1611,7 @@ func TestAggregateRoleStatuses(t *testing.T) {
 					},
 				},
 			},
+			updateRevision: "rev1",
 			expected: []orchestrationv1alpha1.RoleStatus{
 				{
 					Name:                 "decode",
@@ -1607,6 +1635,11 @@ func TestAggregateRoleStatuses(t *testing.T) {
 			name: "multiple RoleSets with same role - replica mode aggregation",
 			roleSets: []*orchestrationv1alpha1.RoleSet{
 				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.StormServiceRevisionLabelKey: "rev1",
+						},
+					},
 					Status: orchestrationv1alpha1.RoleSetStatus{
 						Roles: []orchestrationv1alpha1.RoleStatus{
 							{
@@ -1621,6 +1654,11 @@ func TestAggregateRoleStatuses(t *testing.T) {
 					},
 				},
 				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.StormServiceRevisionLabelKey: "rev1",
+						},
+					},
 					Status: orchestrationv1alpha1.RoleSetStatus{
 						Roles: []orchestrationv1alpha1.RoleStatus{
 							{
@@ -1635,6 +1673,11 @@ func TestAggregateRoleStatuses(t *testing.T) {
 					},
 				},
 				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.StormServiceRevisionLabelKey: "rev1",
+						},
+					},
 					Status: orchestrationv1alpha1.RoleSetStatus{
 						Roles: []orchestrationv1alpha1.RoleStatus{
 							{
@@ -1649,13 +1692,14 @@ func TestAggregateRoleStatuses(t *testing.T) {
 					},
 				},
 			},
+			updateRevision: "rev1",
 			expected: []orchestrationv1alpha1.RoleStatus{
 				{
 					Name:                 "worker",
 					Replicas:             30,
 					ReadyReplicas:        23,
 					NotReadyReplicas:     7,
-					UpdatedReplicas:      28,
+					UpdatedReplicas:      30,
 					UpdatedReadyReplicas: 23,
 				},
 			},
@@ -1664,6 +1708,11 @@ func TestAggregateRoleStatuses(t *testing.T) {
 			name: "multiple RoleSets with multiple roles - pool mode aggregation",
 			roleSets: []*orchestrationv1alpha1.RoleSet{
 				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.StormServiceRevisionLabelKey: "rev1",
+						},
+					},
 					Status: orchestrationv1alpha1.RoleSetStatus{
 						Roles: []orchestrationv1alpha1.RoleStatus{
 							{
@@ -1686,6 +1735,11 @@ func TestAggregateRoleStatuses(t *testing.T) {
 					},
 				},
 				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.StormServiceRevisionLabelKey: "rev1",
+						},
+					},
 					Status: orchestrationv1alpha1.RoleSetStatus{
 						Roles: []orchestrationv1alpha1.RoleStatus{
 							{
@@ -1708,6 +1762,7 @@ func TestAggregateRoleStatuses(t *testing.T) {
 					},
 				},
 			},
+			updateRevision: "rev1",
 			expected: []orchestrationv1alpha1.RoleStatus{
 				{
 					Name:                 "decode",
@@ -1731,17 +1786,28 @@ func TestAggregateRoleStatuses(t *testing.T) {
 			name: "RoleSet with no roles in status",
 			roleSets: []*orchestrationv1alpha1.RoleSet{
 				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.StormServiceRevisionLabelKey: "rev1",
+						},
+					},
 					Status: orchestrationv1alpha1.RoleSetStatus{
 						Roles: []orchestrationv1alpha1.RoleStatus{},
 					},
 				},
 			},
-			expected: []orchestrationv1alpha1.RoleStatus{},
+			updateRevision: "rev1",
+			expected:       []orchestrationv1alpha1.RoleStatus{},
 		},
 		{
 			name: "mixed RoleSets - some with status, some without",
 			roleSets: []*orchestrationv1alpha1.RoleSet{
 				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.StormServiceRevisionLabelKey: "rev1",
+						},
+					},
 					Status: orchestrationv1alpha1.RoleSetStatus{
 						Roles: []orchestrationv1alpha1.RoleStatus{
 							{
@@ -1756,11 +1822,21 @@ func TestAggregateRoleStatuses(t *testing.T) {
 					},
 				},
 				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.StormServiceRevisionLabelKey: "rev1",
+						},
+					},
 					Status: orchestrationv1alpha1.RoleSetStatus{
 						Roles: []orchestrationv1alpha1.RoleStatus{},
 					},
 				},
 				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							constants.StormServiceRevisionLabelKey: "rev1",
+						},
+					},
 					Status: orchestrationv1alpha1.RoleSetStatus{
 						Roles: []orchestrationv1alpha1.RoleStatus{
 							{
@@ -1775,6 +1851,7 @@ func TestAggregateRoleStatuses(t *testing.T) {
 					},
 				},
 			},
+			updateRevision: "rev1",
 			expected: []orchestrationv1alpha1.RoleStatus{
 				{
 					Name:                 "worker",
@@ -1786,11 +1863,105 @@ func TestAggregateRoleStatuses(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "rollout scenario - replica mode with mixed revisions (old ready, new not ready)",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				// Old revision RoleSets - all ready
+				makeRoleSetWithRoles("rev1",
+					orchestrationv1alpha1.RoleStatus{Name: "prefill", Replicas: 1, ReadyReplicas: 1, NotReadyReplicas: 0},
+					orchestrationv1alpha1.RoleStatus{Name: "decode", Replicas: 1, ReadyReplicas: 1, NotReadyReplicas: 0}),
+				makeRoleSetWithRoles("rev1",
+					orchestrationv1alpha1.RoleStatus{Name: "prefill", Replicas: 1, ReadyReplicas: 1, NotReadyReplicas: 0},
+					orchestrationv1alpha1.RoleStatus{Name: "decode", Replicas: 1, ReadyReplicas: 1, NotReadyReplicas: 0}),
+				makeRoleSetWithRoles("rev1",
+					orchestrationv1alpha1.RoleStatus{Name: "prefill", Replicas: 1, ReadyReplicas: 1, NotReadyReplicas: 0},
+					orchestrationv1alpha1.RoleStatus{Name: "decode", Replicas: 1, ReadyReplicas: 1, NotReadyReplicas: 0}),
+				// New revision RoleSets - not ready
+				makeRoleSetWithRoles("rev2",
+					orchestrationv1alpha1.RoleStatus{Name: "prefill", Replicas: 1, ReadyReplicas: 0, NotReadyReplicas: 1},
+					orchestrationv1alpha1.RoleStatus{Name: "decode", Replicas: 1, ReadyReplicas: 0, NotReadyReplicas: 1}),
+				makeRoleSetWithRoles("rev2",
+					orchestrationv1alpha1.RoleStatus{Name: "prefill", Replicas: 1, ReadyReplicas: 0, NotReadyReplicas: 1},
+					orchestrationv1alpha1.RoleStatus{Name: "decode", Replicas: 1, ReadyReplicas: 0, NotReadyReplicas: 1}),
+				makeRoleSetWithRoles("rev2",
+					orchestrationv1alpha1.RoleStatus{Name: "prefill", Replicas: 1, ReadyReplicas: 0, NotReadyReplicas: 1},
+					orchestrationv1alpha1.RoleStatus{Name: "decode", Replicas: 1, ReadyReplicas: 0, NotReadyReplicas: 1}),
+			},
+			updateRevision: "rev2",
+			expected: []orchestrationv1alpha1.RoleStatus{
+				{
+					Name:                 "decode",
+					Replicas:             6,
+					ReadyReplicas:        3,
+					NotReadyReplicas:     3,
+					UpdatedReplicas:      3,
+					UpdatedReadyReplicas: 0,
+				},
+				{
+					Name:                 "prefill",
+					Replicas:             6,
+					ReadyReplicas:        3,
+					NotReadyReplicas:     3,
+					UpdatedReplicas:      3,
+					UpdatedReadyReplicas: 0,
+				},
+			},
+		},
+		{
+			name: "rollout scenario - replica mode with mixed revisions (partial ready)",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				makeRoleSetWithRoles("rev1",
+					orchestrationv1alpha1.RoleStatus{Name: "worker", Replicas: 10, ReadyReplicas: 10, NotReadyReplicas: 0}),
+				makeRoleSetWithRoles("rev2",
+					orchestrationv1alpha1.RoleStatus{Name: "worker", Replicas: 10, ReadyReplicas: 7, NotReadyReplicas: 3}),
+			},
+			updateRevision: "rev2",
+			expected: []orchestrationv1alpha1.RoleStatus{
+				{
+					Name:                 "worker",
+					Replicas:             20,
+					ReadyReplicas:        17,
+					NotReadyReplicas:     3,
+					UpdatedReplicas:      10,
+					UpdatedReadyReplicas: 7,
+				},
+			},
+		},
+		{
+			name: "rollout complete - all rolesets at new revision",
+			roleSets: []*orchestrationv1alpha1.RoleSet{
+				makeRoleSetWithRoles("rev2",
+					orchestrationv1alpha1.RoleStatus{Name: "prefill", Replicas: 2, ReadyReplicas: 2, NotReadyReplicas: 0},
+					orchestrationv1alpha1.RoleStatus{Name: "decode", Replicas: 4, ReadyReplicas: 4, NotReadyReplicas: 0}),
+				makeRoleSetWithRoles("rev2",
+					orchestrationv1alpha1.RoleStatus{Name: "prefill", Replicas: 2, ReadyReplicas: 2, NotReadyReplicas: 0},
+					orchestrationv1alpha1.RoleStatus{Name: "decode", Replicas: 4, ReadyReplicas: 4, NotReadyReplicas: 0}),
+			},
+			updateRevision: "rev2",
+			expected: []orchestrationv1alpha1.RoleStatus{
+				{
+					Name:                 "decode",
+					Replicas:             8,
+					ReadyReplicas:        8,
+					NotReadyReplicas:     0,
+					UpdatedReplicas:      8,
+					UpdatedReadyReplicas: 8,
+				},
+				{
+					Name:                 "prefill",
+					Replicas:             4,
+					ReadyReplicas:        4,
+					NotReadyReplicas:     0,
+					UpdatedReplicas:      4,
+					UpdatedReadyReplicas: 4,
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := aggregateRoleStatuses(tt.roleSets)
+			result := aggregateRoleStatuses(tt.roleSets, tt.updateRevision)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

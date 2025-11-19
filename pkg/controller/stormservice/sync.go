@@ -414,7 +414,8 @@ func (r *StormServiceReconciler) updateStatus(ctx context.Context, stormService 
 	stormService.Status.ScalingTargetSelector = fmt.Sprintf("%s=%s", constants.StormServiceNameLabelKey, stormService.Name)
 
 	// Aggregate role statuses from all RoleSets for both pool and replica modes
-	stormService.Status.RoleStatuses = aggregateRoleStatuses(allRoleSets)
+	// Updated* fields will only count pods from RoleSets matching the target revision
+	stormService.Status.RoleStatuses = aggregateRoleStatuses(allRoleSets, updateRevision.Name)
 
 	if !apiequality.Semantic.DeepEqual(checkpoint, &stormService.Status) {
 		err = utils.UpdateStatus(ctx, r.Scheme, r.Client, stormService)
