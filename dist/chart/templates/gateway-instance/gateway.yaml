@@ -51,27 +51,10 @@ spec:
           tolerations:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- with .Values.gateway.envoyProxy.affinity }}
           affinity:
-            podAntiAffinity:
-              preferredDuringSchedulingIgnoredDuringExecution:
-                - weight: 100
-                  podAffinityTerm:
-                    labelSelector:
-                      matchExpressions:
-                        - key: app.kubernetes.io/name
-                          operator: In
-                          values:
-                          - envoy
-                    topologyKey: "kubernetes.io/hostname"
-            nodeAffinity:
-              preferredDuringSchedulingIgnoredDuringExecution:
-                - weight: 100
-                  preference:
-                    matchExpressions:
-                      - key: nvidia.com/gpu.present
-                        operator: NotIn
-                        values:
-                          - "true"
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
         patch:
           type: StrategicMerge
           value:
