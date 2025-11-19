@@ -337,8 +337,14 @@ dev-install-in-kind: docker-build-all install
 		kind load docker-image $$img || { echo "Error: Failed to load $$img"; exit 1; }; \
 	done
 
+	@echo "Waiting for dependency to be ready..."
+	@$(KUBECTL) wait --for=condition=Available --timeout=2m deployment/envoy-gateway -n envoy-gateway-system || echo "Warning: Timeout waiting for Envoy Gateway"
+
+	@echo "Applying test configurations..."
+	@$(KUBECTL) apply -k config/test || { echo "Warning: Failed to apply test configurations"; }
+
 	@echo "Waiting for core components to be ready..."
-	@$(KUBECTL) wait --for=condition=available --timeout=120s deployment -l app=envoy-gateway -n envoy-gateway-system || echo "Warning: Timeout waiting for Envoy Gateway"
+	@$(KUBECTL) wait --for=condition=Available --timeout=2m deployment/aibrix-controller-manager -n aibrix-system || echo "Warning: Timeout waiting for Controller Manager"
 
 	@echo "Applying monitoring configurations..."
 	@echo "  - Applying core Prometheus configurations..."
@@ -349,10 +355,6 @@ dev-install-in-kind: docker-build-all install
 	@$(KUBECTL) apply -f observability/monitor/service_monitor_gateway_plugin.yaml || echo "Warning: Failed to apply Gateway Plugin ServiceMonitor"
 	@$(KUBECTL) apply -f observability/monitor/service_monitor_gateway.yaml || echo "Warning: Failed to apply Gateway ServiceMonitor"
 	@$(KUBECTL) apply -f observability/monitor/service_monitor_vllm.yaml || echo "Warning: Failed to apply vLLM ServiceMonitor"
-
-
-	@echo "Applying test configurations..."
-	@$(KUBECTL) apply -k config/test || { echo "Warning: Failed to apply test configurations"; }
 
 	@echo "Building and loading vLLM mock..."
 	@cd development/app && \
