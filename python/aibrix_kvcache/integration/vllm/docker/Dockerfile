@@ -1,11 +1,16 @@
 ARG VLLM_VERSION=v0.10.2
 
+# Extract torch version from the vLLM base image
+FROM vllm/vllm-openai:${VLLM_VERSION} AS torch-version
+ARG PYTHON_BIN=python3
+RUN ${PYTHON_BIN} -m pip show torch | awk '/Version/{print $2}' | sed 's/+.*$//' > /torch_version.txt
+
+# Builder stage
 FROM docker.io/pytorch/manylinux2_28-builder:cuda12.1 AS builder
 
 ARG AIBRIX_REPO=https://github.com/vllm-project/aibrix
 ARG AIBRIX_BRANCH=main
 ARG PYTHON_BIN=python
-ARG TORCH_VERSION=2.8.0
 
 ENV PATH="/opt/python/cp312-cp312/bin:${PATH}"
 
@@ -14,7 +19,8 @@ RUN git clone ${AIBRIX_REPO} /tmp/aibrix && cd /tmp/aibrix && git checkout ${AIB
     
 # install dependencies
 # use the same torch version as vllm
-RUN --mount=type=cache,target=/root/.cache/pip ${PYTHON_BIN} -m pip install torch==${TORCH_VERSION}
+COPY --from=torch-version /torch_version.txt /tmp/torch_version.txt
+RUN --mount=type=cache,target=/root/.cache/pip ${PYTHON_BIN} -m pip install torch==$(cat /tmp/torch_version.txt) && rm /tmp/torch_version.txt
 RUN --mount=type=cache,target=/root/.cache/pip cd /tmp/aibrix && \
     ${PYTHON_BIN} -m pip install -r python/aibrix_kvcache/requirements/build.txt -r python/aibrix_kvcache/requirements/core.txt
     
@@ -22,7 +28,7 @@ RUN --mount=type=cache,target=/root/.cache/pip cd /tmp/aibrix && \
 RUN cd /tmp/aibrix && \
     ${PYTHON_BIN} -m build python/aibrix_kvcache --wheel --outdir=python/aibrix_kvcache/dist --no-isolation
     
-
+# Runtime stage
 FROM vllm/vllm-openai:${VLLM_VERSION} AS vllm-openai
 
 ARG PYTHON_BIN=python3

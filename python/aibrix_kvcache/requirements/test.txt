@@ -11,4 +11,4 @@ pytest-forked
 
 fakeredis==2.30.1
 
-vllm
+vllm==0.10.2
