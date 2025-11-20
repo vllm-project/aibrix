@@ -73,23 +73,26 @@ func createPrefixCacheMetrics() *PrefixCacheMetrics {
 	return &PrefixCacheMetrics{
 		prefixCacheRoutingDecisions: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "aibrix_prefix_cache_routing_decisions_total",
-				Help: "Total number of routing decisions by match percentage",
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "prefix_cache_routing_decisions_total",
+				Help:      "Total number of routing decisions by match percentage",
 			},
 			[]string{"model", "match_percent_bucket", "using_kv_sync"},
 		),
 		prefixCacheIndexerStatus: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "aibrix_prefix_cache_indexer_status",
-				Help: "Status of prefix cache indexer (1=available, 0=unavailable)",
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "prefix_cache_indexer_status",
+				Help:      "Status of prefix cache indexer (1=available, 0=unavailable)",
 			},
 			[]string{"model", "indexer_type"},
 		),
 		prefixCacheRoutingLatency: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
-				Name:    "aibrix_prefix_cache_routing_latency_seconds",
-				Help:    "Latency of prefix cache routing decisions",
-				Buckets: prometheus.ExponentialBuckets(0.00001, 2, 15), // 10us to ~160ms
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "prefix_cache_routing_latency_seconds",
+				Help:      "Latency of prefix cache routing decisions",
+				Buckets:   prometheus.ExponentialBuckets(0.00001, 2, 15), // 10us to ~160ms
 			},
 			[]string{"model", "using_kv_sync"},
 		),

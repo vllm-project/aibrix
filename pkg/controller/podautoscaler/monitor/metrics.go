@@ -19,13 +19,16 @@ package monitor
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
+
+	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
 var (
 	autoscalerScaleAction = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "aibrix_autoscaler_scale_action",
-			Help: "Records autoscaler scaling decisions with desired replica count",
+			Subsystem: constants.AibrixSubsystemName,
+			Name:      "autoscaler_scale_action",
+			Help:      "Records autoscaler scaling decisions with desired replica count",
 		},
 		[]string{"namespace", "name", "algorithm", "reason"},
 	)

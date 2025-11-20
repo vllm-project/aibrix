@@ -21,6 +21,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/klog/v2"
+
+	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
 // Metric labels
@@ -97,22 +99,25 @@ func createKVCacheMetrics() *KVCacheMetrics {
 		// Connection metrics
 		zmqConnectionTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "aibrix_kvcache_zmq_connections_total",
-				Help: "Total number of ZMQ connections established",
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "kvcache_zmq_connections_total",
+				Help:      "Total number of ZMQ connections established",
 			},
 			[]string{LabelPodKey},
 		),
 		zmqDisconnectionTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "aibrix_kvcache_zmq_disconnections_total",
-				Help: "Total number of ZMQ disconnections",
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "kvcache_zmq_disconnections_total",
+				Help:      "Total number of ZMQ disconnections",
 			},
 			[]string{LabelPodKey},
 		),
 		zmqReconnectAttemptsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "aibrix_kvcache_zmq_reconnect_attempts_total",
-				Help: "Total number of ZMQ reconnection attempts",
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "kvcache_zmq_reconnect_attempts_total",
+				Help:      "Total number of ZMQ reconnection attempts",
 			},
 			[]string{LabelPodKey},
 		),
@@ -120,30 +125,34 @@ func createKVCacheMetrics() *KVCacheMetrics {
 		// Event metrics
 		zmqEventsReceivedTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "aibrix_kvcache_zmq_events_received_total",
-				Help: "Total number of KV cache events received",
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "kvcache_zmq_events_received_total",
+				Help:      "Total number of KV cache events received",
 			},
 			[]string{LabelPodKey, LabelEventType},
 		),
 		zmqEventsProcessedTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "aibrix_kvcache_zmq_events_processed_total",
-				Help: "Total number of KV cache events successfully processed",
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "kvcache_zmq_events_processed_total",
+				Help:      "Total number of KV cache events successfully processed",
 			},
 			[]string{LabelPodKey, LabelEventType},
 		),
 		zmqEventProcessingDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
-				Name:    "aibrix_kvcache_zmq_event_processing_duration_seconds",
-				Help:    "Time taken to process KV cache events",
-				Buckets: prometheus.ExponentialBuckets(0.00001, 2, 15), // 10us to ~160ms
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "kvcache_zmq_event_processing_duration_seconds",
+				Help:      "Time taken to process KV cache events",
+				Buckets:   prometheus.ExponentialBuckets(0.00001, 2, 15), // 10us to ~160ms
 			},
 			[]string{LabelPodKey},
 		),
 		zmqMissedEventsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "aibrix_kvcache_zmq_missed_events_total",
-				Help: "Total number of missed events detected",
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "kvcache_zmq_missed_events_total",
+				Help:      "Total number of missed events detected",
 			},
 			[]string{LabelPodKey},
 		),
@@ -151,22 +160,25 @@ func createKVCacheMetrics() *KVCacheMetrics {
 		// Replay metrics
 		zmqReplayRequestsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "aibrix_kvcache_zmq_replay_requests_total",
-				Help: "Total number of replay requests sent",
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "kvcache_zmq_replay_requests_total",
+				Help:      "Total number of replay requests sent",
 			},
 			[]string{LabelPodKey},
 		),
 		zmqReplaySuccessTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "aibrix_kvcache_zmq_replay_success_total",
-				Help: "Total number of successful replay responses",
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "kvcache_zmq_replay_success_total",
+				Help:      "Total number of successful replay responses",
 			},
 			[]string{LabelPodKey},
 		),
 		zmqReplayFailuresTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "aibrix_kvcache_zmq_replay_failures_total",
-				Help: "Total number of failed replay requests",
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "kvcache_zmq_replay_failures_total",
+				Help:      "Total number of failed replay requests",
 			},
 			[]string{LabelPodKey},
 		),
@@ -174,8 +186,9 @@ func createKVCacheMetrics() *KVCacheMetrics {
 		// Error metrics
 		zmqErrorsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "aibrix_kvcache_zmq_errors_total",
-				Help: "Total number of errors encountered",
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "kvcache_zmq_errors_total",
+				Help:      "Total number of errors encountered",
 			},
 			[]string{LabelPodKey, LabelErrorType},
 		),
@@ -183,15 +196,17 @@ func createKVCacheMetrics() *KVCacheMetrics {
 		// State metrics
 		zmqConnectionStatus: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "aibrix_kvcache_zmq_connection_status",
-				Help: "Current connection status (1=connected, 0=disconnected)",
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "kvcache_zmq_connection_status",
+				Help:      "Current connection status (1=connected, 0=disconnected)",
 			},
 			[]string{LabelPodKey},
 		),
 		zmqLastSequenceID: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "aibrix_kvcache_zmq_last_sequence_id",
-				Help: "Last processed sequence ID",
+				Subsystem: constants.AibrixSubsystemName,
+				Name:      "kvcache_zmq_last_sequence_id",
+				Help:      "Last processed sequence ID",
 			},
 			[]string{LabelPodKey},
 		),
