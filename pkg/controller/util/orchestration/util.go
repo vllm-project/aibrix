@@ -319,3 +319,24 @@ func FinalizePodGroup(ctx context.Context, dc dynamic.Interface, c client.Client
 	}
 	return dc.Resource(podGroup.GetObjectKind().GroupVersionKind().GroupVersion().WithResource("podgroups")).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 }
+
+// keepPrefix controls the truncation strategy:
+// - When keepPrefix is true, keep the prefix (the leading part of the name).
+// - When keepPrefix is false, keep the first character plus the trailing part of the name.
+func Shorten(name string, keepPrefix, isGenerateName bool) string {
+	maxLength := 63
+	if isGenerateName {
+		maxLength = 58 // 63 - 5 // 5 char for generated.
+	}
+	if len(name) < maxLength {
+		return name
+	}
+
+	if keepPrefix {
+		return name[:maxLength]
+	}
+
+	// keep the hash part to prevent name conflicts
+	// keep the first letter to ensure the truncated name starts with a valid character
+	return string(name[0]) + name[len(name)-maxLength+1:]
+}

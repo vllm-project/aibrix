@@ -359,7 +359,7 @@ func (r *PodSetReconciler) createPodFromTemplate(podSet *orchestrationv1alpha1.P
 	}
 
 	// Set pod name
-	pod.Name = fmt.Sprintf("%s-%d", podSet.Name, podIndex)
+	pod.Name = utils.Shorten(fmt.Sprintf("%s-%d", podSet.Name, podIndex), false, false)
 	pod.Namespace = podSet.Namespace
 
 	// Add labels

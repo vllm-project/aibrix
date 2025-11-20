@@ -387,9 +387,9 @@ func (p *PodSetRoleSyncer) createPodSetForRole(roleSet *orchestrationv1alpha1.Ro
 
 	if roleIndex != nil {
 		// add role template hash to pod name, to avoid pod name duplication during rollout
-		podSet.Name = fmt.Sprintf("%s-%s-%s-%d", roleSet.Name, role.Name, templateHash, *roleIndex)
+		podSet.Name = utils.Shorten(fmt.Sprintf("%s-%s-%s-%d", roleSet.Name, role.Name, templateHash, *roleIndex), false, false)
 	} else {
-		podSet.GenerateName = fmt.Sprintf("%s-%s-", roleSet.Name, role.Name)
+		podSet.GenerateName = utils.Shorten(fmt.Sprintf("%s-%s-", roleSet.Name, role.Name), false, true)
 	}
 
 	// inject pod annotations

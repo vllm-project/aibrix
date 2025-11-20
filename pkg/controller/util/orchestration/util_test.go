@@ -132,4 +132,12 @@ func TestMinIntHelpers(t *testing.T) {
 	assert.Equal(t, -5, MinInt(-5, 0))
 }
 
+func TestShorten(t *testing.T) {
+	assert.Equal(t, "abcdefghijklmnopqrstuvwxyz", Shorten("abcdefghijklmnopqrstuvwxyz", false, false))
+	assert.Equal(t, "aijklmnopqrstuvwxyz-1234567890-1234567890-1234567890-1234567890", Shorten("abcdefghijklmnopqrstuvwxyz-1234567890-1234567890-1234567890-1234567890", false, false))
+	assert.Equal(t, "anopqrstuvwxyz-1234567890-1234567890-1234567890-1234567890", Shorten("abcdefghijklmnopqrstuvwxyz-1234567890-1234567890-1234567890-1234567890", false, true))
+	assert.Equal(t, "abcdefghijklmnopqrstuvwxyz-1234567890-1234567890-1234567890-123", Shorten("abcdefghijklmnopqrstuvwxyz-1234567890-1234567890-1234567890-1234567890", true, false))
+	assert.Equal(t, "abcdefghijklmnopqrstuvwxyz-1234567890-1234567890-123456789", Shorten("abcdefghijklmnopqrstuvwxyz-1234567890-1234567890-1234567890-1234567890", true, true))
+}
+
 func boolPtr(b bool) *bool { return &b }
