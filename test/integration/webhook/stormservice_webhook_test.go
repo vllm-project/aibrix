@@ -17,6 +17,8 @@ limitations under the License.
 package webhook
 
 import (
+	"strings"
+
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -74,13 +76,13 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 		},
 		ginkgo.Entry("apply StormService with no sidecar injection annotation", &testDefaultingCase{
 			stormservice: func() *orchestrationapi.StormService {
-				return wrapper.MakeStormService("stormservice-with-no-inject-sidecar").
+				return wrapper.MakeStormService("st-with-no-inject-sidecar").
 					Namespace(ns.Name).
 					WithDefaultConfiguration().
 					Obj()
 			},
 			wantStormService: func() *orchestrationapi.StormService {
-				return wrapper.MakeStormService("stormservice-with-no-inject-sidecar").
+				return wrapper.MakeStormService("st-with-no-inject-sidecar").
 					Namespace(ns.Name).
 					WithDefaultConfiguration().
 					Obj()
@@ -88,14 +90,14 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 		}),
 		ginkgo.Entry("apply StormService with sidecar injection annotation", &testDefaultingCase{
 			stormservice: func() *orchestrationapi.StormService {
-				return wrapper.MakeStormService("stormservice-with-inject-sidecar").
+				return wrapper.MakeStormService("st-with-inject-sidecar").
 					Namespace(ns.Name).
 					Annotations(map[string]string{webhook.SidecarInjectionAnnotation: "true"}).
 					WithDefaultConfiguration().
 					Obj()
 			},
 			wantStormService: func() *orchestrationapi.StormService {
-				return wrapper.MakeStormService("stormservice-with-inject-sidecar").
+				return wrapper.MakeStormService("st-with-inject-sidecar").
 					Namespace(ns.Name).
 					Annotations(map[string]string{webhook.SidecarInjectionAnnotation: "true"}).
 					WithDefaultConfiguration().
@@ -106,7 +108,7 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 		ginkgo.Entry("apply StormService with sidecar injection annotation "+
 			"and sidecar runtime image annotation", &testDefaultingCase{
 			stormservice: func() *orchestrationapi.StormService {
-				return wrapper.MakeStormService("stormservice-with-inject-sidecar").
+				return wrapper.MakeStormService("st-with-inject-sidecar").
 					Namespace(ns.Name).
 					Annotations(map[string]string{
 						webhook.SidecarInjectionAnnotation:             "true",
@@ -116,7 +118,7 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 					Obj()
 			},
 			wantStormService: func() *orchestrationapi.StormService {
-				return wrapper.MakeStormService("stormservice-with-inject-sidecar").
+				return wrapper.MakeStormService("st-with-inject-sidecar").
 					Namespace(ns.Name).
 					Annotations(map[string]string{
 						webhook.SidecarInjectionAnnotation:             "true",
@@ -126,6 +128,84 @@ var _ = ginkgo.Describe("stormservice default webhook", func() {
 					WithSidecarInjection(testRuntimeImage).
 					Obj()
 			},
+		}),
+	)
+
+	type testValidatingCase struct {
+		stormservice func() *orchestrationapi.StormService
+		failed       bool
+	}
+	ginkgo.DescribeTable("test validating",
+		func(tc *testValidatingCase) {
+			if tc.failed {
+				gomega.Expect(k8sClient.Create(ctx, tc.stormservice())).Should(gomega.HaveOccurred())
+			} else {
+				gomega.Expect(k8sClient.Create(ctx, tc.stormservice())).To(gomega.Succeed())
+			}
+		},
+		// Valid StormService with short name and default config (includes sidecar annotations).
+		ginkgo.Entry("accepts valid configuration", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return wrapper.MakeStormService("valid-storm").
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Obj()
+			},
+			failed: false,
+		}),
+
+		// StormService name exceeds 63 characters → rejected by Kubernetes naming rules.
+		ginkgo.Entry("rejects StormService name longer than 63 chars", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				return wrapper.MakeStormService(strings.Repeat("x", 64)).
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					Obj()
+			},
+			failed: true,
+		}),
+
+		// Combined length of StormService name (50) + role name (20) + estimated suffix (~40)
+		// exceeds 63 → rejected because podGroupSize=2 triggers PodSet creation.
+		ginkgo.Entry("rejects combined service+role name too long (PodSet enabled)", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				podGroupSize := int32(2)
+				return wrapper.MakeStormService(strings.Repeat("s", 50)).
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					WithRole(strings.Repeat("r", 20), false, &podGroupSize).
+					Obj()
+			},
+			failed: true,
+		}),
+
+		// Boundary case: service name (12) + role name (11) + suffix (~40) = 63 → accepted.
+		ginkgo.Entry("accepts boundary case (estimated length exactly 63)", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				podGroupSize := int32(2)
+				return wrapper.MakeStormService(strings.Repeat("a", 12)).
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					WithRole(strings.Repeat("b", 11), false, &podGroupSize).
+					Obj()
+			},
+			failed: false,
+		}),
+
+		// Multiple roles: validation uses the longest role name (35 chars).
+		// Estimated PodSet name length = 30 (service) + 35 (role) + 40 > 63,
+		// exceeds 63 → rejected because podGroupSize=2 triggers PodSet creation.
+		ginkgo.Entry("rejects when longest role name causes overflow", &testValidatingCase{
+			stormservice: func() *orchestrationapi.StormService {
+				podGroupSize := int32(2)
+				return wrapper.MakeStormService(strings.Repeat("s", 30)).
+					Namespace(ns.Name).
+					WithDefaultConfiguration().
+					WithRole("short", false, &podGroupSize).                 // len=5
+					WithRole(strings.Repeat("l", 35), false, &podGroupSize). // len=35 → determines outcome
+					Obj()
+			},
+			failed: true,
 		}),
 	)
 })
