@@ -17,13 +17,22 @@ limitations under the License.
 package orchestration
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/stretchr/testify/mock"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
 
 func TestComputeHashRoleSetTemplate(t *testing.T) {
@@ -133,3 +142,374 @@ func TestMinIntHelpers(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+type MockPodGroup struct {
+	metav1.TypeMeta
+	metav1.ObjectMeta
+}
+
+func (m *MockPodGroup) GetObjectKind() schema.ObjectKind {
+	return &m.TypeMeta
+}
+
+func (m *MockPodGroup) DeepCopyObject() runtime.Object {
+	return &MockPodGroup{
+		TypeMeta:   m.TypeMeta,
+		ObjectMeta: *m.ObjectMeta.DeepCopy(),
+	}
+}
+
+func TestEnsurePodGroupExist(t *testing.T) {
+	ctx := context.Background()
+	name := "test-podgroup"
+	namespace := "test-namespace"
+	crdName := "podgroups.scheduling.volcano.sh"
+
+	podGroup := &MockPodGroup{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "scheduling.volcano.sh/v1beta1",
+			Kind:       "PodGroup",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+
+	tests := []struct {
+		name           string
+		setupMocks     func(*MockDynamicInterface, *MockNamespaceableResourceInterface, *MockResourceInterface)
+		expectedResult bool
+		expectedError  bool
+	}{
+		{
+			name: "CRD not installed",
+			setupMocks: func(dc *MockDynamicInterface, crdResource *MockNamespaceableResourceInterface, pgResource *MockResourceInterface) {
+				crdResource.On("Get", ctx, crdName, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, apierrors.NewNotFound(schema.GroupResource{}, ""))
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "apiextensions.k8s.io",
+					Version:  "v1",
+					Resource: "customresourcedefinitions",
+				}).Return(crdResource)
+			},
+			expectedResult: false,
+			expectedError:  false,
+		},
+		{
+			name: "CRD check returns other error",
+			setupMocks: func(dc *MockDynamicInterface, crdResource *MockNamespaceableResourceInterface, pgResource *MockResourceInterface) {
+				crdResource.On("Get", ctx, crdName, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, apierrors.NewInternalError(fmt.Errorf("internal error")))
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "apiextensions.k8s.io",
+					Version:  "v1",
+					Resource: "customresourcedefinitions",
+				}).Return(crdResource)
+			},
+			expectedResult: false,
+			expectedError:  true,
+		},
+		{
+			name: "PodGroup not found and create successfully",
+			setupMocks: func(dc *MockDynamicInterface, crdResource *MockNamespaceableResourceInterface, pgResource *MockResourceInterface) {
+				// CRD exist
+				crdResource.On("Get", ctx, crdName, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, nil)
+
+				// PodGroup not exist
+				pgResource.On("Get", ctx, name, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, apierrors.NewNotFound(schema.GroupResource{}, ""))
+
+				// Create success
+				pgResource.On("Create", ctx, mock.AnythingOfType("*unstructured.Unstructured"), metav1.CreateOptions{}).
+					Return(&unstructured.Unstructured{}, nil)
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "apiextensions.k8s.io",
+					Version:  "v1",
+					Resource: "customresourcedefinitions",
+				}).Return(crdResource)
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "scheduling.volcano.sh",
+					Version:  "v1beta1",
+					Resource: "podgroups",
+				}).Return(crdResource)
+
+				crdResource.On("Namespace", namespace).Return(pgResource)
+			},
+			expectedResult: true,
+			expectedError:  false,
+		},
+		{
+			name: "PodGroup creation fails",
+			setupMocks: func(dc *MockDynamicInterface, crdResource *MockNamespaceableResourceInterface, pgResource *MockResourceInterface) {
+				// CRD exist
+				crdResource.On("Get", ctx, crdName, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, nil)
+
+				// PodGroup not exists
+				pgResource.On("Get", ctx, name, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, apierrors.NewNotFound(schema.GroupResource{}, ""))
+
+				pgResource.On("Create", ctx, mock.AnythingOfType("*unstructured.Unstructured"), metav1.CreateOptions{}).
+					Return(&unstructured.Unstructured{}, apierrors.NewInternalError(fmt.Errorf("create error")))
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "apiextensions.k8s.io",
+					Version:  "v1",
+					Resource: "customresourcedefinitions",
+				}).Return(crdResource)
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "scheduling.volcano.sh",
+					Version:  "v1beta1",
+					Resource: "podgroups",
+				}).Return(crdResource)
+
+				crdResource.On("Namespace", namespace).Return(pgResource)
+			},
+			expectedResult: false,
+			expectedError:  true,
+		},
+		{
+			name: "PodGroup get returns other error",
+			setupMocks: func(dc *MockDynamicInterface, crdResource *MockNamespaceableResourceInterface, pgResource *MockResourceInterface) {
+				// CRD exist
+				crdResource.On("Get", ctx, crdName, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, nil)
+
+				pgResource.On("Get", ctx, name, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, apierrors.NewInternalError(fmt.Errorf("get error")))
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "apiextensions.k8s.io",
+					Version:  "v1",
+					Resource: "customresourcedefinitions",
+				}).Return(crdResource)
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "scheduling.volcano.sh",
+					Version:  "v1beta1",
+					Resource: "podgroups",
+				}).Return(crdResource)
+
+				crdResource.On("Namespace", namespace).Return(pgResource)
+			},
+			expectedResult: false,
+			expectedError:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockDC := new(MockDynamicInterface)
+			mockCrdResource := new(MockNamespaceableResourceInterface)
+			mockPgResource := new(MockResourceInterface)
+
+			tt.setupMocks(mockDC, mockCrdResource, mockPgResource)
+
+			created, err := EnsurePodGroupExist(ctx, mockDC, podGroup, name, namespace)
+
+			// check result
+			if tt.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, tt.expectedResult, created)
+
+			mockDC.AssertExpectations(t)
+			mockCrdResource.AssertExpectations(t)
+			mockPgResource.AssertExpectations(t)
+		})
+	}
+}
+
+func TestFinalizePodGroup(t *testing.T) {
+	ctx := context.Background()
+	name := "test-podgroup"
+	namespace := "test-namespace"
+	crdName := "podgroups.scheduling.volcano.sh"
+
+	podGroup := &MockPodGroup{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "scheduling.volcano.sh/v1beta1",
+			Kind:       "PodGroup",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+
+	tests := []struct {
+		name          string
+		setupMocks    func(*MockDynamicInterface, *MockNamespaceableResourceInterface, *MockResourceInterface)
+		expectedError bool
+	}{
+		{
+			name: "CRD not installed",
+			setupMocks: func(dc *MockDynamicInterface, crdResource *MockNamespaceableResourceInterface, pgResource *MockResourceInterface) {
+				crdResource.On("Get", ctx, crdName, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, apierrors.NewNotFound(schema.GroupResource{}, ""))
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "apiextensions.k8s.io",
+					Version:  "v1",
+					Resource: "customresourcedefinitions",
+				}).Return(crdResource)
+			},
+			expectedError: false,
+		},
+		{
+			name: "CRD check returns other error",
+			setupMocks: func(dc *MockDynamicInterface, crdResource *MockNamespaceableResourceInterface, pgResource *MockResourceInterface) {
+				crdResource.On("Get", ctx, crdName, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, apierrors.NewInternalError(fmt.Errorf("internal error")))
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "apiextensions.k8s.io",
+					Version:  "v1",
+					Resource: "customresourcedefinitions",
+				}).Return(crdResource)
+			},
+			expectedError: true,
+		},
+		{
+			name: "PodGroup not found",
+			setupMocks: func(dc *MockDynamicInterface, crdResource *MockNamespaceableResourceInterface, pgResource *MockResourceInterface) {
+				crdResource.On("Get", ctx, crdName, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, nil)
+
+				pgResource.On("Get", ctx, name, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, apierrors.NewNotFound(schema.GroupResource{}, ""))
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "apiextensions.k8s.io",
+					Version:  "v1",
+					Resource: "customresourcedefinitions",
+				}).Return(crdResource)
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "scheduling.volcano.sh",
+					Version:  "v1beta1",
+					Resource: "podgroups",
+				}).Return(crdResource)
+
+				crdResource.On("Namespace", namespace).Return(pgResource)
+			},
+			expectedError: false,
+		},
+		{
+			name: "PodGroup exists and delete successfully",
+			setupMocks: func(dc *MockDynamicInterface, crdResource *MockNamespaceableResourceInterface, pgResource *MockResourceInterface) {
+
+				crdResource.On("Get", ctx, crdName, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, nil)
+
+				pgResource.On("Get", ctx, name, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, nil)
+
+				pgResource.On("Delete", ctx, name, metav1.DeleteOptions{}).
+					Return(nil)
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "apiextensions.k8s.io",
+					Version:  "v1",
+					Resource: "customresourcedefinitions",
+				}).Return(crdResource)
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "scheduling.volcano.sh",
+					Version:  "v1beta1",
+					Resource: "podgroups",
+				}).Return(crdResource)
+
+				crdResource.On("Namespace", namespace).Return(pgResource)
+			},
+			expectedError: false,
+		},
+		{
+			name: "PodGroup delete fails",
+			setupMocks: func(dc *MockDynamicInterface, crdResource *MockNamespaceableResourceInterface, pgResource *MockResourceInterface) {
+
+				crdResource.On("Get", ctx, crdName, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, nil)
+
+				pgResource.On("Get", ctx, name, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, nil)
+
+				pgResource.On("Delete", ctx, name, metav1.DeleteOptions{}).
+					Return(apierrors.NewInternalError(fmt.Errorf("delete error")))
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "apiextensions.k8s.io",
+					Version:  "v1",
+					Resource: "customresourcedefinitions",
+				}).Return(crdResource)
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "scheduling.volcano.sh",
+					Version:  "v1beta1",
+					Resource: "podgroups",
+				}).Return(crdResource)
+
+				crdResource.On("Namespace", namespace).Return(pgResource)
+			},
+			expectedError: true,
+		},
+		{
+			name: "PodGroup get returns other error",
+			setupMocks: func(dc *MockDynamicInterface, crdResource *MockNamespaceableResourceInterface, pgResource *MockResourceInterface) {
+
+				crdResource.On("Get", ctx, crdName, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, nil)
+
+				pgResource.On("Get", ctx, name, metav1.GetOptions{}).
+					Return(&unstructured.Unstructured{}, apierrors.NewInternalError(fmt.Errorf("get error")))
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "apiextensions.k8s.io",
+					Version:  "v1",
+					Resource: "customresourcedefinitions",
+				}).Return(crdResource)
+
+				dc.On("Resource", schema.GroupVersionResource{
+					Group:    "scheduling.volcano.sh",
+					Version:  "v1beta1",
+					Resource: "podgroups",
+				}).Return(crdResource)
+
+				crdResource.On("Namespace", namespace).Return(pgResource)
+			},
+			expectedError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockDC := new(MockDynamicInterface)
+			mockCrdResource := new(MockNamespaceableResourceInterface)
+			mockPgResource := new(MockResourceInterface)
+			mockClient := client.Client(nil)
+
+			tt.setupMocks(mockDC, mockCrdResource, mockPgResource)
+
+			err := FinalizePodGroup(ctx, mockDC, mockClient, podGroup, name, namespace)
+
+			if tt.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			mockDC.AssertExpectations(t)
+			mockCrdResource.AssertExpectations(t)
+			mockPgResource.AssertExpectations(t)
+		})
+	}
+}
