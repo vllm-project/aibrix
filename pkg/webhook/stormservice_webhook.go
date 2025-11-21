@@ -122,9 +122,49 @@ func (r *StormServiceCustomDefaulter) injectAIBrixRuntime(stormService *orchestr
 
 var _ webhook.CustomDefaulter = &StormServiceCustomDefaulter{}
 
+// estimatedPodNameSuffixLength is an approximation for the total length of suffixes
+// added to a StormService name and role name to form a final Pod name.
+// e.g., <stormservice>-<revision>-<role>-<hash>-<index>
+const estimatedPodNameSuffixLength = 40
+
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type
 func (r *StormServiceCustomDefaulter) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	// TODO(user): fill in your validation logic upon object creation.
+	stormService, ok := obj.(*orchestrationv1alpha1.StormService)
+	if !ok {
+		return nil, fmt.Errorf("expected a StormService object but got %T", obj)
+	}
+
+	// 1. Validate StormService.Name itself (≤63, DNS-1123 compliant)
+	if len(stormService.Name) > 63 {
+		return nil, fmt.Errorf("StormService name must be no more than 63 characters")
+	}
+
+	// 2. Only validate roles that actually create PodSet (i.e., PodGroupSize > 1)
+	maxPodSetRoleNameLen := 0
+	hasPodSetRole := false
+	for _, role := range stormService.Spec.Template.Spec.Roles {
+		if role.PodGroupSize != nil && *role.PodGroupSize > 1 {
+			hasPodSetRole = true
+			if len(role.Name) > maxPodSetRoleNameLen {
+				maxPodSetRoleNameLen = len(role.Name)
+			}
+		}
+	}
+
+	if hasPodSetRole {
+		// Estimated PodSet name length:
+		// RoleSet: <stormService.Name>-roleset-xxxxx → N + 14
+		// PodSet: <roleSet.Name>-<roleName>-<hash(10)>-99999 → ≈ N + M + 40
+		// TODO(googs1025): Shorten pod template hash (currently 10 chars) to 5-6 safe-encoded chars
+		estimatedPodSetNameLen := len(stormService.Name) + maxPodSetRoleNameLen + estimatedPodNameSuffixLength
+		if estimatedPodSetNameLen > 63 {
+			return nil, fmt.Errorf(
+				"combined length of StormService name (%d) and longest PodSet-enabled role name (%d) may produce PodSet names exceeding 63 characters (estimated: %d). Please use shorter names",
+				len(stormService.Name), maxPodSetRoleNameLen, estimatedPodSetNameLen,
+			)
+		}
+	}
+
 	return nil, nil
 }
 

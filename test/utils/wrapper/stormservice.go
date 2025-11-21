@@ -138,7 +138,7 @@ func (w *StormServiceWrapper) WithBasicTemplate() *StormServiceWrapper {
 	return w
 }
 
-func (w *StormServiceWrapper) withRole(name string, stateful bool) *StormServiceWrapper {
+func (w *StormServiceWrapper) WithRole(name string, stateful bool, podGroupSize *int32) *StormServiceWrapper {
 	if w.stormService.Spec.Template.Spec == nil {
 		w.WithBasicTemplate()
 	}
@@ -147,6 +147,7 @@ func (w *StormServiceWrapper) withRole(name string, stateful bool) *StormService
 		Name:         name,
 		Replicas:     ptr.To(int32(1)),
 		UpgradeOrder: ptr.To(int32(1)),
+		PodGroupSize: podGroupSize,
 		Stateful:     stateful,
 		Template: v1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
@@ -185,12 +186,12 @@ func (w *StormServiceWrapper) withRole(name string, stateful bool) *StormService
 
 // WithWorkerRole adds a worker role to the StormService.
 func (w *StormServiceWrapper) WithWorkerRole() *StormServiceWrapper {
-	return w.withRole("worker", false)
+	return w.WithRole("worker", false, nil)
 }
 
 // WithMasterRole adds a master role to the StormService.
 func (w *StormServiceWrapper) WithMasterRole() *StormServiceWrapper {
-	return w.withRole("master", true)
+	return w.WithRole("master", true, nil)
 }
 
 // WithSidecarInjection adds sidecar containers to all roles.
