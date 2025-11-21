@@ -143,7 +143,7 @@ class HPKVConnector(Connector[bytes, torch.Tensor], AsyncBase):
                 return Status(StatusCodes.INVALID)
             desc = HPKVRegisterDescriptor(reg_buf)
             self._register_cache[addr] = desc
-        return Status.ok(desc)
+        return Status.ok()
 
     def _get_register_descriptor(
         self, mr: MemoryRegion

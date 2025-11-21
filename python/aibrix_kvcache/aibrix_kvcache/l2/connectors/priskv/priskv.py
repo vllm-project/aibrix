@@ -16,20 +16,20 @@ from concurrent.futures import Executor
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Tuple
 
-import pris._pris as Pris
+import priskv
 import torch
-from pris.pris_client import PrisClient
+from priskv.priskv_client import PriskvClient
 
-from ... import envs
-from ...common import AsyncBase
-from ...memory import MemoryRegion
-from ...status import Status, StatusCodes
-from . import Connector, ConnectorFeature, ConnectorRegisterDescriptor
+from .... import envs
+from ....common import AsyncBase
+from ....memory import MemoryRegion
+from ....status import Status, StatusCodes
+from .. import Connector, ConnectorFeature, ConnectorRegisterDescriptor
 
 
 @dataclass
-class PrisConfig:
-    """Pris config.
+class PrisKVConfig:
+    """PrisKV config.
     Args:
         remote_addr (str): remote address
         remote_port (int): remote port
@@ -42,8 +42,8 @@ class PrisConfig:
 
 
 @dataclass
-class PrisRegisterDescriptor(ConnectorRegisterDescriptor):
-    """Pris register descriptor."""
+class PrisKVRegisterDescriptor(ConnectorRegisterDescriptor):
+    """PrisKV register descriptor."""
 
     reg_buf: int
 
@@ -56,49 +56,49 @@ class PrisRegisterDescriptor(ConnectorRegisterDescriptor):
     mget="_mget",
     mput="_mput",
 )
-class PrisConnector(Connector[bytes, torch.Tensor], AsyncBase):
-    """Pris connector."""
+class PrisKVConnector(Connector[bytes, torch.Tensor], AsyncBase):
+    """PrisKV connector."""
 
     def __init__(
         self,
-        config: PrisConfig,
+        config: PrisKVConfig,
         key_suffix: str,
         executor: Executor,
     ):
         super().__init__(executor)
         self.config = config
         self.key_suffix = key_suffix
-        self.conn: PrisClient | None = None
-        self._register_cache: Dict[int, PrisRegisterDescriptor] = {}
+        self.conn: PriskvClient | None = None
+        self._register_cache: Dict[int, PrisKVRegisterDescriptor] = {}
 
     @classmethod
     def from_envs(
         cls, conn_id: str, executor: Executor, **kwargs
-    ) -> "PrisConnector":
+    ) -> "PrisKVConnector":
         """Create a connector from environment variables."""
         remote_addr = kwargs.get(
-            "addr", envs.AIBRIX_KV_CACHE_OL_PRIS_REMOTE_ADDR
+            "addr", envs.AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_ADDR
         )
         remote_port = kwargs.get(
-            "port", envs.AIBRIX_KV_CACHE_OL_PRIS_REMOTE_PORT
+            "port", envs.AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_PORT
         )
 
-        config = PrisConfig(
+        config = PrisKVConfig(
             remote_addr=remote_addr,
             remote_port=remote_port,
-            password=envs.AIBRIX_KV_CACHE_OL_PRIS_PASSWORD,
+            password=envs.AIBRIX_KV_CACHE_OL_PRISKV_PASSWORD,
         )
         return cls(config, conn_id, executor)
 
     @property
     def name(self) -> str:
-        return "PRIS"
+        return "PRISKV"
 
     @property
     def feature(self) -> ConnectorFeature:
         feature = ConnectorFeature(
             rdma=True,
-            mput_mget=envs.AIBRIX_KV_CACHE_OL_PRIS_USE_MPUT_MGET,
+            mput_mget=envs.AIBRIX_KV_CACHE_OL_PRISKV_USE_MPUT_MGET,
         )
         return feature
 
@@ -112,7 +112,7 @@ class PrisConnector(Connector[bytes, torch.Tensor], AsyncBase):
     def open(self) -> Status:
         """Open a connection."""
         if self.conn is None:
-            self.conn = PrisClient(
+            self.conn = PriskvClient(
                 raddr=self.config.remote_addr,
                 rport=self.config.remote_port,
                 password=self.config.password,
@@ -140,13 +140,13 @@ class PrisConnector(Connector[bytes, torch.Tensor], AsyncBase):
             reg_buf = self.conn.reg_memory(addr, length)
             if reg_buf == 0:
                 return Status(StatusCodes.INVALID)
-            desc = PrisRegisterDescriptor(reg_buf)
+            desc = PrisKVRegisterDescriptor(reg_buf)
             self._register_cache[addr] = desc
-        return Status.ok(desc)
+        return Status.ok()
 
     def _get_register_descriptor(
         self, mr: MemoryRegion
-    ) -> Status[PrisRegisterDescriptor]:
+    ) -> Status[PrisKVRegisterDescriptor]:
         slab = mr.slab
         addr = slab.data_ptr()
         if addr not in self._register_cache:
@@ -155,7 +155,7 @@ class PrisConnector(Connector[bytes, torch.Tensor], AsyncBase):
             )
         return Status.ok(self._register_cache[addr])
 
-    def _deregister_mr(self, desc: PrisRegisterDescriptor) -> None:
+    def _deregister_mr(self, desc: PrisKVRegisterDescriptor) -> None:
         assert self.conn is not None
         if desc.reg_buf != 0:
             self.conn.dereg_memory(desc.reg_buf)
@@ -177,7 +177,7 @@ class PrisConnector(Connector[bytes, torch.Tensor], AsyncBase):
         if not desc_status.is_ok():
             return Status(desc_status)
         desc = desc_status.get()
-        sgl = Pris.SGL(mr.data_ptr(), mr.length, desc.reg_buf)
+        sgl = priskv.SGL(mr.data_ptr(), mr.length, desc.reg_buf)
         if self.conn.get(self._key(key), sgl, mr.length) != 0:
             return Status(StatusCodes.ERROR)
         return Status.ok()
@@ -190,7 +190,7 @@ class PrisConnector(Connector[bytes, torch.Tensor], AsyncBase):
         if not desc_status.is_ok():
             return Status(desc_status)
         desc = desc_status.get()
-        sgl = Pris.SGL(mr.data_ptr(), mr.length, desc.reg_buf)
+        sgl = priskv.SGL(mr.data_ptr(), mr.length, desc.reg_buf)
         if self.conn.set(self._key(key), sgl) != 0:
             return Status(StatusCodes.ERROR)
         return Status.ok()
@@ -214,7 +214,7 @@ class PrisConnector(Connector[bytes, torch.Tensor], AsyncBase):
         self, keys: Sequence[bytes], mrs: Sequence[MemoryRegion]
     ) -> Sequence[Status]:
         assert self.conn is not None
-        sgls: List[Pris.SGL] = []
+        sgls: List[priskv.SGL] = []
         cache_keys: List[str] = []
         value_lens: List[int] = []
         op_status: List[Status] = [Status.ok()] * len(keys)
@@ -225,7 +225,7 @@ class PrisConnector(Connector[bytes, torch.Tensor], AsyncBase):
                     op_status[j] = Status(desc_status)
                 break
             desc = desc_status.get()
-            sgl = Pris.SGL(mr.data_ptr(), mr.length, desc.reg_buf)
+            sgl = priskv.SGL(mr.data_ptr(), mr.length, desc.reg_buf)
             sgls.append(sgl)
             cache_keys.append(self._key(keys[i]))
             value_lens.append(mr.length)
@@ -247,7 +247,7 @@ class PrisConnector(Connector[bytes, torch.Tensor], AsyncBase):
         self, keys: Sequence[bytes], mrs: Sequence[MemoryRegion]
     ) -> Sequence[Status]:
         assert self.conn is not None
-        sgls: List[Pris.SGL] = []
+        sgls: List[priskv.SGL] = []
         cache_keys: List[str] = []
         op_status: List[Status] = [Status.ok()] * len(keys)
         for i, mr in enumerate(mrs):
@@ -257,7 +257,7 @@ class PrisConnector(Connector[bytes, torch.Tensor], AsyncBase):
                     op_status[j] = Status(desc_status)
                 break
             desc = desc_status.get()
-            sgl = Pris.SGL(mr.data_ptr(), mr.length, desc.reg_buf)
+            sgl = priskv.SGL(mr.data_ptr(), mr.length, desc.reg_buf)
             sgls.append(sgl)
             cache_keys.append(self._key(keys[i]))
 
