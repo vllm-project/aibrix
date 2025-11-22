@@ -59,7 +59,7 @@ func (r *StormServiceReconciler) getRoleSetList(ctx context.Context, selector *m
 func (r *StormServiceReconciler) renderRoleSet(stormService *orchestrationv1alpha1.StormService, index *int, revisionName string, roleRevisions map[string]*apps.ControllerRevision) (*orchestrationv1alpha1.RoleSet, error) {
 	roleSet := &orchestrationv1alpha1.RoleSet{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: stormService.Name + "-roleset-",
+			GenerateName: utils.Shorten(fmt.Sprintf("%s-roleset-", stormService.Name), true, true),
 			Namespace:    stormService.Namespace,
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(stormService, orchestrationv1alpha1.SchemeGroupVersion.WithKind(orchestrationv1alpha1.StormServiceKind)),
