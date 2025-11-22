@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"strconv"
+	"strings"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -44,6 +45,21 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, mo
 	headers = buildEnvoyProxyHeaders(headers, HeaderWentIntoReqHeaders, "true", HeaderRequestID, requestID)
 	if routerCtx != nil && routerCtx.HasRouted() {
 		headers = buildEnvoyProxyHeaders(headers, HeaderTargetPod, routerCtx.TargetAddress())
+	}
+
+	if routerCtx != nil && routerCtx.RespHeaders != nil {
+		for key, value := range routerCtx.RespHeaders {
+			// skip HTTP/2 pseudo-header fields (such as :status, :path, etc.) to avoid protocol errors.
+			if strings.HasPrefix(key, ":") {
+				continue
+			}
+			headers = append(headers, &configPb.HeaderValueOption{
+				Header: &configPb.HeaderValue{
+					Key:      key,
+					RawValue: []byte(value),
+				},
+			})
+		}
 	}
 
 	for _, headerValue := range b.ResponseHeaders.Headers.Headers {
