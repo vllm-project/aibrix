@@ -47,6 +47,10 @@ func TestComputeHashRoleSetTemplate(t *testing.T) {
 
 	var c1, c2 int32 = 1, 2
 	assert.NotEqual(t, ComputeHash(t1, &c1), ComputeHash(t1, &c2))
+
+	// Verify hash length is 6 characters (reduced from 10 to mitigate 63-char limit)
+	assert.Equal(t, 6, len(h1), "hash should be 6 characters")
+	assert.Regexp(t, "^[a-z0-9]+$", h1, "hash should be DNS-safe")
 }
 
 func TestValidateControllerRef(t *testing.T) {
