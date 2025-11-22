@@ -40,5 +40,6 @@ func ShortSafeEncodeString(hashValue uint32) string {
 		return hash[:6]
 	}
 	// Pad with leading zeros if shorter than 6 chars
-	return fmt.Sprintf("%06s", hash)
+	padding := "000000"
+	return padding[:6-len(hash)] + hash
 }

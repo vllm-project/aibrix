@@ -57,31 +57,20 @@ func TestShortSafeEncodeString(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ShortSafeEncodeString(tt.hashValue)
-			if len(result) != tt.wantLen {
-				t.Errorf("ShortSafeEncodeString() length = %d, want %d", len(result), tt.wantLen)
-			}
+			assert.Len(t, result, tt.wantLen)
 			// Verify DNS compliance (lowercase alphanumeric)
-			for _, ch := range result {
-				if !((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) {
-					t.Errorf("ShortSafeEncodeString() = %q, contains non-DNS-safe character %c", result, ch)
-				}
-			}
+			assert.Regexp(t, `^[a-z0-9]+$`, result, "hash should be DNS-safe")
 		})
 	}
 
 	// Test determinism
 	hash1 := ShortSafeEncodeString(42)
 	hash2 := ShortSafeEncodeString(42)
-	if hash1 != hash2 {
-		t.Errorf("ShortSafeEncodeString() not deterministic: %q != %q", hash1, hash2)
-	}
+	assert.Equal(t, hash1, hash2, "ShortSafeEncodeString() should be deterministic")
 
 	// Test uniqueness for different values
-	hash3 := ShortSafeEncodeString(42)
 	hash4 := ShortSafeEncodeString(43)
-	if hash3 == hash4 {
-		t.Errorf("ShortSafeEncodeString() produced same hash for different values: %q == %q", hash3, hash4)
-	}
+	assert.NotEqual(t, hash1, hash4, "ShortSafeEncodeString() produced same hash for different values")
 }
 
 func TestDeepHashObject(t *testing.T) {
