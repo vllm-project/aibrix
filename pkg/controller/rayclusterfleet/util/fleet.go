@@ -30,6 +30,7 @@ import (
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	labelsutil "github.com/vllm-project/aibrix/pkg/utils"
+	hashutil "github.com/vllm-project/aibrix/pkg/utils/hash"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -41,7 +42,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/dump"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/integer"
@@ -1047,7 +1047,7 @@ func ComputeHash(template *orchestrationv1alpha1.RayClusterTemplateSpec, collisi
 		podTemplateSpecHasher.Write(collisionCountBytes)
 	}
 
-	return rand.SafeEncodeString(fmt.Sprint(podTemplateSpecHasher.Sum32()))
+	return hashutil.ShortSafeEncodeString(podTemplateSpecHasher.Sum32())
 }
 
 // DeepHashObject writes specified object to hash using the spew library
