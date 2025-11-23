@@ -57,6 +57,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationmodelv1alpha1.ModelAdapterStatusApplyConfiguration{}
 
 		// Group=orchestration, Version=v1alpha1
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("CanaryStatus"):
+		return &applyconfigurationorchestrationv1alpha1.CanaryStatusApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("CanaryStep"):
+		return &applyconfigurationorchestrationv1alpha1.CanaryStepApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("CanaryUpdateStrategy"):
+		return &applyconfigurationorchestrationv1alpha1.CanaryUpdateStrategyApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("Condition"):
 		return &applyconfigurationorchestrationv1alpha1.ConditionApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("CoschedulingSchedulingStrategySpec"):
@@ -65,6 +71,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationorchestrationv1alpha1.DisruptionToleranceApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("GodelSchedulingStrategySpec"):
 		return &applyconfigurationorchestrationv1alpha1.GodelSchedulingStrategySpecApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("PauseCondition"):
+		return &applyconfigurationorchestrationv1alpha1.PauseConditionApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("PauseStep"):
+		return &applyconfigurationorchestrationv1alpha1.PauseStepApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleet"):
 		return &applyconfigurationorchestrationv1alpha1.RayClusterFleetApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("RayClusterFleetCondition"):
