@@ -9,7 +9,7 @@ RUN ${PYTHON_BIN} -m pip show torch | awk '/Version/{print $2}' | sed 's/+.*$//'
 FROM docker.io/pytorch/manylinux2_28-builder:cuda12.1 AS builder
 
 ARG AIBRIX_REPO=https://github.com/vllm-project/aibrix
-ARG AIBRIX_BRANCH=main
+ARG AIBRIX_BRANCH=v0.5.0
 ARG PYTHON_BIN=python
 
 ENV PATH="/opt/python/cp312-cp312/bin:${PATH}"
@@ -33,6 +33,7 @@ FROM vllm/vllm-openai:${VLLM_VERSION} AS vllm-openai
 
 ARG PYTHON_BIN=python3
 ARG VLLM_VERSION=v0.10.2
+ARG NIXL_VERSION=0.7.1
 
 COPY --from=builder /tmp/aibrix /tmp/aibrix
 
@@ -46,7 +47,7 @@ RUN DIST_DIR=$(${PYTHON_BIN} -m pip show vllm | grep "Location:" | awk '{print $
 
 RUN rm -rf /tmp/aibrix
 
-RUN pip install nixl==0.7.1 nixl-cu12==0.7.1
+RUN pip install nixl==${NIXL_VERSION} nixl-cu12==${NIXL_VERSION}
 RUN apt install iproute2 perftest ucx-utils iputils-ping net-tools -y
 
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
