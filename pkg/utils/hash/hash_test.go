@@ -43,6 +43,36 @@ func (c C) String() string {
 	return fmt.Sprintf("%d:%s", c.x, c.y)
 }
 
+func TestShortSafeEncodeString(t *testing.T) {
+	tests := []struct {
+		name      string
+		hashValue uint32
+		wantLen   int
+	}{
+		{"small hash", 12345, 6},
+		{"large hash", 4294967295, 6},
+		{"zero hash", 0, 6},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ShortSafeEncodeString(tt.hashValue)
+			assert.Len(t, result, tt.wantLen)
+			// Verify DNS compliance (lowercase alphanumeric)
+			assert.Regexp(t, `^[a-z0-9]+$`, result, "hash should be DNS-safe")
+		})
+	}
+
+	// Test determinism
+	hash1 := ShortSafeEncodeString(42)
+	hash2 := ShortSafeEncodeString(42)
+	assert.Equal(t, hash1, hash2, "ShortSafeEncodeString() should be deterministic")
+
+	// Test uniqueness for different values
+	hash4 := ShortSafeEncodeString(43)
+	assert.NotEqual(t, hash1, hash4, "ShortSafeEncodeString() produced same hash for different values")
+}
+
 func TestDeepHashObject(t *testing.T) {
 	successCases := []func() interface{}{
 		func() interface{} { return 8675309 },

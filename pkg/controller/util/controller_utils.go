@@ -27,7 +27,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/rand"
 
 	hashutil "github.com/vllm-project/aibrix/pkg/utils/hash"
 )
@@ -67,7 +66,7 @@ func ComputeHash(template *v1.PodTemplateSpec, collisionCount *int32) string {
 		podTemplateSpecHasher.Write(collisionCountBytes)
 	}
 
-	return rand.SafeEncodeString(fmt.Sprint(podTemplateSpecHasher.Sum32()))
+	return hashutil.ShortSafeEncodeString(podTemplateSpecHasher.Sum32())
 }
 
 func GetPodFromTemplate(template *v1.PodTemplateSpec, parentObject runtime.Object, controllerRef *metav1.OwnerReference) (*v1.Pod, error) {

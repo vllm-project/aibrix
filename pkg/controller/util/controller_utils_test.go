@@ -51,6 +51,19 @@ func TestComputeHash_WithCollisionCount(t *testing.T) {
 	assert.NotEqual(t, h1, h2)
 }
 
+func TestComputeHash_Length(t *testing.T) {
+	template := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "test"}}},
+	}
+	hash := ComputeHash(template, nil)
+
+	// Hash should be exactly 6 characters (reduced from 10 to mitigate 63-char limit)
+	assert.Equal(t, 6, len(hash), "hash should be 6 characters")
+
+	// Hash should be DNS-safe (lowercase alphanumeric only)
+	assert.Regexp(t, "^[a-z0-9]+$", hash, "hash should be DNS-safe")
+}
+
 func TestGetPodFromTemplate_ClonesMetadataAndSpec(t *testing.T) {
 	template := &corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
