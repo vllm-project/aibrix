@@ -19,7 +19,7 @@ package constants
 const (
 	GodelPodGroupNameAnnotationKey   = "godel.bytedance.com/pod-group-name"
 	CoschedulingPodGroupNameLabelKey = "scheduling.x-k8s.io/pod-group"
-	VolcanoPodGroupNameAnnotationKey = "scheduling.k8s.io/group-name"
+	VolcanoPodGroupNameAnnotationKey = "scheduling.k8s.io/group-name" // Aligns with the standard Kubernetes PodGroup annotation for gang scheduling.
 
 	RoleSetNameLabelKey          = "roleset-name"
 	StormServiceNameLabelKey     = "storm-service-name"
