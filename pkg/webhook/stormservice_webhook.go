@@ -125,7 +125,6 @@ var _ webhook.CustomDefaulter = &StormServiceCustomDefaulter{}
 // estimatedPodNameSuffixLength is an approximation for the total length of suffixes
 // added to a StormService name and role name to form a final Pod name.
 // e.g., <stormservice>-<revision>-<role>-<hash>-<index>
-// Hash length reduced from 10 to 6 characters (saving 4 chars)
 const estimatedPodNameSuffixLength = 36
 
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type

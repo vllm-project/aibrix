@@ -21,6 +21,7 @@ import (
 	"hash/adler32"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/util/dump"
 )
 
