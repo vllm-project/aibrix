@@ -18,179 +18,35 @@ limitations under the License.
 package fake
 
 import (
-	"context"
-	json "encoding/json"
-	"fmt"
-
 	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/orchestration/v1alpha1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	labels "k8s.io/apimachinery/pkg/labels"
-	types "k8s.io/apimachinery/pkg/types"
-	watch "k8s.io/apimachinery/pkg/watch"
-	testing "k8s.io/client-go/testing"
+	typedorchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/orchestration/v1alpha1"
+	gentype "k8s.io/client-go/gentype"
 )
 
-// FakeStormServices implements StormServiceInterface
-type FakeStormServices struct {
+// fakeStormServices implements StormServiceInterface
+type fakeStormServices struct {
+	*gentype.FakeClientWithListAndApply[*v1alpha1.StormService, *v1alpha1.StormServiceList, *orchestrationv1alpha1.StormServiceApplyConfiguration]
 	Fake *FakeOrchestrationV1alpha1
-	ns   string
 }
 
-var stormservicesResource = v1alpha1.SchemeGroupVersion.WithResource("stormservices")
-
-var stormservicesKind = v1alpha1.SchemeGroupVersion.WithKind("StormService")
-
-// Get takes name of the stormService, and returns the corresponding stormService object, and an error if there is any.
-func (c *FakeStormServices) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha1.StormService, err error) {
-	emptyResult := &v1alpha1.StormService{}
-	obj, err := c.Fake.
-		Invokes(testing.NewGetActionWithOptions(stormservicesResource, c.ns, name, options), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
+func newFakeStormServices(fake *FakeOrchestrationV1alpha1, namespace string) typedorchestrationv1alpha1.StormServiceInterface {
+	return &fakeStormServices{
+		gentype.NewFakeClientWithListAndApply[*v1alpha1.StormService, *v1alpha1.StormServiceList, *orchestrationv1alpha1.StormServiceApplyConfiguration](
+			fake.Fake,
+			namespace,
+			v1alpha1.SchemeGroupVersion.WithResource("stormservices"),
+			v1alpha1.SchemeGroupVersion.WithKind("StormService"),
+			func() *v1alpha1.StormService { return &v1alpha1.StormService{} },
+			func() *v1alpha1.StormServiceList { return &v1alpha1.StormServiceList{} },
+			func(dst, src *v1alpha1.StormServiceList) { dst.ListMeta = src.ListMeta },
+			func(list *v1alpha1.StormServiceList) []*v1alpha1.StormService {
+				return gentype.ToPointerSlice(list.Items)
+			},
+			func(list *v1alpha1.StormServiceList, items []*v1alpha1.StormService) {
+				list.Items = gentype.FromPointerSlice(items)
+			},
+		),
+		fake,
 	}
-	return obj.(*v1alpha1.StormService), err
-}
-
-// List takes label and field selectors, and returns the list of StormServices that match those selectors.
-func (c *FakeStormServices) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha1.StormServiceList, err error) {
-	emptyResult := &v1alpha1.StormServiceList{}
-	obj, err := c.Fake.
-		Invokes(testing.NewListActionWithOptions(stormservicesResource, stormservicesKind, c.ns, opts), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-
-	label, _, _ := testing.ExtractFromListOptions(opts)
-	if label == nil {
-		label = labels.Everything()
-	}
-	list := &v1alpha1.StormServiceList{ListMeta: obj.(*v1alpha1.StormServiceList).ListMeta}
-	for _, item := range obj.(*v1alpha1.StormServiceList).Items {
-		if label.Matches(labels.Set(item.Labels)) {
-			list.Items = append(list.Items, item)
-		}
-	}
-	return list, err
-}
-
-// Watch returns a watch.Interface that watches the requested stormServices.
-func (c *FakeStormServices) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
-	return c.Fake.
-		InvokesWatch(testing.NewWatchActionWithOptions(stormservicesResource, c.ns, opts))
-
-}
-
-// Create takes the representation of a stormService and creates it.  Returns the server's representation of the stormService, and an error, if there is any.
-func (c *FakeStormServices) Create(ctx context.Context, stormService *v1alpha1.StormService, opts v1.CreateOptions) (result *v1alpha1.StormService, err error) {
-	emptyResult := &v1alpha1.StormService{}
-	obj, err := c.Fake.
-		Invokes(testing.NewCreateActionWithOptions(stormservicesResource, c.ns, stormService, opts), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1alpha1.StormService), err
-}
-
-// Update takes the representation of a stormService and updates it. Returns the server's representation of the stormService, and an error, if there is any.
-func (c *FakeStormServices) Update(ctx context.Context, stormService *v1alpha1.StormService, opts v1.UpdateOptions) (result *v1alpha1.StormService, err error) {
-	emptyResult := &v1alpha1.StormService{}
-	obj, err := c.Fake.
-		Invokes(testing.NewUpdateActionWithOptions(stormservicesResource, c.ns, stormService, opts), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1alpha1.StormService), err
-}
-
-// UpdateStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *FakeStormServices) UpdateStatus(ctx context.Context, stormService *v1alpha1.StormService, opts v1.UpdateOptions) (result *v1alpha1.StormService, err error) {
-	emptyResult := &v1alpha1.StormService{}
-	obj, err := c.Fake.
-		Invokes(testing.NewUpdateSubresourceActionWithOptions(stormservicesResource, "status", c.ns, stormService, opts), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1alpha1.StormService), err
-}
-
-// Delete takes name of the stormService and deletes it. Returns an error if one occurs.
-func (c *FakeStormServices) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
-	_, err := c.Fake.
-		Invokes(testing.NewDeleteActionWithOptions(stormservicesResource, c.ns, name, opts), &v1alpha1.StormService{})
-
-	return err
-}
-
-// DeleteCollection deletes a collection of objects.
-func (c *FakeStormServices) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	action := testing.NewDeleteCollectionActionWithOptions(stormservicesResource, c.ns, opts, listOpts)
-
-	_, err := c.Fake.Invokes(action, &v1alpha1.StormServiceList{})
-	return err
-}
-
-// Patch applies the patch and returns the patched stormService.
-func (c *FakeStormServices) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.StormService, err error) {
-	emptyResult := &v1alpha1.StormService{}
-	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceActionWithOptions(stormservicesResource, c.ns, name, pt, data, opts, subresources...), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1alpha1.StormService), err
-}
-
-// Apply takes the given apply declarative configuration, applies it and returns the applied stormService.
-func (c *FakeStormServices) Apply(ctx context.Context, stormService *orchestrationv1alpha1.StormServiceApplyConfiguration, opts v1.ApplyOptions) (result *v1alpha1.StormService, err error) {
-	if stormService == nil {
-		return nil, fmt.Errorf("stormService provided to Apply must not be nil")
-	}
-	data, err := json.Marshal(stormService)
-	if err != nil {
-		return nil, err
-	}
-	name := stormService.Name
-	if name == nil {
-		return nil, fmt.Errorf("stormService.Name must be provided to Apply")
-	}
-	emptyResult := &v1alpha1.StormService{}
-	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceActionWithOptions(stormservicesResource, c.ns, *name, types.ApplyPatchType, data, opts.ToPatchOptions()), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1alpha1.StormService), err
-}
-
-// ApplyStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating ApplyStatus().
-func (c *FakeStormServices) ApplyStatus(ctx context.Context, stormService *orchestrationv1alpha1.StormServiceApplyConfiguration, opts v1.ApplyOptions) (result *v1alpha1.StormService, err error) {
-	if stormService == nil {
-		return nil, fmt.Errorf("stormService provided to Apply must not be nil")
-	}
-	data, err := json.Marshal(stormService)
-	if err != nil {
-		return nil, err
-	}
-	name := stormService.Name
-	if name == nil {
-		return nil, fmt.Errorf("stormService.Name must be provided to Apply")
-	}
-	emptyResult := &v1alpha1.StormService{}
-	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceActionWithOptions(stormservicesResource, c.ns, *name, types.ApplyPatchType, data, opts.ToPatchOptions(), "status"), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1alpha1.StormService), err
 }

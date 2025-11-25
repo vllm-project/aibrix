@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"context"
+	context "context"
 
-	v1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
-	autoscalingv1alpha1 "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/autoscaling/v1alpha1"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	applyconfigurationautoscalingv1alpha1 "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/autoscaling/v1alpha1"
 	scheme "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/scheme"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
@@ -37,36 +37,37 @@ type PodAutoscalersGetter interface {
 
 // PodAutoscalerInterface has methods to work with PodAutoscaler resources.
 type PodAutoscalerInterface interface {
-	Create(ctx context.Context, podAutoscaler *v1alpha1.PodAutoscaler, opts v1.CreateOptions) (*v1alpha1.PodAutoscaler, error)
-	Update(ctx context.Context, podAutoscaler *v1alpha1.PodAutoscaler, opts v1.UpdateOptions) (*v1alpha1.PodAutoscaler, error)
+	Create(ctx context.Context, podAutoscaler *autoscalingv1alpha1.PodAutoscaler, opts v1.CreateOptions) (*autoscalingv1alpha1.PodAutoscaler, error)
+	Update(ctx context.Context, podAutoscaler *autoscalingv1alpha1.PodAutoscaler, opts v1.UpdateOptions) (*autoscalingv1alpha1.PodAutoscaler, error)
 	// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-	UpdateStatus(ctx context.Context, podAutoscaler *v1alpha1.PodAutoscaler, opts v1.UpdateOptions) (*v1alpha1.PodAutoscaler, error)
+	UpdateStatus(ctx context.Context, podAutoscaler *autoscalingv1alpha1.PodAutoscaler, opts v1.UpdateOptions) (*autoscalingv1alpha1.PodAutoscaler, error)
 	Delete(ctx context.Context, name string, opts v1.DeleteOptions) error
 	DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error
-	Get(ctx context.Context, name string, opts v1.GetOptions) (*v1alpha1.PodAutoscaler, error)
-	List(ctx context.Context, opts v1.ListOptions) (*v1alpha1.PodAutoscalerList, error)
+	Get(ctx context.Context, name string, opts v1.GetOptions) (*autoscalingv1alpha1.PodAutoscaler, error)
+	List(ctx context.Context, opts v1.ListOptions) (*autoscalingv1alpha1.PodAutoscalerList, error)
 	Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error)
-	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.PodAutoscaler, err error)
-	Apply(ctx context.Context, podAutoscaler *autoscalingv1alpha1.PodAutoscalerApplyConfiguration, opts v1.ApplyOptions) (result *v1alpha1.PodAutoscaler, err error)
+	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *autoscalingv1alpha1.PodAutoscaler, err error)
+	Apply(ctx context.Context, podAutoscaler *applyconfigurationautoscalingv1alpha1.PodAutoscalerApplyConfiguration, opts v1.ApplyOptions) (result *autoscalingv1alpha1.PodAutoscaler, err error)
 	// Add a +genclient:noStatus comment above the type to avoid generating ApplyStatus().
-	ApplyStatus(ctx context.Context, podAutoscaler *autoscalingv1alpha1.PodAutoscalerApplyConfiguration, opts v1.ApplyOptions) (result *v1alpha1.PodAutoscaler, err error)
+	ApplyStatus(ctx context.Context, podAutoscaler *applyconfigurationautoscalingv1alpha1.PodAutoscalerApplyConfiguration, opts v1.ApplyOptions) (result *autoscalingv1alpha1.PodAutoscaler, err error)
 	PodAutoscalerExpansion
 }
 
 // podAutoscalers implements PodAutoscalerInterface
 type podAutoscalers struct {
-	*gentype.ClientWithListAndApply[*v1alpha1.PodAutoscaler, *v1alpha1.PodAutoscalerList, *autoscalingv1alpha1.PodAutoscalerApplyConfiguration]
+	*gentype.ClientWithListAndApply[*autoscalingv1alpha1.PodAutoscaler, *autoscalingv1alpha1.PodAutoscalerList, *applyconfigurationautoscalingv1alpha1.PodAutoscalerApplyConfiguration]
 }
 
 // newPodAutoscalers returns a PodAutoscalers
 func newPodAutoscalers(c *AutoscalingV1alpha1Client, namespace string) *podAutoscalers {
 	return &podAutoscalers{
-		gentype.NewClientWithListAndApply[*v1alpha1.PodAutoscaler, *v1alpha1.PodAutoscalerList, *autoscalingv1alpha1.PodAutoscalerApplyConfiguration](
+		gentype.NewClientWithListAndApply[*autoscalingv1alpha1.PodAutoscaler, *autoscalingv1alpha1.PodAutoscalerList, *applyconfigurationautoscalingv1alpha1.PodAutoscalerApplyConfiguration](
 			"podautoscalers",
 			c.RESTClient(),
 			scheme.ParameterCodec,
 			namespace,
-			func() *v1alpha1.PodAutoscaler { return &v1alpha1.PodAutoscaler{} },
-			func() *v1alpha1.PodAutoscalerList { return &v1alpha1.PodAutoscalerList{} }),
+			func() *autoscalingv1alpha1.PodAutoscaler { return &autoscalingv1alpha1.PodAutoscaler{} },
+			func() *autoscalingv1alpha1.PodAutoscalerList { return &autoscalingv1alpha1.PodAutoscalerList{} },
+		),
 	}
 }

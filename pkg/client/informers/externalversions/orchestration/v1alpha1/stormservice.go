@@ -18,13 +18,13 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	apiorchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	versioned "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	internalinterfaces "github.com/vllm-project/aibrix/pkg/client/informers/externalversions/internalinterfaces"
-	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/listers/orchestration/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/listers/orchestration/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"
@@ -35,7 +35,7 @@ import (
 // StormServices.
 type StormServiceInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1alpha1.StormServiceLister
+	Lister() orchestrationv1alpha1.StormServiceLister
 }
 
 type stormServiceInformer struct {
@@ -70,7 +70,7 @@ func NewFilteredStormServiceInformer(client versioned.Interface, namespace strin
 				return client.OrchestrationV1alpha1().StormServices(namespace).Watch(context.TODO(), options)
 			},
 		},
-		&orchestrationv1alpha1.StormService{},
+		&apiorchestrationv1alpha1.StormService{},
 		resyncPeriod,
 		indexers,
 	)
@@ -81,9 +81,9 @@ func (f *stormServiceInformer) defaultInformer(client versioned.Interface, resyn
 }
 
 func (f *stormServiceInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&orchestrationv1alpha1.StormService{}, f.defaultInformer)
+	return f.factory.InformerFor(&apiorchestrationv1alpha1.StormService{}, f.defaultInformer)
 }
 
-func (f *stormServiceInformer) Lister() v1alpha1.StormServiceLister {
-	return v1alpha1.NewStormServiceLister(f.Informer().GetIndexer())
+func (f *stormServiceInformer) Lister() orchestrationv1alpha1.StormServiceLister {
+	return orchestrationv1alpha1.NewStormServiceLister(f.Informer().GetIndexer())
 }

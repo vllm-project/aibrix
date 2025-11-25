@@ -18,7 +18,7 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -26,13 +26,13 @@ import (
 // ConditionApplyConfiguration represents a declarative configuration of the Condition type for use
 // with apply.
 type ConditionApplyConfiguration struct {
-	Type                *v1alpha1.ConditionType `json:"type,omitempty"`
-	Status              *v1.ConditionStatus     `json:"status,omitempty"`
-	LastTransitionTime  *metav1.Time            `json:"lastTransitionTime,omitempty"`
-	LastUpdateTime      *metav1.Time            `json:"lastUpdateTime,omitempty"`
-	LastUpdateMicroTime *metav1.MicroTime       `json:"lastUpdateMicroTime,omitempty"`
-	Reason              *string                 `json:"reason,omitempty"`
-	Message             *string                 `json:"message,omitempty"`
+	Type                *orchestrationv1alpha1.ConditionType `json:"type,omitempty"`
+	Status              *v1.ConditionStatus                  `json:"status,omitempty"`
+	LastTransitionTime  *metav1.Time                         `json:"lastTransitionTime,omitempty"`
+	LastUpdateTime      *metav1.Time                         `json:"lastUpdateTime,omitempty"`
+	LastUpdateMicroTime *metav1.MicroTime                    `json:"lastUpdateMicroTime,omitempty"`
+	Reason              *string                              `json:"reason,omitempty"`
+	Message             *string                              `json:"message,omitempty"`
 }
 
 // ConditionApplyConfiguration constructs a declarative configuration of the Condition type for use with
@@ -44,7 +44,7 @@ func Condition() *ConditionApplyConfiguration {
 // WithType sets the Type field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Type field is set to the value of the last call.
-func (b *ConditionApplyConfiguration) WithType(value v1alpha1.ConditionType) *ConditionApplyConfiguration {
+func (b *ConditionApplyConfiguration) WithType(value orchestrationv1alpha1.ConditionType) *ConditionApplyConfiguration {
 	b.Type = &value
 	return b
 }

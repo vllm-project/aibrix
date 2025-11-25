@@ -18,13 +18,13 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	apiorchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	versioned "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	internalinterfaces "github.com/vllm-project/aibrix/pkg/client/informers/externalversions/internalinterfaces"
-	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/listers/orchestration/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/listers/orchestration/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"
@@ -35,7 +35,7 @@ import (
 // RayClusterFleets.
 type RayClusterFleetInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1alpha1.RayClusterFleetLister
+	Lister() orchestrationv1alpha1.RayClusterFleetLister
 }
 
 type rayClusterFleetInformer struct {
@@ -70,7 +70,7 @@ func NewFilteredRayClusterFleetInformer(client versioned.Interface, namespace st
 				return client.OrchestrationV1alpha1().RayClusterFleets(namespace).Watch(context.TODO(), options)
 			},
 		},
-		&orchestrationv1alpha1.RayClusterFleet{},
+		&apiorchestrationv1alpha1.RayClusterFleet{},
 		resyncPeriod,
 		indexers,
 	)
@@ -81,9 +81,9 @@ func (f *rayClusterFleetInformer) defaultInformer(client versioned.Interface, re
 }
 
 func (f *rayClusterFleetInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&orchestrationv1alpha1.RayClusterFleet{}, f.defaultInformer)
+	return f.factory.InformerFor(&apiorchestrationv1alpha1.RayClusterFleet{}, f.defaultInformer)
 }
 
-func (f *rayClusterFleetInformer) Lister() v1alpha1.RayClusterFleetLister {
-	return v1alpha1.NewRayClusterFleetLister(f.Informer().GetIndexer())
+func (f *rayClusterFleetInformer) Lister() orchestrationv1alpha1.RayClusterFleetLister {
+	return orchestrationv1alpha1.NewRayClusterFleetLister(f.Informer().GetIndexer())
 }

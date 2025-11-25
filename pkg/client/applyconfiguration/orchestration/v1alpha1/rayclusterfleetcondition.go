@@ -18,7 +18,7 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -26,12 +26,12 @@ import (
 // RayClusterFleetConditionApplyConfiguration represents a declarative configuration of the RayClusterFleetCondition type for use
 // with apply.
 type RayClusterFleetConditionApplyConfiguration struct {
-	Type               *v1alpha1.RayClusterFleetConditionType `json:"type,omitempty"`
-	Status             *v1.ConditionStatus                    `json:"status,omitempty"`
-	LastUpdateTime     *metav1.Time                           `json:"lastUpdateTime,omitempty"`
-	LastTransitionTime *metav1.Time                           `json:"lastTransitionTime,omitempty"`
-	Reason             *string                                `json:"reason,omitempty"`
-	Message            *string                                `json:"message,omitempty"`
+	Type               *orchestrationv1alpha1.RayClusterFleetConditionType `json:"type,omitempty"`
+	Status             *v1.ConditionStatus                                 `json:"status,omitempty"`
+	LastUpdateTime     *metav1.Time                                        `json:"lastUpdateTime,omitempty"`
+	LastTransitionTime *metav1.Time                                        `json:"lastTransitionTime,omitempty"`
+	Reason             *string                                             `json:"reason,omitempty"`
+	Message            *string                                             `json:"message,omitempty"`
 }
 
 // RayClusterFleetConditionApplyConfiguration constructs a declarative configuration of the RayClusterFleetCondition type for use with
@@ -43,7 +43,7 @@ func RayClusterFleetCondition() *RayClusterFleetConditionApplyConfiguration {
 // WithType sets the Type field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Type field is set to the value of the last call.
-func (b *RayClusterFleetConditionApplyConfiguration) WithType(value v1alpha1.RayClusterFleetConditionType) *RayClusterFleetConditionApplyConfiguration {
+func (b *RayClusterFleetConditionApplyConfiguration) WithType(value orchestrationv1alpha1.RayClusterFleetConditionType) *RayClusterFleetConditionApplyConfiguration {
 	b.Type = &value
 	return b
 }

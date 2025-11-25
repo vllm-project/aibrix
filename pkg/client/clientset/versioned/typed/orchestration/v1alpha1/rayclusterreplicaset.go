@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"context"
+	context "context"
 
-	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	orchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/orchestration/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	applyconfigurationorchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/orchestration/v1alpha1"
 	scheme "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/scheme"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
@@ -37,36 +37,41 @@ type RayClusterReplicaSetsGetter interface {
 
 // RayClusterReplicaSetInterface has methods to work with RayClusterReplicaSet resources.
 type RayClusterReplicaSetInterface interface {
-	Create(ctx context.Context, rayClusterReplicaSet *v1alpha1.RayClusterReplicaSet, opts v1.CreateOptions) (*v1alpha1.RayClusterReplicaSet, error)
-	Update(ctx context.Context, rayClusterReplicaSet *v1alpha1.RayClusterReplicaSet, opts v1.UpdateOptions) (*v1alpha1.RayClusterReplicaSet, error)
+	Create(ctx context.Context, rayClusterReplicaSet *orchestrationv1alpha1.RayClusterReplicaSet, opts v1.CreateOptions) (*orchestrationv1alpha1.RayClusterReplicaSet, error)
+	Update(ctx context.Context, rayClusterReplicaSet *orchestrationv1alpha1.RayClusterReplicaSet, opts v1.UpdateOptions) (*orchestrationv1alpha1.RayClusterReplicaSet, error)
 	// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-	UpdateStatus(ctx context.Context, rayClusterReplicaSet *v1alpha1.RayClusterReplicaSet, opts v1.UpdateOptions) (*v1alpha1.RayClusterReplicaSet, error)
+	UpdateStatus(ctx context.Context, rayClusterReplicaSet *orchestrationv1alpha1.RayClusterReplicaSet, opts v1.UpdateOptions) (*orchestrationv1alpha1.RayClusterReplicaSet, error)
 	Delete(ctx context.Context, name string, opts v1.DeleteOptions) error
 	DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error
-	Get(ctx context.Context, name string, opts v1.GetOptions) (*v1alpha1.RayClusterReplicaSet, error)
-	List(ctx context.Context, opts v1.ListOptions) (*v1alpha1.RayClusterReplicaSetList, error)
+	Get(ctx context.Context, name string, opts v1.GetOptions) (*orchestrationv1alpha1.RayClusterReplicaSet, error)
+	List(ctx context.Context, opts v1.ListOptions) (*orchestrationv1alpha1.RayClusterReplicaSetList, error)
 	Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error)
-	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.RayClusterReplicaSet, err error)
-	Apply(ctx context.Context, rayClusterReplicaSet *orchestrationv1alpha1.RayClusterReplicaSetApplyConfiguration, opts v1.ApplyOptions) (result *v1alpha1.RayClusterReplicaSet, err error)
+	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *orchestrationv1alpha1.RayClusterReplicaSet, err error)
+	Apply(ctx context.Context, rayClusterReplicaSet *applyconfigurationorchestrationv1alpha1.RayClusterReplicaSetApplyConfiguration, opts v1.ApplyOptions) (result *orchestrationv1alpha1.RayClusterReplicaSet, err error)
 	// Add a +genclient:noStatus comment above the type to avoid generating ApplyStatus().
-	ApplyStatus(ctx context.Context, rayClusterReplicaSet *orchestrationv1alpha1.RayClusterReplicaSetApplyConfiguration, opts v1.ApplyOptions) (result *v1alpha1.RayClusterReplicaSet, err error)
+	ApplyStatus(ctx context.Context, rayClusterReplicaSet *applyconfigurationorchestrationv1alpha1.RayClusterReplicaSetApplyConfiguration, opts v1.ApplyOptions) (result *orchestrationv1alpha1.RayClusterReplicaSet, err error)
 	RayClusterReplicaSetExpansion
 }
 
 // rayClusterReplicaSets implements RayClusterReplicaSetInterface
 type rayClusterReplicaSets struct {
-	*gentype.ClientWithListAndApply[*v1alpha1.RayClusterReplicaSet, *v1alpha1.RayClusterReplicaSetList, *orchestrationv1alpha1.RayClusterReplicaSetApplyConfiguration]
+	*gentype.ClientWithListAndApply[*orchestrationv1alpha1.RayClusterReplicaSet, *orchestrationv1alpha1.RayClusterReplicaSetList, *applyconfigurationorchestrationv1alpha1.RayClusterReplicaSetApplyConfiguration]
 }
 
 // newRayClusterReplicaSets returns a RayClusterReplicaSets
 func newRayClusterReplicaSets(c *OrchestrationV1alpha1Client, namespace string) *rayClusterReplicaSets {
 	return &rayClusterReplicaSets{
-		gentype.NewClientWithListAndApply[*v1alpha1.RayClusterReplicaSet, *v1alpha1.RayClusterReplicaSetList, *orchestrationv1alpha1.RayClusterReplicaSetApplyConfiguration](
+		gentype.NewClientWithListAndApply[*orchestrationv1alpha1.RayClusterReplicaSet, *orchestrationv1alpha1.RayClusterReplicaSetList, *applyconfigurationorchestrationv1alpha1.RayClusterReplicaSetApplyConfiguration](
 			"rayclusterreplicasets",
 			c.RESTClient(),
 			scheme.ParameterCodec,
 			namespace,
-			func() *v1alpha1.RayClusterReplicaSet { return &v1alpha1.RayClusterReplicaSet{} },
-			func() *v1alpha1.RayClusterReplicaSetList { return &v1alpha1.RayClusterReplicaSetList{} }),
+			func() *orchestrationv1alpha1.RayClusterReplicaSet {
+				return &orchestrationv1alpha1.RayClusterReplicaSet{}
+			},
+			func() *orchestrationv1alpha1.RayClusterReplicaSetList {
+				return &orchestrationv1alpha1.RayClusterReplicaSetList{}
+			},
+		),
 	}
 }

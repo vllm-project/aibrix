@@ -18,25 +18,25 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
 
 // StormServiceStatusApplyConfiguration represents a declarative configuration of the StormServiceStatus type for use
 // with apply.
 type StormServiceStatusApplyConfiguration struct {
-	ObservedGeneration    *int64                         `json:"observedGeneration,omitempty"`
-	Replicas              *int32                         `json:"replicas,omitempty"`
-	ReadyReplicas         *int32                         `json:"readyReplicas,omitempty"`
-	NotReadyReplicas      *int32                         `json:"notReadyReplicas,omitempty"`
-	CurrentReplicas       *int32                         `json:"currentReplicas,omitempty"`
-	UpdatedReplicas       *int32                         `json:"updatedReplicas,omitempty"`
-	CurrentRevision       *string                        `json:"currentRevision,omitempty"`
-	UpdateRevision        *string                        `json:"updateRevision,omitempty"`
-	UpdatedReadyReplicas  *int32                         `json:"updatedReadyReplicas,omitempty"`
-	Conditions            *v1alpha1.Conditions           `json:"conditions,omitempty"`
-	CollisionCount        *int32                         `json:"collisionCount,omitempty"`
-	ScalingTargetSelector *string                        `json:"scalingTargetSelector,omitempty"`
-	RoleStatuses          []RoleStatusApplyConfiguration `json:"roleStatuses,omitempty"`
+	ObservedGeneration    *int64                            `json:"observedGeneration,omitempty"`
+	Replicas              *int32                            `json:"replicas,omitempty"`
+	ReadyReplicas         *int32                            `json:"readyReplicas,omitempty"`
+	NotReadyReplicas      *int32                            `json:"notReadyReplicas,omitempty"`
+	CurrentReplicas       *int32                            `json:"currentReplicas,omitempty"`
+	UpdatedReplicas       *int32                            `json:"updatedReplicas,omitempty"`
+	CurrentRevision       *string                           `json:"currentRevision,omitempty"`
+	UpdateRevision        *string                           `json:"updateRevision,omitempty"`
+	UpdatedReadyReplicas  *int32                            `json:"updatedReadyReplicas,omitempty"`
+	Conditions            *orchestrationv1alpha1.Conditions `json:"conditions,omitempty"`
+	CollisionCount        *int32                            `json:"collisionCount,omitempty"`
+	ScalingTargetSelector *string                           `json:"scalingTargetSelector,omitempty"`
+	RoleStatuses          []RoleStatusApplyConfiguration    `json:"roleStatuses,omitempty"`
 }
 
 // StormServiceStatusApplyConfiguration constructs a declarative configuration of the StormServiceStatus type for use with
@@ -120,7 +120,7 @@ func (b *StormServiceStatusApplyConfiguration) WithUpdatedReadyReplicas(value in
 // WithConditions sets the Conditions field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Conditions field is set to the value of the last call.
-func (b *StormServiceStatusApplyConfiguration) WithConditions(value v1alpha1.Conditions) *StormServiceStatusApplyConfiguration {
+func (b *StormServiceStatusApplyConfiguration) WithConditions(value orchestrationv1alpha1.Conditions) *StormServiceStatusApplyConfiguration {
 	b.Conditions = &value
 	return b
 }

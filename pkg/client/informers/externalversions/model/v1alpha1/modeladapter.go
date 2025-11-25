@@ -18,13 +18,13 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	apimodelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	versioned "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	internalinterfaces "github.com/vllm-project/aibrix/pkg/client/informers/externalversions/internalinterfaces"
-	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/listers/model/v1alpha1"
+	modelv1alpha1 "github.com/vllm-project/aibrix/pkg/client/listers/model/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"
@@ -35,7 +35,7 @@ import (
 // ModelAdapters.
 type ModelAdapterInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1alpha1.ModelAdapterLister
+	Lister() modelv1alpha1.ModelAdapterLister
 }
 
 type modelAdapterInformer struct {
@@ -70,7 +70,7 @@ func NewFilteredModelAdapterInformer(client versioned.Interface, namespace strin
 				return client.ModelV1alpha1().ModelAdapters(namespace).Watch(context.TODO(), options)
 			},
 		},
-		&modelv1alpha1.ModelAdapter{},
+		&apimodelv1alpha1.ModelAdapter{},
 		resyncPeriod,
 		indexers,
 	)
@@ -81,9 +81,9 @@ func (f *modelAdapterInformer) defaultInformer(client versioned.Interface, resyn
 }
 
 func (f *modelAdapterInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&modelv1alpha1.ModelAdapter{}, f.defaultInformer)
+	return f.factory.InformerFor(&apimodelv1alpha1.ModelAdapter{}, f.defaultInformer)
 }
 
-func (f *modelAdapterInformer) Lister() v1alpha1.ModelAdapterLister {
-	return v1alpha1.NewModelAdapterLister(f.Informer().GetIndexer())
+func (f *modelAdapterInformer) Lister() modelv1alpha1.ModelAdapterLister {
+	return modelv1alpha1.NewModelAdapterLister(f.Informer().GetIndexer())
 }

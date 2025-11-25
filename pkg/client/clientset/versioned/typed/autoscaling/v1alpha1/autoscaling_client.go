@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"net/http"
+	http "net/http"
 
-	v1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
-	"github.com/vllm-project/aibrix/pkg/client/clientset/versioned/scheme"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	scheme "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/scheme"
 	rest "k8s.io/client-go/rest"
 )
 
@@ -84,10 +84,10 @@ func New(c rest.Interface) *AutoscalingV1alpha1Client {
 }
 
 func setConfigDefaults(config *rest.Config) error {
-	gv := v1alpha1.SchemeGroupVersion
+	gv := autoscalingv1alpha1.SchemeGroupVersion
 	config.GroupVersion = &gv
 	config.APIPath = "/apis"
-	config.NegotiatedSerializer = scheme.Codecs.WithoutConversion()
+	config.NegotiatedSerializer = rest.CodecFactoryForGeneratedClient(scheme.Scheme, scheme.Codecs).WithoutConversion()
 
 	if config.UserAgent == "" {
 		config.UserAgent = rest.DefaultKubernetesUserAgent()

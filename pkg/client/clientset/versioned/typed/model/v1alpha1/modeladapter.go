@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"context"
+	context "context"
 
-	v1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
-	modelv1alpha1 "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/model/v1alpha1"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	applyconfigurationmodelv1alpha1 "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/model/v1alpha1"
 	scheme "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/scheme"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
@@ -37,36 +37,37 @@ type ModelAdaptersGetter interface {
 
 // ModelAdapterInterface has methods to work with ModelAdapter resources.
 type ModelAdapterInterface interface {
-	Create(ctx context.Context, modelAdapter *v1alpha1.ModelAdapter, opts v1.CreateOptions) (*v1alpha1.ModelAdapter, error)
-	Update(ctx context.Context, modelAdapter *v1alpha1.ModelAdapter, opts v1.UpdateOptions) (*v1alpha1.ModelAdapter, error)
+	Create(ctx context.Context, modelAdapter *modelv1alpha1.ModelAdapter, opts v1.CreateOptions) (*modelv1alpha1.ModelAdapter, error)
+	Update(ctx context.Context, modelAdapter *modelv1alpha1.ModelAdapter, opts v1.UpdateOptions) (*modelv1alpha1.ModelAdapter, error)
 	// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-	UpdateStatus(ctx context.Context, modelAdapter *v1alpha1.ModelAdapter, opts v1.UpdateOptions) (*v1alpha1.ModelAdapter, error)
+	UpdateStatus(ctx context.Context, modelAdapter *modelv1alpha1.ModelAdapter, opts v1.UpdateOptions) (*modelv1alpha1.ModelAdapter, error)
 	Delete(ctx context.Context, name string, opts v1.DeleteOptions) error
 	DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error
-	Get(ctx context.Context, name string, opts v1.GetOptions) (*v1alpha1.ModelAdapter, error)
-	List(ctx context.Context, opts v1.ListOptions) (*v1alpha1.ModelAdapterList, error)
+	Get(ctx context.Context, name string, opts v1.GetOptions) (*modelv1alpha1.ModelAdapter, error)
+	List(ctx context.Context, opts v1.ListOptions) (*modelv1alpha1.ModelAdapterList, error)
 	Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error)
-	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.ModelAdapter, err error)
-	Apply(ctx context.Context, modelAdapter *modelv1alpha1.ModelAdapterApplyConfiguration, opts v1.ApplyOptions) (result *v1alpha1.ModelAdapter, err error)
+	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *modelv1alpha1.ModelAdapter, err error)
+	Apply(ctx context.Context, modelAdapter *applyconfigurationmodelv1alpha1.ModelAdapterApplyConfiguration, opts v1.ApplyOptions) (result *modelv1alpha1.ModelAdapter, err error)
 	// Add a +genclient:noStatus comment above the type to avoid generating ApplyStatus().
-	ApplyStatus(ctx context.Context, modelAdapter *modelv1alpha1.ModelAdapterApplyConfiguration, opts v1.ApplyOptions) (result *v1alpha1.ModelAdapter, err error)
+	ApplyStatus(ctx context.Context, modelAdapter *applyconfigurationmodelv1alpha1.ModelAdapterApplyConfiguration, opts v1.ApplyOptions) (result *modelv1alpha1.ModelAdapter, err error)
 	ModelAdapterExpansion
 }
 
 // modelAdapters implements ModelAdapterInterface
 type modelAdapters struct {
-	*gentype.ClientWithListAndApply[*v1alpha1.ModelAdapter, *v1alpha1.ModelAdapterList, *modelv1alpha1.ModelAdapterApplyConfiguration]
+	*gentype.ClientWithListAndApply[*modelv1alpha1.ModelAdapter, *modelv1alpha1.ModelAdapterList, *applyconfigurationmodelv1alpha1.ModelAdapterApplyConfiguration]
 }
 
 // newModelAdapters returns a ModelAdapters
 func newModelAdapters(c *ModelV1alpha1Client, namespace string) *modelAdapters {
 	return &modelAdapters{
-		gentype.NewClientWithListAndApply[*v1alpha1.ModelAdapter, *v1alpha1.ModelAdapterList, *modelv1alpha1.ModelAdapterApplyConfiguration](
+		gentype.NewClientWithListAndApply[*modelv1alpha1.ModelAdapter, *modelv1alpha1.ModelAdapterList, *applyconfigurationmodelv1alpha1.ModelAdapterApplyConfiguration](
 			"modeladapters",
 			c.RESTClient(),
 			scheme.ParameterCodec,
 			namespace,
-			func() *v1alpha1.ModelAdapter { return &v1alpha1.ModelAdapter{} },
-			func() *v1alpha1.ModelAdapterList { return &v1alpha1.ModelAdapterList{} }),
+			func() *modelv1alpha1.ModelAdapter { return &modelv1alpha1.ModelAdapter{} },
+			func() *modelv1alpha1.ModelAdapterList { return &modelv1alpha1.ModelAdapterList{} },
+		),
 	}
 }

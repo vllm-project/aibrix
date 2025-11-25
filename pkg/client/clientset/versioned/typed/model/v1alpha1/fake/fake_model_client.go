@@ -28,7 +28,7 @@ type FakeModelV1alpha1 struct {
 }
 
 func (c *FakeModelV1alpha1) ModelAdapters(namespace string) v1alpha1.ModelAdapterInterface {
-	return &FakeModelAdapters{c, namespace}
+	return newFakeModelAdapters(c, namespace)
 }
 
 // RESTClient returns a RESTClient that is used to communicate

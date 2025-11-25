@@ -18,7 +18,7 @@ limitations under the License.
 package externalversions
 
 import (
-	"fmt"
+	fmt "fmt"
 
 	v1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"

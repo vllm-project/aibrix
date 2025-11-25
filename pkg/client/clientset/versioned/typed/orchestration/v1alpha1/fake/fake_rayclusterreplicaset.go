@@ -18,179 +18,35 @@ limitations under the License.
 package fake
 
 import (
-	"context"
-	json "encoding/json"
-	"fmt"
-
 	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/orchestration/v1alpha1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	labels "k8s.io/apimachinery/pkg/labels"
-	types "k8s.io/apimachinery/pkg/types"
-	watch "k8s.io/apimachinery/pkg/watch"
-	testing "k8s.io/client-go/testing"
+	typedorchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/orchestration/v1alpha1"
+	gentype "k8s.io/client-go/gentype"
 )
 
-// FakeRayClusterReplicaSets implements RayClusterReplicaSetInterface
-type FakeRayClusterReplicaSets struct {
+// fakeRayClusterReplicaSets implements RayClusterReplicaSetInterface
+type fakeRayClusterReplicaSets struct {
+	*gentype.FakeClientWithListAndApply[*v1alpha1.RayClusterReplicaSet, *v1alpha1.RayClusterReplicaSetList, *orchestrationv1alpha1.RayClusterReplicaSetApplyConfiguration]
 	Fake *FakeOrchestrationV1alpha1
-	ns   string
 }
 
-var rayclusterreplicasetsResource = v1alpha1.SchemeGroupVersion.WithResource("rayclusterreplicasets")
-
-var rayclusterreplicasetsKind = v1alpha1.SchemeGroupVersion.WithKind("RayClusterReplicaSet")
-
-// Get takes name of the rayClusterReplicaSet, and returns the corresponding rayClusterReplicaSet object, and an error if there is any.
-func (c *FakeRayClusterReplicaSets) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha1.RayClusterReplicaSet, err error) {
-	emptyResult := &v1alpha1.RayClusterReplicaSet{}
-	obj, err := c.Fake.
-		Invokes(testing.NewGetActionWithOptions(rayclusterreplicasetsResource, c.ns, name, options), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
+func newFakeRayClusterReplicaSets(fake *FakeOrchestrationV1alpha1, namespace string) typedorchestrationv1alpha1.RayClusterReplicaSetInterface {
+	return &fakeRayClusterReplicaSets{
+		gentype.NewFakeClientWithListAndApply[*v1alpha1.RayClusterReplicaSet, *v1alpha1.RayClusterReplicaSetList, *orchestrationv1alpha1.RayClusterReplicaSetApplyConfiguration](
+			fake.Fake,
+			namespace,
+			v1alpha1.SchemeGroupVersion.WithResource("rayclusterreplicasets"),
+			v1alpha1.SchemeGroupVersion.WithKind("RayClusterReplicaSet"),
+			func() *v1alpha1.RayClusterReplicaSet { return &v1alpha1.RayClusterReplicaSet{} },
+			func() *v1alpha1.RayClusterReplicaSetList { return &v1alpha1.RayClusterReplicaSetList{} },
+			func(dst, src *v1alpha1.RayClusterReplicaSetList) { dst.ListMeta = src.ListMeta },
+			func(list *v1alpha1.RayClusterReplicaSetList) []*v1alpha1.RayClusterReplicaSet {
+				return gentype.ToPointerSlice(list.Items)
+			},
+			func(list *v1alpha1.RayClusterReplicaSetList, items []*v1alpha1.RayClusterReplicaSet) {
+				list.Items = gentype.FromPointerSlice(items)
+			},
+		),
+		fake,
 	}
-	return obj.(*v1alpha1.RayClusterReplicaSet), err
-}
-
-// List takes label and field selectors, and returns the list of RayClusterReplicaSets that match those selectors.
-func (c *FakeRayClusterReplicaSets) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha1.RayClusterReplicaSetList, err error) {
-	emptyResult := &v1alpha1.RayClusterReplicaSetList{}
-	obj, err := c.Fake.
-		Invokes(testing.NewListActionWithOptions(rayclusterreplicasetsResource, rayclusterreplicasetsKind, c.ns, opts), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-
-	label, _, _ := testing.ExtractFromListOptions(opts)
-	if label == nil {
-		label = labels.Everything()
-	}
-	list := &v1alpha1.RayClusterReplicaSetList{ListMeta: obj.(*v1alpha1.RayClusterReplicaSetList).ListMeta}
-	for _, item := range obj.(*v1alpha1.RayClusterReplicaSetList).Items {
-		if label.Matches(labels.Set(item.Labels)) {
-			list.Items = append(list.Items, item)
-		}
-	}
-	return list, err
-}
-
-// Watch returns a watch.Interface that watches the requested rayClusterReplicaSets.
-func (c *FakeRayClusterReplicaSets) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
-	return c.Fake.
-		InvokesWatch(testing.NewWatchActionWithOptions(rayclusterreplicasetsResource, c.ns, opts))
-
-}
-
-// Create takes the representation of a rayClusterReplicaSet and creates it.  Returns the server's representation of the rayClusterReplicaSet, and an error, if there is any.
-func (c *FakeRayClusterReplicaSets) Create(ctx context.Context, rayClusterReplicaSet *v1alpha1.RayClusterReplicaSet, opts v1.CreateOptions) (result *v1alpha1.RayClusterReplicaSet, err error) {
-	emptyResult := &v1alpha1.RayClusterReplicaSet{}
-	obj, err := c.Fake.
-		Invokes(testing.NewCreateActionWithOptions(rayclusterreplicasetsResource, c.ns, rayClusterReplicaSet, opts), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1alpha1.RayClusterReplicaSet), err
-}
-
-// Update takes the representation of a rayClusterReplicaSet and updates it. Returns the server's representation of the rayClusterReplicaSet, and an error, if there is any.
-func (c *FakeRayClusterReplicaSets) Update(ctx context.Context, rayClusterReplicaSet *v1alpha1.RayClusterReplicaSet, opts v1.UpdateOptions) (result *v1alpha1.RayClusterReplicaSet, err error) {
-	emptyResult := &v1alpha1.RayClusterReplicaSet{}
-	obj, err := c.Fake.
-		Invokes(testing.NewUpdateActionWithOptions(rayclusterreplicasetsResource, c.ns, rayClusterReplicaSet, opts), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1alpha1.RayClusterReplicaSet), err
-}
-
-// UpdateStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-func (c *FakeRayClusterReplicaSets) UpdateStatus(ctx context.Context, rayClusterReplicaSet *v1alpha1.RayClusterReplicaSet, opts v1.UpdateOptions) (result *v1alpha1.RayClusterReplicaSet, err error) {
-	emptyResult := &v1alpha1.RayClusterReplicaSet{}
-	obj, err := c.Fake.
-		Invokes(testing.NewUpdateSubresourceActionWithOptions(rayclusterreplicasetsResource, "status", c.ns, rayClusterReplicaSet, opts), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1alpha1.RayClusterReplicaSet), err
-}
-
-// Delete takes name of the rayClusterReplicaSet and deletes it. Returns an error if one occurs.
-func (c *FakeRayClusterReplicaSets) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
-	_, err := c.Fake.
-		Invokes(testing.NewDeleteActionWithOptions(rayclusterreplicasetsResource, c.ns, name, opts), &v1alpha1.RayClusterReplicaSet{})
-
-	return err
-}
-
-// DeleteCollection deletes a collection of objects.
-func (c *FakeRayClusterReplicaSets) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	action := testing.NewDeleteCollectionActionWithOptions(rayclusterreplicasetsResource, c.ns, opts, listOpts)
-
-	_, err := c.Fake.Invokes(action, &v1alpha1.RayClusterReplicaSetList{})
-	return err
-}
-
-// Patch applies the patch and returns the patched rayClusterReplicaSet.
-func (c *FakeRayClusterReplicaSets) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.RayClusterReplicaSet, err error) {
-	emptyResult := &v1alpha1.RayClusterReplicaSet{}
-	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceActionWithOptions(rayclusterreplicasetsResource, c.ns, name, pt, data, opts, subresources...), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1alpha1.RayClusterReplicaSet), err
-}
-
-// Apply takes the given apply declarative configuration, applies it and returns the applied rayClusterReplicaSet.
-func (c *FakeRayClusterReplicaSets) Apply(ctx context.Context, rayClusterReplicaSet *orchestrationv1alpha1.RayClusterReplicaSetApplyConfiguration, opts v1.ApplyOptions) (result *v1alpha1.RayClusterReplicaSet, err error) {
-	if rayClusterReplicaSet == nil {
-		return nil, fmt.Errorf("rayClusterReplicaSet provided to Apply must not be nil")
-	}
-	data, err := json.Marshal(rayClusterReplicaSet)
-	if err != nil {
-		return nil, err
-	}
-	name := rayClusterReplicaSet.Name
-	if name == nil {
-		return nil, fmt.Errorf("rayClusterReplicaSet.Name must be provided to Apply")
-	}
-	emptyResult := &v1alpha1.RayClusterReplicaSet{}
-	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceActionWithOptions(rayclusterreplicasetsResource, c.ns, *name, types.ApplyPatchType, data, opts.ToPatchOptions()), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1alpha1.RayClusterReplicaSet), err
-}
-
-// ApplyStatus was generated because the type contains a Status member.
-// Add a +genclient:noStatus comment above the type to avoid generating ApplyStatus().
-func (c *FakeRayClusterReplicaSets) ApplyStatus(ctx context.Context, rayClusterReplicaSet *orchestrationv1alpha1.RayClusterReplicaSetApplyConfiguration, opts v1.ApplyOptions) (result *v1alpha1.RayClusterReplicaSet, err error) {
-	if rayClusterReplicaSet == nil {
-		return nil, fmt.Errorf("rayClusterReplicaSet provided to Apply must not be nil")
-	}
-	data, err := json.Marshal(rayClusterReplicaSet)
-	if err != nil {
-		return nil, err
-	}
-	name := rayClusterReplicaSet.Name
-	if name == nil {
-		return nil, fmt.Errorf("rayClusterReplicaSet.Name must be provided to Apply")
-	}
-	emptyResult := &v1alpha1.RayClusterReplicaSet{}
-	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceActionWithOptions(rayclusterreplicasetsResource, c.ns, *name, types.ApplyPatchType, data, opts.ToPatchOptions(), "status"), emptyResult)
-
-	if obj == nil {
-		return emptyResult, err
-	}
-	return obj.(*v1alpha1.RayClusterReplicaSet), err
 }

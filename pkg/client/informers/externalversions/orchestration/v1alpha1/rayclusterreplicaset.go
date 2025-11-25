@@ -18,13 +18,13 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"context"
+	context "context"
 	time "time"
 
-	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	apiorchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	versioned "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
 	internalinterfaces "github.com/vllm-project/aibrix/pkg/client/informers/externalversions/internalinterfaces"
-	v1alpha1 "github.com/vllm-project/aibrix/pkg/client/listers/orchestration/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/listers/orchestration/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"
@@ -35,7 +35,7 @@ import (
 // RayClusterReplicaSets.
 type RayClusterReplicaSetInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1alpha1.RayClusterReplicaSetLister
+	Lister() orchestrationv1alpha1.RayClusterReplicaSetLister
 }
 
 type rayClusterReplicaSetInformer struct {
@@ -70,7 +70,7 @@ func NewFilteredRayClusterReplicaSetInformer(client versioned.Interface, namespa
 				return client.OrchestrationV1alpha1().RayClusterReplicaSets(namespace).Watch(context.TODO(), options)
 			},
 		},
-		&orchestrationv1alpha1.RayClusterReplicaSet{},
+		&apiorchestrationv1alpha1.RayClusterReplicaSet{},
 		resyncPeriod,
 		indexers,
 	)
@@ -81,9 +81,9 @@ func (f *rayClusterReplicaSetInformer) defaultInformer(client versioned.Interfac
 }
 
 func (f *rayClusterReplicaSetInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&orchestrationv1alpha1.RayClusterReplicaSet{}, f.defaultInformer)
+	return f.factory.InformerFor(&apiorchestrationv1alpha1.RayClusterReplicaSet{}, f.defaultInformer)
 }
 
-func (f *rayClusterReplicaSetInformer) Lister() v1alpha1.RayClusterReplicaSetLister {
-	return v1alpha1.NewRayClusterReplicaSetLister(f.Informer().GetIndexer())
+func (f *rayClusterReplicaSetInformer) Lister() orchestrationv1alpha1.RayClusterReplicaSetLister {
+	return orchestrationv1alpha1.NewRayClusterReplicaSetLister(f.Informer().GetIndexer())
 }

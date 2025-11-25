@@ -18,8 +18,8 @@ limitations under the License.
 package versioned
 
 import (
-	"fmt"
-	"net/http"
+	fmt "fmt"
+	http "net/http"
 
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/autoscaling/v1alpha1"
 	modelv1alpha1 "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/typed/model/v1alpha1"

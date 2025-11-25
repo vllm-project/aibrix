@@ -18,19 +18,19 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 )
 
 // MetricSourceApplyConfiguration represents a declarative configuration of the MetricSource type for use
 // with apply.
 type MetricSourceApplyConfiguration struct {
-	MetricSourceType *v1alpha1.MetricSourceType `json:"metricSourceType,omitempty"`
-	ProtocolType     *v1alpha1.ProtocolType     `json:"protocolType,omitempty"`
-	Endpoint         *string                    `json:"endpoint,omitempty"`
-	Path             *string                    `json:"path,omitempty"`
-	Port             *string                    `json:"port,omitempty"`
-	TargetMetric     *string                    `json:"targetMetric,omitempty"`
-	TargetValue      *string                    `json:"targetValue,omitempty"`
+	MetricSourceType *autoscalingv1alpha1.MetricSourceType `json:"metricSourceType,omitempty"`
+	ProtocolType     *autoscalingv1alpha1.ProtocolType     `json:"protocolType,omitempty"`
+	Endpoint         *string                               `json:"endpoint,omitempty"`
+	Path             *string                               `json:"path,omitempty"`
+	Port             *string                               `json:"port,omitempty"`
+	TargetMetric     *string                               `json:"targetMetric,omitempty"`
+	TargetValue      *string                               `json:"targetValue,omitempty"`
 }
 
 // MetricSourceApplyConfiguration constructs a declarative configuration of the MetricSource type for use with
@@ -42,7 +42,7 @@ func MetricSource() *MetricSourceApplyConfiguration {
 // WithMetricSourceType sets the MetricSourceType field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the MetricSourceType field is set to the value of the last call.
-func (b *MetricSourceApplyConfiguration) WithMetricSourceType(value v1alpha1.MetricSourceType) *MetricSourceApplyConfiguration {
+func (b *MetricSourceApplyConfiguration) WithMetricSourceType(value autoscalingv1alpha1.MetricSourceType) *MetricSourceApplyConfiguration {
 	b.MetricSourceType = &value
 	return b
 }
@@ -50,7 +50,7 @@ func (b *MetricSourceApplyConfiguration) WithMetricSourceType(value v1alpha1.Met
 // WithProtocolType sets the ProtocolType field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the ProtocolType field is set to the value of the last call.
-func (b *MetricSourceApplyConfiguration) WithProtocolType(value v1alpha1.ProtocolType) *MetricSourceApplyConfiguration {
+func (b *MetricSourceApplyConfiguration) WithProtocolType(value autoscalingv1alpha1.ProtocolType) *MetricSourceApplyConfiguration {
 	b.ProtocolType = &value
 	return b
 }

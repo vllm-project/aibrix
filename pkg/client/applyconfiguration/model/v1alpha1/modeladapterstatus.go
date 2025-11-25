@@ -18,14 +18,14 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
 // ModelAdapterStatusApplyConfiguration represents a declarative configuration of the ModelAdapterStatus type for use
 // with apply.
 type ModelAdapterStatusApplyConfiguration struct {
-	Phase           *v1alpha1.ModelAdapterPhase      `json:"phase,omitempty"`
+	Phase           *modelv1alpha1.ModelAdapterPhase `json:"phase,omitempty"`
 	Candidates      *int32                           `json:"candidates,omitempty"`
 	ReadyReplicas   *int32                           `json:"readyReplicas,omitempty"`
 	DesiredReplicas *int32                           `json:"desiredReplicas,omitempty"`
@@ -42,7 +42,7 @@ func ModelAdapterStatus() *ModelAdapterStatusApplyConfiguration {
 // WithPhase sets the Phase field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Phase field is set to the value of the last call.
-func (b *ModelAdapterStatusApplyConfiguration) WithPhase(value v1alpha1.ModelAdapterPhase) *ModelAdapterStatusApplyConfiguration {
+func (b *ModelAdapterStatusApplyConfiguration) WithPhase(value modelv1alpha1.ModelAdapterPhase) *ModelAdapterStatusApplyConfiguration {
 	b.Phase = &value
 	return b
 }

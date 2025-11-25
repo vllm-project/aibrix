@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"context"
+	context "context"
 
-	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	orchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/orchestration/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	applyconfigurationorchestrationv1alpha1 "github.com/vllm-project/aibrix/pkg/client/applyconfiguration/orchestration/v1alpha1"
 	scheme "github.com/vllm-project/aibrix/pkg/client/clientset/versioned/scheme"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
@@ -37,36 +37,37 @@ type StormServicesGetter interface {
 
 // StormServiceInterface has methods to work with StormService resources.
 type StormServiceInterface interface {
-	Create(ctx context.Context, stormService *v1alpha1.StormService, opts v1.CreateOptions) (*v1alpha1.StormService, error)
-	Update(ctx context.Context, stormService *v1alpha1.StormService, opts v1.UpdateOptions) (*v1alpha1.StormService, error)
+	Create(ctx context.Context, stormService *orchestrationv1alpha1.StormService, opts v1.CreateOptions) (*orchestrationv1alpha1.StormService, error)
+	Update(ctx context.Context, stormService *orchestrationv1alpha1.StormService, opts v1.UpdateOptions) (*orchestrationv1alpha1.StormService, error)
 	// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
-	UpdateStatus(ctx context.Context, stormService *v1alpha1.StormService, opts v1.UpdateOptions) (*v1alpha1.StormService, error)
+	UpdateStatus(ctx context.Context, stormService *orchestrationv1alpha1.StormService, opts v1.UpdateOptions) (*orchestrationv1alpha1.StormService, error)
 	Delete(ctx context.Context, name string, opts v1.DeleteOptions) error
 	DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error
-	Get(ctx context.Context, name string, opts v1.GetOptions) (*v1alpha1.StormService, error)
-	List(ctx context.Context, opts v1.ListOptions) (*v1alpha1.StormServiceList, error)
+	Get(ctx context.Context, name string, opts v1.GetOptions) (*orchestrationv1alpha1.StormService, error)
+	List(ctx context.Context, opts v1.ListOptions) (*orchestrationv1alpha1.StormServiceList, error)
 	Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error)
-	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.StormService, err error)
-	Apply(ctx context.Context, stormService *orchestrationv1alpha1.StormServiceApplyConfiguration, opts v1.ApplyOptions) (result *v1alpha1.StormService, err error)
+	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *orchestrationv1alpha1.StormService, err error)
+	Apply(ctx context.Context, stormService *applyconfigurationorchestrationv1alpha1.StormServiceApplyConfiguration, opts v1.ApplyOptions) (result *orchestrationv1alpha1.StormService, err error)
 	// Add a +genclient:noStatus comment above the type to avoid generating ApplyStatus().
-	ApplyStatus(ctx context.Context, stormService *orchestrationv1alpha1.StormServiceApplyConfiguration, opts v1.ApplyOptions) (result *v1alpha1.StormService, err error)
+	ApplyStatus(ctx context.Context, stormService *applyconfigurationorchestrationv1alpha1.StormServiceApplyConfiguration, opts v1.ApplyOptions) (result *orchestrationv1alpha1.StormService, err error)
 	StormServiceExpansion
 }
 
 // stormServices implements StormServiceInterface
 type stormServices struct {
-	*gentype.ClientWithListAndApply[*v1alpha1.StormService, *v1alpha1.StormServiceList, *orchestrationv1alpha1.StormServiceApplyConfiguration]
+	*gentype.ClientWithListAndApply[*orchestrationv1alpha1.StormService, *orchestrationv1alpha1.StormServiceList, *applyconfigurationorchestrationv1alpha1.StormServiceApplyConfiguration]
 }
 
 // newStormServices returns a StormServices
 func newStormServices(c *OrchestrationV1alpha1Client, namespace string) *stormServices {
 	return &stormServices{
-		gentype.NewClientWithListAndApply[*v1alpha1.StormService, *v1alpha1.StormServiceList, *orchestrationv1alpha1.StormServiceApplyConfiguration](
+		gentype.NewClientWithListAndApply[*orchestrationv1alpha1.StormService, *orchestrationv1alpha1.StormServiceList, *applyconfigurationorchestrationv1alpha1.StormServiceApplyConfiguration](
 			"stormservices",
 			c.RESTClient(),
 			scheme.ParameterCodec,
 			namespace,
-			func() *v1alpha1.StormService { return &v1alpha1.StormService{} },
-			func() *v1alpha1.StormServiceList { return &v1alpha1.StormServiceList{} }),
+			func() *orchestrationv1alpha1.StormService { return &orchestrationv1alpha1.StormService{} },
+			func() *orchestrationv1alpha1.StormServiceList { return &orchestrationv1alpha1.StormServiceList{} },
+		),
 	}
 }

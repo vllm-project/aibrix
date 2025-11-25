@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/listers"
-	"k8s.io/client-go/tools/cache"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	labels "k8s.io/apimachinery/pkg/labels"
+	listers "k8s.io/client-go/listers"
+	cache "k8s.io/client-go/tools/cache"
 )
 
 // ModelAdapterLister helps list ModelAdapters.
@@ -29,7 +29,7 @@ import (
 type ModelAdapterLister interface {
 	// List lists all ModelAdapters in the indexer.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1alpha1.ModelAdapter, err error)
+	List(selector labels.Selector) (ret []*modelv1alpha1.ModelAdapter, err error)
 	// ModelAdapters returns an object that can list and get ModelAdapters.
 	ModelAdapters(namespace string) ModelAdapterNamespaceLister
 	ModelAdapterListerExpansion
@@ -37,17 +37,17 @@ type ModelAdapterLister interface {
 
 // modelAdapterLister implements the ModelAdapterLister interface.
 type modelAdapterLister struct {
-	listers.ResourceIndexer[*v1alpha1.ModelAdapter]
+	listers.ResourceIndexer[*modelv1alpha1.ModelAdapter]
 }
 
 // NewModelAdapterLister returns a new ModelAdapterLister.
 func NewModelAdapterLister(indexer cache.Indexer) ModelAdapterLister {
-	return &modelAdapterLister{listers.New[*v1alpha1.ModelAdapter](indexer, v1alpha1.Resource("modeladapter"))}
+	return &modelAdapterLister{listers.New[*modelv1alpha1.ModelAdapter](indexer, modelv1alpha1.Resource("modeladapter"))}
 }
 
 // ModelAdapters returns an object that can list and get ModelAdapters.
 func (s *modelAdapterLister) ModelAdapters(namespace string) ModelAdapterNamespaceLister {
-	return modelAdapterNamespaceLister{listers.NewNamespaced[*v1alpha1.ModelAdapter](s.ResourceIndexer, namespace)}
+	return modelAdapterNamespaceLister{listers.NewNamespaced[*modelv1alpha1.ModelAdapter](s.ResourceIndexer, namespace)}
 }
 
 // ModelAdapterNamespaceLister helps list and get ModelAdapters.
@@ -55,15 +55,15 @@ func (s *modelAdapterLister) ModelAdapters(namespace string) ModelAdapterNamespa
 type ModelAdapterNamespaceLister interface {
 	// List lists all ModelAdapters in the indexer for a given namespace.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1alpha1.ModelAdapter, err error)
+	List(selector labels.Selector) (ret []*modelv1alpha1.ModelAdapter, err error)
 	// Get retrieves the ModelAdapter from the indexer for a given namespace and name.
 	// Objects returned here must be treated as read-only.
-	Get(name string) (*v1alpha1.ModelAdapter, error)
+	Get(name string) (*modelv1alpha1.ModelAdapter, error)
 	ModelAdapterNamespaceListerExpansion
 }
 
 // modelAdapterNamespaceLister implements the ModelAdapterNamespaceLister
 // interface.
 type modelAdapterNamespaceLister struct {
-	listers.ResourceIndexer[*v1alpha1.ModelAdapter]
+	listers.ResourceIndexer[*modelv1alpha1.ModelAdapter]
 }

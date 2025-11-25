@@ -18,17 +18,17 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1alpha1 "github.com/kubewharf/godel-scheduler-api/pkg/apis/scheduling/v1alpha1"
+	schedulingv1alpha1 "github.com/kubewharf/godel-scheduler-api/pkg/apis/scheduling/v1alpha1"
 )
 
 // GodelSchedulingStrategySpecApplyConfiguration represents a declarative configuration of the GodelSchedulingStrategySpec type for use
 // with apply.
 type GodelSchedulingStrategySpecApplyConfiguration struct {
-	MinMember              *int32             `json:"minMember,omitempty"`
-	PriorityClassName      *string            `json:"priorityClassName,omitempty"`
-	ScheduleTimeoutSeconds *int32             `json:"scheduleTimeoutSeconds,omitempty"`
-	Application            *string            `json:"application,omitempty"`
-	Affinity               *v1alpha1.Affinity `json:"affinity,omitempty"`
+	MinMember              *int32                       `json:"minMember,omitempty"`
+	PriorityClassName      *string                      `json:"priorityClassName,omitempty"`
+	ScheduleTimeoutSeconds *int32                       `json:"scheduleTimeoutSeconds,omitempty"`
+	Application            *string                      `json:"application,omitempty"`
+	Affinity               *schedulingv1alpha1.Affinity `json:"affinity,omitempty"`
 }
 
 // GodelSchedulingStrategySpecApplyConfiguration constructs a declarative configuration of the GodelSchedulingStrategySpec type for use with
@@ -72,7 +72,7 @@ func (b *GodelSchedulingStrategySpecApplyConfiguration) WithApplication(value st
 // WithAffinity sets the Affinity field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Affinity field is set to the value of the last call.
-func (b *GodelSchedulingStrategySpecApplyConfiguration) WithAffinity(value v1alpha1.Affinity) *GodelSchedulingStrategySpecApplyConfiguration {
+func (b *GodelSchedulingStrategySpecApplyConfiguration) WithAffinity(value schedulingv1alpha1.Affinity) *GodelSchedulingStrategySpecApplyConfiguration {
 	b.Affinity = &value
 	return b
 }

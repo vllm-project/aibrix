@@ -28,15 +28,15 @@ type FakeOrchestrationV1alpha1 struct {
 }
 
 func (c *FakeOrchestrationV1alpha1) RayClusterFleets(namespace string) v1alpha1.RayClusterFleetInterface {
-	return &FakeRayClusterFleets{c, namespace}
+	return newFakeRayClusterFleets(c, namespace)
 }
 
 func (c *FakeOrchestrationV1alpha1) RayClusterReplicaSets(namespace string) v1alpha1.RayClusterReplicaSetInterface {
-	return &FakeRayClusterReplicaSets{c, namespace}
+	return newFakeRayClusterReplicaSets(c, namespace)
 }
 
 func (c *FakeOrchestrationV1alpha1) StormServices(namespace string) v1alpha1.StormServiceInterface {
-	return &FakeStormServices{c, namespace}
+	return newFakeStormServices(c, namespace)
 }
 
 // RESTClient returns a RESTClient that is used to communicate

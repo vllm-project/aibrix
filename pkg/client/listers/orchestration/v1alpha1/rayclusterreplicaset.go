@@ -18,10 +18,10 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/listers"
-	"k8s.io/client-go/tools/cache"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	labels "k8s.io/apimachinery/pkg/labels"
+	listers "k8s.io/client-go/listers"
+	cache "k8s.io/client-go/tools/cache"
 )
 
 // RayClusterReplicaSetLister helps list RayClusterReplicaSets.
@@ -29,7 +29,7 @@ import (
 type RayClusterReplicaSetLister interface {
 	// List lists all RayClusterReplicaSets in the indexer.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1alpha1.RayClusterReplicaSet, err error)
+	List(selector labels.Selector) (ret []*orchestrationv1alpha1.RayClusterReplicaSet, err error)
 	// RayClusterReplicaSets returns an object that can list and get RayClusterReplicaSets.
 	RayClusterReplicaSets(namespace string) RayClusterReplicaSetNamespaceLister
 	RayClusterReplicaSetListerExpansion
@@ -37,17 +37,17 @@ type RayClusterReplicaSetLister interface {
 
 // rayClusterReplicaSetLister implements the RayClusterReplicaSetLister interface.
 type rayClusterReplicaSetLister struct {
-	listers.ResourceIndexer[*v1alpha1.RayClusterReplicaSet]
+	listers.ResourceIndexer[*orchestrationv1alpha1.RayClusterReplicaSet]
 }
 
 // NewRayClusterReplicaSetLister returns a new RayClusterReplicaSetLister.
 func NewRayClusterReplicaSetLister(indexer cache.Indexer) RayClusterReplicaSetLister {
-	return &rayClusterReplicaSetLister{listers.New[*v1alpha1.RayClusterReplicaSet](indexer, v1alpha1.Resource("rayclusterreplicaset"))}
+	return &rayClusterReplicaSetLister{listers.New[*orchestrationv1alpha1.RayClusterReplicaSet](indexer, orchestrationv1alpha1.Resource("rayclusterreplicaset"))}
 }
 
 // RayClusterReplicaSets returns an object that can list and get RayClusterReplicaSets.
 func (s *rayClusterReplicaSetLister) RayClusterReplicaSets(namespace string) RayClusterReplicaSetNamespaceLister {
-	return rayClusterReplicaSetNamespaceLister{listers.NewNamespaced[*v1alpha1.RayClusterReplicaSet](s.ResourceIndexer, namespace)}
+	return rayClusterReplicaSetNamespaceLister{listers.NewNamespaced[*orchestrationv1alpha1.RayClusterReplicaSet](s.ResourceIndexer, namespace)}
 }
 
 // RayClusterReplicaSetNamespaceLister helps list and get RayClusterReplicaSets.
@@ -55,15 +55,15 @@ func (s *rayClusterReplicaSetLister) RayClusterReplicaSets(namespace string) Ray
 type RayClusterReplicaSetNamespaceLister interface {
 	// List lists all RayClusterReplicaSets in the indexer for a given namespace.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*v1alpha1.RayClusterReplicaSet, err error)
+	List(selector labels.Selector) (ret []*orchestrationv1alpha1.RayClusterReplicaSet, err error)
 	// Get retrieves the RayClusterReplicaSet from the indexer for a given namespace and name.
 	// Objects returned here must be treated as read-only.
-	Get(name string) (*v1alpha1.RayClusterReplicaSet, error)
+	Get(name string) (*orchestrationv1alpha1.RayClusterReplicaSet, error)
 	RayClusterReplicaSetNamespaceListerExpansion
 }
 
 // rayClusterReplicaSetNamespaceLister implements the RayClusterReplicaSetNamespaceLister
 // interface.
 type rayClusterReplicaSetNamespaceLister struct {
-	listers.ResourceIndexer[*v1alpha1.RayClusterReplicaSet]
+	listers.ResourceIndexer[*orchestrationv1alpha1.RayClusterReplicaSet]
 }
