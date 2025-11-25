@@ -184,8 +184,9 @@ var _ = ginkgo.Describe("PodSet controller test", func() {
 						// trigger PodSet all pods to ready
 						updateFunc: func(podset *orchestrationapi.PodSet) {
 							gomega.Expect(k8sClient.Create(ctx, podset)).To(gomega.Succeed())
+
 							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.PodSetNameLabelKey,
-								podset.Name, 1)
+								podset.Name, 2)
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, podset *orchestrationapi.PodSet) {
 							expectedLabels := map[string]string{
