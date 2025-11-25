@@ -451,21 +451,16 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 					return wrapper.MakeRoleSet("rs-normal").
 						Namespace(ns.Name).
 						SchedulingStrategyPodGroup(schedulingStrategy).
-						WithRole("master", 1, 0, podTemplate).
+						WithRole("master", 2, 0, podTemplate).
 						Obj()
 				},
 				updates: []*update{
 					{
 						updateFunc: func(rs *orchestrationapi.RoleSet) {
-							// Step 1: Create the RoleSet
 							gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
 
-							// Step 2: Wait for 1 Pods to be created (1 master)
 							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.RoleSetNameLabelKey,
-								rs.Name, 1)
-
-							// Step 3: Patch all Pods to Running and Ready (simulate integration test environment)
-							validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.RoleSetNameLabelKey, rs.Name)
+								rs.Name, 2)
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, rs *orchestrationapi.RoleSet) {
 							expectedLabels := map[string]string{
@@ -473,13 +468,17 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 							}
 							podGroup := &schedv1alpha1.PodGroup{}
 							podGroup.SetGroupVersionKind(schedv1alpha1.SchemeGroupVersion.WithKind("PodGroup"))
-							strategy := rs.Spec.SchedulingStrategy.GodelSchedulingStrategy.MinMember
+							minMember := rs.Spec.SchedulingStrategy.GodelSchedulingStrategy.MinMember
 							// Validate pg CRD exists
 							validation.ValidatePodGroupCRDExist(ctx, dynamicClient, podGroup)
 							// Validate pg Spec
-							validation.ValidatePodGroupSpec(ctx, dynamicClient, podGroup, strategy, rs.Namespace, rs.Name)
+							validation.ValidatePodGroupSpec(ctx, dynamicClient, podGroup, minMember,
+								rs.Namespace, rs.Name)
 							// Validate pg labels which is labelled by podSet controller
-							validation.ValidatePodGroupLabels(ctx, dynamicClient, podGroup, expectedLabels, rs.Namespace, rs.Name)
+							validation.ValidatePodGroupLabels(ctx, dynamicClient, podGroup, expectedLabels,
+								rs.Namespace, rs.Name)
+							// Validate pg count created by roleset
+							validation.ValidatePodGroupCount(ctx, dynamicClient, podGroup, rs.Namespace, 1)
 						},
 					},
 				},
