@@ -19,10 +19,13 @@ package routingalgorithms
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,55 +43,225 @@ import (
 
 func TestPDRouter_Route(t *testing.T) {
 	tests := []struct {
-		name        string
-		readyPods   []*v1.Pod
-		serverCode  int
-		serverResp  string
-		llmEngine   string
-		expectError bool
-		expectMsg   string
+		name                   string
+		readyPods              []*v1.Pod
+		message                string // input message to ctx
+		remotePrefillThreshold int    // set on router
+		expectPrefillCall      bool   // whether test server should be called (i.e., prefill happened)
+		serverCode             int
+		serverResp             string
+		llmEngine              string
+		expectError            bool
+		expectTargetAddr       string
 	}{
 		{
-			name: "successful routing with both prefill and decode pods",
+			name: "long prompt (> threshold): uses prefill → decode flow",
 			readyPods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}, Name: "prefill-1"}, Status: v1.PodStatus{PodIP: "127.0.0.1",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
-				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}, Name: "decode-1"}, Status: v1.PodStatus{PodIP: "127.0.0.2",
-					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}}}},
+				{ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{PDRoleSetIdentifier: "test", PDRoleIdentifier: "prefill"},
+					Name:   "prefill-1",
+				}, Status: v1.PodStatus{
+					PodIP:      "127.0.0.1",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				}},
+				{ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{PDRoleSetIdentifier: "test", PDRoleIdentifier: "decode"},
+					Name:   "decode-1",
+				}, Status: v1.PodStatus{
+					PodIP:      "127.0.0.2",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				}},
 			},
-			serverCode:  http.StatusOK,
-			llmEngine:   "vllm",
-			expectError: false,
-			expectMsg:   "127.0.0.2:8000",
+			message:                strings.Repeat("a", 2000), // message > shortPromptThreshold
+			remotePrefillThreshold: 512,
+			expectPrefillCall:      true,
+			serverCode:             http.StatusOK,
+			llmEngine:              VLLMEngine,
+			expectError:            false,
+			expectTargetAddr:       "127.0.0.2:8000",
 		},
 		{
-			name: "missing prefill pod",
+			name: "short prompt (<= threshold): bypasses prefill, routes directly to decode pod",
 			readyPods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"role-name": "decode"}, Name: "decode-1"}, Status: v1.PodStatus{PodIP: "127.0.0.2"}},
+				{ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{PDRoleSetIdentifier: "test", PDRoleIdentifier: "prefill"},
+					Name:   "prefill-1",
+				}, Status: v1.PodStatus{
+					PodIP:      "127.0.0.1",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				}},
+				{ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{PDRoleSetIdentifier: "test", PDRoleIdentifier: "decode"},
+					Name:   "decode-1",
+				}, Status: v1.PodStatus{
+					PodIP:      "127.0.0.2",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				}},
 			},
-			serverCode:  http.StatusOK,
-			serverResp:  "",
-			llmEngine:   "vllm",
-			expectError: true,
-			expectMsg:   "",
+			message:                "hi", // message < shortPromptThreshold
+			expectPrefillCall:      false,
+			remotePrefillThreshold: 512,
+			serverCode:             http.StatusOK,
+			llmEngine:              VLLMEngine,
+			expectError:            false,
+			expectTargetAddr:       "127.0.0.2:8000",
 		},
-	}
-
-	r := pdRouter{
-		cache:                 cache.NewForTest(),
-		tokenizer:             tokenizer.NewCharacterTokenizer(),
-		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
-		prefillRequestTracker: NewPrefillRequestTracker(),
-		httpClient:            &http.Client{},
+		{
+			name: "short prompt but no decode pod available: error",
+			readyPods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{PDRoleSetIdentifier: "test", PDRoleIdentifier: "prefill"},
+					Name:   "prefill-1",
+				}, Status: v1.PodStatus{
+					PodIP:      "127.0.0.1",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				}},
+				// No decode pod!
+			},
+			message:                "hello", // message < shortPromptThreshold
+			remotePrefillThreshold: 512,
+			serverCode:             http.StatusOK,
+			llmEngine:              VLLMEngine,
+			expectError:            true,
+			expectTargetAddr:       "",
+		},
+		{
+			name: "long prompt but missing prefill pod: error",
+			readyPods: []*v1.Pod{
+				// No prefill pod!
+				{ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{PDRoleSetIdentifier: "test", PDRoleIdentifier: "decode"},
+					Name:   "decode-1",
+				}, Status: v1.PodStatus{
+					PodIP:      "127.0.0.2",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				}},
+			},
+			message:                strings.Repeat("x", 2000), // message > shortPromptThreshold
+			remotePrefillThreshold: 512,
+			serverCode:             http.StatusOK,
+			llmEngine:              VLLMEngine,
+			expectError:            true,
+			expectTargetAddr:       "",
+		},
+		{
+			name: "multiple decode pods: should pick one (e.g., first ready)",
+			readyPods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{PDRoleSetIdentifier: "test", PDRoleIdentifier: "prefill"},
+					Name:   "prefill-1",
+				}, Status: v1.PodStatus{
+					PodIP:      "127.0.0.1",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				}},
+				{ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{PDRoleSetIdentifier: "test", PDRoleIdentifier: "decode"},
+					Name:   "decode-1",
+				}, Status: v1.PodStatus{
+					PodIP:      "127.0.0.2",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				}},
+				{ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{PDRoleSetIdentifier: "test", PDRoleIdentifier: "decode"},
+					Name:   "decode-2",
+				}, Status: v1.PodStatus{
+					PodIP:      "127.0.0.3",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				}},
+			},
+			message:                "short msg", // message < shortPromptThreshold
+			remotePrefillThreshold: 512,
+			expectPrefillCall:      false,
+			serverCode:             http.StatusOK,
+			llmEngine:              VLLMEngine,
+			expectError:            false,
+			expectTargetAddr:       "127.0.0.2:8000", // assumes first decode pod is chosen
+		},
+		{
+			name: "sglang engine: still supports short-prompt path",
+			readyPods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						PDRoleSetIdentifier: "test", PDRoleIdentifier: "prefill",
+						LLMEngineIdentifier: SGLangEngine,
+					},
+					Name: "prefill-1",
+				}, Status: v1.PodStatus{
+					PodIP:      "127.0.0.1",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				}},
+				{ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						PDRoleSetIdentifier: "test", PDRoleIdentifier: "decode",
+						LLMEngineIdentifier: SGLangEngine,
+					},
+					Name: "decode-1",
+				}, Status: v1.PodStatus{
+					PodIP:      "127.0.0.2",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				}},
+			},
+			message:                "hi", // message < shortPromptThreshold
+			expectPrefillCall:      true,
+			remotePrefillThreshold: 512,
+			serverCode:             http.StatusOK,
+			llmEngine:              SGLangEngine,
+			expectError:            false,
+			expectTargetAddr:       "127.0.0.2:8000",
+		},
+		{
+			name: "sglang engine: still supports long-prompt path",
+			readyPods: []*v1.Pod{
+				{ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						PDRoleSetIdentifier: "test", PDRoleIdentifier: "prefill",
+						LLMEngineIdentifier: SGLangEngine,
+					},
+					Name: "prefill-1",
+				}, Status: v1.PodStatus{
+					PodIP:      "127.0.0.1",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				}},
+				{ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						PDRoleSetIdentifier: "test", PDRoleIdentifier: "decode",
+						LLMEngineIdentifier: SGLangEngine,
+					},
+					Name: "decode-1",
+				}, Status: v1.PodStatus{
+					PodIP:      "127.0.0.2",
+					Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+				}},
+			},
+			message:                strings.Repeat("c", 2000), // message > shortPromptThreshold
+			expectPrefillCall:      true,
+			remotePrefillThreshold: 512,
+			serverCode:             http.StatusOK,
+			llmEngine:              SGLangEngine,
+			expectError:            false,
+			expectTargetAddr:       "127.0.0.2:8000",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ts := setupTestServer(t, tt.serverCode, tt.serverResp, tt.llmEngine)
+			var prefillCalled atomic.Bool // Track whether the mock prefill server received a request
+			ts := setupTestServer(t, tt.serverCode, tt.serverResp, tt.llmEngine, &prefillCalled)
 			defer ts.Close()
 
-			ctx := types.NewRoutingContext(context.Background(), "test", "model", "message", "test-request", "user")
-			ctx.ReqBody = []byte(`{"messages":[{"role":"user","content":"test"}],"stream":true}`)
+			r := pdRouter{
+				cache:                  cache.NewForTest(),
+				tokenizer:              tokenizer.NewCharacterTokenizer(), // counts bytes
+				prefixCacheIndexer:     prefixcacheindexer.NewPrefixHashTable(),
+				prefillRequestTracker:  NewPrefillRequestTracker(),
+				httpClient:             &http.Client{},
+				remotePrefillThreshold: tt.remotePrefillThreshold, // critical for short-prompt logic
+			}
+
+			ctx := types.NewRoutingContext(context.Background(),
+				"test", "model", tt.message, "test-request", "user")
+			ctx.ReqBody = []byte(fmt.Sprintf(
+				`{"messages":[{"role":"user","content":"%s"}],"stream":true}`, tt.message))
 
 			result, err := r.Route(ctx, &utils.PodArray{Pods: tt.readyPods})
 
@@ -96,7 +269,19 @@ func TestPDRouter_Route(t *testing.T) {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, tt.expectMsg, result)
+				assert.Equal(t, tt.expectTargetAddr, result)
+				if tt.llmEngine == SGLangEngine && tt.expectPrefillCall {
+					// if the engine is SGLang and a prefill call is expected,
+					// wait briefly for the asynchronous prefill request to actually occur.
+					for i := 0; i < 10; i++ {
+						if prefillCalled.Load() {
+							break
+						}
+						time.Sleep(10 * time.Millisecond)
+					}
+				}
+				assert.Equal(t, tt.expectPrefillCall, prefillCalled.Load(),
+					"prefill HTTP call happened unexpectedly (or not when expected)")
 			}
 		})
 	}
@@ -567,7 +752,7 @@ func TestDoPrefillRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ts := setupTestServer(t, tt.serverCode, tt.serverResp, tt.llmEngine)
+			ts := setupTestServer(t, tt.serverCode, tt.serverResp, tt.llmEngine, nil)
 			defer ts.Close()
 
 			prefillPods := []*v1.Pod{
@@ -737,7 +922,7 @@ func TestUpdateRoutingContextWithKVTransferParams(t *testing.T) {
 
 func TestVLLMIntegrationWithTestServer(t *testing.T) {
 	// Integration test: verify vLLM prefill request extracts KV params from test server
-	ts := setupTestServer(t, http.StatusOK, "", VLLMEngine) // Empty resp means use default vLLM response
+	ts := setupTestServer(t, http.StatusOK, "", VLLMEngine, nil) // Empty resp means use default vLLM response
 	defer ts.Close()
 
 	prefillPods := []*v1.Pod{{
@@ -863,13 +1048,16 @@ func TestVLLMKVTransferProcessing(t *testing.T) {
 }
 
 // Common test utilities
-func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *httptest.Server {
+func setupTestServer(t *testing.T, code int, resp string, llmEngine string, called *atomic.Bool) *httptest.Server {
 	l, err := net.Listen("tcp", "127.0.0.1:8000")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if called != nil {
+			called.Store(true)
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("Failed to read request body: %v", err)
