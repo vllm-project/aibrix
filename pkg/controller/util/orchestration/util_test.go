@@ -17,13 +17,21 @@ limitations under the License.
 package orchestration
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic/fake"
+	volcanoschedv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
+
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 )
 
 func TestComputeHashRoleSetTemplate(t *testing.T) {
@@ -141,3 +149,171 @@ func TestShorten(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+var (
+	podGroupGVR = schema.GroupVersionResource{
+		Group:    "scheduling.volcano.sh",
+		Version:  "v1beta1",
+		Resource: "podgroups",
+	}
+)
+
+func createPGCRDObject(name string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "apiextensions.k8s.io/v1",
+			"kind":       "CustomResourceDefinition",
+			"metadata": map[string]interface{}{
+				"name": name,
+			},
+			"spec": map[string]interface{}{
+				"group": "scheduling.volcano.sh",
+				"versions": []interface{}{
+					map[string]interface{}{
+						"name":   "v1beta1",
+						"served": true,
+					},
+				},
+				"scope": "Namespaced",
+				"names": map[string]interface{}{
+					"plural": "podgroups",
+					"kind":   "PodGroup",
+				},
+			},
+		},
+	}
+}
+
+func createPodGroupObject(name, namespace string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "scheduling.volcano.sh/v1beta1",
+			"kind":       "PodGroup",
+			"metadata": map[string]interface{}{
+				"name":      name,
+				"namespace": namespace,
+			},
+			"spec": map[string]interface{}{
+				"minMember": int64(1),
+			},
+		},
+	}
+}
+
+func TestEnsurePodGroupExist(t *testing.T) {
+	ctx := context.Background()
+	name := "test-podgroup"
+	namespace := "test-namespace"
+
+	podGroup := &volcanoschedv1beta1.PodGroup{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "scheduling.volcano.sh/v1beta1",
+			Kind:       "PodGroup",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+
+	tests := []struct {
+		name           string
+		initialObjects []runtime.Object
+		expectedResult bool
+	}{
+		{
+			name:           "CRD not installed",
+			initialObjects: []runtime.Object{}, // not found CRD
+			expectedResult: false,
+		},
+		{
+			name: "PodGroup not found and create successfully",
+			initialObjects: []runtime.Object{
+				createPGCRDObject("podgroups.scheduling.volcano.sh"),
+			},
+			expectedResult: true,
+		},
+		{
+			name: "PodGroup already exists",
+			initialObjects: []runtime.Object{
+				createPGCRDObject("podgroups.scheduling.volcano.sh"),
+				createPodGroupObject(name, namespace),
+			},
+			expectedResult: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			fakeClient := fake.NewSimpleDynamicClient(scheme, tt.initialObjects...)
+
+			created, err := EnsurePodGroupExist(ctx, fakeClient, podGroup, name, namespace)
+
+			assert.NoError(t, err)
+
+			assert.Equal(t, tt.expectedResult, created)
+
+			if tt.expectedResult {
+				_, err := fakeClient.Resource(podGroupGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+				assert.NoError(t, err, "PodGroup should be created")
+			}
+		})
+	}
+}
+
+func TestFinalizePodGroup(t *testing.T) {
+	ctx := context.Background()
+	name := "test-podgroup"
+	namespace := "test-namespace"
+
+	podGroup := &volcanoschedv1beta1.PodGroup{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "scheduling.volcano.sh/v1beta1",
+			Kind:       "PodGroup",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+
+	tests := []struct {
+		name           string
+		initialObjects []runtime.Object
+	}{
+		{
+			name:           "CRD not installed",
+			initialObjects: []runtime.Object{},
+		},
+		{
+			name: "PodGroup not found",
+			initialObjects: []runtime.Object{
+				createPGCRDObject("podgroups.scheduling.volcano.sh"),
+			},
+		},
+		{
+			name: "PodGroup exists and delete successfully",
+			initialObjects: []runtime.Object{
+				createPGCRDObject("podgroups.scheduling.volcano.sh"),
+				createPodGroupObject(name, namespace),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			fakeClient := fake.NewSimpleDynamicClient(scheme, tt.initialObjects...)
+
+			err := FinalizePodGroup(ctx, fakeClient, nil, podGroup, name, namespace)
+
+			assert.NoError(t, err)
+
+			// check PodGroup existing after finalized
+			_, err = fakeClient.Resource(podGroupGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+
+			assert.True(t, apierrors.IsNotFound(err), "PodGroup should not exist")
+		})
+	}
+}
