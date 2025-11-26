@@ -468,7 +468,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 							}
 							podGroup := &volcanoschedv1beta1.PodGroup{}
 							podGroup.SetGroupVersionKind(volcanoschedv1beta1.SchemeGroupVersion.WithKind("PodGroup"))
-							minMember := rs.Spec.SchedulingStrategy.GodelSchedulingStrategy.MinMember
+							minMember := rs.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinMember
 							// Validate pg CRD exists
 							validation.ValidatePodGroupCRDExist(ctx, dynamicClient, podGroup)
 							// Validate pg Spec
@@ -520,7 +520,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 							gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
 
 							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.RoleSetNameLabelKey,
-								rs.Name, 6)
+								rs.Name, 3)
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, rs *orchestrationapi.RoleSet) {
 							expectedLabels := map[string]string{
@@ -528,7 +528,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 							}
 							podGroup := &volcanoschedv1beta1.PodGroup{}
 							podGroup.SetGroupVersionKind(volcanoschedv1beta1.SchemeGroupVersion.WithKind("PodGroup"))
-							minMember := rs.Spec.SchedulingStrategy.GodelSchedulingStrategy.MinMember
+							minMember := rs.Spec.SchedulingStrategy.VolcanoSchedulingStrategy.MinMember
 							// Validate pg CRD exists
 							validation.ValidatePodGroupCRDExist(ctx, dynamicClient, podGroup)
 							// Validate pg Spec
