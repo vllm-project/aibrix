@@ -1,0 +1,76 @@
+apiVersion: orchestration.aibrix.ai/v1alpha1
+kind: StormService
+metadata:
+  name: canary-replica-demo
+  namespace: default
+spec:
+  # Replica mode: 3 replicas for canary distribution across RoleSets
+  replicas: 4
+  stateful: true
+  
+  selector:
+    matchLabels:
+      app: canary-replica-demo
+  
+  updateStrategy:
+    type: RollingUpdate
+    maxUnavailable: 1
+    maxSurge: 1
+    canary:
+      steps:
+        # Step 1: Set 33% traffic to new version
+        - setWeight: 33
+        # Step 2: Automatic pause for 30 seconds
+        - pause:
+            duration: "30s"
+        # Step 3: Set 66% traffic to new version  
+        - setWeight: 66
+        # Step 4: Manual pause - requires user intervention
+        - pause: {}
+        # Step 5: Complete rollout at 100%
+        - setWeight: 100
+
+  template:
+    metadata:
+      labels:
+        app: canary-replica-demo
+    spec:
+      roles:
+        - name: prefill
+          replicas: 1
+          stateful: true
+          template:
+            spec:
+              containers:
+                - name: busybox
+                  image: busybox:1.36
+                  imagePullPolicy: IfNotPresent
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      echo "Prefill role started: ${PODSET_NAME}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5000"
+                      echo "Pod IP: $(hostname -i)"
+                      echo "Role: prefill"
+                      while true; do
+                        echo "$(date): Prefill processing requests..."
+                        sleep 30
+                      done
+        - name: decode
+          replicas: 1
+          stateful: true
+          template:
+            spec:
+              containers:
+                - name: busybox
+                  image: busybox:1.35
+                  imagePullPolicy: IfNotPresent
+                  command: ["sh", "-c"]
+                  args:
+                    - |
+                      echo "Decode role started: ${PODSET_NAME}-0.${STORM_SERVICE_NAME}.default.svc.cluster.local:5001"
+                      echo "Pod IP: $(hostname -i)"
+                      echo "Role: decode"
+                      while true; do
+                        echo "$(date): Decode processing requests..."
+                        sleep 30
+                      done

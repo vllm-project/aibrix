@@ -114,7 +114,7 @@ func ValidateStormServiceStatus(ctx context.Context, k8sClient client.Client,
 		}
 
 		return nil
-	}, time.Second*30, time.Millisecond*250).Should(
+	}, time.Second*30, time.Second).Should(
 		gomega.Succeed(), "StormService status validation failed")
 }
 
