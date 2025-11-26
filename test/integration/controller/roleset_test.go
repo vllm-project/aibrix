@@ -22,13 +22,13 @@ import (
 	"fmt"
 	"time"
 
-	schedv1alpha1 "github.com/kubewharf/godel-scheduler-api/pkg/apis/scheduling/v1alpha1"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	volcanoschedv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 
 	orchestrationapi "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/constants"
@@ -427,7 +427,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 			},
 		),
 
-		ginkgo.Entry("handle roleset with godel schedulingStrategy",
+		ginkgo.Entry("handle roleset with volcano schedulingStrategy",
 			&testValidatingCase{
 				makeRoleSet: func() *orchestrationapi.RoleSet {
 					podTemplate := corev1.PodTemplateSpec{
@@ -446,7 +446,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 						},
 					}
 					schedulingStrategy := &orchestrationapi.SchedulingStrategy{
-						GodelSchedulingStrategy: &orchestrationapi.GodelSchedulingStrategySpec{MinMember: int32(1)},
+						VolcanoSchedulingStrategy: &orchestrationapi.VolcanoSchedulingStrategySpec{MinMember: int32(1)},
 					}
 					return wrapper.MakeRoleSet("rs-normal").
 						Namespace(ns.Name).
@@ -466,8 +466,8 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 							expectedLabels := map[string]string{
 								constants.RoleSetNameLabelKey: rs.Name,
 							}
-							podGroup := &schedv1alpha1.PodGroup{}
-							podGroup.SetGroupVersionKind(schedv1alpha1.SchemeGroupVersion.WithKind("PodGroup"))
+							podGroup := &volcanoschedv1beta1.PodGroup{}
+							podGroup.SetGroupVersionKind(volcanoschedv1beta1.SchemeGroupVersion.WithKind("PodGroup"))
 							minMember := rs.Spec.SchedulingStrategy.GodelSchedulingStrategy.MinMember
 							// Validate pg CRD exists
 							validation.ValidatePodGroupCRDExist(ctx, dynamicClient, podGroup)
@@ -485,7 +485,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 			},
 		),
 
-		ginkgo.Entry("handle each role with godel schedulingStrategy",
+		ginkgo.Entry("handle each role with volcano schedulingStrategy",
 			&testValidatingCase{
 				makeRoleSet: func() *orchestrationapi.RoleSet {
 					podTemplate := corev1.PodTemplateSpec{
@@ -504,7 +504,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 						},
 					}
 					schedulingStrategy := &orchestrationapi.SchedulingStrategy{
-						GodelSchedulingStrategy: &orchestrationapi.GodelSchedulingStrategySpec{MinMember: int32(1)},
+						VolcanoSchedulingStrategy: &orchestrationapi.VolcanoSchedulingStrategySpec{MinMember: int32(1)},
 					}
 					return wrapper.MakeRoleSet("rs-normal").
 						Namespace(ns.Name).
@@ -526,8 +526,8 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 							expectedLabels := map[string]string{
 								constants.RoleSetNameLabelKey: rs.Name,
 							}
-							podGroup := &schedv1alpha1.PodGroup{}
-							podGroup.SetGroupVersionKind(schedv1alpha1.SchemeGroupVersion.WithKind("PodGroup"))
+							podGroup := &volcanoschedv1beta1.PodGroup{}
+							podGroup.SetGroupVersionKind(volcanoschedv1beta1.SchemeGroupVersion.WithKind("PodGroup"))
 							minMember := rs.Spec.SchedulingStrategy.GodelSchedulingStrategy.MinMember
 							// Validate pg CRD exists
 							validation.ValidatePodGroupCRDExist(ctx, dynamicClient, podGroup)
