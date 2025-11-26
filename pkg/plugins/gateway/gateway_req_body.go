@@ -74,7 +74,10 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		headers = buildEnvoyProxyHeaders(headers, HeaderModel, model)
 		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream)
 	} else {
-		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr)
+		// external filter in header
+		externalFilter := routingCtx.ReqHeaders[HeaderExternalFilter]
+		klog.InfoS("found external filter", "filter", externalFilter)
+		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr, externalFilter)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingAlgorithm, "model", model, "routingDuration", routingCtx.GetRoutingDelay())
 			return generateErrorResponse(

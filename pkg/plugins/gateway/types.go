@@ -46,6 +46,7 @@ const (
 	HeaderRoutingStrategy    = "routing-strategy"
 	HeaderRequestID          = "request-id"
 	HeaderModel              = "model"
+	HeaderExternalFilter     = "external-filter"
 
 	// RPM & TPM Update Errors
 	HeaderUpdateTPM        = "x-update-tpm"
