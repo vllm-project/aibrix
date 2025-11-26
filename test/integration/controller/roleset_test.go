@@ -509,8 +509,8 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 					return wrapper.MakeRoleSet("rs-normal").
 						Namespace(ns.Name).
 						SchedulingStrategyPodGroup(schedulingStrategy).
-						WithRole("master", 2, 0, podTemplate).
-						WithRole("worker", 1, 0, podTemplate).
+						WithRole("master", 2, 2, podTemplate).
+						WithRole("worker", 1, 2, podTemplate).
 						WithRoleSchedulingStrategy(schedulingStrategy).
 						Obj()
 				},
@@ -520,7 +520,7 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 							gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
 
 							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name, constants.RoleSetNameLabelKey,
-								rs.Name, 3)
+								rs.Name, 6)
 						},
 						checkFunc: func(ctx context.Context, k8sClient client.Client, rs *orchestrationapi.RoleSet) {
 							expectedLabels := map[string]string{
