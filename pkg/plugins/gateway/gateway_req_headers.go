@@ -56,6 +56,8 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			requestPath = string(n.RawValue)
 		case authorizationKey:
 			reqHeaders[n.Key] = string(n.RawValue)
+		case HeaderExternalFilter:
+			reqHeaders[n.Key] = string(n.RawValue)
 		}
 	}
 

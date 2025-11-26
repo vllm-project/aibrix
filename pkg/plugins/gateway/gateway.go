@@ -28,6 +28,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
@@ -160,7 +162,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	}
 }
 
-func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList, externalFilterExpr string) (string, error) {
 	router, err := routing.Select(ctx)
 	if err != nil {
 		return "", err
@@ -170,6 +172,25 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) 
 		return "", fmt.Errorf("no pods for routing")
 	}
 	readyPods := utils.FilterRoutablePods(pods.All())
+
+	// filter pod by header ext-filter
+	// k8s labelSelector format, eg: "k=v"、"env in (prod,stg)"
+	if externalFilterExpr != "" {
+		sel, err := labels.Parse(externalFilterExpr)
+		if err != nil {
+			return "", err
+		}
+		out := make([]*corev1.Pod, 0, len(readyPods))
+		for _, p := range readyPods {
+			klog.V(3).InfoS("filtering pod", "pod", p.Name)
+			if sel.Matches(labels.Set(p.Labels)) {
+				out = append(out, p)
+				klog.V(3).InfoS("filter passed", "pod", p.Name)
+			}
+		}
+		readyPods = out
+	}
+
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods for routing")
 	}
