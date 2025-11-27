@@ -73,6 +73,10 @@ spec:
         - name: gateway-plugin
           image: {{ .Values.gatewayPlugin.container.image.repository }}:{{ .Values.gatewayPlugin.container.image.tag }}
           imagePullPolicy: {{ .Values.gatewayPlugin.container.image.imagePullPolicy | default "IfNotPresent" }}
+          #args:
+          #  - --enable-leader-election=false
+          #  - --leader-election-id=gateway-plugin-lock
+          #  - --leader-election-namespace=aibrix-system
           ports:
             - name: gateway
               containerPort: 50052
