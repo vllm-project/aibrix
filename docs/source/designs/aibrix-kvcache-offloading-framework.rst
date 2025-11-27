@@ -419,7 +419,7 @@ HPKV Connector Configuration
      - "12345"
      - Local port.
 
-Pris Connector Configuration
+PrisKV Connector Configuration
 """"""""""""""""""""""""""""
 
 .. list-table::
@@ -429,16 +429,16 @@ Pris Connector Configuration
    * - Variable
      - Default
      - Description
-   * - AIBRIX_KV_CACHE_OL_PRIS_REMOTE_ADDR
+   * - AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_ADDR
      - "127.0.0.1"
      - Remote address.
-   * - AIBRIX_KV_CACHE_OL_PRIS_REMOTE_PORT
+   * - AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_PORT
      - "6379"
      - Remote port.
-   * - AIBRIX_KV_CACHE_OL_PRIS_USE_MPUT_MGET
+   * - AIBRIX_KV_CACHE_OL_PRISKV_USE_MPUT_MGET
      - "0"
      - Enable MPUT/MGET.
-   * - AIBRIX_KV_CACHE_OL_PRIS_PASSWORD
+   * - AIBRIX_KV_CACHE_OL_PRISKV_PASSWORD
      - ""
      - Password.
 
