@@ -125,7 +125,7 @@ var _ webhook.CustomDefaulter = &StormServiceCustomDefaulter{}
 // estimatedPodNameSuffixLength is an approximation for the total length of suffixes
 // added to a StormService name and role name to form a final Pod name.
 // e.g., <stormservice>-<revision>-<role>-<hash>-<index>
-const estimatedPodNameSuffixLength = 40
+const estimatedPodNameSuffixLength = 36
 
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type
 func (r *StormServiceCustomDefaulter) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
@@ -154,8 +154,7 @@ func (r *StormServiceCustomDefaulter) ValidateCreate(ctx context.Context, obj ru
 	if hasPodSetRole {
 		// Estimated PodSet name length:
 		// RoleSet: <stormService.Name>-roleset-xxxxx → N + 14
-		// PodSet: <roleSet.Name>-<roleName>-<hash(10)>-99999 → ≈ N + M + 40
-		// TODO(googs1025): Shorten pod template hash (currently 10 chars) to 5-6 safe-encoded chars
+		// PodSet: <roleSet.Name>-<roleName>-<hash(6)>-99999 → ≈ N + M + 36
 		estimatedPodSetNameLen := len(stormService.Name) + maxPodSetRoleNameLen + estimatedPodNameSuffixLength
 		if estimatedPodSetNameLen > 63 {
 			return nil, fmt.Errorf(

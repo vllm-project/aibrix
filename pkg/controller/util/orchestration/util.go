@@ -33,7 +33,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
@@ -57,7 +56,7 @@ func ComputeHash(template *orchestrationv1alpha1.RoleSetTemplateSpec, collisionC
 		roleSetTemplateSpecHasher.Write(collisionCountBytes)
 	}
 
-	return rand.SafeEncodeString(fmt.Sprint(roleSetTemplateSpecHasher.Sum32()))
+	return hashutil.ShortSafeEncodeString(roleSetTemplateSpecHasher.Sum32())
 }
 
 func ValidateControllerRef(controllerRef *metav1.OwnerReference) error {

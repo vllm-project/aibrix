@@ -28,7 +28,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/rand"
 
 	hashutil "github.com/vllm-project/aibrix/pkg/utils/hash"
 )
@@ -90,7 +89,7 @@ func HashControllerRevision(revision *apps.ControllerRevision, probe *int32) str
 	if probe != nil {
 		hf.Write([]byte(strconv.FormatInt(int64(*probe), 10)))
 	}
-	return rand.SafeEncodeString(fmt.Sprint(hf.Sum32()))
+	return hashutil.ShortSafeEncodeString(hf.Sum32())
 }
 
 // SortControllerRevisions sorts revisions by their Revision.
