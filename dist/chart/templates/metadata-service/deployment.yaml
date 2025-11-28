@@ -23,10 +23,17 @@ spec:
       initContainers:
         - name: init-redis
           image: {{ .Values.metadata.service.initContainer.image.repository }}:{{ .Values.metadata.service.initContainer.image.tag }}
-          command:
-            - 'sh'
-            - '-c'
-            - 'until echo "ping" | nc {{ .Values.metadata.service.redis.host }} {{ .Values.metadata.service.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done'
+          {{- if .Values.metadata.redis.enablePassword }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aibrix-redis
+                  key: redis-password
+          command: ['sh', '-c', 'until printf ''AUTH %s\nping\n'' "$REDIS_PASSWORD" | nc {{ .Values.metadata.service.redis.host }} {{ .Values.metadata.service.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
+          {{- else }}
+          command: ['sh', '-c', 'until echo "ping" | nc {{ .Values.metadata.service.redis.host }} {{ .Values.metadata.service.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
+          {{- end }}
       containers:
         - name: metadata-service
           image: {{ .Values.metadata.service.container.image.repository }}:{{ .Values.metadata.service.container.image.tag }}
