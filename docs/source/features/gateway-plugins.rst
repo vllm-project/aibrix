@@ -222,7 +222,7 @@ https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
 
 .. note::
     1. Filtering happens **before** the routing strategy. It never changes which Pods are considered “optimal” by the routing strategy.
-    2. The ``external-filter`` only takes effect when a ``routing-strategy``` is set. If no routing strategy found, the external filter skipped.
+    2. The ``external-filter`` only takes effect when a ``routing-strategy``` is set.
     3. It only reduces the Pod selected by `model.aibrix.ai/name` and set by applying extra label constraints.
     4. Same as `no target pod`, If the filter eliminates all Pods, the request will fail with ``no ready pods for routing``.
     5. ``external-filter`` is optional. When omitted, no extra filtering is applied.
