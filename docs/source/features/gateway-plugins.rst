@@ -196,7 +196,7 @@ To set up rate limiting, add the user header in the request, like this:
 
 External Filter
 ===============
-The ``external-filter`` header is evaluated **after** the routing strategy selects the optimal Pod set.  allows users to dynamically restrict the target Pods using Kubernetes ``labelSelector`` expressions.
+The ``external-filter`` header is evaluated **before** the routing strategy selects the optimal target pod. allows users to dynamically restrict the target Pods using Kubernetes ``labelSelector`` expressions.
 
 The header value follows the Kubernetes label selector syntax:
 
@@ -221,10 +221,11 @@ https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
           }'
 
 .. note::
-    1. Filtering happens **after** the routing strategy. It never changes which Pods are considered “optimal” by the routing strategy.
-    2. It only reduces the eligible Pod set by applying extra label constraints.
-    3. Same as `no target pod`, If the filter eliminates all Pods, the request will fail with ``no ready pods for routing``.
-    4. ``external-filter`` is optional. When omitted, no extra filtering is applied.
+    1. Filtering happens **before** the routing strategy. It never changes which Pods are considered “optimal” by the routing strategy.
+    2. The ``external-filter`` only takes effect when a ``routing-strategy``` is set. If no routing strategy found, the external filter skipped.
+    3. It only reduces the Pod selected by `model.aibrix.ai/name` and set by applying extra label constraints.
+    4. Same as `no target pod`, If the filter eliminates all Pods, the request will fail with ``no ready pods for routing``.
+    5. ``external-filter`` is optional. When omitted, no extra filtering is applied.
 
 Headers Explanation
 --------------------
@@ -249,7 +250,7 @@ Target Headers & General Error Headers
    * - ``routing-strategy``
      - Defines the routing strategy applied to this request. Ensures correct routing logic is followed.
    * - ``external-filter``
-     - Provides a generic and pluggable mechanism to further filter candidate Pods after routing.
+     - Provides a generic and pluggable mechanism to further filter candidate Pods after routing. Filtering applied only when a routing strategy is set; Skipped if no routing algorithm is present.
 
 Routing & Error Debugging Headers
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

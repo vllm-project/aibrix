@@ -74,19 +74,6 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		headers = buildEnvoyProxyHeaders(headers, HeaderModel, model)
 		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream)
 	} else {
-		// external-filter in header, value is k8s labelSelector format https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
-		// like: environment=production,tier=frontend; environment in (production, qa)
-		// full request example:
-		// curl -v http://${ENDPOINT}/v1/completions \
-		//    -H "Content-Type: application/json" \
-		//    -H "routing-strategy: random" \
-		//    -H "external-filter: key1=value1,key2=value2" \
-		//    -d '{
-		//        "model": "deepseek-r1-distill-llama-8b",
-		//        "prompt": "San Francisco is a",
-		//        "max_tokens": 128,
-		//        "temperature": 0
-		//    }'
 		externalFilter := routingCtx.ReqHeaders[HeaderExternalFilter]
 		klog.InfoS("found external filter", "filter", externalFilter)
 		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr, externalFilter)
