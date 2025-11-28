@@ -73,6 +73,10 @@ spec:
           command: ['sh', '-c', 'until echo "ping" | nc aibrix-redis-master 6379 -w 1  | grep -c PONG; do echo waiting for service aibrix-redis-master; sleep 2; done']
       containers:
         - name: gateway-plugin
+          args:
+            - --enable-leader-election=false
+            #- --leader-election-id=gateway-plugin-lock
+            #- --leader-election-namespace=aibrix-system
           image: gateway-plugins:latest
           imagePullPolicy: IfNotPresent
           ports:
@@ -120,11 +124,13 @@ spec:
           livenessProbe:
             grpc:
               port: 50052
+              service: liveness
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             grpc:
               port: 50052
+              service: readiness
             initialDelaySeconds: 5
             periodSeconds: 10
       serviceAccountName: aibrix-gateway-plugins
