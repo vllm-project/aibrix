@@ -62,6 +62,13 @@ type RoutingContext struct {
 	ReqBody    []byte
 	ReqPath    string
 
+	// RespHeaders holds response headers that the router intends to set.
+	// These are typically used to propagate control information back to the client,
+	// such as session affinity id.
+	// The router implementation (e.g., sessionAffinityRouter) may populate this field
+	// during the Route() call.
+	RespHeaders map[string]string
+
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
 	lastError    atomic.Pointer[error]
@@ -277,6 +284,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.ReqBody = []byte{}
 	// RoutedTime will not be reset, it must before ReqeustTime at this time.
 
+	r.RespHeaders = map[string]string{}
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
 	r.lastError.Store(nil)
