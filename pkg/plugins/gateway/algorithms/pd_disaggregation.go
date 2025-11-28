@@ -56,12 +56,14 @@ const (
 
 	defaultMaxRequest             float64 = 32
 	defaultMaxTokenThroughputDiff float64 = 2048
+	defaultShortPromptThreshold           = 512
 )
 
 var (
 	prefillRequestTimeout         int     = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
 	aibrixDecodeMaxRequest        float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_REQUEST", defaultMaxRequest)
 	aibrixDecodeMaxThroughputDiff float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_THROUGHPUT", defaultMaxTokenThroughputDiff)
+	shortPromptThreshold                  = utils.LoadEnvInt("AIBRIX_SHORT_PROMPT_THRESHOLD", defaultShortPromptThreshold)
 )
 
 func init() {
@@ -74,6 +76,7 @@ type pdRouter struct {
 	prefixCacheIndexer    *prefixcacheindexer.PrefixHashTable
 	prefillRequestTracker *PrefillRequestTracker
 	httpClient            *http.Client
+	shortPromptThreshold  int
 }
 
 // PrefillRequestTracker manages prefill-specific request counts
@@ -115,6 +118,7 @@ func NewPDRouter() (types.Router, error) {
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            httpClient,
+		shortPromptThreshold:  shortPromptThreshold,
 	}, nil
 }
 
@@ -126,7 +130,79 @@ func NewPrefillRequestTracker() *PrefillRequestTracker {
 	}
 }
 
+// Route determines which pod should handle the incoming LLM request.
+// It supports two routing strategies:
+//
+// 1. **Short-Prompt Optimization (Decode-Only)**:
+//   - If the input prompt length (in tokens) ≤ AIBRIX_SHORT_PROMPT_THRESHOLD (default value = 2048 tokens),
+//     the request is routed directly to a decode pod.
+//   - The decode pod performs *both* prefill (KV cache computation) and decoding locally,
+//     bypassing the remote prefill step entirely.
+//   - This reduces latency for short prompts by eliminating inter-pod communication.
+//
+// 2. **Standard Two-Stage Pipeline (Prefill+Decode)**:
+//   - For longer prompts, the system uses the traditional split architecture:
+//     a) A prefill pod computes the KV cache.
+//     b) The result is sent to a decode pod for autoregressive generation.
+//
+// Route decision flow:
+/*
+┌───────────────────────┐
+│     Client Request    │
+│   (e.g., "Hello!")    │
+└──────────┬────────────┘
+           │
+           ▼
+┌───────────────────────┐
+│     pdRouter.Route()  │
+│   (Tokenize & Decide) │
+└──────────┬────────────┘
+           │
+┌──────────┴────────────┬───────────────────────────────┐
+│                       │                               │
+│  Is token count       │ Yes                           │ No
+│  ≤ threshold?         ▼                               ▼
+│             ┌─────────────────────┐        ┌─────────────────────┐
+│             │   Decode Pod        │        │   Prefill Pod       │
+│             │ (Local Prefill +    │        │ (Remote Prefill,    │
+│             │  Decode in one pod) │        │  KV Cache Compute)  │
+│             └──────────┬──────────┘        └──────────┬──────────┘
+│                        │                              │
+│                        │                              ▼
+│                        │                   ┌─────────────────────┐
+│                        │                   │   Decode Pod        │
+│                        │                   │ (Generation Only)   │
+│                        │                   └──────────┬──────────┘
+│                        │                              │
+└────────────────────────┼──────────────────────────────┘
+                         │
+                         ▼
+               ┌───────────────────────┐
+               │    Response to        │
+               │      Client           │
+               └───────────────────────┘
+*/
 func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	if r.shortPromptThreshold > 0 {
+		tokens, err := r.tokenizer.TokenizeInputText(ctx.Message)
+		if err != nil {
+			klog.Warningf("Tokenization for short-prompt check failed, falling back to standard routing: %v", err)
+		} else if len(tokens) <= r.shortPromptThreshold {
+			klog.InfoS("Short prompt detected: bypassing remote prefill",
+				"request_id", ctx.RequestID,
+				"token_count", len(tokens),
+				"threshold", r.shortPromptThreshold)
+			// short prompt optimization (Decode-Only Path)
+			_, decodePod, err := r.filterPrefillDecodePods(ctx, readyPodList.All())
+			if err != nil {
+				klog.Warning("Failed to select decode pod for direct inference; falling back to prefill-decode flow",
+					"request_id", ctx.RequestID, "error", err)
+			} else if decodePod != nil {
+				ctx.SetTargetPod(decodePod)
+				return ctx.TargetAddress(), nil
+			}
+		}
+	}
 	// Validate engine consistency across all prefill pods
 	llmEngine, err := validateAndGetLLMEngine(readyPodList.All())
 	if err != nil {
