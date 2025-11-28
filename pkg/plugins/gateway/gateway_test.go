@@ -159,11 +159,12 @@ func Test_selectTargetPod(t *testing.T) {
 
 	// Define test cases for different pod selection and error scenarios
 	tests := []struct {
-		name          string
-		pods          types.PodList
-		mockSetup     func(*mockRouter, types.RoutingAlgorithm)
-		expectedError bool
-		expectedPodIP string
+		name           string
+		pods           types.PodList
+		mockSetup      func(*mockRouter, types.RoutingAlgorithm)
+		expectedError  bool
+		expectedPodIP  string
+		externalFilter string
 	}{
 		{
 			name: "routing.Route returns error",
@@ -288,6 +289,325 @@ func Test_selectTargetPod(t *testing.T) {
 			expectedError: false,
 			expectedPodIP: "1.2.3.4:8000",
 		},
+		{
+			name: "single external filter",
+			pods: &utils.PodArray{Pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "bar",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "1.2.3.4",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "sad",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "5.6.7.8",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+			}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router that selects a pod from multiple ready pods
+				routing.Register(algo, func() (types.Router, error) {
+					return mockRouter, nil
+				})
+				mockRouter.On("Route", mock.Anything, mock.Anything).Unset()
+			},
+			expectedError:  false,
+			expectedPodIP:  "1.2.3.4:8000",
+			externalFilter: "foo=bar",
+		},
+		{
+			name: "slice external filter",
+			pods: &utils.PodArray{Pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "bar",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "1.2.3.4",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"env": "prod",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "5.6.7.8",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "bar",
+							"env": "prod",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "2.3.4.5",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+			}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router that selects a pod from multiple ready pods
+				routing.Register(algo, func() (types.Router, error) {
+					return mockRouter, nil
+				})
+				mockRouter.On("Route", mock.Anything, mock.Anything).Unset()
+			},
+			expectedError:  false,
+			expectedPodIP:  "2.3.4.5:8000",
+			externalFilter: "foo=bar,env=prod",
+		},
+		{
+			name: "external filter and route multiple pods",
+			pods: &utils.PodArray{Pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "bar",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "1.2.3.4",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "bar",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "5.6.7.8",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+			}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router that selects a pod from multiple ready pods
+				routing.Register(algo, func() (types.Router, error) {
+					return mockRouter, nil
+				})
+				mockRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).Once()
+			},
+			expectedError:  false,
+			expectedPodIP:  "1.2.3.4:8000",
+			externalFilter: "foo=bar",
+		},
+		{
+			name: "external filter use 'in' and route multiple pods",
+			pods: &utils.PodArray{Pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "bar",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "1.2.3.4",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "bug",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "5.6.7.8",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+			}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router that selects a pod from multiple ready pods
+				routing.Register(algo, func() (types.Router, error) {
+					return mockRouter, nil
+				})
+				mockRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).Once()
+			},
+			expectedError:  false,
+			expectedPodIP:  "1.2.3.4:8000",
+			externalFilter: "foo in (bar, bug)",
+		},
+		{
+			name: "external filter use 'not in' and route multiple pods",
+			pods: &utils.PodArray{Pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "bar",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "1.2.3.4",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "bug",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "5.6.7.8",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "par",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "2.3.4.5",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+			}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router that selects a pod from multiple ready pods
+				routing.Register(algo, func() (types.Router, error) {
+					return mockRouter, nil
+				})
+				mockRouter.On("Route", mock.Anything, mock.Anything).Unset()
+			},
+			expectedError:  false,
+			expectedPodIP:  "2.3.4.5:8000",
+			externalFilter: "foo notin (bar, bug)",
+		},
+		{
+			name: "external filter use !=",
+			pods: &utils.PodArray{Pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "bar",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "1.2.3.4",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "bug",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "5.6.7.8",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+			}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router that selects a pod from multiple ready pods
+				routing.Register(algo, func() (types.Router, error) {
+					return mockRouter, nil
+				})
+				mockRouter.On("Route", mock.Anything, mock.Anything).Unset()
+			},
+			expectedError:  false,
+			expectedPodIP:  "5.6.7.8:8000",
+			externalFilter: "foo!=bar",
+		},
+		{
+			name: "external filter with key exists",
+			pods: &utils.PodArray{Pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "bar",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "1.2.3.4",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "sad",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "5.6.7.8",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+			}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router that selects a pod from multiple ready pods
+				routing.Register(algo, func() (types.Router, error) {
+					return mockRouter, nil
+				})
+				mockRouter.On("Route", mock.Anything, mock.Anything).Return("1.2.3.4:8000", nil).Once()
+			},
+			expectedError:  false,
+			expectedPodIP:  "1.2.3.4:8000",
+			externalFilter: "foo",
+		},
+		{
+			name: "external filter with key not exists",
+			pods: &utils.PodArray{Pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"foo": "bar",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "1.2.3.4",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"sad": "sad",
+						},
+					},
+					Status: v1.PodStatus{
+						PodIP:      "5.6.7.8",
+						Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionTrue}},
+					},
+				},
+			}},
+			mockSetup: func(mockRouter *mockRouter, algo types.RoutingAlgorithm) {
+				// Register a mock router that selects a pod from multiple ready pods
+				routing.Register(algo, func() (types.Router, error) {
+					return mockRouter, nil
+				})
+				mockRouter.On("Route", mock.Anything, mock.Anything).Unset()
+			},
+			expectedError:  false,
+			expectedPodIP:  "5.6.7.8:8000",
+			externalFilter: "!foo",
+		},
 	}
 
 	for _, tt := range tests {
@@ -305,7 +625,7 @@ func Test_selectTargetPod(t *testing.T) {
 			ctx := types.NewRoutingContext(context.Background(), routingAlgo, "test-model", "test-message", "test-request", "test-user")
 
 			// Call selectTargetPod and check the result
-			podIP, err := server.selectTargetPod(ctx, tt.pods)
+			podIP, err := server.selectTargetPod(ctx, tt.pods, tt.externalFilter)
 
 			if tt.expectedError {
 				assert.Error(subtest, err)

@@ -160,7 +160,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	}
 }
 
-func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList, externalFilterExpr string) (string, error) {
 	router, err := routing.Select(ctx)
 	if err != nil {
 		return "", err
@@ -170,6 +170,13 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList) 
 		return "", fmt.Errorf("no pods for routing")
 	}
 	readyPods := utils.FilterRoutablePods(pods.All())
+
+	// filter pod by header 'external-filter'
+	readyPods, err = utils.FilterPodsByLabelSelector(readyPods, externalFilterExpr)
+	if err != nil {
+		return "", fmt.Errorf("filter pods by label selector failed: %v", err)
+	}
+
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods for routing")
 	}
