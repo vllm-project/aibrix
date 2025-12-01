@@ -276,6 +276,27 @@ func FilterPodsByLabel(pods []*v1.Pod, labelKey, labelValue string) []*v1.Pod {
 	return filtered
 }
 
+// FilterPodsByLabelSelector filter pod by k8s labelSelector
+func FilterPodsByLabelSelector(pods []*v1.Pod, labelSelector string) ([]*v1.Pod, error) {
+	// k8s labelSelector format, eg: "k=v"、"env in (prod,stg)"
+	if labelSelector == "" {
+		return pods, nil
+	}
+	sel, err := labels.Parse(labelSelector)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*v1.Pod, 0, len(pods))
+	for _, p := range pods {
+		klog.V(3).InfoS("filtering pod", "pod", p.Name)
+		if sel.Matches(labels.Set(p.Labels)) {
+			out = append(out, p)
+			klog.V(3).InfoS("filter passed", "pod", p.Name)
+		}
+	}
+	return out, nil
+}
+
 // DeploymentNameFromPod extracts the deployment name from the pod using two methods:
 // 1. If the pod has a label with the key "app.kubernetes.io/name", its value is considered the deployment name.
 // 2. If the pod has an owner reference of kind "ReplicaSet", the deployment name is extracted from the owner reference's name.

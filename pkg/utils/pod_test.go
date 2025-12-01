@@ -252,3 +252,131 @@ func TestModePortForPod(t *testing.T) {
 		assert.Equal(t, tt.expectedPort, GetModelPortForPod("1", tt.pod), tt.message)
 	}
 }
+
+func TestFilterPodsByLabelSelector(t *testing.T) {
+	pods := []*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "p1",
+				Labels: map[string]string{
+					"env":  "prod",
+					"tier": "frontend",
+					"foo":  "bar",
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "p2",
+				Labels: map[string]string{
+					"env":  "stg",
+					"tier": "backend",
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "p3",
+				Labels: map[string]string{
+					"env":  "qa",
+					"tier": "frontend",
+					"foo":  "baz",
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "p4",
+				Labels: map[string]string{}, // no labels
+			},
+		},
+	}
+
+	testcases := []struct {
+		name          string
+		expr          string
+		inputPods     []*v1.Pod
+		expectedNames []string
+		expectError   bool
+	}{
+		{
+			name:          "empty selector returns all pods",
+			expr:          "",
+			inputPods:     pods,
+			expectedNames: []string{"p1", "p2", "p3", "p4"},
+			expectError:   false,
+		},
+		{
+			name:          "= selector match env=prod",
+			expr:          "env=prod",
+			inputPods:     pods,
+			expectedNames: []string{"p1"},
+			expectError:   false,
+		},
+		{
+			name:          "!= selector exclude env=prod",
+			expr:          "env!=prod",
+			inputPods:     pods,
+			expectedNames: []string{"p2", "p3", "p4"},
+			expectError:   false,
+		},
+		{
+			name:          "in selector env in (prod,stg)",
+			expr:          "env in (prod,stg)",
+			inputPods:     pods,
+			expectedNames: []string{"p1", "p2"},
+			expectError:   false,
+		},
+		{
+			name:          "notin selector env notin (qa)",
+			expr:          "env notin (qa)",
+			inputPods:     pods,
+			expectedNames: []string{"p1", "p2", "p4"},
+			expectError:   false,
+		},
+		{
+			name:          "exists selector foo",
+			expr:          "foo",
+			inputPods:     pods,
+			expectedNames: []string{"p1", "p3"},
+			expectError:   false,
+		},
+		{
+			name:          "not exists selector !foo",
+			expr:          "!foo",
+			inputPods:     pods,
+			expectedNames: []string{"p2", "p4"},
+			expectError:   false,
+		},
+		{
+			name:          "combined selector env=prod,tier=frontend",
+			expr:          "env=prod,tier=frontend",
+			inputPods:     pods,
+			expectedNames: []string{"p1"},
+			expectError:   false,
+		},
+		{
+			name:        "invalid selector returns error",
+			expr:        "env=prod,",
+			inputPods:   pods,
+			expectError: true,
+		},
+	}
+
+	for _, tt := range testcases {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := FilterPodsByLabelSelector(tt.inputPods, tt.expr)
+			if tt.expectError {
+				assert.Error(t, err, tt.name)
+				return
+			}
+			assert.NoError(t, err, tt.name)
+
+			gotNames := make([]string, 0, len(out))
+			for _, p := range out {
+				gotNames = append(gotNames, p.Name)
+			}
+			assert.ElementsMatch(t, tt.expectedNames, gotNames, tt.name)
+		})
+	}
+}

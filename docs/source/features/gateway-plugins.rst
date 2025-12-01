@@ -194,6 +194,39 @@ To set up rate limiting, add the user header in the request, like this:
     If rate limit support is required, ensure this `user` header is always set in the request. if you do not need rate limit, you do not need to set this header.
 
 
+External Filter
+===============
+The ``external-filter`` header is evaluated **before** the routing strategy selects the optimal target pod. allows users to dynamically restrict the target Pods using Kubernetes ``labelSelector`` expressions.
+
+The header value follows the Kubernetes label selector syntax:
+
+- ``key=value``
+- ``key in (a, b)``
+- ``key!=value``
+- comma-separated selector list
+
+For label selector syntax reference:
+https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
+
+.. code-block:: bash
+   curl -v http://${ENDPOINT}/v1/completions \
+      -H "Content-Type: application/json" \
+      -H "routing-strategy: random" \
+      -H "external-filter: environment=production,tier=frontend" \
+      -d '{
+            "model": "deepseek-r1-distill-llama-8b",
+            "prompt": "San Francisco is a",
+            "max_tokens": 128,
+            "temperature": 0
+          }'
+
+.. note::
+    1. Filtering happens **before** the routing strategy. It never changes which Pods are considered “optimal” by the routing strategy.
+    2. The ``external-filter`` only takes effect when a ``routing-strategy``` is set.
+    3. It only reduces the Pod selected by `model.aibrix.ai/name` and set by applying extra label constraints.
+    4. Same as `no target pod`, If the filter eliminates all Pods, the request will fail with ``no ready pods for routing``.
+    5. ``external-filter`` is optional. When omitted, no extra filtering is applied.
+
 Headers Explanation
 --------------------
 
@@ -216,7 +249,8 @@ Target Headers & General Error Headers
      - Specifies the destination pod selected by the routing algorithm. Useful for verifying routing decisions.
    * - ``routing-strategy``
      - Defines the routing strategy applied to this request. Ensures correct routing logic is followed.
-
+   * - ``external-filter``
+     - Provides a generic and pluggable mechanism to further filter candidate Pods after routing. Filtering applied only when a routing strategy is set; Skipped if no routing algorithm is present.
 
 Routing & Error Debugging Headers
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
