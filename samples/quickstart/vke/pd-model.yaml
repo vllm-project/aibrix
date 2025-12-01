@@ -28,7 +28,7 @@ spec:
             spec:
               containers:
                 - name: prefill
-                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-openai:0.11.0-cu128-nixl-v0.4.1
+                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.10.2-aibrix-v0.5.0-nixl-0.7.1-20251123
                   command: ["sh", "-c"]
                   args:
                     - |
@@ -84,7 +84,7 @@ spec:
             spec:
               containers:
                 - name: decode
-                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-openai:0.11.0-cu128-nixl-v0.4.1
+                  image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/vllm-openai:v0.10.2-aibrix-v0.5.0-nixl-0.7.1-20251123
                   command: ["sh", "-c"]
                   args:
                     - |
