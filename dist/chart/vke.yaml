@@ -116,7 +116,7 @@ gateway:
                     - "true"
     container:
       envoy:
-        image: aibrix-public-release-cn-beijing.cr.volces.com/envoyproxy/envoy:v1.33.2
+        image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/envoy:v1.33.2
         resources:
           requests:
             cpu: "1"
@@ -125,7 +125,7 @@ gateway:
             cpu: "1"
             memory: 1Gi
       shutdownManager:
-        image: aibrix-public-release-cn-beijing.cr.volces.com/envoyproxy/gateway:v1.2.8
+        image: aibrix-public-release-cn-beijing.cr.volces.com/aibrix/gateway:v1.2.8
         resources:
           requests:
             cpu: 10m
