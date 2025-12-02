@@ -10,10 +10,10 @@ spec:
   # REQUIRED: Base model that this LoRA adapter extends
   baseModel: qwen-coder-1-5b-instruct
   
-  # Specify the number of replicas for the adapter
-  # The adapter will be loaded on this many pods matching the selector
+  # Do not specify the replicas for the adapter
+  # The adapter will be loaded on all pods
   # Provides high availability and load distribution
-  replicas: 3
+  # replicas: 1
   
   # Pod selector to identify which pods can host this adapter
   # Requires pods to have both labels for proper selection
@@ -41,7 +41,6 @@ spec:
     timeout: "120s"
   
   # Multi-replica behavior:
-  # - Controller ensures adapters are loaded on exactly 3 different pods
-  # - Automatic failover if any pod becomes unavailable
+  # - Controller ensures adapters are loaded on all pods
   # - Load balancing across all healthy replicas
   # - Service discovery includes all replica endpoints
