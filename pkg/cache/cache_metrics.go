@@ -353,17 +353,21 @@ func (c *Store) fetchMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily, 
 		klog.V(4).Infof(err.Error())
 		engineType = defaultEngineLabelValue
 	}
-	rawMetricName, ok := metric.EngineMetricsNameMapping[engineType]
-	if !ok {
-		klog.V(4).Infof("Cannot find engine type %v mapping for metrics %v", engineType, labelMetricName)
+	candidates, ok := metric.EngineMetricsNameMapping[engineType]
+	if !ok || len(candidates) == 0 {
+		klog.V(4).Infof("No metric name candidates found for engine type %v and metric %v", engineType, labelMetricName)
 		return nil, false
 	}
-	metricFamily, exists := allMetrics[rawMetricName]
-	if !exists {
-		klog.V(4).Infof("Cannot find raw metrics %v, engine type %v", rawMetricName, engineType)
-		return nil, false
+
+	for _, rawMetricName := range candidates {
+		if metricFamily, exists := allMetrics[rawMetricName]; exists {
+			return metricFamily, true
+		}
 	}
-	return metricFamily, true
+
+	klog.V(4).Infof("None of the candidate raw metrics %v found for engine %v and metric %v", candidates, engineType, labelMetricName)
+	return nil, false
+
 }
 
 // Update `PodMetrics` and `PodModelMetrics` according to the metric scope

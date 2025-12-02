@@ -100,14 +100,14 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 		return nil, fmt.Errorf("metric %s is not a raw pod metric, use FetchAllTypedMetrics for complex queries", metricName)
 	}
 
-	// Get raw metric name for this engine
-	rawMetricName, exists := metricDef.EngineMetricsNameMapping[engineType]
-	if !exists {
+	// Get raw metric name candidates for this engine
+	candidates, exists := metricDef.EngineMetricsNameMapping[engineType]
+	if !exists || len(candidates) == 0 {
 		return nil, fmt.Errorf("metric %s not supported for engine type %s", metricName, engineType)
 	}
 
 	url := fmt.Sprintf("http://%s/metrics", endpoint)
-
+	var lastErr error
 	// Fetch with retry logic
 	for attempt := 0; attempt <= ef.config.MaxRetries; attempt++ {
 		if attempt > 0 {
@@ -130,21 +130,31 @@ func (ef *EngineMetricsFetcher) FetchTypedMetric(ctx context.Context, endpoint, 
 			continue
 		}
 
-		// Parse the specific metric we need
-		metricValue, err := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
-		if err != nil {
-			klog.V(4).InfoS("Failed to parse metric from engine endpoint",
-				"attempt", attempt+1, "identifier", identifier, "metric", metricName, "error", err)
-			continue
+		// Try each candidate until one exists and can be parsed
+		for _, rawMetricName := range candidates {
+			if _, ok := allMetrics[rawMetricName]; !ok {
+				continue // skip if not present
+			}
+
+			metricValue, err := ef.parseMetricFromFamily(allMetrics, rawMetricName, metricDef)
+			if err != nil {
+				lastErr = err
+				klog.V(5).InfoS("Failed to parse candidate metric", "candidate", rawMetricName, "error", err)
+				continue
+			}
+
+			klog.V(4).InfoS("Successfully fetched typed metric from engine endpoint",
+				"identifier", identifier, "metric", metricName, "rawMetric", rawMetricName, "value", metricValue, "attempt", attempt+1)
+			return metricValue, nil
 		}
 
-		klog.V(4).InfoS("Successfully fetched typed metric from engine endpoint",
-			"identifier", identifier, "metric", metricName, "value", metricValue, "attempt", attempt+1)
-		return metricValue, nil
+		klog.V(4).InfoS("Failed to find valid metric among candidates",
+			"candidates", candidates, "identifier", identifier, "metric", metricName)
+		// Continue to next retry if any
 	}
 
-	return nil, fmt.Errorf("failed to fetch typed metric %s from engine endpoint %s after %d attempts",
-		metricName, identifier, ef.config.MaxRetries+1)
+	return nil, fmt.Errorf("failed to fetch typed metric %s from engine endpoint %s after %d attempts: %w",
+		metricName, identifier, ef.config.MaxRetries+1, lastErr)
 }
 
 // FetchAllTypedMetrics fetches all available typed metrics from an engine endpoint
@@ -215,10 +225,26 @@ func (ef *EngineMetricsFetcher) FetchAllTypedMetrics(ctx context.Context, endpoi
 			continue
 		}
 
-		// Get raw metric name for this engine
-		rawMetricName, exists := metricDef.EngineMetricsNameMapping[result.EngineType]
-		if !exists {
-			klog.V(5).InfoS("Metric not supported for engine type", "metric", metricName, "engine", result.EngineType)
+		// Get raw metric name candidates for this engine
+		candidates, exists := metricDef.EngineMetricsNameMapping[result.EngineType]
+		if !exists || len(candidates) == 0 {
+			klog.V(5).InfoS("No raw metric names defined for metric and engine type",
+				"metric", metricName, "engine", result.EngineType)
+			continue
+		}
+
+		// Find the first candidate that exists in allMetrics
+		var rawMetricName string
+		for _, name := range candidates {
+			if _, ok := allMetrics[name]; ok {
+				rawMetricName = name
+				break
+			}
+		}
+
+		if rawMetricName == "" {
+			klog.V(5).InfoS("None of the candidate raw metrics found in endpoint response",
+				"metric", metricName, "engine", result.EngineType, "candidates", candidates)
 			continue
 		}
 
