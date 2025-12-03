@@ -336,16 +336,9 @@ Robust error handling for various network and startup conditions:
 Advanced Configuration Examples
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-**High-Availability Setup:**
+**High-Availability Setup with Multi-Replica:**
 
-Here's a production-ready configuration demonstrating reliability features:
-
-.. literalinclude:: ../../../samples/adapter/adapter-reliability-demo.yaml
-   :language: yaml
-
-**Multi-Replica Distribution:**
-
-For load balancing across multiple pods:
+Here’s a production-ready configuration demonstrating load balancing across multiple pods:
 
 .. literalinclude:: ../../../samples/adapter/adapter-multi-replica.yaml
    :language: yaml
@@ -355,11 +348,11 @@ For load balancing across multiple pods:
 
 .. code-block:: bash
 
-    # 1. Apply the reliability demo adapter:
-    kubectl apply -f samples/adapter/adapter-reliability-demo.yaml
+    # 1. Apply the multi-replica adapter:
+    kubectl apply -f samples/adapter/adapter-multi-replica.yaml
     
     # 2. Monitor phase transitions:
-    watch kubectl describe modeladapter reliability-demo-lora
+    watch kubectl describe modeladapter sample-lora-multi-replica
     
     # 3. Check controller logs for retry behavior:
     kubectl logs -n aibrix-system deployment/aibrix-controller-manager -f
@@ -369,7 +362,7 @@ For load balancing across multiple pods:
     # Watch how controller handles pod loss and reschedules
     
     # 5. Verify final state:
-    kubectl get modeladapter reliability-demo-lora -o yaml
+    kubectl get modeladapter sample-lora-multi-replica -o yaml
 
 Monitoring and Observability
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -432,9 +425,10 @@ Best Practices for Production
 
    .. code-block:: yaml
    
-       # Distribute adapter across multiple pods
+       # Distribute adapter across all pods
        spec:
-         replicas: 2  # Load adapter on 2 different pods
+         # Load adapter on all pods by omitting replicas field
+         # replicas: 1
 
 3. **Configure Appropriate Health Checks:**
 
@@ -652,7 +646,7 @@ Setup: AWS S3 Storage
       # Reference to S3 credentials
       credentialsSecretRef:
         name: s3-credentials
-      replicas: 2
+      replicas: 1
 
 **Step 4: Verify Artifact Delegation**
 

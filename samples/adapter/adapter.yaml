@@ -21,10 +21,11 @@ spec:
   # Supported formats: huggingface://, s3://, or absolute local path
   artifactURL: huggingface://ai-blond/Qwen-Qwen2.5-Coder-1.5B-Instruct-lora
   
-  # Optional: Number of replicas for the adapter (default: 1)
-  # The controller will load the adapter on this many pods
-  # Uncomment to enable high availability across multiple pods
-  # replicas: 2
+  # Replicas controls adapter distribution across pods:
+  # - nil (omitted): Load adapter on ALL matching pods (recommended)
+  # - 1: Load adapter on a single pod selected by the scheduler
+  # Only nil or 1 are supported. Other values will be rejected.
+  # replicas: 1
   
   # Optional: Scheduler to use for pod selection (default: "default")
   # Available schedulers: "default", "least-adapters"
