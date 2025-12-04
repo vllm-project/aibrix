@@ -6,7 +6,7 @@ Note:
   - Static routing using the upstream vLLM sample router (disagg_proxy_server.py) — suitable for quick testing.
   - Dynamic routing via AIBrix Envoy Gateway with `routing-strategy: pd`.
 - In order to use this example, you need to build your own vLLM image with Nixl. Guidance is provided.
-- AIBrix storm service support replica mode and pool mode, please refer to [AIBrix storm service]( mode, please refer to [AIBrix storm service](https://aibrix.readthedocs.io/latest/designs/aibrix-stormservice.html) for more details.
+- AIBrix storm service supports replica mode and pool mode. Please refer to [AIBrix storm service](https://aibrix.readthedocs.io/latest/designs/aibrix-stormservice.html) for more details.
 - `vke.volcengine.com/rdma`, `k8s.volcengine.com/pod-networks` and `NCCL_IB_GID_INDEX` are specific to Volcano Engine Cloud. Feel free to customize it for your own cluster.
 
 ## Configuration
