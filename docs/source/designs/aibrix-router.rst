@@ -54,7 +54,7 @@ AIBrix ships with a set of built-in algorithms, each optimized for different wor
 * ``prefix-cache-preble``: routes request considering both prefix cache hits and pod load, implementation is based of Preble: Efficient Distributed Prompt Scheduling for LLM Serving: https://arxiv.org/abs/2407.00023.
 * ``vtc-basic``: routes request using a hybrid score balancing fairness (user token count) and pod utilization. It is a simple variant of Virtual Token Counter (VTC) algorithm.  See more details at https://github.com/Ying1123/VTC-artifact
 * ``pd``: routes request for prefill-decode disaggregation, splitting processing between prefill and decode pods for optimized performance.
-
+* ``session-affinity``: enables sticky session routing by encoding the target pod’s address (IP:Port) into a base64-encoded value in the ``x-session-id`` header. On subsequent requests, if the header is present and valid, the gateway attempts to route to the same pod. If the pod is no longer ready (e.g., scaled down or evicted), it falls back to selecting a random ready pod and issues a new session ID.
 
 Core Principle
 --------------
