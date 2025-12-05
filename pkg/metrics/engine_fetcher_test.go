@@ -77,9 +77,9 @@ func setupMockMetrics() {
 	Metrics["running_requests"] = Metric{
 		MetricSource: PodRawMetrics,
 		MetricType:   MetricType{Raw: Gauge},
-		EngineMetricsNameMapping: map[string]string{
-			"vllm":   "vllm_num_requests_running",
-			"sglang": "sglang_running_requests",
+		EngineMetricsNameMapping: map[string][]string{
+			"vllm":   {"vllm_num_requests_running"},
+			"sglang": {"sglang_running_requests"},
 		},
 		Description: "Number of running requests",
 		MetricScope: PodModelMetricScope,
@@ -88,9 +88,9 @@ func setupMockMetrics() {
 	Metrics["waiting_requests"] = Metric{
 		MetricSource: PodRawMetrics,
 		MetricType:   MetricType{Raw: Gauge},
-		EngineMetricsNameMapping: map[string]string{
-			"vllm":   "vllm_num_requests_waiting",
-			"sglang": "sglang_waiting_requests",
+		EngineMetricsNameMapping: map[string][]string{
+			"vllm":   {"vllm_num_requests_waiting"},
+			"sglang": {"sglang_waiting_requests"},
 		},
 		Description: "Number of waiting requests",
 		MetricScope: PodModelMetricScope,
@@ -99,9 +99,9 @@ func setupMockMetrics() {
 	Metrics["cache_usage"] = Metric{
 		MetricSource: PodRawMetrics,
 		MetricType:   MetricType{Raw: Gauge},
-		EngineMetricsNameMapping: map[string]string{
-			"vllm":   "vllm_gpu_cache_usage_perc",
-			"sglang": "sglang_cache_usage",
+		EngineMetricsNameMapping: map[string][]string{
+			"vllm":   {"vllm_gpu_cache_usage_perc"},
+			"sglang": {"sglang_cache_usage"},
 		},
 		Description: "Cache usage percentage",
 		MetricScope: PodMetricScope,
@@ -110,8 +110,8 @@ func setupMockMetrics() {
 	Metrics["time_to_first_token"] = Metric{
 		MetricSource: PodRawMetrics,
 		MetricType:   MetricType{Raw: Histogram},
-		EngineMetricsNameMapping: map[string]string{
-			"vllm": "vllm_time_to_first_token_seconds",
+		EngineMetricsNameMapping: map[string][]string{
+			"vllm": {"vllm_time_to_first_token_seconds"},
 		},
 		Description: "Time to first token histogram",
 		MetricScope: PodModelMetricScope,
