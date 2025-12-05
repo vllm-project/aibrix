@@ -37,7 +37,7 @@ func TestUpdateByPaTypes_MetricsSources(t *testing.T) {
 			MetricsSources: []autoscalingv1alpha1.MetricSource{
 				{
 					MetricSourceType: autoscalingv1alpha1.POD,
-					TargetMetric:     "gpu_cache_usage_perc",
+					TargetMetric:     "kv_cache_usage_perc",
 					TargetValue:      "50",
 				},
 				{
@@ -55,10 +55,10 @@ func TestUpdateByPaTypes_MetricsSources(t *testing.T) {
 	}
 
 	expectedMetricTargets := map[string]MetricTarget{
-		"gpu_cache_usage_perc": {
+		"kv_cache_usage_perc": {
 			TargetValue:   50,
 			TotalValue:    100,
-			ScalingMetric: "gpu_cache_usage_perc",
+			ScalingMetric: "kv_cache_usage_perc",
 			MetricType:    autoscalingv1alpha1.POD,
 		},
 		"cpu": {

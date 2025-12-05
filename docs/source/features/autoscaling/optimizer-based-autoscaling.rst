@@ -98,7 +98,7 @@ Here we show the preliminary experiment results to show how different autoscalin
 Experiments Results
 ^^^^^^^^^^^^^^^^^^^
 
-- gpu_cache_usage_perc: 70
+- kv_cache_usage_perc: 70
 
 .. image:: ../../assets/images/autoscaler/optimizer-based-autoscaling-70-results.png
    :alt: result

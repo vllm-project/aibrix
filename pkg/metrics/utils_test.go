@@ -33,9 +33,9 @@ func TestParseHistogramWithLabels(t *testing.T) {
 # HELP vllm:num_requests_waiting Number of requests waiting to be processed.
 # TYPE vllm:num_requests_waiting gauge
 vllm:num_requests_waiting{model_name="Qwen/Qwen2.5-1.5B-Instruct"} 0.0
-# HELP vllm:gpu_cache_usage_perc GPU KV-cache usage. 1 means 100 percent usage.
-# TYPE vllm:gpu_cache_usage_perc gauge
-vllm:gpu_cache_usage_perc{model_name="Qwen/Qwen2.5-1.5B-Instruct"} 0.0
+# HELP vllm:kv_cache_usage_perc GPU KV-cache usage. 1 means 100 percent usage.
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{model_name="Qwen/Qwen2.5-1.5B-Instruct"} 0.0
 # HELP vllm:time_per_output_token_seconds histogram
 vllm:time_per_output_token_seconds_sum{model_name="Qwen/Qwen2.5-1.5B-Instruct"} 0.23455095291137695
 vllm:time_per_output_token_seconds_count{model_name="Qwen/Qwen2.5-1.5B-Instruct"} 29.0
