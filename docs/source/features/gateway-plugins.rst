@@ -168,6 +168,28 @@ Below are routing strategies gateway supports:
         "temperature": 0.7
     }'
 
+* ``session-affinity``: enables sticky session routing by encoding the target pod’s address (IP:Port) into the ``x-session-id`` header as a base64-encoded value.  On subsequent requests, if the header is present and valid, the gateway attempts to route to the same pod. If the pod is no longer ready (e.g., scaled down or evicted), it falls back to selecting a random ready pod and issues a new session ID.
+
+.. code-block:: bash
+
+    curl -v http://${ENDPOINT}/v1/chat/completions \
+    -H "routing-strategy: session-affinity" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "your-model-name",
+        "messages": [{"role": "user", "content": "Say this is a test!"}],
+        "temperature": 0.7
+    }'
+
+How session affinity works:
+  - On the first request (no ``x-session-id``), the gateway picks a random ready pod and returns a ``x-session-id`` header in the response.
+  - The client should store and resend this header on follow-up requests (e.g., in multi-turn conversations).
+  - The gateway decodes the session ID to recover the original pod address and tries to reuse it.
+  - If that pod is unavailable, it transparently fails over to a new pod and issues a new session ID.
+  - This is especially useful for **multi-turn chat applications** where maintaining context on the same backend instance improves performance and consistency.
+
+.. note::
+The x-session-id header is not a security token—it only encodes network location. Do not rely on it for authentication or authorization.
 
 Rate Limiting
 -------------
