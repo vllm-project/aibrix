@@ -31,7 +31,7 @@ func TestUpdateMetrics(t *testing.T) {
 	metricKey := types.MetricKey{
 		Namespace:   "default",
 		Name:        "test-llm",
-		MetricName:  "gpu_cache_usage_perc",
+		MetricName:  "kv_cache_usage_perc",
 		PaNamespace: "default",
 		PaName:      "test-llm-apa",
 	}
@@ -45,22 +45,22 @@ func TestUpdateMetrics(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Len(t, client.stableWindows, 1)
-	tw := client.stableWindows["default/test-llm-apa/gpu_cache_usage_perc"]
+	tw := client.stableWindows["default/test-llm-apa/kv_cache_usage_perc"]
 	assert.NotNil(t, tw)
 	assert.Len(t, tw.Values(), 1)
 	assert.Equal(t, expectedValue, tw.Values()[0])
 
 	assert.Len(t, client.panicWindows, 1)
-	tw = client.panicWindows["default/test-llm-apa/gpu_cache_usage_perc"]
+	tw = client.panicWindows["default/test-llm-apa/kv_cache_usage_perc"]
 	assert.NotNil(t, tw)
 	assert.Len(t, tw.Values(), 1)
 	assert.Equal(t, expectedValue, tw.Values()[0])
 
 	assert.Len(t, client.stableHistory, 1)
-	assert.NotNil(t, client.stableHistory["default/test-llm-apa/gpu_cache_usage_perc"])
+	assert.NotNil(t, client.stableHistory["default/test-llm-apa/kv_cache_usage_perc"])
 
 	assert.Len(t, client.panicHistory, 1)
-	assert.NotNil(t, client.panicHistory["default/test-llm-apa/gpu_cache_usage_perc"])
+	assert.NotNil(t, client.panicHistory["default/test-llm-apa/kv_cache_usage_perc"])
 }
 
 func TestGetMetricValue(t *testing.T) {
@@ -69,7 +69,7 @@ func TestGetMetricValue(t *testing.T) {
 	metricKey := types.MetricKey{
 		Namespace:   "default",
 		Name:        "test-llm",
-		MetricName:  "gpu_cache_usage_perc",
+		MetricName:  "kv_cache_usage_perc",
 		PaNamespace: "default",
 		PaName:      "test-llm-apa",
 	}

@@ -55,7 +55,7 @@ func TestMakeHPA(t *testing.T) {
 			MetricsSources: []autoscalingv1alpha1.MetricSource{
 				{
 					MetricSourceType: autoscalingv1alpha1.POD,
-					TargetMetric:     "gpu_cache_usage_perc",
+					TargetMetric:     "kv_cache_usage_perc",
 					TargetValue:      "50",
 				},
 				{
@@ -131,7 +131,7 @@ func TestMakeHPA(t *testing.T) {
 					Type: autoscalingv2.PodsMetricSourceType,
 					Pods: &autoscalingv2.PodsMetricSource{
 						Metric: autoscalingv2.MetricIdentifier{
-							Name: "gpu_cache_usage_perc",
+							Name: "kv_cache_usage_perc",
 						},
 						Target: autoscalingv2.MetricTarget{
 							Type:         autoscalingv2.AverageValueMetricType,

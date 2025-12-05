@@ -201,7 +201,7 @@ The following keys can be included in the JSON payload to override metrics:
 - `swapped` → `vllm:num_requests_swapped`
 - `avg_prompt_throughput` → `vllm:avg_prompt_throughput_toks_per_s`
 - `avg_generation_throughput` → `vllm:avg_generation_throughput_toks_per_s`
-- `gpu_cache_usage_perc` → `vllm:gpu_cache_usage_perc`
+- `kv_cache_usage_perc` → `vllm:kv_cache_usage_perc`
 - `cpu_cache_usage_perc` → `vllm:cpu_cache_usage_perc`
 - `model_name` – sets the `model_name` label on all metrics
 
@@ -217,7 +217,7 @@ curl -X GET http://localhost:8000/metrics
 curl -X POST http://localhost:8000/set_metrics \
   -H "Content-Type: application/json" \
   -d '{
-    "gpu_cache_usage_perc": 75.0,
+    "kv_cache_usage_perc": 75.0,
     "running": 50,
     "waiting": 10,
     "success_total": 200
