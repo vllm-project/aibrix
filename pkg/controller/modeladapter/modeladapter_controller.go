@@ -762,6 +762,24 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 				klog.InfoS("Max retries exceeded for pod", "pod", pod.Name, "ModelAdapter", klog.KObj(instance))
 			}
 		}
+	} else {
+		// Make sure existing instances are in correct state
+		// in case lora model removed by engine then load it back.
+		for _, podName := range instance.Status.Instances {
+			pod := activeMap[podName]
+			success, shouldRetry, err := r.tryLoadModelAdapterOnPod(ctx, instance, &pod)
+			if !success {
+				if shouldRetry {
+					// Log the error but continue trying other pods
+					loadingErrors = append(loadingErrors, fmt.Sprintf("pod %s: %v", pod.Name, err))
+					klog.V(4).InfoS("Loading failed on pod, will retry later", "pod", pod.Name, "error", err)
+				} else {
+					// Max retries exceeded for this pod, don't try again
+					loadingErrors = append(loadingErrors, fmt.Sprintf("pod %s: max retries exceeded", pod.Name))
+					klog.InfoS("Max retries exceeded for pod", "pod", pod.Name, "ModelAdapter", klog.KObj(instance))
+				}
+			}
+		}
 	}
 
 	// Update ready replicas count
