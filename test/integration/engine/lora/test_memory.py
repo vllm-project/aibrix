@@ -13,15 +13,6 @@ from vllm.lora.request import LoRARequest
 from test_config import BASE_MODEL, get_lora_path, TEST_PROMPT, MAX_TOKENS
 
 
-<<<<<<< HEAD
-def get_gpu_memory_mb(device=0):
-    """Get current GPU memory usage in MB."""
-    torch.cuda.set_device(device)
-    torch.cuda.synchronize(device)
-    free, total = torch.cuda.mem_get_info()  # bytes
-    used = (total - free) / 1024**2
-    return used
-=======
 def get_gpu_memory_mb():
     """Get current GPU memory usage in MB."""
     torch.cuda.synchronize()
@@ -32,7 +23,6 @@ def get_gpu_memory_gb():
     """Get current GPU memory usage in GB."""
     torch.cuda.synchronize()
     return torch.cuda.memory_allocated() / 1e9
->>>>>>> f3be4b9 (Add vLLM Lora testing scripts (#1829))
 
 
 def cleanup_gpu():
@@ -170,11 +160,7 @@ class TestMemoryIsolation:
 
         # Track memory over multiple iterations
         memory_samples = []
-<<<<<<< HEAD
-        for iteration in range(5):
-=======
         for iteration in range(10):
->>>>>>> f3be4b9 (Add vLLM Lora testing scripts (#1829))
             for i in range(4):
                 llm.generate(
                     [TEST_PROMPT],
@@ -302,11 +288,7 @@ class TestMemoryBudget:
         """Test that memory usage increases with max_lora_rank setting."""
         results = []
 
-<<<<<<< HEAD
-        for max_rank in [8, 16, 32, 64, 128]:
-=======
         for max_rank in [8, 16, 32]:
->>>>>>> f3be4b9 (Add vLLM Lora testing scripts (#1829))
             cleanup_gpu()
             initial = get_gpu_memory_mb()
 
@@ -343,15 +325,6 @@ class TestMemoryBudget:
         print("PASS: Memory scales with max_lora_rank")
 
     def test_rank_mismatch_handling(self):
-<<<<<<< HEAD
-        """Test that add_lora() fails when LoRA rank exceeds max_lora_rank.
-
-        Test LoRAs have rank=8. Setting max_lora_rank=1 should cause
-        add_lora() to raise an error immediately.
-        """
-        cleanup_gpu()
-
-=======
         """Test behavior when LoRA rank exceeds max_lora_rank.
 
         Test LoRAs have rank=8. Setting max_lora_rank=4 should trigger
@@ -362,17 +335,12 @@ class TestMemoryBudget:
         cleanup_gpu()
 
         # Use max_lora_rank=4 which is smaller than the test LoRAs (rank=8)
->>>>>>> f3be4b9 (Add vLLM Lora testing scripts (#1829))
         llm = LLM(
             model=BASE_MODEL,
             enable_lora=True,
             max_loras=2,
             max_cpu_loras=2,
-<<<<<<< HEAD
-            max_lora_rank=1,  # Smaller than test LoRA rank (8)
-=======
             max_lora_rank=4,  # Smaller than test LoRA rank (8)
->>>>>>> f3be4b9 (Add vLLM Lora testing scripts (#1829))
             gpu_memory_utilization=0.7,
             trust_remote_code=True,
             enforce_eager=True,
@@ -380,21 +348,6 @@ class TestMemoryBudget:
 
         lora_req = LoRARequest("test_lora", 1, get_lora_path(0))
 
-<<<<<<< HEAD
-        # add_lora() should fail with rank mismatch error
-        with pytest.raises(Exception) as exc_info:
-            llm.llm_engine.add_lora(lora_req)
-
-        error_msg = str(exc_info.value).lower()
-        assert "rank" in error_msg and "greater" in error_msg, \
-            f"Expected rank mismatch error, got: {exc_info.value}"
-
-        print(f"\n{'='*60}")
-        print("RANK MISMATCH HANDLING")
-        print(f"{'='*60}")
-        print(f"max_lora_rank=1, test LoRA rank=8")
-        print(f"add_lora() correctly raised: {exc_info.value}")
-=======
         print(f"\n{'='*60}")
         print("RANK MISMATCH HANDLING")
         print(f"{'='*60}")
@@ -439,17 +392,12 @@ class TestMemoryBudget:
             print(f"  Both add_lora() and generate() succeeded (rank check passed)")
         else:
             print(f"  add_lora() returned {add_result}")
->>>>>>> f3be4b9 (Add vLLM Lora testing scripts (#1829))
         print(f"{'='*60}")
 
         del llm
         cleanup_gpu()
 
-<<<<<<< HEAD
-        print("PASS: Rank mismatch correctly rejected at add_lora()")
-=======
         print("PASS: Rank mismatch behavior documented")
->>>>>>> f3be4b9 (Add vLLM Lora testing scripts (#1829))
 
 
 if __name__ == "__main__":
