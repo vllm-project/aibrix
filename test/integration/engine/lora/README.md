@@ -7,10 +7,22 @@ This test suite validates vLLM's LoRA adapter memory management, including LRU e
 - Python 3.10+
 - vLLM installed with LoRA support
 - GPU with sufficient memory (recommended: 24GB+ for Qwen3-8B)
-- Required packages: `pytest`, `pytest-asyncio`, `torch`, `safetensors`, `transformers`, `vllm`
+- Required packages: `pytest`, `pytest-asyncio`
+- Install vLLM.
 
 ```bash
-pip install pytest pytest-asyncio torch safetensors transformers vllm
+# 1. create env
+python3 -m venv ~/venvs/vllm
+source ~/venvs/vllm/bin/activate
+
+# 2. Upgrade pip
+pip install --upgrade pip
+
+# 3. Install vLLM (and whatever else you need)
+pip install "vllm[torch]"==0.12.0
+
+# 4. Install test packages
+pip install pytest pytest-asyncio
 ```
 
 ## Quick Start
