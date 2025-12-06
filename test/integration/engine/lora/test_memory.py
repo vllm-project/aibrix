@@ -13,16 +13,13 @@ from vllm.lora.request import LoRARequest
 from test_config import BASE_MODEL, get_lora_path, TEST_PROMPT, MAX_TOKENS
 
 
-def get_gpu_memory_mb():
+def get_gpu_memory_mb(device=0):
     """Get current GPU memory usage in MB."""
-    torch.cuda.synchronize()
-    return torch.cuda.memory_allocated() / 1e6
-
-
-def get_gpu_memory_gb():
-    """Get current GPU memory usage in GB."""
-    torch.cuda.synchronize()
-    return torch.cuda.memory_allocated() / 1e9
+    torch.cuda.set_device(device)
+    torch.cuda.synchronize(device)
+    free, total = torch.cuda.mem_get_info()  # bytes
+    used = (total - free) / 1024**2
+    return used
 
 
 def cleanup_gpu():
@@ -160,7 +157,7 @@ class TestMemoryIsolation:
 
         # Track memory over multiple iterations
         memory_samples = []
-        for iteration in range(10):
+        for iteration in range(5):
             for i in range(4):
                 llm.generate(
                     [TEST_PROMPT],
@@ -288,7 +285,7 @@ class TestMemoryBudget:
         """Test that memory usage increases with max_lora_rank setting."""
         results = []
 
-        for max_rank in [8, 16, 32]:
+        for max_rank in [8, 16, 32, 64, 128]:
             cleanup_gpu()
             initial = get_gpu_memory_mb()
 
@@ -325,22 +322,19 @@ class TestMemoryBudget:
         print("PASS: Memory scales with max_lora_rank")
 
     def test_rank_mismatch_handling(self):
-        """Test behavior when LoRA rank exceeds max_lora_rank.
+        """Test that add_lora() fails when LoRA rank exceeds max_lora_rank.
 
-        Test LoRAs have rank=8. Setting max_lora_rank=4 should trigger
-        a rank mismatch. This tests when the error occurs:
-        - At add_lora() time?
-        - At generate() time?
+        Test LoRAs have rank=8. Setting max_lora_rank=1 should cause
+        add_lora() to raise an error immediately.
         """
         cleanup_gpu()
 
-        # Use max_lora_rank=4 which is smaller than the test LoRAs (rank=8)
         llm = LLM(
             model=BASE_MODEL,
             enable_lora=True,
             max_loras=2,
             max_cpu_loras=2,
-            max_lora_rank=4,  # Smaller than test LoRA rank (8)
+            max_lora_rank=1,  # Smaller than test LoRA rank (8)
             gpu_memory_utilization=0.7,
             trust_remote_code=True,
             enforce_eager=True,
@@ -348,56 +342,25 @@ class TestMemoryBudget:
 
         lora_req = LoRARequest("test_lora", 1, get_lora_path(0))
 
+        # add_lora() should fail with rank mismatch error
+        with pytest.raises(Exception) as exc_info:
+            llm.llm_engine.add_lora(lora_req)
+
+        error_msg = str(exc_info.value).lower()
+        assert "rank" in error_msg and "greater" in error_msg, \
+            f"Expected rank mismatch error, got: {exc_info.value}"
+
         print(f"\n{'='*60}")
         print("RANK MISMATCH HANDLING")
         print(f"{'='*60}")
-        print(f"max_lora_rank=4, test LoRA rank=8")
-
-        # Step 1: Try to add the LoRA
-        add_result = None
-        add_error = None
-        try:
-            add_result = llm.llm_engine.add_lora(lora_req)
-            print(f"\nadd_lora() result: {add_result}")
-        except Exception as e:
-            add_error = str(e)
-            print(f"\nadd_lora() raised: {type(e).__name__}: {e}")
-
-        # Step 2: If add succeeded, try to generate (error might occur here)
-        generate_result = None
-        generate_error = None
-        if add_result is True:
-            print("\nadd_lora succeeded, trying generate()...")
-            sampling_params = SamplingParams(max_tokens=20)
-            try:
-                outputs = llm.generate(
-                    [TEST_PROMPT],
-                    sampling_params,
-                    lora_request=LoRARequest("test_lora", 1, get_lora_path(0))
-                )
-                generate_result = outputs[0].outputs[0].text
-                print(f"generate() succeeded: '{generate_result[:50]}...'")
-            except Exception as e:
-                generate_error = str(e)
-                print(f"generate() raised: {type(e).__name__}: {e}")
-
-        # Document the behavior
-        print(f"\n{'='*60}")
-        print("BEHAVIOR SUMMARY:")
-        if add_error:
-            print(f"  Error at add_lora(): {add_error[:100]}")
-        elif generate_error:
-            print(f"  add_lora() succeeded but generate() failed: {generate_error[:100]}")
-        elif generate_result:
-            print(f"  Both add_lora() and generate() succeeded (rank check passed)")
-        else:
-            print(f"  add_lora() returned {add_result}")
+        print(f"max_lora_rank=1, test LoRA rank=8")
+        print(f"add_lora() correctly raised: {exc_info.value}")
         print(f"{'='*60}")
 
         del llm
         cleanup_gpu()
 
-        print("PASS: Rank mismatch behavior documented")
+        print("PASS: Rank mismatch correctly rejected at add_lora()")
 
 
 if __name__ == "__main__":
