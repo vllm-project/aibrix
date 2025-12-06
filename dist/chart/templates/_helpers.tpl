@@ -82,27 +82,13 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Create the name of the service account to use
-*/}}
-{{- define "aibrix.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create }}
-{{- default (include "aibrix.fullname" .) .Values.serviceAccount.name }}
-{{- else }}
-{{- default "default" .Values.serviceAccount.name }}
-{{- end }}
-{{- end }}
-
-{{/*
 Create the name of the controller manager service account
 */}}
 {{- define "aibrix.controllerManager.serviceAccountName" -}}
-{{- if and .Values.controllerManager.serviceAccount.create (eq .Values.controllerManager.serviceAccount.name "") -}}
-{{- $sa := default (include "aibrix.fullname" .) .Values.controllerManager.serviceAccount.name }}
-{{- printf "%s-controller-manager" $sa }}
-{{- else if and .Values.controllerManager.serviceAccount.create (not (eq .Values.controllerManager.serviceAccount.name "")) -}}
-{{- .Values.controllerManager.serviceAccount.name -}}
+{{- if .Values.controllerManager.serviceAccount.create -}}
+{{- .Values.controllerManager.serviceAccount.name | default (printf "%s-controller-manager" (include "aibrix.fullname" .)) -}}
 {{- else -}}
-{{- include "aibrix.serviceAccountName" . -}}
+{{- .Values.controllerManager.serviceAccount.name | default "default" -}}
 {{- end -}}
 {{- end -}}
 
@@ -110,28 +96,22 @@ Create the name of the controller manager service account
 Create the name of the gateway plugin service account
 */}}
 {{- define "aibrix.gatewayPlugin.serviceAccountName" -}}
-{{- if and .Values.gatewayPlugin.serviceAccount.create (eq .Values.gatewayPlugin.serviceAccount.name "") -}}
-{{- $sa := default (include "aibrix.fullname" .) .Values.gatewayPlugin.serviceAccount.name }}
-{{- printf "%s-gateway-plugin" $sa }}
-{{- else if and .Values.gatewayPlugin.serviceAccount.create (not (eq .Values.gatewayPlugin.serviceAccount.name "")) -}}
-{{- .Values.gatewayPlugin.serviceAccount.name -}}
+{{- if .Values.gatewayPlugin.serviceAccount.create -}}
+{{- .Values.gatewayPlugin.serviceAccount.name | default (printf "%s-gateway-plugin" (include "aibrix.fullname" .)) -}}
 {{- else -}}
-{{- include "aibrix.serviceAccountName" . -}}
+{{- .Values.gatewayPlugin.serviceAccount.name | default "default" -}}
 {{- end -}}
 {{- end -}}
 
 
 {{/*
-Create the name of the gateway plugin service account
+Create the name of the gpu optimizer service account
 */}}
 {{- define "aibrix.gpuOptimizer.serviceAccountName" -}}
-{{- if and .Values.gpuOptimizer.serviceAccount.create (eq .Values.gpuOptimizer.serviceAccount.name "") -}}
-{{- $sa := default (include "aibrix.fullname" .) .Values.gpuOptimizer.serviceAccount.name }}
-{{- printf "%s-gpu-optimizer" $sa }}
-{{- else if and .Values.gpuOptimizer.serviceAccount.create (not (eq .Values.gpuOptimizer.serviceAccount.name "")) -}}
-{{- .Values.gpuOptimizer.serviceAccount.name -}}
+{{- if .Values.gpuOptimizer.serviceAccount.create -}}
+{{- .Values.gpuOptimizer.serviceAccount.name | default (printf "%s-gpu-optimizer" (include "aibrix.fullname" .)) -}}
 {{- else -}}
-{{- include "aibrix.serviceAccountName" . -}}
+{{- .Values.gpuOptimizer.serviceAccount.name | default "default" -}}
 {{- end -}}
 {{- end -}}
 
@@ -139,12 +119,9 @@ Create the name of the gateway plugin service account
 Create the name of the metadata service service account
 */}}
 {{- define "aibrix.metadata.serviceAccountName" -}}
-{{- if and .Values.metadata.serviceAccount.create (eq .Values.metadata.serviceAccount.name "") -}}
-{{- $sa := default (include "aibrix.fullname" .) .Values.metadata.serviceAccount.name }}
-{{- printf "%s-metadata-service" $sa }}
-{{- else if and .Values.metadata.serviceAccount.create (not (eq .Values.metadata.serviceAccount.name "")) -}}
-{{- .Values.metadata.serviceAccount.name -}}
+{{- if .Values.metadata.serviceAccount.create -}}
+{{- .Values.metadata.serviceAccount.name | default (printf "%s-metadata-service" (include "aibrix.fullname" .)) -}}
 {{- else -}}
-{{- include "aibrix.serviceAccountName" . -}}
+{{- .Values.metadata.serviceAccount.name | default "default" -}}
 {{- end -}}
 {{- end -}}
