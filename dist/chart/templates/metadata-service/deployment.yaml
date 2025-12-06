@@ -67,7 +67,7 @@ spec:
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: aibrix-redis
+                  name: {{ include "aibrix.fullname" . }}-redis
                   key: redis-password
             {{- end }}
             - name: POD_NAME
