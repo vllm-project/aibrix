@@ -3,16 +3,15 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-controller-manager
-  name: aibrix-mutating-webhook-configuration
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-mutating-webhook-configuration
 webhooks:
 - admissionReviewVersions:
   - v1
   clientConfig:
     service:
-      name: aibrix-webhook-service
+      name: {{ include "aibrix.fullname" . }}-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /mutate-orchestration-aibrix-ai-v1alpha1-kvcache
   failurePolicy: Ignore
@@ -32,7 +31,7 @@ webhooks:
   - v1
   clientConfig:
     service:
-      name: aibrix-webhook-service
+      name: {{ include "aibrix.fullname" . }}-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /mutate-model-aibrix-ai-v1alpha1-modeladapter
   failurePolicy: Ignore
@@ -52,7 +51,7 @@ webhooks:
     - v1
   clientConfig:
     service:
-      name: webhook-service
+      name: {{ include "aibrix.fullname" . }}-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /mutate-autoscaling-aibrix-ai-v1alpha1-podautoscaler
   failurePolicy: Ignore
@@ -72,7 +71,7 @@ webhooks:
     - v1
   clientConfig:
     service:
-      name: webhook-service
+      name: {{ include "aibrix.fullname" . }}-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /mutate-orchestration-aibrix-ai-v1alpha1-stormservice
   failurePolicy: Ignore
@@ -93,16 +92,15 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-controller-manager
-  name: aibrix-validating-webhook-configuration
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-validating-webhook-configuration
 webhooks:
 - admissionReviewVersions:
   - v1
   clientConfig:
     service:
-      name: aibrix-webhook-service
+      name: {{ include "aibrix.fullname" . }}-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /validate-model-aibrix-ai-v1alpha1-modeladapter
   failurePolicy: Ignore
@@ -122,7 +120,7 @@ webhooks:
   - v1
   clientConfig:
     service:
-      name: aibrix-webhook-service
+      name: {{ include "aibrix.fullname" . }}-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /validate-orchestration-aibrix-ai-v1alpha1-kvcache
   failurePolicy: Ignore
@@ -142,7 +140,7 @@ webhooks:
     - v1
   clientConfig:
     service:
-      name: webhook-service
+      name: {{ include "aibrix.fullname" . }}-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /validate-autoscaling-aibrix-ai-v1alpha1-podautoscaler
   failurePolicy: Ignore
@@ -162,7 +160,7 @@ webhooks:
     - v1
   clientConfig:
     service:
-      name: webhook-service
+      name: {{ include "aibrix.fullname" . }}-webhook-service
       namespace: {{ .Release.Namespace }}
       path: /validate-orchestration-aibrix-ai-v1alpha1-stormservice
   failurePolicy: Ignore
@@ -179,6 +177,3 @@ webhooks:
         - stormservices
   sideEffects: None
 {{- end }}
-
-
-

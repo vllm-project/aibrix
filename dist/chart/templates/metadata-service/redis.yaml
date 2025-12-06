@@ -2,24 +2,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  name: {{ include "aibrix.fullname" . }}-redis-master
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-metadata-redis
-  name: aibrix-redis-master
-  namespace: {{ .Release.Namespace }}
 spec:
   replicas: {{ .Values.metadata.redis.replicas }}
   selector:
     matchLabels:
-      {{- include "chart.selectorLabels" . | nindent 6 }}
+      {{- include "aibrix.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: aibrix-metadata-redis
   template:
     metadata:
       labels:
-        {{- include "chart.labels" . | nindent 8 }}
+        {{- include "aibrix.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-metadata-redis
     spec:
-      {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.metadata.redis.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
+      {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" .Values.metadata.redis.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
       containers:
         - name: master
           image: {{ .Values.metadata.redis.container.image.repository }}:{{ .Values.metadata.redis.container.image.tag }}
@@ -31,7 +30,7 @@ spec:
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: aibrix-redis
+                  name: {{ include "aibrix.fullname" . }}-redis
                   key: redis-password
           {{- end }}
 ---
@@ -39,16 +38,15 @@ apiVersion: v1
 kind: Service
 metadata:
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
-    app.kubernetes.io/component: aibrix-metadata-service  
-  name: aibrix-redis-master
-  namespace: {{ .Release.Namespace }}
+    {{- include "aibrix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: aibrix-metadata-redis
+  name: {{ include "aibrix.fullname" . }}-redis-master
 spec:
   ports:
     - port: 6379
       targetPort: 6379
   selector:
-    {{- include "chart.selectorLabels" . | nindent 4 }}
+    {{- include "aibrix.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-metadata-redis
 
 ---
@@ -57,8 +55,7 @@ spec:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: aibrix-redis
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-redis
 type: Opaque
 data:
   redis-password: {{ .Values.metadata.redis.password | b64enc }}
