@@ -59,6 +59,8 @@ class TestMemoryIsolation:
         yield llm
         del llm
         cleanup_gpu()
+
+    def test_lora_memory_allocation(self, llm_memory_constrained):
         """Test that LoRA memory is allocated separately from KV cache.
 
         Verifies that loading LoRAs doesn't reduce KV cache capacity

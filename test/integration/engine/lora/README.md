@@ -10,7 +10,7 @@ This test suite validates vLLM's LoRA adapter memory management, including LRU e
 - Required packages: `pytest`, `pytest-asyncio`, `torch`, `safetensors`, `transformers`, `vllm`
 
 ```bash
-pip install pytest torch safetensors transformers vllm
+pip install pytest pytest-asyncio torch safetensors transformers vllm
 ```
 
 ## Quick Start
@@ -103,7 +103,7 @@ pytest test_lru_swap_pinning.py -v -s
 pytest test_memory.py::TestMemoryBudget -v -s
 
 # Specific test method
-pytest test_api.py::TestAddLoraAPI::test_add_lora_duplicate_returns_false -v -s
+pytest test_api.py::TestDynamicLoading::test_reload_same_lora -v -s
 
 # Run tests matching a keyword
 pytest -v -s -k "eviction"

@@ -9,6 +9,7 @@ Usage:
 """
 
 import os
+import sys
 import json
 import shutil
 import argparse
@@ -487,4 +488,4 @@ Examples:
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())

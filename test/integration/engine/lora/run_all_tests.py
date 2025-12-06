@@ -262,7 +262,8 @@ def main():
         results.append(result)
 
         # Save intermediate results
-        with open("test_results.json", "w") as f:
+        results_path = Path(__file__).parent / "test_results.json"
+        with open(results_path, "w") as f:
             json.dump(results, f, indent=2)
 
     if not results:

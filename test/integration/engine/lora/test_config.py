@@ -62,7 +62,7 @@ def get_lora_path(index: int) -> str:
                 path = adapter["path"]
                 if os.path.exists(path):
                     return path
-        except Exception:
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
             pass
 
     # Try legacy path format (without manifest)
