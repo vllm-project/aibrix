@@ -1,10 +1,9 @@
 # [Core]: AIBrix Deployment Configurations
+nameOverride: ""
+fullnameOverride: ""
+
 global:
   imagePullSecrets: []
-
-serviceAccount:
-  create: true
-  name: ""
 
 controllerManager:
   replicas: 1
@@ -35,6 +34,10 @@ controllerManager:
         initialDelaySeconds: 5
         periodSeconds: 10
   gatewayTimeoutSeconds: 120
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
   tolerations: []
   affinity: {}
 
@@ -84,6 +87,10 @@ gatewayPlugin:
       host: "" # aibrix-redis-master
       port: 6379
   messageTimeout: "60s"
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
   tolerations: []
 
 gpuOptimizer:
@@ -105,6 +112,10 @@ gpuOptimizer:
       host: ""  # aibrix-redis-master
       port: 6379
   tolerations: []
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
   affinity: {}
 
 gateway:
@@ -159,6 +170,10 @@ gateway:
       connectTimeout: 6s     # e.g., "6s"
 
 metadata:
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
   service:
     replicas: 1
     imagePullSecrets: []

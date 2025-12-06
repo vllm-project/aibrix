@@ -18,7 +18,7 @@ spec:
         app.kubernetes.io/component: aibrix-metadata-service
     spec:
       {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" .Values.metadata.service.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
-      serviceAccountName: {{ include "aibrix.serviceAccountName" . }}-metadata-service
+      serviceAccountName: {{ include "aibrix.metadata.serviceAccountName" . }}
       initContainers:
         - name: init-redis
           image: {{ .Values.metadata.service.initContainer.image.repository }}:{{ .Values.metadata.service.initContainer.image.tag }}

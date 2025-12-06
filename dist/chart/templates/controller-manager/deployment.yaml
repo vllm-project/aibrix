@@ -52,7 +52,7 @@ spec:
           readOnly: true
       securityContext:
         runAsNonRoot: true
-      serviceAccountName: {{ include "aibrix.serviceAccountName" . }}-controller-manager
+      serviceAccountName: {{ include "aibrix.controllerManager.serviceAccountName" . }}
       terminationGracePeriodSeconds: 10
       volumes:
       - name: cert

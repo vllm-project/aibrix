@@ -1,7 +1,9 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ include "aibrix.serviceAccountName" . }}-gpu-optimizer
+  name: {{ include "aibrix.gpuOptimizer.serviceAccountName" . }}
+  annotations:
+    {{- toYaml .Values.gpuOptimizer.serviceAccount.annotations | nindent 4 }}
   labels:
     {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gpu-optimizer
@@ -27,7 +29,7 @@ metadata:
     app.kubernetes.io/component: aibrix-gpu-optimizer
 subjects:
   - kind: ServiceAccount
-    name: {{ include "aibrix.serviceAccountName" . }}-gpu-optimizer
+    name: {{ include "aibrix.gpuOptimizer.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 roleRef:
   kind: ClusterRole

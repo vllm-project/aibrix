@@ -17,7 +17,7 @@ spec:
         {{- include "aibrix.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-gpu-optimizer
     spec:
-      serviceAccountName: {{ include "aibrix.serviceAccountName" . }}-gpu-optimizer
+      serviceAccountName: {{ include "aibrix.gpuOptimizer.serviceAccountName" . }}
       automountServiceAccountToken: true
       {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" .Values.gpuOptimizer.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
       containers:

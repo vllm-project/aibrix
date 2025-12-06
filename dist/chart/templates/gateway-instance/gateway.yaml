@@ -62,7 +62,7 @@ spec:
                     app.kubernetes.io/name: envoy
                     app.kubernetes.io/component: proxy
                 spec:
-                  {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" .Values.gateway.envoyProxy.imagePullSecrets "globalSecrets") | nindent 18 }}
+                  {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" .Values.gateway.envoyProxy.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 18 }}
                   containers:
                     - name: envoy
                       image: {{ .Values.gateway.envoyProxy.container.envoy.image }}

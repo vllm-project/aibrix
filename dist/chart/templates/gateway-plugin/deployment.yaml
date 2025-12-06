@@ -107,5 +107,5 @@ spec:
             {{- toYaml .Values.gatewayPlugin.container.probes.liveness | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.gatewayPlugin.container.probes.readiness | nindent 12 }}
-      serviceAccountName: {{ include "aibrix.serviceAccountName" . }}-gateway-plugins
+      serviceAccountName: {{ include "aibrix.gatewayPlugin.serviceAccountName" . }}
 {{- end }}

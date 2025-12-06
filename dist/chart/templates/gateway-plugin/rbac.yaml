@@ -3,10 +3,12 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
+  name: {{ include "aibrix.gatewayPlugin.serviceAccountName" . }}
+  annotations:
+    {{- toYaml .Values.gatewayPlugin.serviceAccount.annotations | nindent 4 }}
   labels:
     {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway-plugin
-  name: {{ include "aibrix.serviceAccountName" . }}-gateway-plugins
 ---
 
 apiVersion: rbac.authorization.k8s.io/v1
@@ -63,6 +65,6 @@ roleRef:
   name: {{ include "aibrix.fullname" . }}-gateway-plugins
 subjects:
   - kind: ServiceAccount
-    name: {{ include "aibrix.serviceAccountName" . }}-gateway-plugins
+    name: {{ include "aibrix.gatewayPlugin.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
