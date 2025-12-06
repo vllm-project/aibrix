@@ -3,22 +3,21 @@ kind: Deployment
 metadata:
   labels:
     app.kubernetes.io/component: aibrix-controller-manager
-    {{- include "chart.labels" . | nindent 4 }}
-  name: aibrix-controller-manager
-  namespace: {{ .Release.Namespace }}
+    {{- include "aibrix.labels" . | nindent 4 }}
+  name: {{ include "aibrix.fullname" . }}-controller-manager
 spec:
   replicas: {{ .Values.controllerManager.replicas }}
   selector:
     matchLabels:
-      {{- include "chart.selectorLabels" . | nindent 6 }}
+      {{- include "aibrix.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: aibrix-controller-manager
   template:
     metadata:
       labels:
-        {{- include "chart.labels" . | nindent 8 }}
+        {{- include "aibrix.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-controller-manager
     spec:
-      {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.controllerManager.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
+      {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" .Values.controllerManager.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
       containers:
       - args:
         - --leader-elect
@@ -53,13 +52,13 @@ spec:
           readOnly: true
       securityContext:
         runAsNonRoot: true
-      serviceAccountName: aibrix-controller-manager
+      serviceAccountName: {{ include "aibrix.serviceAccountName" . }}-controller-manager
       terminationGracePeriodSeconds: 10
       volumes:
       - name: cert
         secret:
           defaultMode: 420
-          secretName: aibrix-webhook-server-cert
+          secretName: {{ include "aibrix.fullname" . }}-webhook-server-cert
       {{- with .Values.controllerManager.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}

@@ -2,17 +2,15 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
-  name: aibrix-controller-manager
-  namespace: {{ .Release.Namespace }}
+    {{- include "aibrix.labels" . | nindent 4 }}
+  name: {{ include "aibrix.serviceAccountName" . }}-controller-manager
 ---
-
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: aibrix-controller-manager-clusterrole
+  name: {{ include "aibrix.fullname" . }}-controller-manager
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
 rules:
 - apiGroups:
   - ""
@@ -301,33 +299,29 @@ rules:
   - list
   - update
   - watch
-
-
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
-  name: aibrix-controller-manager-clusterrolebinding
+    {{- include "aibrix.labels" . | nindent 4 }}
+  name: {{ include "aibrix.fullname" . }}-controller-manager
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: aibrix-controller-manager-clusterrole
+  name: {{ include "aibrix.fullname" . }}-controller-manager
 subjects:
 - kind: ServiceAccount
-  name: aibrix-controller-manager
+  name: {{ include "aibrix.serviceAccountName" . }}-controller-manager
   namespace: {{ .Release.Namespace }}
-
-
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: aibrix-controller-manager-leader-election-role
+  name: {{ include "aibrix.fullname" . }}-controller-manager-leader-election
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
 rules:
 - apiGroups:
   - ""
@@ -360,20 +354,18 @@ rules:
   verbs:
   - create
   - patch
-
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: aibrix-controller-manager-leader-election-rolebinding
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-controller-manager-leader-election
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: aibrix-controller-manager-leader-election-role
+  name: {{ include "aibrix.fullname" . }}-controller-manager-leader-election
 subjects:
 - kind: ServiceAccount
-  name: aibrix-controller-manager
+  name: {{ include "aibrix.serviceAccountName" . }}-controller-manager
   namespace: {{ .Release.Namespace }}

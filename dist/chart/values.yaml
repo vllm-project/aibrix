@@ -2,6 +2,10 @@
 global:
   imagePullSecrets: []
 
+serviceAccount:
+  create: true
+  name: ""
+
 controllerManager:
   replicas: 1
   imagePullSecrets: []
@@ -77,7 +81,7 @@ gatewayPlugin:
       AIBRIX_PREFILL_REQUEST_TIMEOUT: "60"
   dependencies:
     redis:
-      host: aibrix-redis-master
+      host: "" # aibrix-redis-master
       port: 6379
   messageTimeout: "60s"
   tolerations: []
@@ -98,7 +102,7 @@ gpuOptimizer:
         memory: 64Mi
   dependencies:
     redis:
-      host: aibrix-redis-master
+      host: ""  # aibrix-redis-master
       port: 6379
   tolerations: []
   affinity: {}
@@ -177,7 +181,7 @@ metadata:
     tolerations: []
     affinity: {}
     redis:
-      host: aibrix-redis-master
+      host: "" # aibrix-redis-master
       port: 6379
   redis:
     replicas: 1

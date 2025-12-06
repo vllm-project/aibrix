@@ -4,16 +4,15 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway-plugin
-  name: aibrix-gateway-plugins
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.serviceAccountName" . }}-gateway-plugins
 ---
 
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: aibrix-gateway-plugins-role
+  name: {{ include "aibrix.fullname" . }}-gateway-plugins
 rules:
 - apiGroups:
   - ""
@@ -56,14 +55,14 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
-  name: aibrix-gateway-plugins-rolebinding
+    {{- include "aibrix.labels" . | nindent 4 }}
+  name: {{ include "aibrix.fullname" . }}-gateway-plugins
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: aibrix-gateway-plugins-role
+  name: {{ include "aibrix.fullname" . }}-gateway-plugins
 subjects:
   - kind: ServiceAccount
-    name: aibrix-gateway-plugins
+    name: {{ include "aibrix.serviceAccountName" . }}-gateway-plugins
     namespace: {{ .Release.Namespace }}
 {{- end }}
