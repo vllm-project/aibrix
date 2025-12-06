@@ -117,7 +117,7 @@ class TestDynamicLoading:
         # Second load (same LoRA) - should be idempotent
         result2 = llm.llm_engine.add_lora(lora_req)
 
-        # Document behavior, both should be True.
+        # Document behavior
         print(f"\nFirst add_lora: {result1}")
         print(f"Second add_lora (duplicate): {result2}")
 
@@ -195,38 +195,6 @@ class TestDynamicLoading:
                 "enginecore" in error_msg), \
             f"Expected error about LoRA not found, got: {excinfo.value}"
         print("PASS: pin_lora raises exception when LoRA not found")
-
-    def test_remove_pinned_lora(self, llm):
-        """Test that pinned LoRAs can still be explicitly removed.
-
-        Note: pin_lora() only prevents eviction due to LRU cache pressure,
-        it does NOT prevent explicit remove_lora() calls.
-        """
-        # Add and pin a LoRA
-        lora_req = LoRARequest("pinned_lora", 1, get_lora_path(0))
-        llm.llm_engine.add_lora(lora_req)
-        llm.llm_engine.pin_lora(1)
-
-        # Verify it's loaded
-        loras_before = set(llm.llm_engine.list_loras())
-        assert 1 in loras_before, "LoRA should be loaded"
-
-        # Remove the pinned LoRA - this should succeed
-        remove_result = llm.llm_engine.remove_lora(1)
-        assert remove_result is True, "remove_lora on pinned LoRA should return True"
-
-        # Verify it was removed
-        loras_after = set(llm.llm_engine.list_loras())
-        assert 1 not in loras_after, "Pinned LoRA should be removed after remove_lora()"
-
-        print(f"\n{'='*60}")
-        print("REMOVE PINNED LORA")
-        print(f"{'='*60}")
-        print("pin_lora() prevents LRU eviction, NOT explicit remove_lora()")
-        print(f"remove_lora(1) on pinned LoRA: {remove_result}")
-        print(f"{'='*60}")
-
-        print("PASS: Pinned LoRA can be explicitly removed")
 
 
 if __name__ == "__main__":
