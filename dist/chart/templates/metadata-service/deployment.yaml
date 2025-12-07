@@ -1,4 +1,5 @@
 {{- $redisHost := default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.metadata.service.redis.host }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
