@@ -1,4 +1,5 @@
 {{- if .Values.gateway.enable }}
+{{- $redisHost := default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.gatewayPlugin.dependencies.redis.host }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -63,9 +64,9 @@ spec:
                 secretKeyRef:
                   name: {{ include "aibrix.fullname" . }}-redis
                   key: redis-password
-          command: ['sh', '-c', 'until printf ''AUTH %s\nping\n'' "$REDIS_PASSWORD" | nc {{ .Values.gatewayPlugin.dependencies.redis.host }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
+          command: ['sh', '-c', 'until printf ''AUTH %s\nping\n'' "$REDIS_PASSWORD" | nc {{ $redisHost }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
           {{- else }}
-          command: ['sh', '-c', 'until echo "ping" | nc {{ .Values.gatewayPlugin.dependencies.redis.host }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
+          command: ['sh', '-c', 'until echo "ping" | nc {{ $redisHost }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
           {{- end }}
       containers:
         - name: gateway-plugin
