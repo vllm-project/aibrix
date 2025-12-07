@@ -58,7 +58,7 @@ spec:
       - name: cert
         secret:
           defaultMode: 420
-          secretName: {{ include "aibrix.fullname" . }}-webhook-server-cert
+          secretName: aibrix-webhook-server-cert
       {{- with .Values.controllerManager.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
