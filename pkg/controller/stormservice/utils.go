@@ -124,11 +124,17 @@ func ResolveFenceposts(maxSurge, maxUnavailable *intstrutil.IntOrString, desired
 }
 
 func getRoleSetRevision(roleSet *orchestrationv1alpha1.RoleSet) string {
-	return roleSet.Labels[constants.StormServiceRevisionLabelKey]
+	if v := roleSet.Labels[constants.StormServiceRevisionLabelKey]; v != "" {
+		return v
+	}
+	if v := roleSet.Annotations[constants.RoleSetRevisionAnnotationKey]; v != "" {
+		return v
+	}
+	return ""
 }
 
 func isRoleSetMatchRevision(roleSet *orchestrationv1alpha1.RoleSet, revision string) bool {
-	return getRoleSetRevision(roleSet) == revision
+	return revision != "" && getRoleSetRevision(roleSet) == revision
 }
 
 func getRoleByName(roleSet *orchestrationv1alpha1.RoleSet, name string) *orchestrationv1alpha1.RoleSpec {
