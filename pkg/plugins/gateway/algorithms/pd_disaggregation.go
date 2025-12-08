@@ -62,6 +62,7 @@ var (
 	prefillRequestTimeout         int     = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
 	aibrixDecodeMaxRequest        float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_REQUEST", defaultMaxRequest)
 	aibrixDecodeMaxThroughputDiff float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_THROUGHPUT", defaultMaxTokenThroughputDiff)
+	aibrixPromptLengthBucketing   bool    = utils.LoadEnvBool("AIBRIX_PROMPT_LENGTH_BUCKETING", false)
 )
 
 func init() {
@@ -160,6 +161,14 @@ type Scores struct {
 // Pods without PodGroupIndex label are also included for backward compatibility.
 func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
 	prefillPods, decodePods := []*v1.Pod{}, []*v1.Pod{}
+	promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods := []*v1.Pod{}, []*v1.Pod{}
+
+	var promptLength int
+	if aibrixPromptLengthBucketing {
+		promptLength = r.getPromptLength(routingCtx)
+		klog.InfoS("prompt length based filtering enabled", "request_id", routingCtx.RequestID, "prompt_length", promptLength)
+	}
+
 	for _, pod := range readyPods {
 		if _, ok := pod.Labels[PDRoleSetIdentifier]; !ok {
 			continue
@@ -180,11 +189,32 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		case "decode":
 			decodePods = append(decodePods, pod)
 		}
+
+		if aibrixPromptLengthBucketing {
+			if !r.isPodSuitableForPromptLength(pod, promptLength) {
+				continue
+			}
+			switch pod.Labels[PDRoleIdentifier] {
+			case "prefill":
+				promptLengthBucketingPrefillPods = append(promptLengthBucketingPrefillPods, pod)
+			case "decode":
+				promptLengthBucketingDecodePods = append(promptLengthBucketingDecodePods, pod)
+			}
+		}
 	}
+
+	if len(promptLengthBucketingPrefillPods) != 0 {
+		// If pods that meet the given length exist, use them; otherwise, use all pods as a fallback.
+		prefillPods = promptLengthBucketingPrefillPods
+	}
+
+	if len(promptLengthBucketingDecodePods) != 0 {
+		decodePods = promptLengthBucketingDecodePods
+	}
+
 	if len(prefillPods) == 0 || len(decodePods) == 0 {
 		return nil, nil, fmt.Errorf("prefill or decode pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
 	}
-
 	// check for prefill and decode imbalance
 	targetPod, isImbalanced := r.loadImbalanceSelectPrefillPod(prefillPods, r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods))
 	if isImbalanced {
@@ -201,7 +231,6 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 			prefillPods = utils.FilterPodsByLabel(prefillPods, PDRoleSetIdentifier, targetPod.Labels[PDRoleSetIdentifier])
 		}
 	}
-
 	klog.InfoS("filtered prefill/decode pods", "request_id", routingCtx.RequestID, "prefill_pods", len(prefillPods), "decode_pods", len(decodePods))
 
 	prefillScores, maxPrefillScore, prefixHashes := r.scorePrefillPods(routingCtx, prefillPods)
@@ -771,4 +800,79 @@ func (t *PrefillRequestTracker) GetPrefillRequestCountsForPods(pods []*v1.Pod) m
 		}
 	}
 	return counts
+}
+
+func (r *pdRouter) isPodSuitableForPromptLength(pod *v1.Pod, promptLength int) bool {
+	minLength, maxLength := r.getPodPromptRange(pod)
+	// If no prompt length range is configured, the pod is assumed to be suitable for handling any length.
+	if minLength == 0 && maxLength == math.MaxInt32 {
+		return true
+	}
+
+	// Check if the prompt length is within the pod's processing range (5% boundary overlap is allowed).
+	overlapMargin := (maxLength - minLength) / 20
+	if overlapMargin < 100 {
+		overlapMargin = 100 // The minimum overlap boundary is 100 tokens.
+	}
+
+	adjustedMin := minLength - overlapMargin
+	adjustedMax := maxLength + overlapMargin
+
+	return promptLength >= adjustedMin && promptLength <= adjustedMax
+}
+
+// getPodPromptRange retrieves the minimum and maximum prompt lengths from pod labels.
+func (r *pdRouter) getPodPromptRange(pod *v1.Pod) (int, int) {
+	minLength := 0
+	maxLength := math.MaxInt32
+
+	if val, ok := pod.Labels["prompt-min-length"]; ok {
+		if parsed, err := strconv.Atoi(val); err == nil {
+			minLength = parsed
+		}
+	}
+
+	if val, ok := pod.Labels["prompt-max-length"]; ok {
+		if parsed, err := strconv.Atoi(val); err == nil {
+			maxLength = parsed
+		}
+	}
+
+	return minLength, maxLength
+}
+
+// getPromptLength extracts the prompt length from the request body.
+func (r *pdRouter) getPromptLength(routingCtx *types.RoutingContext) int {
+	var requestBody map[string]interface{}
+	if err := json.Unmarshal(routingCtx.ReqBody, &requestBody); err != nil {
+		klog.ErrorS(err, "failed to unmarshal request body for prompt length", "request_id", routingCtx.RequestID)
+		return 0
+	}
+
+	var prompt string
+	if messages, ok := requestBody["messages"].([]interface{}); ok && len(messages) > 0 {
+		if msg, ok := messages[0].(map[string]interface{}); ok {
+			if content, ok := msg["content"].(string); ok {
+				prompt = content
+			}
+		}
+	} else if p, ok := requestBody["prompt"].(string); ok {
+		prompt = p
+	} else if input, ok := requestBody["input"].(string); ok {
+		prompt = input
+	}
+
+	// Use a token segmenter to accurately calculate the number of tokens
+	tokens, err := utils.TokenizeInputText(prompt)
+	if err != nil {
+		klog.ErrorS(err, "failed to tokenize prompt text", "request_id", routingCtx.RequestID)
+		return 0
+	}
+
+	tokenCount := len(tokens)
+
+	klog.InfoS("extracted prompt length", "request_id", routingCtx.RequestID,
+		"prompt_length", tokenCount, "prompt_chars", len(prompt))
+
+	return tokenCount
 }
