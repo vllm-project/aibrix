@@ -231,6 +231,7 @@ For label selector syntax reference:
 https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
 
 .. code-block:: bash
+
    curl -v http://${ENDPOINT}/v1/completions \
       -H "Content-Type: application/json" \
       -H "routing-strategy: random" \
