@@ -82,7 +82,7 @@ spec:
               containerPort: 8080
           env:
             - name: REDIS_HOST
-              value: {{ default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.gatewayPlugin.dependencies.redis.host }}
+              value: {{ $redisHost }}
             - name: REDIS_PORT
               value: "{{ .Values.gatewayPlugin.dependencies.redis.port }}"
             {{- if .Values.metadata.redis.enablePassword }}
