@@ -100,7 +100,7 @@ func setupMockMetrics() {
 		MetricSource: PodRawMetrics,
 		MetricType:   MetricType{Raw: Gauge},
 		EngineMetricsNameMapping: map[string]string{
-			"vllm":   "vllm_kv_cache_usage_perc",
+			"vllm":   "vllm_gpu_cache_usage_perc",
 			"sglang": "sglang_cache_usage",
 		},
 		Description: "Cache usage percentage",
