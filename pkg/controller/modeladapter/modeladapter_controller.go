@@ -65,7 +65,7 @@ const (
 	ModelAdapterPodTemplateLabelKey   = "adapter.model.aibrix.ai/enabled"
 	ModelAdapterPodTemplateLabelValue = "true"
 
-	DefaultResyncInterval = 30 * time.Second
+	DefaultResyncInterval = 10 * time.Second
 
 	// Retry configuration constants
 	MaxLoadingRetries       = 5
