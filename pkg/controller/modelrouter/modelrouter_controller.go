@@ -414,38 +414,36 @@ func appendCustomModelRouterPaths(httpRoute *gatewayv1.HTTPRoute, modelHeaderMat
 		return
 	}
 
+	if len(httpRoute.Spec.Rules) == 0 {
+		// This case should not happen in the current workflow, as createHTTPRoute always creates a rule.
+		// Creating a rule here without BackendRefs would be incorrect.
+		klog.Warningf("Cannot append custom path to HTTPRoute %s with no rules.", httpRoute.Name)
+		return
+	}
+
 	paths, ok := annotations[modelRouterCustomPath]
 	if !ok {
 		return
 	}
 
 	pathSlice := strings.Split(paths, ",")
-	// record if path exist
-	pathMap := make(map[string]string)
+	// avoid duplicates
+	pathSet := make(map[string]struct{})
 	for _, path := range pathSlice {
 		path = strings.TrimSpace(path)
-		if path == "" || pathMap[path] != "" {
+		if _, exists := pathSet[path]; path == "" || exists {
 			continue
 		}
-		match := gatewayv1.HTTPRouteMatch{
-			Path: &gatewayv1.HTTPPathMatch{
-				Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
-				Value: ptr.To(path),
-			},
-			Headers: []gatewayv1.HTTPHeaderMatch{
-				modelHeaderMatch,
-			},
-		}
-		if httpRoute.Spec.Rules == nil || len(httpRoute.Spec.Rules) == 0 {
-			httpRoute.Spec.Rules = []gatewayv1.HTTPRouteRule{
-				{
-					Matches: []gatewayv1.HTTPRouteMatch{match},
+		httpRoute.Spec.Rules[0].Matches = append(httpRoute.Spec.Rules[0].Matches,
+			gatewayv1.HTTPRouteMatch{
+				Path: &gatewayv1.HTTPPathMatch{
+					Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+					Value: ptr.To(path),
 				},
-			}
-		} else {
-			httpRoute.Spec.Rules[0].Matches = append(httpRoute.Spec.Rules[0].Matches, match)
-		}
-		pathMap[path] = path
+				Headers: []gatewayv1.HTTPHeaderMatch{
+					modelHeaderMatch,
+				},
+			})
 		klog.InfoS("Added custom model router path", "path", path)
 	}
 }

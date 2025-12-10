@@ -72,7 +72,7 @@ func TestAppendCustomModelRouterPaths(t *testing.T) {
 			annotations: map[string]string{
 				modelRouterCustomPath: "/foo",
 			},
-			wantPaths:    []string{"/foo"}, // rules 为空
+			wantPaths:    nil, // empty rule
 			checkHeaders: false,
 		},
 		{
@@ -91,7 +91,7 @@ func TestAppendCustomModelRouterPaths(t *testing.T) {
 				return
 			}
 
-			// 没有规则的情况
+			// if no rule
 			if tt.httpRoute == nil {
 				if tt.wantPaths != nil {
 					t.Fatalf("httpRoute is nil, but wantPaths is not nil")
