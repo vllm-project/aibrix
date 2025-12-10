@@ -1,26 +1,25 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: aibrix-gpu-optimizer
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-gpu-optimizer
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gpu-optimizer
 spec:
   replicas: {{ .Values.gpuOptimizer.replicaCount }}
   selector:
     matchLabels:
-      {{- include "chart.selectorLabels" . | nindent 6 }}
+      {{- include "aibrix.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: aibrix-gpu-optimizer
   template:
     metadata:
       labels:
-        {{- include "chart.labels" . | nindent 8 }}
+        {{- include "aibrix.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-gpu-optimizer
     spec:
-      serviceAccountName: aibrix-gpu-optimizer
+      serviceAccountName: {{ include "aibrix.gpuOptimizer.serviceAccountName" . }}
       automountServiceAccountToken: true
-      {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.gpuOptimizer.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
+      {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" .Values.gpuOptimizer.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
       containers:
         - name: gpu-optimizer
           image: {{ .Values.gpuOptimizer.container.image.repository }}:{{ .Values.gpuOptimizer.container.image.tag }}
@@ -31,14 +30,14 @@ spec:
           # TODO: add liveness and readiness probes
           env:
             - name: REDIS_HOST
-              value: {{ .Values.gpuOptimizer.dependencies.redis.host }}
+              value: {{ default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.gpuOptimizer.dependencies.redis.host }}
             - name: REDIS_PORT
               value: "{{ .Values.gpuOptimizer.dependencies.redis.port }}"
            {{- if .Values.metadata.redis.enablePassword }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: aibrix-redis
+                  name: {{ include "aibrix.fullname" . }}-redis
                   key: redis-password
             {{- end }}
       {{- with .Values.gpuOptimizer.tolerations }}

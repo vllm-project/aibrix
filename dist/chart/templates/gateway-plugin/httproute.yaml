@@ -2,14 +2,13 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: aibrix-reserved-router
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-reserved-router
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway-plugin
 spec:
   parentRefs:
-    - name: aibrix-eg
+    - name: {{ include "aibrix.fullname" . }}-eg
   rules:
     - matches:
         - path:
@@ -28,20 +27,19 @@ spec:
             type: PathPrefix
             value: /v1/video/generations
       backendRefs:
-        - name: aibrix-gateway-plugins
+        - name: {{ include "aibrix.fullname" . }}-gateway-plugins
           port: 50052
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: aibrix-reserved-router-metadata-endpoint
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-reserved-router-metadata-endpoint
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway
 spec:
   parentRefs:
-    - name: aibrix-eg
+    - name: {{ include "aibrix.fullname" . }}-eg
   rules:
     - matches:
         - path:
@@ -54,6 +52,6 @@ spec:
             type: PathPrefix
             value: /v1/batches
       backendRefs:
-        - name: aibrix-metadata-service
+        - name: {{ include "aibrix.fullname" . }}-metadata-service
           port: 8090
 {{- end }}

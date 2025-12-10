@@ -2,10 +2,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: aibrix-webhook-service
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-webhook-service
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-controller-manager
 spec:
   ports:
@@ -14,6 +13,6 @@ spec:
       protocol: TCP
       targetPort: 9443
   selector:
-    {{- include "chart.selectorLabels" . | nindent 4 }}
+    {{- include "aibrix.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-controller-manager
 {{- end }}

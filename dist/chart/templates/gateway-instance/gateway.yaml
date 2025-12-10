@@ -2,29 +2,27 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
-  name: aibrix-eg
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-eg
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway
 spec:
   controllerName: gateway.envoyproxy.io/gatewayclass-controller
   parametersRef:
     group: gateway.envoyproxy.io
     kind: EnvoyProxy
-    name: aibrix-custom-proxy-config
+    name: {{ include "aibrix.fullname" . }}-custom-proxy-config
     namespace: {{ .Release.Namespace }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: aibrix-eg
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-eg
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway
 spec:
-  gatewayClassName: aibrix-eg
+  gatewayClassName: {{ include "aibrix.fullname" . }}-eg
   listeners:
     - name: http
       protocol: HTTP
@@ -33,8 +31,7 @@ spec:
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:
-  name: aibrix-custom-proxy-config
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-custom-proxy-config
 spec:
   provider:
     type: Kubernetes
@@ -65,7 +62,7 @@ spec:
                     app.kubernetes.io/name: envoy
                     app.kubernetes.io/component: proxy
                 spec:
-                  {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.gateway.envoyProxy.imagePullSecrets "globalSecrets") | nindent 18 }}
+                  {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" .Values.gateway.envoyProxy.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 18 }}
                   containers:
                     - name: envoy
                       image: {{ .Values.gateway.envoyProxy.container.envoy.image }}
@@ -77,36 +74,34 @@ spec:
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: ClientTrafficPolicy
 metadata:
-  name: aibrix-client-connection-buffersize
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-client-connection-buffersize
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway
 spec:
   targetRefs:
     - group: gateway.networking.k8s.io
       kind: Gateway
-      name: aibrix-eg
+      name: {{ include "aibrix.fullname" . }}-eg
   connection:
     bufferLimit: {{ .Values.gateway.clientTrafficPolicy.connection.bufferLimit }}
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyPatchPolicy
 metadata:
-  name: aibrix-epp
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-epp
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway
 spec:
   type: "JSONPatch"
   targetRef:
     group: gateway.networking.k8s.io
     kind: Gateway
-    name: aibrix-eg
+    name: {{ include "aibrix.fullname" . }}-eg
   jsonPatches:
     - type: type.googleapis.com/envoy.config.route.v3.RouteConfiguration
-      name: "{{ .Release.Namespace }}/aibrix-eg/http"
+      name: {{ .Release.Namespace }}/{{ include "aibrix.fullname" . }}-eg/http
       operation:
         op: add
         path: "/virtual_hosts/0/routes/0"

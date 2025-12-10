@@ -1,25 +1,26 @@
+{{- $redisHost := default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.metadata.service.redis.host }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: aibrix-metadata-service
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-metadata-service
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-metadata-service
 spec:
   replicas: {{ .Values.metadata.service.replicas }}
   selector:
     matchLabels:
-      {{- include "chart.selectorLabels" . | nindent 6 }}
+      {{- include "aibrix.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: aibrix-metadata-service
   template:
     metadata:
       labels:
-        {{- include "chart.labels" . | nindent 8 }}
+        {{- include "aibrix.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-metadata-service
     spec:
-      {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.metadata.service.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
-      serviceAccountName: aibrix-metadata-service
+      {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" .Values.metadata.service.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
+      serviceAccountName: {{ include "aibrix.metadata.serviceAccountName" . }}
       initContainers:
         - name: init-redis
           image: {{ .Values.metadata.service.initContainer.image.repository }}:{{ .Values.metadata.service.initContainer.image.tag }}
@@ -28,11 +29,11 @@ spec:
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: aibrix-redis
+                  name: {{ include "aibrix.fullname" . }}-redis
                   key: redis-password
-          command: ['sh', '-c', 'until printf ''AUTH %s\nping\n'' "$REDIS_PASSWORD" | nc {{ .Values.metadata.service.redis.host }} {{ .Values.metadata.service.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
+          command: ['sh', '-c', 'until printf ''AUTH %s\nping\n'' "$REDIS_PASSWORD" | nc {{ $redisHost }} {{ .Values.metadata.service.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
           {{- else }}
-          command: ['sh', '-c', 'until echo "ping" | nc {{ .Values.metadata.service.redis.host }} {{ .Values.metadata.service.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
+          command: ['sh', '-c', 'until echo "ping" | nc {{ $redisHost }} {{ .Values.metadata.service.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
           {{- end }}
       containers:
         - name: metadata-service
@@ -61,14 +62,14 @@ spec:
             periodSeconds: 5
           env:
             - name: REDIS_HOST
-              value: {{ .Values.metadata.service.redis.host }}
+              value: {{ $redisHost }}
             - name: REDIS_PORT
               value: "{{ .Values.metadata.service.redis.port }}"
             {{- if .Values.metadata.redis.enablePassword }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: aibrix-redis
+                  name: {{ include "aibrix.fullname" . }}-redis
                   key: redis-password
             {{- end }}
             - name: POD_NAME

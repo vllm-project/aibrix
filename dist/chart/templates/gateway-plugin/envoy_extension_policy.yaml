@@ -3,19 +3,18 @@
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
 metadata:
-  name: aibrix-gateway-plugins-extension-policy
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-gateway-plugins-extension-policy
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway-plugin
 spec:
   targetRef:
     group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: aibrix-reserved-router
+    name: {{ include "aibrix.fullname" . }}-reserved-router
   extProc:
     - backendRefs:
-        - name: aibrix-gateway-plugins
+        - name: {{ include "aibrix.fullname" . }}-gateway-plugins
           port: 50052
       processingMode:
         request:
@@ -27,14 +26,13 @@ spec:
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
 metadata:
-  name: aibrix-skip-ext-proc
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-skip-ext-proc
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway-plugin
 spec:
   targetRef:
     group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: aibrix-reserved-router-metadata-endpoint
+    name: {{ include "aibrix.fullname" . }}-reserved-router-metadata-endpoint
 {{- end }}

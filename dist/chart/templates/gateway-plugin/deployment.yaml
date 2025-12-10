@@ -1,17 +1,18 @@
 {{- if .Values.gateway.enable }}
+{{- $redisHost := default (printf "%s-redis-master" (include "aibrix.fullname" .)) .Values.gatewayPlugin.dependencies.redis.host }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: aibrix-gateway-plugins
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "aibrix.fullname" . }}-gateway-plugins
   labels:
-    {{- include "chart.labels" . | nindent 4 }}
+    {{- include "aibrix.labels" . | nindent 4 }}
     app.kubernetes.io/component: aibrix-gateway-plugin
 spec:
   replicas: {{ .Values.gatewayPlugin.replicaCount }}
   selector:
     matchLabels:
-      {{- include "chart.selectorLabels" . | nindent 6 }}
+      {{- include "aibrix.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: aibrix-gateway-plugin
   strategy:
     type: RollingUpdate
@@ -21,7 +22,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "chart.labels" . | nindent 8 }}
+        {{- include "aibrix.labels" . | nindent 8 }}
         app.kubernetes.io/component: aibrix-gateway-plugin
     spec:
       {{- with .Values.gatewayPlugin.tolerations }}
@@ -38,7 +39,7 @@ spec:
                     - key: app.kubernetes.io/name
                       operator: In
                       values:
-                        - {{ include "chart.name" . }}
+                        - {{ include "aibrix.name" . }}
                     - key: app.kubernetes.io/component
                       operator: In
                       values:
@@ -53,7 +54,7 @@ spec:
                     operator: NotIn
                     values:
                       - "true"
-      {{- include "chart.imagePullSecrets" (dict "componentSecrets" .Values.gatewayPlugin.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
+      {{- include "aibrix.imagePullSecrets" (dict "componentSecrets" .Values.gatewayPlugin.imagePullSecrets "globalSecrets" .Values.global.imagePullSecrets) | nindent 6 }}
       initContainers:
         - name: init-c
           image: {{ .Values.gatewayPlugin.initContainer.image.repository }}:{{ .Values.gatewayPlugin.initContainer.image.tag }}
@@ -62,11 +63,11 @@ spec:
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: aibrix-redis
+                  name: {{ include "aibrix.fullname" . }}-redis
                   key: redis-password
-          command: ['sh', '-c', 'until printf ''AUTH %s\nping\n'' "$REDIS_PASSWORD" | nc {{ .Values.gatewayPlugin.dependencies.redis.host }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
+          command: ['sh', '-c', 'until printf ''AUTH %s\nping\n'' "$REDIS_PASSWORD" | nc {{ $redisHost }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
           {{- else }}
-          command: ['sh', '-c', 'until echo "ping" | nc {{ .Values.gatewayPlugin.dependencies.redis.host }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
+          command: ['sh', '-c', 'until echo "ping" | nc {{ $redisHost }} {{ .Values.gatewayPlugin.dependencies.redis.port }} -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done']
           {{- end }}
       containers:
         - name: gateway-plugin
@@ -81,14 +82,14 @@ spec:
               containerPort: 8080
           env:
             - name: REDIS_HOST
-              value: {{ .Values.gatewayPlugin.dependencies.redis.host }}
+              value: {{ $redisHost }}
             - name: REDIS_PORT
               value: "{{ .Values.gatewayPlugin.dependencies.redis.port }}"
             {{- if .Values.metadata.redis.enablePassword }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: aibrix-redis
+                  name: {{ include "aibrix.fullname" . }}-redis
                   key: redis-password
             {{- end }}
             - name: POD_NAME
@@ -108,5 +109,5 @@ spec:
             {{- toYaml .Values.gatewayPlugin.container.probes.liveness | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.gatewayPlugin.container.probes.readiness | nindent 12 }}
-      serviceAccountName: aibrix-gateway-plugins
+      serviceAccountName: {{ include "aibrix.gatewayPlugin.serviceAccountName" . }}
 {{- end }}
