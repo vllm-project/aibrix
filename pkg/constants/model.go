@@ -40,3 +40,9 @@ const (
 	// Example: "adapter.model.aibrix.ai/enabled": "true"
 	ModelLabelAdapterEnabled = "adapter.model.aibrix.ai/enabled"
 )
+
+const (
+	// ModelAnnoRouterCustomPath is the anno for add PathPrefixes in httpRoute, split by comma
+	// Example: "model.aibrix.ai/model-router-custom-paths": "/score,/version"
+	ModelAnnoRouterCustomPath = "model.aibrix.ai/model-router-custom-paths"
+)

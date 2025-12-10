@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -53,6 +54,8 @@ const (
 	aibrixEnvoyGatewayNamespace = "aibrix-system"
 
 	defaultModelServingPort = 8000
+
+	modelRouterCustomPath = constants.ModelAnnoRouterCustomPath
 )
 
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
@@ -119,7 +122,7 @@ type ModelRouter struct {
 
 func (m *ModelRouter) addRouteFromDeployment(obj interface{}) {
 	deployment := obj.(*appsv1.Deployment)
-	m.createHTTPRoute(deployment.Namespace, deployment.Labels)
+	m.createHTTPRoute(deployment.Namespace, deployment.Labels, deployment.Annotations)
 }
 
 func (m *ModelRouter) deleteRouteFromDeployment(obj interface{}) {
@@ -139,7 +142,7 @@ func (m *ModelRouter) deleteRouteFromDeployment(obj interface{}) {
 
 func (m *ModelRouter) addRouteFromModelAdapter(obj interface{}) {
 	modelAdapter := obj.(*modelv1alpha1.ModelAdapter)
-	m.createHTTPRoute(modelAdapter.Namespace, modelAdapter.Labels)
+	m.createHTTPRoute(modelAdapter.Namespace, modelAdapter.Labels, modelAdapter.Annotations)
 }
 
 func (m *ModelRouter) deleteRouteFromModelAdapter(obj interface{}) {
@@ -159,7 +162,7 @@ func (m *ModelRouter) deleteRouteFromModelAdapter(obj interface{}) {
 
 func (m *ModelRouter) addRouteFromRayClusterFleet(obj interface{}) {
 	fleet := obj.(*orchestrationv1alpha1.RayClusterFleet)
-	m.createHTTPRoute(fleet.Namespace, fleet.Labels)
+	m.createHTTPRoute(fleet.Namespace, fleet.Labels, fleet.Annotations)
 }
 
 func (m *ModelRouter) deleteRouteFromRayClusterFleet(obj interface{}) {
@@ -177,7 +180,7 @@ func (m *ModelRouter) deleteRouteFromRayClusterFleet(obj interface{}) {
 	m.deleteHTTPRoute(fleet.Namespace, fleet.Labels)
 }
 
-func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string) {
+func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string, annotations map[string]string) {
 	modelName, ok := labels[modelIdentifier]
 	if !ok {
 		return
@@ -278,6 +281,9 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 			},
 		},
 	}
+
+	appendCustomModelRouterPaths(&httpRoute, modelHeaderMatch, annotations)
+
 	err = m.Client.Create(context.Background(), &httpRoute)
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
@@ -400,4 +406,46 @@ func (m *ModelRouter) deleteReferenceGrant(namespace string) {
 		}
 	}
 	klog.InfoS("delete reference grant", "referencegrant", referenceGrantName)
+}
+
+func appendCustomModelRouterPaths(httpRoute *gatewayv1.HTTPRoute, modelHeaderMatch gatewayv1.HTTPHeaderMatch, annotations map[string]string) {
+	// append matches if model-router-custom-paths  is set
+	if httpRoute == nil || annotations == nil {
+		return
+	}
+
+	paths, ok := annotations[modelRouterCustomPath]
+	if !ok {
+		return
+	}
+
+	pathSlice := strings.Split(paths, ",")
+	// record if path exist
+	pathMap := make(map[string]string)
+	for _, path := range pathSlice {
+		path = strings.TrimSpace(path)
+		if path == "" || pathMap[path] != "" {
+			continue
+		}
+		match := gatewayv1.HTTPRouteMatch{
+			Path: &gatewayv1.HTTPPathMatch{
+				Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+				Value: ptr.To(path),
+			},
+			Headers: []gatewayv1.HTTPHeaderMatch{
+				modelHeaderMatch,
+			},
+		}
+		if httpRoute.Spec.Rules == nil || len(httpRoute.Spec.Rules) == 0 {
+			httpRoute.Spec.Rules = []gatewayv1.HTTPRouteRule{
+				{
+					Matches: []gatewayv1.HTTPRouteMatch{match},
+				},
+			}
+		} else {
+			httpRoute.Spec.Rules[0].Matches = append(httpRoute.Spec.Rules[0].Matches, match)
+		}
+		pathMap[path] = path
+		klog.InfoS("Added custom model router path", "path", path)
+	}
 }
