@@ -55,6 +55,15 @@ const (
 	defaultModelServingPort = 8000
 )
 
+var modelPaths = []string{
+	"/v1/completions",
+	"/v1/chat/completions",
+	"/v1/embeddings",
+	"/v1/rerank",
+	"/generate",
+	"/generatevideo",
+}
+
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rayclusterfleets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
@@ -196,6 +205,19 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 		Value: modelName,
 	}
 
+	matches := make([]gatewayv1.HTTPRouteMatch, len(modelPaths))
+	for i, p := range modelPaths {
+		matches[i] = gatewayv1.HTTPRouteMatch{
+			Path: &gatewayv1.HTTPPathMatch{
+				Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
+				Value: ptr.To(p),
+			},
+			Headers: []gatewayv1.HTTPHeaderMatch{
+				modelHeaderMatch,
+			},
+		}
+	}
+
 	httpRoute := gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-router", modelName),
@@ -212,53 +234,7 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 			},
 			Rules: []gatewayv1.HTTPRouteRule{
 				{
-					Matches: []gatewayv1.HTTPRouteMatch{
-						{
-							Path: &gatewayv1.HTTPPathMatch{
-								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
-								Value: ptr.To("/v1/completions"),
-							},
-							Headers: []gatewayv1.HTTPHeaderMatch{
-								modelHeaderMatch,
-							},
-						},
-						{
-							Path: &gatewayv1.HTTPPathMatch{
-								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
-								Value: ptr.To("/v1/chat/completions"),
-							},
-							Headers: []gatewayv1.HTTPHeaderMatch{
-								modelHeaderMatch,
-							},
-						},
-						{
-							Path: &gatewayv1.HTTPPathMatch{
-								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
-								Value: ptr.To("/v1/embeddings"),
-							},
-							Headers: []gatewayv1.HTTPHeaderMatch{
-								modelHeaderMatch,
-							},
-						},
-						{
-							Path: &gatewayv1.HTTPPathMatch{
-								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
-								Value: ptr.To("/generate"),
-							},
-							Headers: []gatewayv1.HTTPHeaderMatch{
-								modelHeaderMatch,
-							},
-						},
-						{
-							Path: &gatewayv1.HTTPPathMatch{
-								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
-								Value: ptr.To("/generatevideo"),
-							},
-							Headers: []gatewayv1.HTTPHeaderMatch{
-								modelHeaderMatch,
-							},
-						},
-					},
+					Matches: matches,
 					BackendRefs: []gatewayv1.HTTPBackendRef{
 						{
 							BackendRef: gatewayv1.BackendRef{
