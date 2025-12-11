@@ -101,6 +101,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationorchestrationv1alpha1.StormServiceStatusApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("StormServiceUpdateStrategy"):
 		return &applyconfigurationorchestrationv1alpha1.StormServiceUpdateStrategyApplyConfiguration{}
+	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("TopologyPolicy"):
+		return &applyconfigurationorchestrationv1alpha1.TopologyPolicyApplyConfiguration{}
 	case orchestrationv1alpha1.SchemeGroupVersion.WithKind("VolcanoSchedulingStrategySpec"):
 		return &applyconfigurationorchestrationv1alpha1.VolcanoSchedulingStrategySpecApplyConfiguration{}
 

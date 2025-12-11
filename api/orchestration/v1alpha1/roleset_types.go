@@ -36,6 +36,9 @@ type RoleSetSpec struct {
 
 	// +optional
 	SchedulingStrategy *SchedulingStrategy `json:"schedulingStrategy,omitempty"`
+
+	// +optional
+	TopologyPolicy *TopologyPolicy `json:"topologyPolicy,omitempty"`
 }
 
 // +kubebuilder:validation:MaxProperties=1
@@ -125,6 +128,35 @@ type VolcanoSchedulingStrategySpec struct {
 	// if there's not enough resources to start all tasks, the scheduler
 	// will not start anyone.
 	MinResources v1.ResourceList `json:"minResources,omitempty" protobuf:"bytes,4,opt,name=minResources"`
+}
+
+type TopologyScope string
+
+const (
+	TopologyStormServiceScope TopologyScope = "StormService"
+	TopologyRoleSetScope      TopologyScope = "RoleSet"
+	TopologyRoleScope         TopologyScope = "Role"
+)
+
+// TopologyPolicy specifies how Pods are co-located based on Kubernetes topology keys.
+type TopologyPolicy struct {
+	// Scope defines the granularity of co-location.
+	// Valid values are:
+	// - "StormService": All Pods in the entire StormService share the same topology value.
+	// - "RoleSet": All Pods within each RoleSet share the same topology value (different RoleSets may be on different domains).
+	// - "Role": All Pods of the same role (across all RoleSets) share the same topology value.
+	// +kubebuilder:validation:Enum=StormService;RoleSet;Role
+	// +optional
+	Scope TopologyScope `json:"scope,omitempty"`
+
+	// Key is the Kubernetes topology label key to enforce co-location on.
+	// Common values include:
+	//   - "kubernetes.io/hostname" (node-level)
+	//   - "topology.kubernetes.io/zone" (zone-level)
+	// Required when Scope is set.
+	// TODO: validate that Key is not empty when Scope is set in webhook.
+	// +optional
+	Key string `json:"key,omitempty"`
 }
 
 // +enum

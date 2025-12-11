@@ -490,3 +490,120 @@ func TestSortRolesByUpgradeOrder(t *testing.T) {
 		})
 	}
 }
+
+func TestGetTopologyMatchLabels(t *testing.T) {
+	const (
+		stormServiceName = "test-stormservice"
+		roleSetName      = "test-roleset"
+		roleName         = "prefill"
+	)
+
+	tests := []struct {
+		name           string
+		roleSet        *orchestrationv1alpha1.RoleSet
+		roleName       string
+		tp             *orchestrationv1alpha1.TopologyPolicy
+		expectSuccess  bool
+		expectedLabels map[string]string
+	}{
+		{
+			name: "StormService scope - valid",
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: roleSetName,
+					Labels: map[string]string{
+						constants.StormServiceNameLabelKey: stormServiceName,
+					},
+				},
+			},
+			roleName: roleName,
+			tp: &orchestrationv1alpha1.TopologyPolicy{
+				Scope: orchestrationv1alpha1.TopologyStormServiceScope,
+			},
+			expectSuccess: true,
+			expectedLabels: map[string]string{
+				constants.StormServiceNameLabelKey: stormServiceName,
+			},
+		},
+		{
+			name: "RoleSet scope - valid",
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: roleSetName,
+					Labels: map[string]string{
+						constants.StormServiceNameLabelKey: stormServiceName,
+					},
+				},
+			},
+			roleName: roleName,
+			tp: &orchestrationv1alpha1.TopologyPolicy{
+				Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+			},
+			expectSuccess: true,
+			expectedLabels: map[string]string{
+				constants.StormServiceNameLabelKey: stormServiceName,
+				constants.RoleSetNameLabelKey:      roleSetName,
+			},
+		},
+		{
+			name: "Role scope - valid",
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: roleSetName,
+					Labels: map[string]string{
+						constants.StormServiceNameLabelKey: stormServiceName,
+					},
+				},
+			},
+			roleName: roleName,
+			tp: &orchestrationv1alpha1.TopologyPolicy{
+				Scope: orchestrationv1alpha1.TopologyRoleScope,
+			},
+			expectSuccess: true,
+			expectedLabels: map[string]string{
+				constants.StormServiceNameLabelKey: stormServiceName,
+				constants.RoleNameLabelKey:         roleName,
+			},
+		},
+		{
+			name: "Missing StormService label",
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   roleSetName,
+					Labels: map[string]string{}, // missing label
+				},
+			},
+			roleName: roleName,
+			tp: &orchestrationv1alpha1.TopologyPolicy{
+				Scope: orchestrationv1alpha1.TopologyRoleSetScope,
+			},
+			expectSuccess:  false,
+			expectedLabels: nil,
+		},
+		{
+			name: "Unsupported scope",
+			roleSet: &orchestrationv1alpha1.RoleSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: roleSetName,
+					Labels: map[string]string{
+						constants.StormServiceNameLabelKey: stormServiceName,
+					},
+				},
+			},
+			roleName: roleName,
+			tp: &orchestrationv1alpha1.TopologyPolicy{
+				Scope: "InvalidScope", // not one of the defined enums
+			},
+			expectSuccess:  false,
+			expectedLabels: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			labels, ok := getTopologyMatchLabels(tt.roleSet, tt.roleName, tt.tp)
+			assert.Equal(t, tt.expectSuccess, ok)
+			assert.Equal(t, tt.expectedLabels, labels)
+		})
+	}
+}
