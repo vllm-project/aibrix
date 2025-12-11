@@ -408,8 +408,8 @@ func (m *ModelRouter) deleteReferenceGrant(namespace string) {
 	klog.InfoS("delete reference grant", "referencegrant", referenceGrantName)
 }
 
+// append matches if model-router-custom-paths is set
 func appendCustomModelRouterPaths(httpRoute *gatewayv1.HTTPRoute, modelHeaderMatch gatewayv1.HTTPHeaderMatch, annotations map[string]string) {
-	// append matches if model-router-custom-paths  is set
 	if httpRoute == nil || annotations == nil {
 		return
 	}
@@ -430,7 +430,8 @@ func appendCustomModelRouterPaths(httpRoute *gatewayv1.HTTPRoute, modelHeaderMat
 	// avoid duplicates
 	pathSet := make(map[string]struct{})
 	for _, path := range pathSlice {
-		path = strings.TrimSpace(path)
+		// remove illegal space in path
+		path = strings.ReplaceAll(path, " ", "")
 		if _, exists := pathSet[path]; path == "" || exists {
 			continue
 		}
