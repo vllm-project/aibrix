@@ -122,6 +122,9 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 		AddFunc:    modelRouter.addRouteFromRayClusterFleet,
 		DeleteFunc: modelRouter.deleteRouteFromRayClusterFleet,
 	})
+	if err != nil {
+		return err
+	}
 
 	_, err = lwsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addRouteFromLeaderWorkerSet,
