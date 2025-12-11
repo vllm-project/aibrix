@@ -41,6 +41,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
+	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 const (
@@ -88,6 +89,11 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 		return err
 	}
 
+	lwsInformer, err := cacher.GetInformer(context.TODO(), &lwsv1.LeaderWorkerSet{})
+	if err != nil {
+		return err
+	}
+
 	utilruntime.Must(gatewayv1.AddToScheme(mgr.GetClient().Scheme()))
 	utilruntime.Must(gatewayv1beta1.AddToScheme(mgr.GetClient().Scheme()))
 
@@ -115,6 +121,11 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 	_, err = fleetInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addRouteFromRayClusterFleet,
 		DeleteFunc: modelRouter.deleteRouteFromRayClusterFleet,
+	})
+
+	_, err = lwsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    modelRouter.addRouteFromLeaderWorkerSet,
+		DeleteFunc: modelRouter.deleteRouteFromLeaderWorkerSet,
 	})
 
 	return err
@@ -184,6 +195,26 @@ func (m *ModelRouter) deleteRouteFromRayClusterFleet(obj interface{}) {
 		}
 	}
 	m.deleteHTTPRoute(fleet.Namespace, fleet.Labels)
+}
+
+func (m *ModelRouter) addRouteFromLeaderWorkerSet(obj interface{}) {
+	lws := obj.(*lwsv1.LeaderWorkerSet)
+	m.createHTTPRoute(lws.Namespace, lws.Labels)
+}
+
+func (m *ModelRouter) deleteRouteFromLeaderWorkerSet(obj interface{}) {
+	lws, ok := obj.(*lwsv1.LeaderWorkerSet)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		lws, ok = tombstone.Obj.(*lwsv1.LeaderWorkerSet)
+		if !ok {
+			return
+		}
+	}
+	m.deleteHTTPRoute(lws.Namespace, lws.Labels)
 }
 
 func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string) {

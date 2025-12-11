@@ -26,6 +26,7 @@ import (
 	"time"
 
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
@@ -81,6 +82,7 @@ func init() {
 func RegisterSchemas(scheme *runtime.Scheme) error {
 	podAutoscalerEnabled := features.IsControllerEnabled(features.PodAutoscalerController)
 	modelAdapterEnabled := features.IsControllerEnabled(features.ModelAdapterController)
+	modelRouterEnabled := features.IsControllerEnabled(features.ModelAdapterController)
 	distributedInferenceEnabled := features.IsControllerEnabled(features.DistributedInferenceController)
 	kvCacheEnabled := features.IsControllerEnabled(features.KVCacheController)
 	stormServiceEnabled := features.IsControllerEnabled(features.StormServiceController)
@@ -91,6 +93,10 @@ func RegisterSchemas(scheme *runtime.Scheme) error {
 
 	if modelAdapterEnabled {
 		utilruntime.Must(modelv1alpha1.AddToScheme(scheme))
+	}
+
+	if modelRouterEnabled {
+		utilruntime.Must(lwsv1.AddToScheme(scheme))
 	}
 
 	if distributedInferenceEnabled {
