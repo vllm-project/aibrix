@@ -55,6 +55,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
 const (
@@ -63,6 +64,8 @@ const (
 	ModelAdapterFinalizer             = "adapter.model.aibrix.ai/finalizer"
 	ModelAdapterPodTemplateLabelKey   = "adapter.model.aibrix.ai/enabled"
 	ModelAdapterPodTemplateLabelValue = "true"
+
+	DefaultResyncInterval = 10 * time.Second
 
 	// Retry configuration constants
 	MaxLoadingRetries       = 5
@@ -188,6 +191,8 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		Recorder:            mgr.GetEventRecorderFor(controllerName),
 		scheduler:           scheduler,
 		RuntimeConfig:       runtimeConfig,
+		resyncInterval:      DefaultResyncInterval,
+		eventCh:             make(chan event.GenericEvent),
 	}
 	return reconciler, nil
 }
@@ -237,6 +242,10 @@ func lookupLinkedModelAdapterInNamespace(c client.Client) handler.MapFunc {
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
+	// Build raw source for periodical requeue events from event channel
+	reconciler := r.(*ModelAdapterReconciler)
+	src := source.Channel(reconciler.eventCh, &handler.EnqueueRequestForObject{})
+
 	// use the builder fashion. If we need more fine grain control later, we can switch to `controller.New()`
 	err := ctrl.NewControllerManagedBy(mgr).
 		Named(controllerName).
@@ -249,12 +258,24 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		Owns(&discoveryv1.EndpointSlice{}).
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(lookupLinkedModelAdapterInNamespace(mgr.GetClient())),
 			builder.WithPredicates(podWithLabelFilter(ModelAdapterPodTemplateLabelKey, ModelAdapterPodTemplateLabelValue, ModelIdentifierKey))).
+		WatchesRawSource(src).
 		Complete(r)
 	if err != nil {
 		return err
 	}
 
-	klog.V(4).InfoS("Finished to add model-adapter-controller")
+	klog.InfoS("Finished to add model-adapter-controller")
+
+	errChan := make(chan error)
+	go reconciler.Run(context.Background(), errChan)
+	klog.InfoS("Run model-adapter-reconciler periodical sync started successfully")
+
+	go func() {
+		for err := range errChan {
+			klog.ErrorS(err, "Run model-adapter-reconciler periodical sync returned an error")
+		}
+	}()
+
 	return nil
 }
 
@@ -273,6 +294,9 @@ type ModelAdapterReconciler struct {
 	// EndpointSliceLister is able to list/get services from a shared informer's cache store
 	EndpointSliceLister discoverylisters.EndpointSliceLister
 	RuntimeConfig       config.RuntimeConfig
+
+	resyncInterval time.Duration
+	eventCh        chan event.GenericEvent
 }
 
 //+kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch;create;update;patch;delete
@@ -343,6 +367,43 @@ func (r *ModelAdapterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	return r.DoReconcile(ctx, req, modelAdapter)
+}
+
+func (r *ModelAdapterReconciler) Run(ctx context.Context, errChan chan<- error) {
+	ticker := time.NewTicker(r.resyncInterval)
+	defer ticker.Stop()
+	defer close(r.eventCh)
+
+	for {
+		select {
+		case <-ticker.C:
+			// periodically sync all modeladapter objects
+			klog.V(4).Info("enqueue all modeladapter objects")
+			if err := r.enqueueModelAdapters(ctx); err != nil {
+				klog.ErrorS(err, "Failed to enqueue modeladapter objects")
+				errChan <- err
+			}
+		case <-ctx.Done():
+			klog.Info("context done, stopping running periodically sync modeladapter")
+			errChan <- ctx.Err()
+			return
+		}
+	}
+}
+
+func (r *ModelAdapterReconciler) enqueueModelAdapters(ctx context.Context) error {
+	modelAdapterList := &modelv1alpha1.ModelAdapterList{}
+	if err := r.List(ctx, modelAdapterList); err != nil {
+		return err
+	}
+	for _, ma := range modelAdapterList.Items {
+		// Let's operate the queue and just enqueue the object, that should be ok.
+		e := event.GenericEvent{
+			Object: &ma,
+		}
+		r.eventCh <- e
+	}
+	return nil
 }
 
 func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Request, instance *modelv1alpha1.ModelAdapter) (ctrl.Result, error) {
@@ -760,6 +821,29 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 				// Max retries exceeded for this pod, don't try again
 				loadingErrors = append(loadingErrors, fmt.Sprintf("pod %s: max retries exceeded", pod.Name))
 				klog.InfoS("Max retries exceeded for pod", "pod", pod.Name, "ModelAdapter", klog.KObj(instance))
+			}
+		}
+	} else {
+		// Make sure existing instances are in correct state
+		// in case lora model removed by engine then load it back.
+		for _, podName := range instance.Status.Instances {
+			if pod, ok := activeMap[podName]; ok {
+				success, shouldRetry, err := r.tryLoadModelAdapterOnPod(ctx, instance, &pod)
+				if !success {
+					if shouldRetry {
+						// Log the error but continue trying other pods
+						loadingErrors = append(loadingErrors, fmt.Sprintf("pod %s: %v", podName, err))
+						klog.V(4).InfoS("Loading failed on pod, will retry later", "pod", podName, "error", err)
+					} else {
+						// Max retries exceeded for this pod, don't try again
+						loadingErrors = append(loadingErrors, fmt.Sprintf("pod %s: max retries exceeded", podName))
+						klog.InfoS("Max retries exceeded for pod", "pod", podName, "ModelAdapter", klog.KObj(instance))
+					}
+				}
+			} else {
+				// This case should ideally not be reached as reconcileReplicas should have cleaned up inactive instances.
+				// However, as a safeguard, we log a warning.
+				klog.Warningf("Pod %s, which is in ModelAdapter instance status, was not found in the active pods list.", podName)
 			}
 		}
 	}
