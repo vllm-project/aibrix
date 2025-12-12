@@ -24,6 +24,9 @@ import (
 
 	"github.com/pkoukk/tiktoken-go"
 	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 )
 
@@ -152,4 +155,30 @@ func LoadEnvDuration(key string, defaultValue time.Duration) time.Duration {
 	}
 	klog.Infof("set %s: %v, using default value", key, defaultValue)
 	return defaultValue
+}
+
+// GVKCheckExists check if gvk is support
+func GVKCheckExists(cfg *rest.Config, gvk schema.GroupVersionKind) (bool, error) {
+	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
+	if err != nil {
+		return false, err
+	}
+
+	// get all resource from GroupVersion
+	apiResources, err := dc.ServerResourcesForGroupVersion(gvk.GroupVersion().String())
+	if err != nil {
+		if discovery.IsGroupDiscoveryFailedError(err) {
+			// Group not exist
+			return false, nil
+		}
+		return false, err
+	}
+
+	for _, r := range apiResources.APIResources {
+		if r.Kind == gvk.Kind {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
