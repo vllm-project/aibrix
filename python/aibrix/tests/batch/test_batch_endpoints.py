@@ -37,12 +37,19 @@ def test_embeddings_endpoint_supported():
     assert BatchJobEndpoint(endpoint) == BatchJobEndpoint.EMBEDDINGS
 
 
+def test_rerank_endpoint_supported():
+    """Test that /v1/rerank endpoint is supported."""
+    endpoint = "/v1/rerank"
+    assert BatchJobEndpoint(endpoint) == BatchJobEndpoint.RERANK
+
+
 def test_all_supported_endpoints():
-    """Test that all three OpenAI-compatible endpoints are supported."""
+    """Test that all four OpenAI-compatible endpoints are supported."""
     supported_endpoints = [
         "/v1/chat/completions",
         "/v1/completions",
         "/v1/embeddings",
+        "/v1/rerank",
     ]
 
     for endpoint in supported_endpoints:
@@ -74,6 +81,6 @@ def test_endpoint_enum_values():
 
 
 def test_endpoint_count():
-    """Test that we have exactly 3 supported endpoints."""
+    """Test that we have exactly 4 supported endpoints."""
     endpoints = list(BatchJobEndpoint)
-    assert len(endpoints) == 3
+    assert len(endpoints) == 4

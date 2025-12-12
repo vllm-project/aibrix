@@ -334,6 +334,79 @@ func Test_ValidateRequestBody_Embeddings(t *testing.T) {
 	}
 }
 
+func Test_ValidateRequestBody_Rerank(t *testing.T) {
+	testCases := []struct {
+		message     string
+		requestPath string
+		requestBody []byte
+		model       string
+		messages    string
+		stream      bool
+		user        utils.User
+		statusCode  envoyTypePb.StatusCode
+	}{
+		{
+			message:     "/v1/rerank valid request",
+			requestPath: "/v1/rerank",
+			requestBody: []byte(`{"model": "bge-reranker-base", "query": "what is panda?", "documents": ["hi", "panda is a bear"]}`),
+			model:       "bge-reranker-base",
+			messages:    "what is panda? hi panda is a bear",
+			statusCode:  envoyTypePb.StatusCode_OK,
+		},
+		{
+			message:     "/v1/rerank missing model",
+			requestPath: "/v1/rerank",
+			requestBody: []byte(`{"query": "what is panda?", "documents": ["hi", "panda is a bear"]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/rerank missing query",
+			requestPath: "/v1/rerank",
+			requestBody: []byte(`{"model": "bge-reranker-base", "documents": ["hi", "panda is a bear"]}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/rerank missing documents",
+			requestPath: "/v1/rerank",
+			requestBody: []byte(`{"model": "bge-reranker-base", "query": "what is panda?"}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/rerank empty documents",
+			requestPath: "/v1/rerank",
+			requestBody: []byte(`{"model": "bge-reranker-base", "query": "what is panda?", "documents": []}`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+		{
+			message:     "/v1/rerank invalid json",
+			requestPath: "/v1/rerank",
+			requestBody: []byte(`{"model": "bge-reranker-base", "query": "what is panda?", "documents": ["hi", "panda is a bear"]`),
+			statusCode:  envoyTypePb.StatusCode_BadRequest,
+		},
+	}
+
+	for _, tt := range testCases {
+		model, messages, stream, errRes := validateRequestBody("test-request-id", tt.requestPath, tt.requestBody, tt.user)
+		t.Log(tt.message)
+		if tt.statusCode == 200 {
+			assert.Equal(t, (*extProcPb.ProcessingResponse)(nil), errRes, tt.message)
+		}
+		if tt.statusCode != 200 {
+			assert.Equal(t, tt.statusCode, errRes.GetImmediateResponse().Status.Code, tt.message)
+		}
+
+		if tt.model != "" {
+			assert.Equal(t, tt.model, model, tt.message)
+		}
+		if tt.messages != "" {
+			assert.Equal(t, tt.messages, messages, tt.message)
+		}
+		if tt.stream {
+			assert.Equal(t, tt.stream, stream, tt.message)
+		}
+	}
+}
+
 func TestValidateEmbeddingInput(t *testing.T) {
 	testCases := []struct {
 		name        string
