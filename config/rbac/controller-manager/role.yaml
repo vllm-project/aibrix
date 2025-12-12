@@ -309,3 +309,14 @@ rules:
   - podgroups
   verbs:
   - '*'
+- apiGroups:
+  - leaderworkerset.x-k8s.io
+  resources:
+  - leaderworkersets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
