@@ -25,8 +25,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/selection"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
@@ -34,14 +36,14 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/utils"
-	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 )
 
 const (
@@ -56,6 +58,7 @@ const (
 	defaultModelServingPort = 8000
 
 	modelRouterCustomPath = constants.ModelAnnoRouterCustomPath
+	lwsIdentifier         = "leaderworkersets.leaderworkerset.x-k8s.io"
 )
 
 var modelPaths = []string{
@@ -119,8 +122,26 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 		AddFunc:    modelRouter.addRouteFromRayClusterFleet,
 		DeleteFunc: modelRouter.deleteRouteFromRayClusterFleet,
 	})
+	if err != nil {
+		return err
+	}
 
-	return err
+	exists, err := utils.CheckCRDExists(mgr.GetAPIReader(), lwsIdentifier)
+	if err != nil {
+		klog.ErrorS(err, "Failed to check CRD leaderworkersets")
+		return err
+	}
+	if !exists {
+		klog.Infof("%s CRD not found, skipping add informer for lws. "+
+			"This is optional - install %s CRD if you need ", lwsIdentifier, lwsIdentifier)
+	} else {
+		err = addInformerForLWS(mgr, modelRouter)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 type ModelRouter struct {
@@ -187,6 +208,30 @@ func (m *ModelRouter) deleteRouteFromRayClusterFleet(obj interface{}) {
 		}
 	}
 	m.deleteHTTPRoute(fleet.Namespace, fleet.Labels)
+}
+
+func (m *ModelRouter) addRouteFromLeaderWorkerSet(obj interface{}) {
+	u, ok := obj.(*unstructured.Unstructured)
+	if !ok {
+		klog.Errorf("Failed to get unstructured lws")
+		return
+	}
+	m.createHTTPRoute(u.GetNamespace(), u.GetLabels(), u.GetAnnotations())
+}
+
+func (m *ModelRouter) deleteRouteFromLeaderWorkerSet(obj interface{}) {
+	u, ok := obj.(*unstructured.Unstructured)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		u, ok = tombstone.Obj.(*unstructured.Unstructured)
+		if !ok {
+			return
+		}
+	}
+	m.deleteHTTPRoute(u.GetNamespace(), u.GetLabels())
 }
 
 func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string, annotations map[string]string) {
@@ -423,4 +468,34 @@ func appendCustomModelRouterPaths(httpRoute *gatewayv1.HTTPRoute, modelHeaderMat
 			})
 		klog.InfoS("Added custom model router path", "path", path)
 	}
+}
+
+func addInformerForLWS(mgr manager.Manager, modelRouter *ModelRouter) error {
+	// create dynamic Informer
+	lwsObj := &unstructured.Unstructured{}
+
+	// define LWS GVK (Group, Version, Kind)
+	lwsObj.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "leaderworkerset.x-k8s.io",
+		Version: "v1",
+		Kind:    "LeaderWorkerSet",
+	})
+
+	lwsInformer, err := mgr.GetCache().GetInformer(context.TODO(), lwsObj)
+	if err != nil {
+		klog.ErrorS(err, "Failed to get informer for LWS")
+		return err
+	}
+
+	// add Event Handler
+	// note: modelRouter.addRouteFromLeaderWorkerSet obj will be *unstructured.Unstructured
+	_, err = lwsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    modelRouter.addRouteFromLeaderWorkerSet,
+		DeleteFunc: modelRouter.deleteRouteFromLeaderWorkerSet,
+	})
+	if err != nil {
+		return err
+	}
+	klog.Infof("Added model router informer for LWS")
+	return nil
 }

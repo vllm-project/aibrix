@@ -17,7 +17,6 @@ limitations under the License.
 package controller
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/vllm-project/aibrix/pkg/config"
@@ -31,12 +30,10 @@ import (
 	"github.com/vllm-project/aibrix/pkg/controller/roleset"
 	"github.com/vllm-project/aibrix/pkg/controller/stormservice"
 	"github.com/vllm-project/aibrix/pkg/features"
+	"github.com/vllm-project/aibrix/pkg/utils"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
@@ -64,7 +61,7 @@ func Initialize(mgr manager.Manager) error {
 		// Check if the KubeRay CRD exists. Only skip if CRD is not found.
 		// For other errors (RBAC, API server issues), fail fast.
 		crdName := "rayclusters.ray.io"
-		exists, err := checkCRDExists(mgr.GetAPIReader(), crdName)
+		exists, err := utils.CheckCRDExists(mgr.GetAPIReader(), crdName)
 		if err != nil {
 			// For errors other than NotFound (e.g., RBAC permissions, API server issues), fail fast
 			return fmt.Errorf("failed to check for KubeRay CRD %s: %w", crdName, err)
@@ -106,24 +103,4 @@ func SetupWithManager(m manager.Manager, runtimeConfig config.RuntimeConfig) err
 		}
 	}
 	return nil
-}
-
-// checkCRDExists checks if the specified CRD exists in the cluster.
-// Returns (exists bool, error). If error is not nil, exists value should be ignored.
-func checkCRDExists(c client.Reader, crdName string) (bool, error) {
-	crd := &metav1.PartialObjectMetadata{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "apiextensions.k8s.io/v1",
-			Kind:       "CustomResourceDefinition",
-		},
-	}
-
-	err := c.Get(context.TODO(), client.ObjectKey{Name: crdName}, crd)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("error checking CRD %q: %w", crdName, err)
-	}
-	return true, nil
 }
