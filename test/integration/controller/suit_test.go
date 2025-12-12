@@ -28,6 +28,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/klog/v2"
+	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 
 	"k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	"k8s.io/client-go/rest"
@@ -128,6 +129,7 @@ var _ = BeforeSuite(func() {
 	Expect(rayv1.AddToScheme(scheme.Scheme)).To(Succeed())
 	Expect(gatewayv1.AddToScheme(scheme.Scheme)).To(Succeed())
 	Expect(gatewayv1beta1.AddToScheme(scheme.Scheme)).To(Succeed())
+	Expect(lwsv1.AddToScheme(scheme.Scheme)).To(Succeed())
 
 	Expect(clientgoscheme.AddToScheme(scheme.Scheme)).To(Succeed()) // Core Kubernetes types
 	Expect(appsv1.AddToScheme(scheme.Scheme)).To(Succeed())
