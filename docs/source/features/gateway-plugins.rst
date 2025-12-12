@@ -89,13 +89,7 @@ On a model or lora adapter deployment, their respective controllers create a HTT
 
 In v0.5.0, the default PathPrefix configuration within HTTPRoute.Spec.Rules.Matches only includes the following endpoints:
 
-* /v1/completions
-* /v1/chat/completions
-* /v1/embeddings
-* /generate
-* /generatevideo
-
-To add custom path prefixes, you must specify them using the model.aibrix.ai/model-router-custom-paths annotation in your deployment's manifest (or in the modelAdapter, RayClusterFleet, LWS).
+To add custom path prefixes, you must specify them using the model.aibrix.ai/model-router-custom-paths annotation in your deployment's manifest (or in the modelAdapter, RayClusterFleet).
 
 .. code-block:: bash
 
