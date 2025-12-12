@@ -64,17 +64,19 @@ gatewayPlugin:
       liveness:
         grpc:
           port: 50052
-        initialDelaySeconds: 5
-        periodSeconds: 10
-        timeoutSeconds: 3
-        failureThreshold: 3
+          service: liveness
+        initialDelaySeconds: 60
+        periodSeconds: 15
+        timeoutSeconds: 10
+        failureThreshold: 8
       readiness:
         grpc:
           port: 50052
-        initialDelaySeconds: 5
-        periodSeconds: 10
-        timeoutSeconds: 3
-        failureThreshold: 3
+          service: readiness
+        initialDelaySeconds: 60
+        periodSeconds: 15
+        timeoutSeconds: 10
+        failureThreshold: 8
     envs:
       AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS: "50"
       AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE: "character"
