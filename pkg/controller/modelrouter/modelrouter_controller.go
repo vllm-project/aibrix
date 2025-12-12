@@ -41,6 +41,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
+	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
 const (
@@ -64,11 +65,11 @@ var modelPaths = []string{
 	"/generatevideo",
 }
 
-//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rayclusterfleets,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch;create;update;patch;delete
-
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=orchestration.aibrix.ai,resources=rayclusterfleets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=leaderworkerset.x-k8s.io,resources=leaderworkersets,verbs=get;list;watch;create;update;patch;delete
 func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 	klog.InfoS("Starting modelrouter controller")
 	cacher := mgr.GetCache()
@@ -84,6 +85,11 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 	}
 
 	fleetInformer, err := cacher.GetInformer(context.TODO(), &orchestrationv1alpha1.RayClusterFleet{})
+	if err != nil {
+		return err
+	}
+
+	lwsInformer, err := cacher.GetInformer(context.TODO(), &lwsv1.LeaderWorkerSet{})
 	if err != nil {
 		return err
 	}
@@ -115,6 +121,14 @@ func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
 	_, err = fleetInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    modelRouter.addRouteFromRayClusterFleet,
 		DeleteFunc: modelRouter.deleteRouteFromRayClusterFleet,
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = lwsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    modelRouter.addRouteFromLeaderWorkerSet,
+		DeleteFunc: modelRouter.deleteRouteFromLeaderWorkerSet,
 	})
 
 	return err
@@ -184,6 +198,26 @@ func (m *ModelRouter) deleteRouteFromRayClusterFleet(obj interface{}) {
 		}
 	}
 	m.deleteHTTPRoute(fleet.Namespace, fleet.Labels)
+}
+
+func (m *ModelRouter) addRouteFromLeaderWorkerSet(obj interface{}) {
+	lws := obj.(*lwsv1.LeaderWorkerSet)
+	m.createHTTPRoute(lws.Namespace, lws.Labels)
+}
+
+func (m *ModelRouter) deleteRouteFromLeaderWorkerSet(obj interface{}) {
+	lws, ok := obj.(*lwsv1.LeaderWorkerSet)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		lws, ok = tombstone.Obj.(*lwsv1.LeaderWorkerSet)
+		if !ok {
+			return
+		}
+	}
+	m.deleteHTTPRoute(lws.Namespace, lws.Labels)
 }
 
 func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string) {
