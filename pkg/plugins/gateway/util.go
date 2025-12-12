@@ -121,6 +121,34 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 			return
 		}
 		model = imageGenerationObj.Model
+	case "/v1/rerank":
+		type RerankRequest struct {
+			Model     string   `json:"model"`
+			Query     string   `json:"query"`
+			Documents []string `json:"documents"`
+		}
+		var req RerankRequest
+		if err := json.Unmarshal(requestBody, &req); err != nil {
+			klog.ErrorS(err, "error to unmarshal rerank object", "requestID", requestID)
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+
+		if req.Model == "" {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		if req.Query == "" {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'query' is a required property", "", "query", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		if len(req.Documents) == 0 {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'documents' is a required property and cannot be empty", "", "documents", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+
+		model = req.Model
+		message = strings.Join(append([]string{req.Query}, req.Documents...), " ")
 	default:
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return

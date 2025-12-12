@@ -26,6 +26,9 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/video/generations
+        - path:
+            type: PathPrefix
+            value: /v1/rerank
       backendRefs:
         - name: {{ include "aibrix.fullname" . }}-gateway-plugins
           port: 50052
