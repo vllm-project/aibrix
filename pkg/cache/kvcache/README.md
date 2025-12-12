@@ -56,12 +56,12 @@ Provides efficient serialization for events:
 
 **Encoder:**
 ```go
-data, err := EncodeEventBatch(events)
+data, err := EncodeEventBatch(eventBatch)
 ```
 
 **Decoder:**
 ```go
-events, err := DecodeEventBatch(data)
+events, err := DecodeEventBatch(data, modelName, podName)
 ```
 
 ### Metrics (`metrics.go`)
@@ -82,7 +82,7 @@ Environment variables:
 ## Dependencies
 
 - `github.com/pebbe/zmq4`: ZMQ Go bindings
-- `github.com/shamaton/msgpack/v2`: MessagePack serialization
+- `github.com/vmihailenco/msgpack/v5`: MessagePack serialization
 - System requirement: libzmq3 or higher
 
 ## Testing

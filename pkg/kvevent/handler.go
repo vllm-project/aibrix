@@ -19,7 +19,6 @@ package kvevent
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -84,7 +83,7 @@ func (h *eventHandler) handleBlockStored(ctx context.Context, event *kvcache.Blo
 		LoraID:          h.loraID,
 		SourcePod:       h.podKey,
 		ParentBlockHash: event.ParentBlockHash,
-		Tokens:          convertTokenIDs(event.TokenIDs),
+		Tokens:          event.TokenIDs,
 	}
 
 	// Process event
@@ -137,22 +136,4 @@ func (h *eventHandler) handleAllBlocksCleared(ctx context.Context, event *kvcach
 	// manages its own cache lifecycle independently based on its memory constraints.
 	klog.V(4).Infof("Received AllBlocksCleared event for pod %s (not implemented)", h.podKey)
 	return nil
-}
-
-// convertTokenIDs converts [][]int32 to [][]byte
-func convertTokenIDs(tokenIDs [][]int32) [][]byte {
-	result := make([][]byte, len(tokenIDs))
-	for i, ids := range tokenIDs {
-		result[i] = tokenIDsToBytes(ids)
-	}
-	return result
-}
-
-// tokenIDsToBytes converts []int32 to []byte
-func tokenIDsToBytes(tokenIDs []int32) []byte {
-	bytes := make([]byte, len(tokenIDs)*4)
-	for i, id := range tokenIDs {
-		binary.BigEndian.PutUint32(bytes[i*4:], uint32(id))
-	}
-	return bytes
 }

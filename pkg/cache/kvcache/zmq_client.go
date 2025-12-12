@@ -335,8 +335,8 @@ func (c *ZMQClient) processMessage() error {
 		c.metrics.IncrementMissedEvents(missedCount)
 	}
 
-	// Decode and process events
-	batch, err := DecodeEventBatch(payload)
+	// Decode event batch with metadata
+	batch, err := DecodeEventBatch(payload, c.config.ModelName, c.config.PodKey)
 	if err != nil {
 		c.metrics.IncrementErrorCount("decode")
 		return fmt.Errorf("failed to decode event batch: %w", err)
@@ -344,25 +344,6 @@ func (c *ZMQClient) processMessage() error {
 
 	// Process each event
 	for _, event := range batch.Events {
-		// Add pod information
-		switch e := event.(type) {
-		case *BlockStoredEvent:
-			e.PodName = c.config.PodKey
-			if e.ModelName == "" {
-				e.ModelName = c.config.ModelName
-			}
-		case *BlockRemovedEvent:
-			e.PodName = c.config.PodKey
-			if e.ModelName == "" {
-				e.ModelName = c.config.ModelName
-			}
-		case *AllBlocksClearedEvent:
-			e.PodName = c.config.PodKey
-			if e.ModelName == "" {
-				e.ModelName = c.config.ModelName
-			}
-		}
-
 		// Handle the event
 		startTime := time.Now()
 		if err := c.eventHandler.HandleEvent(event); err != nil {
