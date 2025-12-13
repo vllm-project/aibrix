@@ -87,6 +87,22 @@ On a model or lora adapter deployment, their respective controllers create a HTT
           Namespace:  aibrix-system
     Events:           <none>
 
+In v0.5.0, the default PathPrefix configuration within HTTPRoute.Spec.Rules.Matches only includes the following endpoints:
+
+To add custom path prefixes, you must specify them using the model.aibrix.ai/model-router-custom-paths annotation in your deployment's manifest (or in the modelAdapter, RayClusterFleet).
+
+.. code-block:: bash
+
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      labels:
+        model.aibrix.ai/name: deepseek-r1-distill-llama-8b
+        model.aibrix.ai/port: "8000"
+      annotation:
+        model.aibrix.ai/model-router-custom-paths: /version,/score # Note: split by ',' and ignore any space or empty path
+      name: deepseek-r1-distill-llama-8b
+      namespace: default
 
 In most Kubernetes setups, ``LoadBalancer`` is supported by default. You can retrieve the external IP using the following command:
 
