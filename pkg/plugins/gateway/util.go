@@ -27,8 +27,9 @@ import (
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
+
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 const (
@@ -83,6 +84,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		type Completion struct {
 			Prompt string `json:"prompt"`
 			Model  string `json:"model"`
+			Stream bool   `json:"stream"`
 		}
 		completionObj := Completion{}
 		err := json.Unmarshal(requestBody, &completionObj)
@@ -93,6 +95,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		}
 		model = completionObj.Model
 		message = completionObj.Prompt
+		stream = completionObj.Stream
 	case "/v1/embeddings":
 		embeddingObj := openai.EmbeddingNewParams{}
 		if err := json.Unmarshal(requestBody, &embeddingObj); err != nil {
