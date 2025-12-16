@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -104,6 +105,7 @@ func TestLoadAdapter(t *testing.T) {
 			port:              8000,
 			modelApiResponse:  prepareModelApiResponseWithOneModel("vllm", "qwen2-5-0-5b"),
 			loadApiStatusCode: 500,
+			loadApiWantUrl:    "/v1/load_lora_adapter",
 			wantErr:           true,
 			wantExists:        false,
 			wantLoaded:        false,
@@ -156,6 +158,32 @@ func TestLoadAdapter(t *testing.T) {
 			wantExists:        false,
 			wantLoaded:        true,
 		},
+		{
+			name:          "pod with sglang and without sidecar - model loaded ok",
+			enableSidecar: false,
+			ma: &modelv1alpha1.ModelAdapter{
+				ObjectMeta: v1.ObjectMeta{
+					Name: "qwen-lora-test",
+				},
+			},
+			pod: &corev1.Pod{
+				ObjectMeta: v1.ObjectMeta{
+					Labels: map[string]string{
+						constants.ModelLabelEngine: SGLangEngine,
+					},
+				},
+				Status: corev1.PodStatus{
+					PodIP: "127.0.0.1",
+				},
+			},
+			port:              8000,
+			modelApiResponse:  prepareModelApiResponseWithOneModel("vllm", "qwen2-5-0-5b"),
+			loadApiStatusCode: 200,
+			loadApiWantUrl:    "/load_lora_adapter",
+			wantErr:           false,
+			wantExists:        false,
+			wantLoaded:        true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -172,8 +200,8 @@ func TestLoadAdapter(t *testing.T) {
 				}
 
 				// POST load adapter API
-				if r.URL.Path != tt.loadApiWantUrl { // path unexpected so return 404
-					w.WriteHeader(http.StatusNotFound)
+				if r.URL.Path != tt.loadApiWantUrl {
+					t.Errorf("load api path mis-match, want=%s, got=%s", tt.loadApiWantUrl, r.URL.Path)
 				} else {
 					w.WriteHeader(tt.loadApiStatusCode)
 				}

@@ -110,13 +110,6 @@ const (
 	DefaultDebugInferenceEnginePort = "30081"
 	DefaultRuntimeAPIPort           = "8080"
 
-	ModelListPath            = "/v1/models"
-	ModelListRuntimeAPIPath  = "/v1/models"
-	LoadLoraAdapterPath      = "/v1/load_lora_adapter"
-	LoadLoraRuntimeAPIPath   = "/v1/lora_adapter/load"
-	UnloadLoraAdapterPath    = "/v1/unload_lora_adapter"
-	UnloadLoraRuntimeAPIPath = "/v1/lora_adapter/unload"
-
 	// DefaultModelAdapterSchedulerPolicy is the default scheduler policy for ModelAdapter Controller.
 	DefaultModelAdapterSchedulerPolicy = "leastAdapters"
 )

@@ -28,8 +28,26 @@ import (
 
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
+)
+
+const (
+	VLLMEngine   string = "vllm"
+	SGLangEngine string = "sglang"
+
+	ModelListRuntimeAPIPath  = "/v1/models"
+	LoadLoraRuntimeAPIPath   = "/v1/lora_adapter/load"
+	UnloadLoraRuntimeAPIPath = "/v1/lora_adapter/unload"
+
+	ModelListVLLMAPIPath         = "/v1/models"
+	LoadLoraAdapterVLLMAPIPath   = "/v1/load_lora_adapter"
+	UnloadLoraAdapterVLLMAPIPath = "/v1/unload_lora_adapter"
+
+	ModelListSGLangAPIPath         = "/v1/models"
+	LoadLoraAdapterSGLangAPIPath   = "/load_lora_adapter"
+	UnloadLoraAdapterSGLangAPIPath = "/unload_lora_adapter"
 )
 
 type loraClient struct {
@@ -47,7 +65,7 @@ func (c *loraClient) LoadAdapter(instance *modelv1alpha1.ModelAdapter, targetPod
 		klog.V(4).InfoS("Using direct engine API for adapter unload", "pod", targetPod.Name, "adapter", instance.Name)
 	}
 
-	urls := BuildURLs(targetPod.Status.PodIP, c.RuntimeConfig, useSidecar)
+	urls := BuildURLs(targetPod.Status.PodIP, c.RuntimeConfig, useSidecar, metrics.GetEngineType(*targetPod))
 
 	models, err := c.getModels(urls.ListModelsURL, instance)
 	if err != nil {
@@ -81,7 +99,7 @@ func (c *loraClient) UnloadAdapter(instance *modelv1alpha1.ModelAdapter, targetP
 		return nil, err
 	}
 
-	urls := BuildURLs(targetPod.Status.PodIP, c.RuntimeConfig, useSidecar)
+	urls := BuildURLs(targetPod.Status.PodIP, c.RuntimeConfig, useSidecar, metrics.GetEngineType(*targetPod))
 	req, err := http.NewRequest("POST", urls.UnloadAdapterURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return nil, err
