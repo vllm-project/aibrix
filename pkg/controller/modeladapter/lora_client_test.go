@@ -18,7 +18,6 @@ package modeladapter
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -188,7 +187,7 @@ func TestLoadAdapter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := mockServer(tt.pod.Status.PodIP, tt.port, func(w http.ResponseWriter, r *http.Request) {
+			server := mockServer(t, tt.pod.Status.PodIP, tt.port, func(w http.ResponseWriter, r *http.Request) {
 				// GET model API
 				if r.URL.Path == `/v1/models` {
 					if tt.modelApiResponse != "" {
@@ -227,7 +226,7 @@ func TestLoadAdapter(t *testing.T) {
 	}
 }
 
-func mockServer(ip string, port int, handler http.HandlerFunc) *httptest.Server {
+func mockServer(t *testing.T, ip string, port int, handler http.HandlerFunc) *httptest.Server {
 	addr := fmt.Sprintf("%s:%d", ip, port)
 
 	ts := httptest.NewUnstartedServer(handler)
@@ -235,7 +234,7 @@ func mockServer(ip string, port int, handler http.HandlerFunc) *httptest.Server 
 
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalf("Failed to listen on %s: %v", addr, err)
+		t.Fatalf("Failed to listen on %s: %v", addr, err)
 	}
 	ts.Listener = l
 

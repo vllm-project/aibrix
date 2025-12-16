@@ -878,7 +878,7 @@ func (r *ModelAdapterReconciler) unloadModelAdapter(ctx context.Context, instanc
 
 		resp, err := r.loraClient.UnloadAdapter(instance, targetPod)
 		if err != nil {
-			continue
+			continue // Ignore HTTP errors during unload
 		}
 		func() {
 			defer func() {

@@ -19,7 +19,6 @@ package modeladapter
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -54,15 +53,16 @@ type loraClient struct {
 	RuntimeConfig config.RuntimeConfig
 }
 
+// LoadAdapter loads the loras in inference engines
 func (c *loraClient) LoadAdapter(instance *modelv1alpha1.ModelAdapter, targetPod *corev1.Pod) (loaded bool, exists bool, err error) {
 	// Determine whether to use runtime sidecar:
 	// - If global flag is disabled, always use direct engine API
 	// - If global flag is enabled, detect if pod has sidecar container
 	useSidecar := c.RuntimeConfig.EnableRuntimeSidecar && DetectRuntimeSidecar(targetPod)
 	if useSidecar {
-		klog.V(4).InfoS("Using runtime sidecar API for adapter unload", "pod", targetPod.Name, "adapter", instance.Name)
+		klog.V(4).InfoS("Using runtime sidecar API for adapter loading", "pod", targetPod.Name, "adapter", instance.Name)
 	} else {
-		klog.V(4).InfoS("Using direct engine API for adapter unload", "pod", targetPod.Name, "adapter", instance.Name)
+		klog.V(4).InfoS("Using direct engine API for adapter loading", "pod", targetPod.Name, "adapter", instance.Name)
 	}
 
 	urls := BuildURLs(targetPod.Status.PodIP, c.RuntimeConfig, useSidecar, metrics.GetEngineType(*targetPod))
@@ -82,6 +82,7 @@ func (c *loraClient) LoadAdapter(instance *modelv1alpha1.ModelAdapter, targetPod
 	return true, false, nil
 }
 
+// UnloadAdapter unloads the loras in inference engines
 func (c *loraClient) UnloadAdapter(instance *modelv1alpha1.ModelAdapter, targetPod *corev1.Pod) (*http.Response, error) {
 	// Determine whether to use runtime sidecar:
 	// - If global flag is disabled, always use direct engine API
@@ -109,7 +110,9 @@ func (c *loraClient) UnloadAdapter(instance *modelv1alpha1.ModelAdapter, targetP
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	}
 
-	httpClient := &http.Client{}
+	httpClient := &http.Client{
+		Timeout: time.Duration(HTTPTimeoutSeconds) * time.Second,
+	}
 	resp, err := httpClient.Do(req)
 	return resp, err
 }
@@ -142,25 +145,18 @@ func (c *loraClient) getModels(url string, instance *modelv1alpha1.ModelAdapter)
 		return nil, fmt.Errorf("failed to get models: %s", body)
 	}
 
-	var response map[string]interface{}
+	var response struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return nil, err
 	}
 
-	data, ok := response["data"].([]interface{})
-	if !ok {
-		return nil, errors.New("invalid data format")
-	}
-
 	models := make(map[string]bool)
-	for _, item := range data {
-		model, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if modelID, ok := model["id"].(string); ok {
-			models[modelID] = true
-		}
+	for _, item := range response.Data {
+		models[item.ID] = true
 	}
 
 	return models, nil
@@ -240,10 +236,10 @@ func (c *loraClient) loadAdapterCall(url string, instance *modelv1alpha1.ModelAd
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	}
 
-	client := &http.Client{
+	httpClient := &http.Client{
 		Timeout: time.Duration(HTTPTimeoutSeconds) * time.Second,
 	}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -265,8 +261,6 @@ func (c *loraClient) loadAdapterCall(url string, instance *modelv1alpha1.ModelAd
 	return nil
 }
 
-// unloadModelAdapter unloads the loras from inference engines
-// base model pod could be deleted, in this case, we just do optimistic unloading. It only returns some necessary errors and http errors should not be returned.
 // buildUnloadPayload creates the unload request payload based on runtime mode
 func buildUnloadPayload(instance *modelv1alpha1.ModelAdapter, useSidecar bool) ([]byte, error) {
 	var payloadBytes []byte
