@@ -49,8 +49,18 @@ const (
 	UnloadLoraAdapterSGLangAPIPath = "/unload_lora_adapter"
 )
 
+func NewLoraClient(runtimeConfig config.RuntimeConfig) *loraClient {
+	return &loraClient{
+		runtimeConfig: runtimeConfig,
+		httpClient: &http.Client{
+			Timeout: time.Duration(HTTPTimeoutSeconds) * time.Second,
+		},
+	}
+}
+
 type loraClient struct {
-	RuntimeConfig config.RuntimeConfig
+	runtimeConfig config.RuntimeConfig
+	httpClient    *http.Client
 }
 
 // LoadAdapter loads the loras in inference engines
@@ -58,14 +68,14 @@ func (c *loraClient) LoadAdapter(instance *modelv1alpha1.ModelAdapter, targetPod
 	// Determine whether to use runtime sidecar:
 	// - If global flag is disabled, always use direct engine API
 	// - If global flag is enabled, detect if pod has sidecar container
-	useSidecar := c.RuntimeConfig.EnableRuntimeSidecar && DetectRuntimeSidecar(targetPod)
+	useSidecar := c.runtimeConfig.EnableRuntimeSidecar && DetectRuntimeSidecar(targetPod)
 	if useSidecar {
 		klog.V(4).InfoS("Using runtime sidecar API for adapter loading", "pod", targetPod.Name, "adapter", instance.Name)
 	} else {
 		klog.V(4).InfoS("Using direct engine API for adapter loading", "pod", targetPod.Name, "adapter", instance.Name)
 	}
 
-	urls := BuildURLs(targetPod.Status.PodIP, c.RuntimeConfig, useSidecar, metrics.GetEngineType(*targetPod))
+	urls := BuildURLs(targetPod.Status.PodIP, c.runtimeConfig, useSidecar, metrics.GetEngineType(*targetPod))
 
 	models, err := c.getModels(urls.ListModelsURL, instance)
 	if err != nil {
@@ -87,7 +97,7 @@ func (c *loraClient) UnloadAdapter(instance *modelv1alpha1.ModelAdapter, targetP
 	// Determine whether to use runtime sidecar:
 	// - If global flag is disabled, always use direct engine API
 	// - If global flag is enabled, detect if pod has sidecar container
-	useSidecar := c.RuntimeConfig.EnableRuntimeSidecar && DetectRuntimeSidecar(targetPod)
+	useSidecar := c.runtimeConfig.EnableRuntimeSidecar && DetectRuntimeSidecar(targetPod)
 	if useSidecar {
 		klog.V(4).InfoS("Using runtime sidecar API for adapter unload", "pod", targetPod.Name, "adapter", instance.Name)
 	} else {
@@ -100,7 +110,7 @@ func (c *loraClient) UnloadAdapter(instance *modelv1alpha1.ModelAdapter, targetP
 		return nil, err
 	}
 
-	urls := BuildURLs(targetPod.Status.PodIP, c.RuntimeConfig, useSidecar, metrics.GetEngineType(*targetPod))
+	urls := BuildURLs(targetPod.Status.PodIP, c.runtimeConfig, useSidecar, metrics.GetEngineType(*targetPod))
 	req, err := http.NewRequest("POST", urls.UnloadAdapterURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return nil, err
@@ -110,10 +120,7 @@ func (c *loraClient) UnloadAdapter(instance *modelv1alpha1.ModelAdapter, targetP
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	}
 
-	httpClient := &http.Client{
-		Timeout: time.Duration(HTTPTimeoutSeconds) * time.Second,
-	}
-	resp, err := httpClient.Do(req)
+	resp, err := c.httpClient.Do(req)
 	return resp, err
 }
 
@@ -127,10 +134,7 @@ func (c *loraClient) getModels(url string, instance *modelv1alpha1.ModelAdapter)
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	}
 
-	httpClient := &http.Client{
-		Timeout: time.Duration(HTTPTimeoutSeconds) * time.Second,
-	}
-	resp, err := httpClient.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -236,10 +240,7 @@ func (c *loraClient) loadAdapterCall(url string, instance *modelv1alpha1.ModelAd
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	}
 
-	httpClient := &http.Client{
-		Timeout: time.Duration(HTTPTimeoutSeconds) * time.Second,
-	}
-	resp, err := httpClient.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}

@@ -207,11 +207,11 @@ func TestLoadAdapter(t *testing.T) {
 			})
 			defer server.Close()
 
-			loraClient := &loraClient{
-				RuntimeConfig: config.RuntimeConfig{
+			loraClient := NewLoraClient(
+				config.RuntimeConfig{
 					EnableRuntimeSidecar: tt.enableSidecar,
 				},
-			}
+			)
 
 			loaded, exists, err := loraClient.LoadAdapter(tt.ma, tt.pod) // test
 

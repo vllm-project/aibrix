@@ -183,9 +183,7 @@ func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (rec
 		RuntimeConfig:       runtimeConfig,
 		resyncInterval:      DefaultResyncInterval,
 		eventCh:             make(chan event.GenericEvent),
-		loraClient: &loraClient{
-			RuntimeConfig: runtimeConfig,
-		},
+		loraClient:          NewLoraClient(runtimeConfig),
 	}
 	return reconciler, nil
 }
