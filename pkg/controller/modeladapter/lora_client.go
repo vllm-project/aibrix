@@ -92,8 +92,8 @@ func (c *loraClient) LoadAdapter(instance *modelv1alpha1.ModelAdapter, targetPod
 	return true, false, nil
 }
 
-// UnloadAdapter unloads the loras in inference engines
-func (c *loraClient) UnloadAdapter(instance *modelv1alpha1.ModelAdapter, targetPod *corev1.Pod) (*http.Response, error) {
+// UnloadAdapter unloads the loras from inference engines, ignores http error.
+func (c *loraClient) UnloadAdapter(instance *modelv1alpha1.ModelAdapter, targetPod *corev1.Pod) error {
 	// Determine whether to use runtime sidecar:
 	// - If global flag is disabled, always use direct engine API
 	// - If global flag is enabled, detect if pod has sidecar container
@@ -107,13 +107,13 @@ func (c *loraClient) UnloadAdapter(instance *modelv1alpha1.ModelAdapter, targetP
 	// Build payload using helper function
 	payloadBytes, err := buildUnloadPayload(instance, useSidecar)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	urls := BuildURLs(targetPod.Status.PodIP, c.runtimeConfig, useSidecar, metrics.GetEngineType(*targetPod))
 	req, err := http.NewRequest("POST", urls.UnloadAdapterURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if token, ok := instance.Spec.AdditionalConfig["api-key"]; ok {
@@ -121,7 +121,24 @@ func (c *loraClient) UnloadAdapter(instance *modelv1alpha1.ModelAdapter, targetP
 	}
 
 	resp, err := c.httpClient.Do(req)
-	return resp, err
+	if err != nil {
+		return nil // ignore http errors
+	}
+
+	func() {
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				klog.InfoS("Error closing response body:", err)
+			}
+		}()
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+			body, _ := io.ReadAll(resp.Body)
+			klog.Warningf("Failed to unload LoRA adapter from pod %s: %s", targetPod.Name, body)
+		}
+	}() // process response in separate goroutines; logs error if any
+
+	return nil
 }
 
 func (c *loraClient) getModels(url string, instance *modelv1alpha1.ModelAdapter) (map[string]bool, error) {

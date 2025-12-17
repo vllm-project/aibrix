@@ -19,8 +19,6 @@ package modeladapter
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -874,22 +872,10 @@ func (r *ModelAdapterReconciler) unloadModelAdapter(ctx context.Context, instanc
 			return err
 		}
 
-		resp, err := r.loraClient.UnloadAdapter(instance, targetPod)
+		err := r.loraClient.UnloadAdapter(instance, targetPod)
 		if err != nil {
-			continue // Ignore HTTP errors during unload
+			return err
 		}
-		func() {
-			defer func() {
-				if err := resp.Body.Close(); err != nil {
-					klog.InfoS("Error closing response body:", err)
-				}
-			}()
-
-			if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-				body, _ := io.ReadAll(resp.Body)
-				klog.Warningf("failed to unload LoRA adapter: %s", body)
-			}
-		}()
 	}
 
 	return nil
@@ -905,23 +891,7 @@ func (r *ModelAdapterReconciler) unloadModelAdapterFromPod(ctx context.Context, 
 		}
 		return err
 	}
-
-	resp, err := r.loraClient.UnloadAdapter(instance, targetPod)
-	if err != nil {
-		return nil // Don't fail on HTTP errors during unload
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			klog.InfoS("Error closing response body:", err)
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		klog.Warningf("failed to unload LoRA adapter from pod %s: %s", podName, body)
-	}
-
-	return nil
+	return r.loraClient.UnloadAdapter(instance, targetPod)
 }
 
 func (r *ModelAdapterReconciler) reconcileService(ctx context.Context, instance *modelv1alpha1.ModelAdapter) (ctrl.Result, error) {

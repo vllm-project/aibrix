@@ -55,11 +55,7 @@ func TestLoadAdapter(t *testing.T) {
 					Name: "qwen-lora-test",
 				},
 			},
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{
-					PodIP: "127.0.0.1",
-				},
-			},
+			pod:               newPod("127.0.0.1", VLLMEngine, false),
 			port:              8000,
 			modelApiResponse:  prepareModelApiResponseWithOneModel("vllm", "qwen2-5-0-5b"),
 			loadApiStatusCode: 200,
@@ -76,11 +72,7 @@ func TestLoadAdapter(t *testing.T) {
 					Name: "qwen-lora-test",
 				},
 			},
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{
-					PodIP: "127.0.0.1",
-				},
-			},
+			pod:               newPod("127.0.0.1", VLLMEngine, false),
 			port:              8000,
 			modelApiResponse:  prepareModelApiResponseWithTwoModels("vllm", "qwen2-5-0-5b", "qwen-lora-test"),
 			loadApiStatusCode: 200,
@@ -96,11 +88,7 @@ func TestLoadAdapter(t *testing.T) {
 					Name: "qwen-lora-test",
 				},
 			},
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{
-					PodIP: "127.0.0.1",
-				},
-			},
+			pod:               newPod("127.0.0.1", VLLMEngine, false),
 			port:              8000,
 			modelApiResponse:  prepareModelApiResponseWithOneModel("vllm", "qwen2-5-0-5b"),
 			loadApiStatusCode: 500,
@@ -117,11 +105,7 @@ func TestLoadAdapter(t *testing.T) {
 					Name: "qwen-lora-test",
 				},
 			},
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{
-					PodIP: "127.0.0.1",
-				},
-			},
+			pod:                newPod("127.0.0.1", VLLMEngine, false),
 			port:               8000,
 			modelApiStatusCode: 500,
 			wantErr:            true,
@@ -137,18 +121,7 @@ func TestLoadAdapter(t *testing.T) {
 					Name: "qwen-lora-test",
 				},
 			},
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name: "aibrix-runtime",
-						},
-					},
-				},
-				Status: corev1.PodStatus{
-					PodIP: "127.0.0.1",
-				},
-			},
+			pod:               newPod("127.0.0.1", VLLMEngine, true),
 			port:              8080,
 			modelApiResponse:  prepareModelApiResponseWithOneModel("vllm", "qwen2-5-0-5b"),
 			loadApiStatusCode: 200,
@@ -165,16 +138,7 @@ func TestLoadAdapter(t *testing.T) {
 					Name: "qwen-lora-test",
 				},
 			},
-			pod: &corev1.Pod{
-				ObjectMeta: v1.ObjectMeta{
-					Labels: map[string]string{
-						constants.ModelLabelEngine: SGLangEngine,
-					},
-				},
-				Status: corev1.PodStatus{
-					PodIP: "127.0.0.1",
-				},
-			},
+			pod:               newPod("127.0.0.1", SGLangEngine, false),
 			port:              8000,
 			modelApiResponse:  prepareModelApiResponseWithOneModel("vllm", "qwen2-5-0-5b"),
 			loadApiStatusCode: 200,
@@ -223,6 +187,107 @@ func TestLoadAdapter(t *testing.T) {
 				assert.Equal(t, tt.wantLoaded, loaded)
 			}
 		})
+	}
+}
+
+func TestUnloadAdapter(t *testing.T) {
+	tests := []struct {
+		name             string
+		enableSidecar    bool
+		ma               *modelv1alpha1.ModelAdapter
+		pod              *corev1.Pod
+		port             int
+		serverCalled     bool
+		unloadApiWantUrl string
+		wantErr          bool
+	}{
+		{
+			name:          "pod with vllm and without sidecar - model unloaded ok",
+			enableSidecar: false,
+			ma: &modelv1alpha1.ModelAdapter{
+				ObjectMeta: v1.ObjectMeta{
+					Name: "qwen-lora-test",
+				},
+			},
+			pod:              newPod("127.0.0.1", VLLMEngine, false),
+			port:             8000,
+			unloadApiWantUrl: "/v1/unload_lora_adapter",
+			wantErr:          false,
+		},
+		{
+			name:          "pod with vllm and with sidecar - model unloaded ok",
+			enableSidecar: true,
+			ma: &modelv1alpha1.ModelAdapter{
+				ObjectMeta: v1.ObjectMeta{
+					Name: "qwen-lora-test",
+				},
+			},
+			pod:              newPod("127.0.0.1", VLLMEngine, true),
+			port:             8080,
+			unloadApiWantUrl: "/v1/lora_adapter/unload",
+			wantErr:          false,
+		},
+		{
+			name:          "pod with sglang and without sidecar - model unloaded ok",
+			enableSidecar: false,
+			ma: &modelv1alpha1.ModelAdapter{
+				ObjectMeta: v1.ObjectMeta{
+					Name: "qwen-lora-test",
+				},
+			},
+			pod:              newPod("127.0.0.1", SGLangEngine, false),
+			port:             8000,
+			unloadApiWantUrl: "/unload_lora_adapter",
+			wantErr:          false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := mockServer(t, tt.pod.Status.PodIP, tt.port, func(w http.ResponseWriter, r *http.Request) {
+				tt.serverCalled = true
+				assert.Equal(t, tt.unloadApiWantUrl, r.URL.Path)
+			})
+			defer server.Close()
+
+			loraClient := NewLoraClient(
+				config.RuntimeConfig{
+					EnableRuntimeSidecar: tt.enableSidecar,
+				},
+			)
+
+			err := loraClient.UnloadAdapter(tt.ma, tt.pod) // test
+
+			assert.True(t, tt.serverCalled)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func newPod(ip string, engineType string, enableSidecar bool) *corev1.Pod {
+	containers := []corev1.Container{
+		{Name: "llm-model"},
+	}
+	if enableSidecar {
+		containers = append(containers, corev1.Container{Name: "aibrix-runtime"})
+	}
+	return &corev1.Pod{
+		ObjectMeta: v1.ObjectMeta{
+			Name: "test-pod",
+			Labels: map[string]string{
+				constants.ModelLabelEngine: engineType,
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: containers,
+		},
+		Status: corev1.PodStatus{
+			PodIP: ip,
+		},
 	}
 }
 
