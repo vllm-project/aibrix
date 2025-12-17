@@ -52,6 +52,8 @@ const (
 	PDRoleIdentifier              string                 = "role-name"
 	RoleReplicaIndex              string                 = "stormservice.orchestration.aibrix.ai/role-replica-index"
 	PodGroupIndex                 string                 = "stormservice.orchestration.aibrix.ai/pod-group-index"
+	PromptMinLength               string                 = "prompt-min-length"
+	PromptMaxLength               string                 = "prompt-max-length"
 	defaultPrefillRequestTimeout  int                    = 30
 
 	defaultMaxRequest             float64 = 32
@@ -161,12 +163,11 @@ type Scores struct {
 // Pods without PodGroupIndex label are also included for backward compatibility.
 func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
 	prefillPods, decodePods := []*v1.Pod{}, []*v1.Pod{}
-	promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods := []*v1.Pod{}, []*v1.Pod{}
 
 	var promptLength int
 	if aibrixPromptLengthBucketing {
 		promptLength = r.getPromptLength(routingCtx)
-		klog.InfoS("prompt length based filtering enabled", "request_id", routingCtx.RequestID, "prompt_length", promptLength)
+		klog.V(4).InfoS("prompt length based filtering enabled", "request_id", routingCtx.RequestID, "prompt_length", promptLength)
 	}
 
 	for _, pod := range readyPods {
@@ -183,33 +184,18 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 			continue
 		}
 
+		if aibrixPromptLengthBucketing {
+			if !r.isPodSuitableForPromptLength(pod, promptLength) {
+				continue
+			}
+		}
+
 		switch pod.Labels[PDRoleIdentifier] {
 		case "prefill":
 			prefillPods = append(prefillPods, pod)
 		case "decode":
 			decodePods = append(decodePods, pod)
 		}
-
-		if aibrixPromptLengthBucketing {
-			if !r.isPodSuitableForPromptLength(pod, promptLength) {
-				continue
-			}
-			switch pod.Labels[PDRoleIdentifier] {
-			case "prefill":
-				promptLengthBucketingPrefillPods = append(promptLengthBucketingPrefillPods, pod)
-			case "decode":
-				promptLengthBucketingDecodePods = append(promptLengthBucketingDecodePods, pod)
-			}
-		}
-	}
-
-	if len(promptLengthBucketingPrefillPods) != 0 {
-		// If pods that meet the given length exist, use them; otherwise, use all pods as a fallback.
-		prefillPods = promptLengthBucketingPrefillPods
-	}
-
-	if len(promptLengthBucketingDecodePods) != 0 {
-		decodePods = promptLengthBucketingDecodePods
 	}
 
 	if len(prefillPods) == 0 || len(decodePods) == 0 {
@@ -815,10 +801,10 @@ func (r *pdRouter) isPodSuitableForPromptLength(pod *v1.Pod, promptLength int) b
 		overlapMargin = 100 // The minimum overlap boundary is 100 tokens.
 	}
 
-	adjustedMin := minLength - overlapMargin
-	adjustedMax := maxLength + overlapMargin
+	adjustedMin := math.Max(float64(minLength-overlapMargin), 0)
+	adjustedMax := math.Min(float64(maxLength+overlapMargin), float64(maxLength))
 
-	return promptLength >= adjustedMin && promptLength <= adjustedMax
+	return promptLength >= int(adjustedMin) && promptLength <= int(adjustedMax)
 }
 
 // getPodPromptRange retrieves the minimum and maximum prompt lengths from pod labels.
@@ -826,13 +812,13 @@ func (r *pdRouter) getPodPromptRange(pod *v1.Pod) (int, int) {
 	minLength := 0
 	maxLength := math.MaxInt32
 
-	if val, ok := pod.Labels["prompt-min-length"]; ok {
+	if val, ok := pod.Labels[PromptMinLength]; ok {
 		if parsed, err := strconv.Atoi(val); err == nil {
 			minLength = parsed
 		}
 	}
 
-	if val, ok := pod.Labels["prompt-max-length"]; ok {
+	if val, ok := pod.Labels[PromptMaxLength]; ok {
 		if parsed, err := strconv.Atoi(val); err == nil {
 			maxLength = parsed
 		}
@@ -851,11 +837,15 @@ func (r *pdRouter) getPromptLength(routingCtx *types.RoutingContext) int {
 
 	var prompt string
 	if messages, ok := requestBody["messages"].([]interface{}); ok && len(messages) > 0 {
-		if msg, ok := messages[0].(map[string]interface{}); ok {
-			if content, ok := msg["content"].(string); ok {
-				prompt = content
+		var promptBuilder bytes.Buffer
+		for _, m := range messages {
+			if msg, ok := m.(map[string]interface{}); ok {
+				if content, ok := msg["content"].(string); ok {
+					promptBuilder.WriteString(content)
+				}
 			}
 		}
+		prompt = promptBuilder.String()
 	} else if p, ok := requestBody["prompt"].(string); ok {
 		prompt = p
 	} else if input, ok := requestBody["input"].(string); ok {
@@ -870,9 +860,5 @@ func (r *pdRouter) getPromptLength(routingCtx *types.RoutingContext) int {
 	}
 
 	tokenCount := len(tokens)
-
-	klog.InfoS("extracted prompt length", "request_id", routingCtx.RequestID,
-		"prompt_length", tokenCount, "prompt_chars", len(prompt))
-
 	return tokenCount
 }
