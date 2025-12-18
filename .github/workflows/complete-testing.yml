@@ -112,6 +112,21 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y libzmq3-dev pkg-config
+        sudo apt-get clean -y
+        sudo apt-get autoclean -y
+
+    - name: Move Docker storage
+      run: |
+        sudo systemctl stop docker
+        sudo mkdir -p /mnt/docker-data
+        sudo chown root:root /mnt/docker-data
+        echo '{"data-root":"/mnt/docker-data"}' | sudo tee /etc/docker/daemon.json
+        sudo systemctl start docker
+        docker info | grep "Docker Root Dir"
+        
+    - name: Cleanup Docker (free disk space)
+      run: |
+        docker system prune -af --volumes
     
     - name: Build and load images
       run: |
