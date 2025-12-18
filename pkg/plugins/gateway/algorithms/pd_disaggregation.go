@@ -790,21 +790,16 @@ func (t *PrefillRequestTracker) GetPrefillRequestCountsForPods(pods []*v1.Pod) m
 
 func (r *pdRouter) isPodSuitableForPromptLength(pod *v1.Pod, promptLength int) bool {
 	minLength, maxLength := r.getPodPromptRange(pod)
+
+	if minLength > maxLength {
+		return false
+	}
 	// If no prompt length range is configured, the pod is assumed to be suitable for handling any length.
 	if minLength == 0 && maxLength == math.MaxInt32 {
 		return true
 	}
 
-	// Check if the prompt length is within the pod's processing range (5% boundary overlap is allowed).
-	overlapMargin := (maxLength - minLength) / 20
-	if overlapMargin < 100 {
-		overlapMargin = 100 // The minimum overlap boundary is 100 tokens.
-	}
-
-	adjustedMin := math.Max(float64(minLength-overlapMargin), 0)
-	adjustedMax := math.Min(float64(maxLength+overlapMargin), float64(maxLength))
-
-	return promptLength >= int(adjustedMin) && promptLength <= int(adjustedMax)
+	return promptLength >= minLength && promptLength <= maxLength
 }
 
 // getPodPromptRange retrieves the minimum and maximum prompt lengths from pod labels.
