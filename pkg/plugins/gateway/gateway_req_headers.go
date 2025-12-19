@@ -60,6 +60,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			reqHeaders[n.Key] = string(n.RawValue)
 		}
 	}
+	reqHeaders["X-Request-Id"] = requestID
 
 	routingStrategy, routingStrategyEnabled := getRoutingStrategy(h.RequestHeaders.Headers.Headers)
 	routingAlgorithm, ok := routing.Validate(routingStrategy)

@@ -589,7 +589,6 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 		req.Header.Set(key, value)
 	}
 	req.Header.Set("content-type", "application/json")
-	req.Header.Set("X-Request-Id", routingCtx.RequestID)
 
 	// Use shared HTTP client with connection pooling
 	resp, err := r.httpClient.Do(req)
