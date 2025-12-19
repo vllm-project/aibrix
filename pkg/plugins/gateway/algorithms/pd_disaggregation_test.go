@@ -1424,22 +1424,25 @@ func TestGetPromptLength(t *testing.T) {
 		{
 			name:        "single message in messages",
 			requestBody: `{"messages": [{"role": "user", "content": "Hello World"}]}`,
-			expected:    len(func() []int { t, _ := utils.TokenizeInputText("Hello World"); return t }()),
+			expected:    len(func() []int { tokens, _ := utils.TokenizeInputText("Hello World"); return tokens }()),
 		},
 		{
 			name:        "multiple messages in messages",
 			requestBody: `{"messages": [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": "Hello World"}]}`,
-			expected:    len(func() []int { t, _ := utils.TokenizeInputText("You are a helpful assistant.Hello World"); return t }()),
+			expected: len(func() []int {
+				tokens, _ := utils.TokenizeInputText("You are a helpful assistant.Hello World")
+				return tokens
+			}()),
 		},
 		{
 			name:        "prompt field",
 			requestBody: `{"prompt": "Hello World"}`,
-			expected:    len(func() []int { t, _ := utils.TokenizeInputText("Hello World"); return t }()),
+			expected:    len(func() []int { tokens, _ := utils.TokenizeInputText("Hello World"); return tokens }()),
 		},
 		{
 			name:        "input field",
 			requestBody: `{"input": "Hello World"}`,
-			expected:    len(func() []int { t, _ := utils.TokenizeInputText("Hello World"); return t }()),
+			expected:    len(func() []int { tokens, _ := utils.TokenizeInputText("Hello World"); return tokens }()),
 		},
 		{
 			name:        "invalid JSON",
@@ -1459,7 +1462,7 @@ func TestGetPromptLength(t *testing.T) {
 		{
 			name:        "Chinese text",
 			requestBody: `{"prompt": "你好世界"}`,
-			expected:    len(func() []int { t, _ := utils.TokenizeInputText("你好世界"); return t }()),
+			expected:    len(func() []int { tokens, _ := utils.TokenizeInputText("你好世界"); return tokens }()),
 		},
 	}
 

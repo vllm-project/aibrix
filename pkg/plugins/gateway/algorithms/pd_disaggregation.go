@@ -810,12 +810,16 @@ func (r *pdRouter) getPodPromptRange(pod *v1.Pod) (int, int) {
 	if val, ok := pod.Labels[PromptMinLength]; ok {
 		if parsed, err := strconv.Atoi(val); err == nil {
 			minLength = parsed
+		} else {
+			klog.Warningf("failed to parse pod label %s with value %s as integer: %v", PromptMinLength, val, err)
 		}
 	}
 
 	if val, ok := pod.Labels[PromptMaxLength]; ok {
 		if parsed, err := strconv.Atoi(val); err == nil {
 			maxLength = parsed
+		} else {
+			klog.Warningf("failed to parse pod label %s with value %s as integer: %v", PromptMaxLength, val, err)
 		}
 	}
 
