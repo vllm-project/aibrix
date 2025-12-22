@@ -151,7 +151,7 @@ func Test_handleRequestHeaders(t *testing.T) {
 				},
 				routingCtx: &types.RoutingContext{
 					ReqPath:    "test-path",
-					ReqHeaders: map[string]string{authorizationKey: "token:test-token"},
+					ReqHeaders: map[string]string{authorizationKey: "token:test-token", xRequestIDKey: "test-request-id"},
 				},
 				user: utils.User{},
 				rpm:  0,
