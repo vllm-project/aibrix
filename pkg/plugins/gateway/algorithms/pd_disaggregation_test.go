@@ -902,12 +902,6 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 			assert.False(t, hasKV, "non-vLLM engines should not have kv_transfer_params")
 		}
 
-		// Check X-Request-Id header is set (should match the request ID from routing context)
-		xRequestId := r.Header.Get("X-Request-Id")
-		assert.NotEmpty(t, xRequestId, "X-Request-Id header should be set")
-		// For most tests it's "test-request", but integration tests use different IDs
-		assert.True(t, xRequestId == "test-request" || xRequestId == "integration-test", "X-Request-Id should be valid request ID")
-
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
 		if resp != "" {

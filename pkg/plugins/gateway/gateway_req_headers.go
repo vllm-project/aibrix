@@ -36,6 +36,7 @@ const (
 	userKey          = "user"
 	pathKey          = ":path"
 	authorizationKey = "authorization"
+	xRequestIDKey    = "X-Request-Id"
 )
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext) {
@@ -60,7 +61,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			reqHeaders[n.Key] = string(n.RawValue)
 		}
 	}
-	reqHeaders["X-Request-Id"] = requestID
+	reqHeaders[xRequestIDKey] = requestID
 
 	routingStrategy, routingStrategyEnabled := getRoutingStrategy(h.RequestHeaders.Headers.Headers)
 	routingAlgorithm, ok := routing.Validate(routingStrategy)
