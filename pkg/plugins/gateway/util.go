@@ -241,7 +241,7 @@ func parseMultipartFormData(requestID string, contentType string, requestBody []
 			}
 		}
 
-		part.Close()
+		_ = part.Close()
 	}
 
 	// Validate required model field
