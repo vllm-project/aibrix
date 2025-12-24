@@ -36,6 +36,7 @@ const (
 	userKey          = "user"
 	pathKey          = ":path"
 	authorizationKey = "authorization"
+	contentTypeKey   = "content-type"
 )
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, *types.RoutingContext) {
@@ -57,6 +58,8 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		case authorizationKey:
 			reqHeaders[n.Key] = string(n.RawValue)
 		case HeaderExternalFilter:
+			reqHeaders[n.Key] = string(n.RawValue)
+		case contentTypeKey:
 			reqHeaders[n.Key] = string(n.RawValue)
 		}
 	}

@@ -17,9 +17,13 @@ limitations under the License.
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"strings"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -152,12 +156,101 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 
 		model = req.Model
 		message = strings.Join(append([]string{req.Query}, req.Documents...), " ")
+	case "/v1/audio/transcriptions", "/v1/audio/translations":
+		// Audio endpoints require multipart/form-data content-type, not JSON
+		// This case handles the error when JSON is sent to audio endpoints
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "audio requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
 	default:
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_NotImplemented, "unknown request path", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
 	}
 
 	klog.V(4).InfoS("validateRequestBody", "requestID", requestID, "requestPath", requestPath, "model", model, "message", message, "stream", stream, "streamOptions", streamOptions)
+	return
+}
+
+// isAudioRequest returns true if the request path is an audio endpoint
+func isAudioRequest(requestPath string) bool {
+	return requestPath == "/v1/audio/transcriptions" || requestPath == "/v1/audio/translations"
+}
+
+// isMultipartRequest returns true if the content type indicates multipart form data
+func isMultipartRequest(contentType string) bool {
+	if contentType == "" {
+		return false
+	}
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	return strings.HasPrefix(mediaType, "multipart/")
+}
+
+// parseMultipartFormData parses multipart/form-data request body and extracts the model field.
+// It returns the model name, stream flag, and any processing error response.
+// nolint:nakedret
+func parseMultipartFormData(requestID string, contentType string, requestBody []byte) (model string, stream bool, errRes *extProcPb.ProcessingResponse) {
+	// Extract boundary from Content-Type
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		klog.ErrorS(err, "failed to parse content-type", "requestID", requestID, "contentType", contentType)
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "invalid content-type header", "", "", HeaderErrorMultipartParsing, "true")
+		return
+	}
+
+	if !strings.HasPrefix(mediaType, "multipart/") {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "expected multipart/form-data content-type", "", "", HeaderErrorMultipartParsing, "true")
+		return
+	}
+
+	boundary := params["boundary"]
+	if boundary == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "missing boundary in content-type", "", "", HeaderErrorMultipartParsing, "true")
+		return
+	}
+
+	// Parse multipart form
+	reader := multipart.NewReader(bytes.NewReader(requestBody), boundary)
+
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			klog.ErrorS(err, "failed to read multipart part", "requestID", requestID)
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "failed to parse multipart form", "", "", HeaderErrorMultipartParsing, "true")
+			return
+		}
+
+		fieldName := part.FormName()
+
+		switch fieldName {
+		case "model":
+			modelBytes, err := io.ReadAll(part)
+			if err != nil {
+				klog.ErrorS(err, "failed to read model field", "requestID", requestID)
+				errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "failed to read model field", "", "model", HeaderErrorMultipartParsing, "true")
+				return
+			}
+			model = strings.TrimSpace(string(modelBytes))
+
+		case "stream":
+			streamBytes, err := io.ReadAll(part)
+			if err == nil {
+				streamVal := strings.TrimSpace(strings.ToLower(string(streamBytes)))
+				stream = streamVal == "true" || streamVal == "1"
+			}
+		}
+
+		part.Close()
+	}
+
+	// Validate required model field
+	if model == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorMultipartParsing, "true")
+		return
+	}
+
+	klog.V(4).InfoS("parseMultipartFormData", "requestID", requestID, "model", model, "stream", stream)
 	return
 }
 
