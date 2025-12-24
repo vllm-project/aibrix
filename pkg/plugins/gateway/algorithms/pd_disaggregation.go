@@ -56,12 +56,17 @@ const (
 
 	defaultMaxRequest             float64 = 32
 	defaultMaxTokenThroughputDiff float64 = 2048
+
+	defaultRemotePrefillThreshold                    = 512
+	defaultEnableLocalPrefillForShortPromptsOpt bool = true
 )
 
 var (
-	prefillRequestTimeout         int     = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
-	aibrixDecodeMaxRequest        float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_REQUEST", defaultMaxRequest)
-	aibrixDecodeMaxThroughputDiff float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_THROUGHPUT", defaultMaxTokenThroughputDiff)
+	prefillRequestTimeout             int     = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
+	aibrixDecodeMaxRequest            float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_REQUEST", defaultMaxRequest)
+	aibrixDecodeMaxThroughputDiff     float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_THROUGHPUT", defaultMaxTokenThroughputDiff)
+	remotePrefillThreshold                    = utils.LoadEnvInt("AIBRIX_REMOTE_PREFILL_THRESHOLD", defaultRemotePrefillThreshold)
+	enableLocalPrefillForShortPrompts         = utils.LoadEnvBool("AIBRIX_ENABLE_LOCAL_PREFILL_FOR_SHORT_PROMPTS", defaultEnableLocalPrefillForShortPromptsOpt)
 )
 
 func init() {
@@ -69,11 +74,12 @@ func init() {
 }
 
 type pdRouter struct {
-	cache                 cache.Cache
-	tokenizer             tokenizer.Tokenizer
-	prefixCacheIndexer    *prefixcacheindexer.PrefixHashTable
-	prefillRequestTracker *PrefillRequestTracker
-	httpClient            *http.Client
+	cache                  cache.Cache
+	tokenizer              tokenizer.Tokenizer
+	prefixCacheIndexer     *prefixcacheindexer.PrefixHashTable
+	prefillRequestTracker  *PrefillRequestTracker
+	httpClient             *http.Client
+	remotePrefillThreshold int
 }
 
 // PrefillRequestTracker manages prefill-specific request counts
@@ -110,11 +116,12 @@ func NewPDRouter() (types.Router, error) {
 	}
 
 	return pdRouter{
-		cache:                 c,
-		tokenizer:             tokenizerObj,
-		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
-		prefillRequestTracker: NewPrefillRequestTracker(),
-		httpClient:            httpClient,
+		cache:                  c,
+		tokenizer:              tokenizerObj,
+		prefixCacheIndexer:     prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker:  NewPrefillRequestTracker(),
+		httpClient:             httpClient,
+		remotePrefillThreshold: remotePrefillThreshold,
 	}, nil
 }
 
@@ -126,11 +133,95 @@ func NewPrefillRequestTracker() *PrefillRequestTracker {
 	}
 }
 
+// Route determines which pod should handle the incoming LLM request.
+// The router implements two distinct execution paths:
+//
+// 1. **Short-Prompt Optimization (Local Prefill + Decode)**
+//    - **Condition**: Input token count ≤ `AIBRIX_REMOTE_PREFILL_THRESHOLD`
+//                    AND short-prompt optimization is enabled via `AIBRIX_ENABLE_LOCAL_PREFILL_FOR_SHORT_PROMPTS=true`
+//                    AND the underlying LLM engine is vLLM.
+//    - **Behavior**: The request is routed directly to a *decode-capable* pod, which performs **both** KV cache computation (prefill)
+//      and token generation (decode) **locally in a single pod**.
+//    - **Benefit**: Eliminates inter-pod communication for short prompts, significantly reducing end-to-end latency.
+//    - **Assumption**: The selected decode pod must be running in **`kv_both` mode** (i.e., capable of prefill).
+//      This optimization is **NOT compatible** with disaggregated deployments using dedicated `kv_prefill` / `kv_decode` roles.
+//
+// 2. **Standard Two-Stage Pipeline (Remote Prefill → Decode)**
+//    - **Condition**: Prompt exceeds threshold, OR optimization is disabled, OR engine ≠ vLLM.
+//    - **Behavior**:
+//        a) Request first goes to a **prefill pod** to compute and store the KV cache.
+//        b) The KV cache is then transferred to a **decode pod** for autoregressive token generation.
+//    - **Use Case**: Required for long prompts and mandatory for non-vLLM engines (e.g., SGLang), which do not support local prefill in decode pods.
+//
+// Route decision flow:
+/*
+┌───────────────────────┐
+│     Client Request    │
+│   (e.g., "Hello!")    │
+└──────────┬────────────┘
+           │
+           ▼
+┌───────────────────────┐
+│     pdRouter.Route()  │
+│   (Tokenize & Decide) │
+└──────────┬────────────┘
+           │
+┌──────────┴────────────┬───────────────────────────────┐
+│                       │                               │
+│  Is token count       │ Yes                           │ No
+│  ≤ threshold?         ▼                               ▼
+│             ┌─────────────────────┐        ┌─────────────────────┐
+│             │   Decode Pod        │        │   Prefill Pod       │
+│             │ (Local Prefill +    │        │ (Remote Prefill,    │
+│             │  Decode in one pod) │        │  KV Cache Compute)  │
+│             └──────────┬──────────┘        └──────────┬──────────┘
+│                        │                              │
+│                        │                              ▼
+│                        │                   ┌─────────────────────┐
+│                        │                   │   Decode Pod        │
+│                        │                   │ (Generation Only)   │
+│                        │                   └──────────┬──────────┘
+│                        │                              │
+└────────────────────────┼──────────────────────────────┘
+                         │
+                         ▼
+               ┌───────────────────────┐
+               │    Response to        │
+               │      Client           │
+               └───────────────────────┘
+*/
 func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	// Validate engine consistency across all prefill pods
 	llmEngine, err := validateAndGetLLMEngine(readyPodList.All())
 	if err != nil {
 		return "", fmt.Errorf("engine validation failed for request %s: %w", ctx.RequestID, err)
+	}
+
+	// Short-prompt optimization is ONLY safe under specific conditions:
+	// - Enabled via environment variable (`AIBRIX_ENABLE_LOCAL_PREFILL_FOR_SHORT_PROMPTS`, default=true)
+	// - A valid threshold is set (`r.remotePrefillThreshold > 0`)
+	// - The engine is vLLM (only vLLM supports prefill+decode in a single "decode" pod when in kv_both mode)
+	//
+	// NOT enable this optimization in disaggregated instance (kv_prefill / kv_decode mode)
+	if enableLocalPrefillForShortPrompts && r.remotePrefillThreshold > 0 && llmEngine == VLLMEngine {
+		tokens, err := r.tokenizer.TokenizeInputText(ctx.Message)
+		if err != nil {
+			klog.Warningf("Tokenization for short-prompt check failed, falling back to standard routing: %v", err)
+		} else if len(tokens) <= r.remotePrefillThreshold {
+			klog.InfoS("Short prompt detected: bypassing remote prefill",
+				"request_id", ctx.RequestID,
+				"token_count", len(tokens),
+				"threshold", r.remotePrefillThreshold)
+			// short prompt optimization (Decode-Only Path)
+			_, decodePod, err := r.filterPrefillDecodePods(ctx, readyPodList.All())
+			if err != nil {
+				klog.Warning("Failed to select decode pod for direct inference; falling back to prefill-decode flow",
+					"request_id", ctx.RequestID, "error", err)
+			} else if decodePod != nil {
+				ctx.SetTargetPod(decodePod)
+				return ctx.TargetAddress(), nil
+			}
+		}
 	}
 
 	prefillPod, decodePod, err := r.filterPrefillDecodePods(ctx, readyPodList.All())
