@@ -117,7 +117,7 @@ func DetectRuntimeSidecar(pod *corev1.Pod) bool {
 
 // BuildURLs constructs the API URLs for model adapter operations
 // useSidecar parameter determines whether to use runtime sidecar API or direct engine API
-func BuildURLs(podIP string, config config.RuntimeConfig, useSidecar bool) URLConfig {
+func BuildURLs(podIP string, config config.RuntimeConfig, useSidecar bool, engineType string) URLConfig {
 	var host string
 	if config.DebugMode {
 		host = fmt.Sprintf("http://%s:%s", "localhost", DefaultDebugInferenceEnginePort)
@@ -127,13 +127,26 @@ func BuildURLs(podIP string, config config.RuntimeConfig, useSidecar bool) URLCo
 		host = fmt.Sprintf("http://%s:%s", podIP, DefaultInferenceEnginePort)
 	}
 
-	apiPath := ModelListPath
-	loadPath := LoadLoraAdapterPath
-	unloadPath := UnloadLoraAdapterPath
+	var apiPath, loadPath, unloadPath string
 	if useSidecar {
 		apiPath = ModelListRuntimeAPIPath
 		loadPath = LoadLoraRuntimeAPIPath
 		unloadPath = UnloadLoraRuntimeAPIPath
+	} else {
+		switch engineType {
+		case VLLMEngine:
+			apiPath = ModelListVLLMAPIPath
+			loadPath = LoadLoraAdapterVLLMAPIPath
+			unloadPath = UnloadLoraAdapterVLLMAPIPath
+		case SGLangEngine:
+			apiPath = ModelListSGLangAPIPath
+			loadPath = LoadLoraAdapterSGLangAPIPath
+			unloadPath = UnloadLoraAdapterSGLangAPIPath
+		default:
+			apiPath = ModelListVLLMAPIPath
+			loadPath = LoadLoraAdapterVLLMAPIPath
+			unloadPath = UnloadLoraAdapterVLLMAPIPath
+		}
 	}
 
 	return URLConfig{
