@@ -122,21 +122,20 @@ func (c *loraClient) UnloadAdapter(instance *modelv1alpha1.ModelAdapter, targetP
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		klog.ErrorS(err, "Failed to call unload lora adapter api", "url", urls.UnloadAdapterURL)
 		return nil // ignore http errors
 	}
 
-	func() {
-		defer func() {
-			if err := resp.Body.Close(); err != nil {
-				klog.InfoS("Error closing response body:", err)
-			}
-		}()
-
-		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-			body, _ := io.ReadAll(resp.Body)
-			klog.Warningf("Failed to unload LoRA adapter from pod %s: %s", targetPod.Name, body)
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			klog.InfoS("Error closing response body:", err)
 		}
-	}() // process response in separate goroutines; logs error if any
+	}()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		klog.Warningf("Failed to unload LoRA adapter from pod %s: %s", targetPod.Name, body)
+	}
 
 	return nil
 }
