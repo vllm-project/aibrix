@@ -1,0 +1,260 @@
+version: '3.8'
+
+# AIBrix Docker Compose - Simplified Single-Node Deployment
+#
+# This setup uses Envoy with the gateway-plugin (ext_proc) for intelligent
+# routing, rate limiting, and request tracking.
+#
+# Profiles:
+#   - (default): Gateway mode - Envoy + gateway-plugin + single vLLM
+#   - pd: P/D Disaggregation mode with separate prefill/decode engines
+#
+# Usage:
+#   Default mode:    docker compose up -d
+#   P/D mode:        docker compose --profile pd up -d
+
+x-common-gpu: &common-gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            capabilities: [gpu]
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 10s
+  timeout: 5s
+  retries: 5
+
+services:
+  # ============================================================================
+  # Core Infrastructure
+  # ============================================================================
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: aibrix-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      <<: *healthcheck-defaults
+      start_period: 5s
+    networks:
+      - aibrix-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # Metadata Service - Model Registry & File Management
+  # ============================================================================
+
+  metadata-service:
+    image: aibrix/metadata-service:${AIBRIX_VERSION:-nightly}
+    container_name: aibrix-metadata
+    ports:
+      - "${METADATA_PORT:-8090}:8090"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    command: ["aibrix_metadata", "--host", "0.0.0.0", "--port", "8090"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8090/healthz"]
+      <<: *healthcheck-defaults
+      start_period: 10s
+    networks:
+      - aibrix-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # Envoy Proxy - Entry Point
+  # ============================================================================
+
+  envoy:
+    image: envoyproxy/envoy:v1.33.2
+    container_name: aibrix-envoy
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${ENVOY_ADMIN_PORT:-9901}:9901"
+    volumes:
+      - ${ENVOY_CONFIG:-./configs/envoy.yaml}:/etc/envoy/envoy.yaml:ro
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "${ENVOY_LOG_LEVEL:-warn}"]
+    depends_on:
+      metadata-service:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9901/ready"]
+      <<: *healthcheck-defaults
+      start_period: 5s
+    networks:
+      - aibrix-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # vLLM Engine - Simple Mode (single engine)
+  # ============================================================================
+
+  vllm:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.6.6}
+    container_name: aibrix-vllm
+    # Note: This service runs by default. Use --profile pd to run P/D mode instead.
+    ports:
+      - "${VLLM_PORT:-8000}:8000"
+    environment:
+      CUDA_VISIBLE_DEVICES: ${VLLM_GPU:-0}
+      VLLM_ATTENTION_BACKEND: ${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - ${MODEL_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
+      - /dev/shm:/dev/shm
+    <<: *common-gpu
+    command: >
+      --model ${MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}
+      --host 0.0.0.0
+      --port 8000
+      --tensor-parallel-size ${VLLM_TP:-1}
+      --max-model-len ${MAX_MODEL_LEN:-8192}
+      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.9}
+      --enable-prefix-caching
+      --disable-log-requests
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    networks:
+      - aibrix-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # P/D Disaggregation Mode - Separate Prefill & Decode Engines
+  # ============================================================================
+
+  prefill-engine:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.6.6}
+    container_name: aibrix-prefill
+    profiles: ["pd"]
+    ports:
+      - "${PREFILL_PORT:-8001}:8000"
+    environment:
+      CUDA_VISIBLE_DEVICES: ${PREFILL_GPU:-0}
+      VLLM_ATTENTION_BACKEND: ${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - ${MODEL_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
+      - /dev/shm:/dev/shm
+    <<: *common-gpu
+    command: >
+      --model ${MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}
+      --host 0.0.0.0
+      --port 8000
+      --tensor-parallel-size ${PREFILL_TP:-1}
+      --max-model-len ${MAX_MODEL_LEN:-8192}
+      --gpu-memory-utilization ${PREFILL_GPU_MEMORY:-0.85}
+      --enable-prefix-caching
+      --disable-log-requests
+      --max-num-seqs ${PREFILL_MAX_SEQS:-64}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    networks:
+      - aibrix-network
+    restart: unless-stopped
+
+  decode-engine:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.6.6}
+    container_name: aibrix-decode
+    profiles: ["pd"]
+    ports:
+      - "${DECODE_PORT:-8002}:8000"
+    environment:
+      CUDA_VISIBLE_DEVICES: ${DECODE_GPU:-1}
+      VLLM_ATTENTION_BACKEND: ${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - ${MODEL_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
+      - /dev/shm:/dev/shm
+    <<: *common-gpu
+    command: >
+      --model ${MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}
+      --host 0.0.0.0
+      --port 8000
+      --tensor-parallel-size ${DECODE_TP:-1}
+      --max-model-len ${MAX_MODEL_LEN:-8192}
+      --gpu-memory-utilization ${DECODE_GPU_MEMORY:-0.9}
+      --enable-prefix-caching
+      --disable-log-requests
+      --max-num-seqs ${DECODE_MAX_SEQS:-256}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    networks:
+      - aibrix-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # Gateway Plugin - Intelligent Routing (ext_proc)
+  # Provides: routing algorithms, rate limiting, request tracking
+  # ============================================================================
+
+  gateway:
+    image: aibrix/gateway-plugins:${AIBRIX_VERSION:-nightly}
+    container_name: aibrix-gateway
+    ports:
+      - "${GATEWAY_GRPC_PORT:-50052}:50052"
+      - "${GATEWAY_METRICS_PORT:-8080}:8080"
+    environment:
+      # Docker mode - disables Kubernetes features
+      AIBRIX_DOCKER_MODE: "true"
+      # Redis connection
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      # Static backend configuration (set by start.sh based on mode)
+      # Format: name=host:port:model[:role] - role is 'prefill' or 'decode' for P/D mode
+      AIBRIX_STATIC_BACKENDS: ${AIBRIX_STATIC_BACKENDS:-vllm=vllm:8000:${MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}}
+      AIBRIX_DEFAULT_MODEL: ${MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}
+      # Routing algorithm: random, least_request, prefix_cache_aware, pd (for P/D mode)
+      AIBRIX_ROUTING_ALGORITHM: ${ROUTING_ALGORITHM:-least_request}
+      # Prefix cache settings
+      AIBRIX_PREFIX_CACHE_TOKENIZER_TYPE: tiktoken
+      AIBRIX_PREFIX_CACHE_BLOCK_SIZE: "128"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=:50052"]
+      <<: *healthcheck-defaults
+      start_period: 15s
+    networks:
+      - aibrix-network
+    restart: unless-stopped
+
+networks:
+  aibrix-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  redis-data:
+    driver: local
