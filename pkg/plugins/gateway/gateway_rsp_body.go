@@ -175,7 +175,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 
 func isLanguageRequest(requestPath string) bool {
 	nonLanguagePrefixes := []string{
-		"/v1/image/generations",
+		"/v1/images/generations",
 		"/v1/video/generations",
 		"/v1/audio/transcriptions",
 		"/v1/audio/translations",

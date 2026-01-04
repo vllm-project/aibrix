@@ -107,7 +107,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	})
 
 	switch requestPath {
-	case "/v1/image/generations":
+	case "/v1/images/generations":
 		headers = buildEnvoyProxyHeaders(headers, ":path", "/generate")
 	case "/v1/video/generations":
 		headers = buildEnvoyProxyHeaders(headers, ":path", "/generatevideo")
