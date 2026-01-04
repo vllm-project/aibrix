@@ -184,10 +184,7 @@ func getRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
 	return podRequestCount
 }
 
-// getRequestCountsWithPort returns running request count for each pod with port tracked by gateway.
-// Note: Currently, gateway instance tracks active running request counts for each pod locally,
-// if multiple gateway instances are active then state is not shared across them.
-// It is advised to run on leader gateway instance.
+// getRequestCountsWithPort returns running request count for each pod with port tracked by gateway
 func getRequestCountsWithPort(cache cache.Cache, readyPods []*v1.Pod, portsMap map[string][]int) map[string]int {
 	podRequestCount := make(map[string]int)
 	for _, pod := range readyPods {
