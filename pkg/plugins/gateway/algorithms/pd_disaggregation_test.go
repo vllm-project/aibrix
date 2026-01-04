@@ -1284,3 +1284,120 @@ func TestLoadImbalanceSelectDecodePod(t *testing.T) {
 		})
 	}
 }
+
+func TestIsPodSuitableForPromptLength(t *testing.T) {
+	tests := []struct {
+		name         string
+		podLabels    map[string]string
+		promptLength int
+		expected     bool
+	}{
+		{
+			name: "no prompt length range configured",
+			podLabels: map[string]string{
+				"roleset-name": "test",
+				"role-name":    "prefill",
+			},
+			promptLength: 1000,
+			expected:     true,
+		},
+		{
+			name: "prompt length exactly at min",
+			podLabels: map[string]string{
+				"roleset-name":      "test",
+				"role-name":         "prefill",
+				"prompt-min-length": "1000",
+				"prompt-max-length": "2000",
+			},
+			promptLength: 1000,
+			expected:     true,
+		},
+		{
+			name: "prompt length exactly at max",
+			podLabels: map[string]string{
+				"roleset-name":      "test",
+				"role-name":         "prefill",
+				"prompt-min-length": "1000",
+				"prompt-max-length": "2000",
+			},
+			promptLength: 2000,
+			expected:     true,
+		},
+		{
+			name: "prompt length in middle of range",
+			podLabels: map[string]string{
+				"roleset-name":      "test",
+				"role-name":         "prefill",
+				"prompt-min-length": "1000",
+				"prompt-max-length": "2000",
+			},
+			promptLength: 1500,
+			expected:     true,
+		},
+		{
+			name: "prompt length below min",
+			podLabels: map[string]string{
+				"roleset-name":      "test",
+				"role-name":         "prefill",
+				"prompt-min-length": "1000",
+				"prompt-max-length": "2000",
+			},
+			promptLength: 900,
+			expected:     false,
+		},
+		{
+			name: "prompt length above max",
+			podLabels: map[string]string{
+				"roleset-name":      "test",
+				"role-name":         "prefill",
+				"prompt-min-length": "1000",
+				"prompt-max-length": "2000",
+			},
+			promptLength: 2100,
+			expected:     false,
+		},
+		{
+			name: "prompt length min larger than max",
+			podLabels: map[string]string{
+				"roleset-name":      "test",
+				"role-name":         "prefill",
+				"prompt-min-length": "2000",
+				"prompt-max-length": "1000",
+			},
+			promptLength: 1000,
+			expected:     false,
+		},
+	}
+
+	// Create a router instance
+	router := &pdRouter{
+		cache:                 cache.NewForTest(),
+		tokenizer:             tokenizer.NewCharacterTokenizer(),
+		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
+		prefillRequestTracker: NewPrefillRequestTracker(),
+		httpClient:            &http.Client{},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create test pod
+			pod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "test-pod",
+					Labels: tt.podLabels,
+				},
+				Status: v1.PodStatus{
+					Conditions: []v1.PodCondition{
+						{Type: v1.PodReady, Status: v1.ConditionTrue},
+					},
+				},
+			}
+
+			// Call the function being tested
+			result := router.isPodSuitableForPromptLength(pod, tt.promptLength)
+
+			// Verify the result
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
