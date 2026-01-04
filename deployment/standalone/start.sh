@@ -211,17 +211,19 @@ echo ""
 
 echo -e "${BOLD}Configuring gateway-plugin...${NC}"
 
-# Set backend configuration and routing algorithm based on mode
+# Set endpoints config and routing algorithm based on mode
 if [ "$PD_MODE" = true ]; then
-    # P/D mode: register prefill and decode backends with roles, use 'pd' routing
-    export AIBRIX_STATIC_BACKENDS="prefill=prefill-engine:8000:${MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}:prefill,decode=decode-engine:8000:${MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}:decode"
+    # P/D mode: use endpoints-pd.yaml with prefill/decode roles
+    export ENDPOINTS_CONFIG="./configs/endpoints-pd.yaml"
     export ROUTING_ALGORITHM="pd"
+    echo -e "  ${CYAN}Config:${NC}    endpoints-pd.yaml"
     echo -e "  ${CYAN}Backends:${NC}  prefill-engine (prefill), decode-engine (decode)"
     echo -e "  ${CYAN}Routing:${NC}   P/D disaggregation"
 else
     # Default mode: single vLLM backend
-    export AIBRIX_STATIC_BACKENDS="vllm=vllm:8000:${MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}"
+    export ENDPOINTS_CONFIG="./configs/endpoints.yaml"
     export ROUTING_ALGORITHM="${ROUTING_ALGORITHM:-least_request}"
+    echo -e "  ${CYAN}Config:${NC}    endpoints.yaml"
     echo -e "  ${CYAN}Backends:${NC}  vllm"
     echo -e "  ${CYAN}Routing:${NC}   ${ROUTING_ALGORITHM}"
 fi
