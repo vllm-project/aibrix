@@ -1,10 +1,11 @@
 apiVersion: apps/v1 
 kind: Deployment 
 metadata:
-  name: hunyuan-dit 
-  labels: 
-    model.aibrix.ai/name: hunyuan-dit 
-    model.aibrix.ai/port: "6000" 
+  name: hunyuan-dit
+  labels:
+    model.aibrix.ai/name: hunyuan-dit
+    model.aibrix.ai/port: "6000"
+    model.aibrix.ai/engine: xdit 
 spec: 
   replicas: 1 
   strategy: 
@@ -16,10 +17,11 @@ spec:
     matchLabels: 
       model.aibrix.ai/name: hunyuan-dit 
   template: 
-    metadata: 
-      labels: 
-        model.aibrix.ai/name: hunyuan-dit 
-        model.aibrix.ai/port: "6000" 
+    metadata:
+      labels:
+        model.aibrix.ai/name: hunyuan-dit
+        model.aibrix.ai/port: "6000"
+        model.aibrix.ai/engine: xdit 
     spec: 
       initContainers: 
         - command:             

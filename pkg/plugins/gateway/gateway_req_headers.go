@@ -106,14 +106,10 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 		},
 	})
 
-	switch requestPath {
-	case "/v1/images/generations":
-		headers = buildEnvoyProxyHeaders(headers, ":path", "/generate")
-	case "/v1/video/generations":
-		headers = buildEnvoyProxyHeaders(headers, ":path", "/generatevideo")
-	default:
-		break
-	}
+	// Note: Path rewriting for /v1/images/generations and /v1/video/generations
+	// is handled in HandleRequestBody based on the engine type (model.aibrix.ai/engine label).
+	// - xdit engine: rewrites to /generate or /generatevideo
+	// - vllm/vllm-omni engine: keeps the original OpenAI-compatible path
 
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestHeaders{
