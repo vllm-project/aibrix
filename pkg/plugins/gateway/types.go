@@ -40,6 +40,9 @@ const (
 	HeaderErrorStreaming                 = "x-error-streaming"
 	HeaderErrorStreamOptionsIncludeUsage = "x-error-no-stream-options-include-usage"
 
+	// Multipart/Audio Headers
+	HeaderErrorMultipartParsing = "x-error-multipart-parsing"
+
 	// Request & Target Headers
 	HeaderWentIntoReqHeaders = "x-went-into-req-headers"
 	HeaderTargetPod          = "target-pod"

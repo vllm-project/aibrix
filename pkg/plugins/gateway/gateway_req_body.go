@@ -39,10 +39,28 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	routingAlgorithm := routingCtx.Algorithm
 
 	body := req.Request.(*extProcPb.ProcessingRequest_RequestBody)
-	model, message, stream, errRes := validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)
-	if errRes != nil {
-		return errRes, model, routingCtx, stream, term
+
+	var model, message string
+	var stream bool
+	var errRes *extProcPb.ProcessingResponse
+
+	// Check if this is a multipart request (audio endpoints)
+	contentType := routingCtx.ReqHeaders[contentTypeKey]
+	if isAudioRequest(requestPath) && isMultipartRequest(contentType) {
+		// Parse multipart form data for audio endpoints
+		model, stream, errRes = parseMultipartFormData(requestID, contentType, body.RequestBody.GetBody())
+		if errRes != nil {
+			return errRes, model, routingCtx, stream, term
+		}
+		message = "" // Audio requests don't have a text message for token counting
+	} else {
+		// Use existing JSON validation for other endpoints
+		model, message, stream, errRes = validateRequestBody(requestID, requestPath, body.RequestBody.GetBody(), user)
+		if errRes != nil {
+			return errRes, model, routingCtx, stream, term
+		}
 	}
+
 	routingCtx.Model = model
 	routingCtx.Message = message
 	routingCtx.ReqBody = body.RequestBody.GetBody()

@@ -558,6 +558,231 @@ def chat_completions():
         return jsonify(err), 500
 
 
+@app.route("/v1/audio/transcriptions", methods=["POST"])
+@auth.login_required
+def audio_transcriptions():
+    """
+    Simulates the OpenAI audio transcription endpoint.
+    Accepts multipart/form-data with audio file and returns a mock transcription.
+    """
+    try:
+        # Get form data
+        model = request.form.get("model")
+        language = request.form.get("language", "en")
+        response_format = request.form.get("response_format", "json")
+        stream = request.form.get("stream", "false").lower() in ("true", "1")
+
+        # Get the uploaded file (optional for mock)
+        audio_file = request.files.get("file")
+
+        if not model:
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "message": "'model' is a required parameter",
+                            "type": "invalid_request_error",
+                            "param": "model",
+                            "code": None,
+                        }
+                    }
+                ),
+                400,
+            )
+
+        # Simulate processing time
+        time.sleep(0.1)
+
+        # Mock transcription text
+        mock_text = f"This is a simulated transcription from {model}. The audio file was processed successfully."
+
+        if stream:
+            def generate():
+                completion_id = "transcript-" + "".join(
+                    random.choices(
+                        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                        k=20,
+                    )
+                )
+                words = mock_text.split()
+                for i, word in enumerate(words):
+                    chunk = {
+                        "id": completion_id,
+                        "object": "audio.transcription.chunk",
+                        "text": word + (" " if i < len(words) - 1 else ""),
+                    }
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                    time.sleep(0.05)
+
+                # Final chunk
+                final_chunk = {
+                    "id": completion_id,
+                    "object": "audio.transcription",
+                    "text": mock_text,
+                }
+                yield f"data: {json.dumps(final_chunk)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            response = Response(generate(), mimetype="text/event-stream")
+            response.headers['Cache-Control'] = 'no-cache'
+            response.headers['X-Accel-Buffering'] = 'no'
+            return response
+        else:
+            if response_format == "verbose_json":
+                response = {
+                    "task": "transcribe",
+                    "language": language,
+                    "duration": 5.5,
+                    "text": mock_text,
+                    "words": [
+                        {"word": word, "start": i * 0.5, "end": (i + 1) * 0.5}
+                        for i, word in enumerate(mock_text.split())
+                    ],
+                    "segments": [
+                        {
+                            "id": 0,
+                            "seek": 0,
+                            "start": 0.0,
+                            "end": 5.5,
+                            "text": mock_text,
+                            "tokens": list(range(100)),
+                            "temperature": 0.0,
+                            "avg_logprob": -0.25,
+                            "compression_ratio": 1.5,
+                            "no_speech_prob": 0.01,
+                        }
+                    ],
+                }
+            elif response_format in ("text", "srt", "vtt"):
+                return Response(mock_text, mimetype="text/plain")
+            else:  # json (default)
+                response = {"text": mock_text}
+
+            return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in audio transcriptions endpoint: {e}")
+        err = {
+            "error": {
+                "message": "The server had an error while processing your request. Sorry about that!",
+                "type": "api_error",
+                "param": None,
+                "code": None,
+            }
+        }
+        return jsonify(err), 500
+
+
+@app.route("/v1/audio/translations", methods=["POST"])
+@auth.login_required
+def audio_translations():
+    """
+    Simulates the OpenAI audio translation endpoint.
+    Accepts multipart/form-data with audio file and returns a mock translation to English.
+    """
+    try:
+        # Get form data
+        model = request.form.get("model")
+        response_format = request.form.get("response_format", "json")
+        stream = request.form.get("stream", "false").lower() in ("true", "1")
+
+        # Get the uploaded file (optional for mock)
+        audio_file = request.files.get("file")
+
+        if not model:
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "message": "'model' is a required parameter",
+                            "type": "invalid_request_error",
+                            "param": "model",
+                            "code": None,
+                        }
+                    }
+                ),
+                400,
+            )
+
+        # Simulate processing time
+        time.sleep(0.1)
+
+        # Mock translation text (always to English)
+        mock_text = f"This is a simulated English translation from {model}. The audio was translated successfully."
+
+        if stream:
+            def generate():
+                completion_id = "translation-" + "".join(
+                    random.choices(
+                        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                        k=20,
+                    )
+                )
+                words = mock_text.split()
+                for i, word in enumerate(words):
+                    chunk = {
+                        "id": completion_id,
+                        "object": "audio.translation.chunk",
+                        "text": word + (" " if i < len(words) - 1 else ""),
+                    }
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                    time.sleep(0.05)
+
+                # Final chunk
+                final_chunk = {
+                    "id": completion_id,
+                    "object": "audio.translation",
+                    "text": mock_text,
+                }
+                yield f"data: {json.dumps(final_chunk)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            response = Response(generate(), mimetype="text/event-stream")
+            response.headers['Cache-Control'] = 'no-cache'
+            response.headers['X-Accel-Buffering'] = 'no'
+            return response
+        else:
+            if response_format == "verbose_json":
+                response = {
+                    "task": "translate",
+                    "language": "en",
+                    "duration": 5.5,
+                    "text": mock_text,
+                    "segments": [
+                        {
+                            "id": 0,
+                            "seek": 0,
+                            "start": 0.0,
+                            "end": 5.5,
+                            "text": mock_text,
+                            "tokens": list(range(100)),
+                            "temperature": 0.0,
+                            "avg_logprob": -0.25,
+                            "compression_ratio": 1.5,
+                            "no_speech_prob": 0.01,
+                        }
+                    ],
+                }
+            elif response_format in ("text", "srt", "vtt"):
+                return Response(mock_text, mimetype="text/plain")
+            else:  # json (default)
+                response = {"text": mock_text}
+
+            return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in audio translations endpoint: {e}")
+        err = {
+            "error": {
+                "message": "The server had an error while processing your request. Sorry about that!",
+                "type": "api_error",
+                "param": None,
+                "code": None,
+            }
+        }
+        return jsonify(err), 500
+
+
 @app.route("/v1/embeddings", methods=["POST"])
 @auth.login_required
 def embeddings():
