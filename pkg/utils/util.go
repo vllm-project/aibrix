@@ -19,15 +19,16 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/vllm-project/aibrix/pkg/constants"
-	v1 "k8s.io/api/core/v1"
 	"os"
 	"strconv"
 	"time"
 
 	"github.com/pkoukk/tiktoken-go"
 	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
+
+	"github.com/vllm-project/aibrix/pkg/constants"
 )
 
 // https://cookbook.openai.com/examples/how_to_count_tokens_with_tiktoken
