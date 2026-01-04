@@ -75,7 +75,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream)
 	} else {
 		externalFilter := routingCtx.ReqHeaders[HeaderExternalFilter]
-		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr, externalFilter)
+		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr, externalFilter) // ip + port
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingAlgorithm, "model", model, "routingDuration", routingCtx.GetRoutingDelay())
 			return generateErrorResponse(

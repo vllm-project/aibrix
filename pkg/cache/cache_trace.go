@@ -49,15 +49,28 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 		return
 	}
 	pod := ctx.TargetPod()
-	metaPod, ok := c.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
+	port := ctx.TargetPort()
+	var podKey string
+	var scope metrics.MetricScope
+
+	if port == 0 {
+		podKey = utils.GeneratePodKey(pod.Namespace, pod.Name)
+		scope = metrics.PodMetricScope
+	} else {
+		podKey = utils.GeneratePodKeyWithPort(pod.Namespace, pod.Name, port)
+		scope = metrics.PortMetricScope
+	}
+
+	metaPod, ok := c.metaPods.Load(podKey)
 	if !ok {
 		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
 		return
 	}
+	metaPod.currentPort = port // set current process port
 
 	// Update running requests
 	requests := atomic.AddInt32(&metaPod.runningRequests, 1)
-	if err := c.updatePodRecord(metaPod, "", metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
+	if err := c.updatePodRecord(metaPod, "", metrics.RealtimeNumRequestsRunning, scope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
 		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s, err: %v", metrics.RealtimeNumRequestsRunning, metaPod.Name, requestID, err)
 	}
 
@@ -86,9 +99,20 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 		return
 	}
 	pod := ctx.TargetPod()
+	port := ctx.TargetPort()
+	var podKey string
+	var scope metrics.MetricScope
+
+	if port == 0 {
+		podKey = utils.GeneratePodKey(pod.Namespace, pod.Name)
+		scope = metrics.PodMetricScope
+	} else {
+		podKey = utils.GeneratePodKeyWithPort(pod.Namespace, pod.Name, port)
+		scope = metrics.PortMetricScope
+	}
 
 	// Now that pendingLoadProvider must be set.
-	metaPod, ok := c.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
+	metaPod, ok := c.metaPods.Load(podKey)
 	if !ok {
 		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
 		return
@@ -96,7 +120,7 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 
 	// Update running requests
 	requests := atomic.AddInt32(&metaPod.runningRequests, -1)
-	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
+	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, scope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
 		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNumRequestsRunning, pod.Name, requestID)
 	}
 

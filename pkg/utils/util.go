@@ -18,6 +18,9 @@ package utils
 
 import (
 	"encoding/json"
+	"fmt"
+	"github.com/vllm-project/aibrix/pkg/constants"
+	v1 "k8s.io/api/core/v1"
 	"os"
 	"strconv"
 	"time"
@@ -152,4 +155,85 @@ func LoadEnvDuration(key string, defaultValue time.Duration) time.Duration {
 	}
 	klog.Infof("set %s: %v, using default value", key, defaultValue)
 	return defaultValue
+}
+
+// GetPortsForPod returns all ports for a pod based on its configuration.
+// For distributed data-parallel (DP) inference, a pod may expose multiple ports:
+// - Base port from pod labels (e.g., "model-port")
+// - Additional ports for each DP rank (base_port + rank_index)
+// Returns nil if the pod doesn't have the required configuration.
+func GetPortsForPod(pod *v1.Pod) []int {
+	if pod == nil || pod.Labels == nil {
+		return nil
+	}
+
+	// Get base port from pod labels
+	basePort, err := getBasePortFromLabels(pod)
+	if err != nil {
+		return nil
+	}
+
+	// Get data-parallel size from environment variables
+	dpSize := getDataParallelSize(pod)
+	if dpSize <= 0 {
+		// If no DP size, return only the base port
+		return []int{basePort}
+	}
+
+	// Generate ports for each DP rank: basePort, basePort+1, ..., basePort+(dpSize-1)
+	ports := make([]int, dpSize)
+	for i := 0; i < dpSize; i++ {
+		ports[i] = basePort + i
+	}
+
+	return ports
+}
+
+// getBasePortFromLabels extracts the base port from pod labels
+func getBasePortFromLabels(pod *v1.Pod) (int, error) {
+	portStr, ok := pod.Labels[constants.ModelLabelPort]
+	if !ok || portStr == "" {
+		return 0, fmt.Errorf("no %s label found", constants.ModelLabelPort)
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		klog.Warningf("Invalid port value in label %s=%s: %v",
+			constants.ModelLabelPort, portStr, err)
+		return 0, fmt.Errorf("invalid port format: %w", err)
+	}
+
+	if port <= 0 || port > 65535 {
+		klog.Warningf("Port %d from label %s is out of valid range",
+			port, constants.ModelLabelPort)
+		return 0, fmt.Errorf("port %d out of range [1-65535]", port)
+	}
+
+	return port, nil
+}
+
+// getDataParallelSize extracts data-parallel size from pod environment variables
+func getDataParallelSize(pod *v1.Pod) int {
+	for _, container := range pod.Spec.Containers {
+		for _, env := range container.Env {
+			if env.Name == "data-parallel-size" && env.Value != "" {
+				size, err := strconv.Atoi(env.Value)
+				if err != nil {
+					klog.Warningf("Invalid data-parallel-size value '%s': %v",
+						env.Value, err)
+					return 0
+				}
+
+				if size < 0 {
+					klog.Warningf("Invalid data-parallel-size %d (must be >= 0)", size)
+					return 0
+				}
+
+				return size
+			}
+		}
+	}
+
+	// Default to 0 if not found (single instance)
+	return 0
 }

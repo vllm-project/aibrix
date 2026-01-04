@@ -112,6 +112,7 @@ func (c *Store) addPod(obj interface{}) {
 	defer c.mu.Unlock()
 
 	metaPod := c.addPodLocked(pod)
+	c.addPodWithPortLocked(pod)
 	c.addPodAndModelMappingLocked(metaPod, modelName)
 
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
@@ -294,6 +295,29 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 		c.bufferPod = nil
 	}
 	return metaPod
+}
+
+func (c *Store) addPodWithPortLocked(pod *v1.Pod) {
+	ports := utils.GetPortsForPod(pod)
+	if len(ports) == 0 {
+		return
+	}
+
+	for _, port := range ports {
+		if c.bufferPod == nil {
+			c.bufferPod = &Pod{
+				Pod:    pod,
+				Models: utils.NewRegistry[string](),
+			}
+		} else {
+			c.bufferPod.Pod = pod
+		}
+
+		_, loaded := c.metaPods.LoadOrStore(utils.GeneratePodKeyWithPort(pod.Namespace, pod.Name, port), c.bufferPod)
+		if !loaded {
+			c.bufferPod = nil
+		}
+	}
 }
 
 func (c *Store) addPodAndModelMappingLockedByName(podName, namespace, modelName string) {

@@ -54,6 +54,11 @@ func GeneratePodKey(podNamespace, podName string) string {
 	return fmt.Sprintf("%s/%s", podNamespace, podName)
 }
 
+// GeneratePodKeyWithPort generates a key in the format "namespace/name/port" for a given pod.
+func GeneratePodKeyWithPort(podNamespace, podName string, port int) string {
+	return fmt.Sprintf("%s/%s/%v", podNamespace, podName, port)
+}
+
 // ParsePodKey parses a key in the format "namespace/podName".
 // Returns (namespace, podName, success).
 func ParsePodKey(key string) (string, string, bool) {

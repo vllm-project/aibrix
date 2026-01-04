@@ -180,7 +180,7 @@ func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods types.PodList, 
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods for routing")
 	}
-	if len(readyPods) == 1 {
+	if len(readyPods) == 1 && len(utils.GetPortsForPod(readyPods[0])) <= 1 {
 		ctx.SetTargetPod(readyPods[0])
 		return ctx.TargetAddress(), nil
 	}
