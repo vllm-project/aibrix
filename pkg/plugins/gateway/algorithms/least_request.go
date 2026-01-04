@@ -57,9 +57,8 @@ func NewLeastRequestRouter() (types.Router, error) {
 func (r *leastRequestRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	readyPods := readyPodList.All()
 	// Use distributed DP-level API server routing when pods have multiple ports
-	ports := readyPodList.ListPortsForPod()
-	if len(ports) > 1 {
-		return r.apiServerRoute(ctx, readyPods, ports)
+	if readyPodList.HasMultiPortPods() {
+		return r.apiServerRoute(ctx, readyPods, readyPodList.ListPortsForPod())
 	}
 	// Use default Pod-level routing
 	targetPod := selectTargetPodWithLeastRequestCount(r.cache, readyPods)
@@ -77,8 +76,8 @@ func (r *leastRequestRouter) Route(ctx *types.RoutingContext, readyPodList types
 	return ctx.TargetAddress(), nil
 }
 
-func (r *leastRequestRouter) apiServerRoute(ctx *types.RoutingContext, readyPods []*v1.Pod, ports map[string][]int) (string, error) {
-	targetPod, targetPort := selectTargetPodAndPortWithLeastRequestCount(r.cache, readyPods, ports)
+func (r *leastRequestRouter) apiServerRoute(ctx *types.RoutingContext, readyPods []*v1.Pod, portsMap map[string][]int) (string, error) {
+	targetPod, targetPort := selectTargetPodAndPortWithLeastRequestCount(r.cache, readyPods, portsMap)
 	if targetPod == nil {
 		return "", fmt.Errorf("no target pod selected")
 	}
@@ -118,11 +117,11 @@ func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod
 	return targetPod
 }
 
-func selectTargetPodAndPortWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod, ports map[string][]int) (*v1.Pod, int) {
+func selectTargetPodAndPortWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod, portsMap map[string][]int) (*v1.Pod, int) {
 	minCount := math.MaxInt32
 
-	targetApiServers := []string{}
-	podRequestCount := getRequestCountsWithPort(cache, readyPods, ports)
+	var targetApiServers []string
+	podRequestCount := getRequestCountsWithPort(cache, readyPods, portsMap)
 	if len(podRequestCount) == 0 {
 		return nil, 0
 	}
@@ -152,7 +151,12 @@ func selectTargetPodAndPortWithLeastRequestCount(cache cache.Cache, readyPods []
 	podName := parts[0]
 	portStr := parts[1]
 
-	targetPod, _ := utils.FilterPodByName(podName, readyPods)
+	targetPod, found := utils.FilterPodByName(podName, readyPods)
+	if !found {
+		klog.ErrorS(nil, "Selected pod not found in ready pods list", "podName", podName)
+		return nil, 0
+	}
+
 	targetPort, err := strconv.Atoi(portStr)
 	if err != nil {
 		klog.ErrorS(err, "Failed to parse port", "port", portStr)
@@ -184,10 +188,10 @@ func getRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
 // Note: Currently, gateway instance tracks active running request counts for each pod locally,
 // if multiple gateway instances are active then state is not shared across them.
 // It is advised to run on leader gateway instance.
-func getRequestCountsWithPort(cache cache.Cache, readyPods []*v1.Pod, ports map[string][]int) map[string]int {
+func getRequestCountsWithPort(cache cache.Cache, readyPods []*v1.Pod, portsMap map[string][]int) map[string]int {
 	podRequestCount := make(map[string]int)
 	for _, pod := range readyPods {
-		podPorts, exists := ports[pod.Name]
+		podPorts, exists := portsMap[pod.Name]
 		if !exists || len(podPorts) == 0 {
 			continue
 		}

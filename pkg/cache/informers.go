@@ -313,7 +313,7 @@ func (c *Store) addPodWithPortLocked(pod *v1.Pod) {
 			c.bufferPod.Pod = pod
 		}
 
-		_, loaded := c.metaPods.LoadOrStore(utils.GeneratePodKeyWithPort(pod.Namespace, pod.Name, port), c.bufferPod)
+		_, loaded := c.metaPods.LoadOrStore(utils.GeneratePodKey(pod.Namespace, pod.Name, port), c.bufferPod)
 		if !loaded {
 			c.bufferPod = nil
 		}

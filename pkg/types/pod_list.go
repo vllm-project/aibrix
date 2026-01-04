@@ -33,4 +33,7 @@ type PodList interface {
 
 	// ListPortsForPod returns a map of portList that bind with pod, key podname
 	ListPortsForPod() map[string][]int
+
+	// HasMultiPortPods returns true if pod with multiPorts or false if pod with single port
+	HasMultiPortPods() bool
 }

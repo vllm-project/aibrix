@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	v1 "k8s.io/api/core/v1"
 	"sync/atomic"
 	"time"
 
@@ -50,16 +51,7 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 	}
 	pod := ctx.TargetPod()
 	port := ctx.TargetPort()
-	var podKey string
-	var scope metrics.MetricScope
-
-	if port == 0 {
-		podKey = utils.GeneratePodKey(pod.Namespace, pod.Name)
-		scope = metrics.PodMetricScope
-	} else {
-		podKey = utils.GeneratePodKeyWithPort(pod.Namespace, pod.Name, port)
-		scope = metrics.PortMetricScope
-	}
+	podKey, scope := getPodKeyAndScope(pod, port)
 
 	metaPod, ok := c.metaPods.Load(podKey)
 	if !ok {
@@ -100,16 +92,7 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 	}
 	pod := ctx.TargetPod()
 	port := ctx.TargetPort()
-	var podKey string
-	var scope metrics.MetricScope
-
-	if port == 0 {
-		podKey = utils.GeneratePodKey(pod.Namespace, pod.Name)
-		scope = metrics.PodMetricScope
-	} else {
-		podKey = utils.GeneratePodKeyWithPort(pod.Namespace, pod.Name, port)
-		scope = metrics.PortMetricScope
-	}
+	podKey, scope := getPodKeyAndScope(pod, port)
 
 	// Now that pendingLoadProvider must be set.
 	metaPod, ok := c.metaPods.Load(podKey)
@@ -143,6 +126,13 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 	if metaPod.CanLogPodTrace(5) {
 		klog.V(4).InfoS("pod stats updated (donePodStats).", "pod", metaPod.Name, "requestID", ctx.RequestID, "running_requests", requests, "pending_util", utilization, "pending_load", ctx.PendingLoad)
 	}
+}
+
+func getPodKeyAndScope(pod *v1.Pod, port int) (string, metrics.MetricScope) {
+	if port == 0 {
+		return utils.GeneratePodKey(pod.Namespace, pod.Name), metrics.PodMetricScope
+	}
+	return utils.GeneratePodKey(pod.Namespace, pod.Name, port), metrics.PortMetricScope
 }
 
 func (c *Store) writeRequestTraceToStorage(roundT int64) {

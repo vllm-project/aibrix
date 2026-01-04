@@ -137,3 +137,13 @@ func (arr *PodArray) ListPortsForPod() map[string][]int {
 
 	return podWithPort
 }
+
+func (arr *PodArray) HasMultiPortPods() bool {
+	pods := arr.All()
+	for _, pod := range pods {
+		if len(GetPortsForPod(pod)) > 1 {
+			return true
+		}
+	}
+	return false
+}

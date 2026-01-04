@@ -154,7 +154,7 @@ func (c *Store) GetMetricValueByPod(podName, podNamespace, metricName string) (m
 //	metrics.MetricValue: The metric value
 //	error: Error if Pod or metric doesn't exist
 func (c *Store) GetMetricValueByPodWithPort(podName, podNamespace, metricName string, port int) (metrics.MetricValue, error) {
-	key := utils.GeneratePodKeyWithPort(podNamespace, podName, port)
+	key := utils.GeneratePodKey(podNamespace, podName, port)
 	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
 		return nil, fmt.Errorf("key does not exist in the cache: %s", key)
