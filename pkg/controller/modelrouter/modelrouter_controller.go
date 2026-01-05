@@ -477,9 +477,9 @@ func addInformerForGVK(mgr manager.Manager, modelRouter *ModelRouter, gvk schema
 	uObj := &unstructured.Unstructured{}
 	uObj.SetGroupVersionKind(gvk)
 
-	uInformer, err := mgr.GetCache().GetInformer(context.TODO(), uObj)
+	uInformer, err := mgr.GetCache().GetInformer(context.Background(), uObj)
 	if err != nil {
-		klog.ErrorS(err, "Failed to get informer for LWS")
+		klog.ErrorS(err, "Failed to get informer", "GVK", gvk)
 		return err
 	}
 

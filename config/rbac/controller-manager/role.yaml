@@ -314,9 +314,6 @@ rules:
   resources:
   - leaderworkersets
   verbs:
-  - create
-  - delete
   - get
   - list
-  - update
   - watch
