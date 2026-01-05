@@ -36,26 +36,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-const (
-	// https://github.com/openai/openai-go/blob/main/embedding.go#L126
-	MaxInputTokensPerModel = 8192
-	MaxTotalTokens         = 300000
-	MaxArrayDimensions     = 2048
-
-	// OpenAI Error Types
-	ErrorTypeInvalidRequest = "invalid_request_error"
-	ErrorTypeAuthentication = "authentication_error"
-	ErrorTypeRateLimit      = "rate_limit_error"
-	ErrorTypeApi            = "api_error"
-	ErrorTypeOverloaded     = "overloaded_error"
-
-	// OpenAI Error Codes
-	ErrorCodeInvalidAPIKey      = "invalid_api_key"
-	ErrorCodeModelNotFound      = "model_not_found"
-	ErrorCodeRateLimitExceeded  = "rate_limit_exceeded"
-	ErrorCodeServiceUnavailable = "service_unavailable"
-)
-
 // validateRequestBody validates input by unmarshaling request body into respective openai-golang struct based on requestpath.
 // nolint:nakedret
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
@@ -68,7 +48,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 	}
 
 	switch requestPath {
-	case "/v1/chat/completions":
+	case PathChatCompletions:
 		chatCompletionObj := openai.ChatCompletionNewParams{}
 		if err := json.Unmarshal(requestBody, &chatCompletionObj); err != nil {
 			klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
@@ -82,7 +62,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		if errRes = validateStreamOptions(requestID, user, &stream, streamOptions, jsonMap); errRes != nil {
 			return
 		}
-	case "/v1/completions":
+	case PathCompletions:
 		// openai.CompletionsNewParams does not support json unmarshal for CompletionNewParamsPromptUnion in release v0.1.0-beta.10
 		// once supported, input request will be directly unmarshal into openai.CompletionsNewParams
 		type Completion struct {
@@ -100,7 +80,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		model = completionObj.Model
 		message = completionObj.Prompt
 		stream = completionObj.Stream
-	case "/v1/embeddings":
+	case PathEmbeddings:
 		embeddingObj := openai.EmbeddingNewParams{}
 		if err := json.Unmarshal(requestBody, &embeddingObj); err != nil {
 			klog.ErrorS(err, "error to unmarshal embeddings object", "requestID", requestID, "requestBody", string(requestBody))
@@ -120,7 +100,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 				return
 			}
 		}
-	case "/v1/images/generations", "/v1/video/generations":
+	case PathImagesGenerations, PathVideoGenerations:
 		imageGenerationObj := openai.ImageGenerateParams{}
 		if err := json.Unmarshal(requestBody, &imageGenerationObj); err != nil {
 			klog.ErrorS(err, "error to unmarshal image generations object", "requestID", requestID, "requestBody", string(requestBody))
@@ -128,7 +108,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 			return
 		}
 		model = imageGenerationObj.Model
-	case "/v1/rerank":
+	case PathRerank:
 		type RerankRequest struct {
 			Model     string   `json:"model"`
 			Query     string   `json:"query"`
@@ -156,7 +136,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 
 		model = req.Model
 		message = strings.Join(append([]string{req.Query}, req.Documents...), " ")
-	case "/v1/audio/transcriptions", "/v1/audio/translations":
+	case PathAudioTranscriptions, PathAudioTranslations:
 		// Audio endpoints require multipart/form-data content-type, not JSON
 		// This case handles the error when JSON is sent to audio endpoints
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "audio requests must use multipart/form-data content-type", "", "", HeaderErrorRequestBodyProcessing, "true")
@@ -172,7 +152,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 
 // isAudioRequest returns true if the request path is an audio endpoint
 func isAudioRequest(requestPath string) bool {
-	return requestPath == "/v1/audio/transcriptions" || requestPath == "/v1/audio/translations"
+	return requestPath == PathAudioTranscriptions || requestPath == PathAudioTranslations
 }
 
 // isMultipartRequest returns true if the content type indicates multipart form data
