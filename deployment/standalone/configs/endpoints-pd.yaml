@@ -1,0 +1,17 @@
+# AIBrix Gateway Endpoints Configuration - P/D Disaggregation Mode
+# This file defines separate prefill and decode engines.
+#
+# For local development, add to /etc/hosts:
+#   127.0.0.1 gateway prefill-engine decode-engine metadata-service
+
+models:
+  - name: "Qwen/Qwen3-4B"
+    endpoints:
+      - address: "prefill-engine:8000"
+        labels:
+          role-name: prefill
+          roleset-name: default
+      - address: "decode-engine:8000"
+        labels:
+          role-name: decode
+          roleset-name: default

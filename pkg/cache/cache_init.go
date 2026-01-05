@@ -30,6 +30,7 @@ import (
 	"k8s.io/klog/v2"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/vllm-project/aibrix/pkg/cache/discovery"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -51,6 +52,11 @@ type InitOptions struct {
 
 	// ModelRouterProvider is needed only by the gateway. Can be nil.
 	ModelRouterProvider ModelRouterProviderFunc
+
+	// DiscoveryProvider is an optional service discovery provider.
+	// If set, it will be used instead of Kubernetes informers.
+	// This enables standalone/development mode without Kubernetes.
+	DiscoveryProvider discovery.Provider
 }
 
 const (
@@ -324,9 +330,18 @@ func InitWithOptions(config *rest.Config, stopCh <-chan struct{}, opts InitOptio
 		// Create store with provided dependencies
 		store = New(opts.RedisClient, initPrometheusAPI(), opts.ModelRouterProvider)
 
-		// Initialize cache components
-		if err := initCacheInformers(store, config, stopCh); err != nil {
-			panic(err)
+		// Initialize service discovery
+		if opts.DiscoveryProvider != nil {
+			// Use custom discovery provider (e.g., file-based for standalone mode)
+			if err := initDiscoveryProvider(store, opts.DiscoveryProvider); err != nil {
+				klog.Fatalf("Failed to initialize discovery provider: %v", err)
+			}
+			klog.InfoS("Using custom discovery provider", "type", opts.DiscoveryProvider.Type())
+		} else {
+			// Use Kubernetes informers (default)
+			if err := initCacheInformers(store, config, stopCh); err != nil {
+				klog.Fatalf("Failed to initialize cache informers: %v", err)
+			}
 		}
 		initMetricsCache(store, stopCh)
 
@@ -378,6 +393,20 @@ func initMetricsCache(store *Store, stopCh <-chan struct{}) {
 			}
 		}
 	}()
+}
+
+// initDiscoveryProvider initializes the cache using a custom discovery provider.
+func initDiscoveryProvider(store *Store, provider discovery.Provider) error {
+	pods, err := provider.Load()
+	if err != nil {
+		return err
+	}
+
+	for _, pod := range pods {
+		store.addPod(pod)
+	}
+
+	return nil
 }
 
 // initMetricsCache initializes metrics cache update loop

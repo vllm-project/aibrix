@@ -32,6 +32,7 @@ DEPLOYMENT_NAME = os.getenv("DEPLOYMENT_NAME", "llama2-7b")
 NAMESPACE = os.getenv("POD_NAMESPACE", "default")
 DEFAULT_REPLICAS = int(os.getenv("DEFAULT_REPLICAS", "1"))
 SIMULATION = os.getenv("SIMULATION", "disabled")
+STANDALONE_MODE = os.getenv("STANDALONE_MODE", "false").lower() in ("true", "1", "yes")
 
 modelMaps = {
     "llama2-7b": "meta-llama/Llama-2-7b-hf",
@@ -1076,18 +1077,21 @@ vllm:{metric_name}{{model_name="{model_name}"}} {value}
 @app.route("/metrics")
 def metrics():
     # get deployment information
-    try:
-        apps_v1 = client.AppsV1Api()
-        resp = apps_v1.read_namespaced_deployment(DEPLOYMENT_NAME, NAMESPACE)
-        replicas = resp.spec.replicas if resp.spec.replicas is not None else 1
-    except Exception as e:
-        print(
-            f"Failed to get deployment information: {DEPLOYMENT_NAME=} {NAMESPACE=} error={str(e)}"
-        )
-        print(
-            f"Due to the failure, replicas {DEFAULT_REPLICAS} will be used to calculate metrics"
-        )
+    if STANDALONE_MODE:
         replicas = DEFAULT_REPLICAS
+    else:
+        try:
+            apps_v1 = client.AppsV1Api()
+            resp = apps_v1.read_namespaced_deployment(DEPLOYMENT_NAME, NAMESPACE)
+            replicas = resp.spec.replicas if resp.spec.replicas is not None else 1
+        except Exception as e:
+            print(
+                f"Failed to get deployment information: {DEPLOYMENT_NAME=} {NAMESPACE=} error={str(e)}"
+            )
+            print(
+                f"Due to the failure, replicas {DEFAULT_REPLICAS} will be used to calculate metrics"
+            )
+            replicas = DEFAULT_REPLICAS
 
     # a reasonable mock total value
     total = overrides.get("total", 100.0)
@@ -1424,11 +1428,12 @@ if __name__ == "__main__":
 
     # Perform profiling and skip actual run
     if "--time_limit" not in sys.argv:
-        try:
-            # config.load_kube_config()
-            config.load_incluster_config()
-        except Exception as e:
-            print(f"Failed to load k8s config: {e}")
+        if not STANDALONE_MODE:
+            try:
+                # config.load_kube_config()
+                config.load_incluster_config()
+            except Exception as e:
+                print(f"Failed to load k8s config: {e}")
 
         app.run(host="0.0.0.0", port=8000)
 
