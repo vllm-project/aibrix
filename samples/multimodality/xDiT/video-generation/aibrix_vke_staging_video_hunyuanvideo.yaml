@@ -1,10 +1,11 @@
 apiVersion: apps/v1 
 kind: Deployment 
 metadata:
-  name: hunyuanvideo 
-  labels: 
-    model.aibrix.ai/name: hunyuanvideo 
-    model.aibrix.ai/port: "8000" 
+  name: hunyuanvideo
+  labels:
+    model.aibrix.ai/name: hunyuanvideo
+    model.aibrix.ai/port: "8000"
+    model.aibrix.ai/engine: xdit 
 spec: 
   replicas: 1 
   strategy: 
@@ -16,10 +17,11 @@ spec:
     matchLabels: 
       model.aibrix.ai/name: hunyuanvideo 
   template: 
-    metadata: 
-      labels: 
-        model.aibrix.ai/name: hunyuanvideo 
-        model.aibrix.ai/port: "8000" 
+    metadata:
+      labels:
+        model.aibrix.ai/name: hunyuanvideo
+        model.aibrix.ai/port: "8000"
+        model.aibrix.ai/engine: xdit 
     spec: 
       initContainers: 
         - command:             
