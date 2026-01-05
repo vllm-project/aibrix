@@ -283,6 +283,77 @@ For production multi-node deployments, use the Helm chart:
 helm install aibrix ./dist/chart
 ```
 
+## Local Development (Without Docker)
+
+For developing and testing the gateway plugin locally without Docker:
+
+### Prerequisites
+
+- Go 1.22+ (for building gateway-plugins)
+- Python 3.9+ (for mock vLLM server)
+- Envoy proxy installed (`brew install envoy` on macOS)
+- Redis running locally (`brew install redis && redis-server`)
+
+### 1. Build Gateway Plugin
+
+```bash
+# Build without ZMQ dependency (for local testing)
+make build-gateway-plugins-nozmq
+```
+
+### 2. Start Components
+
+Open 3 terminal windows:
+
+**Terminal 1 - Mock vLLM Server:**
+```bash
+cd development/app
+STANDALONE_MODE=true MODEL_NAME=Qwen/Qwen3-4B python app.py
+```
+
+**Terminal 2 - Gateway Plugin:**
+```bash
+./bin/gateway-plugins \
+  --standalone \
+  --endpoints-config deployment/standalone/configs/endpoints.yaml
+```
+
+**Terminal 3 - Envoy Proxy:**
+```bash
+envoy -c deployment/standalone/configs/envoy.yaml
+```
+
+### 3. Test
+
+```bash
+# Health check
+curl http://localhost/healthz
+
+# Chat completion
+curl http://localhost/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3-4B",
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+```
+
+### Configuration Files
+
+- `configs/endpoints.yaml` - Define backend endpoints (model name, address)
+- `configs/endpoints-pd.yaml` - P/D disaggregation mode with prefill/decode labels
+- `configs/envoy.yaml` - Envoy config with ext_proc filter for gateway-plugin
+
+### Ports
+
+| Component | Port | Description |
+|-----------|------|-------------|
+| Envoy | 80 | HTTP entry point |
+| Envoy Admin | 9901 | Admin dashboard |
+| Gateway Plugin | 50052 | gRPC ext_proc |
+| Gateway Metrics | 8080 | Prometheus metrics |
+| vLLM/Mock Server | 8000 | Backend inference |
+
 ## File Structure
 
 ```
@@ -291,7 +362,9 @@ standalone/
 ├── .env.example           # Configuration template
 ├── start.sh               # Startup script
 ├── configs/
-│   └── envoy.yaml         # Envoy config with ext_proc for gateway-plugin
+│   ├── envoy.yaml         # Envoy config with ext_proc for gateway-plugin
+│   ├── endpoints.yaml     # Backend endpoints (simple mode)
+│   └── endpoints-pd.yaml  # Backend endpoints (P/D mode)
 └── README.md              # This file
 ```
 

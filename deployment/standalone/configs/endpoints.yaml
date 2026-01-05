@@ -3,8 +3,11 @@
 #
 # Simple mode: Single vLLM engine
 # For P/D mode, use endpoints-pd.yaml instead.
+#
+# For local development, add to /etc/hosts:
+#   127.0.0.1 gateway vllm metadata-service
 
 models:
-  - name: "${MODEL_NAME:-Qwen/Qwen3-4B}"
+  - name: "Qwen/Qwen3-4B"
     endpoints:
       - address: "vllm:8000"

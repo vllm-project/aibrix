@@ -223,6 +223,10 @@ build-gateway-plugins: manifests generate fmt vet ## Build gateway-plugins binar
 		-ldflags='-extldflags "$(CGO_LDFLAGS)"' \
 		-o bin/gateway-plugins cmd/plugins/main.go
 
+.PHONY: build-gateway-plugins-nozmq
+build-gateway-plugins-nozmq: manifests generate fmt vet ## Build gateway-plugins binary without ZMQ (for standalone mode).
+	CGO_ENABLED=0 go build -tags="nozmq" -o bin/gateway-plugins cmd/plugins/main.go
+
 .PHONY: build-metadata-service
 build-metadata-service: ## Metadata service is now Python-based, use docker-build-metadata-service instead.
 	@echo "Metadata service is now Python-based. Use 'make docker-build-metadata-service' to build the Docker image."
