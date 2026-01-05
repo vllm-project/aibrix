@@ -65,6 +65,42 @@ const (
 
 	// Envs
 	EnvRoutingAlgorithm = "ROUTING_ALGORITHM"
+
+	// OpenAI Error Types
+	ErrorTypeInvalidRequest = "invalid_request_error"
+	ErrorTypeAuthentication = "authentication_error"
+	ErrorTypeRateLimit      = "rate_limit_error"
+	ErrorTypeApi            = "api_error"
+	ErrorTypeOverloaded     = "overloaded_error"
+
+	// OpenAI Error Codes
+	ErrorCodeInvalidAPIKey      = "invalid_api_key"
+	ErrorCodeModelNotFound      = "model_not_found"
+	ErrorCodeRateLimitExceeded  = "rate_limit_exceeded"
+	ErrorCodeServiceUnavailable = "service_unavailable"
+
+	// Embedding Constraints
+	// https://github.com/openai/openai-go/blob/main/embedding.go#L126
+	MaxInputTokensPerModel = 8192
+	MaxTotalTokens         = 300000
+	MaxArrayDimensions     = 2048
+
+	// Request Paths
+	PathChatCompletions     = "/v1/chat/completions"
+	PathCompletions         = "/v1/completions"
+	PathEmbeddings          = "/v1/embeddings"
+	PathImagesGenerations   = "/v1/images/generations"
+	PathVideoGenerations    = "/v1/video/generations"
+	PathAudioTranscriptions = "/v1/audio/transcriptions"
+	PathAudioTranslations   = "/v1/audio/translations"
+	PathRerank              = "/v1/rerank"
+
+	// Engine-specific paths (xdit)
+	PathXditGenerate      = "/generate"
+	PathXditGenerateVideo = "/generatevideo"
+
+	// Engine Types
+	EngineXdit = "xdit"
 )
 
 var (

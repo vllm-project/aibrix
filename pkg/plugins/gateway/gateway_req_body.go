@@ -157,12 +157,12 @@ func getEngineBasedPathRewrite(requestPath string, pods []*v1.Pod) string {
 	}
 
 	// Only xdit engine needs path rewriting to its native endpoints
-	if engine == "xdit" {
+	if engine == EngineXdit {
 		switch requestPath {
-		case "/v1/images/generations":
-			return "/generate"
-		case "/v1/video/generations":
-			return "/generatevideo"
+		case PathImagesGenerations:
+			return PathXditGenerate
+		case PathVideoGenerations:
+			return PathXditGenerateVideo
 		}
 	}
 
