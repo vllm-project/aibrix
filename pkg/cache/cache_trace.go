@@ -25,6 +25,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
@@ -49,15 +50,19 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 		return
 	}
 	pod := ctx.TargetPod()
-	metaPod, ok := c.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
+	port := ctx.TargetPort()
+	podKey, scope := getPodKeyAndScope(pod, port)
+
+	metaPod, ok := c.metaPods.Load(podKey)
 	if !ok {
 		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
 		return
 	}
+	metaPod.currentPort = port // set current process port
 
 	// Update running requests
 	requests := atomic.AddInt32(&metaPod.runningRequests, 1)
-	if err := c.updatePodRecord(metaPod, "", metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
+	if err := c.updatePodRecord(metaPod, "", metrics.RealtimeNumRequestsRunning, scope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
 		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s, err: %v", metrics.RealtimeNumRequestsRunning, metaPod.Name, requestID, err)
 	}
 
@@ -86,17 +91,20 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 		return
 	}
 	pod := ctx.TargetPod()
+	port := ctx.TargetPort()
+	podKey, scope := getPodKeyAndScope(pod, port)
 
 	// Now that pendingLoadProvider must be set.
-	metaPod, ok := c.metaPods.Load(utils.GeneratePodKey(pod.Namespace, pod.Name))
+	metaPod, ok := c.metaPods.Load(podKey)
 	if !ok {
 		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
 		return
 	}
+	metaPod.currentPort = port
 
 	// Update running requests
 	requests := atomic.AddInt32(&metaPod.runningRequests, -1)
-	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
+	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, scope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
 		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNumRequestsRunning, pod.Name, requestID)
 	}
 
@@ -119,6 +127,13 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 	if metaPod.CanLogPodTrace(5) {
 		klog.V(4).InfoS("pod stats updated (donePodStats).", "pod", metaPod.Name, "requestID", ctx.RequestID, "running_requests", requests, "pending_util", utilization, "pending_load", ctx.PendingLoad)
 	}
+}
+
+func getPodKeyAndScope(pod *v1.Pod, port int) (string, metrics.MetricScope) {
+	if port == 0 {
+		return utils.GeneratePodKey(pod.Namespace, pod.Name), metrics.PodMetricScope
+	}
+	return utils.GeneratePodKey(pod.Namespace, pod.Name, port), metrics.PortMetricScope
 }
 
 func (c *Store) writeRequestTraceToStorage(roundT int64) {
