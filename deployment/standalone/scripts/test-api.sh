@@ -29,7 +29,7 @@ fi
 
 # Defaults
 BASE_URL="http://localhost:${HTTP_PORT:-80}"
-MODEL_NAME="${MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}"
+MODEL_NAME="${MODEL_NAME:-Qwen/Qwen2.5-1.5B-Instruct}"
 QUICK_MODE=false
 STREAMING_TEST=false
 

@@ -22,7 +22,7 @@ Simplified single-node AIBrix deployment without Kubernetes complexity. Perfect 
 ### 2. Configure
 
 ```bash
-cd docker-compose
+cd deployment/standalone
 
 # Copy and edit the configuration
 cp .env.example .env
@@ -55,7 +55,7 @@ curl http://localhost/v1/models
 curl http://localhost/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "meta-llama/Llama-3.1-8B-Instruct",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
@@ -112,7 +112,7 @@ curl http://localhost/v1/chat/completions \
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MODEL_NAME` | `meta-llama/Llama-3.1-8B-Instruct` | HuggingFace model ID |
+| `MODEL_NAME` | `Qwen/Qwen2.5-1.5B-Instruct` | HuggingFace model ID |
 | `MODEL_DIR` | `~/.cache/huggingface` | Model cache directory |
 | `HF_TOKEN` | - | HuggingFace token (required for gated models) |
 | `VLLM_GPU` | `0` | GPU ID for simple mode |
@@ -294,6 +294,15 @@ For developing and testing the gateway plugin locally without Docker:
 - Envoy proxy installed (`brew install envoy` on macOS)
 - Redis running locally (`brew install redis && redis-server`)
 
+### Network Setup (Important!)
+
+The config files use hostnames that work for both Docker and local development.
+Add these entries to `/etc/hosts` so Envoy can resolve the service names:
+
+```bash
+echo "127.0.0.1 gateway vllm metadata-service" | sudo tee -a /etc/hosts
+```
+
 ### 1. Build Gateway Plugin
 
 ```bash
@@ -342,7 +351,11 @@ curl http://localhost/v1/chat/completions \
 
 - `configs/endpoints.yaml` - Define backend endpoints (model name, address)
 - `configs/endpoints-pd.yaml` - P/D disaggregation mode with prefill/decode labels
-- `configs/envoy.yaml` - Envoy config with ext_proc filter for gateway-plugin
+- `configs/envoy.yaml` - Envoy config with ext_proc filter for gateway-plugin (configured for Docker service names)
+
+**Note:** The `envoy.yaml` is configured for Docker Compose with service names like `gateway`, `vllm`, `metadata-service`. For local development without Docker, you'll need to either:
+1. Add entries to `/etc/hosts`: `127.0.0.1 gateway vllm metadata-service`
+2. Or modify the addresses in `envoy.yaml` to use `127.0.0.1`
 
 ### Ports
 
