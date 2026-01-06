@@ -89,6 +89,17 @@ type MetricCache interface {
 	//   error: Error information if operation fails
 	GetMetricValueByPod(podName, podNamespace, metricName string) (metrics.MetricValue, error)
 
+	// GetMetricValueByPodWithPort gets metric value for a pod
+	// Parameters:
+	//   podName: Name of the pod
+	//   podNamespace: Namespace of the pod
+	//   metricName: Name of the metric
+	//	 port: port of the pod in distribute-dp
+	// Returns:
+	//   metrics.MetricValue: Retrieved metric value
+	//   error: Error information if operation fails
+	GetMetricValueByPodWithPort(podName, podNamespace, metricName string, port int) (metrics.MetricValue, error)
+
 	// GetMetricValueByPodModel gets metric value for pod-model pair
 	// Parameters:
 	//   ctx: Routing context

@@ -112,6 +112,7 @@ func (c *Store) addPod(obj interface{}) {
 	defer c.mu.Unlock()
 
 	metaPod := c.addPodLocked(pod)
+	c.addPodWithPortLocked(pod)
 	c.addPodAndModelMappingLocked(metaPod, modelName)
 
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
@@ -161,6 +162,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	// Add new mappings if present
 	if newOk {
 		metaPod := c.addPodLocked(newPod)
+		c.addPodWithPortLocked(newPod)
 		c.addPodAndModelMappingLocked(metaPod, newModelName)
 	}
 
@@ -215,6 +217,9 @@ func (c *Store) deletePod(obj interface{}) {
 
 	// delete base model and associated lora models on this pod
 	metaPod := c.deletePodLocked(name, namespace)
+	for _, port := range utils.GetPortsForPod(pod) {
+		c.deletePodWithPortLocked(name, namespace, port)
+	}
 	if metaPod != nil {
 		for _, modelName := range metaPod.Models.Array() {
 			c.deletePodAndModelMappingLocked(name, namespace, modelName, 1)
@@ -296,6 +301,29 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 	return metaPod
 }
 
+func (c *Store) addPodWithPortLocked(pod *v1.Pod) {
+	ports := utils.GetPortsForPod(pod)
+	if len(ports) == 0 {
+		return
+	}
+
+	for _, port := range ports {
+		if c.bufferPod == nil {
+			c.bufferPod = &Pod{
+				Pod:    pod,
+				Models: utils.NewRegistry[string](),
+			}
+		} else {
+			c.bufferPod.Pod = pod
+		}
+
+		_, loaded := c.metaPods.LoadOrStore(utils.GeneratePodKey(pod.Namespace, pod.Name, port), c.bufferPod)
+		if !loaded {
+			c.bufferPod = nil
+		}
+	}
+}
+
 func (c *Store) addPodAndModelMappingLockedByName(podName, namespace, modelName string) {
 	pod, ok := c.metaPods.Load(utils.GeneratePodKey(namespace, podName))
 	if !ok {
@@ -335,6 +363,12 @@ func (c *Store) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
 
 func (c *Store) deletePodLocked(podName, podNamespace string) *Pod {
 	key := utils.GeneratePodKey(podNamespace, podName)
+	metaPod, _ := c.metaPods.LoadAndDelete(key)
+	return metaPod
+}
+
+func (c *Store) deletePodWithPortLocked(podName, podNamespace string, port int) *Pod {
+	key := utils.GeneratePodKey(podNamespace, podName, port)
 	metaPod, _ := c.metaPods.LoadAndDelete(key)
 	return metaPod
 }

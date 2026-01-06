@@ -142,6 +142,28 @@ func (c *Store) GetMetricValueByPod(podName, podNamespace, metricName string) (m
 	return c.getPodMetricImpl(podName, &metaPod.Metrics, metricName)
 }
 
+// GetMetricValueByPodWithPort retrieves metric value for a Pod with port
+// Parameters:
+//
+//	podName: Name of the Pod
+//	podNamespace: Namespace of the Pod
+//	metricName: Name of the metric
+//	 port: port of the pod in distribute-dp
+//
+// Returns:
+//
+//	metrics.MetricValue: The metric value
+//	error: Error if Pod or metric doesn't exist
+func (c *Store) GetMetricValueByPodWithPort(podName, podNamespace, metricName string, port int) (metrics.MetricValue, error) {
+	key := utils.GeneratePodKey(podNamespace, podName, port)
+	metaPod, ok := c.metaPods.Load(key)
+	if !ok {
+		return nil, fmt.Errorf("key does not exist in the cache: %s", key)
+	}
+
+	return c.getPodWithPortMetricImpl(podName, &metaPod.Metrics, metricName, port)
+}
+
 // GetMetricValueByPodModel retrieves metric value for Pod-Model combination
 // Parameters:
 //
