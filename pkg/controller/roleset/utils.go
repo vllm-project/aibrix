@@ -19,10 +19,12 @@ package roleset
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -171,6 +173,14 @@ func renderStormServicePod(roleSet *orchestrationv1alpha1.RoleSet, role *orchest
 			templateHash,
 		)
 	}
+
+	// inject topology co-location affinity if TopologyPolicy is specified
+	if roleSet.Spec.TopologyPolicy != nil {
+		tp := roleSet.Spec.TopologyPolicy
+		if tp.Key != "" && tp.Scope != "" {
+			injectTopologyAffinityForPod(pod, roleSet, role.Name, tp)
+		}
+	}
 }
 
 // injectContainerEnvVars injects env variables into container.
@@ -235,6 +245,38 @@ func injectContainerEnvVars(
 	}
 }
 
+// injectTopologyAffinityToPodSpec injects required pod affinity into the given PodSpec
+// based on the TopologyPolicy and provided matching labels.
+func injectTopologyAffinityToPodSpec(
+	spec *v1.PodSpec,
+	matchLabels map[string]string,
+	topologyKey string,
+) {
+	affinityTerm := v1.PodAffinityTerm{
+		TopologyKey: topologyKey,
+		LabelSelector: &metav1.LabelSelector{
+			MatchLabels: matchLabels,
+		},
+	}
+
+	if spec.Affinity == nil {
+		spec.Affinity = &v1.Affinity{}
+	}
+	if spec.Affinity.PodAffinity == nil {
+		spec.Affinity.PodAffinity = &v1.PodAffinity{}
+	}
+
+	// avoid duplicate terms
+	for _, term := range spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution {
+		if term.TopologyKey == topologyKey &&
+			reflect.DeepEqual(term.LabelSelector.MatchLabels, matchLabels) {
+			return
+		}
+	}
+	spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution =
+		append(spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, affinityTerm)
+}
+
 func filterRolePods(role *orchestrationv1alpha1.RoleSpec, pods []*v1.Pod) []*v1.Pod {
 	var filtered []*v1.Pod
 	for i := range pods {
@@ -243,6 +285,75 @@ func filterRolePods(role *orchestrationv1alpha1.RoleSpec, pods []*v1.Pod) []*v1.
 		}
 	}
 	return filtered
+}
+
+// getTopologyMatchLabels returns the match labels for topology affinity based on the TopologyPolicy scope.
+// If the scope is invalid, it returns false.
+// - TopologyStormServiceScope: match on StormService name only.
+// - TopologyRoleSetScope: match on StormService name and RoleSet name.
+// - TopologyRoleScope: match on StormService name and Role name.
+func getTopologyMatchLabels(
+	roleSet *orchestrationv1alpha1.RoleSet,
+	roleName string,
+	tp *orchestrationv1alpha1.TopologyPolicy,
+) (map[string]string, bool) {
+	stormServiceName := roleSet.Labels[constants.StormServiceNameLabelKey]
+	if stormServiceName == "" {
+		klog.Warningf("RoleSet %s/%s missing label %q; skipping topology policy enforcement",
+			roleSet.Namespace, roleSet.Name, constants.StormServiceNameLabelKey)
+		return nil, false
+	}
+
+	var matchLabels map[string]string
+	switch tp.Scope {
+	case orchestrationv1alpha1.TopologyStormServiceScope:
+		matchLabels = map[string]string{
+			constants.StormServiceNameLabelKey: stormServiceName,
+		}
+	case orchestrationv1alpha1.TopologyRoleSetScope:
+		matchLabels = map[string]string{
+			constants.StormServiceNameLabelKey: stormServiceName,
+			constants.RoleSetNameLabelKey:      roleSet.Name,
+		}
+	case orchestrationv1alpha1.TopologyRoleScope:
+		matchLabels = map[string]string{
+			constants.StormServiceNameLabelKey: stormServiceName,
+			constants.RoleNameLabelKey:         roleName,
+		}
+	default:
+		klog.Warningf("RoleSet %s/%s: unsupported TopologyPolicy.Scope=%q",
+			roleSet.Namespace, roleSet.Name, tp.Scope)
+		return nil, false
+	}
+	return matchLabels, true
+}
+
+func injectTopologyAffinityForPod(
+	pod *v1.Pod,
+	roleSet *orchestrationv1alpha1.RoleSet,
+	roleName string,
+	tp *orchestrationv1alpha1.TopologyPolicy,
+) {
+	matchLabels, ok := getTopologyMatchLabels(roleSet, roleName, tp)
+	if !ok {
+		return
+	}
+
+	injectTopologyAffinityToPodSpec(&pod.Spec, matchLabels, tp.Key)
+}
+
+func injectTopologyAffinityForPodTemplate(
+	template *v1.PodTemplateSpec,
+	roleSet *orchestrationv1alpha1.RoleSet,
+	roleName string,
+	tp *orchestrationv1alpha1.TopologyPolicy,
+) {
+	matchLabels, ok := getTopologyMatchLabels(roleSet, roleName, tp)
+	if !ok {
+		return
+	}
+
+	injectTopologyAffinityToPodSpec(&template.Spec, matchLabels, tp.Key)
 }
 
 func filterActivePods(pods []*v1.Pod) (active []*v1.Pod, inactive []*v1.Pod) {
