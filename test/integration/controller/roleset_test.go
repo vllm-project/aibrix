@@ -45,6 +45,10 @@ const (
 	decodeImageVersionV2  = "decode:v2"
 	routerImageVersionV1  = "router:v1"
 	routerImageVersionV2  = "router:v2"
+	ingressRoleName       = "ingress"
+	decodeRoleName        = "decode"
+	prefillRoleName       = "prefill"
+	postprocessRoleName   = "postprocess"
 )
 
 var _ = ginkgo.Describe("RoleSet controller test", func() {
@@ -420,6 +424,145 @@ var _ = ginkgo.Describe("RoleSet controller test", func() {
 								"default-order", "default:v2",
 								"Default order role (nil) should upgrade last")
 
+						},
+					},
+				},
+			},
+		),
+		ginkgo.Entry("respect role dependencies during scale-up",
+			&testValidatingCase{
+				makeRoleSet: func() *orchestrationapi.RoleSet {
+					int32Ptr := func(i int32) *int32 { return &i }
+					// ingress: no deps, starts first
+					ingressRole := orchestrationapi.RoleSpec{
+						Name:     ingressRoleName,
+						Replicas: int32Ptr(1),
+						Template: validation.MakePodTemplate("nginx:alpine"),
+						// No Dependencies → starts immediately
+					}
+
+					// decode: depends on ingress
+					decodeRole := orchestrationapi.RoleSpec{
+						Name:         decodeRoleName,
+						Replicas:     int32Ptr(2),
+						Dependencies: []string{ingressRoleName},
+						Template:     validation.MakePodTemplate("ghcr.io/llm-d/llm-d-inference-sim:latest"),
+					}
+
+					// prefill: depends on decode (intentionally reversed)
+					prefillRole := orchestrationapi.RoleSpec{
+						Name:         prefillRoleName,
+						Replicas:     int32Ptr(2),
+						Dependencies: []string{decodeRoleName},
+						Template:     validation.MakePodTemplate("ghcr.io/llm-d/llm-d-inference-sim:latest"),
+					}
+
+					// postprocess: depends on both
+					postprocessRole := orchestrationapi.RoleSpec{
+						Name:         postprocessRoleName,
+						Replicas:     int32Ptr(2),
+						Dependencies: []string{prefillRoleName, decodeRoleName},
+						Template:     validation.MakePodTemplate("alpine:latest"),
+					}
+
+					return wrapper.MakeRoleSet("dependency-test").
+						Namespace(ns.Name).
+						UpdateStrategy(orchestrationapi.SequentialRoleSetStrategyType).
+						WithRoleAdvanced(ingressRole).
+						WithRoleAdvanced(decodeRole).
+						WithRoleAdvanced(prefillRole).
+						WithRoleAdvanced(postprocessRole).
+						Obj()
+				},
+				updates: []*update{
+					// Stage 1: Create RoleSet → only ingress pods appear
+					{
+						updateFunc: func(rs *orchestrationapi.RoleSet) {
+							gomega.Expect(k8sClient.Create(ctx, rs)).To(gomega.Succeed())
+
+							// Only ingress (1 pod) should exist initially
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name,
+								constants.RoleSetNameLabelKey, rs.Name, 1)
+
+						},
+						checkFunc: func(ctx context.Context, k8sClient client.Client, rs *orchestrationapi.RoleSet) {
+							// Mark current pods (ingress) as ready
+							validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.RoleNameLabelKey, ingressRoleName)
+							// Verify one roles
+							gomega.Eventually(func(g gomega.Gomega) {
+								latest := &orchestrationapi.RoleSet{}
+								g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+								g.Expect(validation.ValidateRoleStatus(latest, ingressRoleName, 1)).To(gomega.Succeed())
+							}, time.Second*10).Should(gomega.Succeed())
+						},
+					},
+					// Stage 2: decode pods should now be created (2 pods)
+					{
+						updateFunc: func(rs *orchestrationapi.RoleSet) {
+							// Total pods: 1 (ingress) + 2 (decode) = 3
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name,
+								constants.RoleSetNameLabelKey, rs.Name, 3)
+						},
+						checkFunc: func(ctx context.Context, k8sClient client.Client, rs *orchestrationapi.RoleSet) {
+							// Mark all decode pods as ready
+							validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.RoleNameLabelKey, decodeRoleName)
+							// Verify two roles
+							gomega.Eventually(func(g gomega.Gomega) {
+								latest := &orchestrationapi.RoleSet{}
+								g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+								g.Expect(validation.ValidateRoleStatus(latest, ingressRoleName, 1)).To(gomega.Succeed())
+								g.Expect(validation.ValidateRoleStatus(latest, decodeRoleName, 2)).To(gomega.Succeed())
+							}, time.Second*10).Should(gomega.Succeed())
+						},
+					},
+					// Stage 3: prefill pods created (2 more → total 5)
+					{
+						updateFunc: func(rs *orchestrationapi.RoleSet) {
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name,
+								constants.RoleSetNameLabelKey, rs.Name, 5)
+						},
+						checkFunc: func(ctx context.Context, k8sClient client.Client, rs *orchestrationapi.RoleSet) {
+							// Mark prefill pods as ready
+							validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.RoleNameLabelKey, prefillRoleName)
+							// Verify three roles
+							gomega.Eventually(func(g gomega.Gomega) {
+								latest := &orchestrationapi.RoleSet{}
+								g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest)).To(gomega.Succeed())
+								g.Expect(validation.ValidateRoleStatus(latest, ingressRoleName, 1)).To(gomega.Succeed())
+								g.Expect(validation.ValidateRoleStatus(latest, decodeRoleName, 2)).To(gomega.Succeed())
+								g.Expect(validation.ValidateRoleStatus(latest, prefillRoleName, 2)).To(gomega.Succeed())
+							}, time.Second*10).Should(gomega.Succeed())
+						},
+					},
+					// Stage 4: postprocess pods created (2 more → total 7)
+					{
+						updateFunc: func(rs *orchestrationapi.RoleSet) {
+							validation.WaitForPodsCreated(ctx, k8sClient, ns.Name,
+								constants.RoleSetNameLabelKey, rs.Name, 7)
+						},
+						checkFunc: func(ctx context.Context, k8sClient client.Client, rs *orchestrationapi.RoleSet) {
+							// Final mark
+							validation.MarkPodsReady(ctx, k8sClient, ns.Name, constants.RoleNameLabelKey, postprocessRoleName)
+							// Validate final status
+							gomega.Eventually(func() error {
+								latest := &orchestrationapi.RoleSet{}
+								if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(rs), latest); err != nil {
+									return err
+								}
+								if err := validation.ValidateRoleStatus(latest, ingressRoleName, 1); err != nil {
+									return err
+								}
+								if err := validation.ValidateRoleStatus(latest, decodeRoleName, 2); err != nil {
+									return err
+								}
+								if err := validation.ValidateRoleStatus(latest, prefillRoleName, 2); err != nil {
+									return err
+								}
+								if err := validation.ValidateRoleStatus(latest, postprocessRoleName, 2); err != nil {
+									return err
+								}
+								return nil
+							}, time.Second*30).Should(gomega.Succeed())
 						},
 					},
 				},

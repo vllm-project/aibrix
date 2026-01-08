@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -275,6 +276,133 @@ func TestSyncHeadlessService(t *testing.T) {
 
 			if service.Spec.PublishNotReadyAddresses != true {
 				t.Errorf("Expected PublishNotReadyAddresses to be true, got %v", service.Spec.PublishNotReadyAddresses)
+			}
+		})
+	}
+}
+
+func TestTopologicalSortRolesFromSpec(t *testing.T) {
+	tests := []struct {
+		name            string
+		roles           []orchestrationv1alpha1.RoleSpec
+		expectError     bool
+		expectOrder     []string
+		isDeterministic bool // if true, expect exact order; otherwise only validate dependency constraints
+	}{
+		{
+			name:            "empty roles",
+			roles:           []orchestrationv1alpha1.RoleSpec{},
+			expectError:     false,
+			expectOrder:     []string{},
+			isDeterministic: true,
+		},
+		{
+			name: "no dependencies (non-deterministic)",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "A"},
+				{Name: "B"},
+				{Name: "C"},
+			},
+			expectError:     false,
+			expectOrder:     nil, // don't check exact order
+			isDeterministic: false,
+		},
+		{
+			name: "linear dependency: A → B → C",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "C", Dependencies: []string{"B"}},
+				{Name: "B", Dependencies: []string{"A"}},
+				{Name: "A"},
+			},
+			expectError:     false,
+			expectOrder:     []string{"A", "B", "C"},
+			isDeterministic: true,
+		},
+		{
+			name: "diamond dependency",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "D", Dependencies: []string{"B", "C"}},
+				{Name: "B", Dependencies: []string{"A"}},
+				{Name: "C", Dependencies: []string{"A"}},
+				{Name: "A"},
+			},
+			expectError:     false,
+			expectOrder:     nil,
+			isDeterministic: false, // multiple valid orders
+		},
+		{
+			name: "circular dependency: A→B→C→A",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "A", Dependencies: []string{"C"}},
+				{Name: "B", Dependencies: []string{"A"}},
+				{Name: "C", Dependencies: []string{"B"}},
+			},
+			expectError: true,
+		},
+		{
+			name: "dependency on non-existent role",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "A", Dependencies: []string{"NonExistent"}},
+			},
+			expectError: true,
+		},
+		{
+			name: "self dependency (circular)",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "A", Dependencies: []string{"A"}},
+			},
+			expectError: true,
+		},
+		{
+			name: "multiple roots and leaves",
+			roles: []orchestrationv1alpha1.RoleSpec{
+				{Name: "X"},
+				{Name: "Y"},
+				{Name: "Z", Dependencies: []string{"X", "Y"}},
+				{Name: "W", Dependencies: []string{"X"}},
+			},
+			expectError:     false,
+			expectOrder:     nil,
+			isDeterministic: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &StormServiceReconciler{}
+			sorted, err := r.topologicalSortRolesFromSpec(tt.roles)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, len(tt.roles), len(sorted))
+
+			// Map role name to its position in result
+			nameToIndex := make(map[string]int, len(sorted))
+			for i, role := range sorted {
+				nameToIndex[role.Name] = i
+			}
+
+			// Validate: every dependency must appear before its dependent
+			for _, role := range sorted {
+				for _, dep := range role.Dependencies {
+					depIdx, exists := nameToIndex[dep]
+					assert.True(t, exists, "dependency %q not found in output", dep)
+					curIdx := nameToIndex[role.Name]
+					assert.Less(t, depIdx, curIdx, "dependency %q must come before %q", dep, role.Name)
+				}
+			}
+
+			// If deterministic, check exact order
+			if tt.isDeterministic {
+				actualNames := make([]string, len(sorted))
+				for i, role := range sorted {
+					actualNames[i] = role.Name
+				}
+				assert.Equal(t, tt.expectOrder, actualNames)
 			}
 		})
 	}
