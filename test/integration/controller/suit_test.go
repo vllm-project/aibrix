@@ -27,6 +27,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/klog/v2"
 
 	"k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
@@ -66,12 +67,13 @@ import (
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
 var (
-	cfg       *rest.Config         // Config for connecting to the test control plane (API server)
-	k8sClient client.Client        // Client for interacting with Kubernetes resources
-	testEnv   *envtest.Environment // Test environment that spins up etcd and kube-apiserver
-	ctx       context.Context      // Context to control the lifecycle of the controller manager
-	cancel    context.CancelFunc   // Function to cancel the context and stop the manager
-	stopCh    chan struct{}        // Channel to signal shutdown of custom caches (e.g., informers)
+	cfg           *rest.Config         // Config for connecting to the test control plane (API server)
+	k8sClient     client.Client        // Client for interacting with Kubernetes resources
+	testEnv       *envtest.Environment // Test environment that spins up etcd and kube-apiserver
+	ctx           context.Context      // Context to control the lifecycle of the controller manager
+	cancel        context.CancelFunc   // Function to cancel the context and stop the manager
+	stopCh        chan struct{}        // Channel to signal shutdown of custom caches (e.g., informers)
+	dynamicClient dynamic.Interface
 )
 
 func TestAPIs(t *testing.T) {
@@ -99,6 +101,7 @@ var _ = BeforeSuite(func() {
 		CRDDirectoryPaths: []string{
 			filepath.Join("..", "..", "..", "config", "crd", "bases"),                           // Aibrix CRDs
 			filepath.Join("..", "..", "..", "config", "dependency", "kuberay-operator", "crds"), // KubeRay CRDs (dependency)
+			filepath.Join("..", "..", "..", "config", "dependency", "podgroup", "crds"),
 		},
 
 		ErrorIfCRDPathMissing: true,
@@ -140,6 +143,8 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred(), "Failed to create Kubernetes client")
 	Expect(k8sClient).NotTo(BeNil(), "Kubernetes client should not be nil")
+
+	dynamicClient = dynamic.NewForConfigOrDie(testEnv.Config)
 
 	By("setting up controller manager")
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
