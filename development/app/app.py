@@ -61,7 +61,7 @@ if SIMULATION != "disabled":
         sys.argv.append(modelMaps.get(MODEL_NAME, MODEL_NAME))
 
 tokenizer = None
-simulator: Optional[Simulator] = None
+simulator = None  # Optional[Simulator] when simulation is enabled
 
 # Extract the api_key argument and prepare for authentication
 api_key = None
