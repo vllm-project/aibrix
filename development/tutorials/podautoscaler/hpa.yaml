@@ -11,7 +11,7 @@ spec:
   metrics:
   - pods:
       metric:
-        name: gpu_cache_usage_perc
+        name: kv_cache_usage_perc
       target:
         averageValue: "40"
         type: AverageValue

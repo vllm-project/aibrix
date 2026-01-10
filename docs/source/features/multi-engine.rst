@@ -104,8 +104,8 @@ We only support limited number of metrics from different engines and we will con
      - vllm:request_prefill_time_seconds
      - N/A
      - N/A
-   * - gpu_cache_usage_perc
-     - vllm:gpu_cache_usage_perc
+   * - kv_cache_usage_perc
+     - vllm:kv_cache_usage_perc
      - sglang:token_usage [1]_
      - kv_cache_utilization
    * - engine_utilization

@@ -36,9 +36,9 @@ vllm_num_requests_running{model_name="meta-llama/Llama-2-7b-chat-hf"} 2.0
 # HELP vllm_num_requests_waiting Number of requests waiting to be processed.
 # TYPE vllm_num_requests_waiting gauge
 vllm_num_requests_waiting{model_name="meta-llama/Llama-2-7b-chat-hf"} 3.0
-# HELP vllm_gpu_cache_usage_perc GPU KV-cache usage. 1.0 means 100 percent usage.
-# TYPE vllm_gpu_cache_usage_perc gauge
-vllm_gpu_cache_usage_perc 0.75
+# HELP vllm_kv_cache_usage_perc GPU KV-cache usage. 1.0 means 100 percent usage.
+# TYPE vllm_kv_cache_usage_perc gauge
+vllm_kv_cache_usage_perc 0.75
 # HELP vllm_time_to_first_token_seconds Histogram of time to first token in seconds.
 # TYPE vllm_time_to_first_token_seconds histogram
 vllm_time_to_first_token_seconds_bucket{model_name="meta-llama/Llama-2-7b-chat-hf",le="0.001"} 0.0
