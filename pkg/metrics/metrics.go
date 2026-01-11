@@ -60,50 +60,25 @@ var (
 	// Metrics defines all available metrics, including raw and query-based metrics.
 	Metrics = map[string]Metric{
 		// Counter metrics
-		NumRequestsRunning: {
-			MetricScope:  PodModelMetricScope,
-			MetricSource: PodRawMetrics,
-			MetricType: MetricType{
-				Raw: Counter,
-			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:num_requests_running",
-				"sglang": "sglang:num_running_reqs",
-			},
-			Description: "Number of running requests",
-		},
-		NumRequestsWaiting: {
-			MetricScope:  PodModelMetricScope,
-			MetricSource: PodRawMetrics,
-			MetricType: MetricType{
-				Raw: Counter,
-			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:num_requests_waiting",
-				"sglang": "sglang:num_waiting_reqs",
-			},
-			Description: "Number of waiting requests",
-		},
 		NumRequestsSwapped: {
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Counter,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:num_requests_swapped",
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm": {"vllm:num_requests_swapped"},
 			},
 			Description: "Number of swapped requests",
 		},
-		// Gauge metrics
 		PromptTokenTotal: {
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Raw: Gauge,
+				Raw: Counter,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:prompt_tokens_total",
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm": {"vllm:prompt_tokens_total"},
 			},
 			Description: "Total prompt tokens",
 		},
@@ -111,12 +86,37 @@ var (
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Raw: Gauge,
+				Raw: Counter,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:generation_tokens_total",
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm": {"vllm:generation_tokens_total"},
 			},
 			Description: "Total generation tokens",
+		},
+		// Gauge metrics
+		NumRequestsRunning: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm":   {"vllm:num_requests_running"},
+				"sglang": {"sglang:num_running_reqs"},
+			},
+			Description: "Number of running requests",
+		},
+		NumRequestsWaiting: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm":   {"vllm:num_requests_waiting"},
+				"sglang": {"sglang:num_waiting_reqs"},
+			},
+			Description: "Number of waiting requests",
 		},
 		AvgPromptThroughputToksPerS: {
 			MetricScope:  PodModelMetricScope,
@@ -124,8 +124,13 @@ var (
 			MetricType: MetricType{
 				Raw: Gauge,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:avg_prompt_throughput_toks_per_s",
+			EngineMetricsNameMapping: map[string][]string{
+				// vLLM deprecated "vllm:avg_prompt_throughput_toks_per_s" in v0.7.0
+				// It was removed entirely in PR #12383(https://github.com/vllm-project/vllm/pull/12383).
+				// This metric is no longer emitted by vLLM >= v0.7.0.
+				// TODO: Remove the deprecated vLLM metric names from EngineMetricsNameMapping
+				// once we confirm no deployments rely on vLLM < v0.7.0.
+				"vllm": {"vllm:avg_prompt_throughput_toks_per_s"},
 			},
 			Description: "Average prompt throughput in tokens per second",
 		},
@@ -135,9 +140,14 @@ var (
 			MetricType: MetricType{
 				Raw: Gauge,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:avg_generation_throughput_toks_per_s",
-				"sglang": "sglang:gen_throughput",
+			EngineMetricsNameMapping: map[string][]string{
+				// vLLM deprecated "vllm:avg_generation_throughput_toks_per_s" in v0.7.0.
+				// It was removed entirely in PR #12383(https://github.com/vllm-project/vllm/pull/12383).
+				// This metric is no longer emitted by vLLM >= v0.7.0.
+				// TODO: Remove the deprecated vLLM metric names from EngineMetricsNameMapping
+				// once we confirm no deployments rely on vLLM < v0.7.0.
+				"vllm":   {"vllm:avg_generation_throughput_toks_per_s"},
+				"sglang": {"sglang:gen_throughput"},
 			},
 			Description: "Average generation throughput in tokens per second",
 		},
@@ -148,8 +158,8 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:iteration_tokens_total",
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm": {"vllm:iteration_tokens_total"},
 			},
 			Description: "Total iteration tokens",
 		},
@@ -159,9 +169,9 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:time_to_first_token_seconds",
-				"sglang": "sglang:time_to_first_token_seconds",
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm":   {"vllm:time_to_first_token_seconds"},
+				"sglang": {"sglang:time_to_first_token_seconds"},
 			},
 			Description: "Time to first token in seconds",
 		},
@@ -171,9 +181,18 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:time_per_output_token_seconds",
-				"sglang": "sglang:inter_token_latency_seconds",
+			EngineMetricsNameMapping: map[string][]string{
+				// vLLM exposes two metrics for inter-token latency:
+				// - "vllm:inter_token_latency_seconds" is the current, recommended metric (since v0.11).
+				// - "vllm:time_per_output_token_seconds" is deprecated as of v0.11 and hidden by default.
+				//   It can be temporarily enabled via --show-hidden-metrics-for-version=0.11,
+				//   but will be removed in v0.13.0.
+				//
+				// We list both to maintain backward compatibility during transition.
+				// TODO: Remove "vllm:time_per_output_token_seconds" from this list once vLLM >= v0.13.0
+				// is widely adopted and the deprecated metric is no longer in use.
+				"vllm":   {"vllm:inter_token_latency_seconds", "vllm:time_per_output_token_seconds"},
+				"sglang": {"sglang:inter_token_latency_seconds"},
 			},
 			Description: "Time per output token in seconds",
 		},
@@ -183,9 +202,9 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:e2e_request_latency_seconds",
-				"sglang": "sglang:e2e_request_latency_seconds",
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm":   {"vllm:e2e_request_latency_seconds"},
+				"sglang": {"sglang:e2e_request_latency_seconds"},
 			},
 			Description: "End-to-end request latency in seconds",
 		},
@@ -195,8 +214,9 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_queue_time_seconds",
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm":   {"vllm:request_queue_time_seconds"},
+				"sglang": {"sglang:queue_time_seconds"},
 			},
 			Description: "Request queue time in seconds",
 		},
@@ -206,8 +226,8 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_inference_time_seconds",
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm": {"vllm:request_inference_time_seconds"},
 			},
 			Description: "Request inference time in seconds",
 		},
@@ -217,8 +237,8 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_decode_time_seconds",
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm": {"vllm:request_decode_time_seconds"},
 			},
 			Description: "Request decode time in seconds",
 		},
@@ -228,8 +248,8 @@ var (
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_prefill_time_seconds",
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm": {"vllm:request_prefill_time_seconds"},
 			},
 			Description: "Request prefill time in seconds",
 		},
@@ -303,10 +323,16 @@ var (
 			MetricType: MetricType{
 				Raw: Counter,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:gpu_cache_usage_perc",
-				"sglang": "sglang:token_usage", // Based on https://github.com/sgl-project/sglang/issues/5979
-				"xllm":   "kv_cache_utilization",
+			EngineMetricsNameMapping: map[string][]string{
+				// In vLLM PR#18354 (https://github.com/vllm-project/vllm/pull/18354) (merged since v0.10.0),
+				// metrics with the "gpu_" prefix for non-GPU-specific data were deprecated:
+				//   - Deprecated: vllm:gpu_cache_usage_perc
+				//   - Official replacement: vllm:kv_cache_usage_perc (same value, clearer semantics)
+				//
+				// We keep both for backward compatibility with deployments < v0.10.0.
+				"vllm":   {"vllm:gpu_cache_usage_perc", "vllm:kv_cache_usage_perc"},
+				"sglang": {"sglang:token_usage"}, // Based on https://github.com/sgl-project/sglang/issues/5979
+				"xllm":   {"kv_cache_utilization"},
 			},
 			Description: "GPU cache usage percentage",
 		},
@@ -316,8 +342,8 @@ var (
 			MetricType: MetricType{
 				Raw: Gauge,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"xllm": "engine_utilization",
+			EngineMetricsNameMapping: map[string][]string{
+				"xllm": {"engine_utilization"},
 			},
 			Description: "GPU busy time ratio",
 		},
@@ -327,8 +353,8 @@ var (
 			MetricType: MetricType{
 				Raw: Counter,
 			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:cpu_cache_usage_perc",
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm": {"vllm:cpu_cache_usage_perc"},
 			},
 			Description: "CPU cache usage percentage",
 		},
@@ -375,8 +401,8 @@ var (
 				Query: QueryLabel,
 			},
 			LabelKey: "max_lora",
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:lora_requests_info",
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm": {"vllm:lora_requests_info"},
 			},
 			Description: "Max count of Lora Adapters",
 		},
@@ -387,8 +413,8 @@ var (
 				Query: QueryLabel,
 			},
 			LabelKey: "running_lora_adapters",
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:lora_requests_info",
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm": {"vllm:lora_requests_info"},
 			},
 			Description: "Count of running Lora Adapters",
 		},
@@ -399,8 +425,8 @@ var (
 				Query: QueryLabel,
 			},
 			LabelKey: "waiting_lora_adapters",
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:lora_requests_info",
+			EngineMetricsNameMapping: map[string][]string{
+				"vllm": {"vllm:lora_requests_info"},
 			},
 			Description: "Count of waiting Lora Adapters",
 		},
