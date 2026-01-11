@@ -188,6 +188,9 @@ func (b *baseScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscal
 			klog.ErrorS(err, "Failed to parse target value", "metric", ms.TargetMetric, "value", ms.TargetValue)
 			return fmt.Errorf("invalid targetValue for metric %q: %w", ms.TargetMetric, err)
 		}
+		if targetValue <= 0 {
+			return fmt.Errorf("targetValue for metric %q must be greater than 0, got %f", ms.TargetMetric, targetValue)
+		}
 
 		b.MetricTargets[ms.TargetMetric] = MetricTarget{
 			TargetValue:   targetValue,
