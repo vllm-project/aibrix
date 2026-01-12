@@ -20,13 +20,13 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	zmq "github.com/pebbe/zmq4"
-	msgpack "github.com/shamaton/msgpack/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -195,41 +195,31 @@ func TestMockZMQPublisher(t *testing.T) {
 	client := NewZMQClient(config, handler)
 
 	// Connect should work
-	err = client.Connect()
-	assert.NoError(t, err)
+	require.NoError(t, client.Connect())
 	assert.True(t, client.IsConnected())
 
 	// Prepare test event
 	now := time.Now().UTC().Truncate(time.Second)
 	testEvent := &BlockStoredEvent{
 		Type:        EventTypeBlockStored,
-		Timestamp:   now,
 		BlockHashes: []int64{123, 456},
-		TokenIDs:    [][]int32{{1, 2}, {3, 4}},
-		ModelName:   "test-model",
-	}
-
-	// Create event batch
-	batch := map[string]interface{}{
-		"events": []interface{}{
-			map[string]interface{}{
-				"type":         string(testEvent.Type),
-				"timestamp":    testEvent.Timestamp.Unix(),
-				"block_hashes": []interface{}{int64(123), int64(456)},
-				"token_ids":    []interface{}{[]interface{}{int32(1), int32(2)}, []interface{}{int32(3), int32(4)}},
-				"model_name":   testEvent.ModelName,
-			},
+		TokenIDs: [][]byte{
+			tokenIDsToBytes([]uint32{1, 2}),
+			tokenIDsToBytes([]uint32{3, 4}),
 		},
 	}
 
-	payload, err := msgpack.Marshal(batch)
+	testBatch := &EventBatch{
+		Timestamp: now,
+		Events:    []KVEvent{testEvent},
+	}
+
+	// Encode batch
+	payload, err := EncodeEventBatch(testBatch)
 	require.NoError(t, err)
 
-	// Start client before publishing to avoid race conditions in CI
-	// where messages sent before client starts might still be buffered
-	// and received, causing the test to receive 2 events instead of 1
-	err = client.Start()
-	assert.NoError(t, err)
+	// Start client before publishing to avoid race condition
+	require.NoError(t, client.Start())
 
 	// Wait for client to start consuming
 	time.Sleep(100 * time.Millisecond)
@@ -252,15 +242,22 @@ func TestMockZMQPublisher(t *testing.T) {
 
 	// Check received events
 	events := handler.GetEvents()
-	assert.Len(t, events, 1)
+	require.Len(t, events, 1, "expected exactly one event")
 
-	if len(events) > 0 {
-		receivedEvent, ok := events[0].(*BlockStoredEvent)
-		assert.True(t, ok)
-		assert.Equal(t, testEvent.Type, receivedEvent.Type)
-		assert.Equal(t, testEvent.BlockHashes, receivedEvent.BlockHashes)
-		assert.Equal(t, "test-pod", receivedEvent.PodName)
-	}
+	receivedEvent, ok := events[0].(*BlockStoredEvent)
+	require.True(t, ok, "event type mismatch")
+
+	fmt.Println("Type:", receivedEvent.Type)
+	fmt.Println("BlockHashes:", receivedEvent.BlockHashes)
+	fmt.Println("TokenIDs:", receivedEvent.TokenIDs)
+	fmt.Println("Timestamp:", receivedEvent.Timestamp)
+
+	assert.Equal(t, testEvent.Type, receivedEvent.Type)
+	assert.Equal(t, testEvent.BlockHashes, receivedEvent.BlockHashes)
+	assert.Equal(t, testEvent.TokenIDs, receivedEvent.TokenIDs)
+	assert.Equal(t, now, receivedEvent.Timestamp)
+	assert.Equal(t, "test-model", receivedEvent.ModelName)
+	assert.Equal(t, "test-pod", receivedEvent.PodName)
 }
 
 func TestMetricsTracking(t *testing.T) {
@@ -357,23 +354,20 @@ func TestZMQClientEventProcessingFull(t *testing.T) {
 	parentHash := int64(9999)
 	events := []KVEvent{
 		&BlockStoredEvent{
-			Type:            EventTypeBlockStored,
-			Timestamp:       time.Now(),
-			BlockHashes:     []int64{1234, 5678},
-			TokenIDs:        [][]int32{{1, 2, 3}, {4, 5, 6}},
+			Type:        EventTypeBlockStored,
+			BlockHashes: []int64{1234, 5678},
+			TokenIDs: [][]byte{
+				tokenIDsToBytes([]uint32{1, 2, 3}),
+				tokenIDsToBytes([]uint32{4, 5, 6}),
+			},
 			ParentBlockHash: &parentHash,
-			ModelName:       "test-model",
 		},
 		&BlockRemovedEvent{
 			Type:        EventTypeBlockRemoved,
-			Timestamp:   time.Now(),
 			BlockHashes: []int64{1234},
-			ModelName:   "test-model",
 		},
 		&AllBlocksClearedEvent{
-			Type:      EventTypeAllCleared,
-			Timestamp: time.Now(),
-			ModelName: "test-model",
+			Type: EventTypeAllCleared,
 		},
 	}
 
@@ -395,9 +389,12 @@ func TestZMQClientEventProcessingFull(t *testing.T) {
 	for _, event := range receivedEvents {
 		switch e := event.(type) {
 		case *BlockStoredEvent:
+			assert.Equal(t, []int64{1234, 5678}, e.BlockHashes)
+			assert.Equal(t, parentHash, *e.ParentBlockHash)
 			assert.Equal(t, "test-pod", e.PodName)
 		case *BlockRemovedEvent:
 			assert.Equal(t, "test-pod", e.PodName)
+			assert.Equal(t, []int64{1234}, e.BlockHashes)
 		case *AllBlocksClearedEvent:
 			assert.Equal(t, "test-pod", e.PodName)
 		}
@@ -434,14 +431,14 @@ func TestZMQClientReconnectionFlow(t *testing.T) {
 	assert.True(t, client.IsConnected())
 
 	// Publish first event
-	event1 := &BlockStoredEvent{
+	testEvent1 := &BlockStoredEvent{
 		Type:        EventTypeBlockStored,
-		Timestamp:   time.Now(),
 		BlockHashes: []int64{1000},
-		TokenIDs:    [][]int32{{10}},
-		ModelName:   "test-model",
+		TokenIDs: [][]byte{
+			tokenIDsToBytes([]uint32{10}),
+		},
 	}
-	err = publisher.PublishEvent(event1)
+	err = publisher.PublishEvent(testEvent1)
 	require.NoError(t, err)
 
 	// Wait for processing
@@ -465,13 +462,11 @@ func TestZMQClientReconnectionFlow(t *testing.T) {
 	assert.True(t, client.IsConnected())
 
 	// Publish second event
-	event2 := &BlockRemovedEvent{
+	testEvent2 := &BlockRemovedEvent{
 		Type:        EventTypeBlockRemoved,
-		Timestamp:   time.Now(),
 		BlockHashes: []int64{1000},
-		ModelName:   "test-model",
 	}
-	err = publisher.PublishEvent(event2)
+	err = publisher.PublishEvent(testEvent2)
 	require.NoError(t, err)
 
 	// Wait for processing
@@ -521,14 +516,14 @@ func TestZMQClientSequenceHandling(t *testing.T) {
 			continue
 		}
 
-		event := &BlockStoredEvent{
+		testEvent := &BlockStoredEvent{
 			Type:        EventTypeBlockStored,
-			Timestamp:   time.Now(),
 			BlockHashes: []int64{int64(i * 100)},
-			TokenIDs:    [][]int32{{int32(i)}},
-			ModelName:   "test-model",
+			TokenIDs: [][]byte{
+				tokenIDsToBytes([]uint32{uint32(i)}),
+			},
 		}
-		err = publisher.PublishEvent(event)
+		err = publisher.PublishEvent(testEvent)
 		require.NoError(t, err)
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -687,15 +682,14 @@ func BenchmarkZMQClientEventProcessing(b *testing.B) {
 
 	// Publish events
 	for i := 0; i < b.N; i++ {
-		event := &BlockStoredEvent{
+		testEvent := &BlockStoredEvent{
 			Type:        EventTypeBlockStored,
-			Timestamp:   time.Now(),
 			BlockHashes: []int64{int64(i)},
-			TokenIDs:    [][]int32{{int32(i)}},
-			ModelName:   "bench-model",
+			TokenIDs: [][]byte{
+				tokenIDsToBytes([]uint32{uint32(i)}),
+			},
 		}
-
-		err := publisher.PublishEvent(event)
+		err := publisher.PublishEvent(testEvent)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -769,16 +763,16 @@ func TestZMQClientWithMockHandler(t *testing.T) {
 	// Give client time to connect
 	time.Sleep(200 * time.Millisecond)
 
-	// Publish test event
-	blockStored := &BlockStoredEvent{
+	testEvent := &BlockStoredEvent{
 		Type:        EventTypeBlockStored,
-		Timestamp:   time.Now(),
 		BlockHashes: []int64{1234, 5678},
-		TokenIDs:    [][]int32{{1, 2, 3}, {4, 5, 6}},
-		ModelName:   "test-model",
+		TokenIDs: [][]byte{
+			tokenIDsToBytes([]uint32{1, 2, 3}),
+			tokenIDsToBytes([]uint32{4, 5, 6}),
+		},
 	}
 
-	err = publisher.PublishEvent(blockStored)
+	err = publisher.PublishEvent(testEvent)
 	require.NoError(t, err)
 
 	// Wait for processing

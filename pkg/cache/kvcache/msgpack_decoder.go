@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	 http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,309 +15,432 @@
 package kvcache
 
 import (
+	"encoding/binary"
 	"fmt"
+	"math"
 	"time"
 
-	msgpack "github.com/shamaton/msgpack/v2"
+	msgpack "github.com/vmihailenco/msgpack/v5"
 )
 
-// DecodeEventBatch decodes a MessagePack encoded event batch
-func DecodeEventBatch(data []byte) (*EventBatch, error) {
-	var raw map[string]interface{}
-	if err := msgpack.Unmarshal(data, &raw); err != nil {
+// DecodeEventBatch parses a raw msgpack batch of events.
+// The subscriber must supply batch timestamp + model/pod name.
+func DecodeEventBatch(
+	data []byte,
+	modelName string,
+	podName string,
+) (*EventBatch, error) {
+	// The batch contains [ts, events]
+	var rawBatch []interface{}
+	if err := msgpack.Unmarshal(data, &rawBatch); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal event batch: %w", err)
 	}
+	if len(rawBatch) != 2 {
+		return nil, fmt.Errorf("expected 2 elements in batch (ts, events), got %d", len(rawBatch))
+	}
 
-	// Parse events array
-	eventsRaw, ok := raw["events"].([]interface{})
+	// 0: batch timestamp
+	tsFloat, ok := rawBatch[0].(float64)
 	if !ok {
-		return nil, fmt.Errorf("missing or invalid events field")
+		return nil, fmt.Errorf("invalid batch timestamp type: %T", rawBatch[0])
+	}
+	batchTS := time.Unix(int64(tsFloat), int64((tsFloat-float64(int64(tsFloat)))*1e9)).UTC()
+
+	// 1: events array
+	eventsRaw, ok := rawBatch[1].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("expected events array, got %T", rawBatch[1])
 	}
 
 	batch := &EventBatch{
-		Events: make([]KVEvent, 0, len(eventsRaw)),
+		Timestamp: batchTS,
+		Events:    make([]KVEvent, 0, len(eventsRaw)),
 	}
 
-	for i, eventRaw := range eventsRaw {
-		event, err := parseEvent(eventRaw)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse event at index %d: %w", i, err)
+	for i, raw := range eventsRaw {
+		arr, ok := raw.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("event %d: expected msgpack array, got %T", i, raw)
 		}
-		batch.Events = append(batch.Events, event)
+
+		evt, err := parseEventArray(arr)
+		if err != nil {
+			return nil, fmt.Errorf("event %d: %w", i, err)
+		}
+
+		// Apply batch metadata
+		applyBatchMetadata(evt, batchTS, modelName, podName)
+		batch.Events = append(batch.Events, evt)
 	}
 
 	return batch, nil
 }
 
-// parseEvent parses a single event from raw data
-func parseEvent(raw interface{}) (KVEvent, error) {
-	// Handle both map[string]interface{} and map[interface{}]interface{}
-	var eventMap map[string]interface{}
-
-	switch m := raw.(type) {
-	case map[string]interface{}:
-		eventMap = m
-	case map[interface{}]interface{}:
-		// Convert map[interface{}]interface{} to map[string]interface{}
-		eventMap = make(map[string]interface{})
-		for k, v := range m {
-			if ks, ok := k.(string); ok {
-				eventMap[ks] = v
-			} else {
-				return nil, fmt.Errorf("non-string key in event map: %v", k)
-			}
-		}
-	default:
-		return nil, fmt.Errorf("invalid event format: expected map, got %T", raw)
+func parseEventArray(arr []interface{}) (KVEvent, error) {
+	if len(arr) == 0 {
+		return nil, fmt.Errorf("empty event array")
 	}
 
-	eventType, ok := eventMap["type"].(string)
+	// First element is event type tag
+	rawTag, ok := arr[0].(string)
 	if !ok {
-		return nil, fmt.Errorf("missing event type")
+		return nil, fmt.Errorf("event tag not string: %T", arr[0])
 	}
+	tag := EventType(rawTag)
 
-	switch EventType(eventType) {
+	switch tag {
+
 	case EventTypeBlockStored:
-		return parseBlockStoredEvent(eventMap)
-	case EventTypeBlockRemoved:
-		return parseBlockRemovedEvent(eventMap)
-	case EventTypeAllCleared:
-		return parseAllBlocksClearedEvent(eventMap)
-	default:
-		return nil, fmt.Errorf("unknown event type: %s", eventType)
-	}
-}
+		// Minimum = 5 fields
+		if len(arr) < 5 {
+			return nil, fmt.Errorf("BlockStored requires at least 5 fields, got %d", len(arr))
+		}
 
-// parseBlockStoredEvent parses a BlockStoredEvent from raw data
-func parseBlockStoredEvent(data map[string]interface{}) (*BlockStoredEvent, error) {
-	event := &BlockStoredEvent{
-		Type: EventTypeBlockStored,
-	}
+		// 1: block_hashes
+		blockHashes, err := toInt64Slice(arr[1])
+		if err != nil {
+			return nil, fmt.Errorf("invalid block_hashes: %w", err)
+		}
 
-	// Parse timestamp
-	if ts, err := parseTimestamp(data["timestamp"]); err == nil {
-		event.Timestamp = ts
-	} else {
-		return nil, fmt.Errorf("failed to parse timestamp: %w", err)
-	}
+		// 2: parent_block_hash
+		parentHash, err := toInt64Ptr(arr[2])
+		if err != nil {
+			return nil, fmt.Errorf("invalid parent_block_hash: %w", err)
+		}
 
-	// Parse model name
-	if modelName, ok := data["model_name"].(string); ok {
-		event.ModelName = modelName
-	} else {
-		return nil, fmt.Errorf("missing or invalid model_name")
-	}
+		// 3: token_ids
+		rawTokenIDs, ok := arr[3].([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("invalid token_ids type: %T", arr[3])
+		}
 
-	// Parse block hashes
-	if hashes, err := parseInt64Array(data["block_hashes"]); err == nil {
-		event.BlockHashes = hashes
-	} else {
-		return nil, fmt.Errorf("failed to parse block_hashes: %w", err)
-	}
+		// 4: block_size (required)
+		blockSize, err := parseInt(arr[4])
+		if err != nil {
+			return nil, fmt.Errorf("invalid block_size: %w", err)
+		}
 
-	// Parse token IDs (array of arrays)
-	if tokenIDsRaw, ok := data["token_ids"].([]interface{}); ok {
-		event.TokenIDs = make([][]int32, 0, len(tokenIDsRaw))
-		for i, tokensRaw := range tokenIDsRaw {
-			tokens, err := parseInt32Array(tokensRaw)
+		// Flatten tokenIDs into []uint32
+		tokenIDs := make([]uint32, len(rawTokenIDs))
+		for i, v := range rawTokenIDs {
+			n, err := parseUint32(v)
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse token_ids at index %d: %w", i, err)
+				return nil, fmt.Errorf("token_ids[%d]: %w", i, err)
 			}
-			event.TokenIDs = append(event.TokenIDs, tokens)
+			tokenIDs[i] = n
 		}
-	} else {
-		return nil, fmt.Errorf("missing or invalid token_ids")
-	}
 
-	// Parse optional parent block hash
-	if parentHash, ok := data["parent_block_hash"]; ok && parentHash != nil {
-		hash, err := parseInt64(parentHash)
+		// Convert directly to [][]byte grouped by blockSize
+		tokens, err := convertTokenIDs(tokenIDs, blockSize)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse parent_block_hash: %w", err)
+			return nil, err
 		}
-		event.ParentBlockHash = &hash
-	}
 
-	return event, nil
-}
+		return &BlockStoredEvent{
+			Type:            EventTypeBlockStored,
+			BlockHashes:     blockHashes,
+			ParentBlockHash: parentHash,
+			TokenIDs:        tokens,
+		}, nil
 
-// parseBlockRemovedEvent parses a BlockRemovedEvent from raw data
-func parseBlockRemovedEvent(data map[string]interface{}) (*BlockRemovedEvent, error) {
-	event := &BlockRemovedEvent{
-		Type: EventTypeBlockRemoved,
-	}
+	case EventTypeBlockRemoved:
+		if len(arr) < 2 {
+			return nil, fmt.Errorf("BlockRemoved expects ≥2 fields, got %d", len(arr))
+		}
 
-	// Parse timestamp
-	if ts, err := parseTimestamp(data["timestamp"]); err == nil {
-		event.Timestamp = ts
-	} else {
-		return nil, fmt.Errorf("failed to parse timestamp: %w", err)
-	}
+		blockHashes, err := toInt64Slice(arr[1])
+		if err != nil {
+			return nil, fmt.Errorf("invalid block_hashes: %w", err)
+		}
 
-	// Parse model name
-	if modelName, ok := data["model_name"].(string); ok {
-		event.ModelName = modelName
-	} else {
-		return nil, fmt.Errorf("missing or invalid model_name")
-	}
+		ev := &BlockRemovedEvent{
+			Type:        tag,
+			BlockHashes: blockHashes,
+		}
 
-	// Parse block hashes
-	if hashes, err := parseInt64Array(data["block_hashes"]); err == nil {
-		event.BlockHashes = hashes
-	} else {
-		return nil, fmt.Errorf("failed to parse block_hashes: %w", err)
-	}
+		return ev, nil
 
-	return event, nil
-}
+	case EventTypeAllCleared:
+		return &AllBlocksClearedEvent{
+			Type: tag,
+		}, nil
 
-// parseAllBlocksClearedEvent parses an AllBlocksClearedEvent from raw data
-func parseAllBlocksClearedEvent(data map[string]interface{}) (*AllBlocksClearedEvent, error) {
-	event := &AllBlocksClearedEvent{
-		Type: EventTypeAllCleared,
-	}
-
-	// Parse timestamp
-	if ts, err := parseTimestamp(data["timestamp"]); err == nil {
-		event.Timestamp = ts
-	} else {
-		return nil, fmt.Errorf("failed to parse timestamp: %w", err)
-	}
-
-	// Parse model name
-	if modelName, ok := data["model_name"].(string); ok {
-		event.ModelName = modelName
-	} else {
-		return nil, fmt.Errorf("missing or invalid model_name")
-	}
-
-	return event, nil
-}
-
-// Helper functions for parsing common types
-
-func parseTimestamp(v interface{}) (time.Time, error) {
-	switch t := v.(type) {
-	case time.Time:
-		return t, nil
-	case int64:
-		// Unix timestamp in seconds
-		return time.Unix(t, 0).UTC(), nil
-	case int:
-		// Unix timestamp in seconds
-		return time.Unix(int64(t), 0).UTC(), nil
-	case int32:
-		// Unix timestamp in seconds
-		return time.Unix(int64(t), 0).UTC(), nil
-	case uint32:
-		// Unix timestamp in seconds
-		return time.Unix(int64(t), 0).UTC(), nil
-	case uint64:
-		// Unix timestamp in seconds
-		return time.Unix(int64(t), 0).UTC(), nil
-	case float64:
-		// Unix timestamp with fractional seconds
-		sec := int64(t)
-		nsec := int64((t - float64(sec)) * 1e9)
-		return time.Unix(sec, nsec).UTC().Truncate(time.Microsecond), nil
-	case float32:
-		// Unix timestamp with fractional seconds
-		f64 := float64(t)
-		sec := int64(f64)
-		nsec := int64((f64 - float64(sec)) * 1e9)
-		return time.Unix(sec, nsec).UTC().Truncate(time.Microsecond), nil
-	case string:
-		// Try to parse RFC3339 format
-		return time.Parse(time.RFC3339, t)
 	default:
-		return time.Time{}, fmt.Errorf("unsupported timestamp type: %T", v)
+		return nil, fmt.Errorf("unknown event type: %s", tag)
 	}
 }
 
-func parseInt64(v interface{}) (int64, error) {
-	switch n := v.(type) {
-	case int64:
-		return n, nil
-	case int:
-		return int64(n), nil
-	case int32:
-		return int64(n), nil
-	case int16:
-		return int64(n), nil
-	case int8:
-		return int64(n), nil
+func applyBatchMetadata(evt KVEvent, ts time.Time, model, pod string) {
+	switch e := evt.(type) {
+
+	case *BlockStoredEvent:
+		e.Timestamp = ts
+		e.ModelName = model
+		e.PodName = pod
+
+	case *BlockRemovedEvent:
+		e.Timestamp = ts
+		e.ModelName = model
+		e.PodName = pod
+
+	case *AllBlocksClearedEvent:
+		e.Timestamp = ts
+		e.ModelName = model
+		e.PodName = pod
+	}
+}
+
+func toInt64Slice(v any) ([]int64, error) {
+	raw, ok := v.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("expected []interface{}, got %T", v)
+	}
+	out := make([]int64, len(raw))
+	for i, x := range raw {
+		val, err := parseInt64(x)
+		if err != nil {
+			return nil, fmt.Errorf("block_hashes[%d]: %w", i, err)
+		}
+		out[i] = val
+	}
+	return out, nil
+}
+
+func toInt64Ptr(v any) (*int64, error) {
+	if v == nil {
+		return nil, nil
+	}
+	val, err := parseInt64(v)
+	if err != nil {
+		return nil, err
+	}
+	return &val, nil
+}
+
+func parseUint32(v any) (uint32, error) {
+	switch x := v.(type) {
+
+	// ---- Unsigned integer types ----
 	case uint:
-		return int64(n), nil
-	case uint64:
-		return int64(n), nil
-	case uint32:
-		return int64(n), nil
-	case uint16:
-		return int64(n), nil
+		if x > math.MaxUint32 {
+			return 0, fmt.Errorf("uint out of uint32 range: %d", x)
+		}
+		return uint32(x), nil
+
 	case uint8:
-		return int64(n), nil
-	case float64:
-		return int64(n), nil
+		return uint32(x), nil
+
+	case uint16:
+		return uint32(x), nil
+
+	case uint32:
+		return x, nil
+
+	case uint64:
+		if x > math.MaxUint32 {
+			return 0, fmt.Errorf("uint64 out of uint32 range: %d", x)
+		}
+		return uint32(x), nil
+
+	// ---- Signed integer types ----
+	case int:
+		if x < 0 || x > math.MaxUint32 {
+			return 0, fmt.Errorf("int out of uint32 range: %d", x)
+		}
+		return uint32(x), nil
+
+	case int8:
+		if x < 0 {
+			return 0, fmt.Errorf("int8 negative: %d", x)
+		}
+		return uint32(x), nil
+
+	case int16:
+		if x < 0 {
+			return 0, fmt.Errorf("int16 negative: %d", x)
+		}
+		return uint32(x), nil
+
+	case int32:
+		if x < 0 {
+			return 0, fmt.Errorf("int32 negative: %d", x)
+		}
+		return uint32(x), nil
+
+	case int64:
+		if x < 0 || x > math.MaxUint32 {
+			return 0, fmt.Errorf("int64 out of uint32 range: %d", x)
+		}
+		return uint32(x), nil
+
+	// ---- Floating-point types ----
 	case float32:
-		return int64(n), nil
+		f := float64(x)
+		if f < 0 || f > math.MaxUint32 {
+			return 0, fmt.Errorf("float32 out of uint32 range: %f", f)
+		}
+		if f != math.Trunc(f) {
+			return 0, fmt.Errorf("float32 has fractional part: %f", f)
+		}
+		return uint32(f), nil
+
+	case float64:
+		if x < 0 || x > math.MaxUint32 {
+			return 0, fmt.Errorf("float64 out of uint32 range: %f", x)
+		}
+		if x != math.Trunc(x) {
+			return 0, fmt.Errorf("float64 has fractional part: %f", x)
+		}
+		return uint32(x), nil
+
 	default:
-		return 0, fmt.Errorf("unsupported int64 type: %T", v)
+		return 0, fmt.Errorf("unsupported numeric type %T", v)
 	}
 }
 
-func parseInt64Array(v interface{}) ([]int64, error) {
-	arr, ok := v.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("expected array, got %T", v)
+func parseInt(v any) (int, error) {
+	switch x := v.(type) {
+	case int, int8, int16, int32, int64:
+		return int(toInt64(x)), nil
+	case uint, uint8, uint16, uint32, uint64:
+		if toUint64(x) > math.MaxInt {
+			return 0, fmt.Errorf("int overflow: %d", x)
+		}
+		return int(toUint64(x)), nil
+	case float64:
+		return int(x), nil
+	default:
+		return 0, fmt.Errorf("unsupported type %T", v)
+	}
+}
+
+func toInt64(v any) int64 {
+	switch x := v.(type) {
+	case int:
+		return int64(x)
+	case int8:
+		return int64(x)
+	case int16:
+		return int64(x)
+	case int32:
+		return int64(x)
+	case int64:
+		return x
+	}
+	panic("unreachable")
+}
+
+func toUint64(v any) uint64 {
+	switch x := v.(type) {
+	case uint:
+		return uint64(x)
+	case uint8:
+		return uint64(x)
+	case uint16:
+		return uint64(x)
+	case uint32:
+		return uint64(x)
+	case uint64:
+		return x
+	}
+	panic("unreachable")
+}
+
+func parseInt64(v any) (int64, error) {
+	switch x := v.(type) {
+
+	// ---- Signed integers ----
+	case int:
+		return int64(x), nil
+	case int8:
+		return int64(x), nil
+	case int16:
+		return int64(x), nil
+	case int32:
+		return int64(x), nil
+	case int64:
+		return x, nil
+
+	// ---- Unsigned integers ----
+	case uint:
+		if x > math.MaxInt64 {
+			return 0, fmt.Errorf("uint out of int64 range: %d", x)
+		}
+		return int64(x), nil
+
+	case uint8:
+		return int64(x), nil
+
+	case uint16:
+		return int64(x), nil
+
+	case uint32:
+		return int64(x), nil
+
+	case uint64:
+		if x > uint64(math.MaxInt64) {
+			return 0, fmt.Errorf("uint64 out of int64 range: %d", x)
+		}
+		return int64(x), nil
+
+	// ---- Floating-point ----
+	case float32:
+		f := float64(x)
+		if f < math.MinInt64 || f > math.MaxInt64 {
+			return 0, fmt.Errorf("float32 out of int64 range: %f", f)
+		}
+		if f != math.Trunc(f) {
+			return 0, fmt.Errorf("float32 has fractional part: %f", f)
+		}
+		return int64(f), nil
+
+	case float64:
+		if x < math.MinInt64 || x > math.MaxInt64 {
+			return 0, fmt.Errorf("float64 out of int64 range: %f", x)
+		}
+		if x != math.Trunc(x) {
+			return 0, fmt.Errorf("float64 has fractional part: %f", x)
+		}
+		return int64(x), nil
+
+	default:
+		return 0, fmt.Errorf("unsupported numeric type %T", v)
+	}
+}
+
+// convertTokenIDs groups tokenIDs into blocks of size blockSize and converts each block to []byte.
+// Each uint32 value is encoded as 4 bytes in big-endian format.
+func convertTokenIDs(tokenIDs []uint32, blockSize int) ([][]byte, error) {
+	if len(tokenIDs) == 0 {
+		return [][]byte{}, nil
 	}
 
-	result := make([]int64, 0, len(arr))
-	for i, item := range arr {
-		val, err := parseInt64(item)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse element at index %d: %w", i, err)
-		}
-		result = append(result, val)
+	if blockSize <= 0 {
+		return nil, fmt.Errorf("blockSize must be > 0, got %d", blockSize)
+	}
+	if len(tokenIDs)%blockSize != 0 {
+		return nil, fmt.Errorf(
+			"tokenIDs len=%d not divisible by blockSize=%d",
+			len(tokenIDs), blockSize,
+		)
+	}
+
+	numBlocks := len(tokenIDs) / blockSize
+	result := make([][]byte, numBlocks)
+
+	for i := 0; i < numBlocks; i++ {
+		start := i * blockSize
+		end := start + blockSize
+		result[i] = tokenIDsToBytes(tokenIDs[start:end])
 	}
 	return result, nil
 }
 
-func parseInt32Array(v interface{}) ([]int32, error) {
-	arr, ok := v.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("expected array, got %T", v)
+// tokenIDsToBytes converts slice of uint32 to big-endian []byte.
+func tokenIDsToBytes(ids []uint32) []byte {
+	out := make([]byte, len(ids)*4)
+	for i, v := range ids {
+		binary.BigEndian.PutUint32(out[i*4:], v)
 	}
-
-	result := make([]int32, 0, len(arr))
-	for i, item := range arr {
-		switch n := item.(type) {
-		case int32:
-			result = append(result, n)
-		case int:
-			result = append(result, int32(n))
-		case int64:
-			result = append(result, int32(n))
-		case int16:
-			result = append(result, int32(n))
-		case int8:
-			result = append(result, int32(n))
-		case uint:
-			result = append(result, int32(n))
-		case uint64:
-			result = append(result, int32(n))
-		case uint32:
-			result = append(result, int32(n))
-		case uint16:
-			result = append(result, int32(n))
-		case uint8:
-			result = append(result, int32(n))
-		case float64:
-			result = append(result, int32(n))
-		case float32:
-			result = append(result, int32(n))
-		default:
-			return nil, fmt.Errorf("unsupported int32 type at index %d: %T", i, item)
-		}
-	}
-	return result, nil
+	return out
 }

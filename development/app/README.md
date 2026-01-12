@@ -5,6 +5,52 @@
 1. You should follow the README.md to deploy aibrix first. After that, you can deploy mocked app as a deployment
 2. You can launch `app.py` directly on your dev environment without containers.
 
+## Local Development
+
+### Install dependencies
+
+```bash
+# Slim version (basic mock only)
+pip install -r requirements.txt
+
+# Full version (with simulator support)
+pip install -r requirements-simulator.txt
+```
+
+### Running the server locally
+
+Run the mocked app without Kubernetes:
+
+```bash
+STANDALONE_MODE=true python app.py
+```
+
+The server will start on `http://localhost:8000`.
+
+### Testing endpoints
+
+Two test files are provided for validating the endpoints:
+
+```bash
+# Start the server first
+STANDALONE_MODE=true python app.py
+
+# In another terminal, run the tests:
+
+# Test OpenAI-compatible endpoints (uses OpenAI SDK)
+python test_openai_endpoints.py
+
+# Test vLLM-specific endpoints (uses HTTP client)
+python test_vllm_endpoints.py
+```
+
+You can also specify a custom base URL:
+
+```bash
+python test_openai_endpoints.py --base-url http://localhost:8000/v1
+python test_vllm_endpoints.py --base-url http://localhost:8000
+```
+
 ## Mocked vLLM Basic Deployment
 
 ### Deploy the mocked app
@@ -92,8 +138,31 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## Mocked vLLM Features
 
-- metrics
-- openAI compatible interface
+### OpenAI-Compatible Endpoints
+- `/v1/models` - List available models
+- `/v1/chat/completions` - Chat completions (streaming supported)
+- `/v1/completions` - Text completions (streaming supported)
+- `/v1/embeddings` - Text embeddings
+- `/v1/images/generations` - Image generation
+- `/v1/video/generations` - Video generation
+- `/v1/rerank` - Document reranking
+- `/v1/audio/speech` - Text-to-speech
+- `/v1/audio/transcriptions` - Audio transcription
+- `/v1/audio/translations` - Audio translation
+
+### vLLM-Specific Endpoints
+- `/v1/load_lora_adapter` - Load a LoRA adapter
+- `/v1/unload_lora_adapter` - Unload a LoRA adapter
+- `/tokenize` - Tokenize text
+- `/detokenize` - Detokenize tokens
+- `/load` - Server load metrics
+- `/version` - Version info
+- `/metrics` - Prometheus metrics
+
+### Health/Utility Endpoints
+- `/health` - Health check
+- `/ready` - Ready check
+- `/ping` - Ping check
 
 
 ## How to test AIBrix features
@@ -154,7 +223,7 @@ curl http://localhost:8000/metrics
 ```log
 # HELP vllm:request_success_total Count of successfully processed requests.
 # TYPE vllm:request_success_total counter
-vllm:request_success_total{finished_reason="stop",model_name="llama2-7b"} 100.0
+vllm:request_success_total{model_name="llama2-7b"} 100.0
 # HELP vllm:avg_prompt_throughput_toks_per_s Average prefill throughput in tokens/s.
 # TYPE vllm:avg_prompt_throughput_toks_per_s gauge
 vllm:avg_prompt_throughput_toks_per_s{model_name="llama2-7b"} 100.0
@@ -172,10 +241,10 @@ kubectl scale deployment llama2-7b --replicas=5
 curl http://localhost:8000/metrics
 ```
 
-```
+```log
 # HELP vllm:request_success_total Count of successfully processed requests.
 # TYPE vllm:request_success_total counter
-vllm:request_success_total{finished_reason="stop",model_name="llama2-7b"} 20.0
+vllm:request_success_total{model_name="llama2-7b"} 20.0
 # HELP vllm:avg_prompt_throughput_toks_per_s Average prefill throughput in tokens/s.
 # TYPE vllm:avg_prompt_throughput_toks_per_s gauge
 vllm:avg_prompt_throughput_toks_per_s{model_name="llama2-7b"} 20.0

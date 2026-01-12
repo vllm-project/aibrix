@@ -14,7 +14,33 @@
 
 package kvcache
 
-import "time"
+import (
+	"time"
+)
+
+// vLLM encodes KV cache events as lists of values in msgpack.
+// In each list, the first entry is the event type as string.
+// The remaining entries depend on the event type.
+//
+// [
+//   "BlockStored",      # <- tag (string)
+//   [123, 567, 999],    # block_hashes
+//   None,               # parent_block_hash
+//   [55, 11, 22],       # token_ids
+//   32,                 # block_size
+//   None,               # lora_id
+//   "cuda:0"            # medium
+// ]
+//
+// [
+//   "BlockRemoved",
+//   [555, 666],
+//   "cpu"
+// ]
+//
+// [
+//   "AllBlocksCleared"
+// ]
 
 // EventType represents the type of KV cache event
 type EventType string
@@ -27,80 +53,116 @@ type EventType string
 
 const (
 	// EventTypeBlockStored indicates that blocks have been stored in the KV cache
-	EventTypeBlockStored EventType = "BLOCK_STORED"
-
+	EventTypeBlockStored EventType = "BlockStored"
 	// EventTypeBlockRemoved indicates that blocks have been removed from the KV cache
-	EventTypeBlockRemoved EventType = "BLOCK_REMOVED"
-
+	EventTypeBlockRemoved EventType = "BlockRemoved"
 	// EventTypeAllCleared indicates that all blocks have been cleared from the cache
-	EventTypeAllCleared EventType = "ALL_BLOCKS_CLEARED"
+	EventTypeAllCleared EventType = "AllBlocksCleared"
 )
 
 // KVEvent is the base interface for all KV cache events
 type KVEvent interface {
 	GetType() EventType
+	// Timestamp of a KV event is shared among all events in the same EventBatch
 	GetTimestamp() time.Time
+	setTimestamp(time.Time)
+	GetModelName() string
+	setModelName(string)
+	GetPodName() string
+	setPodName(string)
 }
 
 // BlockStoredEvent represents blocks being stored in KV cache
+// ------------------------------------------------------------
+// BlockStored (msgspec encoding order)
+// Python fields:
+//
+//	[tag, block_hashes, parent_block_hash, token_ids, block_size, lora_id, medium]
+//
+// ------------------------------------------------------------
+//
+// lora_id and medium are unused for now.
 type BlockStoredEvent struct {
-	Type            EventType `msgpack:"type"`
-	Timestamp       time.Time `msgpack:"timestamp"`
-	BlockHashes     []int64   `msgpack:"block_hashes"`
-	TokenIDs        [][]int32 `msgpack:"token_ids"`                   // One array per block
-	ParentBlockHash *int64    `msgpack:"parent_block_hash,omitempty"` // Parent hash for chaining
-	ModelName       string    `msgpack:"model_name"`
-	PodName         string    `msgpack:"-"` // Set by subscriber
+	_               struct{}  `msgpack:",array"` // msgspec array encoding
+	Type            EventType `msgpack:"-"`
+	BlockHashes     []int64
+	ParentBlockHash *int64
+	TokenIDs        [][]byte
+
+	// NOTE: These are NOT part of msgpack
+	Timestamp time.Time `msgpack:"-"`
+	ModelName string    `msgpack:"-"`
+	PodName   string    `msgpack:"-"`
 }
 
-// GetType returns the event type
-func (e *BlockStoredEvent) GetType() EventType {
-	return e.Type
-}
-
-// GetTimestamp returns the event timestamp
-func (e *BlockStoredEvent) GetTimestamp() time.Time {
-	return e.Timestamp
-}
+func (e *BlockStoredEvent) GetType() EventType        { return e.Type }
+func (e *BlockStoredEvent) GetTimestamp() time.Time   { return e.Timestamp }
+func (e *BlockStoredEvent) setTimestamp(ts time.Time) { e.Timestamp = ts }
+func (e *BlockStoredEvent) GetModelName() string      { return e.ModelName }
+func (e *BlockStoredEvent) setModelName(name string)  { e.ModelName = name }
+func (e *BlockStoredEvent) GetPodName() string        { return e.PodName }
+func (e *BlockStoredEvent) setPodName(name string)    { e.PodName = name }
 
 // BlockRemovedEvent represents blocks being removed from KV cache
+// ------------------------------------------------------------
+// BlockRemoved (msgspec order)
+// Python: [tag, block_hashes, medium]
+// ------------------------------------------------------------
+//
+// lora_id is unused for now.
 type BlockRemovedEvent struct {
-	Type        EventType `msgpack:"type"`
-	Timestamp   time.Time `msgpack:"timestamp"`
-	BlockHashes []int64   `msgpack:"block_hashes"`
-	ModelName   string    `msgpack:"model_name"`
-	PodName     string    `msgpack:"-"` // Set by subscriber
+	_           struct{}  `msgpack:",array"`
+	Type        EventType `msgpack:"-"`
+	BlockHashes []int64
+
+	// NOTE: These are NOT part of msgpack
+	Timestamp time.Time `msgpack:"-"`
+	ModelName string    `msgpack:"-"`
+	PodName   string    `msgpack:"-"`
 }
 
-// GetType returns the event type
-func (e *BlockRemovedEvent) GetType() EventType {
-	return e.Type
-}
-
-// GetTimestamp returns the event timestamp
-func (e *BlockRemovedEvent) GetTimestamp() time.Time {
-	return e.Timestamp
-}
+func (e *BlockRemovedEvent) GetType() EventType        { return e.Type }
+func (e *BlockRemovedEvent) GetTimestamp() time.Time   { return e.Timestamp }
+func (e *BlockRemovedEvent) setTimestamp(ts time.Time) { e.Timestamp = ts }
+func (e *BlockRemovedEvent) GetModelName() string      { return e.ModelName }
+func (e *BlockRemovedEvent) setModelName(name string)  { e.ModelName = name }
+func (e *BlockRemovedEvent) GetPodName() string        { return e.PodName }
+func (e *BlockRemovedEvent) setPodName(name string)    { e.PodName = name }
 
 // AllBlocksClearedEvent represents all blocks being cleared
+// ------------------------------------------------------------
+// AllBlocksCleared (msgspec order)
+// Python: [tag]
+// ------------------------------------------------------------
 type AllBlocksClearedEvent struct {
-	Type      EventType `msgpack:"type"`
-	Timestamp time.Time `msgpack:"timestamp"`
-	ModelName string    `msgpack:"model_name"`
-	PodName   string    `msgpack:"-"` // Set by subscriber
+	_    struct{}  `msgpack:",array"`
+	Type EventType `msgpack:"-"`
+
+	// NOTE: These are NOT part of msgpack
+	Timestamp time.Time `msgpack:"-"`
+	ModelName string    `msgpack:"-"`
+	PodName   string    `msgpack:"-"`
 }
 
-// GetType returns the event type
-func (e *AllBlocksClearedEvent) GetType() EventType {
-	return e.Type
-}
-
-// GetTimestamp returns the event timestamp
-func (e *AllBlocksClearedEvent) GetTimestamp() time.Time {
-	return e.Timestamp
-}
+func (e *AllBlocksClearedEvent) GetType() EventType        { return e.Type }
+func (e *AllBlocksClearedEvent) GetTimestamp() time.Time   { return e.Timestamp }
+func (e *AllBlocksClearedEvent) setTimestamp(ts time.Time) { e.Timestamp = ts }
+func (e *AllBlocksClearedEvent) GetModelName() string      { return e.ModelName }
+func (e *AllBlocksClearedEvent) setModelName(name string)  { e.ModelName = name }
+func (e *AllBlocksClearedEvent) GetPodName() string        { return e.PodName }
+func (e *AllBlocksClearedEvent) setPodName(name string)    { e.PodName = name }
 
 // EventBatch represents a batch of events from vLLM
+// ------------------------------------------------------------
+// Batch object
+// Python msgspec.Struct(array_like=True):
+//
+// EventBatch encoded as:
+//
+//	[ ts, [<event1>, <event2>, ...] ]
+//
+// ------------------------------------------------------------
 type EventBatch struct {
-	Events []KVEvent `msgpack:"events"`
+	Timestamp time.Time
+	Events    []KVEvent
 }

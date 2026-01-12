@@ -93,8 +93,6 @@ const (
 	ConditionNotReason = "ConditionNotFound"
 	// PodNotReadyReason is added when a pod is not ready for adapter loading
 	PodNotReadyReason = "PodNotReady"
-	// MaxRetriesExceededReason is added when max retries are exceeded for a pod
-	MaxRetriesExceededReason = "MaxRetriesExceeded"
 
 	// Available:
 
@@ -115,7 +113,7 @@ const (
 var (
 	controllerKind         = modelv1alpha1.GroupVersion.WithKind("ModelAdapter")
 	controllerName         = "model-adapter-controller"
-	defaultRequeueDuration = 3 * time.Second
+	defaultRequeueDuration = 10 * time.Second
 )
 
 type URLConfig struct {
@@ -424,16 +422,19 @@ func (r *ModelAdapterReconciler) DoReconcile(ctx context.Context, req ctrl.Reque
 
 	// Step 2: Reconcile Loading (pass oldInstances to detect pod removal)
 	if err := r.reconcileLoading(ctx, instance, oldInstances); err != nil {
-		// retry any of the failure.
-		instance.Status.Phase = modelv1alpha1.ModelAdapterBound
-		condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeBound), metav1.ConditionFalse,
-			ModelAdapterLoadingErrorReason, fmt.Sprintf("ModelAdapter %s is loaded", klog.KObj(instance)))
-		if err := r.updateStatus(ctx, instance, condition); err != nil {
-			klog.InfoS("Got error when updating status", "cluster name", req.Name, "error", err, "ModelAdapter", instance)
-			return ctrl.Result{}, err
+		// Don't overwrite Failed status - it should be preserved for visibility
+		if instance.Status.Phase != modelv1alpha1.ModelAdapterFailed {
+			instance.Status.Phase = modelv1alpha1.ModelAdapterBound
+			condition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeBound), metav1.ConditionFalse,
+				ModelAdapterLoadingErrorReason, fmt.Sprintf("ModelAdapter %s loading failed", klog.KObj(instance)))
+			if err := r.updateStatus(ctx, instance, condition); err != nil {
+				klog.InfoS("Got error when updating status", "cluster name", req.Name, "error", err, "ModelAdapter", instance)
+				return ctrl.Result{}, err
+			}
 		}
-
-		return ctrl.Result{RequeueAfter: defaultRequeueDuration}, err
+		// Continue to retry - requeue even for Failed state.
+		// Do not emit errors, this is recoverable
+		return ctrl.Result{RequeueAfter: defaultRequeueDuration}, nil
 	}
 
 	// Step 3: Reconcile Service
@@ -796,22 +797,22 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 
 					// If this is a recovery from pod removal, update Scheduled condition back to True
 					if podRemoved {
-						scheduledCondition := NewCondition(string(modelv1alpha1.ModelAdapterConditionTypeScheduled), metav1.ConditionTrue,
-							"Rescheduled", fmt.Sprintf("Adapter successfully loaded on new pod %s", pod.Name))
+						scheduledCondition := NewCondition(
+							string(modelv1alpha1.ModelAdapterConditionTypeScheduled),
+							metav1.ConditionTrue,
+							"Rescheduled",
+							fmt.Sprintf("Adapter successfully loaded on new pod %s", pod.Name))
 
 						if err := r.updateStatus(ctx, instance, scheduledCondition); err != nil {
-							klog.ErrorS(err, "Failed to update Scheduled condition after successful loading", "ModelAdapter", klog.KObj(instance))
+							klog.ErrorS(err, "Failed to update Scheduled condition after successful loading",
+								"ModelAdapter", klog.KObj(instance))
 						}
 					}
 				}
-			} else if shouldRetry {
-				// Log the error but continue trying other pods
-				loadingErrors = append(loadingErrors, fmt.Sprintf("pod %s: %v", pod.Name, err))
-				klog.V(4).InfoS("Loading failed on pod, will retry later", "pod", pod.Name, "error", err)
 			} else {
-				// Max retries exceeded for this pod, don't try again
-				loadingErrors = append(loadingErrors, fmt.Sprintf("pod %s: max retries exceeded", pod.Name))
-				klog.InfoS("Max retries exceeded for pod", "pod", pod.Name, "ModelAdapter", klog.KObj(instance))
+				// Loading failed, record error
+				loadingErrors = append(loadingErrors, fmt.Sprintf("pod %s: %v", pod.Name, err))
+				klog.V(4).InfoS("Loading failed on pod", "pod", pod.Name, "error", err, "shouldRetry", shouldRetry)
 			}
 		}
 	} else {
@@ -819,22 +820,15 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 		// in case lora model removed by engine then load it back.
 		for _, podName := range instance.Status.Instances {
 			if pod, ok := activeMap[podName]; ok {
-				success, shouldRetry, err := r.tryLoadModelAdapterOnPod(ctx, instance, &pod)
+				success, _, err := r.tryLoadModelAdapterOnPod(ctx, instance, &pod)
 				if !success {
-					if shouldRetry {
-						// Log the error but continue trying other pods
-						loadingErrors = append(loadingErrors, fmt.Sprintf("pod %s: %v", podName, err))
-						klog.V(4).InfoS("Loading failed on pod, will retry later", "pod", podName, "error", err)
-					} else {
-						// Max retries exceeded for this pod, don't try again
-						loadingErrors = append(loadingErrors, fmt.Sprintf("pod %s: max retries exceeded", podName))
-						klog.InfoS("Max retries exceeded for pod", "pod", podName, "ModelAdapter", klog.KObj(instance))
-					}
+					loadingErrors = append(loadingErrors, fmt.Sprintf("pod %s: %v", podName, err))
+					klog.V(4).InfoS("Loading failed on pod", "pod", podName, "error", err)
 				}
 			} else {
-				// This case should ideally not be reached as reconcileReplicas should have cleaned up inactive instances.
-				// However, as a safeguard, we log a warning.
-				klog.Warningf("Pod %s, which is in ModelAdapter instance status, was not found in the active pods list.", podName)
+				// This case should ideally not be reached as reconcileReplicas should have cleaned up
+				// inactive instances. However, as a safeguard, we log a warning.
+				klog.Warningf("Pod %s in ModelAdapter instance status not found in active pods list.", podName)
 			}
 		}
 	}
@@ -844,14 +838,38 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 
 	// Check if we have any successful instances
 	if len(instance.Status.Instances) == 0 {
-		// No successful loadings, return error to trigger retry
+		// No successful loadings - transition to Failed state if there are errors
 		if len(loadingErrors) > 0 {
+			instance.Status.Phase = modelv1alpha1.ModelAdapterFailed
+			condition := NewCondition(
+				string(modelv1alpha1.ModelAdapterConditionReady),
+				metav1.ConditionFalse,
+				ModelAdapterLoadingErrorReason,
+				fmt.Sprintf("Loading failed on all pods: %v", strings.Join(loadingErrors, "; ")))
+			if err := r.updateStatus(ctx, instance, condition); err != nil {
+				return err
+			}
+			klog.InfoS("ModelAdapter transitioned to Failed state",
+				"ModelAdapter", klog.KObj(instance),
+				"errors", loadingErrors)
 			return fmt.Errorf("failed to load adapter on any pods: %v", strings.Join(loadingErrors, "; "))
 		}
 		return fmt.Errorf("no suitable pods available for adapter loading")
 	}
 
-	klog.V(4).InfoS("ModelAdapter loading completed", "ModelAdapter", klog.KObj(instance), "instances", instance.Status.Instances, "ready", instance.Status.ReadyReplicas, "desired", instance.Status.DesiredReplicas)
+	// Clear Failed status if we have successful instances
+	if instance.Status.Phase == modelv1alpha1.ModelAdapterFailed {
+		instance.Status.Phase = modelv1alpha1.ModelAdapterRunning
+		klog.InfoS("ModelAdapter recovered from Failed state",
+			"ModelAdapter", klog.KObj(instance),
+			"instances", instance.Status.Instances)
+	}
+
+	klog.V(4).InfoS("ModelAdapter loading completed",
+		"ModelAdapter", klog.KObj(instance),
+		"instances", instance.Status.Instances,
+		"ready", instance.Status.ReadyReplicas,
+		"desired", instance.Status.DesiredReplicas)
 	return nil
 }
 
@@ -1029,7 +1047,7 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 
 	// Check max retries
 	if retryCount >= MaxLoadingRetries {
-		r.recordRetryFailure(instance, pod.Name, "max retries exceeded")
+		klog.InfoS("Max retries exceeded for pod", "pod", pod.Name)
 		return false, false, fmt.Errorf("max retries (%d) exceeded", MaxLoadingRetries)
 	}
 
@@ -1044,7 +1062,7 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 			return false, true, err
 		}
 		// Non-retriable error
-		r.recordRetryFailure(instance, pod.Name, fmt.Sprintf("Non-retriable error loading adapter: %v", err))
+		klog.InfoS("Non-retriable error loading adapter on pod", "pod", pod.Name, "modelAdapter", klog.KObj(instance), "error", err)
 		return false, false, err
 	}
 
@@ -1136,12 +1154,6 @@ func (r *ModelAdapterReconciler) clearRetryInfo(instance *modelv1alpha1.ModelAda
 
 	delete(instance.Annotations, retryCountKey)
 	delete(instance.Annotations, lastRetryTimeKey)
-}
-
-// recordRetryFailure records a retry failure event
-func (r *ModelAdapterReconciler) recordRetryFailure(instance *modelv1alpha1.ModelAdapter, podName string, reason string) {
-	r.Recorder.Eventf(instance, corev1.EventTypeWarning, MaxRetriesExceededReason,
-		"Max retries exceeded for pod %s: %s", podName, reason)
 }
 
 // getPodNames extracts pod names from a list of pods

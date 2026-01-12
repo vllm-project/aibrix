@@ -12,6 +12,11 @@
 # 3. Selects the best backend based on routing algorithm
 # 4. Returns the target backend via the "target-pod" header
 # 5. Envoy routes to the selected backend
+#
+# NETWORKING:
+# This config uses hostnames (gateway, vllm, metadata-service) that work for:
+# - Docker Compose: Resolved via Docker's internal DNS
+# - Local development: Add to /etc/hosts: 127.0.0.1 gateway vllm metadata-service
 
 admin:
   address:
@@ -182,8 +187,8 @@ static_resources:
               - endpoint:
                   address:
                     socket_address:
-                      # For local dev, use 127.0.0.1 or add "gateway" to /etc/hosts
-                      address: 127.0.0.1
+                      # Docker service name for container networking
+                      address: gateway
                       port_value: 50052
       health_checks:
         - timeout: 5s
@@ -207,8 +212,8 @@ static_resources:
               - endpoint:
                   address:
                     socket_address:
-                      # For local dev, use 127.0.0.1 or add "gateway" to /etc/hosts
-                      address: 127.0.0.1
+                      # Docker service name for container networking
+                      address: gateway
                       port_value: 8080
       connect_timeout: 5s
 
@@ -235,8 +240,8 @@ static_resources:
               - endpoint:
                   address:
                     socket_address:
-                      # For local dev, use 127.0.0.1 or add "vllm" to /etc/hosts
-                      address: 127.0.0.1
+                      # Docker service name for container networking
+                      address: vllm
                       port_value: 8000
 
       health_checks:
@@ -285,8 +290,8 @@ static_resources:
               - endpoint:
                   address:
                     socket_address:
-                      # For local dev, use 127.0.0.1 or add "metadata-service" to /etc/hosts
-                      address: 127.0.0.1
+                      # Docker service name for container networking
+                      address: metadata-service
                       port_value: 8090
 
       health_checks:

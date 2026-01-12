@@ -112,6 +112,10 @@ class Connector(Generic[K, V]):
             from .eic import EICConnector
 
             return EICConnector.from_envs(conn_id, executor, **kwargs)
+        elif backend_name == "SHFS":
+            from .shfs import SHFSConnector
+
+            return SHFSConnector.from_envs(conn_id, executor, **kwargs)
         else:
             raise ValueError(f"Unknown connector type: {backend_name}")
 

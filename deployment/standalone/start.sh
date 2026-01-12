@@ -176,7 +176,7 @@ echo ""
 
 echo -e "${BOLD}Configuration:${NC}"
 echo ""
-echo -e "  ${CYAN}Model:${NC}        ${MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}"
+echo -e "  ${CYAN}Model:${NC}        ${MODEL_NAME:-Qwen/Qwen2.5-1.5B-Instruct}"
 echo -e "  ${CYAN}Model Dir:${NC}    ${MODEL_DIR:-~/.cache/huggingface}"
 
 if [ "$PD_MODE" = true ]; then
@@ -358,7 +358,7 @@ echo ""
 echo "  curl http://localhost:${HTTP_PORT:-80}/v1/chat/completions \\"
 echo "    -H 'Content-Type: application/json' \\"
 echo "    -d '{"
-echo "      \"model\": \"${MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}\","
+echo "      \"model\": \"${MODEL_NAME:-Qwen/Qwen2.5-1.5B-Instruct}\","
 echo "      \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]"
 echo "    }'"
 echo ""
