@@ -176,9 +176,9 @@ func (r *PodSetReconciler) reconcilePodGroup(ctx context.Context, podSet *orches
 			Spec:       schedv1alpha1.PodGroupSpec(*podSet.Spec.SchedulingStrategy.GodelSchedulingStrategy),
 		}
 		expectedGroup.SetGroupVersionKind(schedv1alpha1.SchemeGroupVersion.WithKind("PodGroup"))
-		if created, err := utils.EnsurePodGroupExist(ctx, r.DynamicClient, expectedGroup, podSet.Name, podSet.Namespace); err != nil {
+		if synced, err := utils.EnsurePodGroup(ctx, r.DynamicClient, expectedGroup, podSet.Name, podSet.Namespace); err != nil {
 			return err
-		} else if created {
+		} else if synced {
 			r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, PodGroupSyncedEventType, "pod group %s synced", podSet.Name)
 		}
 	}
@@ -188,9 +188,9 @@ func (r *PodSetReconciler) reconcilePodGroup(ctx context.Context, podSet *orches
 			Spec:       schedulerpluginsv1aplha1.PodGroupSpec(*podSet.Spec.SchedulingStrategy.CoschedulingSchedulingStrategy),
 		}
 		expectedGroup.SetGroupVersionKind(schedulerpluginsv1aplha1.SchemeGroupVersion.WithKind("PodGroup"))
-		if created, err := utils.EnsurePodGroupExist(ctx, r.DynamicClient, expectedGroup, podSet.Name, podSet.Namespace); err != nil {
+		if synced, err := utils.EnsurePodGroup(ctx, r.DynamicClient, expectedGroup, podSet.Name, podSet.Namespace); err != nil {
 			return err
-		} else if created {
+		} else if synced {
 			r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, PodGroupSyncedEventType, "pod group %s synced", podSet.Name)
 		}
 	}
@@ -206,9 +206,9 @@ func (r *PodSetReconciler) reconcilePodGroup(ctx context.Context, podSet *orches
 			},
 		}
 		expectedGroup.SetGroupVersionKind(volcanoschedv1beta1.SchemeGroupVersion.WithKind("PodGroup"))
-		if created, err := utils.EnsurePodGroupExist(ctx, r.DynamicClient, expectedGroup, podSet.Name, podSet.Namespace); err != nil {
+		if synced, err := utils.EnsurePodGroup(ctx, r.DynamicClient, expectedGroup, podSet.Name, podSet.Namespace); err != nil {
 			return err
-		} else if created {
+		} else if synced {
 			r.EventRecorder.Eventf(podSet, v1.EventTypeNormal, PodGroupSyncedEventType, "pod group %s synced", podSet.Name)
 		}
 	}
