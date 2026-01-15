@@ -81,7 +81,7 @@ var (
 	aibrixDecodeMaxThroughputDiff float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_THROUGHPUT", defaultMaxTokenThroughputDiff)
 	aibrixPromptLengthBucketing   bool    = utils.LoadEnvBool("AIBRIX_PROMPT_LENGTH_BUCKETING", false)
 	// KV connector type: "shfs" (default) for GPU/SHFS, "nixl" for Neuron
-	aibrixKVConnectorType string = utils.LoadEnvString("AIBRIX_KV_CONNECTOR_TYPE", KVConnectorTypeSHFS)
+	aibrixKVConnectorType string = utils.LoadEnv("AIBRIX_KV_CONNECTOR_TYPE", KVConnectorTypeSHFS)
 )
 
 func init() {
