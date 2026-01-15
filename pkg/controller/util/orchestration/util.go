@@ -268,7 +268,7 @@ func MinInt(a, b int) int {
 	return b
 }
 
-func EnsurePodGroupExist(ctx context.Context, dc dynamic.Interface, podGroup client.Object, name, namespace string) (created bool, err error) {
+func EnsurePodGroup(ctx context.Context, dc dynamic.Interface, podGroup client.Object, name, namespace string) (synced bool, err error) {
 	crd := schema.GroupVersionResource{
 		Group:    "apiextensions.k8s.io",
 		Version:  "v1",
@@ -282,7 +282,7 @@ func EnsurePodGroupExist(ctx context.Context, dc dynamic.Interface, podGroup cli
 		return false, err
 	}
 
-	if _, err := dc.Resource(podGroup.GetObjectKind().GroupVersionKind().GroupVersion().WithResource("podgroups")).Namespace(namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
+	if res, err := dc.Resource(podGroup.GetObjectKind().GroupVersionKind().GroupVersion().WithResource("podgroups")).Namespace(namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
 		if apierrors.IsNotFound(err) { // podgroup not found, create it
 			podGroupUnstructed, err := runtime.DefaultUnstructuredConverter.ToUnstructured(podGroup)
 			if err != nil {
@@ -292,9 +292,22 @@ func EnsurePodGroupExist(ctx context.Context, dc dynamic.Interface, podGroup cli
 			return err == nil, err
 		}
 		return false, err // other get error
+	} else {
+		// podgroup already presented, update pod group if needed.
+		podGroup.SetResourceVersion(res.GetResourceVersion())
+		podGroupUnstructed, err := runtime.DefaultUnstructuredConverter.ToUnstructured(podGroup)
+		if err != nil {
+			return false, err
+		}
+
+		// Only update if the spec has changed.
+		if reflect.DeepEqual(res.Object["spec"], podGroupUnstructed["spec"]) {
+			return false, nil
+		}
+
+		_, err = dc.Resource(podGroup.GetObjectKind().GroupVersionKind().GroupVersion().WithResource("podgroups")).Namespace(namespace).Update(ctx, &unstructured.Unstructured{Object: podGroupUnstructed}, metav1.UpdateOptions{})
+		return err == nil, err
 	}
-	// podgroup already presented
-	return false, nil
 }
 
 func FinalizePodGroup(ctx context.Context, dc dynamic.Interface, c client.Client, podGroup client.Object, name, namespace string) error {
