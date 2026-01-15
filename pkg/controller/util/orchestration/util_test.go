@@ -218,32 +218,39 @@ func TestEnsurePodGroup(t *testing.T) {
 			Name:      name,
 			Namespace: namespace,
 		},
+		Spec: volcanoschedv1beta1.PodGroupSpec{
+			MinMember: 2,
+		},
 	}
 
 	tests := []struct {
 		name           string
 		initialObjects []runtime.Object
-		expectedResult bool
+		expectCreated  bool
+		expectUpdated  bool
 	}{
 		{
 			name:           "CRD not installed",
 			initialObjects: []runtime.Object{}, // not found CRD
-			expectedResult: false,
+			expectCreated:  false,
+			expectUpdated:  false,
 		},
 		{
 			name: "PodGroup not found and create successfully",
 			initialObjects: []runtime.Object{
 				createPGCRDObject("podgroups.scheduling.volcano.sh"),
 			},
-			expectedResult: true,
+			expectCreated: true,
+			expectUpdated: false,
 		},
 		{
-			name: "PodGroup already exists",
+			name: "PodGroup already exists and update successfully",
 			initialObjects: []runtime.Object{
 				createPGCRDObject("podgroups.scheduling.volcano.sh"),
 				createPodGroupObject(name, namespace),
 			},
-			expectedResult: true,
+			expectCreated: true,
+			expectUpdated: true,
 		},
 	}
 
@@ -256,11 +263,18 @@ func TestEnsurePodGroup(t *testing.T) {
 
 			assert.NoError(t, err)
 
-			assert.Equal(t, tt.expectedResult, synced)
+			assert.Equal(t, tt.expectCreated, synced)
 
-			if tt.expectedResult {
-				_, err := fakeClient.Resource(podGroupGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
-				assert.NoError(t, err, "PodGroup should be synced")
+			if tt.expectCreated {
+				pg, err := fakeClient.Resource(podGroupGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+				assert.NoError(t, err, "PodGroup should be created")
+
+				if tt.expectUpdated {
+					expectedSpec := map[string]interface{}{
+						"minMember": int64(podGroup.Spec.MinMember),
+					}
+					assert.Equal(t, expectedSpec, pg.Object["spec"], "PodGroup should be updated if changed")
+				}
 			}
 		})
 	}
