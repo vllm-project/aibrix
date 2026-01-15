@@ -93,12 +93,26 @@ func initCacheInformers(instance *Store, config *rest.Config, stopCh <-chan stru
 	return nil
 }
 
+// getModelNameFromPod retrieves model name from pod labels first, then annotations.
+// This supports cases where model names contain characters invalid for K8s labels (e.g., '/').
+func getModelNameFromPod(pod *v1.Pod) (string, bool) {
+	// Try label first (standard case)
+	if modelName, ok := pod.Labels[modelIdentifier]; ok && modelName != "" {
+		return modelName, true
+	}
+	// Fallback to annotation (allows special characters like '/' in model paths)
+	if modelName, ok := pod.Annotations[modelIdentifier]; ok && modelName != "" {
+		return modelName, true
+	}
+	return "", false
+}
+
 func (c *Store) addPod(obj interface{}) {
 	pod := obj.(*v1.Pod)
-	// only track pods with model deployments
-	modelName, ok := pod.Labels[modelIdentifier]
+	// only track pods with model deployments (check label first, then annotation)
+	modelName, ok := getModelNameFromPod(pod)
 	if !ok {
-		klog.V(4).InfoS("ignored pod without model label", "name", pod.Name)
+		klog.V(4).InfoS("ignored pod without model label or annotation", "name", pod.Name)
 		return
 	}
 	// ignore worker pods
@@ -127,9 +141,9 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
 
-	_, oldOk := oldPod.Labels[modelIdentifier]
+	_, oldOk := getModelNameFromPod(oldPod)
 	_, existed := c.metaPods.Load(utils.GeneratePodKey(oldPod.Namespace, oldPod.Name)) // Make sure nothing left.
-	newModelName, newOk := newPod.Labels[modelIdentifier]
+	newModelName, newOk := getModelNameFromPod(newPod)
 
 	if !oldOk && !existed && !newOk {
 		return // No model information to track in either old or new pod
@@ -175,18 +189,18 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 
 func (c *Store) deletePod(obj interface{}) {
 	var namespace, name string
-	var hasModelLabel bool
+	var hasModelInfo bool
 	var pod *v1.Pod
 	switch obj := obj.(type) {
 	case *v1.Pod:
 		pod = obj
 		namespace, name = obj.Namespace, obj.Name
-		_, hasModelLabel = obj.Labels[modelIdentifier]
+		_, hasModelInfo = getModelNameFromPod(obj)
 	case cache.DeletedFinalStateUnknown:
 		if p, ok := obj.Obj.(*v1.Pod); ok {
 			pod = p
 			namespace, name = p.Namespace, p.Name
-			_, hasModelLabel = p.Labels[modelIdentifier]
+			_, hasModelInfo = getModelNameFromPod(p)
 			break
 		}
 
@@ -201,7 +215,7 @@ func (c *Store) deletePod(obj interface{}) {
 		}
 	}
 	_, existed := c.metaPods.Load(utils.GeneratePodKey(namespace, name))
-	if !hasModelLabel && !existed {
+	if !hasModelInfo && !existed {
 		return
 	}
 
