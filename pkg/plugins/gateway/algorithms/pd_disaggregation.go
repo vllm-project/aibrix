@@ -69,11 +69,19 @@ const (
 	pdRoutePrefillEmptyKVTransferParams = "pd-prefill-empty-kv-transfer-params"
 )
 
+const (
+	// KV connector types for different backends
+	KVConnectorTypeSHFS = "shfs" // Default - AIBrix SHFS/KVCacheManager (GPU)
+	KVConnectorTypeNIXL = "nixl" // NIXL for Neuron (uses disagg_prefill_resp wrapper)
+)
+
 var (
 	prefillRequestTimeout         int     = utils.LoadEnvInt("AIBRIX_PREFILL_REQUEST_TIMEOUT", defaultPrefillRequestTimeout)
 	aibrixDecodeMaxRequest        float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_REQUEST", defaultMaxRequest)
 	aibrixDecodeMaxThroughputDiff float64 = utils.LoadEnvFloat("AIBRIX_DECODE_MAX_THROUGHPUT", defaultMaxTokenThroughputDiff)
 	aibrixPromptLengthBucketing   bool    = utils.LoadEnvBool("AIBRIX_PROMPT_LENGTH_BUCKETING", false)
+	// KV connector type: "shfs" (default) for GPU/SHFS, "nixl" for Neuron
+	aibrixKVConnectorType string = utils.LoadEnvString("AIBRIX_KV_CONNECTOR_TYPE", KVConnectorTypeSHFS)
 )
 
 func init() {
@@ -633,8 +641,9 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 		routingCtx.ReqBody = bodyCopy
 	}
 
-	// Add nixl-specific kv_transfer_params for vLLM prefill requests only
-	if llmEngine == VLLMEngine {
+	// Add kv_transfer_params for vLLM prefill requests only (SHFS mode)
+	// For NIXL mode (Neuron), the backend handles KV transfer via its own mechanism
+	if llmEngine == VLLMEngine && aibrixKVConnectorType != KVConnectorTypeNIXL {
 		completionRequest["kv_transfer_params"] = map[string]any{
 			"do_remote_decode":  true,
 			"do_remote_prefill": false,
@@ -707,6 +716,36 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 }
 
 func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.RoutingContext, responseData map[string]any, prefillPod *v1.Pod) error {
+	// Parse the original request body
+	var originalRequest map[string]any
+	if err := json.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
+		return fmt.Errorf("failed to unmarshal original request body: %w", err)
+	}
+
+	// Handle NIXL mode (Neuron) - wrap entire prefill response in disagg_prefill_resp
+	if aibrixKVConnectorType == KVConnectorTypeNIXL {
+		// For NIXL, wrap the entire prefill response for decode to process
+		// This is the format expected by Neuron's NixlConnector
+		originalRequest["disagg_prefill_resp"] = responseData
+
+		// Marshal the updated request body
+		updatedReqBody, err := json.Marshal(originalRequest)
+		if err != nil {
+			return fmt.Errorf("failed to marshal updated request body: %w", err)
+		}
+
+		// Update routing context with new request body
+		routingCtx.ReqBody = updatedReqBody
+
+		klog.InfoS("updated routing context with disagg_prefill_resp (NIXL mode)",
+			"request_id", routingCtx.RequestID,
+			"prefill_pod", prefillPod.Name,
+			"prefill_host", prefillPod.Status.PodIP,
+			"kv_connector_type", aibrixKVConnectorType)
+		return nil
+	}
+
+	// SHFS mode (default) - use kv_transfer_params with remote_host
 	// Extract kv_transfer_params from prefill response
 	kvTransferParams, exists := responseData["kv_transfer_params"]
 	if !exists {
@@ -741,10 +780,11 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 	// Update routing context with new request body
 	routingCtx.ReqBody = updatedReqBody
 
-	klog.InfoS("updated routing context with kv_transfer_params",
+	klog.InfoS("updated routing context with kv_transfer_params (SHFS mode)",
 		"request_id", routingCtx.RequestID,
 		"prefill_pod", prefillPod.Name,
-		"prefill_host", prefillPod.Status.PodIP)
+		"prefill_host", prefillPod.Status.PodIP,
+		"kv_connector_type", aibrixKVConnectorType)
 	return nil
 }
 
