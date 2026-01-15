@@ -79,7 +79,7 @@ type loraClient struct {
 }
 
 // LoadAdapter loads the loras in inference engines
-func (c *loraClient) LoadAdapter(instance *modelv1alpha1.ModelAdapter, targetPod *corev1.Pod) (loaded bool, exists bool, err error) {
+func (c *loraClient) LoadAdapter(ctx context.Context, instance *modelv1alpha1.ModelAdapter, targetPod *corev1.Pod) (loaded bool, exists bool, err error) {
 	// Determine whether to use runtime sidecar:
 	// - If global flag is disabled, always use direct engine API
 	// - If global flag is enabled, detect if pod has sidecar container
@@ -100,7 +100,7 @@ func (c *loraClient) LoadAdapter(instance *modelv1alpha1.ModelAdapter, targetPod
 		return false, true, nil
 	}
 
-	err = c.loadAdapterCall(urls.LoadAdapterURL, instance, useSidecar)
+	err = c.loadAdapterCall(ctx, urls.LoadAdapterURL, instance, useSidecar)
 	if err != nil {
 		return false, false, err
 	}
@@ -198,7 +198,7 @@ func (c *loraClient) getModels(url string, instance *modelv1alpha1.ModelAdapter)
 }
 
 // Separate method to load the LoRA adapter
-func (c *loraClient) loadAdapterCall(url string, instance *modelv1alpha1.ModelAdapter, useSidecar bool) error {
+func (c *loraClient) loadAdapterCall(ctx context.Context, url string, instance *modelv1alpha1.ModelAdapter, useSidecar bool) error {
 	var payloadBytes []byte
 	var err error
 
@@ -212,7 +212,7 @@ func (c *loraClient) loadAdapterCall(url string, instance *modelv1alpha1.ModelAd
 
 		// Add credentials if provided
 		if instance.Spec.CredentialsSecretRef != nil && c.k8sClient != nil {
-			secret, err := c.k8sClient.CoreV1().Secrets(instance.Namespace).Get(context.Background(), instance.Spec.CredentialsSecretRef.Name, metav1.GetOptions{})
+			secret, err := c.k8sClient.CoreV1().Secrets(instance.Namespace).Get(ctx, instance.Spec.CredentialsSecretRef.Name, metav1.GetOptions{})
 			if err != nil {
 				klog.ErrorS(err, "Failed to get credentials secret", "secret", instance.Spec.CredentialsSecretRef.Name, "namespace", instance.Namespace)
 				return err
@@ -271,7 +271,7 @@ func (c *loraClient) loadAdapterCall(url string, instance *modelv1alpha1.ModelAd
 	}
 
 	// Send HTTP request
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return err
 	}
