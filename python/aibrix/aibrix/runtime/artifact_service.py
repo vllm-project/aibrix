@@ -14,6 +14,7 @@
 
 """Artifact delegation service for LoRA adapters."""
 
+import asyncio
 import os
 import shutil
 from pathlib import Path
@@ -131,7 +132,7 @@ class ArtifactDelegationService:
         Download artifact from remote location.
 
         Args:
-            artifact_url: Source URL (s3://, gs://, huggingface://, etc.)
+            artifact_url: Source URL (s3://, gs://, huggingface://, tos://, etc.)
             lora_name: Name of the LoRA adapter
             credentials: Optional credentials dict
 
@@ -159,8 +160,14 @@ class ArtifactDelegationService:
             downloader = get_downloader(artifact_url)
 
             # Download artifact
-            downloaded_path = await downloader.download(
-                artifact_url, local_path, credentials
+            credentials_copy = dict(credentials) if credentials else None
+
+            def _run_download_coroutine(coro):
+                return asyncio.run(coro)
+  
+            downloaded_path = await asyncio.to_thread(
+                _run_download_coroutine,
+                downloader.download(artifact_url, local_path, credentials_copy),
             )
 
             logger.info(
