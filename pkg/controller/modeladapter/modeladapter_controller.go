@@ -1060,7 +1060,7 @@ func (r *ModelAdapterReconciler) tryLoadModelAdapterOnPod(ctx context.Context, i
 	// Update retry info
 	r.updateRetryInfo(instance, pod.Name, retryCount+1)
 
-	_, exists, err := r.loraClient.LoadAdapter(instance, pod)
+	_, exists, err := r.loraClient.LoadAdapter(ctx, instance, pod)
 
 	if err != nil {
 		if r.isRetriableError(err) {

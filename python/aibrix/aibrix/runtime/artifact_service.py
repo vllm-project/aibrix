@@ -132,7 +132,7 @@ class ArtifactDelegationService:
         Download artifact from remote location.
 
         Args:
-            artifact_url: Source URL (s3://, gs://, huggingface://, etc.)
+            artifact_url: Source URL (s3://, gs://, huggingface://, tos://, etc.)
             lora_name: Name of the LoRA adapter
             credentials: Optional credentials dict
 
@@ -160,8 +160,9 @@ class ArtifactDelegationService:
             downloader = get_downloader(artifact_url)
 
             # Download artifact
+            credentials_copy = dict(credentials) if credentials else None
             downloaded_path = await downloader.download(
-                artifact_url, local_path, credentials
+                artifact_url, local_path, credentials_copy
             )
 
             logger.info(
@@ -207,10 +208,12 @@ class ArtifactDelegationService:
         try:
             # Load credentials if specified
             credentials = None
-            if hasattr(request, 'credentials') and request.credentials:
+            if hasattr(request, "credentials") and request.credentials:
                 # Use credentials directly from request if provided
                 credentials = request.credentials
-                logger.info(f"Using direct credentials from request with keys: {list(credentials.keys())}")
+                logger.info(
+                    f"Using direct credentials from request with keys: {list(credentials.keys())}"
+                )
             elif request.credentials_secret:
                 # Fallback to loading from secret file
                 credentials = self._load_credentials(request.credentials_secret)
