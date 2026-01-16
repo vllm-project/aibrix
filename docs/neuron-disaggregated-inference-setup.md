@@ -42,7 +42,7 @@ aws ec2 create-launch-template-version \
   --launch-template-data "{
     \"BlockDeviceMappings\": [{
       \"DeviceName\": \"/dev/xvda\",
-      \"Ebs\": {\"VolumeSize\": 2048, \"VolumeType\": \"gp3\", \"DeleteOnTermination\": true}
+      \"Ebs\": {\"VolumeSize\": 512, \"VolumeType\": \"gp3\", \"DeleteOnTermination\": true}
     }],
     \"NetworkInterfaces\": [
       {\"DeviceIndex\": 0, \"DeleteOnTermination\": true},
@@ -266,14 +266,14 @@ kubectl set image deployment/aibrix-gateway-plugins -n aibrix-system \
 # NOTE: Use ROUTING_ALGORITHM, NOT AIBRIX_ROUTING_ALGORITHM
 kubectl set env deployment/aibrix-gateway-plugins -n aibrix-system ROUTING_ALGORITHM=pd
 
-# Set prefill request timeout (in seconds)
-kubectl set env deployment/aibrix-gateway-plugins -n aibrix-system AIBRIX_PREFILL_REQUEST_TIMEOUT=6000
+# Set prefill request timeout (in seconds) - adjust based on model size
+kubectl set env deployment/aibrix-gateway-plugins -n aibrix-system AIBRIX_PREFILL_REQUEST_TIMEOUT=600
 
 # Reduce metrics scrape frequency (optional)
 kubectl set env deployment/aibrix-gateway-plugins -n aibrix-system AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS=10000
 
-# Set gateway timeout for controller-manager
-kubectl set env deployment/aibrix-controller-manager -n aibrix-system AIBRIX_GATEWAY_TIMEOUT_SECONDS=6000
+# Set gateway timeout for controller-manager - adjust based on model size
+kubectl set env deployment/aibrix-controller-manager -n aibrix-system AIBRIX_GATEWAY_TIMEOUT_SECONDS=600
 ```
 
 ### Step 5: Wait for Rollout
@@ -379,14 +379,14 @@ make docker-push-gateway-plugins IMG=public.ecr.aws/e6d8z6l9/gateway-plugins:neu
 
 ```bash
 kubectl patch envoyextensionpolicy aibrix-gateway-plugins-extension-policy -n aibrix-system \
-  --type='json' -p='[{"op": "replace", "path": "/spec/extProc/0/messageTimeout", "value": "6000s"}]'
+  --type='json' -p='[{"op": "replace", "path": "/spec/extProc/0/messageTimeout", "value": "600s"}]'
 ```
 
 ### Update HTTPRoute Timeout
 
 ```bash
 kubectl patch httproute llama31-8b-router -n aibrix-system \
-  --type='json' -p='[{"op": "replace", "path": "/spec/rules/0/timeouts/request", "value": "6000s"}]'
+  --type='json' -p='[{"op": "replace", "path": "/spec/rules/0/timeouts/request", "value": "600s"}]'
 ```
 
 ### Create BackendTrafficPolicy
@@ -405,9 +405,9 @@ spec:
     name: aibrix-reserved-router
   timeout:
     http:
-      connectionIdleTimeout: 6000s
-      maxConnectionDuration: 6000s
-      requestTimeout: 6000s
+      connectionIdleTimeout: 600s
+      maxConnectionDuration: 600s
+      requestTimeout: 600s
 EOF
 ```
 
@@ -442,7 +442,7 @@ EOF
 ```bash
 kubectl run test --rm -it --image=curlimages/curl --restart=Never -- \
   curl -v -X POST \
-  "http://envoy-aibrix-system-aibrix-eg-903790dc.envoy-gateway-system:80/v1/chat/completions" \
+  "http://<envoy-gateway-svc>.envoy-gateway-system:80/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{"model": "llama31-8b", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 10, "temperature": 0}'
 ```
