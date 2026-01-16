@@ -366,7 +366,7 @@ var (
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Raw: Counter,
+				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:gpu_cache_usage_perc",
@@ -390,7 +390,7 @@ var (
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Raw: Counter,
+				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:cpu_cache_usage_perc",
@@ -404,7 +404,9 @@ var (
 				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:kv_cache_usage_perc",
+				"vllm":   "vllm:kv_cache_usage_perc",
+				"sglang": "sglang:token_usage", // Based on https://github.com/sgl-project/sglang/issues/5979
+				"xllm":   "kv_cache_utilization",
 			},
 			Description: "KV-cache usage. 1 means 100 percent usage.",
 		},
