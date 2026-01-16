@@ -77,11 +77,26 @@ const (
 
 // Metric defines a unique metric with metadata.
 type Metric struct {
-	MetricSource             MetricSource
-	MetricType               MetricType
-	PromQL                   string            // Optional: Only applicable for PromQL-based metrics
-	LabelKey                 string            // Optional: Only applicable for QueryLabel-based metrics
-	EngineMetricsNameMapping map[string]string // Optional: Mapping from engine type to raw metric name.
+	MetricSource MetricSource
+	MetricType   MetricType
+	PromQL       string // Optional: Only applicable for PromQL-based metrics
+	LabelKey     string // Optional: Only applicable for QueryLabel-based metrics
+	// EngineMetricsNameMapping defines a fallback list of raw metric names for each engine type.
+	// This is necessary because different versions or forks of inference engines (e.g., vLLM)
+	// may expose the same logical metric under different Prometheus metric names.
+	//
+	// The slice order matters: the system will try names in the given order and use the first
+	// one that exists in the scraped metrics. This allows graceful compatibility across engine
+	// versions without requiring runtime version detection.
+	//
+	// Example:
+	//   "vllm": {"vllm:inter_token_latency_seconds", "vllm:time_per_output_token_seconds"}
+	//   → Newer vLLM versions use "vllm:inter_token_latency_seconds", older ones use "vllm:time_per_output_token_seconds".
+	//   → By listing the new name first, deployments using newer versions will pick it up,
+	//     while older deployments fall back to the second name if the first is absent.
+	//
+	// If no candidate name exists in the actual metrics endpoint, the metric will be skipped.
+	EngineMetricsNameMapping map[string][]string // Optional: Mapping from engine type to raw metric name.
 	Description              string
 	MetricScope              MetricScope
 }
