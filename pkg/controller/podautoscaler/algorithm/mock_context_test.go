@@ -50,7 +50,7 @@ type mockScalingContext struct {
 	PanicWindow    time.Duration
 	ScaleDownDelay time.Duration
 
-	MetricTargets map[string]scalingctx.MetricTarget // key: metric name (e.g., "cpu", "gpu_cache_usage_perc")
+	MetricTargets map[string]scalingctx.MetricTarget // key: metric name (e.g., "cpu", "kv_cache_usage_perc")
 }
 
 // Ensure MockScalingContext implements the ScalingContext interface

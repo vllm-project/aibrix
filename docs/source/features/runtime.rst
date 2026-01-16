@@ -170,9 +170,9 @@ Unified metrics help to standardize the metrics for different inference engines 
     # HELP vllm:num_requests_waiting Number of requests waiting to be processed.
     # TYPE vllm:num_requests_waiting gauge
     vllm:num_requests_waiting{model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct"} 0.0
-    # HELP vllm:gpu_cache_usage_perc GPU KV-cache usage. 1 means 100 percent usage.
-    # TYPE vllm:gpu_cache_usage_perc gauge
-    vllm:gpu_cache_usage_perc{model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct"} 0.0
+    # HELP vllm:kv_cache_usage_perc GPU KV-cache usage. 1 means 100 percent usage.
+    # TYPE vllm:kv_cache_usage_perc gauge
+    vllm:kv_cache_usage_perc{model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct"} 0.0
     # HELP vllm:cpu_cache_usage_perc CPU KV-cache usage. 1 means 100 percent usage.
     # TYPE vllm:cpu_cache_usage_perc gauge
     vllm:cpu_cache_usage_perc{model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct"} 0.0
