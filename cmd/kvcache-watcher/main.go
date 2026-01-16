@@ -19,7 +19,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -31,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -475,7 +475,7 @@ func syncPods(
 		return fmt.Errorf("failed to get existing data from redis %v", err)
 	}
 	existingClusterNodes := ClusterNodes{}
-	_ = json.Unmarshal([]byte(val), &existingClusterNodes)
+	_ = sonic.Unmarshal([]byte(val), &existingClusterNodes)
 	klog.Infof("redis get result: key %s, value %s", redisKey, val)
 
 	needUpdate := !isNodeListEqual(currentNodes, existingClusterNodes.Nodes)
@@ -496,7 +496,7 @@ func syncPods(
 		Version: newVersion,
 	}
 
-	jsonData, err := json.Marshal(newData)
+	jsonData, err := sonic.Marshal(newData)
 	if err != nil {
 		return fmt.Errorf("failed to marshal nodes data: %v", err)
 	}
@@ -582,7 +582,7 @@ func getRDMAIPFromAnnotation(pod *corev1.Pod, ifName string) (string, bool) {
 	}
 
 	var entries []networkStatusEntry
-	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+	if err := sonic.Unmarshal([]byte(raw), &entries); err != nil {
 		return "", false
 	}
 

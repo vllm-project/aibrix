@@ -19,7 +19,6 @@ package routingalgorithms
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -30,6 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -560,7 +560,7 @@ func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod
 
 func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *v1.Pod, llmEngine string) ([]byte, error) {
 	var completionRequest map[string]any
-	if err := json.Unmarshal(routingCtx.ReqBody, &completionRequest); err != nil {
+	if err := sonic.Unmarshal(routingCtx.ReqBody, &completionRequest); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal prefill request body: %w", err)
 	}
 
@@ -571,7 +571,7 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 		completionRequest["bootstrap_room"] = rand.Int63n(1<<63 - 1)
 
 		// Create a copy of the request body
-		reqBody, err := json.Marshal(completionRequest)
+		reqBody, err := sonic.Marshal(completionRequest)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal post prefill request body: %w", err)
 		}
@@ -598,7 +598,7 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 	completionRequest["stream"] = false
 	delete(completionRequest, "stream_options")
 
-	return json.Marshal(completionRequest)
+	return sonic.Marshal(completionRequest)
 }
 
 func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingContext, payload []byte) (map[string]any, error) {
@@ -640,7 +640,7 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 
 	// Parse response JSON
 	var responseData map[string]any
-	if err := json.Unmarshal(body, &responseData); err != nil {
+	if err := sonic.Unmarshal(body, &responseData); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal prefill response: %w", err)
 	}
 
@@ -657,7 +657,7 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 
 	// Parse the original request body
 	var originalRequest map[string]any
-	if err := json.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
+	if err := sonic.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
 		return fmt.Errorf("failed to unmarshal original request body: %w", err)
 	}
 
@@ -672,7 +672,7 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 	kvTransferParamsMap["remote_host"] = prefillPod.Status.PodIP
 
 	// Marshal the updated request body
-	updatedReqBody, err := json.Marshal(originalRequest)
+	updatedReqBody, err := sonic.Marshal(originalRequest)
 	if err != nil {
 		return fmt.Errorf("failed to marshal updated request body: %w", err)
 	}

@@ -17,9 +17,9 @@ limitations under the License.
 package patch
 
 import (
-	"encoding/json"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -57,11 +57,11 @@ func NewJSONPatch(items ...JSONPatchItem) *JSONPatch {
 }
 
 func (jp *JSONPatch) Marshal() ([]byte, error) {
-	return json.Marshal(jp)
+	return sonic.Marshal(jp)
 }
 
 func (jp *JSONPatch) ToClientPatch() (client.Patch, error) {
-	bytes, err := json.Marshal(jp)
+	bytes, err := sonic.Marshal(jp)
 	if err != nil {
 		return nil, err
 	}

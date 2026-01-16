@@ -17,9 +17,9 @@ limitations under the License.
 package patch
 
 import (
-	"encoding/json"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/stretchr/testify/assert"
 
 	corev1 "k8s.io/api/core/v1"
@@ -39,7 +39,7 @@ func TestRemoveFinalizerPatch_RemoveLast(t *testing.T) {
 	assert.NoError(t, err)
 
 	var arr []map[string]interface{}
-	assert.NoError(t, json.Unmarshal(data, &arr))
+	assert.NoError(t, sonic.Unmarshal(data, &arr))
 	assert.Len(t, arr, 1)
 	assert.Equal(t, "remove", arr[0]["op"])
 	assert.Equal(t, "/metadata/finalizers", arr[0]["path"])
@@ -53,7 +53,7 @@ func TestRemoveFinalizerPatch_Filtered(t *testing.T) {
 	data, _ := patch.Data(nil)
 
 	var arr []map[string]interface{}
-	_ = json.Unmarshal(data, &arr)
+	_ = sonic.Unmarshal(data, &arr)
 	assert.Len(t, arr, 1)
 	assert.Equal(t, "add", arr[0]["op"])
 	assert.Equal(t, "/metadata/finalizers", arr[0]["path"])
@@ -70,7 +70,7 @@ func TestAddFinalizerPatch(t *testing.T) {
 
 	data, _ := patch.Data(nil)
 	var arr []map[string]interface{}
-	_ = json.Unmarshal(data, &arr)
+	_ = sonic.Unmarshal(data, &arr)
 	assert.Len(t, arr, 1)
 	assert.Equal(t, "add", arr[0]["op"])
 	vals := arr[0]["value"].([]interface{})
