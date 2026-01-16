@@ -17,21 +17,48 @@ limitations under the License.
 package metrics
 
 const (
-	NumRequestsRunning                   = "num_requests_running"
-	NumRequestsWaiting                   = "num_requests_waiting"
-	NumRequestsSwapped                   = "num_requests_swapped"
-	PromptTokenTotal                     = "prompt_token_total"
-	GenerationTokenTotal                 = "generation_token_total"
-	AvgPromptThroughputToksPerS          = "avg_prompt_throughput_toks_per_s"
-	AvgGenerationThroughputToksPerS      = "avg_generation_throughput_toks_per_s"
-	IterationTokensTotal                 = "iteration_tokens_total"
-	TimeToFirstTokenSeconds              = "time_to_first_token_seconds"
-	TimePerOutputTokenSeconds            = "time_per_output_token_seconds"
-	E2ERequestLatencySeconds             = "e2e_request_latency_seconds"
-	RequestQueueTimeSeconds              = "request_queue_time_seconds"
-	RequestInferenceTimeSeconds          = "request_inference_time_seconds"
-	RequestDecodeTimeSeconds             = "request_decode_time_seconds"
-	RequestPrefillTimeSeconds            = "request_prefill_time_seconds"
+	NumRequestsRunning  = "num_requests_running"
+	NumRequestsWaiting  = "num_requests_waiting"
+	EngineSleepState    = "engine_sleep_state"
+	HTTPRequestTotal    = "http_requests_total"
+	NumPreemptionsTotal = "num_preemptions_total"
+	RequestSuccessTotal = "request_success_total"
+
+	E2ERequestLatencySeconds        = "e2e_request_latency_seconds"
+	RequestQueueTimeSeconds         = "request_queue_time_seconds"
+	RequestInferenceTimeSeconds     = "request_inference_time_seconds"
+	HTTPRequestDurationSeconds      = "http_request_duration_seconds"
+	HTTPRequestDurationHighRSeconds = "http_request_duration_highr_seconds"
+
+	TimeToFirstTokenSeconds   = "time_to_first_token_seconds"
+	RequestPrefillTimeSeconds = "request_prefill_time_seconds"
+	PromptTokenTotal          = "prompt_tokens_total"
+	RequestPromptTokens       = "request_prompt_tokens"
+
+	// deprecated (time_per_output_token_seconds), use inter_token_latency_seconds instead
+	TimePerOutputTokenSeconds        = "time_per_output_token_seconds"
+	InterTokenLatencySeconds         = "inter_token_latency_seconds"
+	RequestTimePerOutputTokenSeconds = "request_time_per_output_token_seconds"
+	RequestDecodeTimeSeconds         = "request_decode_time_seconds"
+
+	GenerationTokenTotal          = "generation_tokens_total"
+	IterationTokensTotal          = "iteration_tokens_total"
+	RequestGenerationTokens       = "request_generation_tokens"
+	RequestMaxNumGenerationTokens = "request_max_num_generation_tokens"
+
+	KVCacheUsagePerc                = "kv_cache_usage_perc"
+	NixlNumFailedTransfers          = "nixl_num_failed_transfers_total"
+	NixlNumFailedNotifications      = "nixl_num_failed_notifications_total"
+	PrefixCacheHitTotal             = "prefix_cache_hits_total"
+	PrefixCacheQueriesTotal         = "prefix_cache_queries_total"
+	ExternalPrefixCacheHitsTotal    = "external_prefix_cache_hits_total"
+	ExternalPrefixCacheQueriesTotal = "external_prefix_cache_queries_total"
+
+	NixlXferTimeSeconds  = "nixl_xfer_time_seconds"
+	NixlPostTimeSeconds  = "nixl_post_time_seconds"
+	NixlBytesTransferred = "nixl_bytes_transferred"
+	NixlNumDescriptors   = "nixl_num_descriptors"
+
 	P95TTFT5m                            = "p95_ttft_5m"
 	P95TTFT5mPod                         = "p95_ttft_5m_pod"
 	AvgTTFT5mPod                         = "avg_ttft_5m_pod"
@@ -54,12 +81,16 @@ const (
 	// Realtime metrics
 	RealtimeNumRequestsRunning = "realtime_num_requests_running"
 	RealtimeNormalizedPendings = "realtime_normalized_pendings"
+
+	// Deprecated metrics
+	NumRequestsSwapped              = "num_requests_swapped"
+	AvgPromptThroughputToksPerS     = "avg_prompt_throughput_toks_per_s"
+	AvgGenerationThroughputToksPerS = "avg_generation_throughput_toks_per_s"
 )
 
 var (
 	// Metrics defines all available metrics, including raw and query-based metrics.
 	Metrics = map[string]Metric{
-		// Counter metrics
 		NumRequestsRunning: {
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
@@ -95,7 +126,107 @@ var (
 			},
 			Description: "Number of swapped requests",
 		},
-		// Gauge metrics
+		EngineSleepState: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:engine_sleep_state",
+			},
+			Description: "Engine sleep state; awake = 0 means engine is sleeping; awake = 1 means engine is awake; weights_offloaded = 1 means sleep level 1; discard_all = 1 means sleep level 2.",
+		},
+		HTTPRequestTotal: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:http_requests_total",
+			},
+			Description: "Total number of requests by method, status and handler.",
+		},
+		NumPreemptionsTotal: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:num_preemptions_total",
+			},
+			Description: "Number of preemptions",
+		},
+		RequestSuccessTotal: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:num_requests_success_total",
+			},
+			Description: "Number of successful requests",
+		},
+
+		E2ERequestLatencySeconds: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Histogram,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm":   "vllm:e2e_request_latency_seconds",
+				"sglang": "sglang:e2e_request_latency_seconds",
+			},
+			Description: "End-to-end request latency in seconds",
+		},
+		RequestQueueTimeSeconds: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Histogram,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:request_queue_time_seconds",
+			},
+			Description: "Request queue time in seconds",
+		},
+		RequestInferenceTimeSeconds: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Histogram,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:request_inference_time_seconds",
+			},
+			Description: "Request inference time in seconds",
+		},
+		HTTPRequestDurationSeconds: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Histogram,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "http_request_duration_seconds",
+			},
+			Description: "Histogram of request duration in seconds",
+		},
+		HTTPRequestDurationHighRSeconds: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Histogram,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "http_request_duration_highr_seconds",
+			},
+			Description: "Histogram of request duration in seconds for high priority requests",
+		},
 		PromptTokenTotal: {
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
@@ -106,6 +237,17 @@ var (
 				"vllm": "vllm:prompt_tokens_total",
 			},
 			Description: "Total prompt tokens",
+		},
+		RequestPromptTokens: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Histogram,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:request_prompt_tokens",
+			},
+			Description: "Histogram of prompt tokens",
 		},
 		GenerationTokenTotal: {
 			MetricScope:  PodModelMetricScope,
@@ -118,30 +260,28 @@ var (
 			},
 			Description: "Total generation tokens",
 		},
-		AvgPromptThroughputToksPerS: {
+		RequestGenerationTokens: {
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Raw: Gauge,
+				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:avg_prompt_throughput_toks_per_s",
+				"vllm": "vllm:request_generation_tokens",
 			},
-			Description: "Average prompt throughput in tokens per second",
+			Description: "Histogram of generation tokens",
 		},
-		AvgGenerationThroughputToksPerS: {
+		RequestMaxNumGenerationTokens: {
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Raw: Gauge,
+				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:avg_generation_throughput_toks_per_s",
-				"sglang": "sglang:gen_throughput",
+				"vllm": "vllm:request_max_num_generation_tokens",
 			},
-			Description: "Average generation throughput in tokens per second",
+			Description: "Histogram of max number of generation tokens",
 		},
-		// Histogram metrics
 		IterationTokensTotal: {
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
@@ -177,39 +317,17 @@ var (
 			},
 			Description: "Time per output token in seconds",
 		},
-		E2ERequestLatencySeconds: {
+		InterTokenLatencySeconds: {
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
 				Raw: Histogram,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:e2e_request_latency_seconds",
-				"sglang": "sglang:e2e_request_latency_seconds",
+				"vllm":   "vllm:inter_token_latency_seconds",
+				"sglang": "sglang:inter_token_latency_seconds",
 			},
-			Description: "End-to-end request latency in seconds",
-		},
-		RequestQueueTimeSeconds: {
-			MetricScope:  PodModelMetricScope,
-			MetricSource: PodRawMetrics,
-			MetricType: MetricType{
-				Raw: Histogram,
-			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_queue_time_seconds",
-			},
-			Description: "Request queue time in seconds",
-		},
-		RequestInferenceTimeSeconds: {
-			MetricScope:  PodModelMetricScope,
-			MetricSource: PodRawMetrics,
-			MetricType: MetricType{
-				Raw: Histogram,
-			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:request_inference_time_seconds",
-			},
-			Description: "Request inference time in seconds",
+			Description: "Inter-token latency in seconds",
 		},
 		RequestDecodeTimeSeconds: {
 			MetricScope:  PodModelMetricScope,
@@ -233,6 +351,177 @@ var (
 			},
 			Description: "Request prefill time in seconds",
 		},
+		RequestTimePerOutputTokenSeconds: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Histogram,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:request_time_per_output_token_seconds",
+			},
+			Description: "Time per output token in seconds",
+		},
+		GPUCacheUsagePerc: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm":   "vllm:gpu_cache_usage_perc",
+				"sglang": "sglang:token_usage", // Based on https://github.com/sgl-project/sglang/issues/5979
+				"xllm":   "kv_cache_utilization",
+			},
+			Description: "GPU cache usage percentage",
+		},
+		EngineUtilization: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"xllm": "engine_utilization",
+			},
+			Description: "GPU busy time ratio",
+		},
+		CPUCacheUsagePerc: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:cpu_cache_usage_perc",
+			},
+			Description: "CPU cache usage percentage",
+		},
+		KVCacheUsagePerc: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm":   "vllm:kv_cache_usage_perc",
+				"sglang": "sglang:token_usage", // Based on https://github.com/sgl-project/sglang/issues/5979
+				"xllm":   "kv_cache_utilization",
+			},
+			Description: "KV-cache usage. 1 means 100 percent usage.",
+		},
+		PrefixCacheQueriesTotal: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:prefix_cache_queries_total",
+			},
+			Description: "Prefix cache queries, in terms of number of queried tokens..",
+		},
+		PrefixCacheHitTotal: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:prefix_cache_hits_total",
+			},
+			Description: "Prefix cache hits, in terms of number of cached tokens.",
+		},
+		ExternalPrefixCacheQueriesTotal: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:external_prefix_cache_queries_total",
+			},
+			Description: "External prefix cache queries from KV connector cross-instance cache sharing, in terms of number of queried tokens.",
+		},
+		ExternalPrefixCacheHitsTotal: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:external_prefix_cache_hits_total",
+			},
+			Description: "External prefix cache hits from KV connector cross-instance cache sharing, in terms of number of cached tokens.",
+		},
+
+		NixlXferTimeSeconds: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Histogram,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:nixl_xfer_time_seconds",
+			},
+			Description: "transfer duration for NIXL KV Cache transfers",
+		},
+		NixlPostTimeSeconds: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Histogram,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:nixl_post_time_seconds",
+			},
+			Description: "transfer post time for NIXL KV Cache transfers",
+		},
+		NixlBytesTransferred: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Histogram,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:nixl_bytes_transferred",
+			},
+			Description: "number of bytes transferred per NIXL KV Cache transfer",
+		},
+		NixlNumDescriptors: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Histogram,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:nixl_num_descriptors",
+			},
+			Description: "number of descriptors per NIXL  KV Cache transfers",
+		},
+		NixlNumFailedTransfers: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:nixl_num_failed_transfers",
+			},
+			Description: "number of failed NIXL KV Cache transfers",
+		},
+		NixlNumFailedNotifications: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Counter,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:nixl_num_failed_notifications",
+			},
+			Description: "number of failed NIXL KV Cache notifications",
+		},
+
 		// Query-based metrics
 		P95TTFT5m: {
 			MetricScope:  PodModelMetricScope,
@@ -297,41 +586,6 @@ var (
 			PromQL:      `increase(vllm:request_generation_tokens_sum{instance="${instance}", model_name="${model_name}", job="pods"}[1d]) / increase(vllm:request_generation_tokens_count{instance="${instance}", model_name="${model_name}", job="pods"}[1d])`,
 			Description: "Average generation tokens per request in last day",
 		},
-		GPUCacheUsagePerc: {
-			MetricScope:  PodModelMetricScope,
-			MetricSource: PodRawMetrics,
-			MetricType: MetricType{
-				Raw: Counter,
-			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm":   "vllm:gpu_cache_usage_perc",
-				"sglang": "sglang:token_usage", // Based on https://github.com/sgl-project/sglang/issues/5979
-				"xllm":   "kv_cache_utilization",
-			},
-			Description: "GPU cache usage percentage",
-		},
-		EngineUtilization: {
-			MetricScope:  PodModelMetricScope,
-			MetricSource: PodRawMetrics,
-			MetricType: MetricType{
-				Raw: Gauge,
-			},
-			EngineMetricsNameMapping: map[string]string{
-				"xllm": "engine_utilization",
-			},
-			Description: "GPU busy time ratio",
-		},
-		CPUCacheUsagePerc: {
-			MetricScope:  PodModelMetricScope,
-			MetricSource: PodRawMetrics,
-			MetricType: MetricType{
-				Raw: Counter,
-			},
-			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:cpu_cache_usage_perc",
-			},
-			Description: "CPU cache usage percentage",
-		},
 		AvgE2ELatencyPod: {
 			MetricScope:  PodMetricScope,
 			MetricSource: PrometheusEndpoint,
@@ -349,6 +603,29 @@ var (
 			},
 			PromQL:      `increase(vllm:request_success_total{instance="${instance}", job="pods"}[5m]) / 5`,
 			Description: "Average requests throughput per minute in last 5 mins",
+		},
+		AvgPromptThroughputToksPerS: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:avg_prompt_throughput_toks_per_s",
+			},
+			Description: "Average prompt throughput in tokens per second",
+		},
+		AvgGenerationThroughputToksPerS: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm":   "vllm:avg_generation_throughput_toks_per_s",
+				"sglang": "sglang:gen_throughput",
+			},
+			Description: "Average generation throughput in tokens per second",
 		},
 		AvgPromptThroughputToksPerMinPod: {
 			MetricScope:  PodMetricScope,
