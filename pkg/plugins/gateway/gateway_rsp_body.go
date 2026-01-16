@@ -19,13 +19,13 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/ssestream"
 	"k8s.io/klog/v2"
@@ -216,7 +216,7 @@ func processLanguageResponse(requestID string, b *extProcPb.ProcessingRequest_Re
 	// Clean up the buffer after final processing
 	requestBuffers.Delete(requestID)
 
-	if err := json.Unmarshal(finalBody, &res); err != nil {
+	if err := sonic.Unmarshal(finalBody, &res); err != nil {
 		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
 		complete = true
 		processingRes = buildErrorResponse(envoyTypePb.StatusCode_InternalServerError, err.Error(), "", "", HeaderErrorResponseUnmarshal, "true")

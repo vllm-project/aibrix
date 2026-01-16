@@ -17,11 +17,11 @@ limitations under the License.
 package utils
 
 import (
-	"encoding/json"
 	"os"
 	"strconv"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/pkoukk/tiktoken-go"
 	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -64,10 +64,10 @@ type Message struct {
 
 func TrimMessage(message string) string {
 	var messages []Message
-	if err := json.Unmarshal([]byte(message), &messages); err != nil {
+	if err := sonic.Unmarshal([]byte(message), &messages); err != nil {
 		// If array parsing fails, try single message
 		var msg Message
-		if err := json.Unmarshal([]byte(message), &msg); err != nil {
+		if err := sonic.Unmarshal([]byte(message), &msg); err != nil {
 			return message
 		}
 		return msg.Content

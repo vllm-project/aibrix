@@ -26,6 +26,7 @@ import (
 	"mime/multipart"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
@@ -41,7 +42,7 @@ import (
 func validateRequestBody(requestID, requestPath string, requestBody []byte, user utils.User) (model, message string, stream bool, errRes *extProcPb.ProcessingResponse) {
 	var streamOptions openai.ChatCompletionStreamOptionsParam
 	var jsonMap map[string]json.RawMessage
-	if err := json.Unmarshal(requestBody, &jsonMap); err != nil {
+	if err := sonic.Unmarshal(requestBody, &jsonMap); err != nil {
 		klog.ErrorS(err, "error to unmarshal request body", "requestID", requestID, "requestBody", string(requestBody))
 		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 		return
@@ -50,7 +51,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 	switch requestPath {
 	case PathChatCompletions:
 		chatCompletionObj := openai.ChatCompletionNewParams{}
-		if err := json.Unmarshal(requestBody, &chatCompletionObj); err != nil {
+		if err := sonic.Unmarshal(requestBody, &chatCompletionObj); err != nil {
 			klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
 			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 			return
@@ -71,7 +72,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 			Stream bool   `json:"stream"`
 		}
 		completionObj := Completion{}
-		err := json.Unmarshal(requestBody, &completionObj)
+		err := sonic.Unmarshal(requestBody, &completionObj)
 		if err != nil {
 			klog.ErrorS(err, "error to unmarshal chat completions object", "requestID", requestID, "requestBody", string(requestBody))
 			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
@@ -82,7 +83,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		stream = completionObj.Stream
 	case PathEmbeddings:
 		embeddingObj := openai.EmbeddingNewParams{}
-		if err := json.Unmarshal(requestBody, &embeddingObj); err != nil {
+		if err := sonic.Unmarshal(requestBody, &embeddingObj); err != nil {
 			klog.ErrorS(err, "error to unmarshal embeddings object", "requestID", requestID, "requestBody", string(requestBody))
 			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 			return
@@ -95,14 +96,14 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 		streamVal, ok := jsonMap["stream"]
 		if ok {
 			var streamBool bool
-			if err := json.Unmarshal(streamVal, &streamBool); err != nil || streamBool {
+			if err := sonic.Unmarshal(streamVal, &streamBool); err != nil || streamBool {
 				errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream not supported for embeddings", "", "stream", HeaderErrorRequestBodyProcessing, "true")
 				return
 			}
 		}
 	case PathImagesGenerations, PathVideoGenerations:
 		imageGenerationObj := openai.ImageGenerateParams{}
-		if err := json.Unmarshal(requestBody, &imageGenerationObj); err != nil {
+		if err := sonic.Unmarshal(requestBody, &imageGenerationObj); err != nil {
 			klog.ErrorS(err, "error to unmarshal image generations object", "requestID", requestID, "requestBody", string(requestBody))
 			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 			return
@@ -115,7 +116,7 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 			Documents []string `json:"documents"`
 		}
 		var req RerankRequest
-		if err := json.Unmarshal(requestBody, &req); err != nil {
+		if err := sonic.Unmarshal(requestBody, &req); err != nil {
 			klog.ErrorS(err, "error to unmarshal rerank object", "requestID", requestID)
 			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
 			return
@@ -241,7 +242,7 @@ func validateStreamOptions(requestID string, user utils.User, stream *bool, stre
 		return nil
 	}
 
-	if err := json.Unmarshal(streamData, stream); err != nil {
+	if err := sonic.Unmarshal(streamData, stream); err != nil {
 		klog.ErrorS(nil, "no stream option available", "requestID", requestID)
 		return buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "stream incorrectly set", "", "stream", HeaderErrorStream, "stream incorrectly set")
 	}
@@ -287,7 +288,7 @@ func getChatCompletionsMessage(requestID string, chatCompletionObj openai.ChatCo
 		case *string:
 			builder.WriteString(*content)
 		default:
-			if jsonBytes, err := json.Marshal(content); err == nil {
+			if jsonBytes, err := sonic.Marshal(content); err == nil {
 				builder.Write(jsonBytes)
 			} else {
 				klog.ErrorS(err, "error marshalling message content", "requestID", requestID, "message", m)
@@ -345,7 +346,7 @@ func generateErrorMessage(message, errorType, errorCode, param string) string {
 		errorStruct["error"].(map[string]interface{})["param"] = param
 	}
 
-	jsonData, err := json.Marshal(errorStruct)
+	jsonData, err := sonic.Marshal(errorStruct)
 	if err != nil {
 		klog.ErrorS(err, "failed to marshal OpenAI error response")
 		return `{"error":{"message":"internal server error while formatting error response","type":"api_error","code":null,"param":null}}`

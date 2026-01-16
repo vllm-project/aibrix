@@ -18,10 +18,10 @@ package utils
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -46,7 +46,7 @@ func GetUser(ctx context.Context, u User, redisClient *redis.Client) (User, erro
 		return User{}, err
 	}
 	user := &User{}
-	err = json.Unmarshal([]byte(val), user)
+	err = sonic.Unmarshal([]byte(val), user)
 	if err != nil {
 		return User{}, err
 	}
@@ -59,7 +59,7 @@ func SetUser(ctx context.Context, u User, redisClient *redis.Client) error {
 		return fmt.Errorf("rpm or tpm can not negative")
 	}
 
-	b, err := json.Marshal(&u)
+	b, err := sonic.Marshal(&u)
 	if err != nil {
 		return err
 	}

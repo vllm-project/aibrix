@@ -17,11 +17,11 @@ package cache
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -150,7 +150,7 @@ func (c *Store) writeRequestTraceToStorage(roundT int64) {
 		trace.RecycleLocked()
 		trace.Unlock()
 
-		value, err := json.Marshal(traceMap)
+		value, err := sonic.Marshal(traceMap)
 		if err != nil {
 			klog.ErrorS(err, "error to marshall request trace for redis set")
 			return true

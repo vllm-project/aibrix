@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/config"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -205,7 +206,7 @@ func (c *loraClient) loadAdapterCall(url string, instance *modelv1alpha1.ModelAd
 			payload["additional_config"] = instance.Spec.AdditionalConfig
 		}
 
-		payloadBytes, err = json.Marshal(payload)
+		payloadBytes, err = sonic.Marshal(payload)
 		if err != nil {
 			return err
 		}
@@ -234,7 +235,7 @@ func (c *loraClient) loadAdapterCall(url string, instance *modelv1alpha1.ModelAd
 			"lora_path": artifactURL,
 		}
 
-		payloadBytes, err = json.Marshal(payload)
+		payloadBytes, err = sonic.Marshal(payload)
 		if err != nil {
 			return err
 		}
@@ -289,13 +290,13 @@ func buildUnloadPayload(instance *modelv1alpha1.ModelAdapter, useSidecar bool) (
 			"lora_name":     instance.Name,
 			"cleanup_local": true, // Clean up local artifacts on unload
 		}
-		payloadBytes, err = json.Marshal(payload)
+		payloadBytes, err = sonic.Marshal(payload)
 	} else {
 		// Direct path - simple unload
 		payload := map[string]string{
 			"lora_name": instance.Name,
 		}
-		payloadBytes, err = json.Marshal(payload)
+		payloadBytes, err = sonic.Marshal(payload)
 	}
 
 	return payloadBytes, err

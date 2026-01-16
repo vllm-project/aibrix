@@ -18,7 +18,6 @@ package routingalgorithms
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -26,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -636,7 +636,7 @@ func TestPreparePrefillPayload(t *testing.T) {
 			assert.NoError(t, err)
 
 			var result map[string]any
-			err = json.Unmarshal(payload, &result)
+			err = sonic.Unmarshal(payload, &result)
 			assert.NoError(t, err)
 
 			// Check basic prefill parameters
@@ -720,7 +720,7 @@ func TestUpdateRoutingContextWithKVTransferParams(t *testing.T) {
 			if tt.expectKV {
 				// Parse updated request body
 				var updatedRequest map[string]any
-				err = json.Unmarshal(routingCtx.ReqBody, &updatedRequest)
+				err = sonic.Unmarshal(routingCtx.ReqBody, &updatedRequest)
 				assert.NoError(t, err)
 
 				// Check KV transfer params were added
@@ -779,7 +779,7 @@ func TestVLLMIntegrationWithTestServer(t *testing.T) {
 
 	// Verify that routing context was updated with KV transfer params from test server
 	var updatedRequest map[string]any
-	err = json.Unmarshal(routingCtx.ReqBody, &updatedRequest)
+	err = sonic.Unmarshal(routingCtx.ReqBody, &updatedRequest)
 	assert.NoError(t, err)
 
 	kvParams, exists := updatedRequest["kv_transfer_params"]
@@ -841,7 +841,7 @@ func TestVLLMKVTransferProcessing(t *testing.T) {
 			if tt.checkKV {
 				// Body should be updated when KV params are present
 				var updatedRequest map[string]any
-				err = json.Unmarshal(routingCtx.ReqBody, &updatedRequest)
+				err = sonic.Unmarshal(routingCtx.ReqBody, &updatedRequest)
 				assert.NoError(t, err)
 
 				kvParams, exists := updatedRequest["kv_transfer_params"]
@@ -853,7 +853,7 @@ func TestVLLMKVTransferProcessing(t *testing.T) {
 			} else {
 				// Body should remain unchanged when no KV params are present
 				var updatedRequest map[string]any
-				err = json.Unmarshal(routingCtx.ReqBody, &updatedRequest)
+				err = sonic.Unmarshal(routingCtx.ReqBody, &updatedRequest)
 				assert.NoError(t, err)
 				_, exists := updatedRequest["kv_transfer_params"]
 				assert.False(t, exists, "KV params should not be added when not in response")
@@ -876,7 +876,7 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 		}
 
 		var completionRequest map[string]any
-		if err := json.Unmarshal(body, &completionRequest); err != nil {
+		if err := sonic.Unmarshal(body, &completionRequest); err != nil {
 			assert.NoError(t, err)
 		}
 
@@ -927,11 +927,11 @@ func setupTestServer(t *testing.T, code int, resp string, llmEngine string) *htt
 						"remote_port":       "8080",
 					},
 				}
-				respBytes, _ := json.Marshal(response)
+				respBytes, _ := sonic.Marshal(response)
 				_, _ = w.Write(respBytes)
 			} else {
 				// For other engines, return simple success
-				respBytes, _ := json.Marshal(map[string]any{"choices": []map[string]any{{"message": map[string]any{"content": "test response"}}}})
+				respBytes, _ := sonic.Marshal(map[string]any{"choices": []map[string]any{{"message": map[string]any{"content": "test response"}}}})
 				_, _ = w.Write(respBytes)
 			}
 		}

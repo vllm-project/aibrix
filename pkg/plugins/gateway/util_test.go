@@ -17,10 +17,10 @@ limitations under the License.
 package gateway
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/openai/openai-go"
@@ -902,7 +902,7 @@ func TestGenerateErrorMessageWithHTTPCode(t *testing.T) {
 
 			// Parse JSON to verify structure
 			var errResponse map[string]interface{}
-			err := json.Unmarshal([]byte(result), &errResponse)
+			err := sonic.Unmarshal([]byte(result), &errResponse)
 			assert.NoError(t, err, "Result should be valid JSON")
 
 			errObj, ok := errResponse["error"].(map[string]interface{})
@@ -982,7 +982,7 @@ func TestBuildErrorResponse(t *testing.T) {
 			// Verify error body is valid JSON with correct structure
 			body := resp.GetImmediateResponse().GetBody()
 			var errResponse map[string]interface{}
-			err := json.Unmarshal([]byte(body), &errResponse)
+			err := sonic.Unmarshal([]byte(body), &errResponse)
 			assert.NoError(t, err, "Response body should be valid JSON")
 
 			errObj, ok := errResponse["error"].(map[string]interface{})
