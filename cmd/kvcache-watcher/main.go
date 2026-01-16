@@ -19,6 +19,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -582,7 +583,7 @@ func getRDMAIPFromAnnotation(pod *corev1.Pod, ifName string) (string, bool) {
 	}
 
 	var entries []networkStatusEntry
-	if err := sonic.Unmarshal([]byte(raw), &entries); err != nil {
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
 		return "", false
 	}
 

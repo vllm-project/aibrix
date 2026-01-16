@@ -17,12 +17,12 @@ limitations under the License.
 package cache
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
@@ -83,7 +83,7 @@ func ModelGPUProfileKey(modelName string, deploymentName string) string {
 }
 
 func (pf *ModelGPUProfile) Unmarshal(data []byte) error {
-	err := sonic.Unmarshal(data, pf)
+	err := json.Unmarshal(data, pf)
 	if err != nil {
 		return err
 	}
