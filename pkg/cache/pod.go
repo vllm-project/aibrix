@@ -38,6 +38,8 @@ type Pod struct {
 
 	// Log frenquency control
 	lastTraceLogTimestamp int64
+	// Current process port
+	currentPort int
 }
 
 func (pod *Pod) CanLogPodTrace(level klog.Level) bool {

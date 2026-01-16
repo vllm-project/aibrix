@@ -73,6 +73,7 @@ const (
 	ModelMetricScope    MetricScope = "Model"
 	PodMetricScope      MetricScope = "Pod"
 	PodModelMetricScope MetricScope = "PodModel" // model in pod
+	PortMetricScope     MetricScope = "Port"
 )
 
 // Metric defines a unique metric with metadata.

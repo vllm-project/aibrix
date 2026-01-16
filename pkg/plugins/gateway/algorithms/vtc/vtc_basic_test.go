@@ -76,6 +76,10 @@ func (c *SimpleCache) GetMetricValueByPod(podName, podNamespace, metricName stri
 	return nil, nil
 }
 
+func (c *SimpleCache) GetMetricValueByPodWithPort(podName, podNamespace, metricName string, port int) (metrics.MetricValue, error) {
+	return nil, nil
+}
+
 func (c *SimpleCache) AddSubscriber(subscriber metrics.MetricSubscriber) {
 }
 
@@ -104,6 +108,14 @@ func (p *SimplePodList) Indexes() []string {
 
 func (p *SimplePodList) ListByIndex(index string) []*v1.Pod {
 	return p.pods
+}
+
+func (p *SimplePodList) ListPortsForPod() map[string][]int {
+	return nil
+}
+
+func (p *SimplePodList) HasMultiPortPods() bool {
+	return false
 }
 
 func TestVTCRouterSimple(t *testing.T) {

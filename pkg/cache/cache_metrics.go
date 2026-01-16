@@ -17,6 +17,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -136,6 +137,20 @@ func initPrometheusAPI() prometheusv1.API {
 
 func (c *Store) getPodMetricImpl(podName string, metricStore *utils.SyncMap[string, metrics.MetricValue], metricName string) (metrics.MetricValue, error) {
 	metricVal, ok := metricStore.Load(metricName)
+	if !ok {
+		return nil, &MetricNotFoundError{
+			CacheError: ErrorTypeMetricNotFound,
+			PodName:    podName,
+			MetricName: metricName,
+		}
+	}
+
+	return metricVal, nil
+}
+
+func (c *Store) getPodWithPortMetricImpl(podName string, metricStore *utils.SyncMap[string, metrics.MetricValue], metricName string, port int) (metrics.MetricValue, error) {
+	metricNameWithPort := metricName + "/" + strconv.Itoa(port)
+	metricVal, ok := metricStore.Load(metricNameWithPort)
 	if !ok {
 		return nil, &MetricNotFoundError{
 			CacheError: ErrorTypeMetricNotFound,
@@ -380,6 +395,10 @@ func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, s
 			}
 		}
 		pod.ModelMetrics.Store(c.getPodModelMetricName(modelName, metricName), metricValue)
+	} else if scope == metrics.PortMetricScope {
+		// store metric pod with port
+		keyName := metricName + "/" + strconv.Itoa(pod.currentPort)
+		pod.Metrics.Store(keyName, metricValue)
 	} else {
 		return fmt.Errorf("scope %v is not supported", scope)
 	}

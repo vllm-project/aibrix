@@ -71,6 +71,7 @@ type RoutingContext struct {
 
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
+	targetPort   atomic.Int32
 	lastError    atomic.Pointer[error]
 	tokens       []int           // Cache of tokenized prompts
 	predictor    OutputPredictor // OutputPredictor gained from cache
@@ -204,6 +205,14 @@ func (r *RoutingContext) TargetPod() *v1.Pod {
 	return targetPod
 }
 
+func (r *RoutingContext) TargetPort() int {
+	return int(r.targetPort.Load())
+}
+
+func (r *RoutingContext) SetTargetPort(port int) {
+	r.targetPort.Store(int32(port))
+}
+
 // GetError returns the error of the routing context.
 func (r *RoutingContext) GetError() error {
 	if r.TargetPod() == nil {
@@ -217,6 +226,11 @@ func (r *RoutingContext) TargetAddress() string {
 	pod := r.TargetPod()
 	if pod == nil {
 		return ""
+	}
+
+	port := r.TargetPort()
+	if port != 0 {
+		return r.targetAddressWithPort(pod.Status.PodIP, port)
 	}
 	return r.targetAddress(r.TargetPod())
 }
@@ -254,6 +268,10 @@ func (r *RoutingContext) GetRoutingDelay() time.Duration {
 
 func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
 	return fmt.Sprintf("%v:%v", pod.Status.PodIP, utils.GetModelPortForPod(r.RequestID, pod))
+}
+
+func (r *RoutingContext) targetAddressWithPort(podIP string, port int) string {
+	return fmt.Sprintf("%v:%v", podIP, port)
 }
 
 func (r *RoutingContext) getError() (err error) {

@@ -30,4 +30,10 @@ type PodList interface {
 
 	// ListByIndex returns a slice of pods that match the given index.
 	ListByIndex(index string) []*v1.Pod
+
+	// ListPortsForPod returns a map of portList that bind with pod, key podname
+	ListPortsForPod() map[string][]int
+
+	// HasMultiPortPods returns true if pod with multiPorts or false if pod with single port
+	HasMultiPortPods() bool
 }
