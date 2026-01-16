@@ -4106,6 +4106,27 @@ spec:
                 type: object
               updateStrategy:
                 properties:
+                  canary:
+                    properties:
+                      steps:
+                        items:
+                          properties:
+                            pause:
+                              properties:
+                                duration:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  x-kubernetes-int-or-string: true
+                              type: object
+                            setWeight:
+                              format: int32
+                              maximum: 100
+                              minimum: 0
+                              type: integer
+                          type: object
+                        type: array
+                    type: object
                   maxSurge:
                     anyOf:
                     - type: integer
@@ -4129,6 +4150,32 @@ spec:
             type: object
           status:
             properties:
+              canaryStatus:
+                properties:
+                  abortedAt:
+                    format: date-time
+                    type: string
+                  currentStep:
+                    format: int32
+                    type: integer
+                  message:
+                    type: string
+                  pauseConditions:
+                    items:
+                      properties:
+                        reason:
+                          type: string
+                        startTime:
+                          format: date-time
+                          type: string
+                      required:
+                      - reason
+                      - startTime
+                      type: object
+                    type: array
+                  phase:
+                    type: string
+                type: object
               collisionCount:
                 format: int32
                 type: integer
