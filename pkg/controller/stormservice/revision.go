@@ -19,6 +19,7 @@ package stormservice
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 
 	apps "k8s.io/api/apps/v1"
@@ -29,7 +30,6 @@ import (
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/bytedance/sonic"
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/controller/util/history"
 )
@@ -86,7 +86,7 @@ func getPatch(stormService *orchestrationv1alpha1.StormService) ([]byte, error) 
 	specCopy["template"] = template
 	template["$patch"] = "replace"
 	objCopy["spec"] = specCopy
-	patch, err := sonic.Marshal(objCopy)
+	patch, err := json.Marshal(objCopy)
 	return patch, err
 }
 
@@ -223,7 +223,7 @@ func (r *StormServiceReconciler) syncRevision(ctx context.Context, stormService 
 // ApplyRevision returns a new stormService constructed by restoring the state in revision to stormService.
 func applyRevision(stormService *orchestrationv1alpha1.StormService, revision *apps.ControllerRevision) (*orchestrationv1alpha1.StormService, error) {
 	clone := stormService.DeepCopy()
-	cloneBytes, err := sonic.Marshal(clone)
+	cloneBytes, err := json.Marshal(clone)
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +232,7 @@ func applyRevision(stormService *orchestrationv1alpha1.StormService, revision *a
 		return nil, err
 	}
 	restored := &orchestrationv1alpha1.StormService{}
-	err = sonic.Unmarshal(patched, restored)
+	err = json.Unmarshal(patched, restored)
 	if err != nil {
 		return nil, err
 	}
