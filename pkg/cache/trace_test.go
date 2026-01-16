@@ -23,7 +23,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bytedance/sonic"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -61,10 +60,17 @@ var _ = Describe("reqeustTrace", func() {
 		trace.DoneRequest("no use now", 0)
 		trace.AddRequestTrace("no use now", 1, 1, "1:1")
 		traceMap := trace.ToMap(2, 3)
-		expected := []byte("{\"1:1\":1,\"meta_interval_sec\":10,\"meta_pending_reqs\":2,\"meta_precision\":10,\"meta_queueing_reqs\":3,\"meta_total_reqs\":1,\"meta_v\":4}")
-		marshaled, err := sonic.Marshal(traceMap)
-		Expect(err).To(BeNil())
-		Expect(marshaled).To(Equal(expected))
+		// Compare maps semantically instead of relying on JSON key order
+		expected := map[string]int{
+			"1:1":                               1,
+			MetaKeyIntervalInSeconds.ToString(): 10,
+			MetaKeyPendingRequests.ToString():   2,
+			MetaKeyTracePrecision.ToString():    10,
+			MetaKeyQueueingRequests.ToString():  3,
+			MetaKeyTotalRequests.ToString():     1,
+			MetaKeyVersionKey.ToString():        RequestTraceVersion,
+		}
+		Expect(traceMap).To(Equal(expected))
 	})
 
 	It("should pending requests should not negative.", func() {
