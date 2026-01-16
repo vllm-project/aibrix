@@ -18,6 +18,7 @@ package metrics
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 
@@ -168,54 +169,65 @@ func (h *HistogramMetricValue) GetMean() float64 {
 }
 
 func (h *HistogramMetricValue) GetPercentile(percentile float64) (float64, error) {
-	if percentile < 0 || percentile > 100 {
+	if percentile <= 0 || percentile > 100 {
 		return 0, fmt.Errorf("percentile must be between 0 and 100, got: %f", percentile)
 	}
 
-	// Collect and sort bucket boundaries, treating +Inf specially
 	type bucket struct {
-		bound float64
+		upper float64
 		count float64
 		isInf bool
 	}
+
 	var buckets []bucket
-	for bound, count := range h.Buckets {
-		if bound == "+Inf" {
-			buckets = append(buckets, bucket{bound: 0, count: count, isInf: true})
+	var maxCount float64
+	for k, v := range h.Buckets {
+		if k == "+Inf" {
+			buckets = append(buckets, bucket{upper: math.Inf(1), count: v, isInf: true})
 		} else {
-			parsedBound, err := strconv.ParseFloat(bound, 64)
+			b, err := strconv.ParseFloat(k, 64)
 			if err != nil {
-				return 0, fmt.Errorf("invalid bucket boundary: %s", bound)
+				return 0, err
 			}
-			buckets = append(buckets, bucket{bound: parsedBound, count: count, isInf: false})
+			buckets = append(buckets, bucket{upper: b, count: v})
+		}
+		if v > maxCount {
+			maxCount = v
 		}
 	}
 
-	// Sort buckets by boundary, placing +Inf last
 	sort.Slice(buckets, func(i, j int) bool {
-		if buckets[i].isInf {
-			return false
-		}
-		if buckets[j].isInf {
-			return true
-		}
-		return buckets[i].bound < buckets[j].bound
+		return buckets[i].upper < buckets[j].upper
 	})
 
-	var lastBound float64
-	// Calculate cumulative distribution and find the desired percentile
-	for _, b := range buckets {
-		if b.count/h.Count*100 >= percentile {
-			if b.isInf {
-				// instead of return +Inf for infinite bucket, let's return last bucket value
-				return lastBound, nil // Return
-			}
-			return b.bound, nil
-		}
-		lastBound = b.bound
+	// Use bucket-derived total if h.Count is missing or smaller than buckets.
+	totalCount := h.Count
+	if totalCount <= 0 || totalCount < maxCount {
+		totalCount = maxCount
 	}
 
-	return 0, nil
+	target := percentile / 100.0 * totalCount
+
+	var prevCount float64
+	var prevUpper float64
+
+	for _, b := range buckets {
+		if b.count >= target {
+			if b.isInf {
+				return prevUpper, nil
+			}
+			bucketCount := b.count - prevCount
+			if bucketCount == 0 {
+				return b.upper, nil
+			}
+			fraction := (target - prevCount) / bucketCount
+			return prevUpper + fraction*(b.upper-prevUpper), nil
+		}
+		prevCount = b.count
+		prevUpper = b.upper
+	}
+
+	return 0, fmt.Errorf("percentile not found")
 }
 
 func (s *HistogramMetricValue) GetLabelValue() string {
