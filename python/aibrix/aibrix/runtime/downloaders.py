@@ -14,6 +14,8 @@
 
 """Artifact downloaders for different storage backends."""
 
+import asyncio
+import functools
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -57,6 +59,18 @@ class S3ArtifactDownloader(ArtifactDownloader):
     """Download artifacts from AWS S3."""
 
     async def download(
+        self, source_url: str, local_path: str, credentials: Optional[Dict] = None
+    ) -> str:
+        """
+        Download from S3 (Async wrapper).
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            functools.partial(self._download_sync, source_url, local_path, credentials),
+        )
+
+    def _download_sync(
         self, source_url: str, local_path: str, credentials: Optional[Dict] = None
     ) -> str:
         """
@@ -170,6 +184,18 @@ class GCSArtifactDownloader(ArtifactDownloader):
         self, source_url: str, local_path: str, credentials: Optional[Dict] = None
     ) -> str:
         """
+        Download from GCS (Async wrapper).
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            functools.partial(self._download_sync, source_url, local_path, credentials),
+        )
+
+    def _download_sync(
+        self, source_url: str, local_path: str, credentials: Optional[Dict] = None
+    ) -> str:
+        """
         Download from GCS.
 
         Credentials dict should contain:
@@ -256,6 +282,18 @@ class HuggingFaceArtifactDownloader(ArtifactDownloader):
     """Download artifacts from HuggingFace Hub."""
 
     async def download(
+        self, source_url: str, local_path: str, credentials: Optional[Dict] = None
+    ) -> str:
+        """
+        Download from HuggingFace Hub (Async wrapper).
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            functools.partial(self._download_sync, source_url, local_path, credentials),
+        )
+
+    def _download_sync(
         self, source_url: str, local_path: str, credentials: Optional[Dict] = None
     ) -> str:
         """

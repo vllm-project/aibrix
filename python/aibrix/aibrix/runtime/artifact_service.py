@@ -14,6 +14,7 @@
 
 """Artifact delegation service for LoRA adapters."""
 
+import asyncio
 import os
 import shutil
 from pathlib import Path
@@ -313,7 +314,8 @@ class ArtifactDelegationService:
                 local_path = self._get_local_path_for_adapter(lora_name)
                 if os.path.exists(local_path):
                     try:
-                        shutil.rmtree(local_path)
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, shutil.rmtree, local_path)
                         logger.info(f"Cleaned up local artifacts for {lora_name}")
                     except Exception as e:
                         logger.warning(
@@ -337,7 +339,8 @@ class ArtifactDelegationService:
 
         if os.path.exists(local_path):
             try:
-                shutil.rmtree(local_path)
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, shutil.rmtree, local_path)
                 logger.info(f"Cleaned up artifacts for {lora_name}")
             except Exception as e:
                 logger.warning(f"Failed to clean up artifacts for {lora_name}: {e}")
