@@ -154,7 +154,7 @@ class S3ArtifactDownloader(ArtifactDownloader):
                 local_file_path = os.path.join(local_path, relative_path)
 
                 # Ensure directory exists
-                os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+                self._ensure_directory(os.path.dirname(local_file_path))
 
                 # Download file
                 s3_client.download_file(bucket_name, key, local_file_path)
@@ -227,7 +227,7 @@ class GCSArtifactDownloader(ArtifactDownloader):
                     local_file_path = os.path.join(local_path, relative_path)
 
                     # Ensure directory exists
-                    os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+                    self._ensure_directory(os.path.dirname(local_file_path))
 
                     # Download file
                     blob.download_to_filename(local_file_path)
