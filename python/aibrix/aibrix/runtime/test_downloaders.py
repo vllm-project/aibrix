@@ -13,10 +13,8 @@
 # limitations under the License.
 
 import os
-import sys
 import pytest
-from unittest.mock import MagicMock, patch, ANY
-from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from aibrix.runtime.downloaders import (
     get_downloader,
