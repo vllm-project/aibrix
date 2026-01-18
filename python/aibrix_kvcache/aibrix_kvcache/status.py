@@ -74,6 +74,27 @@ class Status(Generic[T]):
     def is_ok(self) -> bool:
         return self.error_code == StatusCodes.OK
 
+    def is_error(self) -> bool:
+        return self.error_code == StatusCodes.ERROR
+
+    def is_not_found(self) -> bool:
+        return self.error_code == StatusCodes.NOT_FOUND
+
+    def is_invalid(self) -> bool:
+        return self.error_code == StatusCodes.INVALID
+
+    def is_out_of_memory(self) -> bool:
+        return self.error_code == StatusCodes.OUT_OF_MEMORY
+
+    def is_timeout(self) -> bool:
+        return self.error_code == StatusCodes.TIMEOUT
+
+    def is_denied(self) -> bool:
+        return self.error_code == StatusCodes.DENIED
+
+    def is_cancelled(self) -> bool:
+        return self.error_code == StatusCodes.CANCELLED
+
     def get(self, default=None) -> T:
         """Returns the value if successful, otherwise returns default."""
         if not self.is_ok():
@@ -95,14 +116,6 @@ class Status(Generic[T]):
     ) -> "Status[T]":
         """Factory method for error status."""
         return cls(error_code, message_or_exception)
-
-    def __getattr__(self, name):
-        if name.startswith("is_"):
-            expected_code = name[3:].upper()
-            return lambda: self.error_code == getattr(
-                StatusCodes, expected_code, None
-            )
-        raise AttributeError(f"{name} not found")
 
     def __repr__(self):
         if self.trace is not None:
