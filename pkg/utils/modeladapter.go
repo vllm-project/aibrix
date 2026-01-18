@@ -21,9 +21,9 @@ import (
 	"strings"
 )
 
-var AllowedSchemas = []string{"s3://", "gcs://", "huggingface://", "hf://", "/"}
+var AllowedSchemas = []string{"s3://", "gcs://", "tos://", "huggingface://", "hf://", "/"}
 
-// ValidateArtifactURL checks if the ArtifactURL has a valid schema (s3://, gcs://, huggingface://, https://, /)
+// ValidateArtifactURL checks if the ArtifactURL has a valid schema (s3://, gcs://, tos://, huggingface://, https://, /)
 func ValidateArtifactURL(artifactURL string) error {
 	for _, schema := range AllowedSchemas {
 		if strings.HasPrefix(artifactURL, schema) {
