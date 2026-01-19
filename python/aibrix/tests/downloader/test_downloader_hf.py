@@ -29,7 +29,7 @@ def test_get_downloader_hf():
 
 def test_get_downloader_hf_not_exist():
     with pytest.raises(ModelNotFoundError) as exception:
-        get_downloader("not_exsit_path/model")
+        get_downloader("not_exist_path/model")
     assert "Model not found" in str(exception.value)
 
 
@@ -39,5 +39,5 @@ def test_get_downloader_hf_invalid_uri():
     assert "not in the expected format: repo/name" in str(exception.value)
 
     with pytest.raises(ArgNotFormatError) as exception:
-        get_downloader("multi/filed/repo")
+        get_downloader("multi/field/repo")
     assert "not in the expected format: repo/name" in str(exception.value)
