@@ -117,6 +117,14 @@ class Status(Generic[T]):
         """Factory method for error status."""
         return cls(error_code, message_or_exception)
 
+    def __getattr__(self, name):
+        if name.startswith("is_"):
+            expected_code = name[3:].upper()
+            return lambda: self.error_code == getattr(
+                StatusCodes, expected_code, None
+            )
+        raise AttributeError(f"{name} not found")
+
     def __repr__(self):
         if self.trace is not None:
             return (
