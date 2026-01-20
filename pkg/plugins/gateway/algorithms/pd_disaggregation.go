@@ -641,9 +641,9 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 		routingCtx.ReqBody = bodyCopy
 	}
 
-	// Add kv_transfer_params for vLLM prefill requests only (SHFS mode)
-	// For NIXL mode (Neuron), the backend handles KV transfer via its own mechanism
-	if llmEngine == VLLMEngine && aibrixKVConnectorType != KVConnectorTypeNIXL {
+	// Add kv_transfer_params only for SHFS mode
+	// For NIXL mode, the backend handles KV transfer via its own mechanism
+	if aibrixKVConnectorType == KVConnectorTypeSHFS {
 		completionRequest["kv_transfer_params"] = map[string]any{
 			"do_remote_decode":  true,
 			"do_remote_prefill": false,
@@ -718,7 +718,7 @@ func (r *pdRouter) executeHTTPRequest(url string, routingCtx *types.RoutingConte
 func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.RoutingContext, responseData map[string]any, prefillPod *v1.Pod) error {
 	// Parse the original request body
 	var originalRequest map[string]any
-	if err := json.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
+	if err := sonic.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
 		return fmt.Errorf("failed to unmarshal original request body: %w", err)
 	}
 
@@ -729,7 +729,7 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 		originalRequest["disagg_prefill_resp"] = responseData
 
 		// Marshal the updated request body
-		updatedReqBody, err := json.Marshal(originalRequest)
+		updatedReqBody, err := sonic.Marshal(originalRequest)
 		if err != nil {
 			return fmt.Errorf("failed to marshal updated request body: %w", err)
 		}
@@ -742,49 +742,41 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 			"prefill_pod", prefillPod.Name,
 			"prefill_host", prefillPod.Status.PodIP,
 			"kv_connector_type", aibrixKVConnectorType)
-		return nil
+	} else {
+		// SHFS mode (default) - use kv_transfer_params with remote_host
+		// Extract kv_transfer_params from prefill response
+		kvTransferParams, exists := responseData["kv_transfer_params"]
+		if !exists {
+			klog.InfoS("no kv_transfer_params in prefill response", "request_id", routingCtx.RequestID)
+			return nil
+		}
+
+		// Update request body with KV transfer params from prefill response
+		originalRequest["kv_transfer_params"] = kvTransferParams
+
+		// Add prefill host information
+		kvTransferParamsMap, ok := kvTransferParams.(map[string]any)
+		if !ok {
+			return fmt.Errorf("kv_transfer_params has unexpected type %T, expected map[string]any", kvTransferParams)
+		}
+		kvTransferParamsMap["remote_host"] = prefillPod.Status.PodIP
+
+		// Marshal the updated request body
+		updatedReqBody, err := sonic.Marshal(originalRequest)
+		if err != nil {
+			return fmt.Errorf("failed to marshal updated request body: %w", err)
+		}
+
+		// Update routing context with new request body
+		routingCtx.ReqBody = updatedReqBody
+
+		klog.InfoS("updated routing context with kv_transfer_params (SHFS mode)",
+			"request_id", routingCtx.RequestID,
+			"prefill_pod", prefillPod.Name,
+			"prefill_host", prefillPod.Status.PodIP,
+			"kv_connector_type", aibrixKVConnectorType)
 	}
 
-	// SHFS mode (default) - use kv_transfer_params with remote_host
-	// Extract kv_transfer_params from prefill response
-	kvTransferParams, exists := responseData["kv_transfer_params"]
-	if !exists {
-		klog.InfoS("no kv_transfer_params in prefill response", "request_id", routingCtx.RequestID)
-		return nil
-	}
-
-	// Parse the original request body
-	var originalRequest map[string]any
-	if err := sonic.Unmarshal(routingCtx.ReqBody, &originalRequest); err != nil {
-		return fmt.Errorf("failed to unmarshal original request body: %w", err)
-	}
-
-	// Update request body with KV transfer params from prefill response
-	originalRequest["kv_transfer_params"] = kvTransferParams
-
-	// Add prefill host information
-	kvTransferParamsMap, ok := kvTransferParams.(map[string]any)
-	if !ok {
-		metrics.EmitCounterMetric(routingCtx, nil, metrics.GatewayPrefillRequestFailTotal, 1.0,
-			map[string]string{"status": pdRoutePrefillEmptyKVTransferParams, "status_code": "500"})
-		return fmt.Errorf("kv_transfer_params has unexpected type %T, expected map[string]any", kvTransferParams)
-	}
-	kvTransferParamsMap["remote_host"] = prefillPod.Status.PodIP
-
-	// Marshal the updated request body
-	updatedReqBody, err := sonic.Marshal(originalRequest)
-	if err != nil {
-		return fmt.Errorf("failed to marshal updated request body: %w", err)
-	}
-
-	// Update routing context with new request body
-	routingCtx.ReqBody = updatedReqBody
-
-	klog.InfoS("updated routing context with kv_transfer_params (SHFS mode)",
-		"request_id", routingCtx.RequestID,
-		"prefill_pod", prefillPod.Name,
-		"prefill_host", prefillPod.Status.PodIP,
-		"kv_connector_type", aibrixKVConnectorType)
 	return nil
 }
 
