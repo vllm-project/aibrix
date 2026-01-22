@@ -50,6 +50,7 @@ func getDeploymentIdentifier() string {
 }
 
 // GeneratePodKey generates a key in the format "namespace/name" for a given pod.
+// or generates a key in the format "namespace/name/port" for a given pod with port.
 func GeneratePodKey(podNamespace, podName string) string {
 	return fmt.Sprintf("%s/%s", podNamespace, podName)
 }
