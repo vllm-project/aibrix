@@ -106,6 +106,10 @@ func (p *SimplePodList) ListByIndex(index string) []*v1.Pod {
 	return p.pods
 }
 
+func (p *SimplePodList) ListPortsForPod() map[string][]int {
+	return nil
+}
+
 func TestVTCRouterSimple(t *testing.T) {
 	trackerConfig := &VTCConfig{
 		InputTokenWeight:  1.0,
