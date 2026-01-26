@@ -33,20 +33,34 @@ import (
 const (
 	// When the engine's HTTP proxy is separated from the engine itself,
 	// the request port and metrics port may differ, so a dedicated metrics port is required.
-	MetricPortLabel                     = constants.ModelLabelMetricPort
-	engineLabel                         = constants.ModelLabelEngine
-	portLabel                           = constants.ModelLabelPort
-	modelLabel                          = constants.ModelLabelName
-	defaultMetricPort                   = 8000
-	defaultEngineLabelValue             = "vllm"
-	defaultPodMetricRefreshIntervalInMS = 50
-	defaultPodMetricsWorkerCount        = 10
+	MetricPortLabel                       = constants.ModelLabelMetricPort
+	engineLabel                           = constants.ModelLabelEngine
+	portLabel                             = constants.ModelLabelPort
+	modelLabel                            = constants.ModelLabelName
+	modelRoleNameLabel                    = "role-name"
+	defaultMetricPort                     = 8000
+	defaultEngineLabelValue               = "vllm"
+	defaultPodMetricRefreshIntervalInMS   = 50
+	defaultModelMetricRefreshIntervalInMS = 10000
+	defaultPodMetricsWorkerCount          = 10
+	aggregatedLogInterval                 = 60 * time.Second
 )
 
 var (
 	counterGaugeMetricNames = []string{
 		metrics.NumRequestsRunning,
 		metrics.NumRequestsWaiting,
+		metrics.EngineSleepState,
+		metrics.HTTPRequestTotal,
+
+		metrics.KVCacheUsagePerc,
+		metrics.NixlNumFailedTransfers,
+		metrics.NixlNumFailedNotifications,
+		metrics.PrefixCacheQueriesTotal,
+		metrics.PrefixCacheHitTotal,
+		metrics.ExternalPrefixCacheHitsTotal,
+		metrics.ExternalPrefixCacheQueriesTotal,
+
 		metrics.NumRequestsSwapped,
 		metrics.PromptTokenTotal,
 		metrics.GenerationTokenTotal,
@@ -67,6 +81,15 @@ var (
 		metrics.RequestInferenceTimeSeconds,
 		metrics.RequestDecodeTimeSeconds,
 		metrics.RequestPrefillTimeSeconds,
+		metrics.HTTPRequestDurationSeconds,
+		metrics.HTTPRequestDurationHighRSeconds,
+		metrics.RequestPromptTokens,
+		metrics.RequestGenerationTokens,
+
+		metrics.NixlXferTimeSeconds,
+		metrics.NixlPostTimeSeconds,
+		metrics.NixlBytesTransferred,
+		metrics.NixlNumDescriptors,
 	}
 
 	prometheusMetricNames = []string{
@@ -88,7 +111,10 @@ var (
 		metrics.WaitingLoraAdapters,
 		metrics.RunningLoraAdapters,
 	}
-	podMetricRefreshInterval = time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
+	podMetricRefreshInterval   = time.Duration(utils.LoadEnvInt("AIBRIX_POD_METRIC_REFRESH_INTERVAL_MS", defaultPodMetricRefreshIntervalInMS)) * time.Millisecond
+	modelMetricRefreshInterval = time.Duration(utils.LoadEnvInt("AIBRIX_MODEL_METRIC_REFRESH_INTERVAL_MS", defaultModelMetricRefreshIntervalInMS)) * time.Millisecond
+
+	aggregatedLogLast sync.Map
 )
 
 // MetricSnapshot represents a metric value at a specific timestamp
