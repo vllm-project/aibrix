@@ -35,6 +35,7 @@ class BatchJobEndpoint(str, Enum):
     EMBEDDINGS = "/v1/embeddings"
     COMPLETIONS = "/v1/completions"
     RERANK = "/v1/rerank"
+    CLASSIFY = "/v1/classify"
 
 
 class CompletionWindow(str, Enum):

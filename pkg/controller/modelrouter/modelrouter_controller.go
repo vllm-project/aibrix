@@ -69,6 +69,7 @@ var modelPaths = []string{
 	"/v1/chat/completions",
 	"/v1/embeddings",
 	"/v1/rerank",
+	"/v1/classify",
 	"/generate",
 	"/generatevideo",
 	"/v1/audio/transcriptions",
