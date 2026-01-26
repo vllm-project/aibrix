@@ -829,6 +829,11 @@ func (in *RoleSpec) DeepCopyInto(out *RoleSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.Dependencies != nil {
+		in, out := &in.Dependencies, &out.Dependencies
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.UpgradeOrder != nil {
 		in, out := &in.UpgradeOrder, &out.UpgradeOrder
 		*out = new(int32)
