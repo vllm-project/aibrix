@@ -735,15 +735,24 @@ func TestPreparePrefillPayloadBackwardCompatibility(t *testing.T) {
 }
 
 func TestUpdateRoutingContextWithKVTransferParams(t *testing.T) {
+	// Save original value to restore after test
+	originalKVConnectorType := aibrixKVConnectorType
+	defer func() { aibrixKVConnectorType = originalKVConnectorType }()
+
 	tests := []struct {
-		name         string
-		responseData map[string]any
-		originalBody string
-		expectError  bool
-		expectKV     bool
+		name            string
+		kvConnectorType string
+		responseData    map[string]any
+		originalBody    string
+		expectError     bool
+		expectKV        bool
+		expectDisagg    bool // For NIXL mode: expect disagg_prefill_resp wrapper
+		description     string
 	}{
+		// SHFS mode tests (default - backward compatible)
 		{
-			name: "successful kv params update",
+			name:            "SHFS mode - successful kv params update",
+			kvConnectorType: KVConnectorTypeSHFS,
 			responseData: map[string]any{
 				"kv_transfer_params": map[string]any{
 					"remote_engine_id": "engine123",
@@ -753,25 +762,78 @@ func TestUpdateRoutingContextWithKVTransferParams(t *testing.T) {
 			originalBody: `{"messages":[{"role":"user","content":"test"}]}`,
 			expectError:  false,
 			expectKV:     true,
+			expectDisagg: false,
+			description:  "SHFS mode uses kv_transfer_params with remote_host",
 		},
 		{
-			name:         "no kv params in response",
-			responseData: map[string]any{"other": "data"},
+			name:            "SHFS mode - no kv params in response",
+			kvConnectorType: KVConnectorTypeSHFS,
+			responseData:    map[string]any{"other": "data"},
+			originalBody:    `{"messages":[{"role":"user","content":"test"}]}`,
+			expectError:     false,
+			expectKV:        false,
+			expectDisagg:    false,
+			description:     "SHFS mode without kv_transfer_params in response",
+		},
+		{
+			name:            "SHFS mode - invalid json body",
+			kvConnectorType: KVConnectorTypeSHFS,
+			responseData:    map[string]any{"kv_transfer_params": map[string]any{}},
+			originalBody:    `invalid json`,
+			expectError:     true,
+			expectKV:        false,
+			expectDisagg:    false,
+			description:     "SHFS mode with invalid JSON body",
+		},
+		// NIXL mode tests (Neuron)
+		{
+			name:            "NIXL mode - wraps response in disagg_prefill_resp",
+			kvConnectorType: KVConnectorTypeNIXL,
+			responseData: map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{"content": "test response"},
+				}},
+				"kv_transfer_params": map[string]any{
+					"remote_engine_id": "neuron-engine-1",
+				},
+			},
 			originalBody: `{"messages":[{"role":"user","content":"test"}]}`,
 			expectError:  false,
 			expectKV:     false,
+			expectDisagg: true,
+			description:  "NIXL mode wraps entire prefill response in disagg_prefill_resp",
 		},
 		{
-			name:         "invalid json body",
-			responseData: map[string]any{"kv_transfer_params": map[string]any{}},
-			originalBody: `invalid json`,
-			expectError:  true,
+			name:            "NIXL mode - response without kv_transfer_params",
+			kvConnectorType: KVConnectorTypeNIXL,
+			responseData: map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{"content": "test response"},
+				}},
+			},
+			originalBody: `{"messages":[{"role":"user","content":"test"}]}`,
+			expectError:  false,
 			expectKV:     false,
+			expectDisagg: true,
+			description:  "NIXL mode still wraps response even without kv_transfer_params",
+		},
+		{
+			name:            "NIXL mode - invalid json body",
+			kvConnectorType: KVConnectorTypeNIXL,
+			responseData:    map[string]any{"data": "value"},
+			originalBody:    `invalid json`,
+			expectError:     true,
+			expectKV:        false,
+			expectDisagg:    false,
+			description:     "NIXL mode with invalid JSON body should error",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Set the connector type for this test
+			aibrixKVConnectorType = tt.kvConnectorType
+
 			router := &pdRouter{}
 			pod := &v1.Pod{
 				Status: v1.PodStatus{PodIP: "192.168.1.100"},
@@ -785,28 +847,128 @@ func TestUpdateRoutingContextWithKVTransferParams(t *testing.T) {
 			err := router.updateRoutingContextWithKVTransferParams(routingCtx, tt.responseData, pod)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				assert.Error(t, err, tt.description)
 				return
 			}
 
+			assert.NoError(t, err, tt.description)
+
+			// Parse updated request body
+			var updatedRequest map[string]any
+			err = sonic.Unmarshal(routingCtx.ReqBody, &updatedRequest)
 			assert.NoError(t, err)
 
 			if tt.expectKV {
-				// Parse updated request body
-				var updatedRequest map[string]any
-				err = sonic.Unmarshal(routingCtx.ReqBody, &updatedRequest)
-				assert.NoError(t, err)
-
-				// Check KV transfer params were added
+				// SHFS mode: Check kv_transfer_params were added with remote_host
 				kvParams, exists := updatedRequest["kv_transfer_params"]
-				assert.True(t, exists)
+				assert.True(t, exists, "%s: should have kv_transfer_params", tt.description)
 
-				// Check remote_host was added
 				kvMap := kvParams.(map[string]any)
-				assert.Equal(t, "192.168.1.100", kvMap["remote_host"])
+				assert.Equal(t, "192.168.1.100", kvMap["remote_host"], "remote_host should be set to pod IP")
+			}
+
+			if tt.expectDisagg {
+				// NIXL mode: Check disagg_prefill_resp wrapper
+				disaggResp, exists := updatedRequest["disagg_prefill_resp"]
+				assert.True(t, exists, "%s: should have disagg_prefill_resp", tt.description)
+				assert.NotNil(t, disaggResp, "disagg_prefill_resp should contain the prefill response")
+
+				// Verify the response data is wrapped correctly
+				disaggMap, ok := disaggResp.(map[string]any)
+				assert.True(t, ok, "disagg_prefill_resp should be a map")
+
+				// Original response data should be in the wrapper
+				for key := range tt.responseData {
+					_, exists := disaggMap[key]
+					assert.True(t, exists, "disagg_prefill_resp should contain key: %s", key)
+				}
+
+				// Should NOT have kv_transfer_params at top level in NIXL mode
+				_, hasTopLevelKV := updatedRequest["kv_transfer_params"]
+				assert.False(t, hasTopLevelKV, "NIXL mode should NOT have top-level kv_transfer_params")
 			}
 		})
 	}
+}
+
+// TestUpdateRoutingContextNIXLMode specifically tests NIXL mode behavior
+func TestUpdateRoutingContextNIXLMode(t *testing.T) {
+	// Save original value to restore after test
+	originalKVConnectorType := aibrixKVConnectorType
+	defer func() { aibrixKVConnectorType = originalKVConnectorType }()
+
+	aibrixKVConnectorType = KVConnectorTypeNIXL
+
+	router := &pdRouter{}
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "prefill-neuron-1"},
+		Status:     v1.PodStatus{PodIP: "10.0.1.100"},
+	}
+
+	// Simulate prefill response from Neuron vLLM backend
+	prefillResponse := map[string]any{
+		"id":      "cmpl-neuron-123",
+		"object":  "chat.completion",
+		"created": 1234567890,
+		"model":   "llama3-8b",
+		"choices": []map[string]any{{
+			"index": 0,
+			"message": map[string]any{
+				"role":    "assistant",
+				"content": "",
+			},
+			"finish_reason": "length",
+		}},
+		"usage": map[string]any{
+			"prompt_tokens":     32,
+			"completion_tokens": 1,
+			"total_tokens":      33,
+		},
+		"kv_transfer_params": map[string]any{
+			"kv_connector":     "NixlConnector",
+			"remote_engine_id": "neuron-engine-abc123",
+			"do_remote_decode":  true,
+			"do_remote_prefill": false,
+		},
+	}
+
+	routingCtx := &types.RoutingContext{
+		RequestID: "nixl-test-request",
+		ReqBody:   []byte(`{"messages":[{"role":"user","content":"Hello"}],"model":"llama3-8b"}`),
+		Context:   context.Background(),
+	}
+
+	err := router.updateRoutingContextWithKVTransferParams(routingCtx, prefillResponse, pod)
+	assert.NoError(t, err)
+
+	// Parse the updated request body
+	var updatedRequest map[string]any
+	err = sonic.Unmarshal(routingCtx.ReqBody, &updatedRequest)
+	assert.NoError(t, err)
+
+	// Verify disagg_prefill_resp wrapper is present
+	disaggResp, exists := updatedRequest["disagg_prefill_resp"]
+	assert.True(t, exists, "NIXL mode should wrap response in disagg_prefill_resp")
+
+	// Verify the wrapper contains the full prefill response
+	disaggMap := disaggResp.(map[string]any)
+	assert.Equal(t, "cmpl-neuron-123", disaggMap["id"])
+	assert.Equal(t, "chat.completion", disaggMap["object"])
+	assert.Equal(t, "llama3-8b", disaggMap["model"])
+
+	// Verify kv_transfer_params is inside the wrapper, not at top level
+	kvParams, hasKV := disaggMap["kv_transfer_params"]
+	assert.True(t, hasKV, "kv_transfer_params should be inside disagg_prefill_resp")
+	kvMap := kvParams.(map[string]any)
+	assert.Equal(t, "neuron-engine-abc123", kvMap["remote_engine_id"])
+
+	// Verify no top-level kv_transfer_params
+	_, hasTopLevelKV := updatedRequest["kv_transfer_params"]
+	assert.False(t, hasTopLevelKV, "NIXL mode should NOT have top-level kv_transfer_params")
+
+	// Original request fields should still be present
+	assert.NotNil(t, updatedRequest["messages"])
+	assert.Equal(t, "llama3-8b", updatedRequest["model"])
 }
 
 func TestVLLMIntegrationWithTestServer(t *testing.T) {
