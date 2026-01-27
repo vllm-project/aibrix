@@ -641,9 +641,9 @@ func (r *pdRouter) preparePrefillPayload(routingCtx *types.RoutingContext, pod *
 		routingCtx.ReqBody = bodyCopy
 	}
 
-	// Add kv_transfer_params only for SHFS mode
+	// Add kv_transfer_params only for SHFS mode with vLLM
 	// For NIXL mode, the backend handles KV transfer via its own mechanism
-	if aibrixKVConnectorType == KVConnectorTypeSHFS {
+	if llmEngine == VLLMEngine && aibrixKVConnectorType == KVConnectorTypeSHFS {
 		completionRequest["kv_transfer_params"] = map[string]any{
 			"do_remote_decode":  true,
 			"do_remote_prefill": false,
