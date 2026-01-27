@@ -574,34 +574,73 @@ func TestDoPrefillRequest(t *testing.T) {
 }
 
 func TestPreparePrefillPayload(t *testing.T) {
+	// Save original value to restore after test
+	originalKVConnectorType := aibrixKVConnectorType
+	defer func() { aibrixKVConnectorType = originalKVConnectorType }()
+
 	tests := []struct {
-		name      string
-		llmEngine string
-		reqBody   string
-		checkKV   bool
+		name            string
+		llmEngine       string
+		kvConnectorType string
+		reqBody         string
+		checkKV         bool
+		description     string
 	}{
 		{
-			name:      "vllm engine adds kv_transfer_params",
-			llmEngine: VLLMEngine,
-			reqBody:   `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
-			checkKV:   true,
+			name:            "vllm engine with SHFS adds kv_transfer_params",
+			llmEngine:       VLLMEngine,
+			kvConnectorType: KVConnectorTypeSHFS,
+			reqBody:         `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
+			checkKV:         true,
+			description:     "backward compatibility: vLLM + SHFS should add kv_transfer_params",
 		},
 		{
-			name:      "sglang engine no kv_transfer_params",
-			llmEngine: SGLangEngine,
-			reqBody:   `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
-			checkKV:   false,
+			name:            "vllm engine with NIXL no kv_transfer_params",
+			llmEngine:       VLLMEngine,
+			kvConnectorType: KVConnectorTypeNIXL,
+			reqBody:         `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
+			checkKV:         false,
+			description:     "vLLM + NIXL should NOT add kv_transfer_params (handled by backend)",
 		},
 		{
-			name:      "other engine no kv_transfer_params",
-			llmEngine: "other",
-			reqBody:   `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
-			checkKV:   false,
+			name:            "sglang engine with SHFS no kv_transfer_params",
+			llmEngine:       SGLangEngine,
+			kvConnectorType: KVConnectorTypeSHFS,
+			reqBody:         `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
+			checkKV:         false,
+			description:     "SGLang uses bootstrap mechanism, not kv_transfer_params",
+		},
+		{
+			name:            "sglang engine with NIXL no kv_transfer_params",
+			llmEngine:       SGLangEngine,
+			kvConnectorType: KVConnectorTypeNIXL,
+			reqBody:         `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
+			checkKV:         false,
+			description:     "SGLang uses bootstrap mechanism regardless of connector type",
+		},
+		{
+			name:            "other engine with SHFS no kv_transfer_params",
+			llmEngine:       "other",
+			kvConnectorType: KVConnectorTypeSHFS,
+			reqBody:         `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
+			checkKV:         false,
+			description:     "unknown engines should not add kv_transfer_params",
+		},
+		{
+			name:            "other engine with NIXL no kv_transfer_params",
+			llmEngine:       "other",
+			kvConnectorType: KVConnectorTypeNIXL,
+			reqBody:         `{"messages":[{"role":"user","content":"test"}],"stream":true}`,
+			checkKV:         false,
+			description:     "unknown engines should not add kv_transfer_params",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Set the connector type for this test
+			aibrixKVConnectorType = tt.kvConnectorType
+
 			router := &pdRouter{}
 			pod := &v1.Pod{
 				Status: v1.PodStatus{PodIP: "127.0.0.1"},
@@ -612,29 +651,85 @@ func TestPreparePrefillPayload(t *testing.T) {
 			}
 
 			payload, err := router.preparePrefillPayload(routingCtx, pod, tt.llmEngine)
+			assert.NoError(t, err, tt.description)
+
+			var result map[string]any
+			err = sonic.Unmarshal(payload, &result)
+			assert.NoError(t, err)
+
+			// Check basic prefill parameters (always set)
+			assert.Equal(t, float64(1), result["max_tokens"], "max_tokens should be 1 for prefill")
+			assert.Equal(t, float64(1), result["max_completion_tokens"], "max_completion_tokens should be 1 for prefill")
+			assert.Equal(t, false, result["stream"], "stream should be false for prefill")
+			_, exists := result["stream_options"]
+			assert.False(t, exists, "stream_options should be removed")
+
+			// Check KV transfer params based on engine and connector type
+			kvParams, hasKV := result["kv_transfer_params"]
+			if tt.checkKV {
+				assert.True(t, hasKV, "%s: should have kv_transfer_params", tt.description)
+				kvMap := kvParams.(map[string]any)
+				assert.Equal(t, true, kvMap["do_remote_decode"])
+				assert.Equal(t, false, kvMap["do_remote_prefill"])
+			} else {
+				assert.False(t, hasKV, "%s: should NOT have kv_transfer_params", tt.description)
+			}
+		})
+	}
+}
+
+func TestPreparePrefillPayloadBackwardCompatibility(t *testing.T) {
+	// This test specifically validates backward compatibility:
+	// - kv_transfer_params is ONLY added when BOTH conditions are true:
+	//   1. llmEngine == VLLMEngine
+	//   2. aibrixKVConnectorType == KVConnectorTypeSHFS
+	//
+	// This ensures the original behavior is preserved for existing GPU/SHFS deployments
+
+	originalKVConnectorType := aibrixKVConnectorType
+	defer func() { aibrixKVConnectorType = originalKVConnectorType }()
+
+	testCases := []struct {
+		engine        string
+		connectorType string
+		expectKV      bool
+	}{
+		// Original behavior (backward compatible)
+		{VLLMEngine, KVConnectorTypeSHFS, true},
+
+		// New NIXL support (no kv_transfer_params, backend handles it)
+		{VLLMEngine, KVConnectorTypeNIXL, false},
+
+		// Other engines never get kv_transfer_params
+		{SGLangEngine, KVConnectorTypeSHFS, false},
+		{SGLangEngine, KVConnectorTypeNIXL, false},
+		{"unknown", KVConnectorTypeSHFS, false},
+		{"unknown", KVConnectorTypeNIXL, false},
+	}
+
+	for _, tc := range testCases {
+		name := tc.engine + "_" + tc.connectorType
+		t.Run(name, func(t *testing.T) {
+			aibrixKVConnectorType = tc.connectorType
+
+			router := &pdRouter{}
+			pod := &v1.Pod{Status: v1.PodStatus{PodIP: "127.0.0.1"}}
+			routingCtx := &types.RoutingContext{
+				ReqBody: []byte(`{"messages":[{"role":"user","content":"test"}]}`),
+				Context: context.Background(),
+			}
+
+			payload, err := router.preparePrefillPayload(routingCtx, pod, tc.engine)
 			assert.NoError(t, err)
 
 			var result map[string]any
 			err = sonic.Unmarshal(payload, &result)
 			assert.NoError(t, err)
 
-			// Check basic prefill parameters
-			assert.Equal(t, float64(1), result["max_tokens"])
-			assert.Equal(t, float64(1), result["max_completion_tokens"])
-			assert.Equal(t, false, result["stream"])
-			_, exists := result["stream_options"]
-			assert.False(t, exists)
-
-			// Check KV transfer params
-			kvParams, hasKV := result["kv_transfer_params"]
-			if tt.checkKV {
-				assert.True(t, hasKV, "vLLM should have kv_transfer_params")
-				kvMap := kvParams.(map[string]any)
-				assert.Equal(t, true, kvMap["do_remote_decode"])
-				assert.Equal(t, false, kvMap["do_remote_prefill"])
-			} else {
-				assert.False(t, hasKV, "non-vLLM engines should not have kv_transfer_params")
-			}
+			_, hasKV := result["kv_transfer_params"]
+			assert.Equal(t, tc.expectKV, hasKV,
+				"engine=%s, connector=%s: kv_transfer_params expected=%v, got=%v",
+				tc.engine, tc.connectorType, tc.expectKV, hasKV)
 		})
 	}
 }
