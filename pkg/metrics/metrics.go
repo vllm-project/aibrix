@@ -451,7 +451,7 @@ var (
 			MetricType: MetricType{
 				Query: PromQL,
 			},
-			PromQL:      `increase(vllm:time_per_output_token_seconds_sum{instance="${instance}", job="pods"}[5m]) / increase(vllm:time_per_output_token_seconds_sum{instance="${instance}", job="pods"}[5m])`,
+			PromQL:      `increase(vllm:time_per_output_token_seconds_sum{instance="${instance}", job="pods"}[5m]) / increase(vllm:time_per_output_token_seconds_count{instance="${instance}", job="pods"}[5m])`,
 			Description: "Average tpot in last 5 mins",
 		},
 		AvgPromptToksPerReq: {
@@ -476,7 +476,7 @@ var (
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Raw: Counter,
+				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:gpu_cache_usage_perc",
@@ -626,7 +626,7 @@ var (
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Raw: Counter,
+				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:cpu_cache_usage_perc",

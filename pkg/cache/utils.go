@@ -18,8 +18,11 @@ package cache
 
 import (
 	"fmt"
+	"os"
 	"strconv"
+	"strings"
 
+	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
 
@@ -45,4 +48,38 @@ func getPodLabel(pod *Pod, labelName string) (string, error) {
 		return "", err
 	}
 	return labelTarget, nil
+}
+
+func buildMetricLabels(pod *Pod, engineType string, model string) ([]string, []string) {
+	labelNames := []string{
+		"namespace",
+		"pod",
+		"model",
+		"engine_type",
+		"roleset",
+		"role",
+		"role_replica_index",
+		"gateway_pod",
+	}
+	labelValues := []string{
+		pod.Namespace,
+		pod.Name,
+		model,
+		engineType,
+		utils.GetPodEnv(pod.Pod, "ROLESET_NAME", ""),
+		utils.GetPodEnv(pod.Pod, "ROLE_NAME", ""),
+		utils.GetPodEnv(pod.Pod, "ROLE_REPLICA_INDEX", ""),
+		os.Getenv("POD_NAME"),
+	}
+	return labelNames, labelValues
+}
+
+func shouldSkipMetric(podName string, metricName string) bool {
+	if strings.Contains(podName, "prefill") && isDecodeOnlyMetric(metricName) {
+		return true
+	}
+	if strings.Contains(podName, "decode") && isPrefillOnlyMetric(metricName) {
+		return true
+	}
+	return false
 }

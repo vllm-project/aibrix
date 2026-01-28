@@ -17,7 +17,6 @@ package cache
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -208,56 +207,12 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			continue
 		}
 
+		podLabelNames, podLabelValues := buildMetricLabels(pod, engineType, "")
 		for metricName, metricValue := range result.Metrics {
-			metricDef, exists := metrics.Metrics[metricName]
-			if !exists {
+			if shouldSkipMetric(pod.Name, metricName) {
 				continue
 			}
-
-			labelNames := []string{
-				"namespace",
-				"pod",
-				"model",
-				"engine_type",
-				"roleset",
-				"role",
-				"role_replica_index",
-				"gateway_pod",
-			}
-			labelValues := []string{
-				pod.Namespace,
-				pod.Name,
-				"",
-				engineType,
-				utils.GetPodEnv(pod.Pod, "ROLESET_NAME", ""),
-				utils.GetPodEnv(pod.Pod, "ROLE_NAME", ""),
-				utils.GetPodEnv(pod.Pod, "ROLE_REPLICA_INDEX", ""),
-				os.Getenv("POD_NAME"),
-			}
-
-			if strings.Contains(pod.Name, "prefill") && isDecodeOnlyMetric(metricName) {
-				continue
-			}
-			if strings.Contains(pod.Name, "decode") && isPrefillOnlyMetric(metricName) {
-				continue
-			}
-
-			switch metricDef.MetricType.Raw {
-			case metrics.Gauge:
-				metrics.SetGaugeMetric(metricName, metrics.GetMetricHelp(metricName), metricValue.GetSimpleValue(), labelNames, labelValues...)
-			case metrics.Counter:
-				c.emitCounterValue(metricName, metricValue.GetSimpleValue(), labelNames, labelValues...)
-			default:
-				if hv := metricValue.GetHistogramValue(); hv != nil {
-					metrics.SetHistogramMetric(metricName, metrics.GetMetricHelp(metricName), hv, labelNames, labelValues...)
-					p50, _ := hv.GetPercentile(50)
-					metrics.SetGaugeMetric(metricName+"_p50", metrics.GetMetricHelp(metricName), p50, labelNames, labelValues...)
-					p90, _ := hv.GetPercentile(90)
-					metrics.SetGaugeMetric(metricName+"_p90", metrics.GetMetricHelp(metricName), p90, labelNames, labelValues...)
-					p99, _ := hv.GetPercentile(99)
-					metrics.SetGaugeMetric(metricName+"_p99", metrics.GetMetricHelp(metricName), p99, labelNames, labelValues...)
-				}
-			}
+			c.emitMetricToPrometheus(metricName, metricValue, podLabelNames, podLabelValues)
 		}
 
 		for metricName, metricValue := range result.ModelMetrics {
@@ -268,33 +223,11 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			model := parts[0]
 			metric := parts[1]
 
-			labelNames := []string{
-				"namespace",
-				"pod",
-				"model",
-				"engine_type",
-				"roleset",
-				"role",
-				"role_replica_index",
-				"gateway_pod",
-			}
-			labelValues := []string{
-				pod.Namespace,
-				pod.Name,
-				model,
-				engineType,
-				utils.GetPodEnv(pod.Pod, "ROLESET_NAME", ""),
-				utils.GetPodEnv(pod.Pod, "ROLE_NAME", ""),
-				utils.GetPodEnv(pod.Pod, "ROLE_REPLICA_INDEX", ""),
-				os.Getenv("POD_NAME"),
+			if shouldSkipMetric(pod.Name, metric) {
+				continue
 			}
 
-			if strings.Contains(pod.Name, "prefill") && isDecodeOnlyMetric(metric) {
-				continue
-			}
-			if strings.Contains(pod.Name, "decode") && isPrefillOnlyMetric(metric) {
-				continue
-			}
+			labelNames, labelValues := buildMetricLabels(pod, engineType, model)
 
 			if strings.Contains(pod.Name, "prefill") && metric == metrics.PromptTokenTotal {
 				perSecRate := c.calculatePerSecondRate(pod, model, metric, metricValue.GetSimpleValue())
@@ -318,25 +251,7 @@ func (c *Store) worker(jobs <-chan *Pod) {
 				}
 			}
 
-			metricType := metrics.Metrics[metric].MetricType
-			switch metricType.Raw {
-			case metrics.Gauge:
-				metrics.SetGaugeMetric(metric, metrics.GetMetricHelp(metric), metricValue.GetSimpleValue(), labelNames, labelValues...)
-			case metrics.Counter:
-				c.emitCounterValue(metric, metricValue.GetSimpleValue(), labelNames, labelValues...)
-			default:
-				if hv := metricValue.GetHistogramValue(); hv != nil {
-					metrics.SetHistogramMetric(metric, metrics.GetMetricHelp(metric), hv, labelNames, labelValues...)
-					p50, _ := hv.GetPercentile(50)
-					metrics.SetGaugeMetric(metric+"_p50", metrics.GetMetricHelp(metric), p50, labelNames, labelValues...)
-
-					p90, _ := hv.GetPercentile(90)
-					metrics.SetGaugeMetric(metric+"_p90", metrics.GetMetricHelp(metric), p90, labelNames, labelValues...)
-
-					p99, _ := hv.GetPercentile(99)
-					metrics.SetGaugeMetric(metric+"_p99", metrics.GetMetricHelp(metric), p99, labelNames, labelValues...)
-				}
-			}
+			c.emitMetricToPrometheus(metric, metricValue, labelNames, labelValues)
 		}
 		// Update pod metrics using typed results
 		c.updatePodMetricsFromTypedResult(pod, result)
@@ -356,6 +271,30 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			"errors", len(result.Errors))
 
 		cancel()
+	}
+}
+
+func (c *Store) emitMetricToPrometheus(metricName string, metricValue metrics.MetricValue, labelNames []string, labelValues []string) {
+	metricDef, exists := metrics.Metrics[metricName]
+	if !exists {
+		return
+	}
+
+	switch metricDef.MetricType.Raw {
+	case metrics.Gauge:
+		metrics.SetGaugeMetric(metricName, metrics.GetMetricHelp(metricName), metricValue.GetSimpleValue(), labelNames, labelValues...)
+	case metrics.Counter:
+		c.emitCounterValue(metricName, metricValue.GetSimpleValue(), labelNames, labelValues...)
+	default:
+		if hv := metricValue.GetHistogramValue(); hv != nil {
+			metrics.SetHistogramMetric(metricName, metrics.GetMetricHelp(metricName), hv, labelNames, labelValues...)
+			p50, _ := hv.GetPercentile(50)
+			metrics.SetGaugeMetric(metricName+"_p50", metrics.GetMetricHelp(metricName), p50, labelNames, labelValues...)
+			p90, _ := hv.GetPercentile(90)
+			metrics.SetGaugeMetric(metricName+"_p90", metrics.GetMetricHelp(metricName), p90, labelNames, labelValues...)
+			p99, _ := hv.GetPercentile(99)
+			metrics.SetGaugeMetric(metricName+"_p99", metrics.GetMetricHelp(metricName), p99, labelNames, labelValues...)
+		}
 	}
 }
 

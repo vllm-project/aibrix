@@ -26,10 +26,10 @@ import (
 )
 
 var (
-	customGauges     = make(map[string]*prometheus.GaugeVec)
-	customGaugesMu   sync.RWMutex
-	customCounters   = make(map[string]*prometheus.CounterVec)
-	customCountersMu sync.RWMutex
+	customGauges       = make(map[string]*prometheus.GaugeVec)
+	customGaugesMu     sync.RWMutex
+	customCounters     = make(map[string]*prometheus.CounterVec)
+	customCountersMu   sync.RWMutex
 	customHistograms   = make(map[string]*histogramCollector)
 	customHistogramsMu sync.RWMutex
 
