@@ -17,8 +17,11 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
+	"strconv"
+	"strings"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
@@ -45,14 +48,19 @@ func NewLeastRequestRouter() (types.Router, error) {
 		return nil, err
 	}
 
-	return leastRequestRouter{
+	return &leastRequestRouter{
 		cache: c,
 	}, nil
 }
 
 // Route request based of least active request among input ready pods
-func (r leastRequestRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+func (r *leastRequestRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	readyPods := readyPodList.All()
+	// Use distributed DP-level API server routing when pods have multiple ports
+	if isMultiPortPods(readyPods) {
+		return r.apiServerRoute(ctx, readyPods, readyPodList.ListPortsForPod())
+	}
+	// Use default Pod-level routing
 	targetPod := selectTargetPodWithLeastRequestCount(r.cache, readyPods)
 
 	// Use fallback if no valid metrics
@@ -65,6 +73,20 @@ func (r leastRequestRouter) Route(ctx *types.RoutingContext, readyPodList types.
 	}
 
 	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
+}
+
+func (r *leastRequestRouter) apiServerRoute(ctx *types.RoutingContext, readyPods []*v1.Pod, portsMap map[string][]int) (string, error) {
+	targetPod, targetPort := selectTargetPodAndPortWithLeastRequestCount(r.cache, readyPods, portsMap)
+	if targetPod == nil {
+		return "", fmt.Errorf("no target pod selected")
+	}
+
+	if targetPort == 0 {
+		return "", fmt.Errorf("target pod does not have a port")
+	}
+	ctx.SetTargetPod(targetPod)
+	ctx.SetTargetPort(targetPort)
 	return ctx.TargetAddress(), nil
 }
 
@@ -95,13 +117,67 @@ func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod
 	return targetPod
 }
 
+func selectTargetPodAndPortWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod, portsMap map[string][]int) (*v1.Pod, int) {
+	readyPodsMap := make(map[string]*v1.Pod, len(readyPods))
+	for _, pod := range readyPods {
+		readyPodsMap[pod.Name] = pod
+	}
+
+	minCount := math.MaxInt32
+
+	var targetApiServers []string
+	podRequestCount := getRequestCountsWithPort(cache, readyPods, portsMap)
+	if len(podRequestCount) == 0 {
+		return nil, 0
+	}
+
+	klog.V(4).InfoS("selectTargetPodAndPortWithLeastRequestCount", "podRequestCount", podRequestCount)
+	for servername, totalReq := range podRequestCount {
+		if totalReq < minCount {
+			minCount = totalReq
+			targetApiServers = []string{servername}
+		} else if totalReq == minCount {
+			targetApiServers = append(targetApiServers, servername)
+		}
+	}
+
+	if len(targetApiServers) == 0 {
+		return nil, 0
+	}
+
+	// Random selection among candidates
+	selectedServer := targetApiServers[rand.Intn(len(targetApiServers))]
+	parts := strings.Split(selectedServer, "/")
+	if len(parts) != 2 {
+		klog.ErrorS(nil, "Invalid server name format", "serverName", selectedServer)
+		return nil, 0
+	}
+
+	podName := parts[0]
+	portStr := parts[1]
+
+	targetPod, found := readyPodsMap[podName]
+	if !found {
+		klog.ErrorS(nil, "Selected pod not found in ready pods list", "podName", podName)
+		return nil, 0
+	}
+
+	targetPort, err := strconv.Atoi(portStr)
+	if err != nil {
+		klog.ErrorS(err, "Failed to parse port", "port", portStr)
+		return targetPod, 0
+	}
+
+	return targetPod, targetPort
+}
+
 // getRequestCounts returns running request count for each pod tracked by gateway.
 // Note: Currently, gateway instance tracks active running request counts for each pod locally,
 // if multiple gateway instances are active then state is not shared across them.
 // It is advised to run on leader gateway instance.
 // TODO: Support stateful information sync across gateway instances: https://github.com/vllm-project/aibrix/issues/761
 func getRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
-	podRequestCount := map[string]int{}
+	podRequestCount := make(map[string]int, len(readyPods))
 	for _, pod := range readyPods {
 		runningReq, err := cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
 		if err != nil {
@@ -111,4 +187,46 @@ func getRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
 	}
 
 	return podRequestCount
+}
+
+// getRequestCountsWithPort returns running request count for each pod with port tracked by gateway
+func getRequestCountsWithPort(cache cache.Cache, readyPods []*v1.Pod, portsMap map[string][]int) map[string]int {
+	podRequestCount := make(map[string]int)
+	for _, pod := range readyPods {
+		podPorts, exists := portsMap[pod.Name]
+		if !exists || len(podPorts) == 0 {
+			continue
+		}
+
+		for _, port := range podPorts {
+			var metricName string
+			var keyName string
+
+			if len(podPorts) == 1 {
+				metricName = metrics.RealtimeNumRequestsRunning
+				keyName = pod.Name
+			} else {
+				metricName = metrics.RealtimeNumRequestsRunning + "/" + strconv.Itoa(port)
+				keyName = pod.Name + "/" + strconv.Itoa(port)
+			}
+
+			var count int
+			if val, err := cache.GetMetricValueByPod(pod.Name, pod.Namespace, metricName); err == nil && val != nil {
+				count = int(val.GetSimpleValue())
+			}
+			podRequestCount[keyName] = count
+		}
+	}
+
+	return podRequestCount
+}
+
+func isMultiPortPods(pods []*v1.Pod) bool {
+	for _, pod := range pods {
+		if utils.IsDataParallelPod(pod) {
+			return true
+		}
+	}
+
+	return false
 }

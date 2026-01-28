@@ -98,6 +98,10 @@ func (m *mockPodList) ListByIndex(index string) []*v1.Pod {
 	return nil
 }
 
+func (m *mockPodList) ListPortsForPod() map[string][]int {
+	return nil
+}
+
 func newMockPodList(pods []*v1.Pod, indexes map[string][]*v1.Pod) *mockPodList {
 	if indexes == nil {
 		indexes = make(map[string][]*v1.Pod)

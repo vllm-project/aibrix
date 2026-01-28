@@ -113,7 +113,7 @@ func (r *StormServiceReconciler) createRoleSet(stormService *orchestrationv1alph
 	}
 	var toCreate []*orchestrationv1alpha1.RoleSet
 	for i := 0; i < count; i++ {
-		roleSet, err := r.renderRoleSet(stormService, nil, revisionName, roleRevisions)
+		roleSet, err := r.renderRoleSet(stormService, &i, revisionName, roleRevisions)
 		if err != nil {
 			return 0, err
 		}
@@ -147,7 +147,9 @@ func (r *StormServiceReconciler) updateRoleSet(stormService *orchestrationv1alph
 		klog.Infof("[rolesetoperation] update roleset %s", toUpdate[i].Name)
 		// overwrite labels and annotations, to keep the revision updated
 		toUpdate[i].Labels = target.Labels
+		rsIdx := toUpdate[i].Annotations[constants.RoleSetIndexAnnotationKey]
 		toUpdate[i].Annotations = target.Annotations
+		toUpdate[i].Annotations[constants.RoleSetIndexAnnotationKey] = rsIdx
 		// update roleset spec
 		toUpdate[i].Spec = target.Spec
 		return r.Client.Update(context.TODO(), toUpdate[i])

@@ -137,6 +137,11 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 
 		model = req.Model
 		message = strings.Join(append([]string{req.Query}, req.Documents...), " ")
+	case PathClassify:
+		model, message, errRes = validateClassifyRequest(requestID, requestBody)
+		if errRes != nil {
+			return
+		}
 	case PathAudioTranscriptions, PathAudioTranslations:
 		// Audio endpoints require multipart/form-data content-type, not JSON
 		// This case handles the error when JSON is sent to audio endpoints
@@ -154,6 +159,55 @@ func validateRequestBody(requestID, requestPath string, requestBody []byte, user
 // isAudioRequest returns true if the request path is an audio endpoint
 func isAudioRequest(requestPath string) bool {
 	return requestPath == PathAudioTranscriptions || requestPath == PathAudioTranslations
+}
+
+// validateClassifyRequest validates a classify request and returns the model and message.
+// nolint:nakedret
+func validateClassifyRequest(requestID string, requestBody []byte) (model, message string, errRes *extProcPb.ProcessingResponse) {
+	type ClassifyRequest struct {
+		Model string          `json:"model"`
+		Input json.RawMessage `json:"input"`
+	}
+	var req ClassifyRequest
+	if err := json.Unmarshal(requestBody, &req); err != nil {
+		klog.ErrorS(err, "error to unmarshal classify object", "requestID", requestID)
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "error processing request body", "", "", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if req.Model == "" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'model' is a required property", "", "model", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	if len(req.Input) == 0 || string(req.Input) == "null" {
+		errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' is a required property", "", "input", HeaderErrorRequestBodyProcessing, "true")
+		return
+	}
+
+	// Parse input - can be string or array of strings
+	var inputStr string
+	if err := json.Unmarshal(req.Input, &inputStr); err == nil {
+		if inputStr == "" {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' cannot be an empty string", "", "input", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		message = inputStr
+	} else {
+		var inputArr []string
+		if err := json.Unmarshal(req.Input, &inputArr); err != nil {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' must be a string or array of strings", "", "input", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		if len(inputArr) == 0 {
+			errRes = buildErrorResponse(envoyTypePb.StatusCode_BadRequest, "'input' array cannot be empty", "", "input", HeaderErrorRequestBodyProcessing, "true")
+			return
+		}
+		message = strings.Join(inputArr, " ")
+	}
+
+	model = req.Model
+	return
 }
 
 // isMultipartRequest returns true if the content type indicates multipart form data
