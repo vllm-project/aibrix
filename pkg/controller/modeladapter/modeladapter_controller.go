@@ -629,7 +629,20 @@ func (r *ModelAdapterReconciler) reconcileLoadOnSinglePod(ctx context.Context, i
 		if len(candidatePods) >= neededReplicas {
 			selectedPods, err := r.schedulePods(ctx, instance, candidatePods, neededReplicas)
 			if err != nil {
-				return ctrl.Result{}, err
+				instance.Status.Phase = modelv1alpha1.ModelAdapterPending
+
+				condition := NewCondition(
+					string(modelv1alpha1.ModelAdapterConditionTypeScheduled),
+					metav1.ConditionFalse,
+					"SchedulingFailed",
+					err.Error(),
+				)
+
+				if err2 := r.updateStatus(ctx, instance, condition); err2 != nil {
+					return ctrl.Result{}, err2
+				}
+
+				return ctrl.Result{RequeueAfter: time.Duration(RetryBackoffSeconds) * time.Second}, nil
 			}
 
 			// Persist the scheduling decision in annotations
