@@ -370,3 +370,14 @@ func GetModelPortForPod(requestID string, pod *v1.Pod) int64 {
 	}
 	return modelPort
 }
+
+func GetPodEnv(pod *v1.Pod, envName, defaultValue string) string {
+	for _, container := range pod.Spec.Containers {
+		for _, env := range container.Env {
+			if env.Name == envName {
+				return env.Value
+			}
+		}
+	}
+	return defaultValue
+}

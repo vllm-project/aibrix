@@ -17,6 +17,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -115,6 +116,7 @@ var (
 	modelMetricRefreshInterval = time.Duration(utils.LoadEnvInt("AIBRIX_MODEL_METRIC_REFRESH_INTERVAL_MS", defaultModelMetricRefreshIntervalInMS)) * time.Millisecond
 
 	aggregatedLogLast sync.Map
+	lastCounterValues sync.Map
 )
 
 // MetricSnapshot represents a metric value at a specific timestamp
@@ -206,6 +208,136 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			continue
 		}
 
+		for metricName, metricValue := range result.Metrics {
+			metricDef, exists := metrics.Metrics[metricName]
+			if !exists {
+				continue
+			}
+
+			labelNames := []string{
+				"namespace",
+				"pod",
+				"model",
+				"engine_type",
+				"roleset",
+				"role",
+				"role_replica_index",
+				"gateway_pod",
+			}
+			labelValues := []string{
+				pod.Namespace,
+				pod.Name,
+				"",
+				engineType,
+				utils.GetPodEnv(pod.Pod, "ROLESET_NAME", ""),
+				utils.GetPodEnv(pod.Pod, "ROLE_NAME", ""),
+				utils.GetPodEnv(pod.Pod, "ROLE_REPLICA_INDEX", ""),
+				os.Getenv("POD_NAME"),
+			}
+
+			if strings.Contains(pod.Name, "prefill") && isDecodeOnlyMetric(metricName) {
+				continue
+			}
+			if strings.Contains(pod.Name, "decode") && isPrefillOnlyMetric(metricName) {
+				continue
+			}
+
+			switch metricDef.MetricType.Raw {
+			case metrics.Gauge:
+				metrics.SetGaugeMetric(metricName, metrics.GetMetricHelp(metricName), metricValue.GetSimpleValue(), labelNames, labelValues...)
+			case metrics.Counter:
+				c.emitCounterValue(metricName, metricValue.GetSimpleValue(), labelNames, labelValues...)
+			default:
+				if hv := metricValue.GetHistogramValue(); hv != nil {
+					metrics.SetHistogramMetric(metricName, metrics.GetMetricHelp(metricName), hv, labelNames, labelValues...)
+					p50, _ := hv.GetPercentile(50)
+					metrics.SetGaugeMetric(metricName+"_p50", metrics.GetMetricHelp(metricName), p50, labelNames, labelValues...)
+					p90, _ := hv.GetPercentile(90)
+					metrics.SetGaugeMetric(metricName+"_p90", metrics.GetMetricHelp(metricName), p90, labelNames, labelValues...)
+					p99, _ := hv.GetPercentile(99)
+					metrics.SetGaugeMetric(metricName+"_p99", metrics.GetMetricHelp(metricName), p99, labelNames, labelValues...)
+				}
+			}
+		}
+
+		for metricName, metricValue := range result.ModelMetrics {
+			parts := strings.SplitN(metricName, "/", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			model := parts[0]
+			metric := parts[1]
+
+			labelNames := []string{
+				"namespace",
+				"pod",
+				"model",
+				"engine_type",
+				"roleset",
+				"role",
+				"role_replica_index",
+				"gateway_pod",
+			}
+			labelValues := []string{
+				pod.Namespace,
+				pod.Name,
+				model,
+				engineType,
+				utils.GetPodEnv(pod.Pod, "ROLESET_NAME", ""),
+				utils.GetPodEnv(pod.Pod, "ROLE_NAME", ""),
+				utils.GetPodEnv(pod.Pod, "ROLE_REPLICA_INDEX", ""),
+				os.Getenv("POD_NAME"),
+			}
+
+			if strings.Contains(pod.Name, "prefill") && isDecodeOnlyMetric(metric) {
+				continue
+			}
+			if strings.Contains(pod.Name, "decode") && isPrefillOnlyMetric(metric) {
+				continue
+			}
+
+			if strings.Contains(pod.Name, "prefill") && metric == metrics.PromptTokenTotal {
+				perSecRate := c.calculatePerSecondRate(pod, model, metric, metricValue.GetSimpleValue())
+				if perSecRate >= 0 {
+					rateMetricName := metrics.AvgPromptThroughputToksPerS
+					rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
+					metrics.SetGaugeMetric(rateMetricName, metrics.GetMetricHelp(rateMetricName), rateValue.GetSimpleValue(), labelNames, labelValues...)
+					_ = c.updatePodRecord(pod, model, rateMetricName, metrics.PodModelMetricScope, rateValue)
+					klog.V(4).InfoS("get metric per sec rate", "metric", rateMetricName, "raw_value", metricValue.GetSimpleValue(), "per_sec_rate", rateValue.GetSimpleValue())
+				}
+			}
+
+			if strings.Contains(pod.Name, "decode") && metric == metrics.GenerationTokenTotal {
+				perSecRate := c.calculatePerSecondRate(pod, model, metric, metricValue.GetSimpleValue())
+				if perSecRate >= 0 {
+					rateMetricName := metrics.AvgGenerationThroughputToksPerS
+					rateValue := &metrics.SimpleMetricValue{Value: perSecRate}
+					metrics.SetGaugeMetric(rateMetricName, metrics.GetMetricHelp(rateMetricName), rateValue.GetSimpleValue(), labelNames, labelValues...)
+					_ = c.updatePodRecord(pod, model, rateMetricName, metrics.PodModelMetricScope, rateValue)
+					klog.V(4).InfoS("get metric per sec rate", "metric", rateMetricName, "raw_value", metricValue.GetSimpleValue(), "per_sec_rate", rateValue.GetSimpleValue())
+				}
+			}
+
+			metricType := metrics.Metrics[metric].MetricType
+			switch metricType.Raw {
+			case metrics.Gauge:
+				metrics.SetGaugeMetric(metric, metrics.GetMetricHelp(metric), metricValue.GetSimpleValue(), labelNames, labelValues...)
+			case metrics.Counter:
+				c.emitCounterValue(metric, metricValue.GetSimpleValue(), labelNames, labelValues...)
+			default:
+				if hv := metricValue.GetHistogramValue(); hv != nil {
+					metrics.SetHistogramMetric(metric, metrics.GetMetricHelp(metric), hv, labelNames, labelValues...)
+					p50, _ := hv.GetPercentile(50)
+					metrics.SetGaugeMetric(metric+"_p50", metrics.GetMetricHelp(metric), p50, labelNames, labelValues...)
+
+					p90, _ := hv.GetPercentile(90)
+					metrics.SetGaugeMetric(metric+"_p90", metrics.GetMetricHelp(metric), p90, labelNames, labelValues...)
+
+					p99, _ := hv.GetPercentile(99)
+					metrics.SetGaugeMetric(metric+"_p99", metrics.GetMetricHelp(metric), p99, labelNames, labelValues...)
+				}
+			}
+		}
 		// Update pod metrics using typed results
 		c.updatePodMetricsFromTypedResult(pod, result)
 
@@ -224,6 +356,55 @@ func (c *Store) worker(jobs <-chan *Pod) {
 			"errors", len(result.Errors))
 
 		cancel()
+	}
+}
+
+func (c *Store) emitCounterValue(metricName string, currentValue float64, labelNames []string, labelValues ...string) {
+	if strings.HasSuffix(metricName, "_total") {
+		key := metricName + "|" + strings.Join(labelValues, "|")
+		lastAny, ok := lastCounterValues.Load(key)
+		if !ok {
+			lastCounterValues.Store(key, currentValue)
+			return
+		}
+		last, ok := lastAny.(float64)
+		if !ok {
+			lastCounterValues.Store(key, currentValue)
+			return
+		}
+		delta := currentValue - last
+		lastCounterValues.Store(key, currentValue)
+		if delta > 0 {
+			metrics.IncrementCounterMetric(metricName, metrics.GetMetricHelp(metricName), delta, labelNames, labelValues...)
+		}
+		return
+	}
+
+	metrics.SetGaugeMetric(metricName, metrics.GetMetricHelp(metricName), currentValue, labelNames, labelValues...)
+}
+
+func isPrefillOnlyMetric(metricName string) bool {
+	switch metricName {
+	case metrics.TimeToFirstTokenSeconds,
+		metrics.RequestPrefillTimeSeconds,
+		metrics.RequestPromptTokens:
+		return true
+	default:
+		return false
+	}
+}
+
+func isDecodeOnlyMetric(metricName string) bool {
+	switch metricName {
+	case metrics.TimePerOutputTokenSeconds,
+		metrics.RequestTimePerOutputTokenSeconds,
+		metrics.RequestDecodeTimeSeconds,
+		metrics.IterationTokensTotal,
+		metrics.RequestGenerationTokens,
+		metrics.RequestMaxNumGenerationTokens:
+		return true
+	default:
+		return false
 	}
 }
 
