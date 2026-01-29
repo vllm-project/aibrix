@@ -52,6 +52,8 @@ var (
 		metrics.NumRequestsWaiting,
 		metrics.EngineSleepState,
 		metrics.HTTPRequestTotal,
+		metrics.NumPrefillPreallocQueueReqs,
+		metrics.NumDecodePreallocQueueReqs,
 
 		metrics.KVCacheUsagePerc,
 		metrics.NixlNumFailedTransfers,
@@ -93,6 +95,7 @@ var (
 	}
 
 	prometheusMetricNames = []string{
+		metrics.DrainRate1m,
 		metrics.P95TTFT5m,
 		metrics.P95TTFT5mPod,
 		metrics.AvgTTFT5mPod,

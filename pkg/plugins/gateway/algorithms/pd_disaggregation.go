@@ -188,7 +188,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 			return nil, combinedPods[rand.Intn(len(combinedPods))], nil
 		}
 
-		if r.shouldPickCombined(routingCtx, prefillPods, decodePods, combinedPods) {
+		if r.shouldPickCombined(routingCtx, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods) {
 			combinedPod := r.scoreCombinedPods(routingCtx, combinedPods)
 			if combinedPod != nil {
 				klog.InfoS("load imbalance detected, selecting combined pod",
@@ -312,8 +312,8 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		maxFreeGPUUsage = math.Max(maxFreeGPUUsage, podFreeGpuUsage[pod.Name])
 	}
 
-	if minRequestCount == 0 || maxRequestCount-minRequestCount >= aibrixDecodeMaxRequest {
-		klog.InfoS("request imbalance at decode pods", "request_id", ctx.RequestID,
+	if maxRequestCount-minRequestCount >= aibrixDecodeMaxRequest {
+		klog.V(4).InfoS("request imbalance at decode pods", "request_id", ctx.RequestID,
 			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
 			"min_throughput", minThroughput, "max_throughput", maxThroughput,
 			"free_gpu_percent", podFreeGpuUsage[minRequestPod.Name],
@@ -896,7 +896,7 @@ func (r *pdRouter) shouldPickCombined(routingCtx *types.RoutingContext, prefillP
 		}
 	}
 	if !combinedLowLoad {
-		klog.V(4).InfoS("loads", "requestId", routingCtx.RequestID, "prefillHighLoad", false, "decodeHighLoad", false, "combinedLowLoad", combinedLowLoad)
+		klog.V(4).InfoS("combined_load", "requestId", routingCtx.RequestID, "prefillHighLoad", false, "decodeHighLoad", false, "combinedLowLoad", combinedLowLoad)
 		return false
 	}
 

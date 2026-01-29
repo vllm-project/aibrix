@@ -22,6 +22,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 // calculatePodScoreBasedOffRequestRate calculates the score of a pod based off the ratio of requests waiting vs requests draining.
@@ -31,6 +32,10 @@ func calculatePodScoreBasedOffRequestRate(routingCtx *types.RoutingContext, cach
 	prefillPreallocQueue := GetPodModelMetricsSimpleValue(cache, pod.Name, pod.Namespace, modelName, metrics.NumPrefillPreallocQueueReqs)
 	decodePreallocQueue := GetPodModelMetricsSimpleValue(cache, pod.Name, pod.Namespace, modelName, metrics.NumDecodePreallocQueueReqs)
 	drainRate1m := GetPodModelMetricsSimplePrometheusValue(cache, pod.Name, pod.Namespace, modelName, metrics.DrainRate1m)
+
+	klog.V(4).InfoS("pod_metrics", "requestId",
+		routingCtx.RequestID, "podName", pod.Name, "namespace", pod.Namespace, "modelName", modelName,
+		"waitingReqs", waitingReqs, "prefillPreallocQueue", prefillPreallocQueue, "decodePreallocQueue", decodePreallocQueue, "drainRate1m", drainRate1m)
 
 	return (waitingReqs + prefillPreallocQueue + decodePreallocQueue) / drainRate1m
 }
