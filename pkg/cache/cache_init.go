@@ -406,14 +406,13 @@ func initDiscoveryProvider(store *Store, provider discovery.Provider, stopCh <-c
 
 	// add all resources during initialization
 	for _, o := range objs {
-		pod, ok := o.(*v1.Pod)
-		if ok {
-			store.addPod(pod)
-			continue
-		}
-		modelAd, ok := o.(*modelv1alpha1.ModelAdapter)
-		if ok {
-			store.addModelAdapter(modelAd)
+		switch obj := o.(type) {
+		case *v1.Pod:
+			store.addPod(obj)
+		case *modelv1alpha1.ModelAdapter:
+			store.addModelAdapter(obj)
+		default:
+			klog.Warningf("Discovery provider returned unknown object type: %T", o)
 		}
 	}
 
