@@ -17,12 +17,14 @@ limitations under the License.
 package metrics
 
 const (
-	NumRequestsRunning  = "num_requests_running"
-	NumRequestsWaiting  = "num_requests_waiting"
-	EngineSleepState    = "engine_sleep_state"
-	HTTPRequestTotal    = "http_requests_total"
-	NumPreemptionsTotal = "num_preemptions_total"
-	RequestSuccessTotal = "request_success_total"
+	NumRequestsRunning          = "num_requests_running"
+	NumRequestsWaiting          = "num_requests_waiting"
+	EngineSleepState            = "engine_sleep_state"
+	HTTPRequestTotal            = "http_requests_total"
+	NumPreemptionsTotal         = "num_preemptions_total"
+	RequestSuccessTotal         = "request_success_total"
+	NumPrefillPreallocQueueReqs = "num_prefill_prealloc_queue_reqs"
+	NumDecodePreallocQueueReqs  = "num_decode_prealloc_queue_reqs"
 
 	E2ERequestLatencySeconds        = "e2e_request_latency_seconds"
 	RequestQueueTimeSeconds         = "request_queue_time_seconds"
@@ -58,6 +60,8 @@ const (
 	NixlPostTimeSeconds  = "nixl_post_time_seconds"
 	NixlBytesTransferred = "nixl_bytes_transferred"
 	NixlNumDescriptors   = "nixl_num_descriptors"
+
+	DrainRate1m = "drain_rate_1m"
 
 	P95TTFT5m                            = "p95_ttft_5m"
 	P95TTFT5mPod                         = "p95_ttft_5m_pod"
@@ -95,7 +99,7 @@ var (
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Raw: Counter,
+				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:num_requests_running",
@@ -107,11 +111,11 @@ var (
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Raw: Counter,
+				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
 				"vllm":   "vllm:num_requests_waiting",
-				"sglang": "sglang:num_waiting_reqs",
+				"sglang": "sglang:num_queue_reqs",
 			},
 			Description: "Number of waiting requests",
 		},
@@ -119,10 +123,11 @@ var (
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Raw: Counter,
+				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:num_requests_swapped",
+				"vllm":   "vllm:num_requests_swapped",
+				"sglang": "sglang:num_retracted_reqs",
 			},
 			Description: "Number of swapped requests",
 		},
@@ -166,9 +171,32 @@ var (
 				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
-				"vllm": "vllm:num_requests_success_total",
+				"vllm":   "vllm:num_requests_success_total",
+				"sglang": "sglang:num_requests_total",
 			},
 			Description: "Number of successful requests",
+		},
+		NumPrefillPreallocQueueReqs: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"sglang": "sglang:num_prefill_prealloc_queue_reqs",
+			},
+			Description: "Number of prefill preallocation queue requests",
+		},
+		NumDecodePreallocQueueReqs: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"sglang": "sglang:num_decode_prealloc_queue_reqs",
+			},
+			Description: "Number of decode preallocation queue requests",
 		},
 
 		E2ERequestLatencySeconds: {
@@ -231,7 +259,7 @@ var (
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Raw: Gauge,
+				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:prompt_tokens_total",
@@ -253,7 +281,7 @@ var (
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PodRawMetrics,
 			MetricType: MetricType{
-				Raw: Gauge,
+				Raw: Counter,
 			},
 			EngineMetricsNameMapping: map[string]string{
 				"vllm": "vllm:generation_tokens_total",
@@ -523,6 +551,28 @@ var (
 		},
 
 		// Query-based metrics
+		// TODO: make it agnostic to the engine
+		DrainRate1m: {
+			MetricScope:  PodModelMetricScope,
+			MetricSource: PrometheusEndpoint,
+			MetricType: MetricType{
+				Query: PromQL,
+			},
+			// Standard rate for the finished requests counter (clamped to avoid divide-by-zero)
+			PromQL: `
+			clamp_min(
+				rate(
+					sglang:num_requests_total{
+						instance="${instance}",
+						model_name="${model_name}",
+						job="pods"
+					}[1m]
+				),
+				0.01
+			)`,
+			Description: "1-minute average rate of finished requests (Drains), clamped to avoid zero",
+		},
+
 		P95TTFT5m: {
 			MetricScope:  PodModelMetricScope,
 			MetricSource: PrometheusEndpoint,

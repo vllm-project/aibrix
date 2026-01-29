@@ -17,7 +17,9 @@ limitations under the License.
 package utils
 
 import (
+	crand "crypto/rand"
 	"fmt"
+	"math/big"
 	"os"
 	"strconv"
 	"time"
@@ -288,4 +290,13 @@ func IsDataParallelPod(pod *v1.Pod) bool {
 		}
 	}
 	return false
+}
+
+func CryptoShuffle[T any](slice []T) {
+	n := len(slice)
+	for i := n - 1; i > 0; i-- {
+		jBig, _ := crand.Int(crand.Reader, big.NewInt(int64(i+1)))
+		j := int(jBig.Int64())
+		slice[i], slice[j] = slice[j], slice[i]
+	}
 }

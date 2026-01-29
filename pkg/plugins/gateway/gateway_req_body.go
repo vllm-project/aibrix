@@ -28,6 +28,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/vllm-project/aibrix/pkg/constants"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -117,8 +118,16 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			HeaderTargetPod, targetPodIP,
 			"content-length", strconv.Itoa(len(routingCtx.ReqBody)),
 			"X-Request-Id", routingCtx.RequestID)
+		var targetPodName string
+		var targetNamespace string
+		var request_count float64
+		if routingCtx.HasRouted() && routingCtx.TargetPod() != nil {
+			targetPodName = routingCtx.TargetPod().Name
+			targetNamespace = routingCtx.TargetPod().Namespace
+			request_count = getRunningRequestsByPod(s, targetPodName, targetNamespace)
+		}
 		klog.InfoS("request start", "requestID", requestID, "requestPath", requestPath, "model", model, "stream", stream, "routingAlgorithm", routingAlgorithm,
-			"targetPodIP", targetPodIP, "routingDuration", routingCtx.GetRoutingDelay())
+			"targetPodName", targetPodName, "targetPodIP", targetPodIP, "outstandingRequests", request_count, "routingDuration", routingCtx.GetRoutingDelay())
 	}
 
 	term = s.cache.AddRequestCount(routingCtx, requestID, model)
@@ -168,4 +177,13 @@ func getEngineBasedPathRewrite(requestPath string, pods []*v1.Pod) string {
 
 	// vllm, vllm-omni, sglang, and other engines use OpenAI-compatible paths
 	return ""
+}
+
+// Helper to fetch running requests on a pod with safe zero fallback.
+func getRunningRequestsByPod(s *Server, podName, namespace string) float64 {
+	mv, err := s.cache.GetMetricValueByPod(podName, namespace, metrics.RealtimeNumRequestsRunning)
+	if err != nil || mv == nil {
+		return 0
+	}
+	return mv.GetSimpleValue()
 }
