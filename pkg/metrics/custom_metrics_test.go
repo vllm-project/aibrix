@@ -183,3 +183,39 @@ func TestSetupCounterMetricsForTest(t *testing.T) {
 	metricValue = testutil.ToFloat64(testCounter.WithLabelValues("pod-2", "model-1"))
 	assert.Equal(t, 10.0, metricValue, "Counter metric with different labels should have correct value")
 }
+
+func TestSetHistogramMetric(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	prometheus.DefaultRegisterer = registry
+	prometheus.DefaultGatherer = registry
+	customHistograms = make(map[string]*histogramCollector)
+
+	hv := &HistogramMetricValue{
+		Sum:   3,
+		Count: 2,
+		Buckets: map[string]float64{
+			"0.100000": 1,
+			"0.500000": 2,
+		},
+	}
+
+	SetHistogramMetric("test_histogram", "test histogram", hv, []string{"pod"}, "pod-1")
+
+	mfs, err := registry.Gather()
+	assert.NoError(t, err)
+
+	var found bool
+	for _, mf := range mfs {
+		if mf.GetName() != "test_histogram" {
+			continue
+		}
+		found = true
+		assert.NotNil(t, mf.GetMetric())
+		assert.Len(t, mf.GetMetric(), 1)
+		h := mf.GetMetric()[0].GetHistogram()
+		assert.NotNil(t, h)
+		assert.Equal(t, uint64(2), h.GetSampleCount())
+		assert.InDelta(t, 3.0, h.GetSampleSum(), 1e-9)
+	}
+	assert.True(t, found)
+}
