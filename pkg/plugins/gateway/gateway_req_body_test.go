@@ -32,6 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	routingalgorithms "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -293,6 +294,7 @@ func Test_handleRequestBody(t *testing.T) {
 					},
 				}
 				mockCache.On("ListPodsByModel", "test-model").Return(podList, nil)
+				mockCache.On("GetMetricValueByPod", mock.Anything, mock.Anything, metrics.RealtimeNumRequestsRunning).Return(&metrics.SimpleMetricValue{Value: 0}, nil)
 				mockCache.On("AddRequestCount", mock.Anything, mock.Anything, "test-model").Return(int64(1))
 			},
 			expected: testResponse{
