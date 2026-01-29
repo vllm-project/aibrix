@@ -17,6 +17,8 @@ limitations under the License.
 package utils
 
 import (
+	crand "crypto/rand"
+	"math/big"
 	"os"
 	"strconv"
 	"time"
@@ -181,4 +183,13 @@ func GVKCheckExists(cfg *rest.Config, gvk schema.GroupVersionKind) (bool, error)
 	}
 
 	return false, nil
+}
+
+func CryptoShuffle[T any](slice []T) {
+	n := len(slice)
+	for i := n - 1; i > 0; i-- {
+		jBig, _ := crand.Int(crand.Reader, big.NewInt(int64(i+1)))
+		j := int(jBig.Int64())
+		slice[i], slice[j] = slice[j], slice[i]
+	}
 }

@@ -263,3 +263,28 @@ func (l *LabelValueMetricValue) GetPrometheusResult() *model.Value {
 func (l *LabelValueMetricValue) GetLabelValue() string {
 	return l.Value
 }
+
+func ExtractNumericFromPromResult(r *model.Value) (float64, error) {
+	if r == nil {
+		return 0, fmt.Errorf("nil Prometheus result")
+	}
+	switch (*r).Type() {
+	case model.ValVector:
+		vec := (*r).(model.Vector)
+		if len(vec) == 0 {
+			return 0, fmt.Errorf("empty vector")
+		}
+		return float64(vec[0].Value), nil
+	case model.ValScalar:
+		scalar := (*r).(*model.Scalar)
+		return float64(scalar.Value), nil
+	case model.ValMatrix:
+		matrix := (*r).(model.Matrix)
+		if len(matrix) == 0 || len(matrix[0].Values) == 0 {
+			return 0, fmt.Errorf("empty matrix")
+		}
+		return float64(matrix[0].Values[0].Value), nil
+	default:
+		return 0, fmt.Errorf("unsupported Prometheus result type: %s", (*r).Type().String())
+	}
+}
