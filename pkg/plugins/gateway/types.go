@@ -94,6 +94,7 @@ const (
 	PathAudioTranscriptions = "/v1/audio/transcriptions"
 	PathAudioTranslations   = "/v1/audio/translations"
 	PathRerank              = "/v1/rerank"
+	PathClassify            = "/v1/classify"
 
 	// Engine-specific paths (xdit)
 	PathXditGenerate      = "/generate"

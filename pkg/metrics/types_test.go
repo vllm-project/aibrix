@@ -59,10 +59,29 @@ func TestHistogramMetricValue(t *testing.T) {
 		Sum:   100.0,
 		Count: 10,
 		Buckets: map[string]float64{
-			"0.1":  5,
-			"0.5":  8,
-			"1.0":  10,
-			"+Inf": 10,
+			"+Inf":        3369,
+			"0.001000":    0,
+			"0.005000":    0,
+			"0.010000":    0,
+			"0.020000":    0,
+			"0.040000":    123,
+			"0.060000":    126,
+			"0.080000":    126,
+			"0.100000":    126,
+			"0.250000":    127,
+			"0.500000":    439,
+			"0.750000":    3352,
+			"1.000000":    3362,
+			"2.500000":    3369,
+			"5.000000":    3369,
+			"7.500000":    3369,
+			"10.000000":   3369,
+			"20.000000":   3369,
+			"40.000000":   3369,
+			"80.000000":   3369,
+			"160.000000":  3369,
+			"640.000000":  3369,
+			"2560.000000": 3369,
 		},
 	}
 
@@ -90,9 +109,9 @@ func TestHistogramMetricValue(t *testing.T) {
 	})
 
 	t.Run("GetBucketValue", func(t *testing.T) {
-		v, ok := histogram.GetBucketValue("0.1")
+		v, ok := histogram.GetBucketValue("0.100000")
 		assert.True(t, ok)
-		assert.Equal(t, 5.0, v)
+		assert.Equal(t, 126.0, v)
 
 		_, ok = histogram.GetBucketValue("unknown")
 		assert.False(t, ok)
@@ -105,15 +124,15 @@ func TestHistogramMetricValue(t *testing.T) {
 	t.Run("GetPercentile", func(t *testing.T) {
 		p50, err := histogram.GetPercentile(50)
 		assert.NoError(t, err)
-		assert.Equal(t, 0.1, p50)
-
-		p75, err := histogram.GetPercentile(75)
-		assert.NoError(t, err)
-		assert.Equal(t, 0.5, p75)
+		assert.InDelta(t, 0.607, p50, 0.1)
 
 		p90, err := histogram.GetPercentile(90)
 		assert.NoError(t, err)
-		assert.Equal(t, 1.0, p90)
+		assert.InDelta(t, 0.723, p90, 0.1)
+
+		p99, err := histogram.GetPercentile(99)
+		assert.NoError(t, err)
+		assert.InDelta(t, 0.749, p99, 0.1)
 
 		_, err = histogram.GetPercentile(110)
 		assert.Error(t, err)

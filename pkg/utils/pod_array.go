@@ -118,3 +118,22 @@ func (arr *PodArray) initDeployments() {
 	arr.deployments = deployments
 	arr.podsByDeployment = podsByDeployment
 }
+
+func (arr *PodArray) ListPortsForPod() map[string][]int {
+	pods := arr.All()
+	if len(pods) == 0 {
+		return nil
+	}
+
+	podWithPort := make(map[string][]int, len(pods))
+	for _, pod := range pods {
+		ports := GetPortsForPod(pod)
+		if len(ports) > 0 {
+			podWithPort[pod.Name] = append(podWithPort[pod.Name], ports...)
+		} else {
+			podWithPort[pod.Name] = []int{}
+		}
+	}
+
+	return podWithPort
+}
