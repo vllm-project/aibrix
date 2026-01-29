@@ -418,15 +418,21 @@ func initDiscoveryProvider(store *Store, provider discovery.Provider, stopCh <-c
 	}
 
 	// Watch for updates
-	for _, kind := range []string{"Pod", "ModelAdapter"} {
-		if err := provider.AddEventHandler(kind,
-			cache.ResourceEventHandlerFuncs{
-				AddFunc:    store.addModelAdapter,
-				UpdateFunc: store.updateModelAdapter,
-				DeleteFunc: store.deleteModelAdapter,
-			}, stopCh); err != nil {
-			return err
-		}
+	if err := provider.AddEventHandler("Pod",
+		cache.ResourceEventHandlerFuncs{
+			AddFunc:    store.addPod,
+			UpdateFunc: store.updatePod,
+			DeleteFunc: store.deletePod,
+		}, stopCh); err != nil {
+		return err
+	}
+	if err := provider.AddEventHandler("ModelAdapter",
+		cache.ResourceEventHandlerFuncs{
+			AddFunc:    store.addModelAdapter,
+			UpdateFunc: store.updateModelAdapter,
+			DeleteFunc: store.deleteModelAdapter,
+		}, stopCh); err != nil {
+		return err
 	}
 
 	return nil
