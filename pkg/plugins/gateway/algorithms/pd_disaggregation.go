@@ -57,8 +57,10 @@ const (
 	PromptMaxLength               string                 = "prompt-max-length"
 	defaultPrefillRequestTimeout  int                    = 30
 
-	defaultMaxRequest             float64 = 32
-	defaultMaxTokenThroughputDiff float64 = 2048
+	defaultMaxRequest                   float64 = 32
+	defaultMaxTokenThroughputDiff       float64 = 2048
+	defaultRequestRateHighLoadThreshold         = 1.0
+	defaultRequestRateLowLoadThreshold          = 0.25
 )
 
 var (
@@ -142,11 +144,13 @@ func (r pdRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (
 		return "", fmt.Errorf("failed to filter prefill/decode pods for request %s: %w", ctx.RequestID, err)
 	}
 
-	klog.InfoS("selected prefill/decode pods", "request_id", ctx.RequestID, "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)
-	err = r.doPrefillRequest(ctx, prefillPod, llmEngine)
-	if err != nil {
-		klog.ErrorS(err, "prefill request failed", "request_id", ctx.RequestID)
-		return "", fmt.Errorf("prefill request failed for request %s: %w", ctx.RequestID, err)
+	if prefillPod != nil {
+		klog.InfoS("selected prefill/decode pods", "request_id", ctx.RequestID, "prefill_pod", prefillPod.Name, "decode_pod", decodePod.Name)
+		err = r.doPrefillRequest(ctx, prefillPod, llmEngine)
+		if err != nil {
+			klog.ErrorS(err, "prefill request failed", "request_id", ctx.RequestID)
+			return "", fmt.Errorf("prefill request failed for request %s: %w", ctx.RequestID, err)
+		}
 	}
 
 	ctx.SetTargetPod(decodePod)
@@ -255,43 +259,7 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 
 	prefillScores, maxPrefillScore, prefixHashes := r.scorePrefillPods(routingCtx, prefillPods)
 	decodeScores, maxDecodeScore := r.scoreDecodePods(routingCtx, decodePods, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage)
-
-	var targetPrefillPod, targetDecodePod *v1.Pod
-	minScore := math.MaxFloat64
-	for roleset, prefillScore := range prefillScores {
-		decodeScore, ok := decodeScores[roleset]
-		if !ok {
-			continue
-		}
-
-		normalizedPrefillScore := prefillScore.Score / maxPrefillScore
-		normalizedDecodeScore := decodeScore.Score / maxDecodeScore
-
-		if normalizedPrefillScore+normalizedDecodeScore < minScore {
-			minScore = normalizedPrefillScore + normalizedDecodeScore
-			targetPrefillPod = prefillScore.Pod
-			targetDecodePod = decodeScore.Pod
-		}
-		klog.V(4).InfoS("final_score", "request_id", routingCtx.RequestID, "roleset", roleset,
-			"final_score", minScore,
-			"prefill_score", prefillScore.Score, "normalized_prefill_score", normalizedPrefillScore,
-			"decode_score", decodeScore.Score, "normalized_decode_score", normalizedDecodeScore)
-	}
-
-	defer func() {
-		if len(prefixHashes) > 0 {
-			r.prefixCacheIndexer.AddPrefix(prefixHashes, routingCtx.Model, targetPrefillPod.Name)
-		}
-	}()
-
-	if targetPrefillPod == nil {
-		return nil, nil, fmt.Errorf("target prefill  pod is nil")
-	}
-	if targetDecodePod == nil {
-		return nil, nil, fmt.Errorf("target decode pod is nil")
-	}
-
-	return targetPrefillPod, targetDecodePod, nil
+	return r.finalPDScore(routingCtx, prefixHashes, prefillScores, maxPrefillScore, decodeScores, maxDecodeScore)
 }
 
 // loadImbalanceSelectPrefillPod evaluates if the load is imbalanced based on the abs difference between
@@ -504,6 +472,56 @@ func (r *pdRouter) scoreDecodePods(routingCtx *types.RoutingContext, filteredDec
 	}
 
 	return decodeScores, maxDecodeScore
+}
+
+func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
+	prefixHashes []uint64,
+	prefillScores map[string]*Scores, maxPrefillScore float64,
+	decodeScores map[string]*Scores, maxDecodeScore float64,
+) (*v1.Pod, *v1.Pod, error) {
+	var targetPrefillPod, targetDecodePod *v1.Pod
+	minScore := math.MaxFloat64
+
+	for roleset, prefillScore := range prefillScores {
+		decodeScore, ok := decodeScores[roleset]
+		if !ok {
+			continue
+		}
+
+		normalizedPrefillScore := prefillScore.Score / maxPrefillScore
+		normalizedDecodeScore := decodeScore.Score / maxDecodeScore
+		final := normalizedPrefillScore + normalizedDecodeScore
+
+		if final < minScore {
+			minScore = final
+			targetPrefillPod = prefillScore.Pod
+			targetDecodePod = decodeScore.Pod
+		}
+
+		klog.V(4).InfoS(
+			"final_score",
+			"request_id", routingCtx.RequestID,
+			"roleset", roleset,
+			"final_score", final,
+			"prefill_score", prefillScore.Score, "normalized_prefill_score", normalizedPrefillScore,
+			"decode_score", decodeScore.Score, "normalized_decode_score", normalizedDecodeScore,
+		)
+	}
+
+	defer func() {
+		if len(prefixHashes) > 0 {
+			r.prefixCacheIndexer.AddPrefix(prefixHashes, routingCtx.Model, targetPrefillPod.Name)
+		}
+	}()
+
+	if targetPrefillPod == nil {
+		return nil, nil, fmt.Errorf("target prefill pod is nil")
+	}
+	if targetDecodePod == nil {
+		return nil, nil, fmt.Errorf("target decode pod is nil")
+	}
+
+	return targetPrefillPod, targetDecodePod, nil
 }
 
 func (r *pdRouter) doPrefillRequest(routingCtx *types.RoutingContext, prefillPod *v1.Pod, llmEngine string) error {
@@ -865,23 +883,33 @@ func isCombinedPod(pod *v1.Pod) bool {
 }
 
 func (r *pdRouter) shouldPickCombined(routingCtx *types.RoutingContext, prefillPods, decodePods, combinedPods []*v1.Pod) bool {
-	var prefillHighLoad, decodeHighLoad, combinedLowLoad bool
+	combinedLowLoad := false
+	for _, combinePod := range combinedPods {
+		if calculatePodScoreBasedOffRequestRate(routingCtx, r.cache, combinePod) < defaultRequestRateLowLoadThreshold {
+			combinedLowLoad = true
+			break
+		}
+	}
+	if !combinedLowLoad {
+		klog.V(4).InfoS("loads", "request_id", routingCtx.RequestID, "prefill_high_load", false, "decode_high_load", false, "combined_low_load", false)
+		return false
+	}
+
+	prefillHighLoad := false
 	for _, prefillPod := range prefillPods {
-		if calculatePodScoreBasedOffRequestRate(routingCtx, r.cache, prefillPod) > 1 {
+		if calculatePodScoreBasedOffRequestRate(routingCtx, r.cache, prefillPod) > defaultRequestRateHighLoadThreshold {
 			prefillHighLoad = true
 			break
 		}
 	}
-	for _, decodePod := range decodePods {
-		if calculatePodScoreBasedOffRequestRate(routingCtx, r.cache, decodePod) > 1 {
-			decodeHighLoad = true
-			break
-		}
-	}
-	for _, combinePod := range combinedPods {
-		if calculatePodScoreBasedOffRequestRate(routingCtx, r.cache, combinePod) < 0.25 {
-			combinedLowLoad = true
-			break
+
+	decodeHighLoad := false
+	if !prefillHighLoad {
+		for _, decodePod := range decodePods {
+			if calculatePodScoreBasedOffRequestRate(routingCtx, r.cache, decodePod) > defaultRequestRateHighLoadThreshold {
+				decodeHighLoad = true
+				break
+			}
 		}
 	}
 

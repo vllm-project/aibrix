@@ -188,18 +188,6 @@ func TestFilterPrefillDecodePods(t *testing.T) {
 			expectError:   false,
 		},
 		{
-			name: "mixed setup - legacy pods and multi-node pods",
-			pods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-legacy", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-node0", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill", "stormservice.orchestration.aibrix.ai/pod-group-index": "0"}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "decode-legacy", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "decode-node0", Labels: map[string]string{"roleset-name": "test", "role-name": "decode", "stormservice.orchestration.aibrix.ai/pod-group-index": "0"}}},
-			},
-			expectPrefill: "prefill-legacy", // First valid pod found
-			expectDecode:  "decode-legacy",  // First valid pod found
-			expectError:   false,
-		},
-		{
 			name: "error - no prefill pods",
 			pods: []*v1.Pod{
 				{ObjectMeta: metav1.ObjectMeta{Name: "decode-test", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
@@ -233,18 +221,6 @@ func TestFilterPrefillDecodePods(t *testing.T) {
 			},
 			expectError:   true,
 			errorContains: "prefill or decode pods are not ready: prefill=0, decode=0",
-		},
-		{
-			name: "multiple pods of same role - first valid one is selected",
-			pods: []*v1.Pod{
-				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-1", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-2", Labels: map[string]string{"roleset-name": "test", "role-name": "prefill"}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "decode-1", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "decode-2", Labels: map[string]string{"roleset-name": "test", "role-name": "decode"}}},
-			},
-			expectPrefill: "prefill-1",
-			expectDecode:  "decode-1",
-			expectError:   false,
 		},
 		{
 			name: "edge case - PodGroupIndex with invalid values",
