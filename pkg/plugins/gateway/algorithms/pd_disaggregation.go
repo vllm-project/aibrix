@@ -312,7 +312,7 @@ func (r *pdRouter) loadImbalanceSelectDecodePod(ctx *types.RoutingContext, filte
 		maxFreeGPUUsage = math.Max(maxFreeGPUUsage, podFreeGpuUsage[pod.Name])
 	}
 
-	if maxRequestCount-minRequestCount >= aibrixDecodeMaxRequest {
+	if minRequestCount == 0 || maxRequestCount-minRequestCount >= aibrixDecodeMaxRequest {
 		klog.V(4).InfoS("request imbalance at decode pods", "request_id", ctx.RequestID,
 			"min_request_count", minRequestCount, "max_request_count", maxRequestCount,
 			"min_throughput", minThroughput, "max_throughput", maxThroughput,
