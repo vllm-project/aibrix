@@ -21,6 +21,7 @@ spec:
       containers:
       - args:
         - --leader-elect
+        - --leader-election-namespace={{ .Release.Namespace }}
         - --health-probe-bind-address=:8081
         - --metrics-bind-address=:8080
         - --enable-runtime-sidecar
