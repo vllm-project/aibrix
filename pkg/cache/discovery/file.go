@@ -57,7 +57,7 @@ type FileProvider struct {
 	configPath string
 }
 
-// AddModelAdapterEventHandler implements Provider.
+// AddEventHandler implements Provider.
 func (p *FileProvider) AddEventHandler(_ string,
 	_ cache.ResourceEventHandlerFuncs, _ <-chan struct{}) error {
 	return nil
