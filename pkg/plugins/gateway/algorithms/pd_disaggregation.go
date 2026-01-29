@@ -167,67 +167,29 @@ type Scores struct {
 // only pods with PodGroupIndex="0" (node_rank=0) are selected as they run the HTTP server.
 // Pods without PodGroupIndex label are also included for backward compatibility.
 func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, readyPods []*v1.Pod) (*v1.Pod, *v1.Pod, error) {
-	prefillPods, decodePods := []*v1.Pod{}, []*v1.Pod{}
-	promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, promptLengthBucketingCombinedPods := []*v1.Pod{}, []*v1.Pod{}, []*v1.Pod{}
-
 	var promptLength int
 	if aibrixPromptLengthBucketing {
 		promptLength, _ = routingCtx.PromptLength()
 		klog.V(4).InfoS("prompt length based filtering enabled", "request_id", routingCtx.RequestID, "prompt_length", promptLength)
 	}
 
-	for _, pod := range readyPods {
-		if _, ok := pod.Labels[PDRoleSetIdentifier]; !ok {
-			continue
-		}
-		if _, ok := pod.Labels[PDRoleIdentifier]; !ok {
-			continue
-		}
-
-		// For multi-node scenarios, only select pods from node_rank=0 (PodGroupIndex=0)
-		// which have the HTTP server running
-		if !isPodWithHTTPServer(pod) {
-			continue
-		}
-
-		switch pod.Labels[PDRoleIdentifier] {
-		case "prefill":
-			prefillPods = append(prefillPods, pod)
-
-			if aibrixPromptLengthBucketing && r.isPodSuitableForPromptLength(pod, promptLength) {
-				promptLengthBucketingPrefillPods = append(promptLengthBucketingPrefillPods, pod)
-			}
-		case "decode":
-			decodePods = append(decodePods, pod)
-
-			if aibrixPromptLengthBucketing && r.isPodSuitableForPromptLength(pod, promptLength) {
-				promptLengthBucketingDecodePods = append(promptLengthBucketingDecodePods, pod)
-			}
-		default:
-			if aibrixPromptLengthBucketing && isCombinedPod(pod) && r.isPodSuitableForPromptLength(pod, promptLength) {
-				promptLengthBucketingCombinedPods = append(promptLengthBucketingCombinedPods, pod)
-			}
-		}
+	prefillPods, decodePods, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, combinedPods := r.collectAndBucketPods(readyPods, promptLength)
+	if len(prefillPods) == 0 {
+		return nil, nil, fmt.Errorf("prefill pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
+	}
+	if len(decodePods) == 0 {
+		return nil, nil, fmt.Errorf("decode pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
 	}
 
-	// Override prefill pods only if bucketing produced results
-	if aibrixPromptLengthBucketing && len(promptLengthBucketingPrefillPods) > 0 {
-		prefillPods = promptLengthBucketingPrefillPods
-	}
-
-	if aibrixPromptLengthBucketing && len(promptLengthBucketingDecodePods) > 0 {
-		decodePods = promptLengthBucketingDecodePods
-	}
-
-	combinedAvailable := aibrixPromptLengthBucketing && len(promptLengthBucketingCombinedPods) > 0
+	combinedAvailable := aibrixPromptLengthBucketing && len(combinedPods) > 0
 	if combinedAvailable {
-		if len(prefillPods) == 0 {
+		if len(promptLengthBucketingPrefillPods) == 0 || len(promptLengthBucketingDecodePods) == 0 {
 			klog.InfoS("routing to combined pod", "requestId", routingCtx.RequestID, "promptLength", promptLength)
-			return nil, promptLengthBucketingCombinedPods[rand.Intn(len(promptLengthBucketingCombinedPods))], nil
+			return nil, combinedPods[rand.Intn(len(combinedPods))], nil
 		}
 
-		if r.shouldPickCombined(routingCtx, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, promptLengthBucketingCombinedPods) {
-			combinedPod := r.scoreCombinedPods(routingCtx, promptLengthBucketingCombinedPods)
+		if r.shouldPickCombined(routingCtx, prefillPods, decodePods, combinedPods) {
+			combinedPod := r.scoreCombinedPods(routingCtx, combinedPods)
 			if combinedPod != nil {
 				klog.InfoS("load imbalance detected, selecting combined pod",
 					"requestId", routingCtx.RequestID, "selectedCombinedPod", combinedPod.Name)
@@ -236,9 +198,6 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 		}
 	}
 
-	if len(prefillPods) == 0 || len(decodePods) == 0 {
-		return nil, nil, fmt.Errorf("prefill or decode pods are not ready: prefill=%d, decode=%d", len(prefillPods), len(decodePods))
-	}
 	// check for prefill and decode imbalance
 	targetPod, isImbalanced := r.loadImbalanceSelectPrefillPod(prefillPods, r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods))
 	if isImbalanced {
@@ -255,7 +214,6 @@ func (r *pdRouter) filterPrefillDecodePods(routingCtx *types.RoutingContext, rea
 			prefillPods = utils.FilterPodsByLabel(prefillPods, PDRoleSetIdentifier, targetPod.Labels[PDRoleSetIdentifier])
 		}
 	}
-	klog.V(4).InfoS("filtered prefill/decode pods", "request_id", routingCtx.RequestID, "prefill_pods", len(prefillPods), "decode_pods", len(decodePods))
 
 	prefillScores, maxPrefillScore, prefixHashes := r.scorePrefillPods(routingCtx, prefillPods)
 	decodeScores, maxDecodeScore := r.scoreDecodePods(routingCtx, decodePods, maxRequestCount, maxThroughput, maxFreeGPUUsage, podRequestCounts, podThroughputs, podFreeGpuUsage)
@@ -882,6 +840,53 @@ func isCombinedPod(pod *v1.Pod) bool {
 	return pod != nil && pod.Labels[CombinedIdentifier] == "true"
 }
 
+func (r *pdRouter) collectAndBucketPods(readyPods []*v1.Pod, promptLength int) ([]*v1.Pod, []*v1.Pod, []*v1.Pod, []*v1.Pod, []*v1.Pod) {
+	prefillPods, decodePods := []*v1.Pod{}, []*v1.Pod{}
+	promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, promptLengthBucketingCombinedPods := []*v1.Pod{}, []*v1.Pod{}, []*v1.Pod{}
+
+	for _, pod := range readyPods {
+		if _, ok := pod.Labels[PDRoleSetIdentifier]; !ok {
+			continue
+		}
+		if _, ok := pod.Labels[PDRoleIdentifier]; !ok {
+			continue
+		}
+
+		// For multi-node scenarios, only select pods from node_rank=0 (PodGroupIndex=0)
+		// which have the HTTP server running
+		if !isPodWithHTTPServer(pod) {
+			continue
+		}
+
+		switch pod.Labels[PDRoleIdentifier] {
+		case "prefill":
+			prefillPods = append(prefillPods, pod)
+			if aibrixPromptLengthBucketing && r.isPodSuitableForPromptLength(pod, promptLength) {
+				promptLengthBucketingPrefillPods = append(promptLengthBucketingPrefillPods, pod)
+			}
+		case "decode":
+			decodePods = append(decodePods, pod)
+			if aibrixPromptLengthBucketing && r.isPodSuitableForPromptLength(pod, promptLength) {
+				promptLengthBucketingDecodePods = append(promptLengthBucketingDecodePods, pod)
+			}
+		default:
+			if aibrixPromptLengthBucketing && isCombinedPod(pod) && r.isPodSuitableForPromptLength(pod, promptLength) {
+				promptLengthBucketingCombinedPods = append(promptLengthBucketingCombinedPods, pod)
+			}
+		}
+	}
+
+	// Override prefill pods only if bucketing produced results
+	if aibrixPromptLengthBucketing && len(promptLengthBucketingPrefillPods) > 0 {
+		prefillPods = promptLengthBucketingPrefillPods
+	}
+	if aibrixPromptLengthBucketing && len(promptLengthBucketingDecodePods) > 0 {
+		decodePods = promptLengthBucketingDecodePods
+	}
+
+	return prefillPods, decodePods, promptLengthBucketingPrefillPods, promptLengthBucketingDecodePods, promptLengthBucketingCombinedPods
+}
+
 func (r *pdRouter) shouldPickCombined(routingCtx *types.RoutingContext, prefillPods, decodePods, combinedPods []*v1.Pod) bool {
 	combinedLowLoad := false
 	for _, combinePod := range combinedPods {
@@ -891,7 +896,7 @@ func (r *pdRouter) shouldPickCombined(routingCtx *types.RoutingContext, prefillP
 		}
 	}
 	if !combinedLowLoad {
-		klog.V(4).InfoS("loads", "request_id", routingCtx.RequestID, "prefill_high_load", false, "decode_high_load", false, "combined_low_load", false)
+		klog.V(4).InfoS("loads", "requestId", routingCtx.RequestID, "prefillHighLoad", false, "decodeHighLoad", false, "combinedLowLoad", combinedLowLoad)
 		return false
 	}
 
@@ -913,7 +918,7 @@ func (r *pdRouter) shouldPickCombined(routingCtx *types.RoutingContext, prefillP
 		}
 	}
 
-	klog.V(4).InfoS("loads", "request_id", routingCtx.RequestID, "prefill_high_load", prefillHighLoad, "decode_high_load", decodeHighLoad, "combined_low_load", combinedLowLoad)
+	klog.V(4).InfoS("loads", "requestId", routingCtx.RequestID, "prefillHighLoad", prefillHighLoad, "decodeHighLoad", decodeHighLoad, "combinedLowLoad", combinedLowLoad)
 	return (prefillHighLoad || decodeHighLoad) && combinedLowLoad
 }
 
