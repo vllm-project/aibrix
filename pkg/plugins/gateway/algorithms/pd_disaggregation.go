@@ -80,6 +80,7 @@ type pdRouter struct {
 	prefixCacheIndexer    *prefixcacheindexer.PrefixHashTable
 	prefillRequestTracker *PrefillRequestTracker
 	httpClient            *http.Client
+	prefixUpdateCh        chan prefixUpdateJob
 }
 
 // PrefillRequestTracker manages prefill-specific request counts
@@ -115,13 +116,18 @@ func NewPDRouter() (types.Router, error) {
 		},
 	}
 
-	return pdRouter{
+	pdRouter := pdRouter{
 		cache:                 c,
 		tokenizer:             tokenizerObj,
 		prefixCacheIndexer:    prefixcacheindexer.NewPrefixHashTable(),
 		prefillRequestTracker: NewPrefillRequestTracker(),
 		httpClient:            httpClient,
-	}, nil
+		prefixUpdateCh:        make(chan prefixUpdateJob, 1024),
+	}
+
+	pdRouter.startPrefixUpdater()
+
+	return pdRouter, nil
 }
 
 // NewPrefillRequestTracker creates a new prefill request tracker
@@ -348,7 +354,6 @@ func (r *pdRouter) scorePrefillPods(routingCtx *types.RoutingContext, prefillPod
 	readyPodsMap := map[string]struct{}{}
 	podRequestCount := r.prefillRequestTracker.GetPrefillRequestCountsForPods(prefillPods)
 
-	// klog.InfoS("prefill_pod_request_count", "request_id", routingCtx.RequestID, "pod_request_count", podRequestCount)
 	for _, cnt := range podRequestCount {
 		countFloat := float64(cnt)
 		requestCount = append(requestCount, countFloat)
@@ -468,7 +473,7 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 
 	defer func() {
 		if len(prefixHashes) > 0 {
-			r.prefixCacheIndexer.AddPrefix(prefixHashes, routingCtx.Model, targetPrefillPod.Name)
+			r.enqueuePrefixUpdate(prefixHashes, routingCtx.Model, targetPrefillPod.Name)
 		}
 	}()
 
@@ -691,6 +696,36 @@ func (r *pdRouter) updateRoutingContextWithKVTransferParams(routingCtx *types.Ro
 
 func (r *pdRouter) SubscribedMetrics() []string {
 	return []string{}
+}
+
+type prefixUpdateJob struct {
+	prefixHashes []uint64
+	model        string
+	pod          string
+}
+
+func (r *pdRouter) startPrefixUpdater() {
+	// single worker to serialize updates, minimizing lock contention in the indexer
+	go func() {
+		for job := range r.prefixUpdateCh {
+			r.prefixCacheIndexer.AddPrefix(job.prefixHashes, job.model, job.pod)
+		}
+	}()
+}
+
+func (r *pdRouter) enqueuePrefixUpdate(prefixHashes []uint64, model, pod string) {
+	// copy slice to avoid data races if caller reuses the backing array
+	copyHashes := append([]uint64(nil), prefixHashes...)
+	select {
+	case r.prefixUpdateCh <- prefixUpdateJob{
+		prefixHashes: copyHashes,
+		model:        model,
+		pod:          pod,
+	}:
+		// enqueued
+	default:
+		// channel full; drop to keep routing path non-blocking
+	}
 }
 
 func getLLMEngine(pod *v1.Pod, labelName string, defaultValue string) string {
