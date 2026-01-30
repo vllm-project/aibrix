@@ -471,17 +471,14 @@ func (r *pdRouter) finalPDScore(routingCtx *types.RoutingContext,
 		)
 	}
 
-	defer func() {
-		if len(prefixHashes) > 0 {
-			r.enqueuePrefixUpdate(prefixHashes, routingCtx.Model, targetPrefillPod.Name)
-		}
-	}()
-
 	if targetPrefillPod == nil {
 		return nil, nil, fmt.Errorf("target prefill pod is nil")
 	}
 	if targetDecodePod == nil {
 		return nil, nil, fmt.Errorf("target decode pod is nil")
+	}
+	if len(prefixHashes) > 0 && targetPrefillPod != nil {
+		r.enqueuePrefixUpdate(prefixHashes, routingCtx.Model, targetPrefillPod.Name)
 	}
 
 	return targetPrefillPod, targetDecodePod, nil
@@ -725,6 +722,7 @@ func (r *pdRouter) enqueuePrefixUpdate(prefixHashes []uint64, model, pod string)
 		// enqueued
 	default:
 		// channel full; drop to keep routing path non-blocking
+		klog.Warningf("Prefix update channel full, dropping update for model %s on pod %s", model, pod)
 	}
 }
 
