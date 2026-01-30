@@ -87,6 +87,26 @@ webhooks:
       resources:
         - stormservices
   sideEffects: None
+- admissionReviewVersions:
+    - v1
+  clientConfig:
+    service:
+      name: {{ include "aibrix.fullname" . }}-webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /mutate-apps-v1-deployment
+  failurePolicy: Ignore
+  name: medeployment.aibrix.ai
+  rules:
+    - apiGroups:
+        - apps
+      apiVersions:
+        - v1
+      operations:
+        - CREATE
+        - UPDATE
+      resources:
+        - deployments
+  sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
