@@ -19,9 +19,9 @@ package webhook
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -170,11 +170,13 @@ func (v *PodAutoscalerCustomValidator) validatePodAutoscaler(pa *autoscalingv1al
 		if ms.TargetValue == "" {
 			allErrs = append(allErrs, field.Required(msPath.Child("targetValue"), "must be set"))
 		} else {
-			val, err := strconv.ParseFloat(ms.TargetValue, 64)
+			qty, err := resource.ParseQuantity(ms.TargetValue)
 			if err != nil {
 				allErrs = append(allErrs, field.Invalid(msPath.Child("targetValue"), ms.TargetValue, "must be a valid number"))
-			} else if val <= 0 {
-				allErrs = append(allErrs, field.Invalid(msPath.Child("targetValue"), ms.TargetValue, "must be greater than 0"))
+			} else {
+				if qty.Sign() <= 0 {
+					allErrs = append(allErrs, field.Invalid(msPath.Child("targetValue"), ms.TargetValue, "must be greater than 0"))
+				}
 			}
 		}
 
