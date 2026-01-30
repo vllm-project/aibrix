@@ -238,3 +238,27 @@ func SetupCounterMetricsForTest(metricName string, labelNames []string) (*promet
 
 	return testCounter, func() { IncrementCounterMetricFnForTest = originalFn }
 }
+
+func EmitMetricToPrometheus(metricName string, metricValue MetricValue, labelNames []string, labelValues []string) {
+	metricDef, exists := Metrics[metricName]
+	if !exists {
+		return
+	}
+
+	switch metricDef.MetricType.Raw {
+	case Gauge:
+		SetGaugeMetric(metricName, GetMetricHelp(metricName), metricValue.GetSimpleValue(), labelNames, labelValues...)
+	case Counter:
+		SetGaugeMetric(metricName, GetMetricHelp(metricName), metricValue.GetSimpleValue(), labelNames, labelValues...)
+	default:
+		if hv := metricValue.GetHistogramValue(); hv != nil {
+			SetHistogramMetric(metricName, GetMetricHelp(metricName), hv, labelNames, labelValues...)
+			p50, _ := hv.GetPercentile(50)
+			SetGaugeMetric(metricName+"_p50", GetMetricHelp(metricName), p50, labelNames, labelValues...)
+			p90, _ := hv.GetPercentile(90)
+			SetGaugeMetric(metricName+"_p90", GetMetricHelp(metricName), p90, labelNames, labelValues...)
+			p99, _ := hv.GetPercentile(99)
+			SetGaugeMetric(metricName+"_p99", GetMetricHelp(metricName), p99, labelNames, labelValues...)
+		}
+	}
+}
