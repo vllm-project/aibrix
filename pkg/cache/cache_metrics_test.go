@@ -15,7 +15,6 @@ limitations under the License.
 package cache
 
 import (
-	"sync"
 	"testing"
 	"time"
 
@@ -39,61 +38,6 @@ func TestCleanupOldSnapshots(t *testing.T) {
 	require.Len(t, filtered, 2)
 	require.Equal(t, float64(3), filtered[0].Value)
 	require.Equal(t, float64(4), filtered[1].Value)
-}
-
-func TestEmitCounterValue_TotalUsesDelta(t *testing.T) {
-	lastCounterValues = sync.Map{}
-
-	var counterAdds []float64
-	originalCounterFn := metrics.IncrementCounterMetricFnForTest
-	originalGaugeFn := metrics.SetGaugeMetricFnForTest
-	defer func() {
-		metrics.IncrementCounterMetricFnForTest = originalCounterFn
-		metrics.SetGaugeMetricFnForTest = originalGaugeFn
-	}()
-
-	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
-		counterAdds = append(counterAdds, value)
-	}
-	metrics.SetGaugeMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
-		t.Fatalf("unexpected gauge metric call: %s=%v", name, value)
-	}
-
-	c := &Store{}
-	c.emitCounterValue("http_requests_total", 10, []string{"pod"}, "p1")
-	require.Empty(t, counterAdds)
-
-	c.emitCounterValue("http_requests_total", 15, []string{"pod"}, "p1")
-	require.Equal(t, []float64{5}, counterAdds)
-
-	c.emitCounterValue("http_requests_total", 3, []string{"pod"}, "p1")
-	require.Equal(t, []float64{5}, counterAdds)
-
-	c.emitCounterValue("http_requests_total", 20, []string{"pod"}, "p1")
-	require.Equal(t, []float64{5, 17}, counterAdds)
-}
-
-func TestEmitCounterValue_NonTotalUsesGauge(t *testing.T) {
-	lastCounterValues = sync.Map{}
-
-	var gaugeSets []float64
-	originalCounterFn := metrics.IncrementCounterMetricFnForTest
-	originalGaugeFn := metrics.SetGaugeMetricFnForTest
-	defer func() {
-		metrics.IncrementCounterMetricFnForTest = originalCounterFn
-		metrics.SetGaugeMetricFnForTest = originalGaugeFn
-	}()
-
-	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
-		t.Fatalf("unexpected counter metric call: %s add=%v", name, value)
-	}
-	metrics.SetGaugeMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
-		gaugeSets = append(gaugeSets, value)
-	}
-
-	c := &Store{}
-	c.emitCounterValue("num_requests_running", 7, []string{"pod"}, "p1")
-	require.Equal(t, []float64{7}, gaugeSets)
 }
 
 func TestUpdatePodRecord(t *testing.T) {
@@ -186,21 +130,13 @@ func TestBuildMetricLabels(t *testing.T) {
 }
 
 func TestEmitMetricToPrometheus_GaugeAndCounter(t *testing.T) {
-	lastCounterValues = sync.Map{}
-
 	var gaugeCalls []struct {
 		name  string
 		value float64
 	}
-	var counterAdds []struct {
-		name  string
-		value float64
-	}
 
-	originalCounterFn := metrics.IncrementCounterMetricFnForTest
 	originalGaugeFn := metrics.SetGaugeMetricFnForTest
 	defer func() {
-		metrics.IncrementCounterMetricFnForTest = originalCounterFn
 		metrics.SetGaugeMetricFnForTest = originalGaugeFn
 	}()
 
@@ -210,28 +146,14 @@ func TestEmitMetricToPrometheus_GaugeAndCounter(t *testing.T) {
 			value float64
 		}{name: name, value: value})
 	}
-	metrics.IncrementCounterMetricFnForTest = func(name string, help string, value float64, labelNames []string, labelValues ...string) {
-		counterAdds = append(counterAdds, struct {
-			name  string
-			value float64
-		}{name: name, value: value})
-	}
 
-	c := &Store{}
 	labels := []string{"pod"}
 	values := []string{"p1"}
 
-	c.emitMetricToPrometheus(metrics.NumRequestsRunning, &metrics.SimpleMetricValue{Value: 3}, labels, values)
+	metrics.EmitMetricToPrometheus(metrics.NumRequestsRunning, &metrics.SimpleMetricValue{Value: 3}, labels, values)
 	require.Len(t, gaugeCalls, 1)
 	require.Equal(t, metrics.NumRequestsRunning, gaugeCalls[0].name)
 	require.Equal(t, 3.0, gaugeCalls[0].value)
-
-	c.emitMetricToPrometheus(metrics.HTTPRequestTotal, &metrics.SimpleMetricValue{Value: 10}, labels, values)
-	require.Len(t, counterAdds, 0)
-	c.emitMetricToPrometheus(metrics.HTTPRequestTotal, &metrics.SimpleMetricValue{Value: 13}, labels, values)
-	require.Len(t, counterAdds, 1)
-	require.Equal(t, metrics.HTTPRequestTotal, counterAdds[0].name)
-	require.Equal(t, 3.0, counterAdds[0].value)
 }
 
 func TestEmitMetricToPrometheus_HistogramAlsoEmitsQuantiles(t *testing.T) {
@@ -252,7 +174,6 @@ func TestEmitMetricToPrometheus_HistogramAlsoEmitsQuantiles(t *testing.T) {
 		gaugeMetricNames = append(gaugeMetricNames, name)
 	}
 
-	c := &Store{}
 	hv := &metrics.HistogramMetricValue{
 		Sum:   3,
 		Count: 2,
@@ -262,7 +183,7 @@ func TestEmitMetricToPrometheus_HistogramAlsoEmitsQuantiles(t *testing.T) {
 			"+Inf":     2,
 		},
 	}
-	c.emitMetricToPrometheus(metrics.TimeToFirstTokenSeconds, hv, []string{"pod"}, []string{"p1"})
+	metrics.EmitMetricToPrometheus(metrics.TimeToFirstTokenSeconds, hv, []string{"pod"}, []string{"p1"})
 
 	require.Contains(t, gaugeMetricNames, metrics.TimeToFirstTokenSeconds+"_p50")
 	require.Contains(t, gaugeMetricNames, metrics.TimeToFirstTokenSeconds+"_p90")
