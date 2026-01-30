@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
@@ -82,4 +83,30 @@ func shouldSkipMetric(podName string, metricName string) bool {
 		return true
 	}
 	return false
+}
+
+func isPrefillOnlyMetric(metricName string) bool {
+	switch metricName {
+	case metrics.TimeToFirstTokenSeconds,
+		metrics.RequestPrefillTimeSeconds,
+		metrics.RequestPromptTokens:
+		return true
+	default:
+		return false
+	}
+}
+
+func isDecodeOnlyMetric(metricName string) bool {
+	switch metricName {
+	case metrics.TimePerOutputTokenSeconds,
+		metrics.InterTokenLatencySeconds,
+		metrics.RequestTimePerOutputTokenSeconds,
+		metrics.RequestDecodeTimeSeconds,
+		metrics.IterationTokensTotal,
+		metrics.RequestGenerationTokens,
+		metrics.RequestMaxNumGenerationTokens:
+		return true
+	default:
+		return false
+	}
 }
