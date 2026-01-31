@@ -196,4 +196,24 @@ webhooks:
       resources:
         - stormservices
   sideEffects: None
+- admissionReviewVersions:
+    - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-apps-v1-deployment
+  failurePolicy: Ignore
+  name: vedeployment.aibrix.ai
+  rules:
+    - apiGroups:
+        - apps
+      apiVersions:
+        - v1
+      operations:
+        - CREATE
+        - UPDATE
+      resources:
+        - deployments
+  sideEffects: None
 {{- end }}
